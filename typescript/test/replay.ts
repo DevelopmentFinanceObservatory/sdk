@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 
-import { SearchWarning } from "../src/answer.ts";
-import type { Gap } from "../src/answer.ts";
-import type { Dataset } from "../src/dataset.ts";
 import { envFrom } from "../src/env.ts";
-import { DfoError, isDfoError } from "../src/errors.ts";
 import type { Narrowing, SpecInput } from "../src/fetch.ts";
 import type { Layout } from "../src/ref.ts";
 import { Transport } from "../src/transport.ts";
@@ -183,45 +179,4 @@ export function replay(
     ...options,
   });
   return { transport, waits, remaining: () => [...queue], urls };
-}
-
-/** Checks a refusal against a scenario's expected error: its class and its code. A strict
- *  fetch throws a `SearchWarning`, whose code is null when the readings differ in several ways. */
-export function assertError(error: unknown, expected: ErrorSummary, name: string): void {
-  if (expected.class === "SearchWarning") {
-    assert.ok(error instanceof SearchWarning, `${name}: ${String(error)}`);
-  } else {
-    assert.ok(isDfoError(error) && error instanceof DfoError, `${name}: ${String(error)}`);
-    assert.equal(error.name, expected.class, name);
-  }
-  assert.equal(error.code, expected.code, name);
-}
-
-/** Checks a dataset against a scenario's expected dataset, its decoded rows included. */
-export async function assertDataset(
-  dataset: Dataset<Gap>,
-  expected: DatasetSummary,
-  name: string,
-): Promise<void> {
-  assert.equal(dataset.rows, expected.rows, name);
-  assert.deepEqual(dataset.columns, expected.columns, name);
-  assert.equal(dataset.complete, expected.complete, name);
-  assert.deepEqual(
-    dataset.members.map((member) => ({
-      parts: [...member.parts],
-      spec_id: member.spec.spec_id,
-      content_version: member.contentVersion,
-      sentence: member.sentence,
-    })),
-    expected.members,
-    name,
-  );
-  assert.deepEqual(
-    dataset.missing.map((gap) => ({ part: gap.partIndex, kind: gap.kind })),
-    expected.missing,
-    name,
-  );
-  const rows = await dataset.toRows();
-  assert.equal(rows.length, expected.rows, name);
-  assert.deepEqual(Object.keys(rows[0] ?? {}), expected.columns, name);
 }

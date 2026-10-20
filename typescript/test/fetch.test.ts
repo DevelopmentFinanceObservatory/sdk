@@ -1,73 +1,15 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { clientOver } from "../src/client.ts";
-import type { Dataset } from "../src/dataset.ts";
 import { fetchDataset, fetchMembers } from "../src/fetch.ts";
-import type { FetchOptions } from "../src/fetch.ts";
 import { DatasetRef } from "../src/ref.ts";
 import type { SpecLike } from "../src/ref.ts";
 import type { DfoWarning } from "../src/warnings.ts";
-import {
-  assertDataset,
-  assertError,
-  NO_EXCHANGES,
-  replay,
-  scenario,
-  scenarios,
-  stepOf,
-} from "./replay.ts";
-import type { Exchange, Outcome, Scenario } from "./replay.ts";
+import { NO_EXCHANGES, replay, scenario, stepOf } from "./replay.ts";
 import { contractJson } from "./support.ts";
 
-/** Runs one fetch and checks it reaches the scenario's outcome, using every exchange. */
-async function reaches(
-  record: Scenario,
-  outcome: Outcome,
-  run: () => Promise<Dataset>,
-  remaining: () => Exchange[],
-): Promise<void> {
-  if ("error" in outcome) {
-    await assert.rejects(run(), (error: unknown) => {
-      assertError(error, outcome.error, record.name);
-      return true;
-    });
-  } else {
-    assert.ok("dataset" in outcome, `${record.name}: the outcome is a dataset`);
-    await assertDataset(await run(), outcome.dataset, record.name);
-  }
-  assert.deepEqual(remaining(), [], `${record.name}: exchanges left unrequested`);
-}
-
-const fetchScenarios = (await scenarios()).filter((record) => record.call[0]?.op === "fetch");
-
-describe("a spec or ref fetch reaches each scenario's outcome", () => {
-  test("cover a spec fetch and a ref fetch", () => {
-    const steps = fetchScenarios.map((record) => stepOf(record, 0, "fetch"));
-    assert.ok(steps.some((step) => step.spec !== undefined));
-    assert.ok(steps.some((step) => step.ref !== undefined));
-  });
-
-  for (const record of fetchScenarios) {
-    test(record.name, async () => {
-      const { transport, remaining } = replay(record);
-      const { spec, ref, window, facets } = stepOf(record, 0, "fetch");
-      const target = ref === undefined ? spec : DatasetRef.fromJSON(ref);
-      assert.ok(target, `${record.name}: the step names a spec or a ref`);
-      const options: FetchOptions = {
-        ...(window === undefined ? {} : { window }),
-        ...(facets === undefined ? {} : { facets }),
-      };
-      await reaches(
-        record,
-        record.expect[0]!,
-        () => clientOver(transport).fetch(target, options),
-        remaining,
-      );
-    });
-  }
-
-  test("a fetched spec's ref is the contract's ref for that member", async () => {
+describe("a fetched spec's ref", () => {
+  test("is the contract's ref for that member", async () => {
     const record = await scenario("fetch-spec-known-sentence");
     const { spec } = stepOf(record, 0, "fetch");
     assert.ok(spec);

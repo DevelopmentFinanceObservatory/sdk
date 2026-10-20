@@ -41,9 +41,18 @@ const TIMED_OUT =
 /** What a gap needs to settle it: the contract's gap kinds, or one the client derives. */
 export type GapKind = (typeof GAP_KINDS)[number] | "timed_out" | "unknown";
 
-/** One reading of a part that has several. The label, unit and source split its sentence. */
-export type Candidate = {
-  readonly kind: "candidate";
+/** Builds a candidate's dataset through the answer it came from. */
+type CandidateFetch = (candidate: Candidate, options: AnswerFetchOptions) => Promise<Dataset<Gap>>;
+
+/**
+ * One reading of a part that has several. The label, unit and source split its sentence.
+ *
+ * A candidate in an `Answer` fetches through that answer. One in `Dataset.missing` or in
+ * `IncompleteAnswerError.gaps` belongs to no answer and holds no client; fetch its spec with
+ * `client.fetch(candidate.spec)`.
+ */
+export class Candidate {
+  readonly kind = "candidate";
   readonly spec: Spec;
   /** Search's sentence for the reading. */
   readonly sentence: string | null;
@@ -53,7 +62,43 @@ export type Candidate = {
   readonly source: string | null;
   /** The byline's unit, such as "Current US dollars". */
   readonly unit: string | null;
-};
+  readonly #fetch: CandidateFetch | null;
+
+  /** Candidates come from an answer; this constructor is the client's. */
+  constructor(
+    reading: Pick<Candidate, "spec" | "sentence" | "label" | "source" | "unit">,
+    fetch: CandidateFetch | null = null,
+  ) {
+    this.spec = reading.spec;
+    this.sentence = reading.sentence;
+    this.label = reading.label;
+    this.source = reading.source;
+    this.unit = reading.unit;
+    this.#fetch = fetch;
+  }
+
+  /**
+   * Builds this reading's dataset: the one-part answer `answer.choose(part, candidate)` would
+   * give, fetched with `Answer.fetch`'s options.
+   *
+   * @throws {InvalidRequestError} The candidate came from no answer.
+   */
+  async fetch(options: AnswerFetchOptions = {}): Promise<Dataset<Gap>> {
+    if (this.#fetch === null) {
+      throw clientError("invalid_argument", {
+        detail:
+          "candidate.fetch() cannot build this reading: it came from no answer; fetch its spec " +
+          "with client.fetch(candidate.spec).",
+      });
+    }
+    return this.#fetch(this, options);
+  }
+
+  /** The same reading, belonging to no answer. */
+  unbound(): Candidate {
+    return this.#fetch === null ? this : new Candidate(this);
+  }
+}
 
 /** One way to settle a part that awaits a choice of place or source. */
 export type QueryOption = {
@@ -167,8 +212,12 @@ export class Answer {
     this.timedOut = init.timedOut ?? false;
     this.raw = init.raw;
     this.#context = init.context;
+    const bind =
+      (part: CandidatesPart): CandidateFetch =>
+      (candidate, options) =>
+        this.#withCandidate(part, candidate).fetch(options);
     this.gaps = this.parts.flatMap((part, index) => {
-      const gap = gapFor(index, part, this.timedOut);
+      const gap = gapFor(index, part, this.timedOut, bind);
       return gap === null ? [] : [gap];
     });
     this.complete = this.kind === "resolution" && this.gaps.length === 0;
@@ -241,7 +290,10 @@ export class Answer {
       (this.#context.onWarning ?? emitWarning)(warning);
     }
     const build = this.#context.fetchMembers ?? defaultFetchMembers;
-    return build(this.#context.transport, members, { ...fetchOptions, missing: this.gaps });
+    return build(this.#context.transport, members, {
+      ...fetchOptions,
+      missing: this.gaps.map(unboundGap),
+    });
   }
 
   /** The error `fetch` raises for this answer's gaps. */
@@ -249,7 +301,7 @@ export class Answer {
     return clientError("answer_incomplete", {
       detail: incompleteMessage(this),
       answer: this,
-      gaps: this.gaps,
+      gaps: this.gaps.map(unboundGap),
     });
   }
 
@@ -401,8 +453,23 @@ function membersOf(parts: readonly Part[]): MemberRequest[] {
   }));
 }
 
-/** The gap a part leaves, or null when it has a reading. */
-function gapFor(partIndex: number, part: Part, timedOut: boolean): Gap | null {
+/** A gap whose candidates belong to no answer, for a dataset or an error, which hold no client. */
+export function unboundGap(gap: Gap): Gap {
+  if (!gap.options.some((option) => option.kind === "candidate")) return gap;
+  return {
+    ...gap,
+    options: gap.options.map((option) => (option.kind === "candidate" ? option.unbound() : option)),
+  };
+}
+
+/** The gap a part leaves, or null when it has a reading. `bind` gives a candidates part's
+ *  readings their fetch through the answer. */
+function gapFor(
+  partIndex: number,
+  part: Part,
+  timedOut: boolean,
+  bind: (part: CandidatesPart) => CandidateFetch,
+): Gap | null {
   const gap = (kind: GapKind, message: string, options: Gap["options"] = []): Gap => ({
     partIndex,
     part,
@@ -421,7 +488,8 @@ function gapFor(partIndex: number, part: Part, timedOut: boolean): Gap | null {
     case "definite":
       return null;
     case "candidates": {
-      const candidates = part.candidates.specs.map(candidateFrom);
+      const fetch = bind(part);
+      const candidates = part.candidates.specs.map((spec) => candidateFrom(spec, fetch));
       return gap("choice", `${candidates.length} readings`, candidates);
     }
     case "no_data": {
@@ -453,7 +521,7 @@ function queryOptions(noData: object): QueryOption[] {
 
 /** A candidate from its full spec: the label is the sentence's heading and the unit the
  *  byline's unit slot, so label, unit and source together say what the sentence says. */
-function candidateFrom(spec: Spec): Candidate {
+function candidateFrom(spec: Spec, fetch: CandidateFetch): Candidate {
   const { resolved } = spec;
   const tokens = resolved.sentence_plan ?? [];
   const heading = tokens
@@ -466,12 +534,14 @@ function candidateFrom(spec: Spec): Candidate {
       token.segment === "byline" && token.kind === "slot" && token.axis === "unit" && token.text,
   )?.text;
   const sentence = resolved.rendered_sentence ?? null;
-  return {
-    kind: "candidate",
-    spec,
-    sentence,
-    label: heading || (sentence ?? ""),
-    source: resolved.facets?.["provenance"]?.label ?? null,
-    unit: unit ?? null,
-  };
+  return new Candidate(
+    {
+      spec,
+      sentence,
+      label: heading || (sentence ?? ""),
+      source: resolved.facets?.["provenance"]?.label ?? null,
+      unit: unit ?? null,
+    },
+    fetch,
+  );
 }

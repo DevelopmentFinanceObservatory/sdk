@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { Answer, answerFromBody, SearchWarning } from "../src/answer.ts";
+import { Answer, answerFromBody, Candidate, SearchWarning } from "../src/answer.ts";
 import type { AnswerContext, Gap } from "../src/answer.ts";
 import {
   ContractError,
@@ -9,12 +9,14 @@ import {
   IncompleteAnswerError,
   InvalidRequestError,
 } from "../src/errors.ts";
+import { clientOver } from "../src/client.ts";
 import { Dataset } from "../src/dataset.ts";
 import type { MemberRequest } from "../src/fetch.ts";
 import { search } from "../src/search.ts";
+import { Transport } from "../src/transport.ts";
 import type { DfoWarning } from "../src/warnings.ts";
 import type { CandidatesPart, DefinitePart } from "../src/wire.ts";
-import { NO_EXCHANGES, replay, scenarioBytes, scenarios } from "./replay.ts";
+import { NO_EXCHANGES, replay, scenarioBytes, scenarios, stepOf } from "./replay.ts";
 import type { Scenario } from "./replay.ts";
 import { json, mockFetch } from "./support.ts";
 
@@ -212,6 +214,109 @@ describe("choose", () => {
         },
       ],
     });
+  });
+});
+
+/** Every value reachable from `root` through own properties, `root` included. */
+function reachable(root: unknown): unknown[] {
+  const seen = new Set<unknown>();
+  const queue = [root];
+  while (queue.length > 0) {
+    const value = queue.pop();
+    if (value === null || typeof value !== "object" || seen.has(value)) continue;
+    seen.add(value);
+    for (const key of Reflect.ownKeys(value)) {
+      queue.push((value as Record<PropertyKey, unknown>)[key]);
+    }
+  }
+  return [...seen];
+}
+
+const candidatesOf = (gaps: readonly Gap[]): Candidate[] =>
+  gaps.flatMap((gap) => gap.options.filter((option) => option instanceof Candidate));
+
+/** Checks that a candidate refuses `fetch`, naming the call that fetches its spec. */
+async function refusesFetch(candidate: Candidate): Promise<void> {
+  await assert.rejects(candidate.fetch(), (error: unknown) => {
+    assert.ok(error instanceof InvalidRequestError);
+    assert.equal(error.code, "invalid_argument");
+    assert.match(error.message, /client\.fetch\(candidate\.spec\)/);
+    return true;
+  });
+}
+
+describe("candidate.fetch", () => {
+  test("builds the dataset choosing the candidate builds", async () => {
+    const scenario = record("answer-candidates-choose-fetch");
+    const { transport, remaining } = replay(scenario);
+    const answer = await clientOver(transport).search("GNI of Germany from 2015 to 2022");
+    const dataset = await candidatesOf(answer.gaps)[0]!.fetch();
+    const expected = scenario.expect[2]!;
+    assert.ok("dataset" in expected);
+    assert.equal(dataset.rows, expected.dataset.rows);
+    assert.deepEqual(
+      dataset.members.map((member) => [
+        member.spec.spec_id,
+        member.contentVersion,
+        member.sentence,
+      ]),
+      expected.dataset.members.map((member) => [
+        member.spec_id,
+        member.content_version,
+        member.sentence,
+      ]),
+    );
+    assert.deepEqual(remaining(), []);
+  });
+
+  test("in an answer of several parts, builds the candidate's part alone with the options given", async () => {
+    const built: { members: MemberRequest[]; layout: unknown; timeout: unknown }[] = [];
+    const context: AnswerContext = {
+      transport: replay(NO_EXCHANGES).transport,
+      onWarning: () => undefined,
+      fetchMembers: (_, members, options) => {
+        built.push({ members: [...members], layout: options.layout, timeout: options.timeout });
+        return Promise.resolve(builtDataset);
+      },
+    };
+    const answer = answerOf("choose-candidate-two-parts", context);
+    const candidate = candidatesOf(answer.gaps)[1]!;
+    await candidate.fetch({ layout: "frame", timeout: 5_000 });
+    assert.deepEqual(
+      built.map(({ members, layout, timeout }) => ({
+        specs: members.map((member) => member.spec.spec_id),
+        parts: members.map((member) => member.parts),
+        layout,
+        timeout,
+      })),
+      [{ specs: [candidate.spec.spec_id], parts: [["GNI"]], layout: "frame", timeout: 5_000 }],
+    );
+  });
+
+  test("a partial fetch's dataset and an IncompleteAnswerError hold candidates with no client", async () => {
+    const scenario = record("choose-candidate-two-parts");
+    const [search, , , , , ...oda] = scenario.exchanges;
+    const { transport, remaining } = replay({ ...scenario, exchanges: [search!, ...oda] });
+    const answer = await clientOver(transport).search(stepOf(scenario, 0, "search").question);
+    const dataset = await answer.fetch({ partial: true });
+    assert.deepEqual(remaining(), []);
+
+    assert.deepEqual(
+      reachable(dataset).filter((value) => value instanceof Transport),
+      [],
+    );
+    const missing = candidatesOf(dataset.missing);
+    assert.equal(missing.length, 3);
+    for (const candidate of missing) await refusesFetch(candidate);
+
+    const error = answer.incompleteError();
+    const held = candidatesOf(error.gaps);
+    assert.equal(held.length, 3);
+    for (const candidate of held) await refusesFetch(candidate);
+    assert.deepEqual(
+      candidatesOf(answer.gaps).map((candidate) => candidate.spec),
+      held.map((candidate) => candidate.spec),
+    );
   });
 });
 

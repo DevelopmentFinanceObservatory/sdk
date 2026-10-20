@@ -42,6 +42,7 @@
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "test": "node --test \"test/**/*.test.ts\"",
+    "test:e2e": "node --test \"test/e2e/*.e2e.ts\"",
     "generate": "node scripts/generate-wire.ts && node scripts/generate-contract.ts",
     "generate:check": "node scripts/generate-wire.ts --check && node scripts/generate-contract.ts --check"
   },

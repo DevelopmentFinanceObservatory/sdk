@@ -1,12 +1,5 @@
-export { Answer, SearchWarning } from "./answer.ts";
-export type {
-  AnswerFetchOptions,
-  Candidate,
-  Gap,
-  GapKind,
-  QueryOption,
-  SearchOptions,
-} from "./answer.ts";
+export { Answer, Candidate, SearchWarning } from "./answer.ts";
+export type { AnswerFetchOptions, Gap, GapKind, QueryOption, SearchOptions } from "./answer.ts";
 export { Client } from "./client.ts";
 export type { ClientOptions, RawRequestOptions } from "./client.ts";
 export {
