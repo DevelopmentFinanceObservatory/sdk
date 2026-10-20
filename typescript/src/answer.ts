@@ -389,17 +389,19 @@ export function definiteParts(parts: readonly Part[]): DefinitePart[] {
 
 /** One member per distinct `spec_id`, in query order; folded parts share their spec's member. */
 function membersOf(parts: readonly Part[]): MemberRequest[] {
-  const grouped = new Map<string, { spec: Spec; parts: string[] }>();
+  const grouped = new Map<string, { spec: Spec; parts: string[]; answerParts: Part[] }>();
   for (const part of definiteParts(parts)) {
     const { spec } = part;
-    const entry = grouped.get(spec.spec_id) ?? { spec, parts: [] };
+    const entry = grouped.get(spec.spec_id) ?? { spec, parts: [], answerParts: [] };
     entry.parts.push(part.variable_text ?? spec.resolved.rendered_sentence ?? spec.spec_id);
+    entry.answerParts.push(part);
     grouped.set(spec.spec_id, entry);
   }
-  return [...grouped.values()].map(({ spec, parts: names }) => ({
+  return [...grouped.values()].map(({ spec, parts: names, answerParts }) => ({
     parts: names,
     spec,
     sentence: spec.resolved.rendered_sentence,
+    answerParts,
   }));
 }
 

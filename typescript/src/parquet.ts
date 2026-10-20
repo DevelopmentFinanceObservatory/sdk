@@ -1,12 +1,13 @@
 /**
- * Decoding the bare Parquet files a dataset holds, with hyparquet, into rows or an Arrow table.
- * Several files stack into one table: a `part` column first, then every file's columns in
- * file order, with a column one file lacks null in that file's rows.
+ * Reading the bare Parquet files a dataset holds with hyparquet, and writing a stacked dataset
+ * as one Parquet file with hyparquet-writer. Several files stack into one table: a `part`
+ * column first, then every file's columns in file order, with a column one file lacks null in
+ * that file's rows.
  */
 
 import { parquetMetadata, parquetReadObjects } from "hyparquet";
-import type { FileMetaData, ParquetParsers, SchemaElement } from "hyparquet";
-import type * as Arrow from "apache-arrow";
+import type { FileMetaData, KeyValue, ParquetParsers, SchemaElement } from "hyparquet";
+import { parquetWriteBuffer } from "hyparquet-writer";
 
 /**
  * One cell of `toRows()`. INT64 columns arrive as numbers, so `JSON.stringify` works on the
@@ -67,7 +68,7 @@ const text = (bytes: Uint8Array | undefined): string | undefined => bytes && dec
 /** Parsers for `toRows()`: hyparquet's defaults, with JSON columns kept as text. */
 const ROW_PARSERS: Partial<ParquetParsers> = { jsonFromBytes: text };
 
-/** Parsers for `toArrow()`: timestamps and dates as their stored integers, JSON as text. */
+/** Parsers for stored values: timestamps and dates as their stored integers, JSON as text. */
 const RAW_PARSERS: Partial<ParquetParsers> = {
   timestampFromMilliseconds: (value) => value,
   timestampFromMicroseconds: (value) => value,
@@ -212,102 +213,12 @@ export async function decodeRows(parts: readonly TablePart[]): Promise<Row[]> {
   return rows;
 }
 
-type ArrowModule = typeof Arrow;
+/** A stacked table's columns, each with its values as stored: integers for dates and
+ *  timestamps, `bigint` for INT64, text for strings, null where a file lacks the column. */
+export type StoredColumn = Column & { readonly values: unknown[] };
 
-async function loadArrow(): Promise<ArrowModule> {
-  try {
-    return await import("apache-arrow");
-  } catch (error) {
-    throw new Error("toArrow() needs the apache-arrow package; install it beside this client.", {
-      cause: error,
-    });
-  }
-}
-
-const TIME_UNITS = { MILLIS: "MILLISECOND", MICROS: "MICROSECOND", NANOS: "NANOSECOND" } as const;
-
-function arrowType(arrow: ArrowModule, type: ColumnType): Arrow.DataType {
-  switch (type.kind) {
-    case "null":
-      return new arrow.Null();
-    case "bool":
-      return new arrow.Bool();
-    case "string":
-      return new arrow.Utf8();
-    case "binary":
-      return new arrow.Binary();
-    case "date":
-      return new arrow.DateDay();
-    case "timestamp":
-      return new arrow.Timestamp(arrow.TimeUnit[TIME_UNITS[type.unit]], type.utc ? "UTC" : null);
-    case "float":
-      return type.bits === 32 ? new arrow.Float32() : new arrow.Float64();
-    case "int":
-      return new arrow.Int(type.signed, type.bits);
-  }
-}
-
-type FixedArray =
-  | Int8Array
-  | Int16Array
-  | Int32Array
-  | Uint8Array
-  | Uint16Array
-  | Uint32Array
-  | Float32Array
-  | Float64Array
-  | BigInt64Array
-  | BigUint64Array;
-
-function fixedArray(type: ColumnType, length: number): FixedArray {
-  if (type.kind === "float")
-    return type.bits === 32 ? new Float32Array(length) : new Float64Array(length);
-  if (type.kind === "date") return new Int32Array(length);
-  if (type.kind === "timestamp") return new BigInt64Array(length);
-  if (type.kind !== "int") throw new TypeError(`${type.kind} is not a fixed-width type.`);
-  const arrays = type.signed
-    ? { 8: Int8Array, 16: Int16Array, 32: Int32Array, 64: BigInt64Array }
-    : { 8: Uint8Array, 16: Uint16Array, 32: Uint32Array, 64: BigUint64Array };
-  return new arrays[type.bits](length);
-}
-
-function arrowVector(arrow: ArrowModule, type: ColumnType, values: readonly unknown[]) {
-  const dataType = arrowType(arrow, type);
-  const length = values.length;
-  if (type.kind === "null") return arrow.makeVector(arrow.makeData({ type: dataType, length }));
-  if (type.kind === "string") {
-    const strings = values.map((value) => (value instanceof Uint8Array ? text(value) : value));
-    return arrow.vectorFromArray(strings, dataType);
-  }
-  if (type.kind === "bool" || type.kind === "binary")
-    return arrow.vectorFromArray(values, dataType);
-
-  // Fixed-width values are written straight into the column buffer with a validity bitmap,
-  // so int64 and timestamp values keep every bit.
-  const data = fixedArray(type, length);
-  const validity = new Uint8Array(Math.ceil(length / 8));
-  let nullCount = 0;
-  for (const [index, value] of values.entries()) {
-    if (value === null || value === undefined) {
-      nullCount += 1;
-      continue;
-    }
-    if (data instanceof BigInt64Array || data instanceof BigUint64Array) {
-      data[index] = BigInt(value as bigint | number);
-    } else {
-      data[index] = Number(value);
-    }
-    validity[index >> 3]! |= 1 << (index & 7);
-  }
-  return arrow.makeVector(
-    // makeData has one overload per concrete type; `data` is the typed array `type` stores.
-    arrow.makeData({ type: dataType, length, nullCount, nullBitmap: validity, data } as never),
-  );
-}
-
-/** The stacked table as an Arrow table, built column by column from hyparquet's decoding. */
-export async function decodeArrow(parts: readonly TablePart[]): Promise<Arrow.Table> {
-  const arrow = await loadArrow();
+/** Every column of the stacked table with its stored values, in row order. */
+export async function decodeStored(parts: readonly TablePart[]): Promise<StoredColumn[]> {
   const decoded = await Promise.all(
     parts.map(({ file }) =>
       parquetReadObjects({
@@ -318,14 +229,83 @@ export async function decodeArrow(parts: readonly TablePart[]): Promise<Arrow.Ta
       }),
     ),
   );
-  const vectors: Record<string, Arrow.Vector> = {};
-  for (const { name, type } of stackedColumns(parts)) {
+  return stackedColumns(parts).map(({ name, type }) => {
     const values: unknown[] = [];
     for (const [index, { label }] of parts.entries()) {
       const isPart = parts.length > 1 && name === PART_COLUMN;
-      for (const row of decoded[index]!) values.push(isPart ? label : (row[name] ?? null));
+      for (const row of decoded[index]!) {
+        const value: unknown = isPart ? label : (row[name] ?? null);
+        values.push(type.kind === "string" && value instanceof Uint8Array ? text(value) : value);
+      }
     }
-    vectors[name] = arrowVector(arrow, type, values);
+    return { name, type, values };
+  });
+}
+
+/** The Parquet schema element a column type is written as; every column is nullable, since a
+ *  column one member lacks is null in its rows. */
+function schemaElement({ name, type }: Column): SchemaElement {
+  const optional = { name, repetition_type: "OPTIONAL" } as const;
+  switch (type.kind) {
+    case "null":
+      return { ...optional, type: "INT32", logical_type: { type: "NULL" } };
+    case "bool":
+      return { ...optional, type: "BOOLEAN" };
+    case "int": {
+      // The legacy converted type, since hyparquet-writer 0.16.10 writes the INTEGER logical
+      // type's bit width as a thrift i32 where the format has an i8, which pyarrow refuses.
+      const physical = type.bits === 64 ? "INT64" : "INT32";
+      if (type.signed && type.bits >= 32) return { ...optional, type: physical };
+      return {
+        ...optional,
+        type: physical,
+        converted_type: `${type.signed ? "" : "U"}INT_${type.bits}`,
+      };
+    }
+    case "float":
+      return { ...optional, type: type.bits === 32 ? "FLOAT" : "DOUBLE" };
+    case "date":
+      return { ...optional, type: "INT32", converted_type: "DATE", logical_type: { type: "DATE" } };
+    case "timestamp":
+      return {
+        ...optional,
+        type: "INT64",
+        logical_type: { type: "TIMESTAMP", isAdjustedToUTC: type.utc, unit: type.unit },
+      };
+    case "string":
+      return {
+        ...optional,
+        type: "BYTE_ARRAY",
+        converted_type: "UTF8",
+        logical_type: { type: "STRING" },
+      };
+    case "binary":
+      return { ...optional, type: "BYTE_ARRAY" };
   }
-  return new arrow.Table(vectors);
+}
+
+/** The stacked table as one snappy Parquet file, with `metadata` as its key-value metadata. */
+export async function encodeStacked(
+  parts: readonly TablePart[],
+  metadata: Readonly<Record<string, string>>,
+): Promise<Uint8Array> {
+  const columns = await decodeStored(parts);
+  const schema: SchemaElement[] = [
+    { name: "root", num_children: columns.length },
+    ...columns.map(schemaElement),
+  ];
+  const kvMetadata: KeyValue[] = Object.entries(metadata).map(([key, value]) => ({ key, value }));
+  const buffer = parquetWriteBuffer({
+    columnData: columns.map(({ name, type, values }) => ({
+      name,
+      // INT64 and timestamp columns hold bigints; a value decoded as a number is written as one.
+      data:
+        (type.kind === "int" && type.bits === 64) || type.kind === "timestamp"
+          ? values.map((value) => (typeof value === "number" ? BigInt(value) : value))
+          : values,
+    })),
+    schema,
+    kvMetadata,
+  });
+  return new Uint8Array(buffer);
 }

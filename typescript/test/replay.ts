@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 
+import { SearchWarning } from "../src/answer.ts";
 import type { Gap } from "../src/answer.ts";
 import type { Dataset } from "../src/dataset.ts";
 import { envFrom } from "../src/env.ts";
@@ -68,6 +69,7 @@ export type DatasetSummary = {
   complete: boolean;
   members: { parts: string[]; spec_id: string; content_version: string; sentence: string }[];
   missing: { part: number; kind: string }[];
+  search_warning?: boolean;
 };
 
 export type ErrorSummary = { class: string; code: string | null };
@@ -184,8 +186,14 @@ export function replay(
 }
 
 /** Checks a refusal against a scenario's expected error: its class, and its code or, for a
- *  null code, that no problem document arrived. */
+ *  null code, that no problem document arrived. A strict fetch throws a `SearchWarning`, which
+ *  no problem document carries. */
 export function assertError(error: unknown, expected: ErrorSummary, name: string): void {
+  if (expected.class === "SearchWarning") {
+    assert.ok(error instanceof SearchWarning, `${name}: ${String(error)}`);
+    assert.equal(expected.code, null, name);
+    return;
+  }
   assert.ok(isDfoError(error) && error instanceof DfoError, `${name}: ${String(error)}`);
   assert.equal(error.name, expected.class, name);
   if (expected.code === null) assert.equal(error.problem, null, name);

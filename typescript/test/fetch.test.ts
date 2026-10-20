@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
+import { clientOver } from "../src/client.ts";
 import type { Dataset } from "../src/dataset.ts";
 import { fetchDataset, fetchMembers } from "../src/fetch.ts";
 import type { FetchOptions } from "../src/fetch.ts";
@@ -52,7 +53,7 @@ describe("a spec or ref fetch reaches each scenario's outcome", () => {
       await reaches(
         record,
         record.expect[0]!,
-        () => fetchDataset(transport, target, options),
+        () => clientOver(transport).fetch(target, options),
         remaining,
       );
     });

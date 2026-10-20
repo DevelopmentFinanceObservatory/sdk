@@ -7,8 +7,10 @@
  *
  * - the chosen option posts its one parsed part, and a chosen candidate its identity;
  * - a definite part posts its spec's identity and entity groups;
+ * - a candidates part left alone posts its candidate set in the server's order, with `ordering`
+ *   and `truncated` echoed, since Search cannot recompute that order from a restatement;
  * - any other part posts its `restatement`, which Search resolves again and so keeps its message
- *   and its choices. A part without one posts its candidate set, or a placeholder of its refusal.
+ *   and its choices, or a placeholder of its refusal when it has none.
  */
 import type { Answer, Candidate, Gap, QueryOption } from "./answer.ts";
 import { ContractError, InvalidRequestError } from "./errors.ts";
@@ -133,19 +135,20 @@ function chosenEntry(part: Part, chosen: Candidate | QueryOption): Entry {
 
 function entry(part: Part): Entry {
   if (isKnownPart(part) && part.status === "definite") return identityEntry(part, part.spec);
-  // Any part status may carry a restatement, an unknown one included.
+  if (isKnownPart(part) && part.status === "candidates") {
+    return {
+      ...echoed(part),
+      entry_kind: "candidates",
+      ordering: part.candidates.ordering,
+      truncated: part.candidates.truncated,
+      candidates: part.candidates.specs.map(identityOf),
+    };
+  }
+  // Any other part status may carry a restatement, an unknown one included.
   const restatement = part.restatement as ParsedPart | null | undefined;
   if (restatement != null) return { entry_kind: "parsed", part: restatement };
   if (isKnownPart(part)) {
     switch (part.status) {
-      case "candidates":
-        return {
-          ...echoed(part),
-          entry_kind: "candidates",
-          ordering: part.candidates.ordering,
-          truncated: part.candidates.truncated,
-          candidates: part.candidates.specs.map(identityOf),
-        };
       case "no_data":
         return {
           ...echoed(part),

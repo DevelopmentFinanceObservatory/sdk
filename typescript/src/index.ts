@@ -7,6 +7,8 @@ export type {
   QueryOption,
   SearchOptions,
 } from "./answer.ts";
+export { Client } from "./client.ts";
+export type { ClientOptions, RawRequestOptions } from "./client.ts";
 export {
   AuthenticationError,
   ContractError,
@@ -50,6 +52,15 @@ export type {
   KeySource,
   ResolvedKey,
 } from "./keys.ts";
+export { Codes, Graph } from "./lookups.ts";
+export type {
+  CatalogueOptions,
+  GraphNode,
+  LookupOptions,
+  NodeOptions,
+  ResolveKind,
+  ResolveOptions,
+} from "./lookups.ts";
 export { Operation } from "./operation.ts";
 export type { Progress, ProgressEvent, ProgressHandler, ResultOptions } from "./operation.ts";
 export type { Row, Value } from "./parquet.ts";
@@ -63,6 +74,8 @@ export type {
   Rendering,
   SpecLike,
 } from "./ref.ts";
+export { RawResponse } from "./transport.ts";
+export type { HeaderProvider } from "./transport.ts";
 export { VERSION } from "./version.ts";
 export { DfoDeprecationWarning, DfoWarning } from "./warnings.ts";
 export type { WarningHandler } from "./warnings.ts";

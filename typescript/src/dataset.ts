@@ -1,10 +1,13 @@
-import type * as Arrow from "apache-arrow";
-
-import { decodeArrow, decodeRows, readParquet, stackedColumns } from "./parquet.ts";
+import type { Gap } from "./answer.ts";
+import { decodeRows, encodeStacked, readParquet, stackedColumns } from "./parquet.ts";
 import type { ParquetFile, Row, TablePart } from "./parquet.ts";
 import { DatasetRef } from "./ref.ts";
 import type { Layout, Rendering, SpecLike } from "./ref.ts";
-import type { CitationSource } from "./wire.ts";
+import type { CitationSource, Departure, Part, RequestedOperation, WarningModel } from "./wire.ts";
+
+/** The version of the provenance a stacked file carries under `dfo.*` keys, the one Python's
+ *  `Dataset.save` writes. */
+export const SAVED_FORMAT_VERSION = 1;
 
 /** How to cite the data: the citation text and the cited sources. */
 export type Citation = {
@@ -39,6 +42,9 @@ export type FetchedMember = {
   readonly digest: string;
   readonly rendering: Rendering;
   readonly data: Uint8Array;
+  /** The answer parts the member answers, when it came from an answer; their departures and
+   *  requested computations reach the dataset. */
+  readonly answerParts?: readonly Part[];
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -57,6 +63,27 @@ function citationOf(manifest: Readonly<Record<string, unknown>>): Citation {
     sources: sources.filter(isSource),
   };
 }
+
+const unique = <T>(items: readonly T[]): T[] => [
+  ...new Map(items.map((item) => [JSON.stringify(item), item])).values(),
+];
+
+const objects = (value: unknown): Record<string, unknown>[] =>
+  Array.isArray(value) ? value.filter(isRecord) : [];
+
+/** The datasets surface's warnings in the manifests, each with the members every warning has. */
+const warningsOf = (manifests: readonly Readonly<Record<string, unknown>>[]): WarningModel[] =>
+  unique(
+    manifests.flatMap((manifest) =>
+      objects(manifest["warnings"]).flatMap((notice) =>
+        typeof notice["code"] === "string" &&
+        typeof notice["severity"] === "string" &&
+        typeof notice["message"] === "string"
+          ? [notice as WarningModel]
+          : [],
+      ),
+    ),
+  );
 
 function mergeCitations(citations: readonly Citation[]): Citation {
   const texts = new Set<string>();
@@ -92,17 +119,26 @@ function retentionOf(manifests: readonly Readonly<Record<string, unknown>>[]): {
   return { heldUntil, pinned: false };
 }
 
+/** Reads a dataset's private table parts; Dataset's static block assigns it. */
+let readParts: (dataset: Dataset<Gap>) => TablePart[];
+
 /**
  * A table of data with its provenance: one exact version per member. It holds no client, so its
  * conversions never touch the network. `TMissing` is the type of the parts a partial fetch left
  * out; a dataset fetched from a spec or a ref leaves none out.
  */
-export class Dataset<TMissing = never> {
+export class Dataset<TMissing extends Gap = never> {
   /** What the data shows, in Search's words: the members' sentences in order. */
   readonly sentence: string;
   readonly members: readonly Member[];
   /** How to cite the data, every member's sources together. */
   readonly citation: Citation;
+  /** The datasets surface's warnings about the members' data. */
+  readonly warnings: readonly WarningModel[];
+  /** How the readings differ from the question. */
+  readonly departures: readonly Departure[];
+  /** Computations the question asked for, which the data leaves to the caller. */
+  readonly requestedOperations: readonly RequestedOperation[];
   /** Whether every part of the question has a member. */
   readonly complete: boolean;
   /** The parts a partial fetch left out. */
@@ -115,6 +151,12 @@ export class Dataset<TMissing = never> {
   readonly layout: Layout;
   readonly #files: readonly ParquetFile[];
   readonly #data: readonly Uint8Array[];
+  /** Each member's artifact layout, as its manifest names it. */
+  readonly #layouts: readonly string[];
+
+  static {
+    readParts = (dataset) => dataset.#parts();
+  }
 
   /** Builds a dataset from the members a fetch downloaded and checked against their digests. */
   constructor(
@@ -134,10 +176,19 @@ export class Dataset<TMissing = never> {
       digest: member.digest,
       rendering: member.rendering,
     }));
-    const retention = retentionOf(members.map((member) => member.manifest));
+    const manifests = members.map((member) => member.manifest);
+    const answerParts = members.flatMap((member) => member.answerParts ?? []);
+    const retention = retentionOf(manifests);
     this.sentence = built.map((member) => member.sentence).join(" ");
     this.members = Object.freeze(built);
     this.citation = mergeCitations(built.map((member) => member.citation));
+    this.warnings = Object.freeze(warningsOf(manifests));
+    this.departures = Object.freeze(
+      unique(answerParts.flatMap((part) => (part.departures ?? []) as Departure[])),
+    );
+    this.requestedOperations = Object.freeze(
+      unique(answerParts.flatMap((part) => (part.operations ?? []) as RequestedOperation[])),
+    );
     this.missing = Object.freeze([...(options.missing ?? [])]);
     this.complete = this.missing.length === 0;
     this.heldUntil = retention.heldUntil;
@@ -145,6 +196,7 @@ export class Dataset<TMissing = never> {
     this.layout = options.layout;
     this.#data = members.map((member) => member.data.slice());
     this.#files = this.#data.map(readParquet);
+    this.#layouts = members.map((member) => artifactLayout(member, options.layout));
     // Reading the columns checks the members stack before the dataset is returned.
     stackedColumns(this.#parts());
   }
@@ -174,17 +226,14 @@ export class Dataset<TMissing = never> {
   }
 
   /**
-   * The Parquet file the server built, checked against its digest. A dataset of several
-   * members has one file per member: read each with `memberBytes(index)`.
+   * The dataset as one Parquet file. A one-member dataset returns the file the server built,
+   * checked against its digest. Several members stack into one file, `part` first, whose
+   * key-value metadata carries the provenance and the ref under `dfo.*` keys, as Python's
+   * `Dataset.save` writes it.
    */
-  bytes(): Uint8Array {
-    if (this.#data.length > 1) {
-      throw new TypeError(
-        `This dataset stacks ${this.#data.length} members, each its own Parquet file; ` +
-          "read one with memberBytes(index).",
-      );
-    }
-    return this.memberBytes(0);
+  async bytes(): Promise<Uint8Array> {
+    if (this.#data.length === 1) return this.memberBytes(0);
+    return encodeStacked(this.#parts(), this.#metadata());
   }
 
   /** One member's Parquet file, checked against its digest. */
@@ -201,10 +250,50 @@ export class Dataset<TMissing = never> {
     return decodeRows(this.#parts());
   }
 
-  /** The table as an Arrow table. Needs the optional `apache-arrow` package. INT64 columns
-   *  keep their `bigint` values. */
-  toArrow(): Promise<Arrow.Table> {
-    return decodeArrow(this.#parts());
+  /** The provenance as a stacked file's key-value metadata, in the shape Python's
+   *  `Dataset.save` writes, so `dfo.open_bundle` reads the file back. */
+  #metadata(): Record<string, string> {
+    const sources = this.citation.sources;
+    const licences = [...new Set(sources.flatMap((source) => source.license ?? []))];
+    return {
+      "dfo.format_version": String(SAVED_FORMAT_VERSION),
+      "dfo.sentence": this.sentence,
+      "dfo.citation": JSON.stringify(savedCitation(this.citation)),
+      "dfo.sources": JSON.stringify(sources.map((source) => source.label)),
+      "dfo.licence": licences.join("; "),
+      "dfo.dataset": JSON.stringify({
+        member_citations: this.members.map((member) => savedCitation(member.citation)),
+        warnings: this.warnings.map(({ code, severity, message }) => ({
+          code,
+          severity,
+          message,
+          spec_id: null,
+        })),
+        departures: this.departures.map(({ code, text, asked, shown, binding_ref }) => ({
+          code,
+          text,
+          asked: asked ?? null,
+          shown: shown ?? null,
+          binding_ref: binding_ref ?? null,
+        })),
+        requested_operations: this.requestedOperations.map(
+          ({ verb, phrase, over, target_year }) => ({
+            verb,
+            phrase,
+            over: over ?? null,
+            target_year: target_year ?? null,
+          }),
+        ),
+        assumptions: [],
+        complete: this.complete,
+        missing: this.missing.map(savedGap),
+        held_until: this.heldUntil?.toISOString().slice(0, 10) ?? null,
+        pinned: this.pinned,
+        stale: false,
+        layout_version: [...new Set(this.#layouts)].join("; "),
+      }),
+      "dfo.ref": JSON.stringify(this.ref),
+    };
   }
 
   #parts(): TablePart[] {
@@ -214,3 +303,43 @@ export class Dataset<TMissing = never> {
     });
   }
 }
+
+/** A dataset's stacked table parts, for the `arrow` entry point. */
+export function tableParts(dataset: Dataset<Gap>): TablePart[] {
+  return readParts(dataset);
+}
+
+/** The layout a member's manifest names for its artifact, else the fetch's layout. */
+function artifactLayout(member: FetchedMember, layout: Layout): string {
+  const artifact = objects(member.manifest["artifacts"]).find(
+    (entry) => entry["artifact_digest"] === member.digest,
+  );
+  const rendering = artifact?.["rendering"];
+  const named = isRecord(rendering) ? rendering["layout"] : undefined;
+  return typeof named === "string" || typeof named === "number" ? String(named) : layout;
+}
+
+/** A citation as Python's `Dataset.save` writes it, its sources' licence spelled `licence`. */
+const savedCitation = ({ text, sources }: Citation) => ({
+  text,
+  sources: sources.map((source) => ({
+    ref: source.ref,
+    label: source.label,
+    licence: source.license ?? null,
+    licence_url: source.license_url ?? null,
+    url: source.url ?? null,
+  })),
+});
+
+/** A gap as Python's `Dataset.save` writes it: a choice of place or source keeps its options. */
+const savedGap = (gap: Gap) => ({
+  part_index: gap.partIndex,
+  part: gap.part,
+  kind: gap.kind,
+  message: gap.message,
+  options: gap.options.flatMap((option) =>
+    option.kind === "query"
+      ? [{ label: option.label, mentions: option.mentions, data_query: option.dataQuery }]
+      : [],
+  ),
+});

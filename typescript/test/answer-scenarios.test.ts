@@ -1,13 +1,13 @@
-// Replays every contract scenario that starts with a search, through `search`, `choose` and
-// `Answer.fetch` with the fetch module's own `fetchMembers`, and asserts each step's expected
+// Replays every contract scenario that starts with a search, through `Client.search`, `choose`
+// and `Answer.fetch` with the fetch module's own `fetchMembers`, and asserts each step's expected
 // outcome, the built dataset's rows included. Every recorded exchange must be requested.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { Answer } from "../src/answer.ts";
-import type { AnswerContext, Gap } from "../src/answer.ts";
+import { Answer, SearchWarning } from "../src/answer.ts";
+import type { Gap } from "../src/answer.ts";
+import { clientOver } from "../src/client.ts";
 import type { Dataset } from "../src/dataset.ts";
-import { search } from "../src/search.ts";
 import { assertDataset, assertError, replay, scenarios } from "./replay.ts";
 import type { AnswerSummary, Scenario } from "./replay.ts";
 
@@ -30,16 +30,20 @@ function summarise(answer: Answer): AnswerSummary {
 }
 
 async function replayAnswer(record: Scenario): Promise<void> {
-  const { transport, remaining } = replay(record);
-  const context: AnswerContext = { transport, onWarning: () => undefined };
+  const warnings: unknown[] = [];
+  const { transport, remaining } = replay(record, {
+    onWarning: (warning) => warnings.push(warning),
+  });
+  const client = clientOver(transport);
 
   let answer: Answer | undefined;
   for (const [index, step] of record.call.entries()) {
     const expected = record.expect[index]!;
     const name = `${record.name}: step ${index}`;
     let outcome: Answer | Dataset<Gap>;
+    warnings.length = 0;
     try {
-      if (step.op === "search") outcome = await search(context, step.question);
+      if (step.op === "search") outcome = await client.search(step.question);
       else if (step.op === "choose") {
         assert.ok(answer, name);
         outcome =
@@ -75,6 +79,10 @@ async function replayAnswer(record: Scenario): Promise<void> {
     }
     assert.ok("dataset" in expected, `${name} gave a dataset`);
     await assertDataset(outcome, expected.dataset, name);
+    if (expected.dataset.search_warning !== undefined) {
+      const issued = warnings.some((warning) => warning instanceof SearchWarning);
+      assert.equal(issued, expected.dataset.search_warning, `${name}: SearchWarning issued`);
+    }
   }
   assert.deepEqual(remaining(), [], `${record.name}: exchanges left unrequested`);
 }

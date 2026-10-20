@@ -119,6 +119,34 @@ function resolveBaseUrl(baseUrl: string): URL {
   }
 }
 
+/** A response from a route the client does not wrap: a 2xx, or a redirect it did not follow. */
+export class RawResponse {
+  readonly status: number;
+  readonly headers: Headers;
+  /** The body's bytes. */
+  readonly body: Uint8Array;
+
+  constructor(status: number, headers: Headers, body: Uint8Array) {
+    this.status = status;
+    this.headers = headers;
+    this.body = body;
+  }
+
+  /** The body decoded as UTF-8. */
+  text(): string {
+    return new TextDecoder().decode(this.body);
+  }
+
+  /**
+   * The body decoded as JSON.
+   *
+   * @throws {SyntaxError} The body is not JSON.
+   */
+  json(): unknown {
+    return JSON.parse(this.text());
+  }
+}
+
 /** Milliseconds a `Retry-After` header asks for, or undefined when it is absent or unreadable. */
 export function retryAfterMs(headers: Headers, now: number = Date.now()): number | undefined {
   const value = headers.get("retry-after")?.trim();
@@ -145,7 +173,8 @@ export class Transport {
   readonly #now: () => number;
   readonly #sleep: Sleep;
   readonly #onWarning: WarningHandler;
-  #key: Promise<ResolvedKey> | undefined;
+  /** The resolved key, shared with every copy `withOptions` makes. */
+  #key: { promise?: Promise<ResolvedKey> } = {};
 
   constructor(options: TransportOptions = {}) {
     this.#options = options;
@@ -177,10 +206,22 @@ export class Transport {
     this.#onWarning(warning);
   }
 
+  /** A copy with other limits that shares this transport's fetch, headers, warning handler and
+   *  resolved key. */
+  withOptions(options: Pick<TransportOptions, "timeout" | "maxRetries">): Transport {
+    const copy = new Transport({
+      ...this.#options,
+      timeout: options.timeout ?? this.timeout,
+      maxRetries: options.maxRetries ?? this.maxRetries,
+    });
+    copy.#key = this.#key;
+    return copy;
+  }
+
   /** The key this transport sends, resolved on first use. */
   apiKey(): Promise<ResolvedKey> {
-    this.#key ??= this.#resolveKey();
-    return this.#key;
+    this.#key.promise ??= this.#resolveKey();
+    return this.#key.promise;
   }
 
   async #resolveKey(): Promise<ResolvedKey> {
@@ -254,6 +295,14 @@ export class Transport {
         cause: error,
       });
     }
+  }
+
+  /** Sends a request and reads its body as bytes, raising a `DfoError` for a refusal. A
+   *  redirect is returned, not followed. */
+  async requestRaw(options: RequestOptions): Promise<RawResponse> {
+    const response = await this.#send(options, this.deadline(options));
+    const body = await this.#bytes(response, options.signal);
+    return new RawResponse(response.status, response.headers, body);
   }
 
   /**
@@ -330,8 +379,8 @@ export class Transport {
         if (outcome.status === 401 && !reauthenticated) {
           // The key is resolved again after a 401, and a different key gets one more try.
           reauthenticated = true;
-          this.#key = this.#resolveKey();
-          const next = (await this.#key).key?.reveal();
+          this.#key.promise = this.#resolveKey();
+          const next = (await this.#key.promise).key?.reveal();
           if (next !== undefined && next !== key) {
             attempt -= 1;
             continue;

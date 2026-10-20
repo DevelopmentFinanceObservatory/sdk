@@ -3,8 +3,13 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { describe, test } from "node:test";
 
-import { Dataset } from "../src/dataset.ts";
+import { parquetMetadata } from "hyparquet";
+
+import { toArrow } from "../src/arrow.ts";
+import { Dataset, tableParts } from "../src/dataset.ts";
 import type { FetchedMember } from "../src/dataset.ts";
+import { decodeStored } from "../src/parquet.ts";
+import { DatasetRef } from "../src/ref.ts";
 import { scenarioBytes } from "./replay.ts";
 
 const SCENARIOS = new URL("../../contract/scenarios/", import.meta.url);
@@ -48,7 +53,7 @@ describe("every scenario Parquet body decodes", async () => {
       assert.equal(typeof rows[0]!["time_period"], "number");
       assert.deepEqual(JSON.parse(JSON.stringify(rows)), rows);
 
-      const table = await dataset.toArrow();
+      const table = await toArrow(dataset);
       assert.equal(table.numRows, dataset.rows);
       assert.deepEqual(
         table.schema.fields.map((field) => field.name),
@@ -78,7 +83,7 @@ describe("Parquet types", () => {
     );
 
   test("toArrow keeps each type, every int64 bit and the timestamp's microseconds", async () => {
-    const table = await (await types()).toArrow();
+    const table = await toArrow(await types());
     const type = (name: string) => String(table.getChild(name)?.type);
     assert.equal(type("year"), "Int64");
     assert.equal(type("big"), "Int64");
@@ -109,10 +114,14 @@ describe("Parquet types", () => {
 describe("a dataset of several members", async () => {
   const health = await scenarioBytes("answer-several-readings-folded.parquet");
   const gdp = await scenarioBytes("answer-several-readings-folded-2.parquet");
+  const gdpSpec = `spec_${"2".repeat(32)}`;
   const dataset = new Dataset(
     [
       member(health, { parts: ["health ODA", "education ODA"], sentence: "Health." }),
-      member(gdp, { sentence: "GDP.", spec: { spec_id: "spec_2", definition: {} } }),
+      member(gdp, {
+        sentence: "GDP.",
+        spec: { spec_id: gdpSpec, definition: { spec_id: gdpSpec } },
+      }),
     ],
     { layout: "long" },
   );
@@ -128,7 +137,7 @@ describe("a dataset of several members", async () => {
     assert.equal(rows[0]!["observationAbout"], null);
     assert.notEqual(rows.at(-1)!["observationAbout"], null);
 
-    const table = await dataset.toArrow();
+    const table = await toArrow(dataset);
     assert.equal(table.numRows, dataset.rows);
     assert.deepEqual(
       table.schema.fields.map((field) => field.name),
@@ -139,9 +148,73 @@ describe("a dataset of several members", async () => {
 
   test("joins the members' sentences and gives each member's file on its own", () => {
     assert.equal(dataset.sentence, "Health. GDP.");
-    assert.throws(() => dataset.bytes(), TypeError);
     assert.deepEqual(dataset.memberBytes(1), gdp);
   });
+
+  test("bytes() writes one Parquet file of the stacked table, with the provenance", async () => {
+    const stacked = await dataset.bytes();
+    const reread = new Dataset([member(stacked)], { layout: "long" });
+    assert.deepEqual(reread.columns, dataset.columns);
+    assert.deepEqual(await reread.toRows(), await dataset.toRows());
+
+    const metadata = Object.fromEntries(
+      (parquetMetadata(stacked.slice().buffer).key_value_metadata ?? []).map(({ key, value }) => [
+        key,
+        value,
+      ]),
+    );
+    assert.deepEqual(Object.keys(metadata).toSorted(), [
+      "dfo.citation",
+      "dfo.dataset",
+      "dfo.format_version",
+      "dfo.licence",
+      "dfo.ref",
+      "dfo.sentence",
+      "dfo.sources",
+    ]);
+    assert.equal(metadata["dfo.format_version"], "1");
+    assert.equal(metadata["dfo.sentence"], "Health. GDP.");
+    const ref = DatasetRef.fromJSON(JSON.parse(metadata["dfo.ref"]!));
+    assert.deepEqual(ref.toJSON(), dataset.ref.toJSON());
+    const saved = JSON.parse(metadata["dfo.dataset"]!) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(saved).toSorted(), [
+      "assumptions",
+      "complete",
+      "departures",
+      "held_until",
+      "layout_version",
+      "member_citations",
+      "missing",
+      "pinned",
+      "requested_operations",
+      "stale",
+      "warnings",
+    ]);
+    assert.equal(saved["complete"], true);
+  });
+});
+
+test("a stacked file keeps every column type the members store", async () => {
+  const data = new Uint8Array(await readFile(new URL("data/types.parquet", import.meta.url)));
+  const dataset = new Dataset(
+    [
+      member(data, { parts: ["one"] }),
+      member(data, { parts: ["two"], spec: { spec_id: "s2", definition: {} } }),
+    ],
+    { layout: "long" },
+  );
+  const stacked = await dataset.bytes();
+  const reread = new Dataset([member(stacked)], { layout: "long" });
+  const [original, written] = await Promise.all(
+    [dataset, reread].map((table) => decodeStored(tableParts(table))),
+  );
+  assert.deepEqual(written, original);
+  assert.equal(written!.find((column) => column.name === "big")?.values[1], 2n ** 60n);
+  // hyparquet-writer writes the INTEGER logical type in a form pyarrow cannot read, so
+  // integers carry the legacy converted type alone.
+  const schema = parquetMetadata(stacked.slice().buffer).schema;
+  assert.ok(schema.every((element) => element.logical_type?.type !== "INTEGER"));
+  assert.equal(schema.find((element) => element.name === "small")?.converted_type, "UINT_8");
 });
 
 describe("retention", () => {
@@ -182,11 +255,11 @@ describe("retention", () => {
   });
 });
 
-test("bytes() returns a copy of the checked file", async () => {
+test("bytes() of one member returns a copy of the checked file, unchanged", async () => {
   const data = await scenarioBytes("fetch-ref.parquet");
   const dataset = new Dataset([member(data)], { layout: "long" });
-  const copy = dataset.bytes();
+  const copy = await dataset.bytes();
   assert.deepEqual(copy, data);
   copy[0] = 0;
-  assert.deepEqual(dataset.bytes(), data);
+  assert.deepEqual(await dataset.bytes(), data);
 });

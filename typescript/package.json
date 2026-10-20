@@ -23,6 +23,10 @@
       "types": "./dist/wire.d.ts",
       "default": "./dist/wire.js"
     },
+    "./arrow": {
+      "types": "./dist/arrow.d.ts",
+      "default": "./dist/arrow.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -42,7 +46,8 @@
     "generate:check": "node scripts/generate-wire.ts --check && node scripts/generate-contract.ts --check"
   },
   "dependencies": {
-    "hyparquet": "^1.31.5"
+    "hyparquet": "^1.31.5",
+    "hyparquet-writer": "0.16.10"
   },
   "peerDependencies": {
     "apache-arrow": "^21.0.0"

@@ -19,6 +19,7 @@
  * another, under one deadline.
  */
 
+import type { Gap } from "./answer.ts";
 import { Dataset } from "./dataset.ts";
 import type { FetchedMember } from "./dataset.ts";
 import {
@@ -43,6 +44,7 @@ import { DatasetRef, layoutOf, renderingFor, renderingMatches, renderingOptions 
 import type { Layout, RefMember, Rendering, SpecLike } from "./ref.ts";
 import { checkStrict } from "./strict.ts";
 import type { Target, Transport } from "./transport.ts";
+import type { Part } from "./wire.ts";
 import { DfoWarning } from "./warnings.ts";
 
 /** A year range, or every year, or the latest year. */
@@ -66,6 +68,8 @@ export type MemberRequest = {
   readonly parts: readonly string[];
   readonly spec: SpecLike;
   readonly sentence?: string | null | undefined;
+  /** The answer parts the reading answers, when it comes from an answer. */
+  readonly answerParts?: readonly Part[];
 };
 
 type CallOptions = {
@@ -81,7 +85,7 @@ type CallOptions = {
 
 export type FetchOptions = CallOptions & Narrowing;
 
-export type FetchMembersOptions<TMissing> = CallOptions & {
+export type FetchMembersOptions<TMissing extends Gap> = CallOptions & {
   /** The parts a partial fetch leaves out; the dataset is complete when there are none. */
   missing?: readonly TMissing[];
   /** The build request's `scope`, applied to every member. */
@@ -304,13 +308,14 @@ type Finishing = {
   readonly sentence: string | null | undefined;
   readonly rendering: Rendering;
   readonly strict: boolean;
+  readonly answerParts?: readonly Part[];
 };
 
 /** Downloads a built version's artifact and gives it Search's sentence. */
 async function finish(
   transport: Transport,
   manifest: Manifest,
-  { parts, posted, sentence, rendering, strict }: Finishing,
+  { parts, posted, sentence, rendering, strict, answerParts }: Finishing,
   wait: Wait,
 ): Promise<FetchedMember> {
   const definition = definitionOf(manifest);
@@ -339,6 +344,7 @@ async function finish(
     digest,
     rendering,
     data,
+    ...(answerParts === undefined ? {} : { answerParts }),
   };
 }
 
@@ -370,6 +376,7 @@ function distinct(members: readonly MemberRequest[]): MemberRequest[] {
             parts: [...seen.parts, ...member.parts.filter((part) => !seen.parts.includes(part))],
             spec: seen.spec,
             sentence: seen.sentence ?? member.sentence,
+            answerParts: [...(seen.answerParts ?? []), ...(member.answerParts ?? [])],
           },
     );
   }
@@ -385,7 +392,7 @@ function distinct(members: readonly MemberRequest[]): MemberRequest[] {
  * @throws {DfoTimeoutError} The deadline passed.
  * @throws {DfoError} The server refused a request.
  */
-export async function fetchMembers<TMissing = never>(
+export async function fetchMembers<TMissing extends Gap = never>(
   transport: Transport,
   members: readonly MemberRequest[],
   options: FetchMembersOptions<TMissing> = {},
@@ -400,7 +407,7 @@ export async function fetchMembers<TMissing = never>(
   const scope = options.narrowing === undefined ? undefined : scopeOf(options.narrowing);
   const wait = { deadline: deadlineOf(transport, options.timeout), signal: options.signal };
   const fetched: FetchedMember[] = [];
-  for (const { parts, spec, sentence } of wants) {
+  for (const { parts, spec, sentence, answerParts } of wants) {
     let manifest: Manifest;
     try {
       manifest = await build(transport, buildBody(spec, rendering, scope), {
@@ -417,7 +424,14 @@ export async function fetchMembers<TMissing = never>(
       await finish(
         transport,
         manifest,
-        { parts, posted: spec, sentence, rendering, strict: options.strict ?? false },
+        {
+          parts,
+          posted: spec,
+          sentence,
+          rendering,
+          strict: options.strict ?? false,
+          ...(answerParts === undefined ? {} : { answerParts }),
+        },
         wait,
       ),
     );
