@@ -1,3 +1,4 @@
+import type { Answer, Gap } from "./answer.ts";
 import { CODE_ACTIONS } from "./generated/actions.ts";
 import type { ACTIONS } from "./generated/actions.ts";
 
@@ -10,6 +11,9 @@ export type DfoErrorCode = keyof typeof CODE_ACTIONS | ClientErrorCode | (string
 /** The codes the client raises itself, for failures no server response describes. */
 export type ClientErrorCode =
   | "network_error"
+  | "answer_incomplete"
+  | "answer_declined"
+  | "choice_invalid"
   | "deadline_exceeded"
   | "contract_violation"
   | "unexpected_response"
@@ -71,7 +75,18 @@ export class InvalidRequestError extends DfoError {}
 /** A spec, version or operation is unknown; the caller checks the id. */
 export class NotFoundError extends DfoError {}
 /** A part of the question has no reading; the caller chooses one or takes the answered parts. */
-export class IncompleteAnswerError extends DfoError {}
+export class IncompleteAnswerError extends DfoError {
+  /** The answer whose fetch raised it, or null for a server refusal. */
+  readonly answer: Answer | null;
+  /** The parts with no reading, each with its kind, message and options. */
+  readonly gaps: readonly Gap[];
+
+  constructor(options: DfoErrorOptions & { answer?: Answer; gaps?: readonly Gap[] }) {
+    super(options);
+    this.answer = options.answer ?? null;
+    this.gaps = options.gaps ?? [];
+  }
+}
 /** Search declined the question or answered with the catalogue; the caller asks a data question. */
 export class DeclinedError extends DfoError {}
 /** A stored version cannot be rebuilt; the caller takes the newest version. */
