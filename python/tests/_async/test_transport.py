@@ -1,0 +1,446 @@
+"""Tests for the transport: URLs, headers, retries, deadlines, keys and downloads.
+
+`scripts/gen_sync.py` derives `tests/_sync/test_transport.py` from this file, so
+the sync transport passes the same tests.
+"""
+
+import json
+import warnings
+from collections.abc import Callable
+
+import httpx2
+import pytest
+
+from dfo import _errors
+from dfo._errors import (
+    AuthenticationError,
+    DfoDeprecationWarning,
+    DfoTimeoutError,
+    DfoWarning,
+    InvalidRequestError,
+    NetworkError,
+    NotFoundError,
+    RateLimitError,
+    ServerError,
+)
+from dfo._transport import USER_AGENT, AsyncTransport
+
+pytestmark = pytest.mark.anyio
+
+BASE = "https://api.example.org/api/v1"
+KEY = "dfo_k_4f8Kq2ZtR7mWx1NcB9vLp3YhD6sGa0Ue2wanxe"
+OTHER_KEY = "dfo_k_Zz9Yy8Xx7Ww6Vv5Uu4Tt3Ss2Rr1Qq0Pp448bfc"
+SIGNED = "https://storage.example.com/bucket/object?X-Goog-Signature=redacted"
+
+type Handler = Callable[[httpx2.Request], httpx2.Response]
+
+
+class Timeline:
+    """A clock and a sleep that advances it at once, recording each wait."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.sleeps: list[float] = []
+
+    def clock(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+class Recorder:
+    """Serves queued responses and records the requests that took them."""
+
+    def __init__(self, *responses: httpx2.Response | Exception) -> None:
+        self.responses = list(responses)
+        self.requests: list[httpx2.Request] = []
+
+    def __call__(self, request: httpx2.Request) -> httpx2.Response:
+        self.requests.append(request)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def problem(status: int, **members: object) -> httpx2.Response:
+    return httpx2.Response(
+        status,
+        headers={"content-type": "application/problem+json"},
+        content=json.dumps({"status": status, **members}).encode(),
+    )
+
+
+def make(
+    handler: Handler, timeline: Timeline | None = None, **options: object
+) -> AsyncTransport:
+    timeline = timeline or Timeline()
+    options.setdefault("api_key", False)
+    options.setdefault("base_url", BASE)
+    return AsyncTransport(
+        http_transport=httpx2.MockTransport(handler),
+        sleep=timeline.sleep,
+        clock=timeline.clock,
+        **options,
+    )
+
+
+@pytest.fixture(autouse=True)
+def fresh_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_errors, "_warned", set())
+
+
+async def test_paths_resolve_under_the_base_url_and_server_urls_under_its_origin() -> (
+    None
+):
+    recorder = Recorder(httpx2.Response(200), httpx2.Response(200))
+    async with make(recorder) as transport:
+        await transport.request("POST", "/search/resolve", json={"q": 1})
+        poll = transport.origin_url("/api/datasets/operations/op_1")
+        await transport.request("GET", poll)
+    assert [str(request.url) for request in recorder.requests] == [
+        "https://api.example.org/api/v1/search/resolve",
+        "https://api.example.org/api/datasets/operations/op_1",
+    ]
+    assert json.loads(recorder.requests[0].content) == {"q": 1}
+
+
+async def test_api_requests_carry_the_user_agent_key_and_first_party_headers() -> None:
+    calls = []
+
+    async def provider() -> dict[str, str]:
+        calls.append(1)
+        return {"X-Serverless-Authorization": "Bearer id-token"}
+
+    recorder = Recorder(httpx2.Response(200))
+    async with make(
+        recorder,
+        api_key=KEY,
+        default_headers={"x-dfo-caller": "data-mcp"},
+        header_provider=provider,
+    ) as transport:
+        await transport.request("GET", "/datasets/schema")
+    headers = recorder.requests[0].headers
+    assert headers["user-agent"] == USER_AGENT
+    assert USER_AGENT.startswith("dfo-python/")
+    assert headers["authorization"] == f"Bearer {KEY}"
+    assert headers["x-dfo-caller"] == "data-mcp"
+    assert headers["x-serverless-authorization"] == "Bearer id-token"
+    assert calls == [1]
+
+
+async def test_an_anonymous_transport_sends_no_authorization() -> None:
+    recorder = Recorder(httpx2.Response(200))
+    async with make(recorder, api_key=False) as transport:
+        await transport.request("GET", "/datasets/schema")
+    assert "authorization" not in recorder.requests[0].headers
+
+
+async def test_a_url_off_the_api_origin_is_refused_before_sending() -> None:
+    recorder = Recorder()
+    async with make(recorder, api_key=KEY) as transport:
+        with pytest.raises(ValueError, match="outside the API"):
+            await transport.request("GET", SIGNED)
+        with pytest.raises(ValueError, match="starts with"):
+            await transport.request("GET", "search/resolve")
+    assert recorder.requests == []
+
+
+async def test_a_redirect_returns_unfollowed() -> None:
+    recorder = Recorder(httpx2.Response(302, headers={"location": SIGNED}))
+    async with make(recorder) as transport:
+        response = await transport.request("GET", "/datasets/s/cv/files/sha256:ab")
+    assert response.status_code == 302
+    assert response.headers["location"] == SIGNED
+    assert len(recorder.requests) == 1
+
+
+async def test_download_sends_a_bare_request() -> None:
+    calls = []
+
+    async def provider() -> dict[str, str]:
+        calls.append(1)
+        return {"X-Serverless-Authorization": "Bearer id-token"}
+
+    recorder = Recorder(httpx2.Response(200, content=b"PAR1"))
+    async with make(
+        recorder,
+        api_key=KEY,
+        default_headers={"x-dfo-principal": "someone"},
+        header_provider=provider,
+    ) as transport:
+        assert await transport.download(SIGNED) == b"PAR1"
+    headers = recorder.requests[0].headers
+    assert str(recorder.requests[0].url) == SIGNED
+    assert "authorization" not in headers
+    assert "x-serverless-authorization" not in headers
+    assert "x-dfo-principal" not in headers
+    assert headers["user-agent"] != USER_AGENT
+    assert calls == []
+
+
+async def test_a_failed_download_is_not_retried() -> None:
+    recorder = Recorder(httpx2.Response(403), httpx2.Response(200))
+    async with make(recorder) as transport:
+        with pytest.raises(ServerError) as caught:
+            await transport.download(SIGNED)
+    assert caught.value.status == 403
+    assert len(recorder.requests) == 1
+
+
+async def test_a_retryable_refusal_backs_off_then_succeeds() -> None:
+    timeline = Timeline()
+    recorder = Recorder(
+        problem(503, code="upstream_unavailable", retryable=True),
+        problem(503, code="upstream_unavailable", retryable=True),
+        httpx2.Response(200),
+    )
+    async with make(recorder, timeline) as transport:
+        response = await transport.request("GET", "/datasets/schema")
+    assert response.status_code == 200
+    assert timeline.sleeps == [0.5, 1.0]
+
+
+async def test_retryable_false_outranks_a_retryable_status() -> None:
+    timeline = Timeline()
+    recorder = Recorder(problem(503, code="internal_error", retryable=False))
+    async with make(recorder, timeline) as transport:
+        with pytest.raises(ServerError) as caught:
+            await transport.request("GET", "/datasets/schema")
+    assert caught.value.retryable is False
+    assert timeline.sleeps == []
+
+
+async def test_a_problem_document_fills_the_error() -> None:
+    body = {
+        "type": "/codes/spec_not_found",
+        "title": "Spec not found",
+        "detail": "No spec spec_1.",
+        "code": "spec_not_found",
+        "trace_id": "trace-1",
+        "retryable": False,
+    }
+    recorder = Recorder(problem(404, **body))
+    async with make(recorder) as transport:
+        with pytest.raises(NotFoundError) as caught:
+            await transport.request("GET", "/datasets/spec_1")
+    error = caught.value
+    assert (error.code, error.status, error.detail, error.trace_id) == (
+        "spec_not_found",
+        404,
+        "No spec spec_1.",
+        "trace-1",
+    )
+    assert error.docs_url == "https://api.example.org/codes/spec_not_found"
+    assert error.problem == {"status": 404, **body}
+
+
+async def test_an_unknown_code_maps_on_its_status() -> None:
+    recorder = Recorder(problem(422, code="a_code_from_the_future", detail="No."))
+    async with make(recorder) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await transport.request("POST", "/datasets", json={})
+    assert caught.value.code == "a_code_from_the_future"
+
+
+async def test_a_proxy_429_waits_for_retry_after_then_raises() -> None:
+    timeline = Timeline()
+    body = {"error": "rate_limited", "retry": "retry_after_delay", "detail": "Slow."}
+    limited = httpx2.Response(429, headers={"Retry-After": "7"}, json=body)
+    recorder = Recorder(limited, limited, limited)
+    async with make(recorder, timeline) as transport:
+        with pytest.raises(RateLimitError) as caught:
+            await transport.request("GET", "/datasets/schema")
+    assert timeline.sleeps == [7.0, 7.0]
+    assert (caught.value.code, caught.value.retryable) == ("rate_limited", True)
+
+
+async def test_a_proxy_502_is_a_server_error_after_retries() -> None:
+    timeline = Timeline()
+    body = {
+        "error": "transient_unavailable",
+        "retry": "retry_after_delay",
+        "detail": "Down.",
+    }
+    recorder = Recorder(*(httpx2.Response(502, json=body) for _ in range(3)))
+    async with make(recorder, timeline) as transport:
+        with pytest.raises(ServerError) as caught:
+            await transport.request("GET", "/datasets/schema")
+    assert caught.value.code == "transient_unavailable"
+    assert timeline.sleeps == [0.5, 1.0]
+
+
+async def test_a_request_can_turn_retries_off() -> None:
+    recorder = Recorder(problem(504, code="internal_error", retryable=True))
+    async with make(recorder) as transport:
+        with pytest.raises(ServerError):
+            await transport.request("POST", "/datasets", json={}, max_retries=0)
+    assert len(recorder.requests) == 1
+
+
+async def test_a_wait_past_the_deadline_raises_at_once() -> None:
+    timeline = Timeline()
+    limited = httpx2.Response(429, headers={"Retry-After": "30"})
+    recorder = Recorder(limited)
+    async with make(recorder, timeline) as transport:
+        with pytest.raises(RateLimitError):
+            await transport.request(
+                "GET", "/datasets/schema", deadline=transport.deadline(10)
+            )
+    assert timeline.sleeps == []
+
+
+async def test_each_attempt_is_clamped_to_the_deadline() -> None:
+    timeline = Timeline()
+    recorder = Recorder(problem(503, retryable=True), httpx2.Response(200))
+    async with make(recorder, timeline, timeout=30.0) as transport:
+        await transport.request(
+            "GET", "/datasets/schema", deadline=transport.deadline(10)
+        )
+    timeouts = [request.extensions["timeout"]["read"] for request in recorder.requests]
+    assert timeouts == [10.0, 9.5]
+
+
+async def test_a_passed_deadline_raises_a_timeout_error() -> None:
+    timeline = Timeline()
+    recorder = Recorder()
+    async with make(recorder, timeline) as transport:
+        deadline = transport.deadline(5)
+        timeline.now += 6
+        with pytest.raises(DfoTimeoutError) as caught:
+            await transport.request("GET", "/datasets/schema", deadline=deadline)
+    assert isinstance(caught.value, TimeoutError)
+    assert recorder.requests == []
+
+
+async def test_connection_failures_retry_then_raise_a_network_error() -> None:
+    timeline = Timeline()
+    recorder = Recorder(*(httpx2.ConnectError("refused") for _ in range(3)))
+    async with make(recorder, timeline) as transport:
+        with pytest.raises(NetworkError) as caught:
+            await transport.request("GET", "/datasets/schema")
+    assert isinstance(caught.value, ConnectionError)
+    assert isinstance(caught.value.__cause__, httpx2.ConnectError)
+    assert timeline.sleeps == [0.5, 1.0]
+
+
+async def test_a_timed_out_attempt_raises_a_timeout_error() -> None:
+    recorder = Recorder(httpx2.ReadTimeout("slow"))
+    async with make(recorder, max_retries=0) as transport:
+        with pytest.raises(DfoTimeoutError) as caught:
+            await transport.request("GET", "/datasets/schema")
+    assert isinstance(caught.value, TimeoutError)
+
+
+async def test_a_401_resolves_the_key_again_and_retries_once_with_a_new_key() -> None:
+    keys = [KEY, OTHER_KEY]
+    recorder = Recorder(problem(401, code="key_invalid"), httpx2.Response(200))
+    async with make(recorder, api_key=lambda: keys.pop(0)) as transport:
+        await transport.request("GET", "/datasets/schema")
+    sent = [request.headers["authorization"] for request in recorder.requests]
+    assert sent == [f"Bearer {KEY}", f"Bearer {OTHER_KEY}"]
+
+
+async def test_a_401_with_the_same_key_raises() -> None:
+    recorder = Recorder(problem(401, code="key_invalid", detail="Unknown key."))
+    async with make(recorder, api_key=KEY) as transport:
+        with pytest.raises(AuthenticationError):
+            await transport.request("GET", "/datasets/schema")
+    assert len(recorder.requests) == 1
+
+
+async def test_deprecation_and_server_warnings_show_once_per_process() -> None:
+    marked = {
+        "Deprecation": "@1767225600",
+        "Sunset": "Thu, 31 Dec 2026 00:00:00 GMT",
+        "x-dfo-warning": "Anonymous builds share a small quota; create a free key.",
+    }
+    recorder = Recorder(*(httpx2.Response(200, headers=marked) for _ in range(3)))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        async with make(recorder) as transport:
+            await transport.request("GET", "/datasets/schema")
+            await transport.request("GET", "/datasets/schema")
+        async with make(recorder) as other:
+            await other.request("GET", "/datasets/schema")
+    categories = sorted(type(warning.message).__name__ for warning in caught)
+    assert categories == ["DfoDeprecationWarning", "DfoWarning"]
+    texts = [str(warning.message) for warning in caught]
+    assert marked["x-dfo-warning"] in texts
+    assert issubclass(DfoDeprecationWarning, DfoWarning)
+
+
+async def test_with_options_shares_the_pool_and_only_the_owner_closes_it() -> None:
+    timeline = Timeline()
+    recorder = Recorder(problem(503, retryable=True), httpx2.Response(200))
+    transport = make(recorder, timeline)
+    quick = transport.with_options(max_retries=0, timeout=5.0)
+    with pytest.raises(ServerError):
+        await quick.request("GET", "/datasets/schema")
+    await quick.aclose()
+    response = await transport.request("GET", "/datasets/schema")
+    assert response.status_code == 200
+    assert (quick.max_retries, quick.timeout) == (0, 5.0)
+    assert (transport.max_retries, transport.timeout) == (2, 30.0)
+    await transport.aclose()
+    with pytest.raises(RuntimeError):
+        await transport.request("GET", "/datasets/schema")
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "wait"),
+    [("Wed, 21 Oct 2015 07:28:00 GMT", 0.0), ("soon", 0.5), ("", 0.5)],
+)
+async def test_retry_after_as_a_date_or_unreadable(
+    retry_after: str, wait: float
+) -> None:
+    timeline = Timeline()
+    busy = httpx2.Response(503, headers={"Retry-After": retry_after}, text="Busy")
+    recorder = Recorder(busy, httpx2.Response(200))
+    async with make(recorder, timeline) as transport:
+        await transport.request("GET", "/datasets/schema")
+    assert timeline.sleeps == [wait]
+
+
+async def test_a_body_that_is_not_json_maps_on_the_status() -> None:
+    recorder = Recorder(httpx2.Response(404, text="<html>gone</html>"))
+    async with make(recorder) as transport:
+        with pytest.raises(NotFoundError) as caught:
+            await transport.request("GET", "/datasets/spec_1")
+    assert (caught.value.problem, str(caught.value)) == (None, "Not Found")
+
+
+@pytest.mark.parametrize(
+    "options",
+    [{"base_url": "ftp://api.example.org"}, {"timeout": 0}, {"max_retries": -1}],
+)
+async def test_invalid_options_are_refused(options: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        make(Recorder(), **options)
+
+
+@pytest.mark.parametrize(
+    ("failure", "error"),
+    [
+        (httpx2.ReadTimeout("slow"), DfoTimeoutError),
+        (httpx2.ConnectError("x"), NetworkError),
+    ],
+)
+async def test_a_download_that_cannot_connect_raises(
+    failure: Exception, error: type[Exception]
+) -> None:
+    async with make(Recorder(failure)) as transport:
+        with pytest.raises(error):
+            await transport.download(SIGNED)
+
+
+async def test_the_transport_sleeps_and_reads_the_clock_it_was_given() -> None:
+    timeline = Timeline()
+    async with make(Recorder(), timeline) as transport:
+        start = transport.now()
+        await transport.sleep(3)
+        assert transport.now() == start + 3
+        assert transport.deadline(None) is None
+    assert timeline.sleeps == [3]

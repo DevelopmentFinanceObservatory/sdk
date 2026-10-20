@@ -41,6 +41,31 @@ CI runs two checks on every change to `contract/`:
 - `scripts/sync_contract.py --check` against the public spec-kit tree at `SOURCE`.
 - `scripts/check_contract_pin.py`, which fails unless `SOURCE` is the rev that dfo-apis `dev` pins for `dfo-spec-kit-client-contract`, or an ancestor of it. The clients never replay scenarios that dfo-apis does not check.
 
+## Generated code
+
+These Python files are generated, and CI fails when one differs from what its generator writes. Never edit them by hand; change the source and run the generator from `python/`:
+
+```bash
+uv run python ../scripts/gen_sync.py
+uv run python ../scripts/gen_errors.py
+```
+
+- `scripts/gen_sync.py` writes each sync module in `python/src/dfo/_sync/` from its async source in `python/src/dfo/`, and each test in `python/tests/_sync/` from `python/tests/_async/`, so the sync client passes the same tests as the async one. `ASYNC_MODULES` in the script lists the async modules.
+- `scripts/gen_errors.py` writes `python/src/dfo/_error_map.py` from `contract/actions.json`: each refusal code's caller action and each no_data reason's gap kind.
+
+Each generator takes `--check`, which writes nothing and exits 1 on a difference.
+
+## Async source rules
+
+The async modules are the source of both clients, and `scripts/gen_sync.py` derives the sync ones by replacing tokens. A module stays convertible when it follows these rules, and the generator refuses one that breaks them:
+
+- No import of `asyncio`, `anyio` or `trio`. So no `asyncio.gather`, `TaskGroup`, `asyncio.timeout` or `wait_for`: the members of a dataset build one after another, and deadlines come from the transport's clock.
+- Sleep and the clock come from the transport (`dfo._hooks`), so a test or a scenario replay can inject them.
+- Import other async modules by absolute name, such as `from dfo._transport import AsyncTransport`; the generator points the sync module at `dfo._sync._transport`.
+- An async name the token map lacks (`async`, `await`, an `Async*` class, `__aenter__`, `aclose`, `aread`, `aiter_*`) fails the run. Add the pair to `SUBS` in the script. A pair no source uses also fails the run, so a renamed name in httpx2 shows up there.
+- Code that does no I/O, such as the cache, Parquet and Arrow code, is plain sync code in a module both clients call.
+- An async test uses `pytestmark = pytest.mark.anyio` and a sync `def` handler for `httpx2.MockTransport`, which serves both clients.
+
 ## Releases
 
 A release is a tag on `main`:

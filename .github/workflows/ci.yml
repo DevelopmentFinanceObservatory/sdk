@@ -75,6 +75,14 @@ jobs:
         if: matrix.python-version == '3.12'
         run: uv run ty check
 
+      - name: Check the generated sync code
+        if: matrix.python-version == '3.12'
+        run: uv run python ../scripts/gen_sync.py --check
+
+      - name: Check the generated error map
+        if: matrix.python-version == '3.12'
+        run: uv run python ../scripts/gen_errors.py --check
+
       - name: Run tests
         run: uv run pytest --cov='src/dfo' --cov-report=xml --cov-report=term
 
