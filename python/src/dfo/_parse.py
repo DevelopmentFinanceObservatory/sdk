@@ -25,7 +25,6 @@ from dfo._types import (
     NoDataPart,
     Notice,
     Option,
-    Part,
     RequestedOperation,
     Spec,
     UnknownPart,
@@ -34,8 +33,18 @@ from dfo._types import (
 
 type Wire = Mapping[str, Any]
 
+# A part as read, before an answer binds its candidates. The parts other than
+# `CandidatesPart` are `Part[Never]`, so each fits an answer of either form.
+type ParsedPart = (
+    DefinitePart
+    | CandidatesPart[Candidate]
+    | NoDataPart
+    | UnsupportedPart
+    | UnknownPart
+)
 
-def parse_parts(resolution: Wire, /) -> tuple[Part, ...]:
+
+def parse_parts(resolution: Wire, /) -> tuple[ParsedPart, ...]:
     """The parts of a `resolution` answer, in query order.
 
     Args:
@@ -52,7 +61,7 @@ def parse_parts(resolution: Wire, /) -> tuple[Part, ...]:
     )
 
 
-def parse_part(part: object, pointer: str = "", /) -> Part:
+def parse_part(part: object, pointer: str = "", /) -> ParsedPart:
     """One answer part, read by its `status`.
 
     Args:
@@ -241,14 +250,14 @@ def _violation(message: str, /, *, pointer: str | None = None) -> ContractError:
     return error
 
 
-def _definite(part: Wire, pointer: str) -> Part:
+def _definite(part: Wire, pointer: str) -> DefinitePart:
     spec = parse_spec(require(part, "DefinitePart", pointer)["spec"], f"{pointer}/spec")
     fields = _part_fields(part, _strict.DEFINITE_PART_STATUS)
     fields["sentence"] = spec.sentence
     return DefinitePart(spec=spec, **fields)
 
 
-def _candidates(part: Wire, pointer: str) -> Part:
+def _candidates(part: Wire, pointer: str) -> CandidatesPart[Candidate]:
     candidate_set = require(
         require(part, "CandidatesPart", pointer)["candidates"],
         "CandidateSet",
@@ -267,7 +276,7 @@ def _candidates(part: Wire, pointer: str) -> Part:
     )
 
 
-def _no_data(part: Wire, pointer: str) -> Part:
+def _no_data(part: Wire, pointer: str) -> NoDataPart:
     no_data = require(
         require(part, "NoDataPart", pointer)["no_data"], "NoData", f"{pointer}/no_data"
     )
@@ -279,7 +288,7 @@ def _no_data(part: Wire, pointer: str) -> Part:
     )
 
 
-def _unsupported(part: Wire, pointer: str) -> Part:
+def _unsupported(part: Wire, pointer: str) -> UnsupportedPart:
     unsupported = require(
         require(part, "UnsupportedPart", pointer)["unsupported"],
         "Unsupported",
@@ -292,7 +301,7 @@ def _unsupported(part: Wire, pointer: str) -> Part:
     )
 
 
-_PART_READERS: Mapping[str, Callable[[Wire, str], Part]] = {
+_PART_READERS: Mapping[str, Callable[[Wire, str], ParsedPart]] = {
     _strict.DEFINITE_PART_STATUS: _definite,
     _strict.CANDIDATES_PART_STATUS: _candidates,
     _strict.NO_DATA_PART_STATUS: _no_data,

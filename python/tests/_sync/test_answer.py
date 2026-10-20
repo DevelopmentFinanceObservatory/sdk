@@ -9,7 +9,9 @@ tests.
 
 import copy
 import json
+import types
 import warnings
+from collections.abc import Mapping
 from typing import Any
 
 import httpx2
@@ -17,6 +19,7 @@ import pytest
 
 import dfo._sync._answer as answer_module
 from dfo._build import Reading
+from dfo._dataset import build_dataset
 from dfo._errors import (
     ContractError,
     DeclinedError,
@@ -28,9 +31,10 @@ from dfo._sync._answer import Answer
 from dfo._sync._fetch import Session
 from dfo._sync._search import search
 from dfo._sync._transport import Transport
-from dfo._types import CandidatesPart, DefinitePart, Gap
+from dfo._types import Candidate, CandidatesPart, DefinitePart, Gap
 
 from .._data import load
+from .._datasets import recorded_member
 
 BASE = "https://api.example.org/api"
 RESOLVE = f"{BASE}/search/resolve"
@@ -510,7 +514,7 @@ def test_fetch_of_an_incomplete_answer_raises_before_any_build(
         ]
     )
     assert caught.value.answer is answer
-    assert caught.value.gaps == answer.gaps
+    assert_unbound(caught.value.gaps, answer.gaps)
     assert caught.value.code == "answer_incomplete"
     assert fetched == []
 
@@ -530,6 +534,81 @@ def test_a_partial_fetch_builds_the_answered_parts_and_names_the_gaps(
     with pytest.raises(IncompleteAnswerError):
         nothing.fetch(partial=True)
     assert len(fetched) == 1
+
+
+def assert_unbound(
+    held: tuple[Gap[Candidate], ...], gaps: tuple[Gap[Any], ...]
+) -> None:
+    """`held` is `gaps` with every candidate bound to no answer."""
+    assert [(g.part_index, g.kind, g.message) for g in held] == [
+        (g.part_index, g.kind, g.message) for g in gaps
+    ]
+    candidates = [
+        (candidate, original)
+        for gap, source in zip(held, gaps, strict=True)
+        if isinstance(gap.part, CandidatesPart)
+        and isinstance(source.part, CandidatesPart)
+        for candidate, original in zip(
+            gap.part.candidates, source.part.candidates, strict=True
+        )
+    ]
+    assert candidates
+    for candidate, original in candidates:
+        assert type(candidate) is Candidate
+        assert candidate.spec == original.spec
+        with pytest.raises(InvalidRequestError) as caught:
+            candidate.fetch()
+        assert caught.value.code == "invalid_argument"
+
+
+def client_references(value: object) -> list[str]:
+    """The transports and functions reachable through `value`'s members and the
+    closures of its functions."""
+    found: list[str] = []
+    seen: set[int] = set()
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        if isinstance(item, Transport | httpx2.Client):
+            found.append(type(item).__name__)
+        elif isinstance(item, types.FunctionType):
+            found.append("function")
+            pending.extend(cell.cell_contents for cell in item.__closure__ or ())
+        elif isinstance(item, Mapping):
+            pending.extend(item.values())
+        elif isinstance(item, tuple | list):
+            pending.extend(item)
+        elif hasattr(type(item), "__dataclass_fields__"):
+            pending.extend(
+                getattr(item, name) for name in type(item).__dataclass_fields__
+            )
+    return found
+
+
+def test_a_partial_fetch_holds_no_client_in_its_dataset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fetch_members(transport: object, members: object, **options: Any) -> object:
+        return build_dataset(
+            [recorded_member()],
+            layout="long",
+            complete=False,
+            missing=options["missing"],
+            stale=False,
+        )
+
+    monkeypatch.setattr(answer_module, "fetch_members", fetch_members)
+    answer, _ = ask(TWO_PARTS, load("search-two-parts-candidates.json"))
+    # The answer itself reaches its transport, so the walk can find one.
+    assert "Transport" in client_references(answer)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SearchWarning)
+        data = answer.fetch(partial=True)
+    assert_unbound(data.missing, answer.gaps)
+    assert client_references(data) == []
 
 
 @pytest.mark.parametrize("body", ["search-declined.json", "search-catalogue.json"])

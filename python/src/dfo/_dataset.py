@@ -24,6 +24,8 @@ from dfo._error_map import CONTRACT_VIOLATION
 from dfo._errors import client_error
 from dfo._parse import parse_citation, parse_notices, parse_part
 from dfo._types import (
+    AsyncCandidate,
+    Candidate,
     Citation,
     CitationSource,
     DatasetRef,
@@ -36,6 +38,7 @@ from dfo._types import (
     Rendering,
     RequestedOperation,
     Spec,
+    unbound_gap,
 )
 
 if TYPE_CHECKING:
@@ -96,7 +99,7 @@ class FetchedMember:
     manifest: Mapping[str, Any] = field(repr=False)
     digest: str
     data: bytes = field(repr=False)
-    answer_parts: tuple[Part, ...] = field(default=(), repr=False)
+    answer_parts: tuple[Part[object], ...] = field(default=(), repr=False)
 
 
 @dataclass(frozen=True, slots=True, eq=False, repr=False)
@@ -116,7 +119,8 @@ class Dataset:
         assumptions: What the server assumed to read the question; empty until
             the server states assumptions.
         complete: Whether every part of the question has a member.
-        missing: The parts left out of a partial fetch.
+        missing: The parts left out of a partial fetch. Their candidates belong
+            to no answer; fetch one with `dfo.fetch(candidate.spec)`.
         held_until: The earliest date any member's version can still be fetched
             without being pinned; None when every member is pinned or the server
             does not say.
@@ -134,7 +138,7 @@ class Dataset:
     departures: tuple[Departure, ...]
     requested_operations: tuple[RequestedOperation, ...]
     complete: bool
-    missing: tuple[Gap, ...]
+    missing: tuple[Gap[Candidate], ...]
     held_until: date | None
     pinned: bool
     stale: bool
@@ -315,7 +319,7 @@ def build_dataset(
     *,
     layout: Layout,
     complete: bool,
-    missing: Sequence[Gap],
+    missing: Sequence[Gap[Candidate | AsyncCandidate]],
     stale: bool,
 ) -> Dataset:
     """Make one dataset from the members a fetch built and downloaded.
@@ -386,7 +390,7 @@ def build_dataset(
             _unique(op for part in answer_parts for op in part.operations)
         ),
         complete=complete,
-        missing=tuple(missing),
+        missing=tuple(unbound_gap(gap) for gap in missing),
         held_until=held_until,
         pinned=pinned,
         stale=stale,
@@ -522,7 +526,7 @@ def _load_citation(obj: Mapping[str, Any]) -> Citation:
     )
 
 
-def _gap_object(gap: Gap) -> dict[str, Any]:
+def _gap_object(gap: Gap[object]) -> dict[str, Any]:
     return {
         "part_index": gap.part_index,
         "part": dict(gap.part.raw) or {"status": gap.part.status},
@@ -539,7 +543,7 @@ def _gap_object(gap: Gap) -> dict[str, Any]:
     }
 
 
-def _load_gap(obj: Mapping[str, Any]) -> Gap:
+def _load_gap(obj: Mapping[str, Any]) -> Gap[Candidate]:
     return Gap(
         part_index=obj["part_index"],
         part=parse_part(obj["part"]),

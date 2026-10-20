@@ -38,6 +38,7 @@ from dfo._sync._answer import Answer
 from dfo._sync._client import Client
 from dfo._sync._operation import Operation
 from dfo._types import (
+    AsyncCandidate,
     Candidate,
     CandidatesPart,
     Citation,
@@ -66,6 +67,7 @@ __all__ = [
     "Answer",
     "ApiKey",
     "AsyncAnswer",
+    "AsyncCandidate",
     "AsyncClient",
     "AsyncOperation",
     "AuthenticationError",

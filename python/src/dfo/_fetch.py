@@ -73,7 +73,15 @@ from dfo._parse import check_manifest, parse_notices, parse_parts
 from dfo._progress import ProgressRenderer
 from dfo._strict import RESOLUTION_KIND
 from dfo._transport import AsyncTransport
-from dfo._types import DatasetRef, DefinitePart, Gap, RefMember, Rendering, Spec
+from dfo._types import (
+    AsyncCandidate,
+    DatasetRef,
+    DefinitePart,
+    Gap,
+    RefMember,
+    Rendering,
+    Spec,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,7 +188,7 @@ async def fetch_members(
     timeout: float | None = 1800.0,
     progress: bool | None = None,
     cache: Cache | None = None,
-    missing: Sequence[Gap] = (),
+    missing: Sequence[Gap[AsyncCandidate]] = (),
     narrowing: Mapping[str, Any] | None = None,
 ) -> Dataset:
     """Build the latest version of each spec and assemble one dataset.

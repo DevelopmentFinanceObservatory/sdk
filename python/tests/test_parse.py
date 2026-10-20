@@ -3,7 +3,6 @@
 import json
 import re
 from collections.abc import Callable
-from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -385,19 +384,10 @@ def test_scenario_bodies_parse(
         pytest.fail(f"no reader for {status} from {path}")
 
 
-def test_a_candidate_from_no_answer_or_the_other_client_names_the_call() -> None:
+def test_a_candidate_from_no_answer_names_the_call() -> None:
     (part,) = parse_parts(load("search-2.json"))
     assert isinstance(part, CandidatesPart)
-    unbound = part.candidates[0]
-
-    async def build(candidate: object, /, **options: object) -> object:
-        raise AssertionError("an async candidate built through fetch()")
-
-    bound = replace(unbound, _afetch=build)
-    for candidate, hint in [
-        (unbound, "dfo.fetch(candidate.spec)"),
-        (bound, "afetch()"),
-    ]:
-        with pytest.raises(InvalidRequestError, match=re.escape(hint)) as caught:
-            candidate.fetch()
-        assert caught.value.code == "invalid_argument"
+    hint = "dfo.fetch(candidate.spec)"
+    with pytest.raises(InvalidRequestError, match=re.escape(hint)) as caught:
+        part.candidates[0].fetch()
+    assert caught.value.code == "invalid_argument"

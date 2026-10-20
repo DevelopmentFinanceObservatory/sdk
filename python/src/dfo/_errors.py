@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     # `dfo._types` raises through this module, so the import is for types only.
-    from dfo._types import Gap
+    from dfo._types import Candidate, Gap
 
 # Every warning skips the client's own frames, so it names the caller's line.
 _PACKAGE_PREFIX = os.path.dirname(__file__) + os.sep
@@ -76,10 +76,12 @@ class IncompleteAnswerError(DfoError):
     Attributes:
         answer: The answer whose fetch raised it, or None for a server refusal.
         gaps: The parts with no reading, each with its kind, message and options.
+            Their candidates belong to no answer; choose through `answer`, or
+            fetch one with `dfo.fetch(candidate.spec)`.
     """
 
     answer: Any = None
-    gaps: "tuple[Gap, ...]" = ()
+    gaps: "tuple[Gap[Candidate], ...]" = ()
 
 
 class DeclinedError(DfoError):

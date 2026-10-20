@@ -9,7 +9,7 @@ import json
 import re
 from collections.abc import Awaitable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, Protocol, Self, override
+from typing import TYPE_CHECKING, Any, Literal, Never, Protocol, Self, override
 
 from dfo._error_map import INVALID_ARGUMENT
 from dfo._errors import client_error
@@ -171,8 +171,8 @@ class Option:
 
 
 @dataclass(frozen=True, slots=True)
-class Candidate:
-    """One reading of a part that has several.
+class _Reading:
+    """The members `Candidate` and `AsyncCandidate` share.
 
     `label`, `unit` and `source` split the sentence: the label is its heading, the
     unit and source come from its byline.
@@ -193,10 +193,17 @@ class Candidate:
     source: str | None
     unit: str | None
     raw: Mapping[str, Any] = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class Candidate(_Reading):
+    """One reading of a part that has several, in an `Answer`.
+
+    A candidate read back from a saved dataset's `missing` belongs to no answer,
+    and fetches its spec with `dfo.fetch(candidate.spec)`.
+    """
+
     _fetch: "_CandidateFetch | None" = field(
-        default=None, repr=False, compare=False, kw_only=True
-    )
-    _afetch: "_AsyncCandidateFetch | None" = field(
         default=None, repr=False, compare=False, kw_only=True
     )
 
@@ -215,11 +222,10 @@ class Candidate:
         give, and takes `Answer.fetch`'s options.
 
         Raises:
-            InvalidRequestError: The candidate came from an `AsyncAnswer`, whose
-                candidates fetch with `await candidate.afetch()`, or from no answer.
+            InvalidRequestError: The candidate came from no answer.
         """
         if self._fetch is None:
-            raise self._unbound("fetch")
+            raise _unbound()
         return self._fetch(
             self,
             partial=partial,
@@ -229,7 +235,16 @@ class Candidate:
             progress=progress,
         )
 
-    async def afetch(
+
+@dataclass(frozen=True, slots=True)
+class AsyncCandidate(_Reading):
+    """One reading of a part that has several, in an `AsyncAnswer`."""
+
+    _fetch: "_AsyncCandidateFetch | None" = field(
+        default=None, repr=False, compare=False, kw_only=True
+    )
+
+    async def fetch(
         self,
         *,
         partial: bool = False,
@@ -240,16 +255,15 @@ class Candidate:
     ) -> "Dataset":
         """Build this reading's dataset, through the `AsyncAnswer` it came from.
 
-        The async form of `fetch`; parts and candidates are shared by `Answer` and
-        `AsyncAnswer`, so each form has its own name.
+        The fetch is the one-part answer `await answer.choose(part, candidate)`
+        would give, and takes `AsyncAnswer.fetch`'s options.
 
         Raises:
-            InvalidRequestError: The candidate came from an `Answer`, whose
-                candidates fetch with `candidate.fetch()`, or from no answer.
+            InvalidRequestError: The candidate came from no answer.
         """
-        if self._afetch is None:
-            raise self._unbound("afetch")
-        return await self._afetch(
+        if self._fetch is None:
+            raise _unbound()
+        return await self._fetch(
             self,
             partial=partial,
             strict=strict,
@@ -258,18 +272,13 @@ class Candidate:
             progress=progress,
         )
 
-    def _unbound(self, called: str) -> Exception:
-        if self._afetch is not None:
-            hint = "it came from an AsyncAnswer; await candidate.afetch()"
-        elif self._fetch is not None:
-            hint = "it came from an Answer; call candidate.fetch()"
-        else:
-            hint = (
-                "it came from no answer; fetch its spec with dfo.fetch(candidate.spec)"
-            )
-        return client_error(
-            INVALID_ARGUMENT, f"candidate.{called}() cannot build this reading: {hint}"
-        )
+
+def _unbound() -> Exception:
+    return client_error(
+        INVALID_ARGUMENT,
+        "candidate.fetch() cannot build this reading: it came from no answer; "
+        "fetch its spec with dfo.fetch(candidate.spec)",
+    )
 
 
 class _CandidateFetch(Protocol):
@@ -289,7 +298,7 @@ class _CandidateFetch(Protocol):
 class _AsyncCandidateFetch(Protocol):
     def __call__(
         self,
-        candidate: Candidate,
+        candidate: AsyncCandidate,
         /,
         *,
         partial: bool,
@@ -300,9 +309,15 @@ class _AsyncCandidateFetch(Protocol):
     ) -> Awaitable["Dataset"]: ...
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class Part:
+# `match_args=False` on every part keeps the dataclass from declaring an empty
+# `__match_args__` on `Part`, which type checkers would hold each subclass to.
+@dataclass(frozen=True, slots=True, kw_only=True, match_args=False)
+class Part[C]:
     """One part of an answer: the reading, or lack of one, for one variable asked.
+
+    Generic over the candidate type: `Answer.parts` hold `Part[Candidate]` and
+    `AsyncAnswer.parts` hold `Part[AsyncCandidate]`. Only `CandidatesPart` holds
+    candidates; the other parts are `Part[Never]`, which fits either answer.
 
     Attributes:
         status: The server's part status.
@@ -325,16 +340,16 @@ class Part:
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class DefinitePart(Part):
+@dataclass(frozen=True, slots=True, kw_only=True, match_args=False)
+class DefinitePart(Part[Never]):
     """A part with one reading. Matches as `DefinitePart(spec)`."""
 
     __match_args__ = ("spec",)
     spec: Spec
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class CandidatesPart(Part):
+@dataclass(frozen=True, slots=True, kw_only=True, match_args=False)
+class CandidatesPart[C](Part[C]):
     """A part with several readings to choose from, in the server's order.
 
     Matches as `CandidatesPart(candidates)`. `truncated` is True when the server
@@ -342,12 +357,12 @@ class CandidatesPart(Part):
     """
 
     __match_args__ = ("candidates",)
-    candidates: tuple[Candidate, ...]
+    candidates: tuple[C, ...]
     truncated: bool = False
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class NoDataPart(Part):
+@dataclass(frozen=True, slots=True, kw_only=True, match_args=False)
+class NoDataPart(Part[Never]):
     """A part with no reading. Matches as `NoDataPart(reason)`.
 
     `options` lists the choices that settle the part, when it awaits a choice of
@@ -360,8 +375,8 @@ class NoDataPart(Part):
     options: tuple[Option, ...] = ()
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class UnsupportedPart(Part):
+@dataclass(frozen=True, slots=True, kw_only=True, match_args=False)
+class UnsupportedPart(Part[Never]):
     """A part understood but not supported. Matches as `UnsupportedPart(reason)`.
 
     `reason` is the refusal code; `message` is the server's explanation.
@@ -372,16 +387,18 @@ class UnsupportedPart(Part):
     message: str | None = None
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class UnknownPart(Part):
+@dataclass(frozen=True, slots=True, kw_only=True, match_args=False)
+class UnknownPart(Part[Never]):
     """A part whose status this client does not know. Matches as `UnknownPart(status, raw)`."""
 
     __match_args__ = ("status", "raw")
 
 
 @dataclass(frozen=True, slots=True)
-class Gap:
+class Gap[C]:
     """A part that stops an answer from building a complete dataset.
+
+    Generic over the candidate type, as `Part` is.
 
     Attributes:
         part_index: The part's position in the answer.
@@ -393,10 +410,42 @@ class Gap:
     """
 
     part_index: int
-    part: Part
+    part: Part[C]
     kind: str
     message: str
     options: tuple[Option, ...] = ()
+
+
+def unbound_gap(gap: Gap[Candidate | AsyncCandidate], /) -> Gap[Candidate]:
+    """`gap` with its candidates bound to no answer, for a dataset or an error.
+
+    A dataset and an `IncompleteAnswerError` hold no client, so their candidates
+    refuse `fetch` and name `dfo.fetch(candidate.spec)` instead.
+    """
+    part = gap.part
+    unbound: Part[Candidate]
+    match part:
+        case CandidatesPart():
+            unbound = CandidatesPart(
+                status=part.status,
+                variable_text=part.variable_text,
+                sentence=part.sentence,
+                separate=part.separate,
+                warnings=part.warnings,
+                departures=part.departures,
+                operations=part.operations,
+                raw=part.raw,
+                candidates=tuple(
+                    Candidate(c.spec, c.sentence, c.label, c.source, c.unit, c.raw)
+                    for c in part.candidates
+                ),
+                truncated=part.truncated,
+            )
+        case DefinitePart() | NoDataPart() | UnsupportedPart() | UnknownPart():
+            unbound = part
+        case _:
+            raise TypeError(f"{type(part).__name__} is not an answer part")
+    return Gap(gap.part_index, unbound, gap.kind, gap.message, gap.options)
 
 
 @dataclass(frozen=True, slots=True)

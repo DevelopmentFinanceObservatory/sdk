@@ -13,7 +13,15 @@ from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from typing import Any, Protocol
 
-from dfo._types import Candidate, CandidatesPart, DefinitePart, Gap, Notice, Part
+from dfo._types import (
+    AsyncCandidate,
+    Candidate,
+    CandidatesPart,
+    DefinitePart,
+    Gap,
+    Notice,
+    Part,
+)
 
 _SHOWN_SEVERITIES = frozenset({"warn", "degraded"})
 
@@ -43,9 +51,9 @@ class AnswerView(Protocol):
     @property
     def reason(self) -> str | None: ...
     @property
-    def parts(self) -> tuple[Part, ...]: ...
+    def parts(self) -> tuple[Part[Candidate | AsyncCandidate], ...]: ...
     @property
-    def gaps(self) -> tuple[Gap, ...]: ...
+    def gaps(self) -> tuple[Gap[Candidate | AsyncCandidate], ...]: ...
     @property
     def complete(self) -> bool: ...
     @property
@@ -192,14 +200,16 @@ def _gap_lines(answer: AnswerView) -> list[str]:
     return lines
 
 
-def _candidate_line(candidate: Candidate) -> str:
+def _candidate_line(candidate: Candidate | AsyncCandidate) -> str:
     label = (candidate.label or candidate.sentence or "").rstrip(".")
     return " · ".join(
         text for text in (label, candidate.source, candidate.unit) if text
     )
 
 
-def _choose_call(answer: AnswerView, gap: Gap) -> str | None:
+def _choose_call(
+    answer: AnswerView, gap: Gap[Candidate | AsyncCandidate]
+) -> str | None:
     """The call that settles a gap with its first choice, or None when none can."""
     if isinstance(gap.part, CandidatesPart):
         if not gap.part.candidates:
@@ -213,14 +223,14 @@ def _choose_call(answer: AnswerView, gap: Gap) -> str | None:
     return f"answer.choose({_option_key(answer, gap)}, {_quote(option.label)})"
 
 
-def _part_key(answer: AnswerView, gap: Gap) -> str:
+def _part_key(answer: AnswerView, gap: Gap[Candidate | AsyncCandidate]) -> str:
     """The part's words when they name it alone, else its index."""
     text = gap.part.variable_text
     named = [part for part in answer.parts if part.variable_text == text]
     return _quote(text) if text and len(named) == 1 else str(gap.part_index)
 
 
-def _option_key(answer: AnswerView, gap: Gap) -> str:
+def _option_key(answer: AnswerView, gap: Gap[Candidate | AsyncCandidate]) -> str:
     """The word the first option settles when it names the part alone, else the
     part's key."""
     mentions = gap.options[0].mentions

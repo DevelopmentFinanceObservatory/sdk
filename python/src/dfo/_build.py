@@ -63,7 +63,7 @@ class Reading:
     parts: tuple[str, ...]
     spec: Spec
     sentence: str | None = None
-    answer_parts: tuple[Part, ...] = ()
+    answer_parts: tuple[Part[object], ...] = ()
 
 
 class Cache(Protocol):

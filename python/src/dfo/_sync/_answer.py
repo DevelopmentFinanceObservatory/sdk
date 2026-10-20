@@ -20,7 +20,7 @@ Search composes the joined sentence and folds the parts again:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any, Literal, NoReturn, overload, override
 
 from dfo import _display, _strict
@@ -34,7 +34,7 @@ from dfo._error_map import (
     GAP_KINDS,
 )
 from dfo._errors import IncompleteAnswerError, SearchWarning, client_error, warn
-from dfo._parse import parse_notices, parse_parts
+from dfo._parse import ParsedPart, parse_notices, parse_parts
 from dfo._sync._fetch import SessionSource, fetch_members
 from dfo._types import (
     Candidate,
@@ -47,6 +47,7 @@ from dfo._types import (
     Part,
     Spec,
     UnsupportedPart,
+    unbound_gap,
 )
 
 type Layout = Literal["long", "frame"]
@@ -91,10 +92,10 @@ class Answer:
     kind: str
     status: str
     sentence: str | None
-    parts: tuple[Part, ...] = ()
+    parts: tuple[Part[Candidate], ...] = ()
     specs: tuple[Spec, ...] = ()
     complete: bool = False
-    gaps: tuple[Gap, ...] = ()
+    gaps: tuple[Gap[Candidate], ...] = ()
     question: str | None = None
     reason: str | None = None
     warnings: tuple[Notice, ...] = ()
@@ -212,10 +213,10 @@ class Answer:
         """The error `fetch` raises for this answer's gaps."""
         error = client_error(ANSWER_INCOMPLETE, _display.incomplete_message(self))
         error.answer = self
-        error.gaps = self.gaps
+        error.gaps = tuple(unbound_gap(gap) for gap in self.gaps)
         return error
 
-    def _only_choice(self) -> Gap:
+    def _only_choice(self) -> Gap[Candidate]:
         waiting = [gap for gap in self.gaps if gap.kind == "choice" or gap.options]
         if len(waiting) == 1:
             return waiting[0]
@@ -229,14 +230,14 @@ class Answer:
             "answer.choose(part, option).",
         )
 
-    def _gap_named(self, key: int | str) -> Gap:
+    def _gap_named(self, key: int | str) -> Gap[Candidate]:
         index = _part_index(self.parts, self.gaps, key)
         gap = next((gap for gap in self.gaps if gap.part_index == index), None)
         if gap is None:
             raise client_error(CHOICE_INVALID, f"Part {key!r} already has a reading.")
         return gap
 
-    def _with_candidate(self, part: Part, candidate: Candidate) -> Answer:
+    def _with_candidate(self, part: Part[Candidate], candidate: Candidate) -> Answer:
         return _candidate_answer(
             _AnswerContext(
                 self.kind, self.sentence, self.question, self.warnings, self.raw
@@ -362,7 +363,10 @@ class _AnswerContext:
 
 
 def _candidate_answer(
-    context: _AnswerContext, part: Part, candidate: Candidate, source: SessionSource
+    context: _AnswerContext,
+    part: Part[Candidate],
+    candidate: Candidate,
+    source: SessionSource,
 ) -> Answer:
     """The one-part answer that reads `part` as `candidate`."""
     definite = DefinitePart(
@@ -395,8 +399,8 @@ def _candidate_answer(
 
 
 def _bind_candidates(
-    part: Part, context: _AnswerContext, source: SessionSource
-) -> Part:
+    part: ParsedPart, context: _AnswerContext, source: SessionSource
+) -> Part[Candidate]:
     """`part`, its candidates able to fetch through the answer's source."""
     if not isinstance(part, CandidatesPart):
         return part
@@ -411,7 +415,7 @@ def _bind_candidates(
         timeout: float | None,
         progress: bool | None,
     ) -> Dataset:
-        return _candidate_answer(context, part, candidate, source).fetch(
+        return _candidate_answer(context, bound, candidate, source).fetch(
             partial=partial,
             strict=strict,
             layout=layout,
@@ -419,20 +423,40 @@ def _bind_candidates(
             progress=progress,
         )
 
-    return replace(
-        part,
+    bound = CandidatesPart(
+        status=part.status,
+        variable_text=part.variable_text,
+        sentence=part.sentence,
+        separate=part.separate,
+        warnings=part.warnings,
+        departures=part.departures,
+        operations=part.operations,
+        raw=part.raw,
         candidates=tuple(
-            replace(candidate, _fetch=fetch) for candidate in part.candidates
+            Candidate(
+                candidate.spec,
+                candidate.sentence,
+                candidate.label,
+                candidate.source,
+                candidate.unit,
+                candidate.raw,
+                _fetch=fetch,
+            )
+            for candidate in part.candidates
         ),
+        truncated=part.truncated,
     )
+    return bound
 
 
-def _status(parts: Sequence[Part]) -> str:
+def _status(parts: Sequence[Part[Candidate]]) -> str:
     statuses = {part.status for part in parts}
     return statuses.pop() if len(statuses) == 1 else "mixed"
 
 
-def _gap(index: int, part: Part, *, timed_out: bool) -> Gap | None:
+def _gap(
+    index: int, part: Part[Candidate], *, timed_out: bool
+) -> Gap[Candidate] | None:
     """The gap a part leaves, or None when it has a reading."""
     match part:
         case DefinitePart():
@@ -461,16 +485,18 @@ def _gap(index: int, part: Part, *, timed_out: bool) -> Gap | None:
             )
 
 
-def _readings(parts: Sequence[Part]) -> list[tuple[Part, Spec]]:
+def _readings(
+    parts: Sequence[Part[Candidate]],
+) -> list[tuple[Part[Candidate], Spec]]:
     return [(part, part.spec) for part in parts if isinstance(part, DefinitePart)]
 
 
-def _members(parts: Sequence[Part]) -> list[Reading]:
+def _members(parts: Sequence[Part[Candidate]]) -> list[Reading]:
     """One reading per distinct spec, in query order.
 
     Parts folded onto one spec share its reading, which names each of them.
     """
-    grouped: dict[Spec, list[Part]] = {}
+    grouped: dict[Spec, list[Part[Candidate]]] = {}
     for part, spec in _readings(parts):
         grouped.setdefault(spec, []).append(part)
     return [
@@ -486,7 +512,11 @@ def _members(parts: Sequence[Part]) -> list[Reading]:
     ]
 
 
-def _part_index(parts: Sequence[Part], gaps: Sequence[Gap], key: int | str) -> int:
+def _part_index(
+    parts: Sequence[Part[Candidate]],
+    gaps: Sequence[Gap[Candidate]],
+    key: int | str,
+) -> int:
     if isinstance(key, int):
         if 0 <= key < len(parts):
             return key
@@ -513,7 +543,9 @@ def _part_index(parts: Sequence[Part], gaps: Sequence[Gap], key: int | str) -> i
     )
 
 
-def _pick(gap: Gap, key: int | str, *, mention: int | str | None) -> Candidate | Option:
+def _pick(
+    gap: Gap[Candidate], key: int | str, *, mention: int | str | None
+) -> Candidate | Option:
     """The candidate or option `key` names in a gap."""
     part = gap.part
     choices: Sequence[Candidate | Option]
@@ -560,11 +592,11 @@ def _pick(gap: Gap, key: int | str, *, mention: int | str | None) -> Candidate |
     )
 
 
-def _mentions(gap: Gap) -> set[str]:
+def _mentions(gap: Gap[Candidate]) -> set[str]:
     return {mention for option in gap.options for mention in option.mentions}
 
 
-def _entry(part: Part, chosen: Candidate | Option | None) -> dict[str, Any]:
+def _entry(part: Part[Candidate], chosen: Candidate | Option | None) -> dict[str, Any]:
     """The `dataset_resubmit` entry for one part, settled by `chosen` when given."""
     if isinstance(chosen, Candidate):
         return _identity_entry(part, chosen.raw)
@@ -578,7 +610,7 @@ def _entry(part: Part, chosen: Candidate | Option | None) -> dict[str, Any]:
     return _restated_entry(part)
 
 
-def _restated_entry(part: Part) -> dict[str, Any]:
+def _restated_entry(part: Part[Candidate]) -> dict[str, Any]:
     """A part with no reading, resolved again from its restatement when it has one.
 
     A placeholder keeps neither the server's message nor the part's choices, so
@@ -603,7 +635,7 @@ def _restated_entry(part: Part) -> dict[str, Any]:
     )
 
 
-def _echo(part: Part, **members: Any) -> dict[str, Any]:
+def _echo(part: Part[Candidate], **members: Any) -> dict[str, Any]:
     """An entry with the members every non-parsed entry echoes from its part."""
     if not part.variable_text:
         raise client_error(
@@ -627,11 +659,11 @@ def _identity(spec: Mapping[str, Any]) -> dict[str, Any]:
     return item
 
 
-def _identity_entry(part: Part, spec: Mapping[str, Any]) -> dict[str, Any]:
+def _identity_entry(part: Part[Candidate], spec: Mapping[str, Any]) -> dict[str, Any]:
     return _echo(part, entry_kind="identity", **_identity(spec))
 
 
-def _candidates_entry(part: CandidatesPart) -> dict[str, Any]:
+def _candidates_entry(part: CandidatesPart[Candidate]) -> dict[str, Any]:
     candidate_set = part.raw["candidates"]
     return _echo(
         part,

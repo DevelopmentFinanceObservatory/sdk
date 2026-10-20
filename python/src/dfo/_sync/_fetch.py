@@ -74,7 +74,15 @@ from dfo._sync._operation import (
     resume,
 )
 from dfo._sync._transport import Transport
-from dfo._types import DatasetRef, DefinitePart, Gap, RefMember, Rendering, Spec
+from dfo._types import (
+    Candidate,
+    DatasetRef,
+    DefinitePart,
+    Gap,
+    RefMember,
+    Rendering,
+    Spec,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,7 +189,7 @@ def fetch_members(
     timeout: float | None = 1800.0,
     progress: bool | None = None,
     cache: Cache | None = None,
-    missing: Sequence[Gap] = (),
+    missing: Sequence[Gap[Candidate]] = (),
     narrowing: Mapping[str, Any] | None = None,
 ) -> Dataset:
     """Build the latest version of each spec and assemble one dataset.
