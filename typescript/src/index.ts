@@ -1,3 +1,12 @@
+export { Answer, SearchWarning } from "./answer.ts";
+export type {
+  AnswerFetchOptions,
+  Candidate,
+  Gap,
+  GapKind,
+  QueryOption,
+  SearchOptions,
+} from "./answer.ts";
 export {
   AuthenticationError,
   ContractError,
