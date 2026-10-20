@@ -16,6 +16,7 @@ jobs:
     outputs:
       python: ${{ steps.filter.outputs.python }}
       contract: ${{ steps.filter.outputs.contract }}
+      typescript: ${{ steps.filter.outputs.typescript }}
     steps:
       - uses: actions/checkout@v7
 
@@ -32,6 +33,10 @@ jobs:
             contract:
               - 'contract/**'
               - 'scripts/**'
+              - '.github/workflows/ci.yml'
+            typescript:
+              - 'typescript/**'
+              - 'contract/**'
               - '.github/workflows/ci.yml'
 
   python:
@@ -106,6 +111,53 @@ jobs:
         if: matrix.python-version == '3.12'
         with:
           files: ./python/coverage.xml
+
+  typescript:
+    needs: changes
+    if: needs.changes.outputs.typescript == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ["22", "24"]
+    defaults:
+      run:
+        working-directory: typescript
+    steps:
+      - uses: actions/checkout@v7
+
+      # Reads the pnpm version from typescript/package.json's packageManager.
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: typescript/package.json
+
+      - name: Set up Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        if: matrix.node-version == '22'
+        run: pnpm lint
+
+      - name: Typecheck
+        if: matrix.node-version == '22'
+        run: pnpm typecheck
+
+      - name: Check that the generated code is current
+        if: matrix.node-version == '22'
+        run: pnpm generate:check
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
 
   contract:
     needs: changes

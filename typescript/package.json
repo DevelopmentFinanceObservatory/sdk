@@ -1,0 +1,54 @@
+{
+  "name": "@developmentfinance/client",
+  "version": "0.1.0",
+  "description": "TypeScript client for the Development Finance Observatory APIs",
+  "license": "MIT",
+  "author": "ONE Campaign <data@one.org>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DevelopmentFinanceObservatory/sdk.git",
+    "directory": "typescript"
+  },
+  "type": "module",
+  "sideEffects": [
+    "./dist/index.node.js"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "node": "./dist/index.node.js",
+      "default": "./dist/index.js"
+    },
+    "./wire": {
+      "types": "./dist/wire.d.ts",
+      "default": "./dist/wire.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  },
+  "packageManager": "pnpm@10.5.2",
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "generate": "node scripts/generate-wire.ts && node scripts/generate-contract.ts",
+    "generate:check": "node scripts/generate-wire.ts --check && node scripts/generate-contract.ts --check"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10",
+    "@types/node": "^22.18",
+    "eslint": "^10",
+    "globals": "^17.13.0",
+    "openapi-typescript": "7.13.0",
+    "prettier": "^3.9",
+    "typescript": "5.9.3",
+    "typescript-eslint": "^8.72"
+  }
+}

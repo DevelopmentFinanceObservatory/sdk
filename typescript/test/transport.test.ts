@@ -1,0 +1,390 @@
+import assert from "node:assert/strict";
+import { describe, test } from "node:test";
+
+import { envFrom } from "../src/env.ts";
+import {
+  AuthenticationError,
+  ContractError,
+  DfoTimeoutError,
+  InvalidRequestError,
+  NetworkError,
+  NotFoundError,
+  RateLimitError,
+  ServerError,
+} from "../src/errors.ts";
+import { ApiKey } from "../src/keys.ts";
+import { Transport } from "../src/transport.ts";
+import type { TransportOptions } from "../src/transport.ts";
+import { VERSION } from "../src/version.ts";
+import type { DfoWarning } from "../src/warnings.ts";
+import { contractJson, json, mockFetch, problem, recordingSleep } from "./support.ts";
+
+const KEY = "dfo_k_4f8Kq2ZtR7mWx1NcB9vLp3YhD6sGa0Ue2wanxe";
+
+/** A transport with no environment and no credentials file, so only `apiKey` supplies a key. */
+const transport = (options: TransportOptions): Transport =>
+  new Transport({ env: envFrom({}), readCredentialsFile: () => Promise.resolve(null), ...options });
+
+describe("requests to the API", () => {
+  test("go under the base URL's path and carry the key and User-Agent", async () => {
+    const { fetch, seen } = mockFetch(json({ ok: true }));
+    const client = transport({ baseUrl: "https://api.example/api/v1", apiKey: KEY, fetch });
+    const response = await client.request({ path: "/search/resolve", json: { q: 1 } });
+    assert.deepEqual(response.body, { ok: true });
+    const request = seen[0];
+    assert.ok(request);
+    assert.equal(request.url, "https://api.example/api/v1/search/resolve");
+    assert.equal(request.method, "POST");
+    assert.equal(request.body, '{"q":1}');
+    assert.equal(request.headers.get("authorization"), `Bearer ${KEY}`);
+    assert.equal(request.headers.get("user-agent"), `dfo-ts/${VERSION}`);
+    assert.equal(request.headers.get("content-type"), "application/json");
+  });
+
+  test("resolve a root-relative URL against the base URL's origin, not its path", async () => {
+    const { fetch, seen } = mockFetch(json({}));
+    const client = transport({ baseUrl: "https://api.example/api/v1", fetch });
+    await client.request({ url: "/api/datasets/operations/op_1" });
+    assert.equal(seen[0]?.url, "https://api.example/api/datasets/operations/op_1");
+  });
+
+  test("send default and provided headers to the API and never the key elsewhere", async () => {
+    const { fetch, seen } = mockFetch(json({}), json({}));
+    const client = transport({
+      baseUrl: "https://api.example/api/v1",
+      apiKey: KEY,
+      fetch,
+      defaultHeaders: { "x-first-party": "site" },
+      headerProvider: ({ url }) => ({ "x-serverless-authorization": `token for ${url.host}` }),
+    });
+    await client.request({ path: "/graph/roots" });
+    await client.request({ url: "https://elsewhere.example/thing" });
+    const [api, elsewhere] = seen;
+    assert.ok(api && elsewhere);
+    assert.equal(api.headers.get("x-first-party"), "site");
+    assert.equal(api.headers.get("x-serverless-authorization"), "token for api.example");
+    assert.deepEqual([...elsewhere.headers], []);
+  });
+
+  test("send no Authorization header for anonymous use", async () => {
+    const { fetch, seen } = mockFetch(json({}));
+    await transport({ apiKey: false, fetch }).request({ path: "/search/capabilities" });
+    assert.equal(seen[0]?.headers.has("authorization"), false);
+  });
+
+  test("raise ContractError for a JSON route that answers with a redirect", async () => {
+    const { fetch } = mockFetch(
+      () => new Response(null, { status: 302, headers: { location: "https://other.example/" } }),
+    );
+    await assert.rejects(transport({ fetch }).request({ path: "/search/resolve" }), ContractError);
+  });
+});
+
+describe("refusals", () => {
+  test("map a problem document by its code and keep its members", async () => {
+    const { fetch } = mockFetch(
+      problem({ code: "snapshot_not_found", status: 404, trace_id: "trace-404" }),
+    );
+    const client = transport({ baseUrl: "https://api.example/api/v1", fetch });
+    const error = await client.request({ path: "/datasets/spec_1/cv_1" }).catch((e: unknown) => e);
+    assert.ok(error instanceof NotFoundError);
+    assert.equal(error.code, "snapshot_not_found");
+    assert.equal(error.status, 404);
+    assert.equal(error.traceId, "trace-404");
+    assert.equal(error.retryable, false);
+    assert.equal(error.docsUrl, "https://api.example/codes/snapshot_not_found");
+    assert.equal(error.problem?.["title"], "Refused");
+  });
+
+  test("retry a retryable refusal after Retry-After, then succeed", async () => {
+    const { sleep, waits } = recordingSleep();
+    const { fetch, seen } = mockFetch(
+      problem(
+        { code: "service_unavailable", status: 503, retryable: true },
+        { "retry-after": "2" },
+      ),
+      json({ ok: true }),
+    );
+    const response = await transport({ fetch, sleep }).request({ path: "/search/resolve" });
+    assert.deepEqual(response.body, { ok: true });
+    assert.equal(seen.length, 2);
+    assert.deepEqual(waits, [2000]);
+  });
+
+  test("back off without Retry-After and give up after maxRetries", async () => {
+    const { sleep, waits } = recordingSleep();
+    const refusal = problem({ code: "upstream_error", status: 502, retryable: true });
+    const { fetch, seen } = mockFetch(refusal, refusal, refusal);
+    await assert.rejects(transport({ fetch, sleep }).request({ path: "/x" }), ServerError);
+    assert.equal(seen.length, 3);
+    assert.deepEqual(waits, [500, 1000]);
+  });
+
+  test("let the body's retryable outrank the status", async () => {
+    const { fetch, seen } = mockFetch(
+      problem({ code: "service_unavailable", status: 503, retryable: false }),
+    );
+    await assert.rejects(transport({ fetch }).request({ path: "/x" }), ServerError);
+    assert.equal(seen.length, 1);
+  });
+
+  test("map the proxy's 429 body and retry it after Retry-After", async () => {
+    const { sleep, waits } = recordingSleep();
+    const limited = json(
+      { error: "rate_limited", retry: "retry_after_delay", detail: "Too many requests." },
+      429,
+      { "retry-after": "1" },
+    );
+    const { fetch } = mockFetch(limited, limited, limited);
+    const error = await transport({ fetch, sleep })
+      .request({ path: "/x" })
+      .catch((e: unknown) => e);
+    assert.ok(error instanceof RateLimitError);
+    assert.equal(error.code, "rate_limited");
+    assert.equal(error.retryable, true);
+    assert.equal(error.detail, "Too many requests.");
+    assert.deepEqual(waits, [1000, 1000]);
+  });
+
+  test("map the proxy's 502 body to a retryable ServerError", async () => {
+    const { sleep } = recordingSleep();
+    const { fetch, seen } = mockFetch(
+      json({ error: "transient_unavailable", retry: "retry_after_delay", detail: "Down." }, 502),
+      json({ ok: true }),
+    );
+    await transport({ fetch, sleep }).request({ path: "/x" });
+    assert.equal(seen.length, 2);
+  });
+
+  test("map a refusal with no problem document by its status", async () => {
+    const { fetch } = mockFetch(() => new Response("<html>bad gateway</html>", { status: 400 }));
+    const error = await transport({ fetch })
+      .request({ path: "/x" })
+      .catch((e: unknown) => e);
+    assert.ok(error instanceof InvalidRequestError);
+    assert.equal(error.code, "unexpected_response");
+  });
+
+  test("stop retrying when the next wait would pass the deadline", async () => {
+    let clock = 0;
+    const sleep = (ms: number): Promise<void> => {
+      clock += ms;
+      return Promise.resolve();
+    };
+    const refusal = problem(
+      { code: "upstream_error", status: 503, retryable: true },
+      {
+        "retry-after": "30",
+      },
+    );
+    const { fetch, seen } = mockFetch(refusal, refusal);
+    const client = transport({ fetch, sleep, now: () => clock, timeout: 45_000 });
+    await assert.rejects(client.request({ path: "/x" }), ServerError);
+    assert.equal(seen.length, 2);
+  });
+});
+
+describe("keys", () => {
+  test("resolve the key again after a 401 and retry once with a new key", async () => {
+    let calls = 0;
+    const { fetch, seen } = mockFetch(
+      problem({ code: "key_revoked", status: 401 }),
+      json({ ok: true }),
+    );
+    const apiKey = (): string => (calls++ === 0 ? "dfo_k_old" : "dfo_k_new");
+    const client = transport({ fetch, apiKey, onWarning: () => undefined });
+    await client.request({ path: "/x" });
+    assert.deepEqual(
+      seen.map((request) => request.headers.get("authorization")),
+      ["Bearer dfo_k_old", "Bearer dfo_k_new"],
+    );
+  });
+
+  test("raise AuthenticationError on a 401 when the key stays the same", async () => {
+    const { fetch, seen } = mockFetch(problem({ code: "key_invalid", status: 401 }));
+    const client = transport({ fetch, apiKey: new ApiKey(KEY) });
+    await assert.rejects(client.request({ path: "/x" }), AuthenticationError);
+    assert.equal(seen.length, 1);
+  });
+
+  test("warn once for a key that fails the format check and send it anyway", async () => {
+    const warnings: DfoWarning[] = [];
+    const { fetch, seen } = mockFetch(json({}), json({}));
+    const client = transport({
+      fetch,
+      apiKey: "sk-other-vendor",
+      onWarning: (w) => warnings.push(w),
+    });
+    await client.request({ path: "/x" });
+    await client.request({ path: "/x" });
+    assert.equal(seen[1]?.headers.get("authorization"), "Bearer sk-other-vendor");
+    assert.deepEqual(
+      warnings.map((warning) => warning.code),
+      ["key_unknown_prefix"],
+    );
+  });
+
+  test("refuse a secret key in a browser page unless the caller allows it", () => {
+    const global = globalThis as { window?: unknown };
+    global.window = { document: {} };
+    try {
+      assert.throws(() => transport({ apiKey: KEY }), TypeError);
+      assert.doesNotThrow(() => transport({ apiKey: KEY, dangerouslyAllowBrowser: true }));
+      assert.doesNotThrow(() => transport({ apiKey: "dfo_p_publishable" }));
+    } finally {
+      delete global.window;
+    }
+  });
+
+  test("mask the key when printed or serialised", () => {
+    const key = new ApiKey(KEY);
+    assert.equal(String(key), "ApiKey(dfo_k_…anxe)");
+    assert.equal(JSON.stringify({ key }), '{"key":"ApiKey(dfo_k_…anxe)"}');
+    assert.equal(key.reveal(), KEY);
+  });
+});
+
+describe("failures and cancellation", () => {
+  test("raise NetworkError with the platform's error as the cause, after retries", async () => {
+    const { sleep } = recordingSleep();
+    const cause = new TypeError("fetch failed");
+    const fail = (): Response => {
+      throw cause;
+    };
+    const { fetch, seen } = mockFetch(fail, fail, fail);
+    const error = await transport({ fetch, sleep })
+      .request({ path: "/x" })
+      .catch((e: unknown) => e);
+    assert.ok(error instanceof NetworkError);
+    assert.equal(error.cause, cause);
+    assert.equal(seen.length, 3);
+  });
+
+  test("reject with the caller's abort reason untouched", async () => {
+    const controller = new AbortController();
+    const reason = { mine: true };
+    const { fetch } = mockFetch(
+      (_request, init) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => {
+            reject(init.signal?.reason);
+          });
+          controller.abort(reason);
+        }),
+    );
+    await assert.rejects(
+      transport({ fetch }).request({ path: "/x", signal: controller.signal }),
+      (error: unknown) => error === reason,
+    );
+  });
+
+  test("raise DfoTimeoutError when the deadline passes", async () => {
+    const { fetch } = mockFetch(
+      (_request, init) =>
+        new Promise((_resolve, reject) => {
+          // AbortSignal.timeout does not hold the event loop open; a real request's socket
+          // does, and this timer stands in for it.
+          const socket = setTimeout(() => undefined, 5_000);
+          init.signal?.addEventListener("abort", () => {
+            clearTimeout(socket);
+            reject(init.signal?.reason);
+          });
+        }),
+    );
+    const error = await transport({ fetch })
+      .request({ path: "/x", timeout: 20 })
+      .catch((e: unknown) => e);
+    assert.ok(error instanceof DfoTimeoutError);
+    assert.equal(error.code, "deadline_exceeded");
+  });
+});
+
+describe("downloads", () => {
+  type Exchange = {
+    request: { method: string; path?: string; origin_path?: string; url?: string; json?: unknown };
+    response: { status: number; headers?: Record<string, string>; json?: unknown };
+  };
+  type Scenario = { origin: { base_url: string }; exchanges: Exchange[] };
+
+  test("replay a recorded build and download: the signed URL is fetched bare", async () => {
+    const scenario = await contractJson<Scenario>("scenarios/fetch-spec-known-sentence.json");
+    const [mint, files, signed] = scenario.exchanges;
+    assert.ok(mint && files && signed);
+    const bytes = new Uint8Array([80, 65, 82, 49]);
+    const { fetch, seen } = mockFetch(
+      json(mint.response.json),
+      () =>
+        new Response(null, {
+          status: files.response.status,
+          headers: files.response.headers ?? {},
+        }),
+      () => new Response(bytes, { status: signed.response.status }),
+    );
+    const client = transport({ baseUrl: scenario.origin.base_url, apiKey: KEY, fetch });
+
+    const built = await client.request({ path: mint.request.path!, json: mint.request.json });
+    const manifest = built.body as { artifacts: { url: string }[] };
+    assert.equal(manifest.artifacts[0]?.url, files.request.origin_path);
+    assert.deepEqual(await client.download({ url: manifest.artifacts[0]!.url }), bytes);
+
+    const origin = new URL(scenario.origin.base_url).origin;
+    assert.deepEqual(
+      seen.map((request) => request.url),
+      [
+        `${scenario.origin.base_url}${mint.request.path!}`,
+        `${origin}${files.request.origin_path!}`,
+        signed.request.url,
+      ],
+    );
+    assert.equal(seen[1]?.headers.get("authorization"), `Bearer ${KEY}`);
+    assert.deepEqual([...(seen[2]?.headers ?? [])], []);
+  });
+
+  test("ask the files route again when the signed fetch fails", async () => {
+    const { sleep } = recordingSleep();
+    const redirect = (n: number) => () =>
+      new Response(null, {
+        status: 302,
+        headers: { location: `https://storage.example/f?sig=${n}` },
+      });
+    const { fetch, seen } = mockFetch(
+      redirect(1),
+      () => new Response("expired", { status: 403 }),
+      redirect(2),
+      () => new Response(new Uint8Array([1])),
+    );
+    const bytes = await transport({ fetch, sleep }).download({ url: "/api/datasets/s/c/files/d" });
+    assert.deepEqual(bytes, new Uint8Array([1]));
+    assert.deepEqual(
+      seen.map((request) => request.url),
+      [
+        "https://developmentfinance.org/api/datasets/s/c/files/d",
+        "https://storage.example/f?sig=1",
+        "https://developmentfinance.org/api/datasets/s/c/files/d",
+        "https://storage.example/f?sig=2",
+      ],
+    );
+  });
+});
+
+describe("server warnings", () => {
+  test("warn once per route for Deprecation and once per message for x-dfo-warning", async () => {
+    const warnings: DfoWarning[] = [];
+    const headers = {
+      deprecation: "@1767225600",
+      sunset: "Wed, 30 Jun 2027 00:00:00 GMT",
+      "x-dfo-warning": "Anonymous builds are limited; create a free key.",
+    };
+    const { fetch } = mockFetch(json({}, 200, headers), json({}, 200, headers));
+    const client = transport({ fetch, onWarning: (warning) => warnings.push(warning) });
+    await client.request({ path: "/deprecated-route" });
+    await client.request({ path: "/deprecated-route" });
+    assert.deepEqual(
+      warnings.map((warning) => [warning.name, warning.code]),
+      [
+        ["DfoDeprecationWarning", "route_deprecated"],
+        ["DfoWarning", "server_warning"],
+      ],
+    );
+  });
+});

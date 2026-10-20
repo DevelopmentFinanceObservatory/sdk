@@ -4,12 +4,14 @@ on:
   push:
     tags:
       - 'python-v*'
+      - 'typescript-v*'
 
 permissions:
   contents: read
 
 jobs:
   python:
+    if: startsWith(github.ref_name, 'python-v')
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -37,3 +39,44 @@ jobs:
 
       - name: Publish to PyPI
         run: uv publish
+
+  typescript:
+    if: startsWith(github.ref_name, 'typescript-v')
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@developmentfinance/client
+    permissions:
+      contents: read
+      id-token: write  # Required for npm trusted publishing and provenance
+    defaults:
+      run:
+        working-directory: typescript
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: typescript/package.json
+
+      # Node 24 ships npm 11, which publishes through OIDC trusted publishing.
+      - name: Set up Node 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+
+      - name: Check the tag against the package version
+        run: test "typescript-v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build package
+        run: pnpm build
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public

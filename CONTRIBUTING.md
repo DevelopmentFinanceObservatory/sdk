@@ -3,7 +3,7 @@
 ## Layout
 
 - `python/` holds the `development-finance` package, which imports as `dfo`.
-- `typescript/` will hold the `@developmentfinance/client` package.
+- `typescript/` holds the `@developmentfinance/client` package.
 - `contract/` holds the client contract, a copy of the `dfo_client_contract` package data from the spec-kit repository. Both clients generate code from it and replay its scenarios.
 - `scripts/` holds the tools shared by the clients.
 
@@ -25,6 +25,34 @@ uv run --directory python ruff format --check
 uv run --directory python ty check
 pre-commit run --all-files
 ```
+
+## TypeScript
+
+The package uses pnpm, at the version `packageManager` in `typescript/package.json` names, and Node 22.18 or later, which runs the TypeScript sources, tests and scripts directly. Run the checks from the root:
+
+```bash
+pnpm --dir typescript install
+pnpm --dir typescript lint
+pnpm --dir typescript typecheck
+pnpm --dir typescript test
+pnpm --dir typescript build
+pnpm --dir typescript generate:check
+```
+
+`pnpm build` writes JavaScript and declaration files to `typescript/dist/`. The package is ESM only. Its `.` export has a `node` condition, whose entry point reads the credentials file from the file system; every other platform loads the entry point without it.
+
+### Generated code
+
+`typescript/src/generated/` is never edited by hand. After a contract sync, regenerate it and commit the result:
+
+```bash
+pnpm --dir typescript generate
+```
+
+- `scripts/generate-wire.ts` writes `openapi.ts`, the wire types, from `contract/served/openapi.json` with openapi-typescript. It opens every string enum into a union with any other string, joins `UnknownPart` to the array of parts discriminated on `status`, and exports one type per schema, with `Operation` named `RequestedOperation`.
+- `scripts/generate-contract.ts` writes `strict.ts` from `contract/strict-fields.json` and `actions.ts` from `contract/actions.json`. It fails when a strict field is not required, or is nullable, in `contract/served/openapi.json`.
+
+`pnpm generate:check` exits non-zero when a generated file differs from what the contract generates. CI and the pre-commit hooks run it.
 
 ## Syncing the contract
 
