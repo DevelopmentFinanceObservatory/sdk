@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://developmentfinance.org/client-contract/schema/v1/dataset-ref.schema.json",
+  "$id": "https://raw.githubusercontent.com/DevelopmentFinanceObservatory/spec-kit/main/python/client-contract/src/dfo_client_contract/dataset-ref.schema.json",
   "title": "DatasetRef",
   "description": "The frozen reference to the exact versions a dataset holds. Every DFO client writes and reads this format, so a ref saved by one language loads in another.",
   "type": "object",

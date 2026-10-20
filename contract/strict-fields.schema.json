@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://developmentfinance.org/client-contract/schema/v1/strict-fields.schema.json",
+  "$id": "https://raw.githubusercontent.com/DevelopmentFinanceObservatory/spec-kit/main/python/client-contract/src/dfo_client_contract/strict-fields.schema.json",
   "title": "Strict fields",
   "description": "The response members the DFO clients act on. Each pointer names one property of one component schema in served/openapi.json. A required entry stays required and non-nullable; an enum entry keeps every listed value.",
   "type": "object",

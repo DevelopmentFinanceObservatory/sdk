@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://developmentfinance.org/client-contract/schema/v1/scenario.schema.json",
+  "$id": "https://raw.githubusercontent.com/DevelopmentFinanceObservatory/spec-kit/main/python/client-contract/src/dfo_client_contract/scenario.schema.json",
   "title": "Client scenario",
   "description": "One client-level call, the HTTP exchanges it makes in order, and the outcome each step reaches. Every DFO client replays every scenario.",
   "type": "object",

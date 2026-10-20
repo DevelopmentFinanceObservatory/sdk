@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://developmentfinance.org/client-contract/schema/v1/rules.schema.json",
+  "$id": "https://raw.githubusercontent.com/DevelopmentFinanceObservatory/spec-kit/main/python/client-contract/src/dfo_client_contract/rules/rules.schema.json",
   "title": "Client rule vectors",
   "description": "One file per rule, each holding the vectors a client's implementation of that rule must reproduce. rules/README.md states each rule.",
   "type": "object",

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://developmentfinance.org/client-contract/schema/v1/actions.schema.json",
+  "$id": "https://raw.githubusercontent.com/DevelopmentFinanceObservatory/spec-kit/main/python/client-contract/src/dfo_client_contract/actions.schema.json",
   "title": "Caller actions",
   "description": "The next step a client caller takes for each active refusal code that reaches a problem document or a no_data reason, sorted by code. A code with a no_data_reason mapping also names the gap kind a no_data part with that reason becomes.",
   "type": "object",
