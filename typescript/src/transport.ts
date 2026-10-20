@@ -6,6 +6,7 @@ import {
   DfoTimeoutError,
   errorClassFor,
   NetworkError,
+  serverCode,
   ServerError,
 } from "./errors.ts";
 import {
@@ -164,6 +165,16 @@ export class Transport {
   /** The transport's clock, in milliseconds. */
   now(): number {
     return this.#now();
+  }
+
+  /** Waits `ms` on the transport's sleep, rejecting with the caller's reason on abort. */
+  sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    return this.#sleep(ms, signal);
+  }
+
+  /** Passes a warning to the caller's warning handler. */
+  warn(warning: DfoWarning): void {
+    this.#onWarning(warning);
   }
 
   /** The key this transport sends, resolved on first use. */
@@ -454,7 +465,7 @@ export class Transport {
       const code = body["code"];
       const ErrorClass = errorClassFor(code, status);
       return new ErrorClass({
-        code,
+        code: serverCode(code),
         status,
         detail: typeof body["detail"] === "string" ? body["detail"] : code,
         traceId: typeof body["trace_id"] === "string" ? body["trace_id"] : headerTrace,
@@ -468,7 +479,7 @@ export class Transport {
       const code = body["error"];
       const ErrorClass = errorClassFor(code, status);
       return new ErrorClass({
-        code,
+        code: serverCode(code),
         status,
         detail: typeof body["detail"] === "string" ? body["detail"] : code,
         traceId: headerTrace,

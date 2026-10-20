@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 
+import type { Gap } from "../src/answer.ts";
+import type { Dataset } from "../src/dataset.ts";
 import { envFrom } from "../src/env.ts";
+import { DfoError, isDfoError } from "../src/errors.ts";
+import type { Narrowing, SpecInput } from "../src/fetch.ts";
+import type { Layout } from "../src/ref.ts";
 import { Transport } from "../src/transport.ts";
+import type { TransportOptions } from "../src/transport.ts";
+
+/** The base URL recorded scenarios name; synthetic ones were derived from recordings on it. */
+export const RECORDED_BASE_URL = "https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app/api";
+
+type Json = Record<string, unknown>;
 
 /** The scenario record format, as `contract/scenario.schema.json` defines it. */
 export type Scenario = {
@@ -14,14 +25,26 @@ export type Scenario = {
   expect: Outcome[];
 };
 
+/** A fetch of the previous step's answer, or of the spec or ref the step names. */
+export type FetchStep = Narrowing & {
+  op: "fetch";
+  partial?: boolean;
+  strict?: boolean;
+  layout?: Layout;
+  timeout?: number;
+  spec?: SpecInput;
+  ref?: unknown;
+};
+
 export type Step =
-  | { op: "search"; question: string }
+  | { op: "search"; question: string; timeout?: number }
   | { op: "choose"; part?: number | string; option: number | string }
-  | { op: "fetch"; partial?: boolean; strict?: boolean; spec?: unknown; ref?: unknown }
-  | { op: "mint" | "result" };
+  | FetchStep
+  | (Narrowing & { op: "mint"; spec: SpecInput; layout?: Layout })
+  | { op: "result"; timeout?: number };
 
 export type Exchange = {
-  request: { method: string; path?: string; origin_path?: string; url?: string; json?: object };
+  request: { method: string; path?: string; origin_path?: string; url?: string; json?: Json };
   response: {
     status: number;
     headers?: Record<string, string>;
@@ -47,87 +70,153 @@ export type DatasetSummary = {
   missing: { part: number; kind: string }[];
 };
 
+export type ErrorSummary = { class: string; code: string | null };
+
 export type Outcome =
   | { answer: AnswerSummary }
   | { dataset: DatasetSummary }
-  | { error: { class: string; code: string | null } };
+  | { operation: Json }
+  | { error: ErrorSummary };
 
-const scenarioUrl = (name: string): URL =>
-  new URL(`../../contract/scenarios/${name}`, import.meta.url);
+const scenarioUrl = (file: string): URL =>
+  new URL(`../../contract/scenarios/${file}`, import.meta.url);
+
+const readScenario = async (file: string): Promise<Scenario> =>
+  JSON.parse(await readFile(scenarioUrl(file), "utf8")) as Scenario;
 
 /** Every scenario record in the contract. */
 export async function scenarios(): Promise<Scenario[]> {
-  const names = (await readdir(scenarioUrl(""))).filter((name) => name.endsWith(".json"));
-  const records = await Promise.all(
-    names.map(async (name) => JSON.parse(await readFile(scenarioUrl(name), "utf8")) as Scenario),
-  );
+  const files = (await readdir(scenarioUrl(""))).filter((file) => file.endsWith(".json"));
+  const records = await Promise.all(files.map(readScenario));
   assert.ok(records.length > 0, "the contract holds no scenarios");
   return records;
 }
 
-/** The base URL a replay gives the client. A path under it tests the origin rule. */
-export const REPLAY_BASE_URL = "https://replay.example/api/v1";
+export const scenario = (name: string): Promise<Scenario> => readScenario(`${name}.json`);
+
+export const scenarioBytes = async (file: string): Promise<Uint8Array<ArrayBuffer>> =>
+  Uint8Array.from(await readFile(scenarioUrl(file)));
+
+/** A scenario with no exchanges, whose replay fails any request. */
+export const NO_EXCHANGES: Scenario = {
+  name: "no-exchanges",
+  description: "Any request fails the replay.",
+  origin: { kind: "synthetic", derived_from: "none" },
+  call: [],
+  exchanges: [],
+  expect: [],
+};
+
+/** A scenario's step, checked to be the operation the test reads it as. */
+export function stepOf<TOp extends Step["op"]>(
+  record: Scenario,
+  index: number,
+  op: TOp,
+): Extract<Step, { op: TOp }> {
+  const step = record.call[index];
+  assert.equal(step?.op, op, `${record.name}: step ${index}`);
+  return step as Extract<Step, { op: TOp }>;
+}
+
+/** The URL a recorded request went to, under the replay's base URL. */
+function expectedUrl(base: URL, request: Exchange["request"]): string {
+  if (request.url !== undefined) return new URL(request.url).href;
+  if (request.origin_path !== undefined) return new URL(request.origin_path, base.origin).href;
+  return new URL(`${base.pathname.replace(/\/$/, "")}${request.path ?? ""}`, base.origin).href;
+}
 
 /**
- * A `fetch` that serves a scenario's exchanges in order. A request matches the next exchange on
- * its method, its target and each listed JSON member; any other request fails the replay.
+ * A transport whose `fetch` answers a scenario's exchanges in order, checking each request's
+ * method, URL and listed JSON members against the record. Sleeps advance a fake clock and are
+ * recorded, not waited. `remaining` lists the exchanges no request reached. `options` override
+ * the transport's; a `fetch` among them replaces the replay.
  */
-export function replayFetch(
-  scenario: Scenario,
-  baseUrl: string = REPLAY_BASE_URL,
-): { fetch: typeof globalThis.fetch; remaining: () => Exchange[] } {
-  const base = new URL(baseUrl);
-  const queue = [...scenario.exchanges];
+export function replay(
+  record: Scenario,
+  options: TransportOptions = {},
+): { transport: Transport; waits: number[]; remaining: () => Exchange[]; urls: string[] } {
+  const base = new URL(
+    record.origin.kind === "recorded" ? record.origin.base_url : RECORDED_BASE_URL,
+  );
+  const queue = [...record.exchanges];
+  const waits: number[] = [];
+  const urls: string[] = [];
+  let clock = 0;
   const fetch: typeof globalThis.fetch = async (input, init = {}) => {
     const url = input instanceof URL ? input.href : input instanceof Request ? input.url : input;
-    const method = init.method ?? "GET";
+    urls.push(url);
     const exchange = queue.shift();
-    assert.ok(exchange, `${scenario.name}: unexpected request ${method} ${url}`);
+    assert.ok(exchange, `${record.name}: unexpected request ${init.method ?? "GET"} ${url}`);
     const { request, response } = exchange;
-    const expected =
-      request.path !== undefined
-        ? `${base.origin}${base.pathname.replace(/\/$/, "")}${request.path}`
-        : request.origin_path !== undefined
-          ? `${base.origin}${request.origin_path}`
-          : request.url!;
-    assert.equal(`${method} ${url}`, `${request.method} ${expected}`, scenario.name);
+    assert.equal(init.method ?? "GET", request.method, `${record.name}: method of ${url}`);
+    assert.equal(url, expectedUrl(base, request), `${record.name}: request URL`);
     if (request.json !== undefined) {
-      assert.equal(typeof init.body, "string", `${scenario.name}: the request has no JSON body`);
-      const body = JSON.parse(init.body as string) as Record<string, unknown>;
-      for (const [member, value] of Object.entries(request.json)) {
-        assert.deepEqual(body[member], value, `${scenario.name}: request member ${member}`);
+      assert.equal(typeof init.body, "string", `${record.name}: ${url} has no JSON body`);
+      const sent = JSON.parse(init.body as string) as Json;
+      for (const [key, value] of Object.entries(request.json)) {
+        assert.deepEqual(sent[key], value, `${record.name}: ${url} body member ${key}`);
       }
     }
     const body =
       response.body_file !== undefined
-        ? await readFile(scenarioUrl(response.body_file))
+        ? await scenarioBytes(response.body_file)
         : response.json === undefined
           ? null
           : JSON.stringify(response.json);
-    return new Response(body, { status: response.status, headers: response.headers ?? {} });
+    return new Response(body, { status: response.status, headers: new Headers(response.headers) });
   };
-  return { fetch, remaining: () => [...queue] };
-}
-
-/** A transport over a replayed `fetch`, with a clock each sleep advances at once. */
-export function replayTransport(fetch: typeof globalThis.fetch): {
-  transport: Transport;
-  waits: number[];
-} {
-  let clock = 0;
-  const waits: number[] = [];
   const transport = new Transport({
-    baseUrl: REPLAY_BASE_URL,
-    fetch,
+    baseUrl: base.href,
     apiKey: false,
     env: envFrom({}),
     readCredentialsFile: () => Promise.resolve(null),
+    fetch,
     now: () => clock,
     sleep: (ms) => {
       waits.push(ms);
       clock += ms;
       return Promise.resolve();
     },
+    onWarning: () => undefined,
+    ...options,
   });
-  return { transport, waits };
+  return { transport, waits, remaining: () => [...queue], urls };
+}
+
+/** Checks a refusal against a scenario's expected error: its class, and its code or, for a
+ *  null code, that no problem document arrived. */
+export function assertError(error: unknown, expected: ErrorSummary, name: string): void {
+  assert.ok(isDfoError(error) && error instanceof DfoError, `${name}: ${String(error)}`);
+  assert.equal(error.name, expected.class, name);
+  if (expected.code === null) assert.equal(error.problem, null, name);
+  else assert.equal(error.code, expected.code, name);
+}
+
+/** Checks a dataset against a scenario's expected dataset, its decoded rows included. */
+export async function assertDataset(
+  dataset: Dataset<Gap>,
+  expected: DatasetSummary,
+  name: string,
+): Promise<void> {
+  assert.equal(dataset.rows, expected.rows, name);
+  assert.deepEqual(dataset.columns, expected.columns, name);
+  assert.equal(dataset.complete, expected.complete, name);
+  assert.deepEqual(
+    dataset.members.map((member) => ({
+      parts: [...member.parts],
+      spec_id: member.spec.spec_id,
+      content_version: member.contentVersion,
+      sentence: member.sentence,
+    })),
+    expected.members,
+    name,
+  );
+  assert.deepEqual(
+    dataset.missing.map((gap) => ({ part: gap.partIndex, kind: gap.kind })),
+    expected.missing,
+    name,
+  );
+  const rows = await dataset.toRows();
+  assert.equal(rows.length, expected.rows, name);
+  assert.deepEqual(Object.keys(rows[0] ?? {}), expected.columns, name);
 }

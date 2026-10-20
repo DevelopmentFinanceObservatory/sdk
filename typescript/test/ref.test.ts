@@ -1,0 +1,61 @@
+import assert from "node:assert/strict";
+import { readdir } from "node:fs/promises";
+import { describe, test } from "node:test";
+
+import { DatasetRef, FormatError } from "../src/ref.ts";
+import { contractJson } from "./support.ts";
+
+type RefRecord = {
+  name: string;
+  ref: unknown;
+  expect?: "accept";
+  error?: { by: "schema" } | { by: "rule"; reason: string };
+};
+
+const records = async (): Promise<RefRecord[]> => {
+  const names = (await readdir(new URL("../../contract/refs/", import.meta.url))).filter((name) =>
+    name.endsWith(".json"),
+  );
+  assert.ok(names.length > 0, "the contract holds no ref records");
+  return Promise.all(names.map((name) => contractJson<RefRecord>(`refs/${name}`)));
+};
+
+describe("the contract's DatasetRef records", async () => {
+  for (const record of await records()) {
+    test(record.name, () => {
+      if (record.expect === "accept") {
+        const ref = DatasetRef.fromJSON(JSON.stringify(record.ref));
+        // A loaded ref writes back the stored format exactly, definition included.
+        assert.equal(JSON.stringify(ref), JSON.stringify(record.ref));
+        return;
+      }
+      assert.throws(
+        () => DatasetRef.fromJSON(record.ref),
+        (error: unknown) => {
+          assert.ok(error instanceof FormatError);
+          const { error: expected } = record;
+          assert.equal(error.reason, expected?.by === "rule" ? expected.reason : "format_invalid");
+          return true;
+        },
+      );
+    });
+  }
+});
+
+describe("DatasetRef.fromJSON", () => {
+  test("refuses text that is not JSON with a pointer to the root", () => {
+    assert.throws(() => DatasetRef.fromJSON("{"), { name: "FormatError", pointer: "" });
+  });
+
+  test("names the offending value by JSON Pointer", async () => {
+    const { ref } = await contractJson<{ ref: { members: Record<string, unknown>[] } }>(
+      "refs/ref-one-member.json",
+    );
+    const broken = structuredClone(ref);
+    broken.members[0]!["content_version"] = "cv_short";
+    assert.throws(() => DatasetRef.fromJSON(broken), {
+      reason: "format_invalid",
+      pointer: "/members/0/content_version",
+    });
+  });
+});

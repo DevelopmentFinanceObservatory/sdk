@@ -17,7 +17,8 @@ const recorded = async (name: string): Promise<Record<string, unknown>> => {
 const violation = (pointer: string) => (error: unknown) =>
   error instanceof ContractError &&
   error.code === "contract_violation" &&
-  error.problem?.["pointer"] === pointer;
+  error.problem === null &&
+  error.pointer === pointer;
 
 test("recorded manifests and resolutions pass the strict checks", async () => {
   checkStrict("Manifest", await recorded("fetch-spec-known-sentence"));

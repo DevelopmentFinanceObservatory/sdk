@@ -41,9 +41,21 @@
     "generate": "node scripts/generate-wire.ts && node scripts/generate-contract.ts",
     "generate:check": "node scripts/generate-wire.ts --check && node scripts/generate-contract.ts --check"
   },
+  "dependencies": {
+    "hyparquet": "^1.31.5"
+  },
+  "peerDependencies": {
+    "apache-arrow": "^21.0.0"
+  },
+  "peerDependenciesMeta": {
+    "apache-arrow": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@eslint/js": "^10",
     "@types/node": "^22.18",
+    "apache-arrow": "21.2.0",
     "eslint": "^10",
     "globals": "^17.13.0",
     "openapi-typescript": "7.13.0",

@@ -2,18 +2,19 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import { Answer, answerFromBody, SearchWarning } from "../src/answer.ts";
-import type { AnswerContext } from "../src/answer.ts";
+import type { AnswerContext, Gap } from "../src/answer.ts";
 import {
   ContractError,
   DeclinedError,
   IncompleteAnswerError,
   InvalidRequestError,
 } from "../src/errors.ts";
-import type { FetchMember } from "../src/fetch-members.ts";
+import { Dataset } from "../src/dataset.ts";
+import type { MemberRequest } from "../src/fetch.ts";
 import { search } from "../src/search.ts";
 import type { DfoWarning } from "../src/warnings.ts";
 import type { CandidatesPart, DefinitePart } from "../src/wire.ts";
-import { replayFetch, replayTransport, scenarios } from "./replay.ts";
+import { NO_EXCHANGES, replay, scenarioBytes, scenarios } from "./replay.ts";
 import type { Scenario } from "./replay.ts";
 import { json, mockFetch } from "./support.ts";
 
@@ -23,18 +24,36 @@ const record = (name: string): Scenario => records.get(name)!;
 const body = (name: string): Record<string, unknown> =>
   structuredClone(record(name).exchanges[0]!.response.json) as Record<string, unknown>;
 
-type Context = AnswerContext & { built: FetchMember[][]; warnings: DfoWarning[] };
+type Context = AnswerContext & { built: MemberRequest[][]; warnings: DfoWarning[] };
 
-/** A context whose transport fails any request and whose builder records its members. */
-function offline(fetch: typeof globalThis.fetch = mockFetch().fetch): Context {
-  const built: FetchMember[][] = [];
+/** What the recording builder returns for every fetch: one member of recorded Parquet. */
+const builtDataset = new Dataset<Gap>(
+  [
+    {
+      parts: [],
+      spec: { spec_id: "spec_offline", definition: {} },
+      sentence: "Built offline.",
+      contentVersion: "cv_offline",
+      manifest: {},
+      digest: "sha256:offline",
+      rendering: { format: "parquet", bundle: false },
+      data: await scenarioBytes("answer-definite-fetch.parquet"),
+    },
+  ],
+  { layout: "long" },
+);
+
+/** A context whose transport fails any request, or answers through `fetch`, and whose builder
+ *  records its members. */
+function offline(fetch?: typeof globalThis.fetch): Context {
+  const built: MemberRequest[][] = [];
   const warnings: DfoWarning[] = [];
   return {
-    transport: replayTransport(fetch).transport,
+    transport: replay(NO_EXCHANGES, fetch === undefined ? {} : { fetch }).transport,
     onWarning: (warning) => warnings.push(warning),
     fetchMembers: (_, members) => {
       built.push([...members]);
-      return Promise.resolve({ complete: true, missing: [] });
+      return Promise.resolve(builtDataset);
     },
     built,
     warnings,
@@ -275,9 +294,9 @@ describe("reading a Search response", () => {
 
   test("search posts the raw question and keeps it on the answer", async () => {
     const scenario = record("answer-definite-fetch");
-    const { fetch } = replayFetch({ ...scenario, exchanges: scenario.exchanges.slice(0, 1) });
+    const { transport } = replay({ ...scenario, exchanges: scenario.exchanges.slice(0, 1) });
     const question = "ODA disbursements from Germany to Nigeria for basic health care";
-    const answer = await search(offline(fetch), question);
+    const answer = await search({ ...offline(), transport }, question);
     assert.equal(answer.question, question);
   });
 });

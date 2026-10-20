@@ -56,7 +56,7 @@ function checkSchema(schema: string, value: unknown, pointer: string): void {
         detail:
           `The response has no ${member} at ${pointer || "/"}, which ` +
           `${schema} requires and this client acts on. Upgrade the client, or report the trace id.`,
-        problem: { pointer: `${pointer}/${escape(member)}`, schema, member },
+        pointer: `${pointer}/${escape(member)}`,
       });
     }
   }

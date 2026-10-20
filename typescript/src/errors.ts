@@ -5,21 +5,35 @@ import type { ACTIONS } from "./generated/actions.ts";
 /** What the caller does next about a refusal, as `contract/actions.json` assigns it. */
 export type Action = (typeof ACTIONS)[number];
 
-/** A refusal code the contract knows, or any other string the server may add. */
-export type DfoErrorCode = keyof typeof CODE_ACTIONS | ClientErrorCode | (string & {});
-
 /** The codes the client raises itself, for failures no server response describes. */
 export type ClientErrorCode =
   | "network_error"
+  | "download_failed"
+  | "digest_mismatch"
   | "answer_incomplete"
   | "answer_declined"
   | "choice_invalid"
+  | "invalid_argument"
+  | "version_unavailable"
   | "deadline_exceeded"
   | "contract_violation"
   | "unexpected_response"
   | "credentials_file_invalid"
   | "profile_not_found"
   | "profile_without_key";
+
+declare const SERVER_CODE: unique symbol;
+
+/** A refusal code read from a server response: one of `contract/actions.json`, or any other
+ *  string a newer server sends. `serverCode` is the only way to make one, so an error the
+ *  client raises itself takes a `ClientErrorCode`. */
+export type ServerErrorCode = string & { readonly [SERVER_CODE]: true };
+
+/** Marks a code read from a server response. */
+export const serverCode = (code: string): ServerErrorCode => code as ServerErrorCode;
+
+/** An error's code: one the client raises, or one the server sent. */
+export type DfoErrorCode = ClientErrorCode | ServerErrorCode;
 
 /** The brand `isDfoError` checks. `Symbol.for` returns one symbol for every copy of the package
  *  in a process, so the check holds across bundles. */
@@ -102,7 +116,15 @@ export class QuotaExceededError extends DfoError {}
 /** A 5xx after retries; the caller reports the trace id. */
 export class ServerError extends DfoError {}
 /** A field the client acts on is missing or renamed, or the server needs a newer client. */
-export class ContractError extends DfoError {}
+export class ContractError extends DfoError {
+  /** The JSON Pointer to the member a response lacks, or null when no one member is at fault. */
+  readonly pointer: string | null;
+
+  constructor(options: DfoErrorOptions & { pointer?: string }) {
+    super(options);
+    this.pointer = options.pointer ?? null;
+  }
+}
 /** The connection failed; the caller retries later. The platform's error is the `cause`. */
 export class NetworkError extends DfoError {}
 /** A deadline passed; the caller extends the timeout or resumes. */

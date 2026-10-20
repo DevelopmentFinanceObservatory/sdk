@@ -8,8 +8,9 @@
 import { answerText, declinedText, incompleteMessage, readingHints } from "./answer-text.ts";
 import { choiceInput, gapNamed, onlyChoice, pick } from "./choices.ts";
 import { ContractError, DeclinedError, IncompleteAnswerError } from "./errors.ts";
-import { fetchMembers as defaultFetchMembers } from "./fetch-members.ts";
-import type { Dataset, FetchMember, FetchMembers, FetchProgress, Layout } from "./fetch-members.ts";
+import type { Dataset } from "./dataset.ts";
+import { fetchMembers as defaultFetchMembers } from "./fetch.ts";
+import type { FetchMembersOptions, MemberRequest } from "./fetch.ts";
 import { CODE_GAP_KINDS } from "./generated/actions.ts";
 import type { GAP_KINDS } from "./generated/actions.ts";
 import { isKnownPart } from "./parts.ts";
@@ -32,7 +33,6 @@ export const RESOLVE_PATH = "/search/resolve";
 const SCHEMA_VERSION = 1;
 /** Longer than Search's 45-second soft deadline, so a slow answer arrives whole. */
 export const SEARCH_TIMEOUT_MS = 60_000;
-export const FETCH_TIMEOUT_MS = 1_800_000;
 
 const TIMED_OUT =
   "Search reached its time limit before this part resolved; search again, or ask for less at once.";
@@ -81,7 +81,12 @@ export type Gap = {
 export type AnswerContext = {
   readonly transport: Transport;
   readonly onWarning?: WarningHandler;
-  readonly fetchMembers?: FetchMembers;
+  /** Builds the answer's members; `fetchMembers` from the fetch module unless a test swaps it. */
+  readonly fetchMembers?: (
+    transport: Transport,
+    members: readonly MemberRequest[],
+    options: FetchMembersOptions<Gap>,
+  ) => Promise<Dataset<Gap>>;
 };
 
 export type SearchOptions = {
@@ -90,16 +95,11 @@ export type SearchOptions = {
   readonly timeout?: number;
 };
 
-export type AnswerFetchOptions = {
+/** A fetch's options, less the gaps the answer supplies. `strict` also throws the
+ *  `SearchWarning` instead of issuing it. */
+export type AnswerFetchOptions = Omit<FetchMembersOptions<Gap>, "missing" | "narrowing"> & {
   /** Build the parts that have a reading when others do not; the dataset lists the gaps. */
   readonly partial?: boolean;
-  /** Throw the `SearchWarning` instead of issuing it. */
-  readonly strict?: boolean;
-  readonly layout?: Layout;
-  /** The deadline for the whole build, in milliseconds. */
-  readonly timeout?: number;
-  readonly signal?: AbortSignal;
-  readonly onProgress?: (progress: FetchProgress) => void;
 };
 
 type ChoiceKey = number | string;
@@ -219,15 +219,16 @@ export class Answer {
    *   one.
    * @throws {SearchWarning} `strict` is true and the reading differs from the question.
    */
-  async fetch(options: AnswerFetchOptions = {}): Promise<Dataset> {
+  async fetch(options: AnswerFetchOptions = {}): Promise<Dataset<Gap>> {
     if (this.kind !== "resolution") {
       throw new DeclinedError({
         code: "answer_declined",
         detail: declinedText(this.kind, this.reason),
       });
     }
+    const { partial, ...fetchOptions } = options;
     const members = membersOf(this.parts);
-    if (this.gaps.length > 0 && (options.partial !== true || members.length === 0)) {
+    if (this.gaps.length > 0 && (partial !== true || members.length === 0)) {
       throw this.incompleteError();
     }
     const hints = readingHints(this, { departures: true });
@@ -240,14 +241,7 @@ export class Answer {
       (this.#context.onWarning ?? emitWarning)(warning);
     }
     const build = this.#context.fetchMembers ?? defaultFetchMembers;
-    return build(this.#context.transport, members, {
-      layout: options.layout ?? "long",
-      strict: options.strict ?? false,
-      timeout: options.timeout ?? FETCH_TIMEOUT_MS,
-      missing: this.gaps,
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-      ...(options.onProgress === undefined ? {} : { onProgress: options.onProgress }),
-    });
+    return build(this.#context.transport, members, { ...fetchOptions, missing: this.gaps });
   }
 
   /** The error `fetch` raises for this answer's gaps. */
@@ -394,7 +388,7 @@ export function definiteParts(parts: readonly Part[]): DefinitePart[] {
 }
 
 /** One member per distinct `spec_id`, in query order; folded parts share their spec's member. */
-function membersOf(parts: readonly Part[]): FetchMember[] {
+function membersOf(parts: readonly Part[]): MemberRequest[] {
   const grouped = new Map<string, { spec: Spec; parts: string[] }>();
   for (const part of definiteParts(parts)) {
     const { spec } = part;
@@ -405,7 +399,7 @@ function membersOf(parts: readonly Part[]): FetchMember[] {
   return [...grouped.values()].map(({ spec, parts: names }) => ({
     parts: names,
     spec,
-    sentence: spec.resolved.rendered_sentence ?? "",
+    sentence: spec.resolved.rendered_sentence,
   }));
 }
 

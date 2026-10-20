@@ -14,6 +14,7 @@ import {
   PermissionDeniedError,
   RateLimitError,
   ServerError,
+  serverCode,
   VersionUnavailableError,
 } from "../src/errors.ts";
 import { contractJson } from "./support.ts";
@@ -27,7 +28,7 @@ test("every code in contract/actions.json maps to a class below DfoError", async
     assert.equal(actionFor(code), action, code);
     const ErrorClass = errorClassFor(code, 400);
     assert.notEqual(ErrorClass, DfoError, code);
-    assert.ok(new ErrorClass({ code }) instanceof DfoError, code);
+    assert.ok(new ErrorClass({ code: serverCode(code) }) instanceof DfoError, code);
   }
 });
 
@@ -54,7 +55,7 @@ for (const [status, expected] of [
 }
 
 test("isDfoError holds across copies of the package and rejects look-alikes", () => {
-  const error = new NotFoundError({ code: "snapshot_not_found", status: 404 });
+  const error = new NotFoundError({ code: serverCode("snapshot_not_found"), status: 404 });
   assert.ok(isDfoError(error));
   assert.equal(error.name, "NotFoundError");
   // A second copy of the package brands its errors with the same registered symbol.
@@ -69,4 +70,10 @@ test("a transport failure keeps the platform's error as the cause", () => {
   const error = new DfoError({ code: "network_error", cause });
   assert.equal(error.cause, cause);
   assert.equal(error.message, "network_error");
+});
+
+test("an error the client raises takes a code from ClientErrorCode", () => {
+  // @ts-expect-error -- a server's code reaches an error only through serverCode.
+  const error = new ServerError({ code: "not_a_client_code" });
+  assert.equal(error.code, "not_a_client_code");
 });
