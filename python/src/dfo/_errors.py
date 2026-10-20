@@ -12,6 +12,7 @@ from typing import Any, assert_never
 from urllib.parse import urljoin
 
 from dfo._error_map import ACTIONS, Action
+from dfo._types import Gap
 
 # Every warning skips the client's own frames, so it names the caller's line.
 _PACKAGE_PREFIX = os.path.dirname(__file__) + os.sep
@@ -68,7 +69,15 @@ class NotFoundError(DfoError):
 
 
 class IncompleteAnswerError(DfoError):
-    """A part of the question has no reading; the caller chooses or takes the rest."""
+    """A part of the question has no reading; the caller chooses or takes the rest.
+
+    Attributes:
+        answer: The answer whose fetch raised it, or None for a server refusal.
+        gaps: The parts with no reading, each with its kind, message and options.
+    """
+
+    answer: Any = None
+    gaps: tuple[Gap, ...] = ()
 
 
 class DeclinedError(DfoError):

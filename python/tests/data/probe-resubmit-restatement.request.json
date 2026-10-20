@@ -1,0 +1,35 @@
+{
+ "schema_version": 1,
+ "input": {
+  "kind": "dataset_resubmit",
+  "entries": [
+   {
+    "entry_kind": "placeholder",
+    "variable_text": "GDP",
+    "status": "no_data",
+    "reason": "entity_ambiguous"
+   },
+   {
+    "entry_kind": "parsed",
+    "part": {
+     "variable_text": "ODA disbursements",
+     "entities": [
+      {
+       "text": "Kenya"
+      },
+      {
+       "text": "Germany",
+       "role_text": "from"
+      },
+      {
+       "text": "Congo",
+       "role_text": "to"
+      }
+     ],
+     "sources": [],
+     "operations": []
+    }
+   }
+  ]
+ }
+}
