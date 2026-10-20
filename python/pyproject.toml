@@ -36,13 +36,12 @@ module-name = "dfo"
 
 [dependency-groups]
 dev = [
-
     "pytest>=9.1.0",
     "pytest-cov>=7.1.0",
-
     "ty>=0.0.59",
     "ruff>=0.15.0",
     "pre-commit>=4.6.0",
+    "datamodel-code-generator>=0.86.0",
 ]
 
 [tool.ruff]
