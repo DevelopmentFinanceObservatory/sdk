@@ -202,7 +202,7 @@ class Answer:
                 raise hint
             warn(hint)
         # The build code loads on the first fetch.
-        from dfo._fetch import fetch_members  # noqa: PLC0415  # ty: ignore[unresolved-import]
+        from dfo._sync._fetch import fetch_members  # noqa: PLC0415  # ty: ignore[unresolved-import]
 
         return fetch_members(
             self._source(),

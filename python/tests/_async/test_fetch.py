@@ -1,0 +1,559 @@
+"""Tests for fetching: spec builds, narrowing, sentences, downloads and stored versions.
+
+`scripts/gen_sync.py` derives `tests/_sync/test_fetch.py` from this file, so the
+sync client passes the same tests.
+"""
+
+import json
+import warnings
+
+import httpx2
+import pytest
+
+import dfo._fetch as fetch_module
+from dfo import _errors
+from dfo._build import digest_of
+from dfo._errors import (
+    ContractError,
+    DataWarning,
+    InvalidRequestError,
+    NetworkError,
+    NotFoundError,
+    ServerError,
+    VersionUnavailableError,
+)
+from dfo._fetch import fetch, fetch_members
+from dfo._parse import parse_spec
+from dfo._transport import AsyncTransport
+from dfo._types import DatasetRef, RefMember, Rendering, Spec
+
+from .._fetch_support import (
+    BASE,
+    DATA,
+    FRAME,
+    LONG,
+    NARROWED_CV,
+    NARROWED_ID,
+    ORIGIN,
+    POSTED_ID,
+    SIGNED,
+    FakeCache,
+    Replay,
+    Server,
+    fake_build_dataset,
+    files_path,
+    json_response,
+    manifest,
+    parquet,
+    posted_spec,
+    problem,
+    redirect,
+    resubmitted,
+)
+
+pytestmark = pytest.mark.anyio
+
+KEY = "dfo_k_4f8Kq2ZtR7mWx1NcB9vLp3YhD6sGa0Ue2wanxe"
+SENTENCE = "Germany's gross ODA disbursements to Nigeria for basic health care, 2020 to 2023. Current US dollars · OECD Creditor Reporting System (CRS)."
+
+
+class Timeline:
+    """A clock and a sleep that advances it at once, recording each wait."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.sleeps: list[float] = []
+
+    def clock(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+@pytest.fixture(autouse=True)
+def fake_dataset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fetch_module, "build_dataset", fake_build_dataset)
+    monkeypatch.setattr(_errors, "_warned", set())
+    monkeypatch.delenv("DFO_OFFLINE", raising=False)
+
+
+def make(handler, timeline: Timeline | None = None, **options) -> AsyncTransport:
+    timeline = timeline or Timeline()
+    options.setdefault("api_key", KEY)
+    options.setdefault("base_url", BASE)
+    return AsyncTransport(
+        http_transport=httpx2.MockTransport(handler),
+        sleep=timeline.sleep,
+        clock=timeline.clock,
+        **options,
+    )
+
+
+def spec(sentence: str | None = None) -> Spec:
+    return Spec(
+        parse_spec(posted_spec()).spec_id, posted_spec()["definition"], sentence
+    )
+
+
+def ref_member(content_version: str = NARROWED_CV, data: bytes = DATA) -> RefMember:
+    body = manifest()
+    return RefMember(
+        parts=("ODA disbursements for basic health care",),
+        sentence=SENTENCE,
+        spec=Spec(NARROWED_ID, body["definition"], SENTENCE),
+        content_version=content_version,
+        digest=digest_of(data),
+        rendering=LONG,
+    )
+
+
+async def test_a_spec_with_its_sentence_replays_the_recorded_build() -> None:
+    replay = Replay("fetch-spec-known-sentence", base_url=BASE)
+    call = replay.record["call"][0]["spec"]
+    target = Spec(call["spec_id"], call["definition"], call["sentence"])
+    async with make(replay) as transport:
+        with pytest.warns(DataWarning, match="coverage falls short") as caught:
+            built = await fetch(transport, target)
+    assert replay.exchanges == []
+    expected = replay.record["expect"][0]["dataset"]["members"][0]
+    (member,) = built.members
+    assert (member.parts, member.spec.spec_id, member.content_version) == (
+        tuple(expected["parts"]),
+        expected["spec_id"],
+        expected["content_version"],
+    )
+    assert member.sentence == member.spec.sentence == expected["sentence"]
+    assert member.digest == digest_of(member.data)
+    assert member.spec.definition is not target.definition
+    assert caught[0].message.code == "coverage_below_scope"
+    signed = replay.requests[-1]
+    assert "authorization" not in signed.headers
+    assert replay.requests[0].headers["authorization"] == f"Bearer {KEY}"
+    assert (built.layout, built.complete, built.stale) == ("long", True, False)
+
+
+async def test_a_narrowed_spec_stores_the_built_identity_and_asks_search_its_sentence() -> (
+    None
+):
+    body = manifest(retention={"pinned": False, "held_until": "2026-11-19T13:59:18Z"})
+    server = Server(
+        json_response(200, body),
+        json_response(200, resubmitted()),
+        redirect(),
+        parquet(),
+    )
+    async with make(server) as transport:
+        built = await fetch(
+            transport,
+            spec("Germany's gross ODA disbursements to Nigeria, 1995 to 2024."),
+            window=(2020, 2023),
+            entities={"destination": ["country/NGA"]},
+            facets={"measurementMethod": None},
+        )
+    assert server.calls() == [
+        f"POST {BASE}/datasets",
+        f"POST {BASE}/search/resolve",
+        f"GET {files_path(body)}",
+        f"GET {SIGNED.split('?')[0]}",
+    ]
+    posted = server.body(0)
+    assert posted["input"]["spec_id"] == POSTED_ID
+    assert posted["input"]["definition"] == posted_spec()["definition"]
+    assert posted["input"]["scope"] == {
+        "window": {"kind": "range", "start_year": 2020, "end_year": 2023},
+        "entities": {"destination": ["country/NGA"]},
+        "facets": {"measurementMethod": {"ref": None}},
+    }
+    assert posted["options"] == {"format": "parquet", "bundle": False}
+    assert server.body(1) == {
+        "schema_version": 1,
+        "input": {
+            "kind": "dataset_resubmit",
+            "entries": [
+                {
+                    "entry_kind": "identity",
+                    "variable_text": "dataset",
+                    "identity": body["definition"]["identity"],
+                }
+            ],
+        },
+    }
+    (member,) = built.members
+    assert (member.spec.spec_id, member.content_version) == (NARROWED_ID, NARROWED_CV)
+    assert member.sentence == SENTENCE
+    assert "2020 to 2023" in member.sentence
+    assert member.manifest == body
+    assert member.manifest["retention"] == body["retention"]
+
+
+async def test_an_answer_part_resubmits_with_its_variable_text() -> None:
+    server = Server(
+        json_response(200, manifest()),
+        json_response(200, resubmitted()),
+        redirect(),
+        parquet(),
+    )
+    async with make(server) as transport:
+        built = await fetch_members(
+            transport,
+            [(("ODA", "aid"), spec(), None)],
+            narrowing={"window": {"kind": "latest"}},
+        )
+    entry = server.body(1)["input"]["entries"][0]
+    assert entry["variable_text"] == "ODA; aid"
+    assert built.members[0].parts == ("ODA", "aid")
+
+
+async def test_a_resubmit_that_answers_another_spec_raises() -> None:
+    server = Server(
+        json_response(200, manifest()),
+        json_response(200, resubmitted(POSTED_ID)),
+    )
+    async with make(server) as transport:
+        with pytest.raises(ContractError, match="did not resolve"):
+            await fetch(transport, spec(), window="latest")
+    assert len(server.requests) == 2
+
+
+async def test_strict_raises_a_dataset_warning_before_downloading() -> None:
+    warning = {"code": "coverage_below_scope", "severity": "warn", "message": "short"}
+    info = {"code": "processing_level_undeclared", "severity": "info", "message": "x"}
+    server = Server(json_response(200, manifest(POSTED_ID, warnings=[info, warning])))
+    async with make(server) as transport:
+        with pytest.raises(DataWarning) as caught:
+            await fetch(transport, spec(SENTENCE), strict=True)
+    assert caught.value.code == "coverage_below_scope"
+    assert len(server.requests) == 1
+
+
+async def test_info_warnings_stay_quiet() -> None:
+    info = {"code": "processing_level_undeclared", "severity": "info", "message": "x"}
+    server = Server(
+        json_response(200, manifest(POSTED_ID, warnings=[info])), redirect(), parquet()
+    )
+    async with make(server) as transport:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            await fetch(transport, spec(SENTENCE))
+
+
+async def test_a_frame_with_several_readings_is_refused_before_any_request() -> None:
+    other = Spec(NARROWED_ID, manifest()["definition"])
+    server = Server()
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError, match="one reading"):
+            await fetch_members(
+                transport, [((), spec(), None), ((), other, None)], layout="frame"
+            )
+    assert server.requests == []
+
+
+async def test_a_frame_builds_the_frame_rendering() -> None:
+    body = manifest(POSTED_ID, data=FRAME, layout="frame")
+    server = Server(json_response(200, body), redirect(), parquet(FRAME))
+    async with make(server) as transport:
+        built = await fetch(transport, spec(SENTENCE), layout="frame")
+    assert server.body(0)["options"] == {
+        "format": "parquet",
+        "bundle": False,
+        "layout": "frame",
+    }
+    assert built.layout == "frame"
+    assert built.members[0].data == FRAME
+
+
+async def test_a_spec_listed_twice_builds_once_for_both_parts() -> None:
+    server = Server(json_response(200, manifest(POSTED_ID)), redirect(), parquet())
+    async with make(server) as transport:
+        built = await fetch_members(
+            transport, [(("ODA",), spec(), SENTENCE), (("aid",), spec(), None)]
+        )
+    assert len(server.requests) == 3
+    assert [member.parts for member in built.members] == [("ODA", "aid")]
+
+
+async def test_members_build_one_after_another_each_finished_before_the_next() -> None:
+    other = Spec(NARROWED_ID, manifest()["definition"], "Other sentence.")
+    second = b"PAR1 second PAR1"
+    first_body = manifest(POSTED_ID)
+    second_body = manifest(NARROWED_ID, data=second)
+    server = Server(
+        json_response(200, first_body),
+        redirect(),
+        parquet(),
+        json_response(200, second_body),
+        redirect(),
+        parquet(second),
+    )
+    async with make(server) as transport:
+        built = await fetch_members(
+            transport,
+            [(("a",), spec(), SENTENCE), (("b",), other, None)],
+            missing=("gap",),
+        )
+    assert [call.split(" ")[0] for call in server.calls()] == [
+        "POST",
+        "GET",
+        "GET",
+        "POST",
+        "GET",
+        "GET",
+    ]
+    assert [member.sentence for member in built.members] == [
+        SENTENCE,
+        "Other sentence.",
+    ]
+    assert (built.complete, built.missing) == (False, ("gap",))
+
+
+async def test_member_not_resolvable_says_to_search_again() -> None:
+    server = Server(problem(422, "member_not_resolvable"))
+    async with make(server) as transport:
+        with pytest.raises(
+            InvalidRequestError, match="search the question again"
+        ) as caught:
+            await fetch(transport, spec(SENTENCE))
+    assert caught.value.code == "member_not_resolvable"
+
+
+async def test_a_signed_download_that_fails_asks_the_files_route_again() -> None:
+    body = manifest(POSTED_ID)
+    server = Server(
+        json_response(200, body),
+        redirect(),
+        httpx2.Response(403),
+        redirect(SIGNED + "&fresh=1"),
+        parquet(),
+    )
+    async with make(server) as transport:
+        built = await fetch(transport, spec(SENTENCE))
+    assert server.calls()[1] == server.calls()[3] == f"GET {files_path(body)}"
+    assert str(server.requests[4].url) == SIGNED + "&fresh=1"
+    assert built.members[0].data == DATA
+
+
+async def test_bytes_that_miss_their_digest_twice_raise() -> None:
+    server = Server(
+        json_response(200, manifest(POSTED_ID)),
+        redirect(),
+        parquet(b"other"),
+        redirect(),
+        parquet(b"other"),
+    )
+    async with make(server) as transport:
+        with pytest.raises(ServerError, match="hashes to"):
+            await fetch(transport, spec(SENTENCE))
+
+
+async def test_cached_bytes_skip_the_download_and_new_ones_are_stored() -> None:
+    cache = FakeCache()
+    server = Server(json_response(200, manifest(POSTED_ID)), redirect(), parquet())
+    async with make(server) as transport:
+        await fetch(transport, spec(SENTENCE), cache=cache)
+        assert cache.files == {digest_of(DATA): DATA}
+        assert (POSTED_ID, NARROWED_CV, LONG) in cache.manifests
+        server.responses.append(json_response(200, manifest(POSTED_ID)))
+        built = await fetch(transport, spec(SENTENCE), cache=cache)
+    assert len(server.requests) == 4
+    assert built.members[0].data == DATA
+
+
+async def test_a_spec_cannot_build_offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DFO_OFFLINE", "1")
+    server = Server()
+    async with make(server) as transport:
+        with pytest.raises(NetworkError, match="DFO_OFFLINE"):
+            await fetch(transport, spec(SENTENCE), cache=FakeCache())
+    assert server.requests == []
+
+
+async def test_a_ref_reads_its_version_through_the_snapshot_and_files_routes() -> None:
+    body = manifest()
+    server = Server(json_response(200, body), redirect(), parquet())
+    member = ref_member()
+    async with make(server) as transport:
+        built = await fetch(transport, DatasetRef((member,)))
+    assert server.calls() == [
+        f"GET {BASE}/datasets/{NARROWED_ID}/{NARROWED_CV}",
+        f"GET {files_path(body)}",
+        f"GET {SIGNED.split('?')[0]}",
+    ]
+    (fetched,) = built.members
+    assert (fetched.parts, fetched.sentence, fetched.digest) == (
+        member.parts,
+        SENTENCE,
+        member.digest,
+    )
+    assert built.stale is False
+
+
+async def test_a_ref_with_an_unknown_version_raises_at_the_snapshot() -> None:
+    server = Server(problem(404, "snapshot_not_found"))
+    async with make(server) as transport:
+        with pytest.raises(NotFoundError) as caught:
+            await fetch(transport, DatasetRef((ref_member("cv_" + "0" * 32),)))
+    assert caught.value.code == "snapshot_not_found"
+    assert len(server.requests) == 1
+
+
+async def test_an_expired_file_is_rendered_again_by_the_file_selector() -> None:
+    body = manifest()
+    server = Server(
+        json_response(200, body),
+        problem(410, "artifact_expired"),
+        redirect(),
+        parquet(),
+    )
+    async with make(server) as transport:
+        built = await fetch(transport, DatasetRef((ref_member(),)))
+    selector = server.requests[2]
+    assert str(selector.url.copy_with(query=None)) == (
+        f"{BASE}/datasets/{NARROWED_ID}/{NARROWED_CV}/file"
+    )
+    assert dict(selector.url.params) == {"format": "parquet", "bundle": "false"}
+    assert built.members[0].digest == digest_of(DATA)
+
+
+async def test_an_expired_file_without_the_selector_rebuilds_the_same_version() -> None:
+    body = manifest()
+    server = Server(
+        json_response(200, body),
+        problem(410, "artifact_expired"),
+        problem(404, "not_found"),
+        json_response(200, body),
+        redirect(),
+        parquet(),
+    )
+    async with make(server) as transport:
+        built = await fetch(transport, DatasetRef((ref_member(),)))
+    rebuild = server.body(3)
+    assert rebuild["input"]["spec_id"] == NARROWED_ID
+    assert "scope" not in rebuild["input"]
+    assert built.members[0].content_version == NARROWED_CV
+    assert built.members[0].sentence == SENTENCE
+    assert len(server.requests) == 6
+
+
+async def test_a_rebuild_with_another_version_names_the_newest() -> None:
+    newer = "cv_" + "1" * 32
+    server = Server(
+        json_response(200, manifest()),
+        problem(410, "artifact_expired"),
+        problem(404, "not_found"),
+        json_response(200, manifest(content_version=newer)),
+    )
+    async with make(server) as transport:
+        with pytest.raises(VersionUnavailableError, match=newer) as caught:
+            await fetch(transport, DatasetRef((ref_member(),)))
+    assert caught.value.code == "artifact_expired"
+    assert len(server.requests) == 4
+
+
+@pytest.mark.parametrize(
+    ("versions", "named"),
+    [
+        (
+            json_response(
+                200,
+                {
+                    "spec_id": NARROWED_ID,
+                    "versions": [{"content_version": "cv_" + "2" * 32}],
+                    "next_cursor": "c1",
+                    "complete": False,
+                },
+            ),
+            "cv_" + "2" * 32,
+        ),
+        (problem(403, "publish_not_permitted"), None),
+    ],
+)
+async def test_a_spec_that_cannot_rebuild_names_the_newest_stored_version(
+    versions: httpx2.Response, named: str | None
+) -> None:
+    server = Server(
+        json_response(200, manifest()),
+        problem(410, "artifact_expired"),
+        problem(404, "not_found"),
+        problem(422, "definition_not_reproducible"),
+        versions,
+    )
+    async with make(server) as transport:
+        with pytest.raises(VersionUnavailableError) as caught:
+            await fetch(transport, DatasetRef((ref_member(),)))
+    assert server.calls()[-1] == f"GET {BASE}/datasets/{NARROWED_ID}/versions"
+    assert caught.value.code == "artifact_expired"
+    assert ("newest version" in str(caught.value)) is (named is not None)
+    if named is not None:
+        assert named in str(caught.value)
+
+
+async def test_a_cached_ref_needs_no_request_and_offline_marks_it_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = manifest()
+    cache = FakeCache()
+    cache.put_bytes(digest_of(DATA), DATA)
+    cache.put_manifest(NARROWED_ID, NARROWED_CV, LONG, body)
+    server = Server()
+    async with make(server) as transport:
+        built = await fetch(transport, DatasetRef((ref_member(),)), cache=cache)
+        assert built.stale is False
+        monkeypatch.setenv("DFO_OFFLINE", "1")
+        offline = await fetch(transport, DatasetRef((ref_member(),)), cache=cache)
+        assert offline.stale is True
+        with pytest.raises(NetworkError, match="cache lacks"):
+            await fetch(transport, DatasetRef((ref_member(),)), cache=FakeCache())
+    assert server.requests == []
+    assert offline.members[0].manifest == body
+
+
+async def test_a_ref_takes_no_narrowing_and_keeps_its_layout() -> None:
+    ref = DatasetRef((ref_member(),))
+    server = Server()
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError, match="no narrowing"):
+            await fetch(transport, ref, window="latest")
+        with pytest.raises(InvalidRequestError, match="long layout"):
+            await fetch(transport, ref, layout="frame")
+        bundled = RefMember(
+            parts=(),
+            sentence=SENTENCE,
+            spec=ref_member().spec,
+            content_version=NARROWED_CV,
+            digest=digest_of(DATA),
+            rendering=Rendering("csv", True),
+        )
+        with pytest.raises(InvalidRequestError, match="bare Parquet"):
+            await fetch(transport, DatasetRef((bundled,)))
+    assert server.requests == []
+
+
+async def test_a_snapshot_for_another_version_raises() -> None:
+    server = Server(json_response(200, manifest(content_version="cv_" + "3" * 32)))
+    async with make(server) as transport:
+        with pytest.raises(ContractError, match="answered"):
+            await fetch(transport, DatasetRef((ref_member(),)))
+
+
+async def test_a_manifest_without_a_strict_field_raises_before_downloading() -> None:
+    body = manifest(POSTED_ID)
+    body["contentVersion"] = body.pop("content_version")
+    server = Server(json_response(200, body))
+    async with make(server) as transport:
+        with pytest.raises(ContractError, match="content_version"):
+            await fetch(transport, spec(SENTENCE))
+    assert len(server.requests) == 1
+
+
+async def test_the_files_route_resolves_against_the_origin_under_any_base_path() -> (
+    None
+):
+    body = manifest(POSTED_ID)
+    server = Server(json_response(200, body), redirect(), parquet())
+    async with make(server, base_url=ORIGIN + "/proxy/api/v1") as transport:
+        await fetch(transport, spec(SENTENCE))
+    assert str(server.requests[0].url) == ORIGIN + "/proxy/api/v1/datasets"
+    assert str(server.requests[1].url) == files_path(body)
+    assert json.loads(server.requests[0].content)["input"]["kind"] == "spec_id"

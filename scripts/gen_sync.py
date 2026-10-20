@@ -35,7 +35,7 @@ ASYNC_TESTS = ROOT / "python" / "tests" / "_async"
 SYNC_TESTS = ROOT / "python" / "tests" / "_sync"
 
 # Async modules of the package, each generating `dfo/_sync/<name>.py`.
-ASYNC_MODULES = ("_transport", "_answer", "_search")
+ASYNC_MODULES = ("_transport", "_answer", "_search", "_operation", "_fetch")
 
 # Hand-written files the sync directories hold beside the generated ones.
 KEPT_NAMES = frozenset({"__init__.py", "conftest.py"})
@@ -49,6 +49,7 @@ SUBS: tuple[tuple[str, str], ...] = (
     ("AsyncTransport", "Transport"),
     ("AsyncAnswer", "Answer"),
     ("AsyncClient", "Client"),
+    ("AsyncOperation", "Operation"),
     ("AsyncBaseTransport", "BaseTransport"),
     ("AsyncHeaderProvider", "HeaderProvider"),
     ("AsyncSleep", "Sleep"),

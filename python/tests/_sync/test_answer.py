@@ -112,9 +112,9 @@ def fetched(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, Any, Any]]:
         calls.append((transport, members, options))
         return "dataset"
 
-    module = types.ModuleType("dfo._fetch")
+    module = types.ModuleType("dfo._sync._fetch")
     module.fetch_members = fetch_members  # ty: ignore[unresolved-attribute]
-    monkeypatch.setitem(sys.modules, "dfo._fetch", module)
+    monkeypatch.setitem(sys.modules, "dfo._sync._fetch", module)
     return calls
 
 
