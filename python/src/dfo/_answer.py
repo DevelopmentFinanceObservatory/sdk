@@ -19,21 +19,20 @@ Search composes the joined sentence and folds the parts again:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, NoReturn, overload, override
 
 from dfo import _display, _strict
 from dfo._build import Reading
 from dfo._dataset import Dataset
-from dfo._error_map import GAP_KINDS
-from dfo._errors import (
-    ContractError,
-    DeclinedError,
-    IncompleteAnswerError,
-    InvalidRequestError,
-    SearchWarning,
-    warn,
+from dfo._error_map import (
+    ANSWER_DECLINED,
+    ANSWER_INCOMPLETE,
+    CHOICE_INVALID,
+    CONTRACT_VIOLATION,
+    GAP_KINDS,
 )
+from dfo._errors import IncompleteAnswerError, SearchWarning, client_error, warn
 from dfo._fetch import SessionSource, fetch_members
 from dfo._parse import parse_notices, parse_parts
 from dfo._types import (
@@ -186,7 +185,8 @@ class AsyncAnswer:
                 question.
         """
         if self.kind != _strict.RESOLUTION_KIND:
-            raise DeclinedError(
+            raise client_error(
+                ANSWER_DECLINED,
                 _display.declined_text(self.kind, self.reason),
                 detail=self.reason or self.kind,
             )
@@ -211,7 +211,7 @@ class AsyncAnswer:
 
     def incomplete_error(self) -> IncompleteAnswerError:
         """The error `fetch` raises for this answer's gaps."""
-        error = IncompleteAnswerError(_display.incomplete_message(self))
+        error = client_error(ANSWER_INCOMPLETE, _display.incomplete_message(self))
         error.answer = self
         error.gaps = self.gaps
         return error
@@ -221,48 +221,30 @@ class AsyncAnswer:
         if len(waiting) == 1:
             return waiting[0]
         if not waiting:
-            raise InvalidRequestError("No part of this answer awaits a choice.")
-        raise InvalidRequestError(
+            raise client_error(
+                CHOICE_INVALID, "No part of this answer awaits a choice."
+            )
+        raise client_error(
+            CHOICE_INVALID,
             f"{len(waiting)} parts of this answer await a choice; name the part: "
-            "answer.choose(part, option)."
+            "answer.choose(part, option).",
         )
 
     def _gap_named(self, key: int | str) -> Gap:
         index = _part_index(self.parts, self.gaps, key)
         gap = next((gap for gap in self.gaps if gap.part_index == index), None)
         if gap is None:
-            raise InvalidRequestError(f"Part {key!r} already has a reading.")
+            raise client_error(CHOICE_INVALID, f"Part {key!r} already has a reading.")
         return gap
 
     def _with_candidate(self, part: Part, candidate: Candidate) -> AsyncAnswer:
-        definite = DefinitePart(
-            status=_strict.DEFINITE_PART_STATUS,
-            variable_text=part.variable_text,
-            sentence=candidate.sentence,
-            separate=part.separate,
-            warnings=part.warnings,
-            departures=part.departures,
-            operations=part.operations,
-            raw={
-                **{
-                    key: value for key, value in part.raw.items() if key != "candidates"
-                },
-                "status": _strict.DEFINITE_PART_STATUS,
-                "spec": candidate.raw,
-            },
-            spec=candidate.spec,
-        )
-        return AsyncAnswer(
-            kind=self.kind,
-            status=_strict.DEFINITE_PART_STATUS,
-            sentence=candidate.sentence or self.sentence,
-            parts=(definite,),
-            specs=(candidate.spec,),
-            complete=True,
-            question=self.question,
-            warnings=self.warnings,
-            raw=self.raw,
-            _source=self._source,
+        return _candidate_answer(
+            _AnswerContext(
+                self.kind, self.sentence, self.question, self.warnings, self.raw
+            ),
+            part,
+            candidate,
+            self._source,
         )
 
     async def _resolve(self, request: Mapping[str, Any]) -> AsyncAnswer:
@@ -313,7 +295,7 @@ def answer_from_body(
             the client acts on is missing.
     """
     if not isinstance(body, Mapping):
-        raise ContractError("The Search response is not an object")
+        raise client_error(CONTRACT_VIOLATION, "The Search response is not an object")
     diagnostics = body.get("diagnostics")
     diagnostics = diagnostics if isinstance(diagnostics, Mapping) else {}
     warnings = parse_notices(diagnostics.get("warnings"))
@@ -332,25 +314,31 @@ def answer_from_body(
             _source=source,
         )
     if kind != _strict.RESOLUTION_KIND:
-        raise ContractError(
+        raise client_error(
+            CONTRACT_VIOLATION,
             f"Search answered with kind {kind!r}, which this client does not know; "
-            "upgrade development-finance"
+            "upgrade development-finance",
         )
-    parts = parse_parts(body)
+    status = body.get("status")
+    sentence = body.get("rendered_sentence")
+    parsed = parse_parts(body)
+    sentence = (
+        sentence
+        if isinstance(sentence, str) and sentence
+        else " ".join(part.sentence for part in parsed if part.sentence)
+    )
+    context = _AnswerContext(kind, sentence, question, warnings, body)
+    parts = tuple(_bind_candidates(part, context, source) for part in parsed)
     timed_out = diagnostics.get("timed_out") is True
     gaps = tuple(
         gap
         for index, part in enumerate(parts)
         if (gap := _gap(index, part, timed_out=timed_out)) is not None
     )
-    status = body.get("status")
-    sentence = body.get("rendered_sentence")
     return AsyncAnswer(
         kind=kind,
         status=status if isinstance(status, str) else _status(parts),
-        sentence=sentence
-        if isinstance(sentence, str) and sentence
-        else " ".join(part.sentence for part in parts if part.sentence),
+        sentence=sentence,
         parts=parts,
         specs=tuple(dict.fromkeys(spec for _, spec in _readings(parts))),
         complete=not gaps,
@@ -360,6 +348,83 @@ def answer_from_body(
         timed_out=timed_out,
         raw=body,
         _source=source,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _AnswerContext:
+    """What a one-part answer settled from a candidate keeps of its answer."""
+
+    kind: str
+    sentence: str | None
+    question: str | None
+    warnings: tuple[Notice, ...]
+    raw: Mapping[str, Any]
+
+
+def _candidate_answer(
+    context: _AnswerContext, part: Part, candidate: Candidate, source: SessionSource
+) -> AsyncAnswer:
+    """The one-part answer that reads `part` as `candidate`."""
+    definite = DefinitePart(
+        status=_strict.DEFINITE_PART_STATUS,
+        variable_text=part.variable_text,
+        sentence=candidate.sentence,
+        separate=part.separate,
+        warnings=part.warnings,
+        departures=part.departures,
+        operations=part.operations,
+        raw={
+            **{key: value for key, value in part.raw.items() if key != "candidates"},
+            "status": _strict.DEFINITE_PART_STATUS,
+            "spec": candidate.raw,
+        },
+        spec=candidate.spec,
+    )
+    return AsyncAnswer(
+        kind=context.kind,
+        status=_strict.DEFINITE_PART_STATUS,
+        sentence=candidate.sentence or context.sentence,
+        parts=(definite,),
+        specs=(candidate.spec,),
+        complete=True,
+        question=context.question,
+        warnings=context.warnings,
+        raw=context.raw,
+        _source=source,
+    )
+
+
+def _bind_candidates(
+    part: Part, context: _AnswerContext, source: SessionSource
+) -> Part:
+    """`part`, its candidates able to fetch through the answer's source."""
+    if not isinstance(part, CandidatesPart):
+        return part
+
+    async def fetch(
+        candidate: Candidate,
+        /,
+        *,
+        partial: bool,
+        strict: bool,
+        layout: Layout,
+        timeout: float | None,
+        progress: bool | None,
+    ) -> Dataset:
+        return await _candidate_answer(context, part, candidate, source).fetch(
+            partial=partial,
+            strict=strict,
+            layout=layout,
+            timeout=timeout,
+            progress=progress,
+        )
+
+    return replace(
+        part,
+        candidates=tuple(
+            replace(candidate, _afetch=fetch) for candidate in part.candidates
+        ),
     )
 
 
@@ -426,8 +491,9 @@ def _part_index(parts: Sequence[Part], gaps: Sequence[Gap], key: int | str) -> i
     if isinstance(key, int):
         if 0 <= key < len(parts):
             return key
-        raise InvalidRequestError(
-            f"Part {key} is out of range; the answer has {len(parts)} parts."
+        raise client_error(
+            CHOICE_INVALID,
+            f"Part {key} is out of range; the answer has {len(parts)} parts.",
         )
     named = [index for index, part in enumerate(parts) if part.variable_text == key]
     if not named:
@@ -439,10 +505,13 @@ def _part_index(parts: Sequence[Part], gaps: Sequence[Gap], key: int | str) -> i
     if len(named) == 1:
         return named[0]
     if not named:
-        raise InvalidRequestError(
-            f"No part is named {key!r}; name a part by its index or its words."
+        raise client_error(
+            CHOICE_INVALID,
+            f"No part is named {key!r}; name a part by its index or its words.",
         )
-    raise InvalidRequestError(f"{len(named)} parts are named {key!r}; use an index.")
+    raise client_error(
+        CHOICE_INVALID, f"{len(named)} parts are named {key!r}; use an index."
+    )
 
 
 def _pick(gap: Gap, key: int | str, *, mention: int | str | None) -> Candidate | Option:
@@ -456,15 +525,16 @@ def _pick(gap: Gap, key: int | str, *, mention: int | str | None) -> Candidate |
         choices = gap.options
         labels = [option.label for option in gap.options]
     else:
-        raise InvalidRequestError(
-            f"Part {gap.part_index} offers no choice: {gap.message}"
+        raise client_error(
+            CHOICE_INVALID, f"Part {gap.part_index} offers no choice: {gap.message}"
         )
     if isinstance(key, int):
         if 0 <= key < len(choices):
             return choices[key]
-        raise InvalidRequestError(
+        raise client_error(
+            CHOICE_INVALID,
             f"Option {key} is out of range; part {gap.part_index} offers "
-            f"{len(choices)}."
+            f"{len(choices)}.",
         )
     # A part named by a word its options settle offers only those options' labels.
     scope = mention if isinstance(mention, str) and mention in _mentions(gap) else None
@@ -479,13 +549,15 @@ def _pick(gap: Gap, key: int | str, *, mention: int | str | None) -> Candidate |
     if len(found) == 1:
         return found[0]
     if not found:
-        raise InvalidRequestError(
+        raise client_error(
+            CHOICE_INVALID,
             f"Part {gap.part_index} has no option labelled {key!r}; name it by "
-            "index or label."
+            "index or label.",
         )
-    raise InvalidRequestError(
+    raise client_error(
+        CHOICE_INVALID,
         f"{len(found)} options of part {gap.part_index} are labelled {key!r}; use "
-        "an index."
+        "an index.",
     )
 
 
@@ -525,17 +597,19 @@ def _restated_entry(part: Part) -> dict[str, Any]:
             return _echo(
                 part, entry_kind="placeholder", status="unsupported", code=reason
             )
-    raise InvalidRequestError(
+    raise client_error(
+        CHOICE_INVALID,
         f"Part {part.variable_text!r} has status {part.status!r}, which this client "
-        "cannot post back; upgrade development-finance."
+        "cannot post back; upgrade development-finance.",
     )
 
 
 def _echo(part: Part, **members: Any) -> dict[str, Any]:
     """An entry with the members every non-parsed entry echoes from its part."""
     if not part.variable_text:
-        raise InvalidRequestError(
-            "A part without variable text cannot be posted back; search again."
+        raise client_error(
+            CHOICE_INVALID,
+            "A part without variable text cannot be posted back; search again.",
         )
     entry: dict[str, Any] = {**members, "variable_text": part.variable_text}
     if part.separate:
@@ -572,8 +646,9 @@ def _candidates_entry(part: CandidatesPart) -> dict[str, Any]:
 def _option_part(option: Option) -> Mapping[str, Any]:
     parts = option.data_query.get("parts")
     if not isinstance(parts, list) or len(parts) != 1:
-        raise ContractError(
-            f"The option {option.label!r} does not carry a one-part parsed input"
+        raise client_error(
+            CONTRACT_VIOLATION,
+            f"The option {option.label!r} does not carry a one-part parsed input",
         )
     return parts[0]
 

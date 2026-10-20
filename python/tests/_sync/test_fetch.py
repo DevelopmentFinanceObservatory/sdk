@@ -7,6 +7,7 @@ sync client passes the same tests.
 
 import json
 import warnings
+from pathlib import Path
 
 import httpx2
 import pytest
@@ -14,6 +15,7 @@ import pytest
 import dfo._sync._fetch as fetch_module
 from dfo import _errors
 from dfo._build import Reading, digest_of
+from dfo._cache import Cache, file_entry
 from dfo._errors import (
     ContractError,
     DataWarning,
@@ -367,8 +369,24 @@ def test_bytes_that_miss_their_digest_twice_raise() -> None:
         parquet(b"other"),
     )
     with make(server) as transport:
-        with pytest.raises(ServerError, match="hashes to"):
+        with pytest.raises(ServerError, match="hashes to") as caught:
             fetch(transport, spec(SENTENCE))
+    assert caught.value.code == "digest_mismatch"
+
+
+def test_a_cache_entry_that_misses_its_digest_is_downloaded_again(
+    tmp_path: Path,
+) -> None:
+    cache = Cache(tmp_path, env={})
+    digest = digest_of(DATA)
+    cache.put_bytes(digest, DATA)
+    (cache.directory / file_entry(digest)).write_bytes(b"damaged")
+    server = Server(json_response(200, manifest(POSTED_ID)), redirect(), parquet())
+    with make(server) as transport:
+        built = fetch(transport, spec(SENTENCE), cache=cache)
+    assert len(server.requests) == 3
+    assert built.members[0].data == DATA
+    assert cache.get_bytes(digest) == DATA
 
 
 def test_cached_bytes_skip_the_download_and_new_ones_are_stored() -> None:
@@ -388,9 +406,10 @@ def test_a_spec_cannot_build_offline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DFO_OFFLINE", "1")
     server = Server()
     with make(server) as transport:
-        with pytest.raises(NetworkError, match="DFO_OFFLINE"):
+        with pytest.raises(NetworkError, match="DFO_OFFLINE") as caught:
             fetch(transport, spec(SENTENCE), cache=FakeCache())
     assert server.requests == []
+    assert caught.value.code == "offline"
 
 
 def test_a_ref_reads_its_version_through_the_snapshot_and_files_routes() -> None:

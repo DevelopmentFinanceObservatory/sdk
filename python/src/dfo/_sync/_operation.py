@@ -30,9 +30,11 @@ from dfo._build import (
     response_json,
 )
 from dfo._dataset import Dataset
-from dfo._errors import ContractError, DfoError, DfoTimeoutError, problem_error
+from dfo._error_map import DEADLINE_EXCEEDED, UNEXPECTED_RESPONSE
+from dfo._errors import DfoError, DfoTimeoutError, client_error
 from dfo._parse import check_manifest
 from dfo._progress import ProgressRenderer
+from dfo._refusals import problem_error
 from dfo._sync._transport import Transport, retry_after
 
 type ProgressHook = Callable[[str, Progress, str | None], None]
@@ -94,9 +96,12 @@ def _reply(response: httpx2.Response) -> Reply:
             retry_after(response),
             trace_id,
         )
-    raise ContractError(
+    raise client_error(
+        UNEXPECTED_RESPONSE,
         f"POST /datasets answered HTTP {response.status_code}; "
-        "a build answers 200 or 202"
+        "a build answers 200 or 202",
+        status=response.status_code,
+        trace_id=trace_id,
     )
 
 
@@ -262,7 +267,8 @@ class Poller:
         return wait
 
     def _still_running(self) -> DfoTimeoutError:
-        return DfoTimeoutError(
+        return client_error(
+            DEADLINE_EXCEEDED,
             f"The build is still running at the deadline. Resume it with "
             f'client.operation("{self.operation_id}").result()',
             retryable=True,
@@ -307,9 +313,12 @@ class Poller:
             self._poll_failed(error, deadline)
             return
         if response.status_code != 200:
-            raise ContractError(
+            raise client_error(
+                UNEXPECTED_RESPONSE,
                 f"GET /datasets/operations/{operation_id} answered HTTP "
-                f"{response.status_code}; a poll answers 200"
+                f"{response.status_code}; a poll answers 200",
+                status=response.status_code,
+                trace_id=response.headers.get("x-dfo-trace-id"),
             )
         self._retries = 0
         self._take(

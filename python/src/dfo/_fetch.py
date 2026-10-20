@@ -42,16 +42,22 @@ from dfo._build import (
     scope,
 )
 from dfo._dataset import Dataset, FetchedMember, build_dataset
+from dfo._error_map import (
+    CONTRACT_VIOLATION,
+    DIGEST_MISMATCH,
+    INVALID_ARGUMENT,
+    OFFLINE,
+    UNEXPECTED_RESPONSE,
+    VERSION_UNAVAILABLE,
+)
 from dfo._errors import (
-    ContractError,
     DataWarning,
     DfoError,
     InvalidRequestError,
-    NetworkError,
     NotFoundError,
     PermissionDeniedError,
-    ServerError,
     VersionUnavailableError,
+    client_error,
     warn,
 )
 from dfo._operation import (
@@ -104,10 +110,6 @@ _SEARCH_AGAIN = (
 )
 
 
-class _DigestMismatchError(ServerError):
-    """Downloaded bytes did not hash to the digest the server named."""
-
-
 async def fetch(
     transport: AsyncTransport,
     target: Spec | DatasetRef,
@@ -143,9 +145,10 @@ async def fetch(
     """
     if isinstance(target, DatasetRef):
         if window is not None or entities is not None or facets is not None:
-            raise InvalidRequestError(
+            raise client_error(
+                INVALID_ARGUMENT,
                 "A DatasetRef names exact versions and takes no narrowing; "
-                "narrow the spec instead"
+                "narrow the spec instead",
             )
         return await _fetch_ref(
             transport,
@@ -206,13 +209,16 @@ async def fetch_members(
     wants = _distinct(readings)
     rendering = rendering_for(layout)
     if layout == "frame" and len(wants) > 1:
-        raise InvalidRequestError(
-            'layout="frame" holds one reading; fetch each spec on its own for its frame'
+        raise client_error(
+            INVALID_ARGUMENT,
+            'layout="frame" holds one reading; fetch each spec on its own for its '
+            "frame",
         )
     if offline():
-        raise NetworkError(
+        raise client_error(
+            OFFLINE,
             "DFO_OFFLINE=1 is set, and a spec builds its latest version on the "
-            "server; fetch a DatasetRef to read a stored version from the cache"
+            "server; fetch a DatasetRef to read a stored version from the cache",
         )
     deadline = transport.deadline(timeout)
     # Groups resolved for the answer's places do not hold for places rebound here.
@@ -403,9 +409,10 @@ async def _finish(
     _note_warnings(manifest, strict=strict)
     artifact = pick_artifact(manifest, rendering)
     if artifact is None:
-        raise ContractError(
+        raise client_error(
+            CONTRACT_VIOLATION,
             f"The manifest of {spec_id} at {content_version} lists no "
-            f"{rendering_options(rendering)} artifact"
+            f"{rendering_options(rendering)} artifact",
         )
     parts = () if want is None else want.parts
     sentence = None if want is None else want.sentence or want.spec.sentence
@@ -476,6 +483,12 @@ async def _download(
     The route answers a redirect to a signed storage URL, fetched with a bare
     request. A signed fetch that fails, or bytes that do not hash to `digest`,
     ask the route once more for a fresh URL rather than retrying the old one.
+
+    Raises:
+        ServerError: The bytes did not hash to `digest` on either attempt
+            (`digest_mismatch`), or the signed fetch failed on both.
+        ContractError: The route answered neither 200 nor a redirect with a
+            Location.
     """
     failure: DfoError | None = None
     for _ in range(2):
@@ -487,9 +500,11 @@ async def _download(
         elif response.status_code in _REDIRECTS:
             location = response.headers.get("location")
             if not location:
-                raise ContractError(
+                raise client_error(
+                    CONTRACT_VIOLATION,
                     f"GET {target} answered HTTP {response.status_code} "
-                    "with no Location"
+                    "with no Location",
+                    status=response.status_code,
                 )
             try:
                 data = await transport.download(location, deadline=deadline)
@@ -499,14 +514,16 @@ async def _download(
                 failure = error
                 continue
         else:
-            raise ContractError(
+            raise client_error(
+                UNEXPECTED_RESPONSE,
                 f"GET {target} answered HTTP {response.status_code}; "
-                "a file route answers a redirect"
+                "a file route answers a redirect",
+                status=response.status_code,
             )
         if (found := digest_of(data)) == digest:
             return data
-        failure = _DigestMismatchError(
-            f"The file at {target} hashes to {found}, not {digest}"
+        failure = client_error(
+            DIGEST_MISMATCH, f"The file at {target} hashes to {found}, not {digest}"
         )
     assert failure is not None
     raise failure
@@ -542,9 +559,10 @@ async def _sentence(
         if len(resolved) == 1 and isinstance(part := resolved[0], DefinitePart):
             found = part.spec
     if found is None or found.spec_id != spec_id or not found.sentence:
-        raise ContractError(
+        raise client_error(
+            CONTRACT_VIOLATION,
             f"Search did not resolve the built identity {spec_id} to itself "
-            "with a sentence"
+            "with a sentence",
         )
     return found.sentence
 
@@ -561,9 +579,10 @@ async def _fetch_ref(
 ) -> Dataset:
     ref_layout = _ref_layout(ref)
     if layout is not None and layout != ref_layout:
-        raise InvalidRequestError(
+        raise client_error(
+            INVALID_ARGUMENT,
             f'The DatasetRef holds the {ref_layout} layout, not "{layout}"; '
-            "fetch its specs for another layout"
+            "fetch its specs for another layout",
         )
     deadline = transport.deadline(timeout)
     stale = offline()
@@ -589,15 +608,17 @@ def _ref_layout(ref: DatasetRef) -> Layout:
     layouts = set()
     for member in ref.members:
         if member.rendering.format != "parquet" or member.rendering.bundle:
-            raise InvalidRequestError(
+            raise client_error(
+                INVALID_ARGUMENT,
                 f"The DatasetRef stores {member.spec.spec_id} as "
                 f"{rendering_options(member.rendering)}; this client reads bare "
-                "Parquet versions"
+                "Parquet versions",
             )
         layouts.add(layout_of(member.rendering))
     if "frame" in layouts and len(ref.members) > 1:
-        raise InvalidRequestError(
-            'layout="frame" holds one reading, and this DatasetRef holds several'
+        raise client_error(
+            INVALID_ARGUMENT,
+            'layout="frame" holds one reading, and this DatasetRef holds several',
         )
     return layouts.pop()
 
@@ -622,8 +643,8 @@ async def _fetch_version(
             _note_warnings(manifest, strict=strict)
             return _stored(member, manifest, data)
     if cache_only:
-        raise NetworkError(
-            f"DFO_OFFLINE=1 is set, and the cache lacks {spec_id} at {version}"
+        raise client_error(
+            OFFLINE, f"DFO_OFFLINE=1 is set, and the cache lacks {spec_id} at {version}"
         )
     refusal: DfoError | None = None
 
@@ -718,9 +739,9 @@ async def _stored_file(
             params=rendering_options(member.rendering),
             deadline=deadline,
         )
-    except _DigestMismatchError:
-        return None, refusal
     except DfoError as error:
+        if error.code == DIGEST_MISMATCH.code:
+            return None, refusal
         if error.code not in _FILE_GONE:
             raise
         return None, refusal or error
@@ -766,7 +787,7 @@ def _unavailable(
         message += f"; the newest version is {newest}. Fetch the spec for it"
     message += "."
     if refusal is None:
-        error = VersionUnavailableError(message)
+        error = client_error(VERSION_UNAVAILABLE, message)
     else:
         error = VersionUnavailableError(
             message,

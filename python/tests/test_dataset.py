@@ -199,12 +199,6 @@ def test_departures_and_operations_come_from_the_answer_parts() -> None:
     assert data.requested_operations == (operation,)
 
 
-def test_bytes_that_differ_from_the_digest_are_refused() -> None:
-    member = recorded_member(data=PARQUET.read_bytes() + b"\0")
-    with pytest.raises(ContractError, match="does not hash"):
-        one(member)
-
-
 def test_a_manifest_without_the_artifact_is_refused() -> None:
     member = recorded_member()
     member.manifest["artifacts"] = member.manifest["artifacts"][1:]

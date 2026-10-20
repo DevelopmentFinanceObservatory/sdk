@@ -15,7 +15,8 @@ from typing import Any, Literal, Protocol
 
 import httpx2
 
-from dfo._errors import ContractError
+from dfo._error_map import CONTRACT_VIOLATION, INVALID_ARGUMENT, UNEXPECTED_RESPONSE
+from dfo._errors import client_error
 from dfo._parse import check_manifest, check_operation
 from dfo._types import Part, Rendering, Spec
 
@@ -69,7 +70,10 @@ class Cache(Protocol):
     """The local store a fetch reads before the network and writes after it."""
 
     def get_bytes(self, digest: str, /) -> bytes | None:
-        """The bytes stored under `digest`, or None."""
+        """The bytes stored under `digest`, or None when absent or not hashing to it.
+
+        A damaged entry reads as a miss, so the fetch downloads it again.
+        """
         ...
 
     def put_bytes(self, digest: str, data: bytes, /) -> None:
@@ -103,10 +107,12 @@ def rendering_for(layout: str) -> Rendering:
     """The bare Parquet rendering both clients build for `layout`.
 
     Raises:
-        ValueError: `layout` is neither `long` nor `frame`.
+        InvalidRequestError: `layout` is neither `long` nor `frame`.
     """
     if layout not in _LAYOUTS:
-        raise ValueError(f'layout is "long" or "frame", not {layout!r}')
+        raise client_error(
+            INVALID_ARGUMENT, f'layout is "long" or "frame", not {layout!r}'
+        )
     return Rendering("parquet", False, "frame" if layout == "frame" else None)
 
 
@@ -141,9 +147,9 @@ def scope(
         The scope object, or None when the fetch narrows nothing.
 
     Raises:
-        TypeError: An entity role is bound to a string instead of a sequence of
-            dcids.
-        ValueError: The window is neither a known kind nor a pair of years.
+        InvalidRequestError: The window is neither a known kind nor a pair of
+            years, or an entity role is bound to a string instead of a sequence
+            of dcids.
     """
     result: dict[str, Any] = {}
     if window is not None:
@@ -164,8 +170,9 @@ def _window(window: Window) -> dict[str, Any]:
         ) and not isinstance(end, bool):
             return {"kind": "range", "start_year": start, "end_year": end}
         case _:
-            raise ValueError(
-                f'window is "all", "latest" or (start_year, end_year), not {window!r}'
+            raise client_error(
+                INVALID_ARGUMENT,
+                f'window is "all", "latest" or (start_year, end_year), not {window!r}',
             )
 
 
@@ -173,9 +180,10 @@ def _entities(entities: Mapping[str, Sequence[str]]) -> dict[str, list[str]]:
     bound = {}
     for role, dcids in entities.items():
         if isinstance(dcids, str):
-            raise TypeError(
+            raise client_error(
+                INVALID_ARGUMENT,
                 f"entities[{role!r}] is a string; bind the role to a list of dcids, "
-                f"such as [{dcids!r}]"
+                f"such as [{dcids!r}]",
             )
         bound[role] = list(dcids)
     return bound
@@ -286,7 +294,7 @@ def read_operation(resource: Wire) -> OperationState:
     status = operation["status"]
     manifest = resource.get("manifest")
     if status == "done":
-        check_manifest(manifest)
+        check_manifest(manifest, "/manifest")
     wait = operation.get("retry_after_ms")
     progress = operation.get("progress")
     error = resource.get("error")
@@ -323,9 +331,10 @@ def check_built(manifest: Wire, spec_id: str, content_version: str) -> None:
     """
     built = (manifest["definition"]["spec_id"], manifest["content_version"])
     if built != (spec_id, content_version):
-        raise ContractError(
+        raise client_error(
+            CONTRACT_VIOLATION,
             f"The server answered {built[0]} at {built[1]} for "
-            f"{spec_id} at {content_version}"
+            f"{spec_id} at {content_version}",
         )
 
 
@@ -338,7 +347,10 @@ def response_json(response: httpx2.Response) -> Any:
     try:
         return response.json()
     except ValueError as error:
-        raise ContractError(
+        raise client_error(
+            UNEXPECTED_RESPONSE,
             f"{response.request.method} {response.request.url.path} answered "
-            f"HTTP {response.status_code} with a body that is not JSON"
+            f"HTTP {response.status_code} with a body that is not JSON",
+            status=response.status_code,
+            trace_id=response.headers.get("x-dfo-trace-id"),
         ) from error

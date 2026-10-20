@@ -7,7 +7,7 @@ from dfo._build import (
     rendering_for,
     scope,
 )
-from dfo._errors import ContractError
+from dfo._errors import ContractError, InvalidRequestError
 from dfo._types import Rendering
 
 from ._fetch_support import OP_ID, operation
@@ -39,20 +39,23 @@ def test_narrowing_maps_to_the_build_scope(narrowing, expected) -> None:
 
 @pytest.mark.parametrize("window", ["2020", (2020,), (2020, "2023"), (True, 2023)])
 def test_a_malformed_window_is_refused(window) -> None:
-    with pytest.raises(ValueError, match="window"):
+    with pytest.raises(InvalidRequestError, match="window") as caught:
         scope(window=window)
+    assert caught.value.code == "invalid_argument"
 
 
 def test_a_role_bound_to_a_string_is_refused() -> None:
-    with pytest.raises(TypeError, match=r"\['country/NGA'\]"):
+    with pytest.raises(InvalidRequestError, match=r"\['country/NGA'\]") as caught:
         scope(entities={"recipient": "country/NGA"})
+    assert caught.value.code == "invalid_argument"
 
 
 def test_each_layout_builds_bare_parquet() -> None:
     assert rendering_for("long") == Rendering("parquet", False)
     assert rendering_for("frame") == Rendering("parquet", False, "frame")
-    with pytest.raises(ValueError, match="layout"):
+    with pytest.raises(InvalidRequestError, match="layout") as caught:
         rendering_for("wide")
+    assert caught.value.code == "invalid_argument"
 
 
 def test_an_operation_reads_its_pacing_and_progress() -> None:

@@ -65,6 +65,8 @@ SUBS: tuple[tuple[str, str], ...] = (
     ("AsyncSleep", "Sleep"),
     ("async_sleep", "sync_sleep"),
     ("aclose", "close"),
+    ("_afetch", "_fetch"),
+    ("afetch", "fetch"),
     ("__aenter__", "__enter__"),
     ("__aexit__", "__exit__"),
     ("pytestmark = pytest.mark.anyio", ""),

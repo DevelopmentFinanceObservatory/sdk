@@ -261,8 +261,20 @@ async def test_unknown_and_unsupported_parts_are_gaps() -> None:
 async def test_an_unknown_answer_kind_raises_contract_error() -> None:
     wire = load("search-1.json")
     wire["kind"] = "essay"
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError) as caught:
         await ask("ODA", wire)
+    assert (caught.value.code, caught.value.pointer) == ("contract_violation", None)
+
+
+async def test_a_part_without_its_payload_names_the_member_missing() -> None:
+    wire = load("search-two-parts-candidates.json")
+    del wire["parts"][1]["candidates"]["specs"][2]["definition"]
+    with pytest.raises(ContractError) as caught:
+        await ask(TWO_PARTS, wire)
+    assert (caught.value.code, caught.value.pointer) == (
+        "contract_violation",
+        "/parts/1/candidates/specs/2/definition",
+    )
 
 
 async def test_choosing_a_candidate_in_a_one_part_answer_sends_no_request() -> None:
@@ -307,6 +319,45 @@ async def test_a_candidate_choice_beside_a_definite_part_posts_dataset_resubmit(
         "gaps": [],
     }
     assert chosen.specs[1] == answer.parts[1].candidates[0].spec
+
+
+async def test_a_candidate_fetches_as_the_answer_that_chooses_it(
+    fetched: list[tuple[Any, Any, Any]],
+) -> None:
+    answer, server = await ask(
+        "GNI of Germany from 2015 to 2022", load("search-2.json")
+    )
+    (part,) = answer.parts
+    assert isinstance(part, CandidatesPart)
+    assert await part.candidates[1].afetch(layout="long", timeout=10.0) == "dataset"
+    assert await (await answer.choose(1)).fetch(layout="long", timeout=10.0) == (
+        "dataset"
+    )
+    assert len(server.posted) == 1
+    (_, by_candidate, options), (_, by_choice, chosen_options) = fetched
+    assert by_candidate == by_choice
+    assert options == chosen_options
+    assert [m.spec for m in by_candidate] == [part.candidates[1].spec]
+
+
+async def test_a_candidate_beside_a_definite_part_fetches_only_its_reading(
+    fetched: list[tuple[Any, Any, Any]],
+) -> None:
+    answer, server = await ask(TWO_PARTS, load("search-two-parts-candidates.json"))
+    part = answer.parts[1]
+    assert isinstance(part, CandidatesPart)
+    candidate = part.candidates[0]
+    with pytest.warns(SearchWarning, match="direction was dropped"):
+        assert await candidate.afetch(layout="frame") == "dataset"
+    with pytest.raises(SearchWarning):
+        await candidate.afetch(strict=True)
+    ((_, members, options),) = fetched
+    assert [(m.parts, m.spec, m.sentence) for m in members] == [
+        (("gross national income",), candidate.spec, candidate.sentence)
+    ]
+    assert (options["layout"], options["missing"]) == ("frame", ())
+    assert len(server.posted) == 1
+    assert answer.gaps[0].part.candidates == part.candidates
 
 
 async def test_a_place_choice_in_a_one_part_answer_posts_the_option_unchanged() -> None:
@@ -388,6 +439,7 @@ async def test_a_choice_that_cannot_be_made_raises_invalid_request(
     with pytest.raises(InvalidRequestError) as caught:
         await answer.choose(*call)
     assert str(caught.value).startswith(error)
+    assert caught.value.code == "choice_invalid"
     assert len(server.posted) == 1
 
 
@@ -466,6 +518,7 @@ async def test_fetch_of_an_incomplete_answer_raises_before_any_build(
     )
     assert caught.value.answer is answer
     assert caught.value.gaps == answer.gaps
+    assert caught.value.code == "answer_incomplete"
     assert fetched == []
 
 
@@ -494,6 +547,7 @@ async def test_fetch_of_a_declined_or_catalogue_answer_raises_declined(
     with pytest.raises(DeclinedError) as caught:
         await answer.fetch()
     assert caught.value.detail == load(body).get("reason", "catalogue")
+    assert caught.value.code == "answer_declined"
     assert str(caught.value) == repr(answer)
     assert answer.sentence is None
     assert fetched == []

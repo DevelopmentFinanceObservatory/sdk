@@ -16,18 +16,17 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx2
 
+from dfo._error_map import DEADLINE_EXCEEDED, DOWNLOAD_FAILED, NETWORK_ERROR
 from dfo._errors import (
     DfoDeprecationWarning,
     DfoError,
-    DfoTimeoutError,
     DfoWarning,
-    NetworkError,
-    ServerError,
-    problem_error,
+    client_error,
     warn_once,
 )
 from dfo._hooks import AsyncHeaderProvider, AsyncSleep, Clock, async_sleep, monotonic
 from dfo._keys import ApiKeyArgument, KeyState, ResolvedKey
+from dfo._refusals import problem_error
 from dfo._version import __version__
 
 DEFAULT_BASE_URL = "https://developmentfinance.org/api/v1"
@@ -202,7 +201,9 @@ class AsyncTransport:
             return limit
         remaining = deadline - self._clock()
         if remaining <= 0:
-            raise DfoTimeoutError("The call's deadline passed before it finished")
+            raise client_error(
+                DEADLINE_EXCEEDED, "The call's deadline passed before it finished"
+            )
         return min(limit, remaining)
 
     async def _headers(self, extra: Mapping[str, str] | None) -> httpx2.Headers:
@@ -304,12 +305,14 @@ class AsyncTransport:
             try:
                 response = await self._http.send(request)
             except httpx2.TimeoutException as exc:
-                error: DfoError = DfoTimeoutError(
-                    f"{method} {url} timed out", retryable=True
+                error: DfoError = client_error(
+                    DEADLINE_EXCEEDED, f"{method} {url} timed out", retryable=True
                 )
                 error.__cause__ = exc
             except httpx2.TransportError as exc:
-                error = NetworkError(f"{method} {url} failed: {exc}", retryable=True)
+                error = client_error(
+                    NETWORK_ERROR, f"{method} {url} failed: {exc}", retryable=True
+                )
                 error.__cause__ = exc
             else:
                 self._note_headers(method, response)
@@ -351,15 +354,16 @@ class AsyncTransport:
         try:
             response = await self._http.send(request)
         except httpx2.TimeoutException as exc:
-            raise DfoTimeoutError(
-                "The signed download timed out", retryable=True
+            raise client_error(
+                DEADLINE_EXCEEDED, "The signed download timed out", retryable=True
             ) from exc
         except httpx2.TransportError as exc:
-            raise NetworkError(
-                f"The signed download failed: {exc}", retryable=True
+            raise client_error(
+                NETWORK_ERROR, f"The signed download failed: {exc}", retryable=True
             ) from exc
         if response.status_code != 200:
-            raise ServerError(
+            raise client_error(
+                DOWNLOAD_FAILED,
                 f"The signed download answered HTTP {response.status_code}",
                 status=response.status_code,
                 retryable=True,

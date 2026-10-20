@@ -1,13 +1,15 @@
 """The parser over recorded dev bodies, the contract's scenarios and edited copies."""
 
 import json
+import re
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 import pytest
 
 from dfo import _strict
-from dfo._errors import ContractError
+from dfo._errors import ContractError, InvalidRequestError
 from dfo._parse import (
     check_manifest,
     check_operation,
@@ -302,8 +304,12 @@ def test_a_missing_or_null_strict_member_raises(
         target[f"{member}_v2"] = value
     else:
         target[member] = None
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError) as caught:
         reader(body)
+    assert (caught.value.code, caught.value.pointer) == (
+        "contract_violation",
+        "".join(f"/{step}" for step in (*path, member)),
+    )
 
 
 def test_a_part_without_status_raises() -> None:
@@ -377,3 +383,21 @@ def test_scenario_bodies_parse(
         check_manifest(json_body)
     else:
         pytest.fail(f"no reader for {status} from {path}")
+
+
+def test_a_candidate_from_no_answer_or_the_other_client_names_the_call() -> None:
+    (part,) = parse_parts(load("search-2.json"))
+    assert isinstance(part, CandidatesPart)
+    unbound = part.candidates[0]
+
+    async def build(candidate: object, /, **options: object) -> object:
+        raise AssertionError("an async candidate built through fetch()")
+
+    bound = replace(unbound, _afetch=build)
+    for candidate, hint in [
+        (unbound, "dfo.fetch(candidate.spec)"),
+        (bound, "afetch()"),
+    ]:
+        with pytest.raises(InvalidRequestError, match=re.escape(hint)) as caught:
+            candidate.fetch()
+        assert caught.value.code == "invalid_argument"

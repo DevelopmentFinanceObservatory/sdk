@@ -10,6 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import gen_errors
 import gen_sync
 
+from dfo._errors import ClientCode, ServerError
+
 
 def test_the_token_map_rewrites_async_source() -> None:
     generator = gen_sync.Generator()
@@ -101,9 +103,42 @@ def test_the_error_map_takes_its_literals_from_the_schema() -> None:
             }
         }
     }
-    source = gen_errors.render(actions, schema)
+    client_codes = {
+        "format_version": 1,
+        "codes": [
+            {"code": "a_failure", "class": "ServerError", "condition": "A."},
+            {"code": "no_code", "class": "by_status", "condition": "B."},
+        ],
+    }
+    source = gen_errors.render(actions, schema, client_codes)
     namespace: dict[str, object] = {}
     exec(compile(source, "_error_map.py", "exec"), namespace)
     assert namespace["ACTIONS"] == {"a_code": "fix_request", "b_code": "choose"}
     assert namespace["GAP_KINDS"] == {"b_code": "choice"}
     assert '"new_action"' in source
+    assert namespace["A_FAILURE"] == ClientCode("a_failure", ServerError)
+    assert namespace["NO_CODE"] == "no_code"
+
+
+def test_the_error_map_refuses_client_codes_without_one_by_status_row() -> None:
+    client_codes = {
+        "format_version": 1,
+        "codes": [{"code": "a_failure", "class": "ServerError", "condition": "A."}],
+    }
+    with pytest.raises(SystemExit, match="by_status"):
+        gen_errors.render(
+            {"format_version": 1, "codes": [{"code": "c", "action": "report"}]},
+            {
+                "properties": {
+                    "codes": {
+                        "items": {
+                            "properties": {
+                                "action": {"enum": ["report"]},
+                                "gap_kind": {"enum": []},
+                            }
+                        }
+                    }
+                }
+            },
+            client_codes,
+        )

@@ -14,7 +14,12 @@ from dataclasses import dataclass
 from typing import Literal, NoReturn, Self
 
 from dfo._credentials import CredentialsFileError, read_profiles
-from dfo._errors import AuthenticationError, DfoWarning, warn
+from dfo._error_map import (
+    CREDENTIALS_FILE_INVALID,
+    PROFILE_NOT_FOUND,
+    PROFILE_WITHOUT_KEY,
+)
+from dfo._errors import DfoWarning, client_error, warn
 from dfo._paths import credentials_path
 
 type KeyFormatProblem = Literal["unknown_prefix", "not_base62", "checksum_mismatch"]
@@ -143,10 +148,10 @@ def _from_file(path: str, env: Mapping[str, str]) -> ResolvedKey | None:
     try:
         profiles = read_profiles(path)
     except CredentialsFileError as error:
-        raise AuthenticationError(
+        raise client_error(
+            CREDENTIALS_FILE_INVALID,
             f"The credentials file {path} is invalid at line {error.line} "
             f"({error.reason}). Fix it, or remove it and run `dfo auth login`.",
-            code="credentials_file_invalid",
         ) from error
     if profiles is None:
         return None
@@ -156,16 +161,16 @@ def _from_file(path: str, env: Mapping[str, str]) -> ResolvedKey | None:
     if entries is None:
         if named is None:
             return None
-        raise AuthenticationError(
+        raise client_error(
+            PROFILE_NOT_FOUND,
             f"DFO_PROFILE names the profile {profile!r}, which {path} lacks. "
             f"Run `dfo auth login` with DFO_PROFILE={profile} to add it.",
-            code="profile_not_found",
         )
     if "key" not in entries:
-        raise AuthenticationError(
+        raise client_error(
+            PROFILE_WITHOUT_KEY,
             f"The profile {profile!r} in {path} has no key. "
             f"Run `dfo auth login` with DFO_PROFILE={profile} to add one.",
-            code="profile_without_key",
         )
     return ResolvedKey("credentials_file", ApiKey(entries["key"]), path, profile)
 

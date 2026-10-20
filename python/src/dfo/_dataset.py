@@ -20,8 +20,8 @@ from typing import TYPE_CHECKING, Any, Literal
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from dfo._cache import sha256_digest
-from dfo._errors import ContractError
+from dfo._error_map import CONTRACT_VIOLATION
+from dfo._errors import client_error
 from dfo._parse import parse_citation, parse_notices, parse_part
 from dfo._types import (
     Citation,
@@ -82,7 +82,9 @@ class FetchedMember:
         manifest: The build's manifest, decoded and untouched.
         digest: The digest of the downloaded artifact, `sha256:<hex>`, one of the
             manifest's `artifacts[].artifact_digest`.
-        data: The artifact's bytes: a bare Parquet file.
+        data: The artifact's bytes, a bare Parquet file, already checked against
+            `digest`: a download that misses it raises `ServerError`
+            (`digest_mismatch`), and a cache entry that misses it is a miss.
         answer_parts: The answer parts the member answers, when it came from an
             answer; their departures and requested operations reach the dataset.
     """
@@ -318,8 +320,7 @@ def build_dataset(
 ) -> Dataset:
     """Make one dataset from the members a fetch built and downloaded.
 
-    Each member's bytes are checked against its digest, and its manifest must list
-    that artifact. Several members stack into one long table, a `part` column
+    Each member's manifest must list the artifact its bytes came from. Several members stack into one long table, a `part` column
     first, holding each member's parts joined by "; " (its sentence when it
     answers no part); columns one member lacks are null in its rows.
 
@@ -332,8 +333,7 @@ def build_dataset(
 
     Raises:
         ValueError: No members, or several members in the frame layout.
-        ContractError: A member's bytes do not match its digest, or its manifest
-            does not list the artifact.
+        ContractError: A member's manifest does not list the artifact.
     """
     if not members:
         raise ValueError("a dataset needs at least one member")
@@ -347,11 +347,6 @@ def build_dataset(
     retentions: list[Mapping[str, Any] | None] = []
     warnings: list[Notice] = []
     for fetched in members:
-        if sha256_digest(fetched.data) != fetched.digest:
-            raise ContractError(
-                f"the artifact for {fetched.spec.spec_id} does not hash to "
-                f"{fetched.digest}"
-            )
         artifact = _artifact(fetched.manifest, fetched.digest)
         layouts.append(str(artifact["rendering"].get("layout", layout)))
         built.append(
@@ -457,7 +452,7 @@ def _artifact(manifest: Mapping[str, Any], digest: str) -> Mapping[str, Any]:
             and isinstance(artifact.get("rendering"), Mapping)
         ):
             return artifact
-    raise ContractError(f"the manifest lists no artifact {digest}")
+    raise client_error(CONTRACT_VIOLATION, f"the manifest lists no artifact {digest}")
 
 
 def _with_part(table: pa.Table, label: str) -> pa.Table:

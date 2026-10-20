@@ -15,6 +15,7 @@ from dfo import _errors
 from dfo._errors import (
     AuthenticationError,
     DfoDeprecationWarning,
+    DfoError,
     DfoTimeoutError,
     DfoWarning,
     InvalidRequestError,
@@ -186,7 +187,7 @@ async def test_a_failed_download_is_not_retried() -> None:
     async with make(recorder) as transport:
         with pytest.raises(ServerError) as caught:
             await transport.download(SIGNED)
-    assert caught.value.status == 403
+    assert (caught.value.status, caught.value.code) == (403, "download_failed")
     assert len(recorder.requests) == 1
 
 
@@ -312,6 +313,7 @@ async def test_a_passed_deadline_raises_a_timeout_error() -> None:
         with pytest.raises(DfoTimeoutError) as caught:
             await transport.request("GET", "/datasets/schema", deadline=deadline)
     assert isinstance(caught.value, TimeoutError)
+    assert caught.value.code == "deadline_exceeded"
     assert recorder.requests == []
 
 
@@ -323,6 +325,7 @@ async def test_connection_failures_retry_then_raise_a_network_error() -> None:
             await transport.request("GET", "/datasets/schema")
     assert isinstance(caught.value, ConnectionError)
     assert isinstance(caught.value.__cause__, httpx2.ConnectError)
+    assert caught.value.code == "network_error"
     assert timeline.sleeps == [0.5, 1.0]
 
 
@@ -332,6 +335,7 @@ async def test_a_timed_out_attempt_raises_a_timeout_error() -> None:
         with pytest.raises(DfoTimeoutError) as caught:
             await transport.request("GET", "/datasets/schema")
     assert isinstance(caught.value, TimeoutError)
+    assert caught.value.code == "deadline_exceeded"
 
 
 async def test_a_401_resolves_the_key_again_and_retries_once_with_a_new_key() -> None:
@@ -422,18 +426,19 @@ async def test_invalid_options_are_refused(options: dict[str, object]) -> None:
 
 
 @pytest.mark.parametrize(
-    ("failure", "error"),
+    ("failure", "error", "code"),
     [
-        (httpx2.ReadTimeout("slow"), DfoTimeoutError),
-        (httpx2.ConnectError("x"), NetworkError),
+        (httpx2.ReadTimeout("slow"), DfoTimeoutError, "deadline_exceeded"),
+        (httpx2.ConnectError("x"), NetworkError, "network_error"),
     ],
 )
 async def test_a_download_that_cannot_connect_raises(
-    failure: Exception, error: type[Exception]
+    failure: Exception, error: type[DfoError], code: str
 ) -> None:
     async with make(Recorder(failure)) as transport:
-        with pytest.raises(error):
+        with pytest.raises(error) as caught:
             await transport.download(SIGNED)
+    assert caught.value.code == code
 
 
 async def test_the_transport_sleeps_and_reads_the_clock_it_was_given() -> None:

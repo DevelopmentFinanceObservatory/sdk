@@ -1,7 +1,8 @@
 """Read decoded response bodies into the public data classes.
 
 The parser reads the plain dicts `json.loads` returns. It checks the members the
-client acts on through `dfo._strict.require`, which raises `ContractError`, and reads
+client acts on through `dfo._strict.require`, which raises `ContractError` with the
+JSON Pointer of the missing member, and reads
 everything else tolerantly: an unknown member is ignored, an unknown enum value
 passes through as a string, and a part with an unknown status becomes `UnknownPart`.
 Server JSON the client posts back, such as a spec's `definition`, is kept as decoded.
@@ -11,7 +12,9 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from dfo import _strict
-from dfo._strict import ContractError, require
+from dfo._error_map import CONTRACT_VIOLATION
+from dfo._errors import ContractError, client_error
+from dfo._strict import require
 from dfo._types import (
     Candidate,
     CandidatesPart,
@@ -43,38 +46,47 @@ def parse_parts(resolution: Wire, /) -> tuple[Part, ...]:
     """
     parts = require(resolution, "Resolution")["parts"]
     if not isinstance(parts, list):
-        raise ContractError("Resolution.parts is not an array in the response")
-    return tuple(parse_part(part) for part in parts)
+        raise _violation("Resolution.parts is not an array in the response")
+    return tuple(
+        parse_part(part, f"/parts/{index}") for index, part in enumerate(parts)
+    )
 
 
-def parse_part(part: object, /) -> Part:
+def parse_part(part: object, pointer: str = "", /) -> Part:
     """One answer part, read by its `status`.
+
+    Args:
+        part: The decoded part.
+        pointer: The part's JSON Pointer in the response body.
 
     Raises:
         ContractError: The part is not an object, has no status, or lacks a
             member its status requires.
     """
     if not isinstance(part, Mapping):
-        raise ContractError("a part is not an object in the response")
+        raise _violation(f"the part at {pointer or '/'} is not an object")
     status = part.get("status")
     if not isinstance(status, str):
-        raise ContractError("a part's status is missing or not a string")
+        raise _violation(
+            f"the part at {pointer or '/'} has no status, or one that is not a string",
+            pointer=f"{pointer}/status",
+        )
     reader = _PART_READERS.get(status)
     if reader is None:
         return UnknownPart(**_part_fields(part, status))
-    return reader(part)
+    return reader(part, pointer)
 
 
-def parse_spec(spec: object, /) -> Spec:
+def parse_spec(spec: object, pointer: str = "", /) -> Spec:
     """A spec, with Search's sentence for it when the response carries one.
 
     Raises:
         ContractError: `spec_id` or `definition` is missing, null or inconsistent.
     """
-    spec = require(spec, "Spec")
-    definition = require(spec["definition"], "SpecDefinition")
+    spec = require(spec, "Spec", pointer)
+    definition = require(spec["definition"], "SpecDefinition", f"{pointer}/definition")
     if definition["spec_id"] != spec["spec_id"]:
-        raise ContractError(
+        raise _violation(
             f"Spec.definition.spec_id is {definition['spec_id']}, "
             f"not the spec's {spec['spec_id']}"
         )
@@ -88,7 +100,7 @@ def parse_spec(spec: object, /) -> Spec:
     )
 
 
-def parse_candidate(spec: object, /) -> Candidate:
+def parse_candidate(spec: object, pointer: str = "", /) -> Candidate:
     """One reading of a candidates part, from its full spec.
 
     The label is the sentence's heading segment, and the unit is the byline's unit
@@ -97,8 +109,8 @@ def parse_candidate(spec: object, /) -> Candidate:
     Raises:
         ContractError: `spec_id` or `definition` is missing, null or inconsistent.
     """
-    spec = require(spec, "Spec")
-    parsed = parse_spec(spec)
+    spec = require(spec, "Spec", pointer)
+    parsed = parse_spec(spec, pointer)
     resolved = _object(spec.get("resolved"))
     tokens = [
         token
@@ -192,21 +204,25 @@ def parse_citation(citation: object, /) -> Citation:
     )
 
 
-def check_manifest(manifest: object, /) -> None:
+def check_manifest(manifest: object, pointer: str = "", /) -> None:
     """Check the members of a manifest that a fetch acts on.
+
+    Args:
+        manifest: The decoded manifest.
+        pointer: The manifest's JSON Pointer in the response body.
 
     Raises:
         ContractError: The definition, its `spec_id`, the `content_version`, the
             artifact list, or an artifact's digest, rendering or URL is missing or
             null.
     """
-    manifest = require(manifest, "Manifest")
-    require(manifest["definition"], "DefinitionModel")
+    manifest = require(manifest, "Manifest", pointer)
+    require(manifest["definition"], "DefinitionModel", f"{pointer}/definition")
     artifacts = manifest["artifacts"]
     if not isinstance(artifacts, list):
-        raise ContractError("Manifest.artifacts is not an array in the response")
-    for artifact in artifacts:
-        require(artifact, "ArtifactEntryModel")
+        raise _violation("Manifest.artifacts is not an array in the response")
+    for index, artifact in enumerate(artifacts):
+        require(artifact, "ArtifactEntryModel", f"{pointer}/artifacts/{index}")
 
 
 def check_operation(resource: object, /) -> None:
@@ -215,32 +231,46 @@ def check_operation(resource: object, /) -> None:
     Raises:
         ContractError: The operation, its id or its status is missing or null.
     """
-    require(require(resource, "OperationResource")["operation"], "OperationEnvelope")
+    resource = require(resource, "OperationResource")
+    require(resource["operation"], "OperationEnvelope", "/operation")
 
 
-def _definite(part: Wire) -> Part:
-    spec = parse_spec(require(part, "DefinitePart")["spec"])
+def _violation(message: str, /, *, pointer: str | None = None) -> ContractError:
+    error = client_error(CONTRACT_VIOLATION, message)
+    error.pointer = pointer
+    return error
+
+
+def _definite(part: Wire, pointer: str) -> Part:
+    spec = parse_spec(require(part, "DefinitePart", pointer)["spec"], f"{pointer}/spec")
     fields = _part_fields(part, _strict.DEFINITE_PART_STATUS)
     fields["sentence"] = spec.sentence
     return DefinitePart(spec=spec, **fields)
 
 
-def _candidates(part: Wire) -> Part:
+def _candidates(part: Wire, pointer: str) -> Part:
     candidate_set = require(
-        require(part, "CandidatesPart")["candidates"], "CandidateSet"
+        require(part, "CandidatesPart", pointer)["candidates"],
+        "CandidateSet",
+        f"{pointer}/candidates",
     )
     specs = candidate_set["specs"]
     if not isinstance(specs, list):
-        raise ContractError("CandidateSet.specs is not an array in the response")
+        raise _violation("CandidateSet.specs is not an array in the response")
     return CandidatesPart(
-        candidates=tuple(parse_candidate(spec) for spec in specs),
+        candidates=tuple(
+            parse_candidate(spec, f"{pointer}/candidates/specs/{index}")
+            for index, spec in enumerate(specs)
+        ),
         truncated=candidate_set.get("truncated") is True,
         **_part_fields(part, _strict.CANDIDATES_PART_STATUS),
     )
 
 
-def _no_data(part: Wire) -> Part:
-    no_data = require(require(part, "NoDataPart")["no_data"], "NoData")
+def _no_data(part: Wire, pointer: str) -> Part:
+    no_data = require(
+        require(part, "NoDataPart", pointer)["no_data"], "NoData", f"{pointer}/no_data"
+    )
     return NoDataPart(
         reason=_text(no_data["reason"]),
         message=_optional_text(no_data.get("message")),
@@ -249,9 +279,11 @@ def _no_data(part: Wire) -> Part:
     )
 
 
-def _unsupported(part: Wire) -> Part:
+def _unsupported(part: Wire, pointer: str) -> Part:
     unsupported = require(
-        require(part, "UnsupportedPart")["unsupported"], "Unsupported"
+        require(part, "UnsupportedPart", pointer)["unsupported"],
+        "Unsupported",
+        f"{pointer}/unsupported",
     )
     return UnsupportedPart(
         reason=_text(unsupported["code"]),
@@ -260,7 +292,7 @@ def _unsupported(part: Wire) -> Part:
     )
 
 
-_PART_READERS: Mapping[str, Callable[[Wire], Part]] = {
+_PART_READERS: Mapping[str, Callable[[Wire, str], Part]] = {
     _strict.DEFINITE_PART_STATUS: _definite,
     _strict.CANDIDATES_PART_STATUS: _candidates,
     _strict.NO_DATA_PART_STATUS: _no_data,

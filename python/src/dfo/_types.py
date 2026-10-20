@@ -7,9 +7,17 @@ sends what the server sent, and stays out of equality, hashing and `repr`.
 
 import json
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Self, override
+from typing import TYPE_CHECKING, Any, Literal, Protocol, Self, override
+
+from dfo._error_map import INVALID_ARGUMENT
+from dfo._errors import client_error
+
+if TYPE_CHECKING:
+    # Both modules read these classes, so the imports are for types only.
+    from dfo._build import Layout
+    from dfo._dataset import Dataset
 
 FORMAT_VERSION = 1
 SPEC_ID = re.compile(r"spec_[0-9a-f]{32}")
@@ -185,6 +193,111 @@ class Candidate:
     source: str | None
     unit: str | None
     raw: Mapping[str, Any] = field(repr=False, compare=False)
+    _fetch: "_CandidateFetch | None" = field(
+        default=None, repr=False, compare=False, kw_only=True
+    )
+    _afetch: "_AsyncCandidateFetch | None" = field(
+        default=None, repr=False, compare=False, kw_only=True
+    )
+
+    def fetch(
+        self,
+        *,
+        partial: bool = False,
+        strict: bool = False,
+        layout: "Layout" = "long",
+        timeout: float | None = 1800.0,
+        progress: bool | None = None,
+    ) -> "Dataset":
+        """Build this reading's dataset, through the `Answer` it came from.
+
+        The fetch is the one-part answer `answer.choose(part, candidate)` would
+        give, and takes `Answer.fetch`'s options.
+
+        Raises:
+            InvalidRequestError: The candidate came from an `AsyncAnswer`, whose
+                candidates fetch with `await candidate.afetch()`, or from no answer.
+        """
+        if self._fetch is None:
+            raise self._unbound("fetch")
+        return self._fetch(
+            self,
+            partial=partial,
+            strict=strict,
+            layout=layout,
+            timeout=timeout,
+            progress=progress,
+        )
+
+    async def afetch(
+        self,
+        *,
+        partial: bool = False,
+        strict: bool = False,
+        layout: "Layout" = "long",
+        timeout: float | None = 1800.0,
+        progress: bool | None = None,
+    ) -> "Dataset":
+        """Build this reading's dataset, through the `AsyncAnswer` it came from.
+
+        The async form of `fetch`; parts and candidates are shared by `Answer` and
+        `AsyncAnswer`, so each form has its own name.
+
+        Raises:
+            InvalidRequestError: The candidate came from an `Answer`, whose
+                candidates fetch with `candidate.fetch()`, or from no answer.
+        """
+        if self._afetch is None:
+            raise self._unbound("afetch")
+        return await self._afetch(
+            self,
+            partial=partial,
+            strict=strict,
+            layout=layout,
+            timeout=timeout,
+            progress=progress,
+        )
+
+    def _unbound(self, called: str) -> Exception:
+        if self._afetch is not None:
+            hint = "it came from an AsyncAnswer; await candidate.afetch()"
+        elif self._fetch is not None:
+            hint = "it came from an Answer; call candidate.fetch()"
+        else:
+            hint = (
+                "it came from no answer; fetch its spec with dfo.fetch(candidate.spec)"
+            )
+        return client_error(
+            INVALID_ARGUMENT, f"candidate.{called}() cannot build this reading: {hint}"
+        )
+
+
+class _CandidateFetch(Protocol):
+    def __call__(
+        self,
+        candidate: Candidate,
+        /,
+        *,
+        partial: bool,
+        strict: bool,
+        layout: "Layout",
+        timeout: float | None,
+        progress: bool | None,
+    ) -> "Dataset": ...
+
+
+class _AsyncCandidateFetch(Protocol):
+    def __call__(
+        self,
+        candidate: Candidate,
+        /,
+        *,
+        partial: bool,
+        strict: bool,
+        layout: "Layout",
+        timeout: float | None,
+        progress: bool | None,
+    ) -> Awaitable["Dataset"]: ...
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

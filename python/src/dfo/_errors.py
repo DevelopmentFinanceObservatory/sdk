@@ -1,34 +1,32 @@
-"""The errors and warnings a DFO client raises, and how a refusal maps to its class.
+"""The errors and warnings a DFO client raises.
 
-Each error class groups the refusal codes by what the caller does next. A code
-maps through `dfo._error_map`, generated from the contract's `actions.json`; a
-code the map lacks maps on its HTTP status.
+Each error class groups codes by what the caller does next. An error the client
+raises itself goes through `client_error`, which takes one of the `ClientCode`
+constants `dfo._error_map` generates from the contract's `client-codes.json`, so
+the code and its class come from one row. `dfo._refusals` reads a server refusal
+into its class.
 """
 
 import os
 import warnings
 from collections.abc import Hashable, Mapping
-from typing import Any, assert_never
-from urllib.parse import urljoin
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
-from dfo._error_map import ACTIONS, Action
-from dfo._types import Gap
+if TYPE_CHECKING:
+    # `dfo._types` raises through this module, so the import is for types only.
+    from dfo._types import Gap
 
 # Every warning skips the client's own frames, so it names the caller's line.
 _PACKAGE_PREFIX = os.path.dirname(__file__) + os.sep
-
-# Statuses worth another attempt when the body does not say `retryable`.
-_RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
-
-# The website proxy's `retry` value for a refusal that clears on its own.
-_PROXY_RETRY = "retry_after_delay"
 
 
 class DfoError(Exception):
     """The base of every error a DFO client raises.
 
     Attributes:
-        code: The refusal code from the problem document, or None.
+        code: The refusal's code from the server, or the client's own code from
+            the contract's `client-codes.json` for an error it raises itself.
         status: The HTTP status, or None when no response arrived.
         detail: The server's explanation of this occurrence, or None.
         trace_id: The request's trace id, to quote when reporting a fault.
@@ -81,7 +79,7 @@ class IncompleteAnswerError(DfoError):
     """
 
     answer: Any = None
-    gaps: tuple[Gap, ...] = ()
+    gaps: "tuple[Gap, ...]" = ()
 
 
 class DeclinedError(DfoError):
@@ -120,7 +118,14 @@ class ServerError(DfoError):
 
 
 class ContractError(DfoError):
-    """A field the client acts on is missing or renamed; the caller upgrades."""
+    """A field the client acts on is missing or renamed; the caller upgrades.
+
+    Attributes:
+        pointer: The JSON Pointer, into the response body, of the member the
+            client found missing or null, or None when no one member is at fault.
+    """
+
+    pointer: str | None = None
 
 
 class NetworkError(DfoError, ConnectionError):
@@ -170,45 +175,13 @@ _STATUS_CLASSES: dict[int, type[DfoError]] = {
     403: PermissionDeniedError,
     404: NotFoundError,
     408: DfoTimeoutError,
+    410: NotFoundError,
     429: RateLimitError,
 }
 
 
-def error_class(code: str | None, status: int | None) -> type[DfoError]:
-    """Return the class for a refusal: on its code when known, else on its status."""
-    if code is not None and (action := ACTIONS.get(code)) is not None:
-        return _class_for_action(action)
-    return _class_for_status(status)
-
-
-# One return per action keeps the match exhaustive, so ty fails on a new action.
-def _class_for_action(action: Action) -> type[DfoError]:  # noqa: PLR0911
-    match action:
-        case "fix_request":
-            return InvalidRequestError
-        case "check_id":
-            return NotFoundError
-        case "choose" | "ask_data_question":
-            return IncompleteAnswerError
-        case "take_newest_version":
-            return VersionUnavailableError
-        case "log_in":
-            return AuthenticationError
-        case "request_scope":
-            return PermissionDeniedError
-        case "wait":
-            return RateLimitError
-        case "wait_for_reset":
-            return QuotaExceededError
-        case "report":
-            return ServerError
-        case "upgrade":
-            return ContractError
-        case _:
-            assert_never(action)
-
-
-def _class_for_status(status: int | None) -> type[DfoError]:
+def status_class(status: int | None) -> type[DfoError]:
+    """Return the class a refusal maps to on its HTTP status alone."""
     if status is None:
         return DfoError
     if (cls := _STATUS_CLASSES.get(status)) is not None:
@@ -220,58 +193,50 @@ def _class_for_status(status: int | None) -> type[DfoError]:
     return DfoError
 
 
-def _text(value: object) -> str | None:
-    return value if isinstance(value, str) and value else None
+@dataclass(frozen=True, slots=True)
+class ClientCode[E: DfoError]:
+    """A code the client raises itself, with the error class its contract row names.
+
+    Attributes:
+        code: The code, as `client-codes.json` lists it.
+        error_class: The class an error with this code is raised as.
+    """
+
+    code: str
+    error_class: type[E]
 
 
-def problem_error(
-    status: int,
-    body: object,
+def client_error[E: DfoError](
+    code: ClientCode[E],
+    message: str,
+    /,
     *,
-    reason: str,
-    origin: str,
+    status: int | None = None,
+    detail: str | None = None,
+    trace_id: str | None = None,
+    retryable: bool = False,
+    docs_url: str | None = None,
     retry_after: float | None = None,
-) -> DfoError:
-    """Build the error for a refused response.
+) -> E:
+    """Build the error for a condition the client detects itself.
 
     Args:
-        status: The response's HTTP status.
-        body: The parsed JSON body, or None when the body is not JSON.
-        reason: The HTTP reason phrase, the message when the body gives none.
-        origin: The API's origin, which a root-relative `type` resolves against.
-        retry_after: The wait the response's `Retry-After` header asked for.
-
-    Returns:
-        The error, of the class the code or else the status maps to. A problem
-        document's `retryable` outranks the status; the website proxy's
-        `{error, retry, detail}` body maps `error` as the code.
+        code: The contract row: the code and the class it raises.
+        message: What the caller reads.
+        status: The HTTP status of the response the condition was found in.
+        detail: The explanation of this occurrence.
+        trace_id: The response's trace id.
+        retryable: Whether the same call can succeed later.
+        docs_url: The page that documents the condition.
+        retry_after: The wait a response asked for, in seconds.
     """
-    problem = body if isinstance(body, dict) else None
-    code = detail = trace_id = docs_url = None
-    retryable = status in _RETRYABLE_STATUSES
-    if problem is not None and "code" not in problem and "error" in problem:
-        code = _text(problem.get("error"))
-        detail = _text(problem.get("detail"))
-        retryable = problem.get("retry") == _PROXY_RETRY
-    elif problem is not None:
-        code = _text(problem.get("code"))
-        detail = _text(problem.get("detail")) or _text(problem.get("title"))
-        trace_id = _text(problem.get("trace_id"))
-        if isinstance(flag := problem.get("retryable"), bool):
-            retryable = flag
-        if type_ := _text(problem.get("type")):
-            docs_url = urljoin(origin + "/", type_)
-    message = detail or reason or f"HTTP {status}"
-    if code is not None:
-        message = f"{message} ({code})"
-    return error_class(code, status)(
+    return code.error_class(
         message,
-        code=code,
+        code=code.code,
         status=status,
         detail=detail,
         trace_id=trace_id,
         retryable=retryable,
-        problem=problem,
         docs_url=docs_url,
         retry_after=retry_after,
     )

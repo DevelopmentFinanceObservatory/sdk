@@ -11,7 +11,7 @@ import pytest
 
 import dfo._fetch as fetch_module
 from dfo import _errors
-from dfo._errors import DfoTimeoutError, NotFoundError, ServerError
+from dfo._errors import ContractError, DfoTimeoutError, NotFoundError, ServerError
 from dfo._fetch import fetch, mint, operation
 from dfo._parse import parse_spec
 from dfo._transport import AsyncTransport
@@ -105,6 +105,26 @@ async def test_a_cut_off_build_is_rebuilt_once() -> None:
     assert server.body(0) == server.body(1)
     assert timeline.sleeps == []
     assert built.members[0].spec.spec_id == POSTED_ID
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx2.Response(201, json={}),
+        httpx2.Response(200, content=b"<html>", headers={"content-type": "text/html"}),
+    ],
+    ids=["status", "not-json"],
+)
+async def test_a_build_answer_the_client_cannot_read_is_unexpected(
+    response: httpx2.Response,
+) -> None:
+    async with make(Server(response)) as transport:
+        with pytest.raises(ContractError) as caught:
+            await fetch(transport, spec())
+    assert (caught.value.code, caught.value.status) == (
+        "unexpected_response",
+        response.status_code,
+    )
 
 
 async def test_a_second_cut_off_raises() -> None:
@@ -254,6 +274,7 @@ async def test_the_deadline_names_the_call_that_resumes_the_build() -> None:
         with pytest.raises(DfoTimeoutError) as caught:
             await fetch(transport, spec(), timeout=10.0)
     assert f'client.operation("{OP_ID}").result()' in str(caught.value)
+    assert caught.value.code == "deadline_exceeded"
     assert timeline.sleeps == [8.0]
 
 
