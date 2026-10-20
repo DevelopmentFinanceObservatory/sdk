@@ -46,7 +46,7 @@
     "generate:check": "node scripts/generate-wire.ts --check && node scripts/generate-contract.ts --check"
   },
   "dependencies": {
-    "hyparquet": "^1.31.5",
+    "hyparquet": "1.31.1",
     "hyparquet-writer": "0.16.10"
   },
   "peerDependencies": {

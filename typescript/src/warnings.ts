@@ -1,8 +1,10 @@
 /** The base of every warning the client emits. */
 export class DfoWarning extends Error {
-  readonly code: string;
+  /** The server's warning or departure code, or null for a `SearchWarning` whose readings
+   *  differ from the question in several ways. */
+  readonly code: string | null;
 
-  constructor(code: string, message: string) {
+  constructor(code: string | null, message: string) {
     super(message);
     this.code = code;
   }

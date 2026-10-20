@@ -2,7 +2,7 @@ import { parseCredentialsFile, platformCredentialsFile } from "./credentials.ts"
 import type { CredentialsFileReader } from "./credentials.ts";
 import { readProcessEnv } from "./env.ts";
 import type { EnvReader } from "./env.ts";
-import { AuthenticationError } from "./errors.ts";
+import { clientError } from "./errors.ts";
 
 const SECRET_PREFIX = "dfo_k_";
 const PUBLISHABLE_PREFIX = "dfo_p_";
@@ -135,8 +135,7 @@ export async function resolveApiKey({
   if (text === null) return { source: "anonymous", key: null };
   const parsed = parseCredentialsFile(text);
   if (!parsed.ok) {
-    throw new AuthenticationError({
-      code: "credentials_file_invalid",
+    throw clientError("credentials_file_invalid", {
       detail: `The credentials file is invalid at line ${parsed.line}: ${parsed.reason}.`,
     });
   }
@@ -145,15 +144,13 @@ export async function resolveApiKey({
   const profile = parsed.profiles[profileName];
   if (profile === undefined) {
     if (named === undefined) return { source: "anonymous", key: null };
-    throw new AuthenticationError({
-      code: "profile_not_found",
+    throw clientError("profile_not_found", {
       detail: `The credentials file has no profile [${named}], which DFO_PROFILE names.`,
     });
   }
   const key = profile["key"];
   if (key === undefined) {
-    throw new AuthenticationError({
-      code: "profile_without_key",
+    throw clientError("profile_without_key", {
       detail: `The credentials file's profile [${profileName}] has no key.`,
     });
   }

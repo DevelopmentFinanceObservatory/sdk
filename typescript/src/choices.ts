@@ -13,7 +13,8 @@
  *   and its choices, or a placeholder of its refusal when it has none.
  */
 import type { Answer, Candidate, Gap, QueryOption } from "./answer.ts";
-import { ContractError, InvalidRequestError } from "./errors.ts";
+import { clientError } from "./errors.ts";
+import type { InvalidRequestError } from "./errors.ts";
 import { isKnownPart } from "./parts.ts";
 import type {
   DatasetResubmitInput,
@@ -28,8 +29,7 @@ import type {
 type ChoiceKey = number | string;
 type Entry = DatasetResubmitInput["entries"][number];
 
-const refuse = (detail: string): InvalidRequestError =>
-  new InvalidRequestError({ code: "choice_invalid", detail });
+const refuse = (detail: string): InvalidRequestError => clientError("choice_invalid", { detail });
 
 /** The gap of the only part that awaits a choice. */
 export function onlyChoice(answer: Answer): Gap {
@@ -125,8 +125,7 @@ function chosenEntry(part: Part, chosen: Candidate | QueryOption): Entry {
   if (chosen.kind === "candidate") return identityEntry(part, chosen.spec);
   const parts = chosen.dataQuery.parts as ParsedInput["parts"] | undefined;
   if (!Array.isArray(parts) || parts.length !== 1) {
-    throw new ContractError({
-      code: "contract_violation",
+    throw clientError("contract_violation", {
       detail: `The option ${JSON.stringify(chosen.label)} does not carry a one-part parsed input.`,
     });
   }

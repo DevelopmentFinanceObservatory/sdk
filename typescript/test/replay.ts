@@ -185,19 +185,16 @@ export function replay(
   return { transport, waits, remaining: () => [...queue], urls };
 }
 
-/** Checks a refusal against a scenario's expected error: its class, and its code or, for a
- *  null code, that no problem document arrived. A strict fetch throws a `SearchWarning`, which
- *  no problem document carries. */
+/** Checks a refusal against a scenario's expected error: its class and its code. A strict
+ *  fetch throws a `SearchWarning`, whose code is null when the readings differ in several ways. */
 export function assertError(error: unknown, expected: ErrorSummary, name: string): void {
   if (expected.class === "SearchWarning") {
     assert.ok(error instanceof SearchWarning, `${name}: ${String(error)}`);
-    assert.equal(expected.code, null, name);
-    return;
+  } else {
+    assert.ok(isDfoError(error) && error instanceof DfoError, `${name}: ${String(error)}`);
+    assert.equal(error.name, expected.class, name);
   }
-  assert.ok(isDfoError(error) && error instanceof DfoError, `${name}: ${String(error)}`);
-  assert.equal(error.name, expected.class, name);
-  if (expected.code === null) assert.equal(error.problem, null, name);
-  else assert.equal(error.code, expected.code, name);
+  assert.equal(error.code, expected.code, name);
 }
 
 /** Checks a dataset against a scenario's expected dataset, its decoded rows included. */

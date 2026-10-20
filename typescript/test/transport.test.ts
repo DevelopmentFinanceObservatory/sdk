@@ -162,7 +162,7 @@ describe("refusals", () => {
       .request({ path: "/x" })
       .catch((e: unknown) => e);
     assert.ok(error instanceof InvalidRequestError);
-    assert.equal(error.code, "unexpected_response");
+    assert.equal(error.code, "refusal_without_code");
   });
 
   test("stop retrying when the next wait would pass the deadline", async () => {

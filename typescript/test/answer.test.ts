@@ -264,7 +264,7 @@ describe("fetch", () => {
     assert.equal(context.warnings.length, 1);
     const [warning] = context.warnings;
     assert.ok(warning instanceof SearchWarning);
-    assert.equal(warning.code, "reading_differs");
+    assert.equal(warning.code, null);
     assert.deepEqual(warning.message.split("\n"), [
       "Search's reading differs from your question:",
       `  Not done: rank ("top 5")`,
@@ -275,6 +275,18 @@ describe("fetch", () => {
 
     await assert.rejects(answer.fetch({ strict: true }), SearchWarning);
     assert.equal(context.built.length, 1);
+  });
+
+  test("a strict fetch with one departure throws a SearchWarning with its code", async () => {
+    const edited = body("answer-definite-fetch");
+    const [part] = edited["parts"] as DefinitePart[];
+    part!.departures = [{ code: "operation_not_applied", text: "Not ranked: rank skipped." }];
+    const context = offline();
+    await assert.rejects(answerFromBody(edited, context, null).fetch({ strict: true }), {
+      name: "SearchWarning",
+      code: "operation_not_applied",
+    });
+    assert.equal(context.built.length, 0);
   });
 });
 

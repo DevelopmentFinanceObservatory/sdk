@@ -15,6 +15,16 @@ test("VERSION matches package.json", async () => {
   assert.equal(VERSION, pkg.version);
 });
 
+test("hyparquet is the version hyparquet-writer pins, so one copy installs", async () => {
+  const read = async (path: string): Promise<{ dependencies: Record<string, string> }> =>
+    JSON.parse(await readFile(new URL(path, import.meta.url), "utf8")) as {
+      dependencies: Record<string, string>;
+    };
+  const own = await read("../package.json");
+  const writer = await read("../node_modules/hyparquet-writer/package.json");
+  assert.equal(own.dependencies["hyparquet"], writer.dependencies["hyparquet"]);
+});
+
 test("the node entry point reads the credentials file from the file system", async () => {
   const directory = await mkdtemp(join(tmpdir(), "dfo-credentials-"));
   try {

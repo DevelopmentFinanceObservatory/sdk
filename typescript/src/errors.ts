@@ -1,26 +1,14 @@
 import type { Answer, Gap } from "./answer.ts";
 import { CODE_ACTIONS } from "./generated/actions.ts";
 import type { ACTIONS } from "./generated/actions.ts";
+import { CLIENT_CODE_CLASSES } from "./generated/client-codes.ts";
 
 /** What the caller does next about a refusal, as `contract/actions.json` assigns it. */
 export type Action = (typeof ACTIONS)[number];
 
-/** The codes the client raises itself, for failures no server response describes. */
-export type ClientErrorCode =
-  | "network_error"
-  | "download_failed"
-  | "digest_mismatch"
-  | "answer_incomplete"
-  | "answer_declined"
-  | "choice_invalid"
-  | "invalid_argument"
-  | "version_unavailable"
-  | "deadline_exceeded"
-  | "contract_violation"
-  | "unexpected_response"
-  | "credentials_file_invalid"
-  | "profile_not_found"
-  | "profile_without_key";
+/** The codes the client raises itself, for failures no server response describes, as
+ *  `contract/client-codes.json` lists them. */
+export type ClientErrorCode = keyof typeof CLIENT_CODE_CLASSES;
 
 declare const SERVER_CODE: unique symbol;
 
@@ -172,6 +160,7 @@ function classForStatus(status: number): ErrorClass {
   if (status === 401) return AuthenticationError;
   if (status === 403) return PermissionDeniedError;
   if (status === 404 || status === 410) return NotFoundError;
+  if (status === 408) return DfoTimeoutError;
   if (status === 429) return RateLimitError;
   if (status >= 500) return ServerError;
   return InvalidRequestError;
@@ -188,4 +177,48 @@ export function actionFor(code: string): Action | undefined {
 export function errorClassFor(code: string, status: number): ErrorClass {
   const action = actionFor(code);
   return action === undefined ? classForStatus(status) : CLASS_BY_ACTION[action];
+}
+
+type ClientClassName = Exclude<(typeof CLIENT_CODE_CLASSES)[ClientErrorCode], "by_status">;
+
+/** The class for each class name `contract/client-codes.json` uses. */
+const CLIENT_CLASSES = {
+  AuthenticationError,
+  ContractError,
+  DeclinedError,
+  DfoTimeoutError,
+  IncompleteAnswerError,
+  InvalidRequestError,
+  NetworkError,
+  ServerError,
+  VersionUnavailableError,
+} satisfies Record<ClientClassName, ErrorClass>;
+
+type ClientClass<C extends ClientErrorCode> = (typeof CLIENT_CLASSES)[Exclude<
+  (typeof CLIENT_CODE_CLASSES)[C],
+  "by_status"
+>];
+
+/** The options an error with a client code takes: its class's options without the code, and a
+ *  status for a code whose class the status picks. */
+export type ClientErrorOptions<C extends ClientErrorCode> =
+  (typeof CLIENT_CODE_CLASSES)[C] extends "by_status"
+    ? Omit<DfoErrorOptions, "code" | "status"> & { status: number }
+    : Omit<ConstructorParameters<ClientClass<C>>[0], "code">;
+
+/** The error a client code raises. */
+export type ClientError<C extends ClientErrorCode> =
+  (typeof CLIENT_CODE_CLASSES)[C] extends "by_status" ? DfoError : InstanceType<ClientClass<C>>;
+
+/** Builds an error the client raises itself, of the class `contract/client-codes.json` assigns
+ *  to its code, or for `refusal_without_code` the class its status maps to. */
+export function clientError<C extends ClientErrorCode>(
+  code: C,
+  options: ClientErrorOptions<C>,
+): ClientError<C> {
+  const name: ClientClassName | "by_status" = CLIENT_CODE_CLASSES[code];
+  const built = { ...options, code } as DfoErrorOptions;
+  const ErrorClass =
+    name === "by_status" ? classForStatus(built.status ?? 0) : CLIENT_CLASSES[name];
+  return new ErrorClass(built) as ClientError<C>;
 }

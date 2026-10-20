@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       hyparquet:
-        specifier: ^1.31.5
-        version: 1.31.5
+        specifier: 1.31.1
+        version: 1.31.1
       hyparquet-writer:
         specifier: 0.16.10
         version: 0.16.10
@@ -385,9 +385,6 @@ packages:
 
   hyparquet@1.31.1:
     resolution: {integrity: sha512-tF9580Xb+41+Eb+mH0av1k7m1PWl+PSKrX66Yd7UOZ760cwEXP9/enwHRMSCeVncaubRI8XPb3v580/ujYKK5w==}
-
-  hyparquet@1.31.5:
-    resolution: {integrity: sha512-KPVfaxW8xOiO2/4fjeiBfFNEXhGVw9tfcb9ha2iNZdJ3J/yBjEwIeAnTyyuhllFFTb9YO9wg0DfRAOnm6KCvBg==}
 
   ignore@5.3.2:
     resolution: {integrity: sha512-hsBTNUqQTDwkWtcdYI2i06Y/nUBEsNEDJKjWdigLvegy8kDuJAS8uRlpkkcQpyEXL0Z/pjDy5HBmMjRCJ2gq+g==}
@@ -1001,8 +998,6 @@ snapshots:
       hyparquet: 1.31.1
 
   hyparquet@1.31.1: {}
-
-  hyparquet@1.31.5: {}
 
   ignore@5.3.2: {}
 

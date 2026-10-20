@@ -8,7 +8,15 @@ import type { FetchOptions } from "../src/fetch.ts";
 import { DatasetRef } from "../src/ref.ts";
 import type { SpecLike } from "../src/ref.ts";
 import type { DfoWarning } from "../src/warnings.ts";
-import { assertDataset, assertError, NO_EXCHANGES, replay, scenario, stepOf } from "./replay.ts";
+import {
+  assertDataset,
+  assertError,
+  NO_EXCHANGES,
+  replay,
+  scenario,
+  scenarios,
+  stepOf,
+} from "./replay.ts";
 import type { Exchange, Outcome, Scenario } from "./replay.ts";
 import { contractJson } from "./support.ts";
 
@@ -31,17 +39,17 @@ async function reaches(
   assert.deepEqual(remaining(), [], `${record.name}: exchanges left unrequested`);
 }
 
+const fetchScenarios = (await scenarios()).filter((record) => record.call[0]?.op === "fetch");
+
 describe("a spec or ref fetch reaches each scenario's outcome", () => {
-  for (const name of [
-    "fetch-spec-known-sentence",
-    "fetch-spec-narrowed",
-    "fetch-spec-request-invalid",
-    "fetch-ref",
-    "fetch-ref-signed-url-refused",
-    "fetch-ref-unknown-version",
-  ]) {
-    test(name, async () => {
-      const record = await scenario(name);
+  test("cover a spec fetch and a ref fetch", () => {
+    const steps = fetchScenarios.map((record) => stepOf(record, 0, "fetch"));
+    assert.ok(steps.some((step) => step.spec !== undefined));
+    assert.ok(steps.some((step) => step.ref !== undefined));
+  });
+
+  for (const record of fetchScenarios) {
+    test(record.name, async () => {
       const { transport, remaining } = replay(record);
       const { spec, ref, window, facets } = stepOf(record, 0, "fetch");
       const target = ref === undefined ? spec : DatasetRef.fromJSON(ref);

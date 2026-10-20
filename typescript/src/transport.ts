@@ -1,14 +1,7 @@
 import type { CredentialsFileReader } from "./credentials.ts";
 import type { EnvReader } from "./env.ts";
-import {
-  ContractError,
-  DfoError,
-  DfoTimeoutError,
-  errorClassFor,
-  NetworkError,
-  serverCode,
-  ServerError,
-} from "./errors.ts";
+import { clientError, DfoError, errorClassFor, NetworkError, serverCode } from "./errors.ts";
+import type { DfoTimeoutError } from "./errors.ts";
 import {
   ApiKey,
   checkKeyFormat,
@@ -274,8 +267,7 @@ export class Transport {
   async request(options: RequestOptions): Promise<JsonResponse> {
     const response = await this.#send(options, this.deadline(options));
     if (this.#isRedirect(response)) {
-      throw new ContractError({
-        code: "unexpected_response",
+      throw clientError("unexpected_response", {
         status: response.status,
         detail: `${this.url(options).pathname} answered with a redirect, which this call does not follow.`,
         traceId: response.headers.get("x-dfo-trace-id"),
@@ -287,8 +279,7 @@ export class Transport {
     try {
       return { status: response.status, headers: response.headers, url, body: JSON.parse(text) };
     } catch (error) {
-      throw new ContractError({
-        code: "unexpected_response",
+      throw clientError("unexpected_response", {
         status: response.status,
         detail: `The response from ${url.pathname} is not JSON.`,
         traceId: response.headers.get("x-dfo-trace-id"),
@@ -325,8 +316,7 @@ export class Transport {
 
       const location = response.headers.get("location");
       if (location === null) {
-        throw new ContractError({
-          code: "contract_violation",
+        throw clientError("contract_violation", {
           status: response.status,
           detail: `The redirect from ${this.url(options).pathname} has no Location header.`,
         });
@@ -454,8 +444,7 @@ export class Transport {
   #failure(error: unknown, url: URL, signal: AbortSignal | undefined, timer?: AbortSignal) {
     if (signal?.aborted) return signal.reason as unknown;
     if (timer?.aborted) return this.#timeout(url, error);
-    return new NetworkError({
-      code: "network_error",
+    return clientError("network_error", {
       detail: `The request to ${url.host} failed before a response arrived.`,
       retryable: true,
       cause: error,
@@ -463,8 +452,7 @@ export class Transport {
   }
 
   #timeout(url: URL, cause?: unknown): DfoTimeoutError {
-    return new DfoTimeoutError({
-      code: "deadline_exceeded",
+    return clientError("deadline_exceeded", {
       detail: `The call to ${url.pathname} passed its deadline.`,
       cause,
     });
@@ -487,8 +475,7 @@ export class Transport {
   async #bare(url: URL, deadline: number, signal: AbortSignal | undefined): Promise<Uint8Array> {
     const response = await this.#fetchOnce(url, deadline, signal, { method: "GET" });
     if (!response.ok) {
-      throw new ServerError({
-        code: "download_failed",
+      throw clientError("download_failed", {
         status: response.status,
         detail: `The signed download from ${url.host} answered HTTP ${response.status}.`,
         retryable: true,
@@ -536,9 +523,7 @@ export class Transport {
         problem: body,
       });
     }
-    const ErrorClass = errorClassFor("unexpected_response", status);
-    return new ErrorClass({
-      code: "unexpected_response",
+    return clientError("refusal_without_code", {
       status,
       detail: `HTTP ${status} with no problem document.`,
       traceId: headerTrace,

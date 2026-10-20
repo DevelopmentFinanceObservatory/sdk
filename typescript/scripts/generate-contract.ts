@@ -2,8 +2,9 @@
 //
 //   src/generated/strict.ts   from strict-fields.json, checked against served/openapi.json
 //   src/generated/actions.ts  from actions.json and the actions it allows in actions.schema.json
+//   src/generated/client-codes.ts  from client-codes.json
 //
-//   node scripts/generate-contract.ts           rewrite both files
+//   node scripts/generate-contract.ts           rewrite every file
 //   node scripts/generate-contract.ts --check   exit 1 when a committed file differs
 //
 // The strict table lists, for every schema that holds a strict field or leads to one, the strict
@@ -199,6 +200,17 @@ export function renderActions(actionsText: string, schemaText: string): Record<s
   };
 }
 
+export function renderClientCodes(codesText: string): Record<string, unknown> {
+  const { codes } = JSON.parse(codesText) as { codes: { code: string; class: string }[] };
+  if (codes.length === 0) throw new Error("client-codes.json lists no codes");
+  const classes = new Map<string, string>();
+  for (const row of codes) {
+    if (classes.has(row.code)) throw new Error(`client-codes.json lists ${row.code} twice`);
+    classes.set(row.code, row.class);
+  }
+  return { CLIENT_CODE_CLASSES: Object.fromEntries(classes) };
+}
+
 async function module(
   source: string,
   tables: Record<string, unknown>,
@@ -228,6 +240,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         "contract/actions.json and contract/actions.schema.json",
         renderActions(await read("actions.json"), await read("actions.schema.json")),
         output("actions.ts"),
+      ),
+    ],
+    [
+      output("client-codes.ts"),
+      await module(
+        "contract/client-codes.json",
+        renderClientCodes(await read("client-codes.json")),
+        output("client-codes.ts"),
       ),
     ],
   ];

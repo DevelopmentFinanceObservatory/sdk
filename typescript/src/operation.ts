@@ -14,7 +14,7 @@
  */
 
 import type { Dataset } from "./dataset.ts";
-import { ContractError, DfoError, DfoTimeoutError, errorClassFor, serverCode } from "./errors.ts";
+import { clientError, DfoError, DfoTimeoutError, errorClassFor, serverCode } from "./errors.ts";
 import { checkStrict } from "./strict.ts";
 import { retryAfterMs } from "./transport.ts";
 import type { JsonResponse, Transport } from "./transport.ts";
@@ -78,8 +78,7 @@ const count = (value: unknown): number | null =>
 export function readManifest(body: unknown): Manifest {
   checkStrict("Manifest", body);
   if (!isRecord(body)) {
-    throw new ContractError({
-      code: "contract_violation",
+    throw clientError("contract_violation", {
       detail: "The manifest is not an object.",
     });
   }
@@ -96,8 +95,7 @@ function readOperation(body: unknown): OperationState {
   const progress = operation["progress"];
   const error = resource["error"];
   if (status === DONE && !isRecord(resource["manifest"])) {
-    throw new ContractError({
-      code: "contract_violation",
+    throw clientError("contract_violation", {
       detail: `The done operation ${String(operation["operation_id"])} holds no manifest.`,
     });
   }
@@ -129,8 +127,7 @@ function buildReply(response: JsonResponse): Reply {
   if (response.status === 202) {
     return { manifest: null, state: readOperation(response.body), ...replyHeaders(response) };
   }
-  throw new ContractError({
-    code: "unexpected_response",
+  throw clientError("unexpected_response", {
     status: response.status,
     detail: `POST /datasets answered HTTP ${response.status}; a build answers 200 or 202.`,
     traceId: response.headers.get("x-dfo-trace-id"),
@@ -142,8 +139,7 @@ function pollReply(response: JsonResponse): Reply {
   if (response.status === 200) {
     return { manifest: null, state: readOperation(response.body), ...replyHeaders(response) };
   }
-  throw new ContractError({
-    code: "unexpected_response",
+  throw clientError("unexpected_response", {
     status: response.status,
     detail: `${response.url.pathname} answered HTTP ${response.status}; a poll answers 200.`,
     traceId: response.headers.get("x-dfo-trace-id"),
@@ -287,8 +283,7 @@ class Poller {
   }
 
   #stillRunning(cause?: unknown): DfoTimeoutError {
-    return new DfoTimeoutError({
-      code: "deadline_exceeded",
+    return clientError("deadline_exceeded", {
       detail:
         "The build is still running at the deadline. Resume it with " +
         `client.operation("${this.operationId ?? ""}").`,

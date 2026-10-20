@@ -7,7 +7,8 @@
  */
 import { answerText, declinedText, incompleteMessage, readingHints } from "./answer-text.ts";
 import { choiceInput, gapNamed, onlyChoice, pick } from "./choices.ts";
-import { ContractError, DeclinedError, IncompleteAnswerError } from "./errors.ts";
+import { clientError } from "./errors.ts";
+import type { IncompleteAnswerError } from "./errors.ts";
 import type { Dataset } from "./dataset.ts";
 import { fetchMembers as defaultFetchMembers } from "./fetch.ts";
 import type { FetchMembersOptions, MemberRequest } from "./fetch.ts";
@@ -221,8 +222,7 @@ export class Answer {
    */
   async fetch(options: AnswerFetchOptions = {}): Promise<Dataset<Gap>> {
     if (this.kind !== "resolution") {
-      throw new DeclinedError({
-        code: "answer_declined",
+      throw clientError("answer_declined", {
         detail: declinedText(this.kind, this.reason),
       });
     }
@@ -234,7 +234,7 @@ export class Answer {
     const hints = readingHints(this, { departures: true });
     if (hints.length > 0) {
       const warning = new SearchWarning(
-        hints.length === 1 ? hints[0]!.code : "reading_differs",
+        hints.length === 1 ? hints[0]!.code : null,
         `Search's reading differs from your question:\n  ${hints.map((h) => h.line).join("\n  ")}`,
       );
       if (options.strict === true) throw warning;
@@ -246,8 +246,7 @@ export class Answer {
 
   /** The error `fetch` raises for this answer's gaps. */
   incompleteError(): IncompleteAnswerError {
-    return new IncompleteAnswerError({
-      code: "answer_incomplete",
+    return clientError("answer_incomplete", {
       detail: incompleteMessage(this),
       answer: this,
       gaps: this.gaps,
@@ -309,8 +308,7 @@ export function answerFromBody(
   question: string | null,
 ): Answer {
   if (!isRecord(body)) {
-    throw new ContractError({
-      code: "contract_violation",
+    throw clientError("contract_violation", {
       detail: "The Search response is not an object.",
     });
   }
@@ -332,8 +330,7 @@ export function answerFromBody(
     });
   }
   if (kind !== "resolution") {
-    throw new ContractError({
-      code: "contract_violation",
+    throw clientError("contract_violation", {
       detail:
         `Search answered with kind ${JSON.stringify(kind)}, which this client does not know; ` +
         "upgrade @developmentfinance/client.",
@@ -342,8 +339,7 @@ export function answerFromBody(
   checkStrict("Resolution", body);
   const parts = body["parts"];
   if (!Array.isArray(parts) || !parts.every(isRecord)) {
-    throw new ContractError({
-      code: "contract_violation",
+    throw clientError("contract_violation", {
       detail: "Resolution.parts is not an array of objects in the response.",
     });
   }

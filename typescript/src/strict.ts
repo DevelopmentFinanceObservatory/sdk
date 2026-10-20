@@ -1,4 +1,4 @@
-import { ContractError } from "./errors.ts";
+import { clientError } from "./errors.ts";
 import { STRICT_SCHEMAS } from "./generated/strict.ts";
 
 /** A schema that holds a strict field, or leads to one. */
@@ -51,8 +51,7 @@ function checkSchema(schema: string, value: unknown, pointer: string): void {
   const body = isRecord(value) ? value : {};
   for (const member of entry.required) {
     if (body[member] === undefined || body[member] === null) {
-      throw new ContractError({
-        code: "contract_violation",
+      throw clientError("contract_violation", {
         detail:
           `The response has no ${member} at ${pointer || "/"}, which ` +
           `${schema} requires and this client acts on. Upgrade the client, or report the trace id.`,

@@ -23,15 +23,14 @@ import type { Gap } from "./answer.ts";
 import { Dataset } from "./dataset.ts";
 import type { FetchedMember } from "./dataset.ts";
 import {
-  ContractError,
+  clientError,
   DfoError,
   InvalidRequestError,
   NotFoundError,
   PermissionDeniedError,
-  ServerError,
   VersionUnavailableError,
 } from "./errors.ts";
-import type { DfoErrorOptions } from "./errors.ts";
+import type { ClientErrorCode, DfoErrorOptions } from "./errors.ts";
 import {
   build,
   DEFAULT_FETCH_TIMEOUT_MS,
@@ -111,7 +110,7 @@ const UNNAMED_PART = "dataset";
  *  has expired. An unknown version (`snapshot_not_found`) ends the lookup. */
 const FILE_EXPIRED = "artifact_expired";
 const FILE_GONE = new Set([FILE_EXPIRED, "artifact_not_found", "not_found"]);
-const DIGEST_MISMATCH = "digest_mismatch";
+const DIGEST_MISMATCH = "digest_mismatch" satisfies ClientErrorCode;
 
 const SEARCH_AGAIN =
   " The server can no longer build this reading; search the question again for a current one.";
@@ -120,7 +119,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
 const invalid = (detail: string): InvalidRequestError =>
-  new InvalidRequestError({ code: "invalid_argument", detail });
+  clientError("invalid_argument", { detail });
 
 function windowScope(window: Window): Record<string, unknown> {
   if (window === "all" || window === "latest") return { kind: window };
@@ -203,8 +202,7 @@ async function download(
     found = await digestOf(data);
     if (found === digest) return data;
   }
-  throw new ServerError({
-    code: DIGEST_MISMATCH,
+  throw clientError(DIGEST_MISMATCH, {
     detail: `The file at ${transport.url(target).pathname} hashes to ${found}, not ${digest}.`,
     retryable: true,
   });
@@ -292,8 +290,7 @@ async function sentenceFor(
     }
   }
   if (typeof sentence !== "string" || sentence === "") {
-    throw new ContractError({
-      code: "contract_violation",
+    throw clientError("contract_violation", {
       detail: `Search did not resolve the built identity ${specId} to itself with a sentence.`,
       traceId: response.headers.get("x-dfo-trace-id"),
     });
@@ -324,8 +321,7 @@ async function finish(
   noteWarnings(transport, manifest, strict);
   const artifact = pickArtifact(manifest, rendering);
   if (artifact === undefined) {
-    throw new ContractError({
-      code: "contract_violation",
+    throw clientError("contract_violation", {
       detail:
         `The manifest of ${specId} at ${contentVersion} lists no ` +
         `${JSON.stringify(renderingOptions(rendering))} artifact.`,
@@ -639,8 +635,7 @@ async function snapshot(
   const built = `${specIdOf(manifest)} at ${contentVersionOf(manifest)}`;
   const asked = `${member.spec.spec_id} at ${member.contentVersion}`;
   if (built !== asked) {
-    throw new ContractError({
-      code: "contract_violation",
+    throw clientError("contract_violation", {
       detail: `The server answered ${built} for ${asked}.`,
     });
   }
@@ -716,13 +711,16 @@ function unavailable(
 ): VersionUnavailableError {
   const hint =
     newest === null ? "" : `; the newest version is ${newest}, which fetching the spec returns`;
+  const detail = `${member.spec.spec_id} at ${member.contentVersion} can no longer be fetched${hint}.`;
+  if (refusal === undefined) return clientError("version_unavailable", { detail });
+  // The server's refusal names why the file is gone; its code stays on the error.
   return new VersionUnavailableError({
-    code: refusal?.code ?? "version_unavailable",
-    status: refusal?.status ?? null,
-    detail: `${member.spec.spec_id} at ${member.contentVersion} can no longer be fetched${hint}.`,
-    traceId: refusal?.traceId ?? null,
-    problem: refusal?.problem ?? null,
-    docsUrl: refusal?.docsUrl ?? null,
-    ...(refusal === undefined ? {} : { cause: refusal }),
+    code: refusal.code,
+    status: refusal.status,
+    detail,
+    traceId: refusal.traceId,
+    problem: refusal.problem,
+    docsUrl: refusal.docsUrl,
+    cause: refusal,
   });
 }
