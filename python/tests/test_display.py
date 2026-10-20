@@ -8,18 +8,18 @@ import pytest
 
 from dfo import _display
 from dfo._answer import AsyncAnswer, answer_from_body
-from dfo._transport import AsyncTransport
+from dfo._fetch import Session
 
 from ._data import load
 
 
-def no_transport() -> AsyncTransport:
+def no_session() -> Session:
     raise AssertionError("the display sends no request")
 
 
 def read(body: str | dict[str, Any]) -> AsyncAnswer:
     wire = load(body) if isinstance(body, str) else body
-    return answer_from_body(wire, question="q", source=no_transport)
+    return answer_from_body(wire, question="q", source=no_session)
 
 
 def test_a_complete_answer_reads_as_its_sentence_and_what_search_did_not_do() -> None:

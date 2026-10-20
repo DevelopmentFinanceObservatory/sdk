@@ -12,7 +12,7 @@ import pytest
 
 import dfo._fetch as fetch_module
 from dfo import _errors
-from dfo._build import digest_of
+from dfo._build import Reading, digest_of
 from dfo._errors import (
     ContractError,
     DataWarning,
@@ -198,12 +198,37 @@ async def test_an_answer_part_resubmits_with_its_variable_text() -> None:
     async with make(server) as transport:
         built = await fetch_members(
             transport,
-            [(("ODA", "aid"), spec(), None)],
+            [Reading(("ODA", "aid"), spec())],
             narrowing={"window": {"kind": "latest"}},
         )
     entry = server.body(1)["input"]["entries"][0]
     assert entry["variable_text"] == "ODA; aid"
     assert built.members[0].parts == ("ODA", "aid")
+
+
+GROUPS = {"destination": {"text": "Sahel", "ref": "SahelRegion", "members": []}}
+
+
+@pytest.mark.parametrize(
+    ("narrowing", "sent"),
+    [
+        ({"window": "latest"}, GROUPS),
+        ({"entities": {"destination": ["country/NGA"]}}, None),
+    ],
+)
+async def test_a_resubmit_sends_the_answers_entity_groups_unless_places_are_rebound(
+    narrowing: dict, sent: object
+) -> None:
+    server = Server(
+        json_response(200, manifest()),
+        json_response(200, resubmitted()),
+        redirect(),
+        parquet(),
+    )
+    grouped = Spec(POSTED_ID, posted_spec()["definition"], SENTENCE, GROUPS)
+    async with make(server) as transport:
+        await fetch(transport, grouped, **narrowing)
+    assert server.body(1)["input"]["entries"][0].get("entity_groups") == sent
 
 
 async def test_a_resubmit_that_answers_another_spec_raises() -> None:
@@ -245,7 +270,7 @@ async def test_a_frame_with_several_readings_is_refused_before_any_request() -> 
     async with make(server) as transport:
         with pytest.raises(InvalidRequestError, match="one reading"):
             await fetch_members(
-                transport, [((), spec(), None), ((), other, None)], layout="frame"
+                transport, [Reading((), spec()), Reading((), other)], layout="frame"
             )
     assert server.requests == []
 
@@ -268,7 +293,7 @@ async def test_a_spec_listed_twice_builds_once_for_both_parts() -> None:
     server = Server(json_response(200, manifest(POSTED_ID)), redirect(), parquet())
     async with make(server) as transport:
         built = await fetch_members(
-            transport, [(("ODA",), spec(), SENTENCE), (("aid",), spec(), None)]
+            transport, [Reading(("ODA",), spec(), SENTENCE), Reading(("aid",), spec())]
         )
     assert len(server.requests) == 3
     assert [member.parts for member in built.members] == [("ODA", "aid")]
@@ -290,7 +315,7 @@ async def test_members_build_one_after_another_each_finished_before_the_next() -
     async with make(server) as transport:
         built = await fetch_members(
             transport,
-            [(("a",), spec(), SENTENCE), (("b",), other, None)],
+            [Reading(("a",), spec(), SENTENCE), Reading(("b",), other)],
             missing=("gap",),
         )
     assert [call.split(" ")[0] for call in server.calls()] == [
@@ -448,6 +473,7 @@ async def test_a_rebuild_with_another_version_names_the_newest() -> None:
         with pytest.raises(VersionUnavailableError, match=newer) as caught:
             await fetch(transport, DatasetRef((ref_member(),)))
     assert caught.value.code == "artifact_expired"
+    assert caught.value.newest_version == newer
     assert len(server.requests) == 4
 
 
@@ -484,9 +510,7 @@ async def test_a_spec_that_cannot_rebuild_names_the_newest_stored_version(
             await fetch(transport, DatasetRef((ref_member(),)))
     assert server.calls()[-1] == f"GET {BASE}/datasets/{NARROWED_ID}/versions"
     assert caught.value.code == "artifact_expired"
-    assert ("newest version" in str(caught.value)) is (named is not None)
-    if named is not None:
-        assert named in str(caught.value)
+    assert caught.value.newest_version == named
 
 
 async def test_a_cached_ref_needs_no_request_and_offline_marks_it_stale(

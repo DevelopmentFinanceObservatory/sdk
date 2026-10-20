@@ -9,14 +9,14 @@ tests.
 
 import copy
 import json
-import sys
-import types
 import warnings
 from typing import Any
 
 import httpx2
 import pytest
 
+import dfo._sync._answer as answer_module
+from dfo._build import Reading
 from dfo._errors import (
     ContractError,
     DeclinedError,
@@ -25,6 +25,7 @@ from dfo._errors import (
     SearchWarning,
 )
 from dfo._sync._answer import Answer
+from dfo._sync._fetch import Session
 from dfo._sync._search import search
 from dfo._sync._transport import Transport
 from dfo._types import CandidatesPart, DefinitePart, Gap
@@ -59,7 +60,7 @@ def transport(server: Server) -> Transport:
 def ask(question: str, *bodies: object) -> tuple[Answer, Server]:
     server = Server(*bodies)
     client = transport(server)
-    return search(lambda: client, question), server
+    return search(lambda: Session(client), question), server
 
 
 def with_options(part: dict[str, Any]) -> dict[str, Any]:
@@ -112,9 +113,7 @@ def fetched(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, Any, Any]]:
         calls.append((transport, members, options))
         return "dataset"
 
-    module = types.ModuleType("dfo._sync._fetch")
-    module.fetch_members = fetch_members  # ty: ignore[unresolved-attribute]
-    monkeypatch.setitem(sys.modules, "dfo._sync._fetch", module)
+    monkeypatch.setattr(answer_module, "fetch_members", fetch_members)
     return calls
 
 
@@ -400,7 +399,7 @@ def test_fetch_builds_one_member_per_distinct_spec(
     assert answer.fetch(layout="long", timeout=10.0) == "dataset"
     ((transport_used, members, options),) = fetched
     oda, gni = wire["parts"][0]["spec"], wire["parts"][1]["spec"]
-    assert [(parts, spec.spec_id, sentence) for parts, spec, sentence in members] == [
+    assert [(m.parts, m.spec.spec_id, m.sentence) for m in members] == [
         (
             ("official development assistance", "aid"),
             oda["spec_id"],
@@ -417,16 +416,19 @@ def test_fetch_builds_one_member_per_distinct_spec(
         "strict": False,
         "timeout": 10.0,
         "progress": None,
+        "cache": None,
         "missing": (),
     }
     assert isinstance(transport_used, Transport)
+    assert [len(m.answer_parts) for m in members] == [2, 1]
+    assert all(isinstance(m, Reading) for m in members)
 
 
 def test_fetch_reads_the_transport_when_it_runs(
     fetched: list[tuple[Any, Any, Any]],
 ) -> None:
     clients = [transport(Server(load("search-1.json")))]
-    answer = search(lambda: clients[-1], "ODA")
+    answer = search(lambda: Session(clients[-1]), "ODA")
     clients.append(transport(Server()))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", SearchWarning)
@@ -472,7 +474,7 @@ def test_a_partial_fetch_builds_the_answered_parts_and_names_the_gaps(
         warnings.simplefilter("ignore", SearchWarning)
         answer.fetch(partial=True)
     ((_, members, options),) = fetched
-    assert [parts for parts, _, _ in members] == [("debt service",)]
+    assert [m.parts for m in members] == [("debt service",)]
     assert options["missing"] == answer.gaps
 
     nothing, _ = ask("tea", load("search-3.json"))

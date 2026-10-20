@@ -78,10 +78,13 @@ def parse_spec(spec: object, /) -> Spec:
             f"Spec.definition.spec_id is {definition['spec_id']}, "
             f"not the spec's {spec['spec_id']}"
         )
+    resolved = _object(spec.get("resolved"))
+    groups = resolved.get("entity_groups")
     return Spec(
         spec["spec_id"],
         definition,
-        _optional_text(_object(spec.get("resolved")).get("rendered_sentence")),
+        _optional_text(resolved.get("rendered_sentence")),
+        groups if isinstance(groups, Mapping) and groups else None,
     )
 
 

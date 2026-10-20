@@ -18,11 +18,13 @@ Search composes the joined sentence and folds the parts again:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, NoReturn, overload, override
+from typing import Any, Literal, NoReturn, overload, override
 
 from dfo import _display, _strict
+from dfo._build import Reading
+from dfo._dataset import Dataset
 from dfo._error_map import GAP_KINDS
 from dfo._errors import (
     ContractError,
@@ -32,8 +34,8 @@ from dfo._errors import (
     SearchWarning,
     warn,
 )
+from dfo._fetch import SessionSource, fetch_members
 from dfo._parse import parse_notices, parse_parts
-from dfo._transport import AsyncTransport
 from dfo._types import (
     Candidate,
     CandidatesPart,
@@ -46,13 +48,6 @@ from dfo._types import (
     Spec,
     UnsupportedPart,
 )
-
-if TYPE_CHECKING:
-    # The dataset class ships beside the fetch code.
-    from dfo._dataset import Dataset  # ty: ignore[unresolved-import]
-
-type TransportSource = Callable[[], AsyncTransport]
-"""Returns the transport an answer's requests go through, read when each one runs."""
 
 type Layout = Literal["long", "frame"]
 
@@ -105,7 +100,7 @@ class AsyncAnswer:
     warnings: tuple[Notice, ...] = ()
     timed_out: bool = False
     raw: Mapping[str, Any] = field(default_factory=dict, compare=False)
-    _source: TransportSource = field(compare=False)
+    _source: SessionSource = field(compare=False)
 
     @override
     def __repr__(self) -> str:
@@ -202,16 +197,15 @@ class AsyncAnswer:
             if strict:
                 raise hint
             warn(hint)
-        # The build code loads on the first fetch.
-        from dfo._fetch import fetch_members  # noqa: PLC0415  # ty: ignore[unresolved-import]
-
+        session = self._source()
         return await fetch_members(
-            self._source(),
+            session.transport,
             members,
             layout=layout,
             strict=strict,
             timeout=timeout,
             progress=progress,
+            cache=session.cache,
             missing=self.gaps,
         )
 
@@ -278,7 +272,7 @@ class AsyncAnswer:
 
 
 async def resolve(
-    source: TransportSource,
+    source: SessionSource,
     request: Mapping[str, Any],
     /,
     *,
@@ -288,7 +282,7 @@ async def resolve(
     """Post one Search input and read the answer.
 
     Args:
-        source: Returns the transport to post through.
+        source: Returns the session to post through.
         request: The `input` member: a raw text, parsed or `dataset_resubmit`
             input.
         question: The question the answer stands for, kept on it.
@@ -298,7 +292,7 @@ async def resolve(
         ContractError: The answer's kind is unknown, or a member the client acts
             on is missing.
     """
-    transport = source()
+    transport = source().transport
     response = await transport.request(
         "POST",
         RESOLVE_PATH,
@@ -310,7 +304,7 @@ async def resolve(
 
 
 def answer_from_body(
-    body: object, /, *, question: str | None, source: TransportSource
+    body: object, /, *, question: str | None, source: SessionSource
 ) -> AsyncAnswer:
     """Read a decoded Search response into an answer.
 
@@ -407,18 +401,24 @@ def _readings(parts: Sequence[Part]) -> list[tuple[Part, Spec]]:
     return [(part, part.spec) for part in parts if isinstance(part, DefinitePart)]
 
 
-def _members(parts: Sequence[Part]) -> list[tuple[tuple[str, ...], Spec, str]]:
-    """One `(parts, spec, sentence)` per distinct spec, in query order.
+def _members(parts: Sequence[Part]) -> list[Reading]:
+    """One reading per distinct spec, in query order.
 
-    Parts folded onto one spec share its member, which names each of them.
+    Parts folded onto one spec share its reading, which names each of them.
     """
-    grouped: dict[Spec, list[str]] = {}
+    grouped: dict[Spec, list[Part]] = {}
     for part, spec in _readings(parts):
-        grouped.setdefault(spec, []).append(
-            part.variable_text or spec.sentence or spec.spec_id
-        )
+        grouped.setdefault(spec, []).append(part)
     return [
-        (tuple(names), spec, spec.sentence or "") for spec, names in grouped.items()
+        Reading(
+            tuple(
+                part.variable_text or spec.sentence or spec.spec_id for part in folded
+            ),
+            spec,
+            spec.sentence,
+            tuple(folded),
+        )
+        for spec, folded in grouped.items()
     ]
 
 

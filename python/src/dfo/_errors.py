@@ -35,6 +35,8 @@ class DfoError(Exception):
         retryable: Whether the same call can succeed later.
         problem: The parsed problem document, or None.
         docs_url: The page that documents the code, or None.
+        retry_after: The wait the response's `Retry-After` header asked for, in
+            seconds, or None.
     """
 
     def __init__(
@@ -49,6 +51,7 @@ class DfoError(Exception):
         retryable: bool = False,
         problem: Mapping[str, Any] | None = None,
         docs_url: str | None = None,
+        retry_after: float | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -58,6 +61,7 @@ class DfoError(Exception):
         self.retryable = retryable
         self.problem = problem
         self.docs_url = docs_url
+        self.retry_after = retry_after
 
 
 class InvalidRequestError(DfoError):
@@ -85,7 +89,14 @@ class DeclinedError(DfoError):
 
 
 class VersionUnavailableError(DfoError):
-    """A stored version cannot be rebuilt; the caller takes the newest version."""
+    """A stored version cannot be rebuilt; the caller takes the newest version.
+
+    Attributes:
+        newest_version: The newest version of the spec the server holds, or None
+            when it names none.
+    """
+
+    newest_version: str | None = None
 
 
 class AuthenticationError(DfoError):
@@ -213,7 +224,14 @@ def _text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def problem_error(status: int, body: object, *, reason: str, origin: str) -> DfoError:
+def problem_error(
+    status: int,
+    body: object,
+    *,
+    reason: str,
+    origin: str,
+    retry_after: float | None = None,
+) -> DfoError:
     """Build the error for a refused response.
 
     Args:
@@ -221,6 +239,7 @@ def problem_error(status: int, body: object, *, reason: str, origin: str) -> Dfo
         body: The parsed JSON body, or None when the body is not JSON.
         reason: The HTTP reason phrase, the message when the body gives none.
         origin: The API's origin, which a root-relative `type` resolves against.
+        retry_after: The wait the response's `Retry-After` header asked for.
 
     Returns:
         The error, of the class the code or else the status maps to. A problem
@@ -254,6 +273,7 @@ def problem_error(status: int, body: object, *, reason: str, origin: str) -> Dfo
         retryable=retryable,
         problem=problem,
         docs_url=docs_url,
+        retry_after=retry_after,
     )
 
 

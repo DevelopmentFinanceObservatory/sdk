@@ -141,6 +141,37 @@ async def test_a_backlog_refusal_backs_off_within_the_retry_count() -> None:
     assert timeline.sleeps == [1.0, 2.0]
 
 
+def refused(status: int, code: str, wait: str) -> httpx2.Response:
+    """A retryable refusal whose `Retry-After` header asks for `wait`."""
+    response = problem(status, code, retryable=True)
+    return json_response(status, response.json(), {"retry-after": wait})
+
+
+async def test_a_backlog_refusal_waits_for_its_retry_after() -> None:
+    timeline = Timeline()
+    busy = refused(503, "service_unavailable", "4")
+    server = Server(
+        busy, busy, json_response(200, manifest(POSTED_ID)), redirect(), parquet()
+    )
+    async with make(server, timeline, max_retries=2) as transport:
+        await fetch(transport, spec())
+    assert timeline.sleeps == [4.0, 4.0]
+
+
+async def test_a_429_poll_waits_for_its_retry_after() -> None:
+    timeline = Timeline()
+    server = Server(
+        accepted(retry_after_ms=1000),
+        refused(429, "rate_limited", "6"),
+        done(),
+        redirect(),
+        parquet(),
+    )
+    async with make(server, timeline) as transport:
+        await fetch(transport, spec())
+    assert timeline.sleeps == [1.0, 6.0]
+
+
 async def test_a_long_build_polls_at_the_servers_pacing_then_finishes() -> None:
     timeline = Timeline()
     server = Server(

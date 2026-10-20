@@ -50,11 +50,15 @@ class Spec:
         spec_id: The server's id for the reading.
         definition: The server's definition, `{schema_version, spec_id, identity}`.
         sentence: Search's sentence for the reading, when known.
+        entity_groups: How Search resolved each role's group of places, keyed by
+            role, when the spec came from an answer; posted back with its
+            identity so Search reads the groups the same way.
     """
 
     spec_id: str
     definition: Mapping[str, Any] = field(repr=False)
     sentence: str | None = None
+    entity_groups: Mapping[str, Any] | None = field(default=None, repr=False)
 
     @override
     def __eq__(self, other: object) -> bool:
@@ -588,3 +592,31 @@ def _load_member(value: object, pointer: str) -> RefMember:
             artifact["rendering"], f"{pointer}/artifact/rendering"
         ),
     )
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class RawResponse:
+    """A response from `client.request`, for a route the client does not wrap.
+
+    Attributes:
+        status_code: The HTTP status; a 2xx or 3xx, since a refusal raises.
+        headers: The response headers, keyed in lower case.
+        content: The body's bytes.
+    """
+
+    status_code: int
+    headers: Mapping[str, str] = field(repr=False)
+    content: bytes = field(repr=False)
+
+    @property
+    def text(self) -> str:
+        """The body decoded as UTF-8."""
+        return self.content.decode("utf-8", errors="replace")
+
+    def json(self) -> Any:
+        """The body decoded as JSON.
+
+        Raises:
+            ValueError: The body is not JSON.
+        """
+        return json.loads(self.content)

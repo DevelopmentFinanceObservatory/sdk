@@ -7,14 +7,13 @@ polls at `/datasets/operations/{id}` until it is done or the deadline passes.
 
 One layer owns build retries, and it is this one: the build request is sent with
 no transport retries, a synchronous cut-off (a 504, or the read timing out) is
-retried once, other retryable refusals back off from 1 to 8 seconds within the
-transport's retry count, and a retryable failed operation is resubmitted once.
-Polls wait for `retry_after_ms` when the resource carries it, else for the
-`Retry-After` header, else back off from 1 to 8 seconds; a 429 waits without
-spending a retry.
+retried once, other retryable refusals wait for their `Retry-After` or back off
+from 1 to 8 seconds within the transport's retry count, and a retryable failed
+operation is resubmitted once. Polls wait for `retry_after_ms` when the resource
+carries it, else for the `Retry-After` header, else back off from 1 to 8 seconds;
+a 429 waits for its `Retry-After` without spending a retry.
 """
 
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
@@ -33,9 +32,8 @@ from dfo._build import (
 from dfo._dataset import Dataset
 from dfo._errors import ContractError, DfoError, DfoTimeoutError, problem_error
 from dfo._parse import check_manifest
-from dfo._sync._transport import Transport, _retry_after
-
-logger = logging.getLogger("dfo")
+from dfo._progress import ProgressRenderer
+from dfo._sync._transport import Transport, retry_after
 
 type ProgressHook = Callable[[str, Progress, str | None], None]
 
@@ -69,15 +67,18 @@ class Reply:
     trace_id: str | None = None
 
 
-def log_progress(operation_id: str, progress: Progress, trace_id: str | None) -> None:
-    """Record a long build's progress on the `dfo` logger."""
-    logger.info(
-        "build %s: %s of %s rows written (trace %s)",
-        operation_id,
-        progress.rows_written,
-        progress.estimate_rows,
-        trace_id,
-    )
+def progress_hook(renderer: ProgressRenderer) -> ProgressHook:
+    """The hook that shows each progress the server reports through `renderer`."""
+
+    def show(operation_id: str, progress: Progress, trace_id: str | None) -> None:
+        renderer.update(
+            operation_id=operation_id,
+            rows_written=progress.rows_written,
+            estimate_rows=progress.estimate_rows,
+            trace_id=trace_id,
+        )
+
+    return show
 
 
 def _reply(response: httpx2.Response) -> Reply:
@@ -90,7 +91,7 @@ def _reply(response: httpx2.Response) -> Reply:
         return Reply(
             None,
             read_operation(response_json(response)),
-            _retry_after(response),
+            retry_after(response),
             trace_id,
         )
     raise ContractError(
@@ -142,7 +143,11 @@ def post_build(transport: Transport, body: Wire, *, deadline: float | None) -> R
                     raise
                 cut_off_retried = True
                 continue
-            wait = poll_backoff(retries)
+            wait = (
+                poll_backoff(retries)
+                if error.retry_after is None
+                else error.retry_after
+            )
             if (
                 not error.retryable
                 or retries >= transport.max_retries
@@ -167,7 +172,7 @@ class Poller:
         reply: Reply,
         *,
         body: Wire | None = None,
-        on_progress: ProgressHook | None = log_progress,
+        on_progress: ProgressHook | None = None,
     ) -> None:
         """Start from the server's answer to a build request.
 
@@ -184,6 +189,7 @@ class Poller:
         self._manifest: Wire | None = None
         self._state: OperationState | None = None
         self._header_wait: float | None = None
+        self._refused_wait: float | None = None
         self._trace_id: str | None = None
         self._error: DfoError | None = None
         self._backoff_step = 0
@@ -244,6 +250,9 @@ class Poller:
         return self._manifest is not None or self._error is not None
 
     def _next_wait(self) -> float:
+        if (refused := self._refused_wait) is not None:
+            self._refused_wait = None
+            return refused
         if self._state is not None and self._state.retry_after is not None:
             return self._state.retry_after
         if self._header_wait is not None:
@@ -307,7 +316,7 @@ class Poller:
             Reply(
                 None,
                 read_operation(response_json(response)),
-                _retry_after(response),
+                retry_after(response),
                 response.headers.get("x-dfo-trace-id"),
             )
         )
@@ -320,6 +329,7 @@ class Poller:
             self._failed(error, deadline)
             return
         if error.status == 429:
+            self._refused_wait = error.retry_after
             return
         if not error.retryable or self._retries >= self._transport.max_retries:
             raise error
@@ -343,10 +353,23 @@ class Operation:
     inline.
     """
 
-    def __init__(self, poller: Poller, finish: Finish) -> None:
-        """Wrap a build's poller and the step that turns its manifest into data."""
+    def __init__(
+        self,
+        poller: Poller,
+        finish: Finish,
+        *,
+        renderer: ProgressRenderer | None = None,
+    ) -> None:
+        """Wrap a build's poller and the step that turns its manifest into data.
+
+        Args:
+            poller: Polls the build.
+            finish: Turns the done build's manifest into the dataset.
+            renderer: Shows the poller's progress; `result` ends its line.
+        """
         self._poller = poller
         self._finish = finish
+        self._renderer = renderer
         self._transport = poller.transport
 
     @property
@@ -381,7 +404,12 @@ class Operation:
             DfoError: The build failed.
         """
         deadline = self._transport.deadline(timeout)
-        return self._finish(self._poller.wait(deadline), deadline)
+        try:
+            manifest = self._poller.wait(deadline)
+        finally:
+            if self._renderer is not None:
+                self._renderer.close()
+        return self._finish(manifest, deadline)
 
     def __repr__(self) -> str:
         return f"<Operation {self.operation_id or 'inline'} {self.status}>"
@@ -391,7 +419,7 @@ def resume(
     transport: Transport,
     operation_id: str,
     *,
-    on_progress: ProgressHook | None = log_progress,
+    on_progress: ProgressHook | None = None,
 ) -> Poller:
     """Read a running build's operation by id, to poll it from this process.
 
@@ -405,7 +433,7 @@ def resume(
         Reply(
             None,
             read_operation(response_json(response)),
-            _retry_after(response),
+            retry_after(response),
             response.headers.get("x-dfo-trace-id"),
         ),
         on_progress=on_progress,

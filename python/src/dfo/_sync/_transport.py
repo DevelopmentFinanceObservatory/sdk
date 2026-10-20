@@ -46,9 +46,9 @@ def _split_base_url(base_url: str) -> tuple[str, str]:
     return origin + parts.path.rstrip("/"), origin
 
 
-def _retry_after(response: httpx2.Response | None) -> float | None:
+def retry_after(response: httpx2.Response) -> float | None:
     """Return the wait a `Retry-After` header asks for, or None."""
-    value = None if response is None else response.headers.get("retry-after")
+    value = response.headers.get("retry-after")
     if not value:
         return None
     if value.strip().isdigit():
@@ -238,16 +238,11 @@ class Transport:
             warn_once(("x-dfo-warning", notice), DfoWarning(notice))
 
     def _retry_wait(
-        self,
-        error: DfoError,
-        response: httpx2.Response | None,
-        attempt: int,
-        retries: int,
-        deadline: float | None,
+        self, error: DfoError, attempt: int, retries: int, deadline: float | None
     ) -> float | None:
         if not error.retryable or attempt >= retries:
             return None
-        wait = _retry_after(response)
+        wait = error.retry_after
         if wait is None:
             wait = min(_BACKOFF_FIRST * 2**attempt, _BACKOFF_CAP)
         if deadline is not None and self._clock() + wait >= deadline:
@@ -305,7 +300,6 @@ class Transport:
                 headers=self._headers(headers),
                 timeout=self._attempt_timeout(timeout, deadline),
             )
-            response = None
             try:
                 response = self._http.send(request)
             except httpx2.TimeoutException as exc:
@@ -328,8 +322,9 @@ class Transport:
                     _json_body(response),
                     reason=response.reason_phrase,
                     origin=self._origin,
+                    retry_after=retry_after(response),
                 )
-            wait = self._retry_wait(error, response, attempt, retries, deadline)
+            wait = self._retry_wait(error, attempt, retries, deadline)
             if wait is None:
                 raise error
             self._sleep(wait)

@@ -19,12 +19,14 @@ the signed URL the files route redirects to, checked against its digest before t
 fetch returns. Members build one after another, under one deadline.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from dfo._build import (
     Cache,
     Layout,
+    Reading,
     Window,
     Wire,
     build_body,
@@ -57,16 +59,32 @@ from dfo._operation import (
     Finish,
     Poller,
     ProgressHook,
-    log_progress,
     post_build,
+    progress_hook,
     resume,
 )
 from dfo._parse import check_manifest, parse_notices, parse_parts
+from dfo._progress import ProgressRenderer
 from dfo._strict import RESOLUTION_KIND
 from dfo._transport import AsyncTransport
 from dfo._types import DatasetRef, DefinitePart, Gap, RefMember, Rendering, Spec
 
-type Want = tuple[tuple[str, ...], Spec, str | None]
+
+@dataclass(frozen=True, slots=True)
+class Session:
+    """What a client's calls go through: its transport and its cache.
+
+    Attributes:
+        transport: The transport requests go through.
+        cache: The local cache, or None to fetch without one.
+    """
+
+    transport: AsyncTransport
+    cache: Cache | None = None
+
+
+type SessionSource = Callable[[], Session]
+"""Returns the session a call goes through, read when the call runs."""
 
 _REDIRECTS = frozenset({301, 302, 303, 307, 308})
 
@@ -135,12 +153,12 @@ async def fetch(
             layout=layout,
             strict=strict,
             timeout=timeout,
-            on_progress=None if progress is False else log_progress,
+            progress=progress,
             cache=cache,
         )
     return await fetch_members(
         transport,
-        [((), target, target.sentence)],
+        [Reading((), target, target.sentence)],
         layout=layout or "long",
         strict=strict,
         timeout=timeout,
@@ -152,7 +170,7 @@ async def fetch(
 
 async def fetch_members(
     transport: AsyncTransport,
-    members: Sequence[Want],
+    readings: Sequence[Reading],
     *,
     layout: Layout = "long",
     strict: bool = False,
@@ -166,13 +184,12 @@ async def fetch_members(
 
     Args:
         transport: The transport requests go through.
-        members: One `(parts, spec, sentence)` per reading: the variable text of
-            the answer parts it answers, the spec, and Search's sentence for it
-            when known. A spec listed twice builds once, answering both parts.
-        layout: `long`, or `frame` for one member.
+        readings: The readings to build, in query order. A spec listed twice
+            builds once, answering both readings' parts.
+        layout: `long`, or `frame` for one reading.
         strict: Raise the first dataset warning instead of issuing it.
         timeout: The longest the fetch takes, in seconds; None for no limit.
-        progress: False silences long-build progress.
+        progress: Show long-build progress; None shows it unless `DFO_PROGRESS=0`.
         cache: The local cache, or None to fetch without one.
         missing: The gaps a partial answer leaves out; the dataset is complete
             when there are none.
@@ -186,7 +203,7 @@ async def fetch_members(
             call that resumes it.
         DfoError: The server refused a request.
     """
-    wants = _distinct(members)
+    wants = _distinct(readings)
     rendering = rendering_for(layout)
     if layout == "frame" and len(wants) > 1:
         raise InvalidRequestError(
@@ -198,31 +215,35 @@ async def fetch_members(
             "server; fetch a DatasetRef to read a stored version from the cache"
         )
     deadline = transport.deadline(timeout)
-    on_progress = None if progress is False else log_progress
+    # Groups resolved for the answer's places do not hold for places rebound here.
+    keep_groups = narrowing is None or "entities" not in narrowing
     fetched = []
-    for parts, spec, sentence in wants:
-        body = build_body(spec, rendering, narrowing)
-        try:
-            manifest = await _build(
-                transport, body, deadline=deadline, on_progress=on_progress
+    with ProgressRenderer(enabled=progress) as renderer:
+        for want in wants:
+            body = build_body(want.spec, rendering, narrowing)
+            try:
+                manifest = await _build(
+                    transport,
+                    body,
+                    deadline=deadline,
+                    on_progress=progress_hook(renderer),
+                )
+            except DfoError as error:
+                if error.code == "member_not_resolvable":
+                    raise _with_hint(error, _SEARCH_AGAIN) from error
+                raise
+            fetched.append(
+                await _finish(
+                    transport,
+                    manifest,
+                    want=want,
+                    entity_groups=want.spec.entity_groups if keep_groups else None,
+                    rendering=rendering,
+                    strict=strict,
+                    cache=cache,
+                    deadline=deadline,
+                )
             )
-        except DfoError as error:
-            if error.code == "member_not_resolvable":
-                raise _with_hint(error, _SEARCH_AGAIN) from error
-            raise
-        fetched.append(
-            await _finish(
-                transport,
-                manifest,
-                parts=parts,
-                posted=spec,
-                sentence=sentence or spec.sentence,
-                rendering=rendering,
-                strict=strict,
-                cache=cache,
-                deadline=deadline,
-            )
-        )
     return build_dataset(
         fetched, layout=layout, complete=not missing, missing=missing, stale=False
     )
@@ -244,20 +265,19 @@ async def mint(
     """
     rendering = rendering_for(layout)
     body = build_body(spec, rendering)
-    on_progress = None if progress is False else log_progress
     reply = await post_build(transport, body, deadline=None)
-    poller = Poller(transport, reply, body=body, on_progress=on_progress)
+    renderer = ProgressRenderer(enabled=progress)
+    poller = Poller(transport, reply, body=body, on_progress=progress_hook(renderer))
     return AsyncOperation(
         poller,
         _finisher(
             transport,
-            parts=(),
-            posted=spec,
-            sentence=spec.sentence,
+            Reading((), spec, spec.sentence),
             layout=layout,
             strict=strict,
             cache=cache,
         ),
+        renderer=renderer,
     )
 
 
@@ -279,28 +299,19 @@ async def operation(
         NotFoundError: The server holds no operation with that id.
         DfoError: The operation failed.
     """
-    on_progress = None if progress is False else log_progress
-    poller = await resume(transport, operation_id, on_progress=on_progress)
+    renderer = ProgressRenderer(enabled=progress)
+    poller = await resume(transport, operation_id, on_progress=progress_hook(renderer))
     return AsyncOperation(
         poller,
-        _finisher(
-            transport,
-            parts=(),
-            posted=None,
-            sentence=None,
-            layout=layout,
-            strict=strict,
-            cache=cache,
-        ),
+        _finisher(transport, None, layout=layout, strict=strict, cache=cache),
+        renderer=renderer,
     )
 
 
 def _finisher(
     transport: AsyncTransport,
+    want: Reading | None,
     *,
-    parts: tuple[str, ...],
-    posted: Spec | None,
-    sentence: str | None,
     layout: Layout,
     strict: bool,
     cache: Cache | None,
@@ -311,9 +322,8 @@ def _finisher(
         member = await _finish(
             transport,
             manifest,
-            parts=parts,
-            posted=posted,
-            sentence=sentence,
+            want=want,
+            entity_groups=None if want is None else want.spec.entity_groups,
             rendering=rendering,
             strict=strict,
             cache=cache,
@@ -326,15 +336,20 @@ def _finisher(
     return finish
 
 
-def _distinct(members: Sequence[Want]) -> list[Want]:
-    """One entry per `spec_id`, in first-seen order, with the parts merged."""
-    merged: dict[str, Want] = {}
-    for parts, spec, sentence in members:
-        if (seen := merged.get(spec.spec_id)) is None:
-            merged[spec.spec_id] = (tuple(parts), spec, sentence)
-        else:
-            extra = tuple(part for part in parts if part not in seen[0])
-            merged[spec.spec_id] = (seen[0] + extra, seen[1], seen[2] or sentence)
+def _distinct(readings: Sequence[Reading]) -> list[Reading]:
+    """One reading per `spec_id`, in first-seen order, with the parts merged."""
+    merged: dict[str, Reading] = {}
+    for reading in readings:
+        if (seen := merged.get(reading.spec.spec_id)) is None:
+            merged[reading.spec.spec_id] = reading
+            continue
+        merged[reading.spec.spec_id] = Reading(
+            seen.parts
+            + tuple(part for part in reading.parts if part not in seen.parts),
+            seen.spec,
+            seen.sentence or reading.sentence,
+            seen.answer_parts + reading.answer_parts,
+        )
     return list(merged.values())
 
 
@@ -348,6 +363,7 @@ def _with_hint(error: DfoError, hint: str) -> DfoError:
         retryable=error.retryable,
         problem=error.problem,
         docs_url=error.docs_url,
+        retry_after=error.retry_after,
     )
 
 
@@ -370,15 +386,17 @@ async def _finish(
     transport: AsyncTransport,
     manifest: Wire,
     *,
-    parts: tuple[str, ...],
-    posted: Spec | None,
-    sentence: str | None,
+    want: Reading | None,
+    entity_groups: Mapping[str, Any] | None,
     rendering: Rendering,
     strict: bool,
     cache: Cache | None,
     deadline: float | None,
 ) -> FetchedMember:
-    """Download a built version's artifact and give it Search's sentence."""
+    """Download a built version's artifact and give it Search's sentence.
+
+    `want` is the reading posted, or None for a build resumed by its id.
+    """
     definition = manifest["definition"]
     spec_id = definition["spec_id"]
     content_version = manifest["content_version"]
@@ -389,8 +407,12 @@ async def _finish(
             f"The manifest of {spec_id} at {content_version} lists no "
             f"{rendering_options(rendering)} artifact"
         )
-    if posted is None or spec_id != posted.spec_id or sentence is None:
-        sentence = await _sentence(transport, definition, parts, deadline=deadline)
+    parts = () if want is None else want.parts
+    sentence = None if want is None else want.sentence or want.spec.sentence
+    if want is None or spec_id != want.spec.spec_id or sentence is None:
+        sentence = await _sentence(
+            transport, definition, parts, entity_groups, deadline=deadline
+        )
     digest = artifact["artifact_digest"]
     data = cache.get_bytes(digest) if cache is not None else None
     if data is None:
@@ -406,6 +428,7 @@ async def _finish(
         manifest=manifest,
         digest=digest,
         data=data,
+        answer_parts=() if want is None else want.answer_parts,
     )
 
 
@@ -493,6 +516,7 @@ async def _sentence(
     transport: AsyncTransport,
     definition: Wire,
     parts: tuple[str, ...],
+    entity_groups: Mapping[str, Any] | None,
     *,
     deadline: float | None,
 ) -> str:
@@ -506,7 +530,9 @@ async def _sentence(
     response = await transport.request(
         "POST",
         "/search/resolve",
-        json=resubmit_body(definition["identity"], "; ".join(parts) or _UNNAMED_PART),
+        json=resubmit_body(
+            definition["identity"], "; ".join(parts) or _UNNAMED_PART, entity_groups
+        ),
         deadline=deadline,
     )
     answer = response_json(response)
@@ -530,7 +556,7 @@ async def _fetch_ref(
     layout: Layout | None,
     strict: bool,
     timeout: float | None,
-    on_progress: ProgressHook | None,
+    progress: bool | None,
     cache: Cache | None,
 ) -> Dataset:
     ref_layout = _ref_layout(ref)
@@ -541,18 +567,19 @@ async def _fetch_ref(
         )
     deadline = transport.deadline(timeout)
     stale = offline()
-    fetched = [
-        await _fetch_version(
-            transport,
-            member,
-            strict=strict,
-            on_progress=on_progress,
-            cache=cache,
-            cache_only=stale,
-            deadline=deadline,
-        )
-        for member in ref.members
-    ]
+    with ProgressRenderer(enabled=progress) as renderer:
+        fetched = [
+            await _fetch_version(
+                transport,
+                member,
+                strict=strict,
+                on_progress=progress_hook(renderer),
+                cache=cache,
+                cache_only=stale,
+                deadline=deadline,
+            )
+            for member in ref.members
+        ]
     return build_dataset(
         fetched, layout=ref_layout, complete=True, missing=(), stale=stale
     )
@@ -630,9 +657,8 @@ async def _fetch_version(
             return await _finish(
                 transport,
                 manifest,
-                parts=member.parts,
-                posted=member.spec,
-                sentence=member.sentence,
+                want=Reading(member.parts, member.spec, member.sentence),
+                entity_groups=None,
                 rendering=member.rendering,
                 strict=strict,
                 cache=cache,
@@ -740,13 +766,16 @@ def _unavailable(
         message += f"; the newest version is {newest}. Fetch the spec for it"
     message += "."
     if refusal is None:
-        return VersionUnavailableError(message)
-    return VersionUnavailableError(
-        message,
-        code=refusal.code,
-        status=refusal.status,
-        detail=refusal.detail,
-        trace_id=refusal.trace_id,
-        problem=refusal.problem,
-        docs_url=refusal.docs_url,
-    )
+        error = VersionUnavailableError(message)
+    else:
+        error = VersionUnavailableError(
+            message,
+            code=refusal.code,
+            status=refusal.status,
+            detail=refusal.detail,
+            trace_id=refusal.trace_id,
+            problem=refusal.problem,
+            docs_url=refusal.docs_url,
+        )
+    error.newest_version = newest
+    return error

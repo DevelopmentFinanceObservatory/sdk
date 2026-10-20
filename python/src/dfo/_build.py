@@ -17,7 +17,7 @@ import httpx2
 
 from dfo._errors import ContractError
 from dfo._parse import check_manifest, check_operation
-from dfo._types import Rendering, Spec
+from dfo._types import Part, Rendering, Spec
 
 type Wire = Mapping[str, Any]
 type Layout = Literal["long", "frame"]
@@ -44,6 +44,25 @@ class Progress:
 
     rows_written: int | None = None
     estimate_rows: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Reading:
+    """One reading a fetch builds, with what it answers.
+
+    Attributes:
+        parts: The variable text of each answer part the reading answers, in
+            query order; empty for a spec fetched outside an answer.
+        spec: The reading to build.
+        sentence: Search's sentence for the reading, when known.
+        answer_parts: The answer parts the reading answers, whose departures and
+            requested operations reach the dataset.
+    """
+
+    parts: tuple[str, ...]
+    spec: Spec
+    sentence: str | None = None
+    answer_parts: tuple[Part, ...] = ()
 
 
 class Cache(Protocol):
@@ -184,20 +203,26 @@ def build_body(
     }
 
 
-def resubmit_body(identity: object, variable_text: str) -> dict[str, Any]:
-    """The Search request that re-resolves one built identity for its sentence."""
+def resubmit_body(
+    identity: object,
+    variable_text: str,
+    entity_groups: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The Search request that re-resolves one built identity for its sentence.
+
+    `entity_groups` are the groups Search resolved for the answer the spec came
+    from, so a group of places reads the same way again.
+    """
+    entry: dict[str, Any] = {
+        "entry_kind": "identity",
+        "variable_text": variable_text,
+        "identity": identity,
+    }
+    if entity_groups:
+        entry["entity_groups"] = entity_groups
     return {
         "schema_version": 1,
-        "input": {
-            "kind": "dataset_resubmit",
-            "entries": [
-                {
-                    "entry_kind": "identity",
-                    "variable_text": variable_text,
-                    "identity": identity,
-                }
-            ],
-        },
+        "input": {"kind": "dataset_resubmit", "entries": [entry]},
     }
 
 

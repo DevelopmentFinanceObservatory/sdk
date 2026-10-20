@@ -313,6 +313,16 @@ def test_a_part_without_status_raises() -> None:
         parse_parts(answer)
 
 
+def test_a_spec_keeps_the_entity_groups_search_resolved() -> None:
+    answer = load("search-1.json")
+    groups = {"destination": {"text": "Sahel", "ref": "SahelRegion"}}
+    answer["parts"][0]["spec"]["resolved"]["entity_groups"] = groups
+    (part,) = parse_parts(answer)
+    assert isinstance(part, DefinitePart)
+    assert part.spec.entity_groups == groups
+    assert parse_parts(load("search-1.json"))[0].spec.entity_groups is None
+
+
 def test_a_spec_whose_definition_names_another_spec_raises() -> None:
     answer = load("search-1.json")
     answer["parts"][0]["spec"]["definition"]["spec_id"] = NARROWED_SPEC_ID
@@ -321,11 +331,18 @@ def test_a_spec_whose_definition_names_another_spec_raises() -> None:
 
 
 def scenario_bodies() -> list[tuple[str, str, int, Any]]:
-    """Every successful JSON response body in the contract's scenarios."""
+    """Every successful JSON response body in the contract's scenarios.
+
+    A scenario whose last call raises ends on the body the client refuses, so its
+    last exchange is left out.
+    """
     bodies = []
     for path in sorted((CONTRACT / "scenarios").glob("*.json")):
         record = json.loads(path.read_text())
-        for exchange in record["exchanges"]:
+        exchanges = record["exchanges"]
+        if "error" in record["expect"][-1]:
+            exchanges = exchanges[:-1]
+        for exchange in exchanges:
             request, response = exchange["request"], exchange["response"]
             if "json" in response and "path" in request and response["status"] < 300:
                 bodies.append(
