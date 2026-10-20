@@ -147,7 +147,10 @@ include = ["src/dfo"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-v --cov=src/dfo --cov-report=term --cov-report=xml"
+addopts = "-v --cov=src/dfo --cov-report=term --cov-report=xml -m 'not live'"
+markers = [
+    "live: reaches the deployed API at DFO_BASE_URL; deselected unless run with -m live",
+]
 
 [tool.coverage.run]
 source = ["src"]
