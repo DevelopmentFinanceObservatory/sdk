@@ -1,0 +1,413 @@
+"""Build requests and long-build operations: posting a build, polling, resuming.
+
+A build posts to `/datasets`. The server answers a build within its synchronous
+limits with the manifest, and a larger one with a 202 operation that the client
+polls at `/datasets/operations/{id}` until it is done or the deadline passes.
+
+One layer owns build retries, and it is this one: the build request is sent with
+no transport retries, a synchronous cut-off (a 504, or the read timing out) is
+retried once, other retryable refusals back off from 1 to 8 seconds within the
+transport's retry count, and a retryable failed operation is resubmitted once.
+Polls wait for `retry_after_ms` when the resource carries it, else for the
+`Retry-After` header, else back off from 1 to 8 seconds; a 429 waits without
+spending a retry.
+"""
+
+import logging
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Protocol
+
+import httpx2
+
+from dfo._build import (
+    BUILD_READ_TIMEOUT,
+    OperationState,
+    Progress,
+    Wire,
+    poll_backoff,
+    read_operation,
+    response_json,
+)
+from dfo._dataset import Dataset
+from dfo._errors import ContractError, DfoError, DfoTimeoutError, problem_error
+from dfo._parse import check_manifest
+from dfo._transport import AsyncTransport, _retry_after
+
+logger = logging.getLogger("dfo")
+
+type ProgressHook = Callable[[str, Progress, str | None], None]
+
+_DONE = "done"
+_FAILED = "failed"
+_OPERATION_FAILED = "operation_failed"
+
+
+class Finish(Protocol):
+    """Turns a done build's manifest into the dataset an operation returns."""
+
+    async def __call__(self, manifest: Wire, deadline: float | None, /) -> Dataset:
+        """Download, check and assemble the dataset for `manifest`."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class Reply:
+    """The server's answer to a build request: a manifest or an operation.
+
+    Attributes:
+        manifest: The manifest of a build that finished inline, or None.
+        state: The operation of a build that runs on, or None.
+        retry_after: The wait the `Retry-After` header asks for, in seconds.
+        trace_id: The response's trace id.
+    """
+
+    manifest: Wire | None
+    state: OperationState | None
+    retry_after: float | None = None
+    trace_id: str | None = None
+
+
+def log_progress(operation_id: str, progress: Progress, trace_id: str | None) -> None:
+    """Record a long build's progress on the `dfo` logger."""
+    logger.info(
+        "build %s: %s of %s rows written (trace %s)",
+        operation_id,
+        progress.rows_written,
+        progress.estimate_rows,
+        trace_id,
+    )
+
+
+def _reply(response: httpx2.Response) -> Reply:
+    trace_id = response.headers.get("x-dfo-trace-id")
+    if response.status_code == 200:
+        manifest = response_json(response)
+        check_manifest(manifest)
+        return Reply(manifest, None, trace_id=trace_id)
+    if response.status_code == 202:
+        return Reply(
+            None,
+            read_operation(response_json(response)),
+            _retry_after(response),
+            trace_id,
+        )
+    raise ContractError(
+        f"POST /datasets answered HTTP {response.status_code}; "
+        "a build answers 200 or 202"
+    )
+
+
+def _is_cut_off(error: DfoError) -> bool:
+    """Whether the server, or the read, cut a synchronous build off."""
+    if not error.retryable:
+        return False
+    return error.status == 504 or (
+        isinstance(error, DfoTimeoutError) and error.status is None
+    )
+
+
+def _fits(transport: AsyncTransport, wait: float, deadline: float | None) -> bool:
+    return deadline is None or transport.now() + wait < deadline
+
+
+async def post_build(
+    transport: AsyncTransport, body: Wire, *, deadline: float | None
+) -> Reply:
+    """Post a build request, owning its retries.
+
+    Args:
+        transport: The transport to send it through.
+        body: The `POST /datasets` body.
+        deadline: The clock reading the build must answer by.
+
+    Raises:
+        DfoError: The refusal, once the retries the build allows are spent.
+        ContractError: The server answered a status a build never answers.
+    """
+    cut_off_retried = False
+    retries = 0
+    while True:
+        try:
+            response = await transport.request(
+                "POST",
+                "/datasets",
+                json=body,
+                timeout=BUILD_READ_TIMEOUT,
+                deadline=deadline,
+                max_retries=0,
+            )
+        except DfoError as error:
+            if _is_cut_off(error):
+                if cut_off_retried:
+                    raise
+                cut_off_retried = True
+                continue
+            wait = poll_backoff(retries)
+            if (
+                not error.retryable
+                or retries >= transport.max_retries
+                or not _fits(transport, wait, deadline)
+            ):
+                raise
+            await transport.sleep(wait)
+            retries += 1
+            continue
+        return _reply(response)
+
+
+class Poller:
+    """Polls one build until it is done, at the server's pacing.
+
+    `operation_id` is None for a build the server finished inline.
+    """
+
+    def __init__(
+        self,
+        transport: AsyncTransport,
+        reply: Reply,
+        *,
+        body: Wire | None = None,
+        on_progress: ProgressHook | None = log_progress,
+    ) -> None:
+        """Start from the server's answer to a build request.
+
+        Args:
+            transport: The transport polls go through.
+            reply: The answer to the build request, or the first poll.
+            body: The build request, resubmitted once when the operation fails
+                with a retryable refusal; None for a resumed operation.
+            on_progress: Called with each progress the server reports.
+        """
+        self._transport = transport
+        self._body = body
+        self._on_progress = on_progress
+        self._manifest: Wire | None = None
+        self._state: OperationState | None = None
+        self._header_wait: float | None = None
+        self._trace_id: str | None = None
+        self._error: DfoError | None = None
+        self._backoff_step = 0
+        self._retries = 0
+        self._resubmitted = False
+        self._take(reply)
+
+    @property
+    def transport(self) -> AsyncTransport:
+        """The transport polls go through."""
+        return self._transport
+
+    @property
+    def operation_id(self) -> str | None:
+        """The operation's id, or None for a build the server finished inline."""
+        return None if self._state is None else self._state.operation_id
+
+    @property
+    def progress(self) -> Progress | None:
+        """The progress the server last reported, or None."""
+        return None if self._state is None else self._state.progress
+
+    @property
+    def status(self) -> str:
+        """`pending`, `running`, `done` or `failed`, as last read."""
+        if self._error is not None:
+            return _FAILED
+        if self._manifest is not None:
+            return _DONE
+        assert self._state is not None
+        return self._state.status
+
+    async def done(self) -> bool:
+        """Whether the build has finished, polling once when it had not."""
+        if not self._finished():
+            await self._poll(None)
+        return self._finished()
+
+    async def wait(self, deadline: float | None) -> Wire:
+        """Poll until the build is done and return its manifest.
+
+        Raises:
+            DfoTimeoutError: The build was still running at `deadline`.
+            DfoError: The build failed.
+        """
+        while not self._finished():
+            wait = self._next_wait()
+            if not _fits(self._transport, wait, deadline):
+                raise self._still_running()
+            await self._transport.sleep(wait)
+            await self._poll(deadline)
+        if self._error is not None:
+            raise self._error
+        assert self._manifest is not None
+        return self._manifest
+
+    def _finished(self) -> bool:
+        return self._manifest is not None or self._error is not None
+
+    def _next_wait(self) -> float:
+        if self._state is not None and self._state.retry_after is not None:
+            return self._state.retry_after
+        if self._header_wait is not None:
+            return self._header_wait
+        wait = poll_backoff(self._backoff_step)
+        self._backoff_step += 1
+        return wait
+
+    def _still_running(self) -> DfoTimeoutError:
+        return DfoTimeoutError(
+            f"The build is still running at the deadline. Resume it with "
+            f'client.operation("{self.operation_id}").result()',
+            retryable=True,
+        )
+
+    def _take(self, reply: Reply) -> None:
+        self._state = reply.state if reply.state is not None else self._state
+        self._header_wait = reply.retry_after
+        self._trace_id = reply.trace_id or self._trace_id
+        state = reply.state
+        if reply.manifest is not None or state is None:
+            self._manifest = reply.manifest
+            return
+        if state.status == _DONE:
+            self._manifest = state.manifest
+        elif state.status == _FAILED:
+            self._error = problem_error(
+                500,
+                state.error,
+                reason="The build failed",
+                origin=self._transport.origin,
+            )
+        elif state.progress is not None and self._on_progress is not None:
+            self._on_progress(state.operation_id, state.progress, self._trace_id)
+
+    async def _poll(self, deadline: float | None) -> None:
+        operation_id = self.operation_id
+        assert operation_id is not None
+        try:
+            response = await self._transport.request(
+                "GET",
+                f"/datasets/operations/{operation_id}",
+                deadline=deadline,
+                max_retries=0,
+            )
+        except DfoTimeoutError as error:
+            if error.retryable:
+                await self._poll_failed(error, deadline)
+                return
+            raise self._still_running() from error
+        except DfoError as error:
+            await self._poll_failed(error, deadline)
+            return
+        if response.status_code != 200:
+            raise ContractError(
+                f"GET /datasets/operations/{operation_id} answered HTTP "
+                f"{response.status_code}; a poll answers 200"
+            )
+        self._retries = 0
+        self._take(
+            Reply(
+                None,
+                read_operation(response_json(response)),
+                _retry_after(response),
+                response.headers.get("x-dfo-trace-id"),
+            )
+        )
+        if self._error is not None:
+            await self._failed(self._error, deadline)
+
+    async def _poll_failed(self, error: DfoError, deadline: float | None) -> None:
+        """Keep polling after a refused poll, or raise when that cannot help."""
+        if error.code == _OPERATION_FAILED:
+            await self._failed(error, deadline)
+            return
+        if error.status == 429:
+            return
+        if not error.retryable or self._retries >= self._transport.max_retries:
+            raise error
+        self._retries += 1
+
+    async def _failed(self, error: DfoError, deadline: float | None) -> None:
+        """Resubmit a build that failed retryably, once; else hold the error."""
+        if not error.retryable or self._body is None or self._resubmitted:
+            self._error = error
+            return
+        self._resubmitted = True
+        self._error = None
+        self._take(await post_build(self._transport, self._body, deadline=deadline))
+
+
+class AsyncOperation:
+    """A long dataset build, running on the server or already done.
+
+    `client.mint(spec)` returns one, and `client.operation("op_...")` resumes one
+    from another process. `operation_id` is None for a build the server finished
+    inline.
+    """
+
+    def __init__(self, poller: Poller, finish: Finish) -> None:
+        """Wrap a build's poller and the step that turns its manifest into data."""
+        self._poller = poller
+        self._finish = finish
+        self._transport = poller.transport
+
+    @property
+    def operation_id(self) -> str | None:
+        """The operation's id, or None for a build the server finished inline."""
+        return self._poller.operation_id
+
+    @property
+    def progress(self) -> Progress | None:
+        """The progress the server last reported, or None."""
+        return self._poller.progress
+
+    @property
+    def status(self) -> str:
+        """`pending`, `running`, `done` or `failed`, as last read."""
+        return self._poller.status
+
+    async def done(self) -> bool:
+        """Whether the build has finished, polling once when it had not."""
+        return await self._poller.done()
+
+    async def result(self, timeout: float | None = 1800.0) -> Dataset:
+        """Wait for the build and return its dataset.
+
+        Args:
+            timeout: The longest to wait, in seconds, polls and downloads
+                included; None waits without limit.
+
+        Raises:
+            DfoTimeoutError: The build was still running at the deadline; the
+                message names the call that resumes it.
+            DfoError: The build failed.
+        """
+        deadline = self._transport.deadline(timeout)
+        return await self._finish(await self._poller.wait(deadline), deadline)
+
+    def __repr__(self) -> str:
+        return f"<Operation {self.operation_id or 'inline'} {self.status}>"
+
+
+async def resume(
+    transport: AsyncTransport,
+    operation_id: str,
+    *,
+    on_progress: ProgressHook | None = log_progress,
+) -> Poller:
+    """Read a running build's operation by id, to poll it from this process.
+
+    Raises:
+        NotFoundError: The server holds no operation with that id.
+        DfoError: The operation failed.
+    """
+    response = await transport.request("GET", f"/datasets/operations/{operation_id}")
+    return Poller(
+        transport,
+        Reply(
+            None,
+            read_operation(response_json(response)),
+            _retry_after(response),
+            response.headers.get("x-dfo-trace-id"),
+        ),
+        on_progress=on_progress,
+    )
