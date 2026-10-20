@@ -11,6 +11,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "httpx2>=2.15",
+    "pyarrow>=15",
     "typing-extensions>=4.12",
 ]
 
@@ -33,6 +34,17 @@ Repository = "https://github.com/DevelopmentFinanceObservatory/sdk"
 Issues = "https://github.com/DevelopmentFinanceObservatory/sdk/issues"
 Changelog = "https://github.com/DevelopmentFinanceObservatory/sdk/blob/main/python/CHANGELOG.md"
 
+[project.optional-dependencies]
+pandas = [
+    "pandas>=2.2",
+]
+polars = [
+    "polars>=1.0",
+]
+xlsx = [
+    "openpyxl>=3.1",
+]
+
 [build-system]
 requires = ["uv_build>=0.12.3,<0.13"]
 build-backend = "uv_build"
@@ -48,6 +60,10 @@ dev = [
     "ruff>=0.15.0",
     "pre-commit>=4.6.0",
     "datamodel-code-generator>=0.86.0",
+    "pandas>=3.0.6",
+    "polars>=2.0.0",
+    "duckdb>=1.5.6",
+    "openpyxl>=3.1.5",
 ]
 
 [tool.ruff]
