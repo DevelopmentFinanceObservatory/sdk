@@ -1,0 +1,482 @@
+/**
+ * Build requests and long builds: posting a build, polling its operation, resuming one.
+ *
+ * A build posts to `/datasets`. The server answers a build within its synchronous limits with
+ * the manifest, and a larger one with a 202 operation the client polls at
+ * `/datasets/operations/{id}` until it is done or the deadline passes.
+ *
+ * This module owns build retries: the build request goes with no transport retries, a
+ * synchronous cut-off (a retryable 504, or the read timing out before the call's deadline) is
+ * retried once, other retryable refusals back off from 1 to 8 seconds within the transport's
+ * retry count, and a retryable failed operation is resubmitted once. Polls wait for the
+ * resource's `retry_after_ms` when it carries one, else for the `Retry-After` header, else
+ * back off from 1 to 8 seconds; a 429 waits without spending a retry.
+ */
+
+import type { Dataset } from "./dataset.ts";
+import { ContractError, DfoError, DfoTimeoutError, errorClassFor } from "./errors.ts";
+import { checkStrict } from "./strict.ts";
+import { retryAfterMs } from "./transport.ts";
+import type { JsonResponse, Transport } from "./transport.ts";
+
+/** The longest the client reads a synchronous build: the server cuts one off at 120 s. */
+const BUILD_READ_TIMEOUT_MS = 150_000;
+const POLL_BACKOFF_FIRST_MS = 1_000;
+const POLL_BACKOFF_CAP_MS = 8_000;
+
+const DONE = "done";
+const FAILED = "failed";
+const OPERATION_FAILED = "operation_failed";
+
+/** A manifest as the server sent it, checked for the members the client acts on. */
+export type Manifest = Readonly<Record<string, unknown>>;
+
+/** How far a long build has got, as the server last reported it. */
+export type Progress = {
+  readonly rowsWritten: number | null;
+  readonly estimateRows: number | null;
+};
+
+/** One progress report from a long build. */
+export type ProgressEvent = {
+  readonly operationId: string;
+  readonly progress: Progress;
+  readonly traceId: string | null;
+};
+
+export type ProgressHandler = (event: ProgressEvent) => void;
+
+/** One reading of an operation resource. */
+type OperationState = {
+  readonly operationId: string;
+  /** `pending`, `running`, `done`, `failed`, or a status this release does not know. */
+  readonly status: string;
+  readonly retryAfterMs: number | null;
+  readonly progress: Progress | null;
+  readonly manifest: Manifest | null;
+  readonly error: Readonly<Record<string, unknown>> | null;
+};
+
+/** The server's answer to a build request or a poll. */
+type Reply = {
+  readonly manifest: Manifest | null;
+  readonly state: OperationState | null;
+  /** The wait the `Retry-After` header asks for. */
+  readonly headerWaitMs: number | null;
+  readonly traceId: string | null;
+};
+
+type Wait = { readonly deadline: number; readonly signal?: AbortSignal | undefined };
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+const count = (value: unknown): number | null =>
+  typeof value === "number" && Number.isInteger(value) ? value : null;
+
+/** Checks a manifest for the members the client acts on and returns it. */
+export function readManifest(body: unknown): Manifest {
+  checkStrict("Manifest", body);
+  if (!isRecord(body)) {
+    throw new ContractError({
+      code: "contract_violation",
+      detail: "The manifest is not an object.",
+    });
+  }
+  return body;
+}
+
+function readOperation(body: unknown): OperationState {
+  checkStrict("OperationResource", body);
+  // checkStrict has proved the resource and its operation are objects with an id and status.
+  const resource = body as Record<string, unknown>;
+  const operation = resource["operation"] as Record<string, unknown>;
+  const status = String(operation["status"]);
+  const wait = operation["retry_after_ms"];
+  const progress = operation["progress"];
+  const error = resource["error"];
+  if (status === DONE && !isRecord(resource["manifest"])) {
+    throw new ContractError({
+      code: "contract_violation",
+      detail: `The done operation ${String(operation["operation_id"])} holds no manifest.`,
+    });
+  }
+  return {
+    operationId: String(operation["operation_id"]),
+    status,
+    retryAfterMs: typeof wait === "number" && wait >= 0 ? wait : null,
+    progress: isRecord(progress)
+      ? {
+          rowsWritten: count(progress["rows_written"]),
+          estimateRows: count(progress["estimate_rows"]),
+        }
+      : null,
+    manifest: status === DONE ? readManifest(resource["manifest"]) : null,
+    error: isRecord(error) ? error : null,
+  };
+}
+
+const replyHeaders = (response: JsonResponse) => ({
+  headerWaitMs: retryAfterMs(response.headers) ?? null,
+  traceId: response.headers.get("x-dfo-trace-id"),
+});
+
+/** A build answers 200 with the manifest, or 202 with the operation it started. */
+function buildReply(response: JsonResponse): Reply {
+  if (response.status === 200) {
+    return { manifest: readManifest(response.body), state: null, ...replyHeaders(response) };
+  }
+  if (response.status === 202) {
+    return { manifest: null, state: readOperation(response.body), ...replyHeaders(response) };
+  }
+  throw new ContractError({
+    code: "unexpected_response",
+    status: response.status,
+    detail: `POST /datasets answered HTTP ${response.status}; a build answers 200 or 202.`,
+    traceId: response.headers.get("x-dfo-trace-id"),
+  });
+}
+
+/** A poll answers 200 with the operation resource. */
+function pollReply(response: JsonResponse): Reply {
+  if (response.status === 200) {
+    return { manifest: null, state: readOperation(response.body), ...replyHeaders(response) };
+  }
+  throw new ContractError({
+    code: "unexpected_response",
+    status: response.status,
+    detail: `${response.url.pathname} answered HTTP ${response.status}; a poll answers 200.`,
+    traceId: response.headers.get("x-dfo-trace-id"),
+  });
+}
+
+/** The error a failed operation's problem document stands for. */
+function problemError(problem: Readonly<Record<string, unknown>> | null): DfoError {
+  const code = typeof problem?.["code"] === "string" ? problem["code"] : OPERATION_FAILED;
+  const status = typeof problem?.["status"] === "number" ? problem["status"] : 500;
+  const ErrorClass = errorClassFor(code, status);
+  return new ErrorClass({
+    code,
+    status,
+    detail: typeof problem?.["detail"] === "string" ? problem["detail"] : "The build failed.",
+    traceId: typeof problem?.["trace_id"] === "string" ? problem["trace_id"] : null,
+    retryable: problem?.["retryable"] === true,
+    problem,
+  });
+}
+
+/** The wait before poll `step` (from 0) when the server sends no pacing. */
+const pollBackoff = (step: number): number =>
+  Math.min(POLL_BACKOFF_FIRST_MS * 2 ** step, POLL_BACKOFF_CAP_MS);
+
+const fits = (transport: Transport, wait: number, deadline: number): boolean =>
+  transport.now() + wait < deadline;
+
+/**
+ * Posts a build request, owning its retries.
+ *
+ * @throws {DfoError} The refusal, once the retries a build allows are spent.
+ */
+async function postBuild(transport: Transport, body: unknown, { deadline, signal }: Wait) {
+  let cutOffRetried = false;
+  for (let retries = 0; ;) {
+    try {
+      const response = await transport.request({
+        path: "/datasets",
+        json: body,
+        timeout: BUILD_READ_TIMEOUT_MS,
+        deadline,
+        maxRetries: 0,
+        ...(signal === undefined ? {} : { signal }),
+      });
+      return buildReply(response);
+    } catch (error) {
+      if (!(error instanceof DfoError)) throw error;
+      // The server cuts a synchronous build off with a retryable 504; the client's own read
+      // limit cuts it off when the call's deadline has not passed.
+      const cutOff =
+        (error.retryable && error.status === 504) ||
+        (error instanceof DfoTimeoutError && transport.now() < deadline);
+      if (cutOff) {
+        if (cutOffRetried) throw error;
+        cutOffRetried = true;
+        continue;
+      }
+      const wait = pollBackoff(retries);
+      if (!error.retryable || retries >= transport.maxRetries || !fits(transport, wait, deadline)) {
+        throw error;
+      }
+      await transport.sleep(wait, signal);
+      retries += 1;
+    }
+  }
+}
+
+/** Polls one build until it is done, at the server's pacing. */
+class Poller {
+  readonly #transport: Transport;
+  /** The build request, resubmitted once when the operation fails retryably; undefined for a
+   *  resumed operation. */
+  readonly #body: unknown;
+  #onProgress: ProgressHandler | undefined;
+  #manifest: Manifest | null = null;
+  #state: OperationState | null = null;
+  #headerWaitMs: number | null = null;
+  #traceId: string | null = null;
+  #error: DfoError | null = null;
+  #backoffStep = 0;
+  #retries = 0;
+  #resubmitted = false;
+
+  constructor(
+    transport: Transport,
+    reply: Reply,
+    options: { body?: unknown; onProgress?: ProgressHandler | undefined },
+  ) {
+    this.#transport = transport;
+    this.#body = options.body;
+    this.#onProgress = options.onProgress;
+    this.#take(reply);
+  }
+
+  get operationId(): string | null {
+    return this.#state?.operationId ?? null;
+  }
+
+  get progress(): Progress | null {
+    return this.#state?.progress ?? null;
+  }
+
+  get status(): string {
+    if (this.#error !== null) return FAILED;
+    if (this.#manifest !== null) return DONE;
+    return this.#state?.status ?? DONE;
+  }
+
+  set onProgress(handler: ProgressHandler | undefined) {
+    this.#onProgress = handler;
+  }
+
+  async done(wait: Wait): Promise<boolean> {
+    if (!this.#finished()) await this.#poll(wait);
+    return this.#finished();
+  }
+
+  /** Polls until the build is done and returns its manifest. */
+  async wait(wait: Wait): Promise<Manifest> {
+    while (!this.#finished()) {
+      const ms = this.#nextWait();
+      if (!fits(this.#transport, ms, wait.deadline)) throw this.#stillRunning();
+      await this.#transport.sleep(ms, wait.signal);
+      await this.#poll(wait);
+    }
+    if (this.#error !== null) throw this.#error;
+    return this.#manifest!;
+  }
+
+  #finished(): boolean {
+    return this.#manifest !== null || this.#error !== null;
+  }
+
+  #nextWait(): number {
+    const paced = this.#state?.retryAfterMs ?? this.#headerWaitMs;
+    if (paced !== null) return paced;
+    const backoff = pollBackoff(this.#backoffStep);
+    this.#backoffStep += 1;
+    return backoff;
+  }
+
+  #stillRunning(cause?: unknown): DfoTimeoutError {
+    return new DfoTimeoutError({
+      code: "deadline_exceeded",
+      detail:
+        "The build is still running at the deadline. Resume it with " +
+        `client.operation("${this.operationId ?? ""}").`,
+      retryable: true,
+      cause,
+    });
+  }
+
+  #take(reply: Reply): void {
+    this.#state = reply.state ?? this.#state;
+    this.#headerWaitMs = reply.headerWaitMs;
+    this.#traceId = reply.traceId ?? this.#traceId;
+    const { state } = reply;
+    if (reply.manifest !== null || state === null) {
+      this.#manifest = reply.manifest;
+      return;
+    }
+    if (state.status === DONE) {
+      this.#manifest = state.manifest;
+    } else if (state.status === FAILED) {
+      this.#error = problemError(state.error);
+    } else if (state.progress !== null) {
+      this.#onProgress?.({
+        operationId: state.operationId,
+        progress: state.progress,
+        traceId: this.#traceId,
+      });
+    }
+  }
+
+  async #poll(wait: Wait): Promise<void> {
+    let response: JsonResponse;
+    try {
+      response = await this.#transport.request({
+        path: `/datasets/operations/${this.operationId ?? ""}`,
+        deadline: wait.deadline,
+        maxRetries: 0,
+        ...(wait.signal === undefined ? {} : { signal: wait.signal }),
+      });
+    } catch (error) {
+      if (!(error instanceof DfoError)) throw error;
+      if (error instanceof DfoTimeoutError && this.#transport.now() >= wait.deadline) {
+        throw this.#stillRunning(error);
+      }
+      await this.#pollFailed(error, wait);
+      return;
+    }
+    this.#retries = 0;
+    this.#take(pollReply(response));
+    if (this.#error !== null) await this.#failed(this.#error, wait);
+  }
+
+  /** Keeps polling after a refused poll, or raises when polling again cannot help. */
+  async #pollFailed(error: DfoError, wait: Wait): Promise<void> {
+    if (error.code === OPERATION_FAILED) {
+      this.#error = error;
+      await this.#failed(error, wait);
+      return;
+    }
+    if (error.status === 429) return;
+    if (!error.retryable || this.#retries >= this.#transport.maxRetries) throw error;
+    this.#retries += 1;
+  }
+
+  /** Resubmits a build that failed retryably, once; otherwise holds the error. */
+  async #failed(error: DfoError, wait: Wait): Promise<void> {
+    if (!error.retryable || this.#body === undefined || this.#resubmitted) {
+      this.#error = error;
+      return;
+    }
+    this.#resubmitted = true;
+    this.#error = null;
+    this.#take(await postBuild(this.#transport, this.#body, wait));
+  }
+}
+
+/** Turns a done build's manifest into the dataset an operation returns. */
+export type Finish = (manifest: Manifest, wait: Wait) => Promise<Dataset>;
+
+/** Options for waiting on a long build. */
+export type ResultOptions = {
+  /** The longest to wait, polls and downloads included, in milliseconds; `Infinity` waits
+   *  without limit. Defaults to 30 minutes. */
+  timeout?: number;
+  signal?: AbortSignal;
+  onProgress?: ProgressHandler;
+};
+
+export const DEFAULT_FETCH_TIMEOUT_MS = 1_800_000;
+
+/**
+ * A long dataset build, running on the server or already done. `client.mint(spec)` returns
+ * one, and `client.operation(id)` resumes one from another process. `operationId` is null for
+ * a build the server finished inline.
+ */
+export class Operation {
+  readonly #transport: Transport;
+  readonly #poller: Poller;
+  readonly #finish: Finish;
+
+  /** @internal Built by `mint` and `resumeOperation`. */
+  constructor(transport: Transport, poller: Poller, finish: Finish) {
+    this.#transport = transport;
+    this.#poller = poller;
+    this.#finish = finish;
+  }
+
+  /** The operation's id, `op_` and 64 hex digits, or null for a build finished inline. */
+  get operationId(): string | null {
+    return this.#poller.operationId;
+  }
+
+  /** `pending`, `running`, `done` or `failed`, as last read. */
+  get status(): string {
+    return this.#poller.status;
+  }
+
+  /** The progress the server last reported, or null. */
+  get progress(): Progress | null {
+    return this.#poller.progress;
+  }
+
+  /** Whether the build has finished, polling once when it had not. */
+  done(options: { signal?: AbortSignal } = {}): Promise<boolean> {
+    return this.#poller.done({ deadline: this.#transport.deadline(), signal: options.signal });
+  }
+
+  /**
+   * Waits for the build and returns its dataset.
+   *
+   * @throws {DfoTimeoutError} The build was still running at the deadline; the message names
+   *   the call that resumes it.
+   * @throws {DfoError} The build failed.
+   */
+  async result(options: ResultOptions = {}): Promise<Dataset> {
+    const wait = {
+      deadline: this.#transport.deadline({ timeout: options.timeout ?? DEFAULT_FETCH_TIMEOUT_MS }),
+      signal: options.signal,
+    };
+    if (options.onProgress !== undefined) this.#poller.onProgress = options.onProgress;
+    return this.#finish(await this.#poller.wait(wait), wait);
+  }
+}
+
+/** Posts a build and waits for its manifest, through a long build when the server starts one. */
+export async function build(
+  transport: Transport,
+  body: unknown,
+  wait: Wait & { onProgress?: ProgressHandler | undefined },
+): Promise<Manifest> {
+  const reply = await postBuild(transport, body, wait);
+  if (reply.manifest !== null) return reply.manifest;
+  return new Poller(transport, reply, { body, onProgress: wait.onProgress }).wait(wait);
+}
+
+/** Posts a build and returns it as an operation, done or running. */
+export async function startOperation(
+  transport: Transport,
+  body: unknown,
+  finish: Finish,
+  wait: Wait & { onProgress?: ProgressHandler | undefined },
+): Promise<Operation> {
+  const reply = await postBuild(transport, body, wait);
+  return new Operation(
+    transport,
+    new Poller(transport, reply, { body, onProgress: wait.onProgress }),
+    finish,
+  );
+}
+
+/**
+ * Reads a running build's operation by id, to poll it from this process.
+ *
+ * @throws {NotFoundError} The server holds no operation with that id.
+ */
+export async function resumeOperation(
+  transport: Transport,
+  operationId: string,
+  finish: Finish,
+  wait: Wait & { onProgress?: ProgressHandler | undefined },
+): Promise<Operation> {
+  const response = await transport.request({
+    path: `/datasets/operations/${encodeURIComponent(operationId)}`,
+    deadline: wait.deadline,
+    ...(wait.signal === undefined ? {} : { signal: wait.signal }),
+  });
+  const poller = new Poller(transport, pollReply(response), {
+    onProgress: wait.onProgress,
+  });
+  return new Operation(transport, poller, finish);
+}

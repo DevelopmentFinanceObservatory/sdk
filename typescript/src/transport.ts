@@ -166,6 +166,16 @@ export class Transport {
     return this.#now();
   }
 
+  /** Waits `ms` on the transport's sleep, rejecting with the caller's reason on abort. */
+  sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    return this.#sleep(ms, signal);
+  }
+
+  /** Passes a warning to the caller's warning handler. */
+  warn(warning: DfoWarning): void {
+    this.#onWarning(warning);
+  }
+
   /** The key this transport sends, resolved on first use. */
   apiKey(): Promise<ResolvedKey> {
     this.#key ??= this.#resolveKey();
