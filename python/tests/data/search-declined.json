@@ -1,0 +1,35 @@
+{
+ "schema_version": 1,
+ "query_echo": {
+  "entry_path": "raw_text",
+  "raw_query": "should donors give more aid to Kenya?",
+  "normalized_query": "should donors give more aid to Kenya?",
+  "extract_skipped": true
+ },
+ "diagnostics": {
+  "engine_build": "8408f1f95c622223f8fa6e9ba55826ee8e22a852",
+  "trace_id": "eb2e2df340ad4dc8b9ea3ffb9cc49f0b",
+  "warnings": [],
+  "timing_ms": {
+   "total": 1,
+   "by_step": {
+    "coverage": 0,
+    "response_cache_layer1": 1
+   }
+  },
+  "llm_usage": {
+   "input_tokens": 0,
+   "output_tokens": 0,
+   "cached_tokens": 0
+  },
+  "timed_out": false
+ },
+ "kind": "declined",
+ "reason": "requires_analysis",
+ "scope": {
+  "place": {
+   "ref": "country/KEN",
+   "label": "Kenya"
+  }
+ }
+}

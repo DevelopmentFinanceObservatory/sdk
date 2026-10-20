@@ -1,0 +1,95 @@
+{
+ "schema_version": 1,
+ "input": {
+  "kind": "dataset_resubmit",
+  "entries": [
+   {
+    "entry_kind": "identity",
+    "variable_text": "official development assistance",
+    "identity": {
+     "identity_version": "spec1",
+     "shape": {
+      "kind": "statvar_schema",
+      "population_type": "FinancialFlow",
+      "measured_property": "amount",
+      "stat_type": "measuredValue",
+      "measurement_qualifier": "Nominal"
+     },
+     "slots": [
+      {
+       "property": "dac1AidType",
+       "binding": {
+        "state": "value",
+        "ref": "DAC1AidType1010"
+       }
+      },
+      {
+       "property": "dacTypeOfFinance",
+       "binding": {
+        "state": "unbound"
+       }
+      },
+      {
+       "property": "financialFlowType",
+       "binding": {
+        "state": "value",
+        "ref": "Disbursement"
+       }
+      },
+      {
+       "property": "nettingBasis",
+       "binding": {
+        "state": "value",
+        "ref": "Gross"
+       }
+      }
+     ],
+     "entities": {
+      "origin": [
+       "country/DEU"
+      ]
+     },
+     "requested_window": {
+      "kind": "range",
+      "start_year": 2015,
+      "end_year": 2022
+     }
+    }
+   },
+   {
+    "entry_kind": "identity",
+    "variable_text": "gross national income",
+    "identity": {
+     "identity_version": "spec1",
+     "shape": {
+      "kind": "statvar_schema",
+      "population_type": "EconomicUnit",
+      "measured_property": "primaryIncome",
+      "stat_type": "measuredValue",
+      "measurement_qualifier": "Nominal"
+     },
+     "slots": [
+      {
+       "property": "fixedCapitalConsumptionBasis",
+       "binding": {
+        "state": "value",
+        "ref": "GrossOfFixedCapitalConsumption"
+       }
+      }
+     ],
+     "entities": {
+      "observationAbout": [
+       "country/DEU"
+      ]
+     },
+     "requested_window": {
+      "kind": "range",
+      "start_year": 2015,
+      "end_year": 2022
+     }
+    }
+   }
+  ],
+  "raw_query": "Germany's ODA and GNI from 2015 to 2022"
+ }
+}

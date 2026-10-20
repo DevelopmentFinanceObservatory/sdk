@@ -1,0 +1,29 @@
+{
+ "schema_version": 1,
+ "query_echo": {
+  "entry_path": "raw_text",
+  "raw_query": "what data do you have?",
+  "normalized_query": "what data do you have?",
+  "extract_skipped": true
+ },
+ "diagnostics": {
+  "engine_build": "8408f1f95c622223f8fa6e9ba55826ee8e22a852",
+  "trace_id": "061a4628e45c40eaab89181cb638d9ab",
+  "warnings": [],
+  "timing_ms": {
+   "total": 0,
+   "by_step": {
+    "coverage": 0,
+    "response_cache_layer1": 0
+   }
+  },
+  "llm_usage": {
+   "input_tokens": 0,
+   "output_tokens": 0,
+   "cached_tokens": 0
+  },
+  "timed_out": false
+ },
+ "kind": "catalogue",
+ "scope": {}
+}

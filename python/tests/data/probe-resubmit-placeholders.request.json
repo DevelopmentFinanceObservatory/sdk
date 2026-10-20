@@ -1,0 +1,20 @@
+{
+ "schema_version": 1,
+ "input": {
+  "kind": "dataset_resubmit",
+  "entries": [
+   {
+    "entry_kind": "placeholder",
+    "variable_text": "GDP",
+    "status": "no_data",
+    "reason": "entity_ambiguous"
+   },
+   {
+    "entry_kind": "placeholder",
+    "variable_text": "ODA disbursements",
+    "status": "no_data",
+    "reason": "entity_ambiguous"
+   }
+  ]
+ }
+}

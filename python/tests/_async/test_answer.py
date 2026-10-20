@@ -1,0 +1,527 @@
+"""Tests for search and answers: gaps, choices, the incomplete-answer error and fetch.
+
+Bodies come from dev (`tests/data/`); the place-choice ones add the `no_data.options`
+the server's next build carries. `scripts/gen_sync.py` derives
+`tests/_sync/test_answer.py` from this file, so the sync answer passes the same
+tests.
+"""
+
+import copy
+import json
+import sys
+import types
+import warnings
+from typing import Any
+
+import httpx2
+import pytest
+
+from dfo._answer import AsyncAnswer
+from dfo._errors import (
+    ContractError,
+    DeclinedError,
+    IncompleteAnswerError,
+    InvalidRequestError,
+    SearchWarning,
+)
+from dfo._search import search
+from dfo._transport import AsyncTransport
+from dfo._types import CandidatesPart, DefinitePart, Gap
+
+from .._data import load
+
+pytestmark = pytest.mark.anyio
+
+BASE = "https://api.example.org/api"
+RESOLVE = f"{BASE}/search/resolve"
+TWO_PARTS = "Germany's ODA and GNI from 2015 to 2022"
+
+
+class Server:
+    """Serves queued JSON bodies and records the JSON each request posted."""
+
+    def __init__(self, *bodies: object) -> None:
+        self.bodies = list(bodies)
+        self.posted: list[Any] = []
+        self.urls: list[str] = []
+
+    def __call__(self, request: httpx2.Request) -> httpx2.Response:
+        self.posted.append(json.loads(request.content))
+        self.urls.append(str(request.url))
+        return httpx2.Response(200, json=self.bodies.pop(0))
+
+
+def transport(server: Server) -> AsyncTransport:
+    return AsyncTransport(
+        base_url=BASE, api_key=False, http_transport=httpx2.MockTransport(server)
+    )
+
+
+async def ask(question: str, *bodies: object) -> tuple[AsyncAnswer, Server]:
+    server = Server(*bodies)
+    client = transport(server)
+    return await search(lambda: client, question), server
+
+
+def with_options(part: dict[str, Any]) -> dict[str, Any]:
+    """An entity_ambiguous part with the options the server's next build carries."""
+    part = copy.deepcopy(part)
+    no_data = part["no_data"]
+    base = no_data.pop("data_query")
+    options = []
+    for group in no_data["ambiguous_entities"]:
+        for candidate in group["candidates"]:
+            query = copy.deepcopy(base)
+            for entity in query["parts"][0]["entities"]:
+                if entity["text"] == group["text"]:
+                    entity["dcid"] = candidate["ref"]
+            options.append(
+                {
+                    "mentions": [group["text"]],
+                    "label": candidate["label"],
+                    "data_query": query,
+                }
+            )
+    no_data["options"] = options
+    return part
+
+
+def summary(answer: AsyncAnswer) -> dict[str, Any]:
+    """The answer as a contract scenario's `expect.answer` states it."""
+    return {
+        "kind": answer.kind,
+        "status": answer.status,
+        "complete": answer.complete,
+        "specs": len(answer.specs),
+        "gaps": [(g.part_index, g.kind, choices(g)) for g in answer.gaps],
+    }
+
+
+def choices(gap: Gap) -> int:
+    """The choices a gap offers: its candidates, or its place or source options."""
+    if isinstance(gap.part, CandidatesPart):
+        return len(gap.part.candidates)
+    return len(gap.options)
+
+
+@pytest.fixture
+def fetched(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, Any, Any]]:
+    """Calls to a fake `fetch_members`, which returns the string "dataset"."""
+    calls: list[tuple[Any, Any, Any]] = []
+
+    async def fetch_members(transport: object, members: object, **options: Any) -> str:
+        calls.append((transport, members, options))
+        return "dataset"
+
+    module = types.ModuleType("dfo._fetch")
+    module.fetch_members = fetch_members  # ty: ignore[unresolved-attribute]
+    monkeypatch.setitem(sys.modules, "dfo._fetch", module)
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            "search-1.json",
+            {
+                "kind": "resolution",
+                "status": "definite",
+                "complete": True,
+                "specs": 1,
+                "gaps": [],
+            },
+        ),
+        (
+            "search-2.json",
+            {
+                "kind": "resolution",
+                "status": "candidates",
+                "complete": False,
+                "specs": 0,
+                "gaps": [(0, "choice", 3)],
+            },
+        ),
+        (
+            "search-3.json",
+            {
+                "kind": "resolution",
+                "status": "no_data",
+                "complete": False,
+                "specs": 0,
+                "gaps": [(0, "choice", 0)],
+            },
+        ),
+        (
+            "search-4.json",
+            {
+                "kind": "resolution",
+                "status": "mixed",
+                "complete": False,
+                "specs": 1,
+                "gaps": [(1, "not_understood", 0)],
+            },
+        ),
+        (
+            "search-two-parts-candidates.json",
+            {
+                "kind": "resolution",
+                "status": "mixed",
+                "complete": False,
+                "specs": 1,
+                "gaps": [(1, "choice", 3)],
+            },
+        ),
+        (
+            "search-two-places.json",
+            {
+                "kind": "resolution",
+                "status": "no_data",
+                "complete": False,
+                "specs": 0,
+                "gaps": [(0, "choice", 0), (1, "choice", 0)],
+            },
+        ),
+        (
+            "search-declined.json",
+            {
+                "kind": "declined",
+                "status": "declined",
+                "complete": False,
+                "specs": 0,
+                "gaps": [],
+            },
+        ),
+        (
+            "search-catalogue.json",
+            {
+                "kind": "catalogue",
+                "status": "catalogue",
+                "complete": False,
+                "specs": 0,
+                "gaps": [],
+            },
+        ),
+    ],
+)
+async def test_search_posts_the_question_and_reads_the_answer(
+    body: str, expected: dict[str, Any]
+) -> None:
+    wire = load(body)
+    question = wire["query_echo"]["raw_query"]
+    answer, server = await ask(question, wire)
+    assert server.urls == [RESOLVE]
+    assert server.posted == [
+        {"schema_version": 1, "input": {"kind": "raw_text", "query": question}}
+    ]
+    assert summary(answer) == expected
+    assert answer.question == question
+    if wire["kind"] == "resolution":
+        assert answer.sentence == wire["rendered_sentence"]
+
+
+async def test_specs_hold_one_spec_per_distinct_spec_id() -> None:
+    wire = load("search-two-parts-candidates.json")
+    folded = copy.deepcopy(wire["parts"][0])
+    folded["variable_text"] = "aid"
+    wire["parts"][1] = folded
+    answer, _ = await ask(TWO_PARTS, wire)
+    assert [spec.spec_id for spec in answer.specs] == [
+        wire["parts"][0]["spec"]["spec_id"]
+    ]
+
+
+async def test_a_timed_out_answer_makes_every_no_data_part_a_timed_out_gap() -> None:
+    wire = load("search-4.json")
+    wire["diagnostics"]["timed_out"] = True
+    answer, _ = await ask("debt", wire)
+    assert [(gap.part_index, gap.kind) for gap in answer.gaps] == [(1, "timed_out")]
+    assert answer.timed_out
+
+
+async def test_unknown_and_unsupported_parts_are_gaps() -> None:
+    wire = load("search-4.json")
+    wire["parts"][0]["status"] = "partly_definite"
+    wire["parts"][1] = {
+        **wire["parts"][1],
+        "status": "unsupported",
+        "unsupported": {"code": "unit_request_unsupported", "detail": "No per-capita."},
+    }
+    answer, _ = await ask("debt", wire)
+    assert [(gap.kind, gap.message) for gap in answer.gaps] == [
+        (
+            "unknown",
+            "Search answered this part with status 'partly_definite', which this "
+            "client does not know; upgrade development-finance.",
+        ),
+        ("unsupported", "No per-capita."),
+    ]
+    assert answer.specs == ()
+
+
+async def test_an_unknown_answer_kind_raises_contract_error() -> None:
+    wire = load("search-1.json")
+    wire["kind"] = "essay"
+    with pytest.raises(ContractError):
+        await ask("ODA", wire)
+
+
+async def test_choosing_a_candidate_in_a_one_part_answer_sends_no_request() -> None:
+    wire = load("search-2.json")
+    answer, server = await ask("GNI of Germany from 2015 to 2022", wire)
+    chosen = await answer.choose(1)
+    by_label = await answer.choose(answer.parts[0].candidates[1].label)
+    assert len(server.posted) == 1
+    candidate = wire["parts"][0]["candidates"]["specs"][1]
+    assert chosen == by_label
+    assert summary(chosen) == {
+        "kind": "resolution",
+        "status": "definite",
+        "complete": True,
+        "specs": 1,
+        "gaps": [],
+    }
+    assert chosen.sentence == candidate["resolved"]["rendered_sentence"]
+    (part,) = chosen.parts
+    assert isinstance(part, DefinitePart)
+    assert part.spec.spec_id == candidate["spec_id"]
+    assert part.raw["spec"] == candidate
+
+
+async def test_a_candidate_choice_beside_a_definite_part_posts_dataset_resubmit() -> (
+    None
+):
+    answer, server = await ask(
+        TWO_PARTS,
+        load("search-two-parts-candidates.json"),
+        load("probe-resubmit-candidate-chosen.json"),
+    )
+    chosen = await answer.choose("gross national income", 0)
+    recorded = load("probe-resubmit-candidate-chosen.request.json")
+    del recorded["input"]["raw_query"]  # echo only; the client posts none
+    assert server.posted[1] == recorded
+    assert summary(chosen) == {
+        "kind": "resolution",
+        "status": "definite",
+        "complete": True,
+        "specs": 2,
+        "gaps": [],
+    }
+    assert chosen.specs[1] == answer.parts[1].candidates[0].spec
+
+
+async def test_a_place_choice_in_a_one_part_answer_posts_the_option_unchanged() -> None:
+    wire = load("search-3.json")
+    wire["parts"][0] = with_options(wire["parts"][0])
+    answer, server = await ask(
+        "ODA disbursements from Germany to Congo",
+        wire,
+        load("probe-option-posted.json"),
+    )
+    assert summary(answer)["gaps"] == [(0, "choice", 2)]
+    chosen = await answer.choose("Congo", "Congo [DRC]")
+    assert server.posted[1] == load("probe-option-posted.request.json")
+    assert summary(chosen)["status"] == "definite"
+    assert chosen.complete
+
+
+async def test_a_place_choice_beside_a_definite_part_posts_its_parsed_part() -> None:
+    wire = load("search-1.json")
+    wire["parts"].append(with_options(load("search-3.json")["parts"][0]))
+    wire["status"] = "mixed"
+    answer, server = await ask("ODA", wire, load("probe-resubmit-option-chosen.json"))
+    chosen = await answer.choose("Congo", 0)
+    assert server.posted[1] == load("probe-resubmit-option-chosen.request.json")
+    assert summary(chosen) == {
+        "kind": "resolution",
+        "status": "definite",
+        "complete": True,
+        "specs": 2,
+        "gaps": [],
+    }
+
+
+async def test_parts_left_alone_post_their_restatement_or_a_placeholder() -> None:
+    wire = load("search-4.json")
+    wire["parts"][0] = with_options(load("search-3.json")["parts"][0])
+    answer, server = await ask("debt", wire, load("search-3.json"))
+    await answer.choose(0, "Congo [Republic]")
+    entries = server.posted[1]["input"]["entries"]
+    assert entries[0]["entry_kind"] == "parsed"
+    assert entries[0]["part"]["entities"][1]["dcid"] == "country/COG"
+    assert entries[1] == {
+        "entry_kind": "placeholder",
+        "status": "no_data",
+        "reason": "variable_not_resolved",
+        "variable_text": "price of tea",
+    }
+
+    places = load("search-two-places.json")
+    places["parts"][1] = with_options(places["parts"][1])
+    answer, server = await ask("places", places, load("search-3.json"))
+    await answer.choose(1, 0)
+    first = server.posted[1]["input"]["entries"][0]
+    assert first == {"entry_kind": "parsed", "part": places["parts"][0]["restatement"]}
+
+
+@pytest.mark.parametrize(
+    ("body", "call", "error"),
+    [
+        ("search-1.json", (0,), "No part of this answer awaits a choice."),
+        (
+            "search-two-places.json",
+            (0,),
+            "2 parts of this answer await a choice; name the part: "
+            "answer.choose(part, option).",
+        ),
+        ("search-3.json", (0,), 'Part 0 offers no choice: "Congo" matches more'),
+        ("search-2.json", (3,), "Option 3 is out of range; part 0 offers 3."),
+        ("search-2.json", ("GNI", "nope"), "Part 0 has no option labelled 'nope'"),
+        ("search-4.json", (0, 0), "Part 0 already has a reading."),
+        ("search-4.json", ("tea", 0), "No part is named 'tea'"),
+        ("search-4.json", (5, 0), "Part 5 is out of range"),
+    ],
+)
+async def test_a_choice_that_cannot_be_made_raises_invalid_request(
+    body: str, call: tuple[Any, ...], error: str
+) -> None:
+    answer, server = await ask("q", load(body))
+    with pytest.raises(InvalidRequestError) as caught:
+        await answer.choose(*call)
+    assert str(caught.value).startswith(error)
+    assert len(server.posted) == 1
+
+
+async def test_fetch_builds_one_member_per_distinct_spec(
+    fetched: list[tuple[Any, Any, Any]],
+) -> None:
+    wire = load("probe-resubmit-candidate-chosen.json")
+    folded = copy.deepcopy(wire["parts"][0])
+    folded["variable_text"] = "aid"
+    wire["parts"].append(folded)
+    answer, _ = await ask(TWO_PARTS, wire)
+    assert await answer.fetch(layout="long", timeout=10.0) == "dataset"
+    ((transport_used, members, options),) = fetched
+    oda, gni = wire["parts"][0]["spec"], wire["parts"][1]["spec"]
+    assert [(parts, spec.spec_id, sentence) for parts, spec, sentence in members] == [
+        (
+            ("official development assistance", "aid"),
+            oda["spec_id"],
+            oda["resolved"]["rendered_sentence"],
+        ),
+        (
+            ("gross national income",),
+            gni["spec_id"],
+            gni["resolved"]["rendered_sentence"],
+        ),
+    ]
+    assert options == {
+        "layout": "long",
+        "strict": False,
+        "timeout": 10.0,
+        "progress": None,
+        "missing": (),
+    }
+    assert isinstance(transport_used, AsyncTransport)
+
+
+async def test_fetch_reads_the_transport_when_it_runs(
+    fetched: list[tuple[Any, Any, Any]],
+) -> None:
+    clients = [transport(Server(load("search-1.json")))]
+    answer = await search(lambda: clients[-1], "ODA")
+    clients.append(transport(Server()))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SearchWarning)
+        await answer.fetch()
+    assert fetched[0][0] is clients[1]
+
+
+async def test_fetch_of_an_incomplete_answer_raises_before_any_build(
+    fetched: list[tuple[Any, Any, Any]],
+) -> None:
+    answer, _ = await ask(TWO_PARTS, load("search-two-parts-candidates.json"))
+    with pytest.raises(IncompleteAnswerError) as caught:
+        await answer.fetch()
+    assert str(caught.value) == "\n".join(
+        [
+            "Search answered 1 of 2 parts of your question.",
+            '  answered "official development assistance": Germany\'s gross '
+            "disbursements for official development assistance, 2015 to 2022. "
+            "Current US dollars · OECD DAC1.",
+            '  missing  "gross national income": 3 readings',
+            "    [0] Germany's primary income for gross of fixed capital "
+            "consumption, 2015 to 2022 · OECD DAC1 · Current US dollars",
+            "    [1] Germany's gross national income based on purchasing power "
+            "parity in international dollars, 2015 to 2022 · World Development "
+            "Indicators",
+            "    [2] Germany's gross national income based on purchasing power "
+            "parity per capita in international dollars, 2015 to 2022 · World "
+            "Development Indicators",
+            '  Choose: answer.choose("gross national income", 0).fetch()',
+            "  Or take the answered part: answer.fetch(partial=True)",
+        ]
+    )
+    assert caught.value.answer is answer
+    assert caught.value.gaps == answer.gaps
+    assert fetched == []
+
+
+async def test_a_partial_fetch_builds_the_answered_parts_and_names_the_gaps(
+    fetched: list[tuple[Any, Any, Any]],
+) -> None:
+    answer, _ = await ask("debt", load("search-4.json"))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SearchWarning)
+        await answer.fetch(partial=True)
+    ((_, members, options),) = fetched
+    assert [parts for parts, _, _ in members] == [("debt service",)]
+    assert options["missing"] == answer.gaps
+
+    nothing, _ = await ask("tea", load("search-3.json"))
+    with pytest.raises(IncompleteAnswerError):
+        await nothing.fetch(partial=True)
+    assert len(fetched) == 1
+
+
+@pytest.mark.parametrize("body", ["search-declined.json", "search-catalogue.json"])
+async def test_fetch_of_a_declined_or_catalogue_answer_raises_declined(
+    body: str, fetched: list[tuple[Any, Any, Any]]
+) -> None:
+    answer, _ = await ask("q", load(body))
+    with pytest.raises(DeclinedError) as caught:
+        await answer.fetch()
+    assert caught.value.detail == load(body).get("reason", "catalogue")
+    assert str(caught.value) == repr(answer)
+    assert answer.sentence is None
+    assert fetched == []
+
+
+async def test_differences_from_the_question_arrive_as_one_search_warning(
+    fetched: list[tuple[Any, Any, Any]],
+) -> None:
+    answer, _ = await ask("top 5 donors to Ethiopia in 2022", load("search-top5.json"))
+    with pytest.warns(SearchWarning) as caught:
+        await answer.fetch()
+    assert len(caught) == 1
+    assert str(caught[0].message).splitlines() == [
+        "Search's reading differs from your question:",
+        '  Not done: rank ("top 5 donors")',
+        "  You asked for a ranking. This shows the amounts behind it, because "
+        "Search does not compute rankings.",
+        "  Note: No aid type was named, so the answer covers official development "
+        "assistance.",
+        "  Note: no provider was named; the answer was resolved across every "
+        "provider with data.",
+    ]
+    with pytest.raises(SearchWarning):
+        await answer.fetch(strict=True)
+    assert len(fetched) == 1
+
+
+async def test_an_answer_holds_no_data_methods() -> None:
+    answer, _ = await ask("ODA", load("search-1.json"))
+    with pytest.raises(AttributeError, match="holds readings, not data"):
+        answer.to_pandas()  # ty: ignore[unresolved-attribute]
+    assert not hasattr(answer, "__arrow_c_stream__")
+    assert not hasattr(answer, "anything_else")
