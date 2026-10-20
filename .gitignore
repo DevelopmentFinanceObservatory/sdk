@@ -10,3 +10,7 @@ node_modules/
 coverage/
 *.tsbuildinfo
 .env
+.coverage
+coverage.xml
+htmlcov/
+*.egg-info/

@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      contract: ${{ steps.filter.outputs.contract }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            python:
+              - 'python/**'
+              - 'contract/**'
+              - 'scripts/**'
+              - 'ruff.toml'
+              - '.github/workflows/ci.yml'
+            contract:
+              - 'contract/**'
+              - 'scripts/**'
+              - '.github/workflows/ci.yml'
+
+  python:
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.0
+
+      - name: Cache uv
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-uv-${{ hashFiles('python/uv.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-uv-
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --frozen --python ${{ matrix.python-version }}
+
+      - name: Run ruff check
+        if: matrix.python-version == '3.12'
+        run: uv run ruff check . ../scripts
+
+      - name: Run ruff format check
+        if: matrix.python-version == '3.12'
+        run: uv run ruff format --check . ../scripts
+
+      - name: Run ty
+        if: matrix.python-version == '3.12'
+        run: uv run ty check
+
+      - name: Run tests
+        run: uv run pytest --cov='src/dfo' --cov-report=xml --cov-report=term
+
+      # The package must satisfy the bblocks family contract. The doctor comes
+      # from the branch that adds subdirectory packages until it is released.
+      - name: Run the family doctor
+        if: matrix.python-version == '3.12'
+        working-directory: .
+        run: >-
+          uvx --from
+          "git+https://github.com/ONEcampaign/bblocks-projects@feat/subdirectory-packages#subdirectory=bblocks-projects"
+          bblocks-projects doctor --family --strict --path python
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v7
+        if: matrix.python-version == '3.12'
+        with:
+          files: ./python/coverage.xml
+
+  contract:
+    needs: changes
+    if: needs.changes.outputs.contract == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read the contract source rev
+        id: source
+        run: echo "rev=$(cat contract/SOURCE)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out spec-kit at the source rev
+        uses: actions/checkout@v7
+        with:
+          repository: DevelopmentFinanceObservatory/spec-kit
+          ref: ${{ steps.source.outputs.rev }}
+          fetch-depth: 0
+          path: spec-kit
+
+      - name: Check that contract/ matches spec-kit
+        run: scripts/sync_contract.py spec-kit --check
+
+      - name: Check out dfo-apis dev
+        uses: actions/checkout@v7
+        with:
+          repository: DevelopmentFinanceObservatory/apis
+          ref: dev
+          sparse-checkout: pyproject.toml
+          path: apis
+
+      - name: Check that SOURCE is at or behind the dfo-apis pin
+        run: scripts/check_contract_pin.py spec-kit apis/pyproject.toml

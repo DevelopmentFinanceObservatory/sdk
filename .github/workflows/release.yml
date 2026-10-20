@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'python-v*'
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/development-finance
+    permissions:
+      contents: read
+      id-token: write  # Required for PyPI trusted publishing
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.0
+
+      - name: Set up Python 3.12
+        run: uv python install '3.12'
+
+      - name: Check the tag against the package version
+        run: test "python-v$(uv version --short)" = "$GITHUB_REF_NAME"
+
+      - name: Build package
+        run: uv build
+
+      - name: Publish to PyPI
+        run: uv publish
