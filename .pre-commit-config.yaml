@@ -5,8 +5,9 @@
 # Update hooks:      pre-commit autoupdate
 # Skip once:         git commit --no-verify
 
-# Files that are copied or recorded byte for byte stay out of every rewriting hook.
-exclude: ^(contract/(?!README\.md$)|python/tests/data/)
+# Recorded dev bodies stay byte for byte, out of every rewriting hook. Git tracks
+# only contract/SOURCE under contract/, so no hook sees the fetched copy.
+exclude: ^python/tests/data/
 
 repos:
   # ---------------------------------------------------------------------------

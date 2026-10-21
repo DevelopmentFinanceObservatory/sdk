@@ -1,10 +1,9 @@
 """Load the contract's rule vectors, which the tests replay through the client."""
 
 import json
-from pathlib import Path
 from typing import Any
 
-CONTRACT = Path(__file__).resolve().parents[2] / "contract"
+from ._data import CONTRACT
 
 
 def vectors(rule: str) -> list[dict[str, Any]]:

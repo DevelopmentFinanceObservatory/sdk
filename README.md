@@ -26,4 +26,4 @@ The source lives in `typescript/`.
 
 ## The contract
 
-Both clients follow the contract in [`contract/`](contract/README.md), so a dataset ref, a credentials file, and a cache directory written by one client work in the other. [CONTRIBUTING.md](CONTRIBUTING.md) explains how the contract is synced and how releases are cut.
+Both clients follow the [client contract](https://github.com/DevelopmentFinanceObservatory/spec-kit/blob/dev/python/client-contract/README.md) kept in spec-kit, which `contract/` copies at the commit `contract/SOURCE` names, so a dataset ref, a credentials file, and a cache directory written by one client work in the other. [CONTRIBUTING.md](CONTRIBUTING.md) explains how the contract is synced and how releases are cut.

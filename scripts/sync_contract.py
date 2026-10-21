@@ -1,31 +1,50 @@
 #!/usr/bin/env python3
-"""Sync `contract/` from a spec-kit checkout, or check that it is in sync.
+"""Fetch `contract/` from spec-kit at the commit `contract/SOURCE` names.
 
 The client contract is package data of `dfo_client_contract`, kept in the spec-kit
 repository at `python/client-contract/src/dfo_client_contract/`, and the rules it
 states are that package's `python/client-contract/README.md`. Both clients read a
-copy of them from `contract/`, the README as `contract/README.md`, and
-`contract/SOURCE` records the spec-kit commit the copy came from.
+copy of them from `contract/`, the README as `contract/README.md`. The repository
+commits only `contract/SOURCE`, the spec-kit commit; this script fetches the rest
+from the GitHub archive of that commit and records it in `contract/.synced`, so a
+second run with the same SOURCE does nothing.
 
-    scripts/sync_contract.py PATH_TO_SPEC_KIT           copy and write SOURCE
-    scripts/sync_contract.py PATH_TO_SPEC_KIT --check   exit 1 on any difference
+    scripts/sync_contract.py                            fetch spec-kit at SOURCE
+    scripts/sync_contract.py --from PATH_TO_SPEC_KIT    copy a checkout, write SOURCE
 
+The `--from` form serves a contract change that is not pushed to spec-kit yet.
 Python modules and bytecode in the package are code and stay out of the copy.
+Each run builds the new copy in a scratch directory beside `contract/` and swaps
+it into place, so a failed run leaves the old copy as it was.
 """
 
 import argparse
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+import tarfile
+import tempfile
+import urllib.request
+from collections.abc import Callable
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parent.parent
 CONTRACT = ROOT / "contract"
-PACKAGE_DATA = Path("python/client-contract/src/dfo_client_contract")
-PACKAGE_README = Path("python/client-contract/README.md")
-OWN_FILES = frozenset({"README.md", "SOURCE"})
+MARKER = ".synced"
+ARCHIVE = (
+    "https://github.com/DevelopmentFinanceObservatory/spec-kit/archive/{rev}.tar.gz"
+)
+PACKAGE_DATA = PurePosixPath("python/client-contract/src/dfo_client_contract")
+PACKAGE_README = PurePosixPath("python/client-contract/README.md")
+OWN_FILES = frozenset({"README.md", "SOURCE", MARKER})
 CODE_SUFFIXES = frozenset({".py", ".pyc", ".typed"})
 IGNORED_NAMES = frozenset({".DS_Store"})
+TIMEOUT_SECONDS = 60
+FETCH_COMMAND = "python scripts/sync_contract.py"
+
+
+class FetchError(Exception):
+    """`contract/` could not be brought to the commit SOURCE names."""
 
 
 def git(checkout: Path, *args: str) -> str:
@@ -39,102 +58,198 @@ def git(checkout: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def is_contract_file(path: Path) -> bool:
+def is_contract_file(path: PurePosixPath) -> bool:
     """Whether a package file is contract data and belongs in the copy."""
     return (
         path.name not in IGNORED_NAMES
         and path.suffix not in CODE_SUFFIXES
         and "__pycache__" not in path.parts
+        and path.as_posix() not in OWN_FILES
     )
 
 
-def list_files(root: Path, *, own: frozenset[str] = frozenset()) -> set[Path]:
-    """Relative paths of the contract files under `root`."""
-    return {
-        path.relative_to(root)
-        for path in root.rglob("*")
-        if path.is_file()
-        and is_contract_file(path.relative_to(root))
-        and path.relative_to(root).as_posix() not in own
-    }
+def destination(path: PurePosixPath) -> PurePosixPath | None:
+    """Where a spec-kit file lands in the copy, or None when it stays out."""
+    if path == PACKAGE_README:
+        return PurePosixPath("README.md")
+    if not path.is_relative_to(PACKAGE_DATA):
+        return None
+    relative = path.relative_to(PACKAGE_DATA)
+    return relative if is_contract_file(relative) else None
 
 
-def differences(spec_kit: Path, source_rev: str) -> list[str]:
-    """Describe every way `contract/` differs from the checkout."""
-    source_dir = spec_kit / PACKAGE_DATA
-    wanted = list_files(source_dir, own=OWN_FILES)
-    present = list_files(CONTRACT, own=OWN_FILES)
-    problems = [f"missing: {path}" for path in sorted(wanted - present)]
-    problems += [f"extra: {path}" for path in sorted(present - wanted)]
-    problems += [
-        f"differs: {path}"
-        for path in sorted(wanted & present)
-        if (source_dir / path).read_bytes() != (CONTRACT / path).read_bytes()
-    ]
-    readme = CONTRACT / "README.md"
-    if not readme.exists():
-        problems.append(f"missing: README.md (from {PACKAGE_README})")
-    elif readme.read_bytes() != (spec_kit / PACKAGE_README).read_bytes():
-        problems.append(f"differs: README.md (from {PACKAGE_README})")
-    source_file = CONTRACT / "SOURCE"
-    recorded = source_file.read_text().strip() if source_file.exists() else None
-    if recorded != source_rev:
-        problems.append(f"SOURCE is {recorded}, the checkout is at {source_rev}")
-    return problems
+def recorded(name: str) -> str | None:
+    """The commit a file in `contract/` records, or None when it is missing."""
+    path = CONTRACT / name
+    return path.read_text().strip() if path.is_file() else None
 
 
-def sync(spec_kit: Path, source_rev: str) -> None:
-    """Make `contract/` match the checkout and record its revision."""
-    source_dir = spec_kit / PACKAGE_DATA
-    wanted = list_files(source_dir, own=OWN_FILES)
-    for path in list_files(CONTRACT, own=OWN_FILES) - wanted:
-        (CONTRACT / path).unlink()
-    for path in wanted:
-        target = CONTRACT / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source_dir / path, target)
-    shutil.copyfile(spec_kit / PACKAGE_README, CONTRACT / "README.md")
-    for directory in sorted(CONTRACT.rglob("*"), reverse=True):
-        if directory.is_dir() and not any(directory.iterdir()):
-            directory.rmdir()
-    (CONTRACT / "SOURCE").write_text(f"{source_rev}\n")
+def source_rev() -> str:
+    """The spec-kit commit `contract/SOURCE` names.
+
+    Raises:
+        FetchError: SOURCE is missing or empty.
+    """
+    if not (rev := recorded("SOURCE")):
+        raise FetchError(f"{CONTRACT / 'SOURCE'} is missing or empty")
+    return rev
 
 
-def main() -> int:
+def is_current() -> bool:
+    """Whether `contract/` holds the copy of the commit SOURCE names."""
+    rev = recorded("SOURCE")
+    return rev is not None and recorded(MARKER) == rev
+
+
+def install(rev: str, fill: Callable[[Path], int]) -> int:
+    """Build a copy with `fill`, record `rev` in it, and swap it in for `contract/`.
+
+    Returns:
+        The number of files `fill` wrote.
+    """
+    with tempfile.TemporaryDirectory(dir=CONTRACT.parent, prefix=".contract-") as tmp:
+        staged = Path(tmp) / "contract"
+        staged.mkdir()
+        count = fill(staged)
+        (staged / "SOURCE").write_text(f"{rev}\n")
+        (staged / MARKER).write_text(f"{rev}\n")
+        if CONTRACT.exists():
+            CONTRACT.rename(Path(tmp) / "previous")
+        staged.rename(CONTRACT)
+    return count
+
+
+def extract(archive: tarfile.TarFile, target: Path) -> int:
+    """Extract the contract files of a spec-kit archive into `target`."""
+    count = 0
+    for member in archive:
+        # The archive holds one top-level directory, `spec-kit-<rev>/`.
+        _, _, inner = member.name.partition("/")
+        landing = destination(PurePosixPath(inner))
+        if landing is None or not member.isfile():
+            continue
+        renamed = member.replace(name=landing.as_posix(), deep=False)
+        archive.extract(renamed, target, filter="data")
+        count += 1
+    return count
+
+
+def fetch(rev: str) -> int:
+    """Replace `contract/` with the contract files of spec-kit at `rev`.
+
+    Returns:
+        The number of files fetched, the README included.
+
+    Raises:
+        FetchError: the download or the extraction failed, or found no files.
+    """
+    url = ARCHIVE.format(rev=rev)
+
+    def fill(target: Path) -> int:
+        try:
+            with (
+                urllib.request.urlopen(url, timeout=TIMEOUT_SECONDS) as response,
+                tarfile.open(fileobj=response, mode="r|gz") as archive,
+            ):
+                count = extract(archive, target)
+        except (OSError, tarfile.TarError) as error:
+            raise FetchError(
+                f"could not fetch the client contract from {url}: {error}"
+            ) from error
+        if not (target / "README.md").is_file() or count < 2:
+            raise FetchError(f"{url} holds no {PACKAGE_README} or no {PACKAGE_DATA}")
+        return count
+
+    return install(rev, fill)
+
+
+def ensure_current() -> None:
+    """Fetch `contract/` unless it already holds the commit SOURCE names.
+
+    Raises:
+        FetchError: the fetch failed; the message names the command to rerun.
+    """
+    if is_current():
+        return
+    try:
+        rev = source_rev()
+        print(f"fetching contract/ from spec-kit at {rev}", file=sys.stderr)
+        fetch(rev)
+    except FetchError as error:
+        raise FetchError(
+            f"{error}; run `{FETCH_COMMAND}` from the repository root to retry"
+        ) from error
+
+
+def require_current() -> None:
+    """Make `contract/` current for a script, exiting with the error when it fails."""
+    try:
+        ensure_current()
+    except FetchError as error:
+        sys.exit(str(error))
+
+
+def copy_checkout(spec_kit: Path, rev: str) -> int:
+    """Replace `contract/` with the contract files of a spec-kit checkout.
+
+    Returns:
+        The number of files copied, the README included.
+    """
+
+    def fill(target: Path) -> int:
+        shutil.copyfile(spec_kit / PACKAGE_README, target / "README.md")
+        count = 1
+        for path in sorted((spec_kit / PACKAGE_DATA).rglob("*")):
+            landing = destination(PurePosixPath(path.relative_to(spec_kit).as_posix()))
+            if landing is None or not path.is_file():
+                continue
+            (target / landing).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, target / landing)
+            count += 1
+        return count
+
+    return install(rev, fill)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Fetch or copy `contract/` and return the exit status."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("spec_kit", type=Path, help="path to a spec-kit checkout")
     parser.add_argument(
-        "--check",
-        action="store_true",
-        help="exit 1 on any difference instead of writing",
+        "--from",
+        dest="checkout",
+        type=Path,
+        metavar="PATH_TO_SPEC_KIT",
+        help="copy from a spec-kit checkout and write its HEAD to SOURCE",
     )
     parser.add_argument(
         "--allow-dirty",
         action="store_true",
-        help="sync from a checkout with uncommitted changes to the package data",
+        help="with --from, copy a checkout with uncommitted changes to the package",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    source_dir = args.spec_kit / PACKAGE_DATA
-    if not source_dir.is_dir():
-        parser.error(f"{source_dir} is not a directory")
-    if not (args.spec_kit / PACKAGE_README).is_file():
-        parser.error(f"{args.spec_kit / PACKAGE_README} is not a file")
-    source_rev = git(args.spec_kit, "rev-parse", "HEAD")
+    if args.checkout is None:
+        if args.allow_dirty:
+            parser.error("--allow-dirty applies to --from only")
+        try:
+            rev = source_rev()
+            if is_current():
+                print(f"contract/ is current at {rev}")
+                return 0
+            count = fetch(rev)
+        except FetchError as error:
+            print(error, file=sys.stderr)
+            return 1
+        print(f"fetched {count} files at {rev}")
+        return 0
 
-    if args.check:
-        problems = differences(args.spec_kit, source_rev)
-        for problem in problems:
-            print(problem, file=sys.stderr)
-        return 1 if problems else 0
-
+    spec_kit = args.checkout
+    if not (spec_kit / PACKAGE_DATA).is_dir():
+        parser.error(f"{spec_kit / PACKAGE_DATA} is not a directory")
+    if not (spec_kit / PACKAGE_README).is_file():
+        parser.error(f"{spec_kit / PACKAGE_README} is not a file")
     dirty = git(
-        args.spec_kit,
-        "status",
-        "--porcelain",
-        "--",
-        str(PACKAGE_DATA),
-        str(PACKAGE_README),
+        spec_kit, "status", "--porcelain", "--", str(PACKAGE_DATA), str(PACKAGE_README)
     )
     if dirty and not args.allow_dirty:
         parser.error(
@@ -142,8 +257,9 @@ def main() -> int:
             "SOURCE would name a revision that does not hold them; commit first or "
             "pass --allow-dirty"
         )
-    sync(args.spec_kit, source_rev)
-    print(f"synced {len(list_files(source_dir, own=OWN_FILES))} files at {source_rev}")
+    rev = git(spec_kit, "rev-parse", "HEAD")
+    count = copy_checkout(spec_kit, rev)
+    print(f"copied {count} files at {rev}")
     return 0
 
 

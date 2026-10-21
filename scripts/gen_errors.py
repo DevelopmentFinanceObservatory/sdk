@@ -21,6 +21,7 @@ import argparse
 import json
 import sys
 
+import sync_contract
 from _codegen import ROOT, format_python, relative, write_or_check
 
 ACTIONS = ROOT / "contract" / "actions.json"
@@ -141,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true", help="exit 1 on a difference")
     args = parser.parse_args(argv)
+    sync_contract.require_current()
     source = render(
         json.loads(ACTIONS.read_text(encoding="utf-8")),
         json.loads(SCHEMA.read_text(encoding="utf-8")),

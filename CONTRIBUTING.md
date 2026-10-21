@@ -4,7 +4,7 @@
 
 - `python/` holds the `development-finance` package, which imports as `dfo`.
 - `typescript/` will hold the `@developmentfinance/client` package.
-- `contract/` holds the client contract, a copy of the `dfo_client_contract` package data from the spec-kit repository. Both clients generate code from it and replay its scenarios.
+- `contract/` holds the client contract, a copy of the `dfo_client_contract` package data from the spec-kit repository at the commit `contract/SOURCE` names. Git tracks only `SOURCE`; `scripts/sync_contract.py` fetches the rest. Both clients generate code from the copy and replay its scenarios.
 - `scripts/` holds the tools shared by the clients.
 
 The root holds `.pre-commit-config.yaml` and `.github/workflows/`, which cover both packages.
@@ -28,18 +28,23 @@ pre-commit run --all-files
 
 ## Syncing the contract
 
-`contract/` is never edited by hand. Change the contract in spec-kit, then copy it from a spec-kit checkout:
+Git tracks only `contract/SOURCE`, the spec-kit commit the clients follow. The rest of `contract/` is fetched from the public spec-kit repository at that commit, and git ignores it:
 
 ```bash
-scripts/sync_contract.py ../spec-kit
+scripts/sync_contract.py
 ```
 
-The script copies the package data into `contract/`, copies the package's README, which states the contract's rules, to `contract/README.md`, and writes the checkout's commit to `contract/SOURCE`. It refuses a checkout with uncommitted changes to the package data or the README, because `SOURCE` would then name a commit that does not hold them. Run it with `--check` to exit non-zero on any difference.
+The script downloads the GitHub archive of the commit, extracts the package data into `contract/` and the package's README, which states the contract's rules, to `contract/README.md`, and records the commit in `contract/.synced`. It does nothing when `.synced` already names `SOURCE`. It builds the copy in a scratch directory and swaps it in, so a failed download leaves the old copy in place. The Python tests, `scripts/gen_wire.py` and `scripts/gen_errors.py` run the fetch themselves when the copy is missing or `.synced` differs from `SOURCE`, and stop with the error when the fetch fails.
 
-CI runs two checks on every change to `contract/`:
+To move the clients to a new contract, change it in spec-kit, push the change, and write the new commit to `contract/SOURCE`. For a change that is not pushed yet, copy it from a spec-kit checkout:
 
-- `scripts/sync_contract.py --check` against the public spec-kit tree at `SOURCE`.
-- `scripts/check_contract_pin.py`, which fails unless `SOURCE` is the rev that dfo-apis `dev` pins for `dfo-spec-kit-client-contract`, or an ancestor of it. The clients replay only scenarios that dfo-apis checks.
+```bash
+scripts/sync_contract.py --from ../spec-kit
+```
+
+That form copies the same files and writes the checkout's commit to `SOURCE`. It refuses a checkout with uncommitted changes to the package data or the README, because `SOURCE` would then name a commit that does not hold them; `--allow-dirty` overrides the refusal.
+
+CI runs `scripts/check_contract_pin.py` on every change to `contract/SOURCE`. It fails unless `SOURCE` is the rev that dfo-apis `dev` pins for `dfo-spec-kit-client-contract`, or an ancestor of it. The clients replay only scenarios that dfo-apis checks.
 
 ## Generated code
 
