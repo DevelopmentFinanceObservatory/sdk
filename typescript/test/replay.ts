@@ -3,6 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 
 import { envFrom } from "../src/env.ts";
 import type { EntityGroups, Narrowing, SpecInput } from "../src/fetch.ts";
+import type { LongBuild } from "../src/operation.ts";
 import type { Layout, SpecLike } from "../src/ref.ts";
 import { Transport } from "../src/transport.ts";
 import type { TransportOptions } from "../src/transport.ts";
@@ -29,18 +30,18 @@ export type FetchStep = Narrowing & {
   partial?: boolean;
   strict?: boolean;
   layout?: Layout;
-  timeout?: number;
   spec?: SpecInput;
   ref?: unknown;
 };
 
 export type Step =
-  | { op: "search"; question: string; timeout?: number }
+  | { op: "search"; question: string }
   | { op: "choose"; part?: number | string; option: number | string }
   | FetchStep
+  | { op: "newest_version"; spec: SpecInput }
   | { op: "mint"; spec: SpecInput; layout?: Layout }
   | { op: "operation"; operation_id: string; layout?: Layout }
-  | { op: "result"; timeout?: number };
+  | { op: "result" };
 
 export type Exchange = {
   request: { method: string; path?: string; origin_path?: string; url?: string; json?: Json };
@@ -52,7 +53,7 @@ export type Exchange = {
   };
 };
 
-export type AnswerSummary = {
+export type AnswerSummary = StepSummary & {
   kind: string;
   status?: string;
   sentence: string | null;
@@ -68,7 +69,14 @@ export type LongBuildSummary = {
   resubmissions: number;
 };
 
-export type DatasetSummary = {
+/** What any step's outcome may also give: the seconds before each retry of a refused request
+ *  other than a poll, and the codes of the warnings its API responses issued. */
+export type StepSummary = {
+  retry_waits?: number[];
+  warnings?: string[];
+};
+
+export type DatasetSummary = StepSummary & {
   rows: number;
   columns: string[];
   complete: boolean;
@@ -78,7 +86,7 @@ export type DatasetSummary = {
   long_builds?: LongBuildSummary[];
 };
 
-export type ErrorSummary = {
+export type ErrorSummary = StepSummary & {
   class: string;
   code: string | null;
   newest_version?: string | null;
@@ -88,7 +96,8 @@ export type ErrorSummary = {
 export type Outcome =
   | { answer: AnswerSummary }
   | { dataset: DatasetSummary }
-  | { operation: Json }
+  | { operation: StepSummary & Json }
+  | { newest_version: StepSummary & { content_version: string | null } }
   | { error: ErrorSummary };
 
 const scenarioUrl = (file: string): URL =>
@@ -115,7 +124,8 @@ function wireSpec({ sentence, entity_groups, ...spec }: ScenarioSpec): SpecInput
 async function readScenario(file: string): Promise<Scenario> {
   const record = JSON.parse(await readFile(scenarioUrl(file), "utf8")) as Scenario;
   const call = record.call.map((step) =>
-    (step.op === "fetch" || step.op === "mint") && step.spec !== undefined
+    (step.op === "fetch" || step.op === "mint" || step.op === "newest_version") &&
+    step.spec !== undefined
       ? { ...step, spec: wireSpec(step.spec as ScenarioSpec) }
       : step,
   );
@@ -166,17 +176,29 @@ function expectedUrl(base: URL, request: Exchange["request"]): string {
 /**
  * A transport whose `fetch` answers a scenario's exchanges in order, checking each request's
  * method, URL and listed JSON members against the record. Sleeps advance a fake clock and are
- * recorded, not waited. `remaining` lists the exchanges no request reached. `options` override
- * the transport's; a `fetch` among them replaces the replay.
+ * recorded, not waited: `waits` holds every sleep, and `retryWaits` the sleeps that are no
+ * long build's poll wait. A poller records each poll wait just before it sleeps it, so a sleep
+ * is a poll wait when the long builds' poll waits grew since the last sleep. `remaining` lists
+ * the exchanges no request reached. `options` override the transport's; a `fetch` among them
+ * replaces the replay.
  */
 export function replay(
   record: Scenario,
   options: TransportOptions = {},
-): { transport: Transport; waits: number[]; remaining: () => Exchange[]; urls: string[] } {
+): {
+  transport: Transport;
+  waits: number[];
+  retryWaits: number[];
+  remaining: () => Exchange[];
+  urls: string[];
+} {
   const base = new URL(REPLAY_BASE_URL);
   const queue = [...record.exchanges];
   const waits: number[] = [];
+  const retryWaits: number[] = [];
   const urls: string[] = [];
+  const longBuilds: LongBuild[] = [];
+  let pollWaitsSeen = 0;
   let clock = 0;
   const fetch: typeof globalThis.fetch = async (input, init = {}) => {
     const url = input instanceof URL ? input.href : input instanceof Request ? input.url : input;
@@ -210,11 +232,18 @@ export function replay(
     now: () => clock,
     sleep: (ms) => {
       waits.push(ms);
+      const pollWaits = longBuilds.reduce((sum, build) => sum + build.pollWaits.length, 0);
+      if (pollWaits === pollWaitsSeen) retryWaits.push(ms);
+      pollWaitsSeen = pollWaits;
       clock += ms;
       return Promise.resolve();
     },
     onWarning: () => undefined,
     ...options,
+    onLongBuild: (build) => {
+      longBuilds.push(build);
+      options.onLongBuild?.(build);
+    },
   });
-  return { transport, waits, remaining: () => [...queue], urls };
+  return { transport, waits, retryWaits, remaining: () => [...queue], urls };
 }

@@ -1,6 +1,6 @@
 import type { CredentialsFileReader } from "./credentials.ts";
 import type { EnvReader } from "./env.ts";
-import { clientError, DfoError, errorClassFor, serverCode } from "./errors.ts";
+import { clientError, DfoError, errorClassFor, isRetryableStatus, serverCode } from "./errors.ts";
 import type { DfoTimeoutError } from "./errors.ts";
 import {
   ApiKey,
@@ -27,8 +27,6 @@ const BACKOFF_START_MS = 500;
 const BACKOFF_CAP_MS = 8_000;
 /** The longest delay a platform timer holds, about 24.8 days; a longer limit is clamped to it. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
-/** Statuses retried when the body does not say whether the refusal is retryable. */
-const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 /** The website proxy's `retry` value for a refusal that clears on its own. */
 const PROXY_RETRY = "retry_after_delay";
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
@@ -95,7 +93,7 @@ export type JsonResponse = {
   status: number;
   headers: Headers;
   url: URL;
-  /** The parsed body, or null for an empty one. */
+  /** The parsed JSON body. */
   body: unknown;
 };
 
@@ -180,6 +178,15 @@ export function retryAfterMs(headers: Headers, now: number = Date.now()): number
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
+/** The timeouts raised because a call's deadline passed, which another attempt cannot clear.
+ *  Their code, `deadline_exceeded`, is retryable for the caller, who may call again with a later
+ *  deadline. */
+const DEADLINE_PASSED = new WeakSet<DfoError>();
+
+/** Whether an error is a timeout raised because the call's deadline passed, as opposed to one
+ *  attempt running past its own timeout. */
+export const passedDeadline = (error: DfoError): boolean => DEADLINE_PASSED.has(error);
+
 /** Whether a refusal is retried: as a problem document's `retryable` says, or the website
  *  proxy's `retry`, and otherwise by its status. */
 export function isRetryable(status: number, body: unknown): boolean {
@@ -187,7 +194,7 @@ export function isRetryable(status: number, body: unknown): boolean {
     if (!("code" in body) && "error" in body) return body["retry"] === PROXY_RETRY;
     if (typeof body["retryable"] === "boolean") return body["retryable"];
   }
-  return RETRYABLE_STATUSES.has(status);
+  return isRetryableStatus(status);
 }
 
 /** A refusal body as a problem document: parsed when its media type is JSON, else undefined. */
@@ -316,8 +323,9 @@ export class Transport {
     return url;
   }
 
-  /** Sends a request and parses its JSON body, raising a `DfoError` for a refusal. A redirect
-   *  is never followed, so no client header reaches another host. */
+  /** Sends a request and parses its JSON body, raising a `DfoError` for a refusal and
+   *  `ContractError` `unexpected_response` for a response with no JSON body. A redirect is never
+   *  followed, so no client header reaches another host. */
   async request(options: RequestOptions): Promise<JsonResponse> {
     const { response, body } = await this.#send(options);
     if (this.#isRedirect(response)) {
@@ -329,13 +337,12 @@ export class Transport {
     }
     const text = new TextDecoder().decode(body);
     const url = new URL(response.url || this.url(options, options.query));
-    if (text === "") return { status: response.status, headers: response.headers, url, body: null };
     try {
       return { status: response.status, headers: response.headers, url, body: JSON.parse(text) };
     } catch (error) {
       throw clientError("unexpected_response", {
         status: response.status,
-        detail: `The response from ${url.pathname} is not JSON.`,
+        detail: `The response from ${url.pathname} has no JSON body.`,
         traceId: response.headers.get("x-dfo-trace-id"),
         cause: error,
       });
@@ -400,7 +407,6 @@ export class Transport {
       throw clientError("download_failed", {
         status: response.status,
         detail: `The signed download from ${url.host} answered HTTP ${response.status}.`,
-        retryable: true,
       });
     }
     return body;
@@ -452,7 +458,7 @@ export class Transport {
         error = this.#refusal(response, body);
       }
 
-      if (!error.retryable || attempt >= retries) throw error;
+      if (!error.retryable || passedDeadline(error) || attempt >= retries) throw error;
       const wait = error.retryAfterMs ?? this.backoff(attempt);
       if (this.#now() + wait >= deadline) throw error;
       await this.#sleep(wait, options.signal);
@@ -503,7 +509,8 @@ export class Transport {
    * One fetch and the read of its whole body, under the attempt's limit. An infinite limit arms
    * no timer. A caller's abort rejects with the caller's reason. A failure the next attempt may
    * clear returns as a retryable error: a network failure, or the attempt's own timeout. The
-   * deadline passing returns a `DfoTimeoutError` that is not retryable.
+   * deadline passing returns a `DfoTimeoutError` that `passedDeadline` marks, which no retry
+   * follows.
    */
   async #attempt(url: URL, options: CallOptions, init: RequestInit): Promise<Received | DfoError> {
     const limit = this.#limit(url, options);
@@ -521,23 +528,23 @@ export class Transport {
         if (limit.byDeadline) return this.#deadlinePassed(url, error);
         return clientError("deadline_exceeded", {
           detail: `One attempt at ${url.pathname} waited ${limit.ms} ms with no whole response.`,
-          retryable: true,
           cause: error,
         });
       }
       return clientError("network_error", {
         detail: `The request to ${url.host} failed before its whole response arrived.`,
-        retryable: true,
         cause: error,
       });
     }
   }
 
   #deadlinePassed(url: URL, cause?: unknown): DfoTimeoutError {
-    return clientError("deadline_exceeded", {
+    const error = clientError("deadline_exceeded", {
       detail: `The call to ${url.pathname} passed its deadline.`,
       cause,
     });
+    DEADLINE_PASSED.add(error);
+    return error;
   }
 
   /** The error a refusal stands for: a problem document, the proxy's own body, or neither. */
@@ -580,7 +587,6 @@ export class Transport {
       status,
       detail: `HTTP ${status} with no problem document.`,
       traceId: headerTrace,
-      retryable,
       retryAfterMs: retryAfter,
     });
   }

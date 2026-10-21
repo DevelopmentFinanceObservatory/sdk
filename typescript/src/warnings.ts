@@ -1,3 +1,5 @@
+import { CLIENT_WARNING_CODES } from "./generated/warning-codes.ts";
+
 /** The base of every warning the client emits. */
 export class DfoWarning extends Error {
   /** The server's warning or departure code, or null for a `SearchWarning` whose readings
@@ -31,22 +33,12 @@ for (const [name, warningClass] of Object.entries(WARNING_CLASSES)) {
   Object.defineProperty(warningClass.prototype, "name", { value: name, configurable: true });
 }
 
-/** The code and class of each warning the client issues itself. A `DataWarning` carries a
- *  manifest warning's code and a `SearchWarning` the code of how a reading differs, both the
- *  server's, so neither is listed. */
-export const CLIENT_WARNING_CODES = {
-  key_checksum_mismatch: "DfoWarning",
-  key_not_base62: "DfoWarning",
-  key_unknown_prefix: "DfoWarning",
-  route_deprecated: "DfoDeprecationWarning",
-  server_warning: "DfoWarning",
-} as const satisfies Record<string, "DfoWarning" | "DfoDeprecationWarning">;
-
 /** A code the client sets on a warning it issues itself. */
 export type ClientWarningCode = keyof typeof CLIENT_WARNING_CODES;
 
-/** Builds a warning the client issues itself, of the class `CLIENT_WARNING_CODES` gives its
- *  code. */
+/** Builds a warning the client issues itself, of the class `contract/warning-codes.json` gives
+ *  its code. A `DataWarning` carries a manifest warning's code and a `SearchWarning` the code of
+ *  how a reading differs, both the server's, so neither is built here. */
 export function clientWarning(code: ClientWarningCode, message: string): DfoWarning {
   return new WARNING_CLASSES[CLIENT_WARNING_CODES[code]](code, message);
 }
@@ -73,4 +65,10 @@ export function warnOnce(key: string, warning: DfoWarning, handler: WarningHandl
   if (shown.has(key)) return;
   shown.add(key);
   handler(warning);
+}
+
+/** @internal Forgets every warning `warnOnce` has emitted, as a fresh process starts; the
+ *  contract replay calls it before each scenario. */
+export function forgetEmittedWarnings(): void {
+  shown.clear();
 }

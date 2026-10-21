@@ -545,7 +545,6 @@ describe("reading a Search response", () => {
     await assert.rejects(search(stuck, "q", { timeout: 30 }), {
       name: "DfoTimeoutError",
       code: "deadline_exceeded",
-      retryable: false,
     });
     assert.equal(late.seen.length, 1);
   });

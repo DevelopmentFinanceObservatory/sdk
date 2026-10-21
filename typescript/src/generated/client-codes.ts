@@ -10,6 +10,7 @@ export const CLIENT_CODE_CLASSES = {
   digest_mismatch: "ServerError",
   download_failed: "ServerError",
   invalid_argument: "InvalidRequestError",
+  key_empty: "AuthenticationError",
   network_error: "NetworkError",
   offline: "NetworkError",
   profile_not_found: "AuthenticationError",
@@ -17,4 +18,24 @@ export const CLIENT_CODE_CLASSES = {
   refusal_without_code: "by_status",
   unexpected_response: "ContractError",
   version_unavailable: "VersionUnavailableError",
+} as const;
+
+export const CLIENT_CODE_RETRYABLE = {
+  answer_declined: false,
+  answer_incomplete: false,
+  choice_invalid: false,
+  contract_violation: false,
+  credentials_file_invalid: false,
+  deadline_exceeded: true,
+  digest_mismatch: false,
+  download_failed: true,
+  invalid_argument: false,
+  key_empty: false,
+  network_error: true,
+  offline: false,
+  profile_not_found: false,
+  profile_without_key: false,
+  refusal_without_code: "by_status",
+  unexpected_response: false,
+  version_unavailable: false,
 } as const;

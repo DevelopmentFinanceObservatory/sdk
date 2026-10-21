@@ -3,6 +3,8 @@
 //   src/generated/strict.ts   from strict-fields.json, checked against served/openapi.json
 //   src/generated/actions.ts  from actions.json and the actions it allows in actions.schema.json
 //   src/generated/client-codes.ts  from client-codes.json
+//   src/generated/warning-codes.ts from warning-codes.json
+//   src/generated/proxy-codes.ts   from proxy-codes.json, checked against actions.json
 //
 //   node scripts/generate-contract.ts           rewrite every file
 //   node scripts/generate-contract.ts --check   exit 1 when a committed file differs
@@ -201,14 +203,52 @@ export function renderActions(actionsText: string, schemaText: string): Record<s
 }
 
 export function renderClientCodes(codesText: string): Record<string, unknown> {
-  const { codes } = JSON.parse(codesText) as { codes: { code: string; class: string }[] };
+  const { codes } = JSON.parse(codesText) as {
+    codes: { code: string; class: string; retryable: unknown }[];
+  };
   if (codes.length === 0) throw new Error("client-codes.json lists no codes");
   const classes = new Map<string, string>();
+  const retryable = new Map<string, boolean | "by_status">();
   for (const row of codes) {
     if (classes.has(row.code)) throw new Error(`client-codes.json lists ${row.code} twice`);
+    if (typeof row.retryable !== "boolean" && row.retryable !== "by_status") {
+      throw new Error(`client-codes.json gives ${row.code} no retryable flag`);
+    }
+    classes.set(row.code, row.class);
+    retryable.set(row.code, row.retryable);
+  }
+  return {
+    CLIENT_CODE_CLASSES: Object.fromEntries(classes),
+    CLIENT_CODE_RETRYABLE: Object.fromEntries(retryable),
+  };
+}
+
+export function renderWarningCodes(codesText: string): Record<string, unknown> {
+  const { codes } = JSON.parse(codesText) as { codes: { code: string; class: string }[] };
+  if (codes.length === 0) throw new Error("warning-codes.json lists no codes");
+  const classes = new Map<string, string>();
+  for (const row of codes) {
+    if (classes.has(row.code)) throw new Error(`warning-codes.json lists ${row.code} twice`);
     classes.set(row.code, row.class);
   }
-  return { CLIENT_CODE_CLASSES: Object.fromEntries(classes) };
+  return { CLIENT_WARNING_CODES: Object.fromEntries(classes) };
+}
+
+/** The proxy's codes with their statuses. A proxy code with a row in `actions.json` would take
+ *  that row's class in place of its status's, so generation refuses one. */
+export function renderProxyCodes(codesText: string, actionsText: string): Record<string, unknown> {
+  const { codes } = JSON.parse(codesText) as { codes: { code: string; status: number }[] };
+  const actions = new Set(
+    (JSON.parse(actionsText) as { codes: { code: string }[] }).codes.map((row) => row.code),
+  );
+  if (codes.length === 0) throw new Error("proxy-codes.json lists no codes");
+  const statuses = new Map<string, number>();
+  for (const row of codes) {
+    if (statuses.has(row.code)) throw new Error(`proxy-codes.json lists ${row.code} twice`);
+    if (actions.has(row.code)) throw new Error(`proxy code ${row.code} has a row in actions.json`);
+    statuses.set(row.code, row.status);
+  }
+  return { PROXY_CODE_STATUSES: Object.fromEntries(statuses) };
 }
 
 async function module(
@@ -248,6 +288,22 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         "contract/client-codes.json",
         renderClientCodes(await read("client-codes.json")),
         output("client-codes.ts"),
+      ),
+    ],
+    [
+      output("warning-codes.ts"),
+      await module(
+        "contract/warning-codes.json",
+        renderWarningCodes(await read("warning-codes.json")),
+        output("warning-codes.ts"),
+      ),
+    ],
+    [
+      output("proxy-codes.ts"),
+      await module(
+        "contract/proxy-codes.json and contract/actions.json",
+        renderProxyCodes(await read("proxy-codes.json"), await read("actions.json")),
+        output("proxy-codes.ts"),
       ),
     ],
   ];

@@ -59,31 +59,34 @@ for (const [status, expected] of [
   });
 }
 
-test("every code in contract/client-codes.json builds an error of its class", async () => {
-  const { codes } = await contractJson<{ codes: { code: string; class: string }[] }>(
-    "client-codes.json",
-  );
+test("every code in contract/client-codes.json builds an error of its class and flag", async () => {
+  const { codes } = await contractJson<{
+    codes: { code: string; class: string; retryable: boolean | "by_status" }[];
+  }>("client-codes.json");
   assert.ok(codes.length > 0);
-  for (const { code, class: name } of codes) {
+  for (const { code, class: name, retryable } of codes) {
     if (name === "by_status") continue;
     const error = clientError(code as Exclude<ClientErrorCode, "refusal_without_code">, {});
     assert.ok(error instanceof DfoError, code);
     assert.equal(error.name, name, code);
     assert.equal(error.code, code, code);
+    assert.equal(error.retryable, retryable, code);
   }
 });
 
-test("a refusal with no code takes the class its status maps to", () => {
-  for (const [status, expected] of [
-    [400, InvalidRequestError],
-    [408, DfoTimeoutError],
-    [410, NotFoundError],
-    [503, ServerError],
+test("a refusal with no code takes the class and retryable flag its status maps to", () => {
+  for (const [status, expected, retryable] of [
+    [400, InvalidRequestError, false],
+    [408, DfoTimeoutError, true],
+    [410, NotFoundError, false],
+    [501, ServerError, false],
+    [503, ServerError, true],
   ] as const) {
     const error = clientError("refusal_without_code", { status });
     assert.ok(error instanceof expected, String(status));
     assert.equal(error.code, "refusal_without_code");
     assert.equal(error.status, status);
+    assert.equal(error.retryable, retryable, String(status));
   }
 });
 

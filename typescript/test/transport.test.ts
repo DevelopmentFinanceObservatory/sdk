@@ -7,12 +7,14 @@ import {
   ContractError,
   DfoError,
   DfoTimeoutError,
+  errorClassFor,
   InvalidRequestError,
   NetworkError,
   NotFoundError,
   RateLimitError,
   ServerError,
 } from "../src/errors.ts";
+import { PROXY_CODE_STATUSES } from "../src/generated/proxy-codes.ts";
 import { ApiKey } from "../src/keys.ts";
 import { Transport } from "../src/transport.ts";
 import type { TransportOptions } from "../src/transport.ts";
@@ -168,15 +170,20 @@ describe("refusals", () => {
     assert.deepEqual(waits, [1000, 1000]);
   });
 
-  test("map the proxy's 502 body to a retryable ServerError", async () => {
-    const { sleep } = recordingSleep();
-    const { fetch, seen } = mockFetch(
-      json({ error: "transient_unavailable", retry: "retry_after_delay", detail: "Down." }, 502),
-      json({ ok: true }),
-    );
-    await transport({ fetch, sleep }).request({ path: "/x" });
-    assert.equal(seen.length, 2);
-  });
+  for (const [code, status] of Object.entries(PROXY_CODE_STATUSES)) {
+    test(`map the proxy's ${code} body by its status ${status}, keeping its code`, async () => {
+      const { sleep } = recordingSleep();
+      const refused = json({ error: code, retry: "retry_after_delay", detail: "Down." }, status);
+      const { fetch, seen } = mockFetch(refused, refused, refused);
+      const error = await transport({ fetch, sleep })
+        .request({ path: "/x" })
+        .catch((e: unknown) => e);
+      assert.ok(error instanceof errorClassFor("code_from_a_newer_server", status));
+      assert.equal(error.code, code);
+      assert.equal(error.retryable, true);
+      assert.equal(seen.length, 3);
+    });
+  }
 
   for (const [type, code] of [
     ["application/problem+json", "snapshot_not_found"],
@@ -370,7 +377,7 @@ describe("timeouts", () => {
     assert.equal(seen.length, 2);
   });
 
-  test("raise a deadline_exceeded that is not retryable when the deadline passes", async () => {
+  test("raise deadline_exceeded with no retry when the deadline passes", async () => {
     const { fetch, seen } = mockFetch(answerAfter(1_000));
     const client = transport({ fetch, timeout: Infinity });
     const error = await client
@@ -378,7 +385,6 @@ describe("timeouts", () => {
       .catch((e: unknown) => e);
     assert.ok(error instanceof DfoTimeoutError);
     assert.equal(error.code, "deadline_exceeded");
-    assert.equal(error.retryable, false);
     assert.equal(seen.length, 1);
   });
 

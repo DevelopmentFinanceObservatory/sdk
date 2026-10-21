@@ -17,9 +17,8 @@
 
 import type { Dataset } from "./dataset.ts";
 import { clientError, DfoError, DfoTimeoutError, errorClassFor, serverCode } from "./errors.ts";
-import type { ClientErrorCode } from "./errors.ts";
 import { checkStrict } from "./strict.ts";
-import { isRetryable, retryAfterMs } from "./transport.ts";
+import { isRetryable, passedDeadline, retryAfterMs } from "./transport.ts";
 import type { JsonResponse, Transport } from "./transport.ts";
 
 /** The longest the client reads a synchronous build: the server cuts one off at 120 s. */
@@ -30,7 +29,6 @@ const POLL_BACKOFF_CAP_MS = 8_000;
 const DONE = "done";
 const FAILED = "failed";
 const OPERATION_FAILED = "operation_failed";
-const DEADLINE_EXCEEDED = "deadline_exceeded" satisfies ClientErrorCode;
 
 /** A manifest as the server sent it, checked for the members the client acts on. */
 export type Manifest = Readonly<Record<string, unknown>>;
@@ -186,9 +184,10 @@ const fits = (transport: Transport, wait: number, deadline: number): boolean =>
   transport.now() + wait < deadline;
 
 /** Whether the server, or the 150-second read, cut a synchronous build off. The deadline
- *  passing is no cut-off: its timeout is not retryable. */
+ *  passing is no cut-off. */
 const isCutOff = (error: DfoError): boolean =>
   error.retryable &&
+  !passedDeadline(error) &&
   (error.status === 504 || (error instanceof DfoTimeoutError && error.status === null));
 
 /**
@@ -333,7 +332,6 @@ class Poller implements LongBuild {
       detail:
         "The build is still running at the deadline. Resume it with " +
         `client.operation("${this.operationId ?? ""}").`,
-      retryable: true,
       cause,
     });
   }
@@ -371,8 +369,8 @@ class Poller implements LongBuild {
       });
     } catch (error) {
       if (!(error instanceof DfoError)) throw error;
-      // The deadline's timeout is not retryable; an attempt's own timeout spends a retry.
-      if (error.code === DEADLINE_EXCEEDED && !error.retryable) throw this.#stillRunning(error);
+      // The deadline passing ends the wait; an attempt's own timeout spends a retry.
+      if (passedDeadline(error)) throw this.#stillRunning(error);
       await this.#pollFailed(error, wait);
       return;
     }

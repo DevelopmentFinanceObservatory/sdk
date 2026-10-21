@@ -2,15 +2,12 @@ import { parseCredentialsFile, platformCredentialsFile } from "./credentials.ts"
 import type { CredentialsFileReader } from "./credentials.ts";
 import { readProcessEnv } from "./env.ts";
 import type { EnvReader } from "./env.ts";
-import { AuthenticationError, clientError } from "./errors.ts";
-import type { ClientErrorCode } from "./errors.ts";
+import { clientError } from "./errors.ts";
 
 const SECRET_PREFIX = "dfo_k_";
 const PUBLISHABLE_PREFIX = "dfo_p_";
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const CHECKSUM_LENGTH = 6;
-/** The key-format code an empty `apiKey` argument raises. */
-const EMPTY_KEY = "key_empty" as ClientErrorCode;
 
 /**
  * An API key. Printing, logging or serialising it shows a masked form; `reveal()` returns the
@@ -132,8 +129,7 @@ export async function resolveApiKey({
   if (apiKey !== undefined) {
     const key = toKey(typeof apiKey === "function" ? await apiKey() : apiKey);
     if (key.reveal() === "") {
-      throw new AuthenticationError({
-        code: EMPTY_KEY,
+      throw clientError("key_empty", {
         detail: "The apiKey argument is empty; pass a key, or false for anonymous use.",
       });
     }

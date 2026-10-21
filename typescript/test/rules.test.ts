@@ -103,24 +103,17 @@ describe("key-lookup", async () => {
   }
 });
 
-describe("an empty key", () => {
-  const file = '[default]\nkey = ""\n';
-  for (const [name, apiKey, code] of [
-    ["argument raises the key-format code", "", "key_empty"],
-    ["argument from a function raises the key-format code", () => "", "key_empty"],
-    ["in the chosen profile raises profile_without_key", undefined, "profile_without_key"],
-  ] as const) {
-    test(name, async () => {
-      await assert.rejects(
-        resolveApiKey({
-          apiKey,
-          env: envFrom({}),
-          readCredentialsFile: () => Promise.resolve(file),
-        }),
-        { name: "AuthenticationError", code },
-      );
-    });
-  }
+// The key-lookup vectors pass strings; a function returning an empty key raises as an empty
+// string does.
+test("an empty key from an apiKey function raises key_empty", async () => {
+  await assert.rejects(
+    resolveApiKey({
+      apiKey: () => "",
+      env: envFrom({}),
+      readCredentialsFile: () => Promise.resolve(null),
+    }),
+    { name: "AuthenticationError", code: "key_empty" },
+  );
 });
 
 test("a profile named __proto__ is a profile like any other", () => {

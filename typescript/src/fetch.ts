@@ -46,6 +46,7 @@ import type { Manifest, Operation, ProgressHandler } from "./operation.ts";
 import { DatasetRef, layoutOf, renderingFor, renderingMatches, renderingOptions } from "./ref.ts";
 import type { Layout, RefMember, Rendering, SpecLike } from "./ref.ts";
 import { checkStrict } from "./strict.ts";
+import { passedDeadline } from "./transport.ts";
 import type { Target, Transport } from "./transport.ts";
 import type { EntityGroup, Part, ResolvedSpec } from "./wire.ts";
 import { DataWarning } from "./warnings.ts";
@@ -60,7 +61,7 @@ export type Narrowing = {
    *  the spec binds and this leaves out keeps its dcids, so `{}` narrows nothing. */
   entities?: Readonly<Record<string, readonly string[] | null>>;
   /** Facet axes (`provenance`, `measurementMethod`, `unit`) bound to a reference; null binds
-   *  the facets that declare no value on the axis. */
+   *  the facets that declare no value on the axis. `{}` narrows nothing. */
   facets?: Readonly<Record<string, string | null>>;
 };
 
@@ -185,8 +186,8 @@ function scopeOf(
 ): Record<string, unknown> | undefined {
   const scope: Record<string, unknown> = {};
   if (window !== undefined) scope["window"] = windowScope(window);
-  if (namesRoles(entities)) scope["entities"] = entityScope(spec, entities);
-  if (facets !== undefined) {
+  if (namesAny(entities)) scope["entities"] = entityScope(spec, entities);
+  if (namesAny(facets)) {
     scope["facets"] = Object.fromEntries(
       Object.entries(facets).map(([axis, ref]) => [axis, { ref }]),
     );
@@ -194,14 +195,13 @@ function scopeOf(
   return Object.keys(scope).length === 0 ? undefined : scope;
 }
 
-/** Whether `entities` names a role; `{}` names none, and posts no `entities`. */
-const namesRoles = (
-  entities: Narrowing["entities"],
-): entities is NonNullable<Narrowing["entities"]> =>
-  entities !== undefined && Object.keys(entities).length > 0;
+/** Whether an `entities` or `facets` map names a role or an axis; `{}` names none, and posts
+ *  nothing. */
+const namesAny = <TMap extends object>(map: TMap | undefined): map is TMap =>
+  map !== undefined && Object.keys(map).length > 0;
 
 const narrows = ({ window, entities, facets }: Narrowing): boolean =>
-  window !== undefined || namesRoles(entities) || facets !== undefined;
+  window !== undefined || namesAny(entities) || namesAny(facets);
 
 /** The `POST /datasets` body that builds a spec's latest version. It always carries the
  *  spec's unmodified definition, so a spec the server has not registered still builds. */
@@ -250,7 +250,7 @@ async function download(
       try {
         data = await transport.fetchSigned(located.signed, call);
       } catch (error) {
-        if (!(error instanceof DfoError) || !error.retryable) throw error;
+        if (!(error instanceof DfoError) || !error.retryable || passedDeadline(error)) throw error;
         failure = error;
         continue;
       }
@@ -790,16 +790,18 @@ async function storedFile(
 }
 
 /**
- * The newest stored version of a spec, which the versions route lists alone at `limit=1` since
- * it lists versions newest first, or null when it lists none or does not know the spec.
+ * @internal The newest stored version of a spec, which the versions route lists alone at
+ * `limit=1` since it lists versions newest first, or null when it lists none or does not know
+ * the spec. A ref's lookup reads it, and the contract replay runs its `newest_version` step
+ * through it.
  *
  * @throws {ContractError} The body is not a `DatasetVersionsPage`: no `versions` list, or a
  *   listed version with no `content_version`.
  */
-async function newestVersion(
+export async function newestVersion(
   transport: Transport,
   specId: string,
-  { deadline, signal }: Wait,
+  { deadline, signal, timeout }: Wait & { readonly timeout?: number | undefined },
 ): Promise<string | null> {
   let body: unknown;
   try {
@@ -807,6 +809,7 @@ async function newestVersion(
       path: `/datasets/${specId}/versions?limit=1`,
       deadline,
       ...(signal === undefined ? {} : { signal }),
+      ...(timeout === undefined ? {} : { timeout }),
     }));
   } catch (error) {
     if (error instanceof NotFoundError) return null;
