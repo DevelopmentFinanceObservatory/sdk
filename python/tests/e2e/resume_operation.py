@@ -2,9 +2,10 @@
 
     python resume_operation.py <base_url> <operation_id>
 
-Prints one JSON object: each poll's status and the pacing the server asked for
-(`retry_after_ms` in the body, `Retry-After` in the headers), each wait the client
-took, and the finished dataset's spec, version, digest and rows. Step 6 of the
+Prints one JSON object: each poll's status, the pacing the server asked for
+(`retry_after_ms` in the body, `Retry-After` in the headers) and the rows it
+estimated, each wait the client took, and the finished dataset's spec, version,
+digest and rows. Step 6 of the
 live journey runs it, so the resume crosses a process boundary.
 """
 
@@ -37,6 +38,9 @@ class Recording(httpx2.BaseTransport):
                     "status": operation.get("status"),
                     "retry_after_ms": operation.get("retry_after_ms"),
                     "retry_after": response.headers.get("retry-after"),
+                    "estimate_rows": (operation.get("progress") or {}).get(
+                        "estimate_rows"
+                    ),
                 }
             )
         return response

@@ -8,6 +8,12 @@ what the server served instead.
 `DFO_E2E_DIR` names a directory shared with the TypeScript journey: step 10
 writes the ref it fetched there as `ref-python.json` and reads back
 `ref-typescript.json` when it exists.
+
+Step 6 builds the spec `e2e/long-builds.json` assigns to this run by the UTC
+day's parity, the language and `DFO_E2E_TARGET`. Each spec there is posted every
+48 hours, so its stored head is past the server's 24-hour maximum age and the
+build runs again as an operation. `DFO_E2E_SCHEDULED=true` marks a scheduled
+run, where a build served inline fails the step; any other run skips it.
 """
 
 import json
@@ -15,8 +21,10 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections import Counter
 from collections.abc import Iterator, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +39,10 @@ from dfo import (
     InvalidRequestError,
     Member,
     NotFoundError,
+    Operation,
+    Spec,
 )
+from dfo._build import resubmit_body
 
 pytestmark = pytest.mark.live
 
@@ -43,15 +54,8 @@ SEVERAL = (
     "and GDP of Kenya"
 )
 PLACE = "ODA disbursements from Germany to Congo"
-# Questions whose builds pass the server's 100,000-row sync budget. A built
-# version is stored, so the server serves it inline afterwards; step 6 takes the
-# first question the server still builds as an operation.
-LONG_BUILDS = (
-    "ODA disbursements from all donors to all recipients for health",
-    "ODA disbursements from all donors to all recipients for education",
-    "ODA disbursements from all donors to all recipients for agriculture",
-)
-SYNC_BUDGET_ROWS = 100_000
+LONG_BUILDS = Path(__file__).parents[3] / "e2e" / "long-builds.json"
+LANGUAGE = "python"
 LONG_COLUMNS = {"stat_var", "time_period", "value", "unit"}
 WINDOW = (2020, 2023)
 UNKNOWN_VERSION = "cv_" + "0" * 32
@@ -219,24 +223,66 @@ def test_05_several_readings_stack_into_one_dataset(client: Client) -> None:
     assert sum(counts.values()) == data.rows
 
 
+def _long_build() -> Spec:
+    """The spec `LONG_BUILDS` assigns to this run's UTC day, language and target."""
+    target = os.environ.get("DFO_E2E_TARGET")
+    if not target:
+        pytest.fail("DFO_E2E_TARGET is unset; step 6 picks its spec by target")
+    parity = int(time.time() // 86_400) % 2
+    entries = json.loads(LONG_BUILDS.read_text())
+    (entry,) = [
+        e
+        for e in entries
+        if (e["day_parity"], e["language"], e["target"]) == (parity, LANGUAGE, target)
+    ]
+    return Spec(entry["spec"]["spec_id"], entry["spec"]["definition"])
+
+
+def _download_rows(client: Client, spec: Spec) -> int:
+    """The rows Search says a build of `spec` downloads, from its identity."""
+    body = resubmit_body(spec.definition, "dataset")
+    (part,) = client.request("POST", "/search/resolve", json=body).json()["parts"]
+    assert part["status"] == "definite", part["status"]
+    assert part["spec"]["spec_id"] == spec.spec_id
+    return part["spec"]["resolved"]["download"]["rows"]
+
+
+def _served_inline(client: Client, spec: Spec, operation: Operation) -> str:
+    """Why the build answered 200, with the age of the version it served.
+
+    The server publishes no head age, so this is the age of the served version's
+    `prepared_at`, at least the head's age.
+    """
+    (member,) = operation.result(timeout=600.0).members
+    prepared = datetime.fromisoformat(_snapshot(client, member)["prepared_at"])
+    hours = (datetime.now(UTC) - prepared).total_seconds() / 3600
+    return (
+        f"POST /datasets served {spec.spec_id} inline (200) at "
+        f"{member.content_version}, prepared {hours:.1f} h ago; a 48-hour "
+        "rotation should find its head past the server's maximum age"
+    )
+
+
 def test_06_a_long_build_runs_as_an_operation_and_resumes_elsewhere(
     client: Client, base_url: str
 ) -> None:
-    served = []
-    for question in LONG_BUILDS:
-        answer = client.search(question)
-        assert answer.status == "definite", question
-        operation = client.mint(answer.specs[0], progress=False)
-        if operation.operation_id is not None:
-            break
-        served.append(
-            f"{answer.specs[0].spec_id} answered 200 with its stored manifest"
-        )
-    else:
-        pytest.skip(
-            "POST /datasets built every long-build question inline: "
-            + "; ".join(served)
-        )
+    spec = _long_build()
+    caps = client.request("GET", "/datasets/capabilities").json()["caps"]
+    budget_rows, budget_requests = (
+        caps["sync_budget_rows"],
+        caps["sync_budget_requests"],
+    )
+    assert isinstance(budget_requests, int)
+    # The server publishes a build's row count before it runs, through Search;
+    # it publishes no request count, so only the rows budget is checked here.
+    assert _download_rows(client, spec) > budget_rows
+
+    operation = client.mint(spec, progress=False)
+    if operation.operation_id is None:
+        reason = _served_inline(client, spec, operation)
+        if os.environ.get("DFO_E2E_SCHEDULED") == "true":
+            pytest.fail(reason)
+        pytest.skip(reason)
     assert OPERATION_ID.fullmatch(operation.operation_id)
     assert operation.status in {"pending", "running"}
 
@@ -258,10 +304,12 @@ def test_06_a_long_build_runs_as_an_operation_and_resumes_elsewhere(
             assert wait == poll["retry_after_ms"] / 1000, poll
         elif poll["retry_after"] is not None:
             assert wait == float(poll["retry_after"]), poll
-    assert read["spec_id"] == answer.specs[0].spec_id
+        if poll["estimate_rows"] is not None:
+            assert poll["estimate_rows"] > budget_rows, poll
+    assert read["spec_id"] == spec.spec_id
     assert CONTENT_VERSION.fullmatch(read["content_version"])
     assert DIGEST.fullmatch(read["digest"])
-    assert read["rows"] > SYNC_BUDGET_ROWS
+    assert read["rows"] > budget_rows
 
 
 def test_07_a_place_choice_answers_definite(client: Client) -> None:
