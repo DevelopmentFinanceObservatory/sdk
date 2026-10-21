@@ -231,23 +231,41 @@ def build_body(
     }
 
 
-def resubmit_body(
-    identity: object,
-    variable_text: str,
-    entity_groups: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """The Search request that re-resolves one built identity for its sentence.
+def kept_entity_groups(held: Spec | None, built: Wire) -> dict[str, Any]:
+    """The held spec's entity groups that still hold for a built definition.
 
-    `entity_groups` are the groups Search resolved for the answer the spec came
-    from, so a group of places reads the same way again.
+    A role keeps its group when the built identity binds it to the same entities
+    as `held`'s definition, so a window or facets narrowing keeps every group and
+    a role that `entities` rebound or dropped loses its group. The server drops a
+    posted group whose members differ from the role's entities.
+    """
+    if held is None or not held.entity_groups:
+        return {}
+    before = held.definition["identity"].get("entities", {})
+    after = built["identity"].get("entities", {})
+    return {
+        role: group
+        for role, group in held.entity_groups.items()
+        if role in after and set(after[role]) == set(before.get(role, ()))
+    }
+
+
+def resubmit_body(
+    built: Wire, variable_text: str, held: Spec | None = None
+) -> dict[str, Any]:
+    """The Search request that re-resolves one built definition for its sentence.
+
+    `held` is the spec the client built from, None for a resumed build. Its
+    groups that `kept_entity_groups` keeps go with the identity, so a group of
+    places reads the same way again.
     """
     entry: dict[str, Any] = {
         "entry_kind": "identity",
         "variable_text": variable_text,
-        "identity": identity,
+        "identity": built["identity"],
     }
-    if entity_groups:
-        entry["entity_groups"] = entity_groups
+    if groups := kept_entity_groups(held, built):
+        entry["entity_groups"] = groups
     return {
         "schema_version": 1,
         "input": {"kind": "dataset_resubmit", "entries": [entry]},

@@ -215,7 +215,12 @@ def _form(step: Mapping[str, Any]) -> str:
 
 
 def _spec(obj: Mapping[str, Any]) -> Spec:
-    return Spec(obj["spec_id"], obj["definition"], obj.get("sentence"))
+    return Spec(
+        obj["spec_id"],
+        obj["definition"],
+        obj.get("sentence"),
+        obj.get("entity_groups"),
+    )
 
 
 def _options(step: Mapping[str, Any], *names: str) -> dict[str, Any]:

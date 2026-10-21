@@ -237,8 +237,6 @@ def fetch_members(
             "the server; fetch it without window, entities or facets",
         )
     deadline = transport.deadline(timeout)
-    # Groups resolved for the answer's places do not hold for places rebound here.
-    keep_groups = narrowing is None or "entities" not in narrowing
     fetched = []
     with ProgressRenderer(enabled=progress) as renderer:
         for want in wants:
@@ -256,7 +254,6 @@ def fetch_members(
                     transport,
                     manifest,
                     want=want,
-                    entity_groups=want.spec.entity_groups if keep_groups else None,
                     rendering=rendering,
                     strict=strict,
                     cache=cache,
@@ -373,7 +370,6 @@ def _finisher(
             transport,
             manifest,
             want=want,
-            entity_groups=None if want is None else want.spec.entity_groups,
             rendering=rendering,
             strict=strict,
             cache=cache,
@@ -437,7 +433,6 @@ def _finish(
     manifest: Wire,
     *,
     want: Reading | None,
-    entity_groups: Mapping[str, Any] | None,
     rendering: Rendering,
     strict: bool,
     cache: Cache | None,
@@ -462,7 +457,11 @@ def _finish(
     sentence = None if want is None else want.sentence or want.spec.sentence
     if want is None or spec_id != want.spec.spec_id or sentence is None:
         sentence = _sentence(
-            transport, definition, parts, entity_groups, deadline=deadline
+            transport,
+            definition,
+            parts,
+            None if want is None else want.spec,
+            deadline=deadline,
         )
     digest = artifact["artifact_digest"]
     data = cache.get_bytes(digest) if cache is not None else None
@@ -577,11 +576,13 @@ def _sentence(
     transport: Transport,
     definition: Wire,
     parts: tuple[str, ...],
-    entity_groups: Mapping[str, Any] | None,
+    held: Spec | None,
     *,
     deadline: float | None,
 ) -> str:
     """Search's sentence for a built identity, from resubmitting it.
+
+    `held` is the spec the client built from, None for a resumed build.
 
     Raises:
         ContractError: Search did not answer the identity with one definite part
@@ -591,9 +592,7 @@ def _sentence(
     response = transport.request(
         "POST",
         "/search/resolve",
-        json=resubmit_body(
-            definition["identity"], parts[0] if parts else _UNNAMED_PART, entity_groups
-        ),
+        json=resubmit_body(definition, parts[0] if parts else _UNNAMED_PART, held),
         deadline=deadline,
     )
     answer = response_json(response)
@@ -721,7 +720,6 @@ def _fetch_version(
                 transport,
                 manifest,
                 want=Reading(member.parts, member.spec, member.sentence),
-                entity_groups=None,
                 rendering=member.rendering,
                 strict=strict,
                 cache=cache,

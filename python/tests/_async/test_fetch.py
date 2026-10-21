@@ -233,21 +233,41 @@ async def test_an_answer_part_resubmits_with_its_first_part() -> None:
     assert built.members[0].parts == ("ODA", "aid")
 
 
-GROUPS = {"destination": {"text": "Sahel", "ref": "SahelRegion", "members": []}}
+SAHEL = {"label": "Sahel", "group_id": "groups/Sahel"}
+EU = {"label": "European Union", "group_id": "groups/EU"}
+GROUPS = {"destination": SAHEL, "origin": EU}
 
 
 @pytest.mark.parametrize(
-    ("narrowing", "sent"),
+    ("narrowing", "built", "sent"),
     [
-        ({"window": "latest"}, GROUPS),
-        ({"entities": {"destination": ["country/NGA"]}}, None),
+        ({"window": "latest"}, None, GROUPS),
+        ({"entities": {"destination": ["country/NGA"]}}, None, GROUPS),
+        (
+            {"entities": {"origin": ["country/FRA"]}},
+            {"destination": ["country/NGA"], "origin": ["country/FRA"]},
+            {"destination": SAHEL},
+        ),
+        (
+            {"entities": {"destination": None}},
+            {"origin": ["country/DEU"]},
+            {"origin": EU},
+        ),
+        (
+            {"entities": {"destination": ["country/GHA"], "origin": ["country/FRA"]}},
+            {"destination": ["country/GHA"], "origin": ["country/FRA"]},
+            None,
+        ),
     ],
 )
-async def test_a_resubmit_sends_the_answers_entity_groups_unless_places_are_rebound(
-    narrowing: dict, sent: object
+async def test_a_resubmit_sends_the_groups_of_the_roles_the_build_kept(
+    narrowing: dict, built: dict | None, sent: object
 ) -> None:
+    body = manifest()
+    if built is not None:
+        body["definition"]["identity"]["entities"] = built
     server = Server(
-        json_response(200, manifest()),
+        json_response(200, body),
         json_response(200, resubmitted()),
         redirect(),
         parquet(),
