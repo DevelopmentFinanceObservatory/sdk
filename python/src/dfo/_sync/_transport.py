@@ -217,12 +217,34 @@ def _keep_to_deadlines(client: httpx2.Client) -> None:
     httpx2 builds the pools, its proxy pools from the environment included, and
     takes no network backend, so the backend goes in after it builds them. A
     transport the caller passed in that is not httpx2's own keeps its timing.
+
+    The pools sit in private attributes of httpx2 and httpcore2, so pyproject.toml
+    pins both to the minor series the stall tests ran on.
+
+    Raises:
+        RuntimeError: When httpx2 or httpcore2 holds its pools differently.
     """
-    for transport in (client._transport, *client._mounts.values()):
-        if isinstance(transport, httpx2.HTTPTransport):
-            pool = transport._pool
-            assert isinstance(pool, httpcore2.ConnectionPool)
-            pool._network_backend = _DeadlineBackend(pool._network_backend)
+    try:
+        transports = (client._transport, *client._mounts.values())
+    except AttributeError as error:
+        raise _pool_layout_error() from error
+    for transport in transports:
+        if not isinstance(transport, httpx2.HTTPTransport):
+            continue
+        pool = getattr(transport, "_pool", None)
+        if not isinstance(pool, httpcore2.ConnectionPool) or not hasattr(
+            pool, "_network_backend"
+        ):
+            raise _pool_layout_error()
+        pool._network_backend = _DeadlineBackend(pool._network_backend)
+
+
+def _pool_layout_error() -> RuntimeError:
+    return RuntimeError(
+        f"httpx2 {httpx2.__version__} with httpcore2 {httpcore2.__version__} holds "
+        "its connection pools where dfo cannot route them through its deadlines; "
+        "install the httpx2 and httpcore2 versions dfo's pyproject.toml pins"
+    )
 
 
 class Transport:

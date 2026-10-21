@@ -33,6 +33,7 @@ from dfo._sync._transport import (
     USER_AGENT,
     Transport,
     _DeadlineBackend,
+    _keep_to_deadlines,
     attempt_deadline,
 )
 
@@ -268,6 +269,24 @@ def test_a_body_that_stalls_after_its_first_chunk_raises_at_the_attempt_end(
     assert 0.55 < elapsed < 0.85
 
 
+@pytest.mark.parametrize("attribute", ["_pool", "_network_backend"])
+def test_a_pool_layout_the_pins_do_not_cover_raises_naming_the_versions(
+    attribute: str,
+) -> None:
+    with httpx2.Client() as client:
+        transport = client._transport
+        assert isinstance(transport, httpx2.HTTPTransport)
+        holder = transport._pool if attribute == "_network_backend" else transport
+        held = getattr(holder, attribute)
+        delattr(holder, attribute)
+        with pytest.raises(RuntimeError) as caught:
+            _keep_to_deadlines(client)
+        # The client's close needs the attribute back.
+        setattr(holder, attribute, held)
+    assert f"httpx2 {httpx2.__version__}" in str(caught.value)
+    assert f"httpcore2 {httpcore2.__version__}" in str(caught.value)
+
+
 class Stream(httpcore2.NetworkStream):
     """A connection that records the timeout each operation is given."""
 
@@ -413,6 +432,8 @@ def test_a_problem_document_fills_the_error() -> None:
             "in-body",
         ),
         (problem(500, retryable=False, trace_id="in-body"), "in-body"),
+        (problem(500, code="internal_error", trace_id=""), "trace-header"),
+        (problem(500, code="internal_error", trace_id=7), "trace-header"),
     ],
     ids=[
         "no-body-code",
@@ -420,6 +441,8 @@ def test_a_problem_document_fills_the_error() -> None:
         "problem-without-trace",
         "problem-trace",
         "codeless-problem-trace",
+        "empty-trace",
+        "trace-not-a-string",
     ],
 )
 def test_a_refusal_takes_its_trace_id_from_the_header_when_the_body_has_none(

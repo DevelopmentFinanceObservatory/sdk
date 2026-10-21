@@ -258,8 +258,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "httpcore2", specifier = ">=2.15" },
-    { name = "httpx2", specifier = ">=2.15" },
+    { name = "httpcore2", specifier = ">=2.15,<2.16" },
+    { name = "httpx2", specifier = ">=2.15,<2.16" },
     { name = "openpyxl", marker = "extra == 'xlsx'", specifier = ">=3.1" },
     { name = "pandas", marker = "extra == 'pandas'", specifier = ">=2.2" },
     { name = "polars", marker = "extra == 'polars'", specifier = ">=1.0" },

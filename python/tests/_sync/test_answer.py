@@ -281,15 +281,21 @@ def test_unknown_and_unsupported_parts_are_gaps() -> None:
     assert answer.specs == ()
 
 
-def test_an_unknown_answer_kind_raises_contract_error() -> None:
+@pytest.mark.parametrize(
+    ("body_trace", "trace_id"),
+    [("body-trace", "body-trace"), ("", TRACE), (7, TRACE)],
+    ids=["body-outranks-header", "empty-reads-absent", "not-a-string-reads-absent"],
+)
+def test_an_unknown_answer_kind_raises_contract_error(
+    body_trace: object, trace_id: str
+) -> None:
     wire = load("search-1.json")
     wire["kind"] = "essay"
-    wire["trace_id"] = "body-trace"
+    wire["trace_id"] = body_trace
     with pytest.raises(ContractError) as caught:
         ask("ODA", wire)
     assert (caught.value.code, caught.value.pointer) == ("contract_violation", None)
-    # The body's trace id outranks the header's.
-    assert caught.value.trace_id == "body-trace"
+    assert caught.value.trace_id == trace_id
 
 
 def test_a_part_without_its_payload_names_the_member_missing() -> None:

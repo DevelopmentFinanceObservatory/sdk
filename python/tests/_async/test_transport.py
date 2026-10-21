@@ -32,6 +32,7 @@ from dfo._transport import (
     USER_AGENT,
     AsyncTransport,
     _DeadlineBackend,
+    _keep_to_deadlines,
     attempt_deadline,
 )
 
@@ -271,6 +272,24 @@ async def test_a_body_that_stalls_after_its_first_chunk_raises_at_the_attempt_en
     assert 0.55 < elapsed < 0.85
 
 
+@pytest.mark.parametrize("attribute", ["_pool", "_network_backend"])
+async def test_a_pool_layout_the_pins_do_not_cover_raises_naming_the_versions(
+    attribute: str,
+) -> None:
+    async with httpx2.AsyncClient() as client:
+        transport = client._transport
+        assert isinstance(transport, httpx2.AsyncHTTPTransport)
+        holder = transport._pool if attribute == "_network_backend" else transport
+        held = getattr(holder, attribute)
+        delattr(holder, attribute)
+        with pytest.raises(RuntimeError) as caught:
+            _keep_to_deadlines(client)
+        # The client's close needs the attribute back.
+        setattr(holder, attribute, held)
+    assert f"httpx2 {httpx2.__version__}" in str(caught.value)
+    assert f"httpcore2 {httpcore2.__version__}" in str(caught.value)
+
+
 class Stream(httpcore2.AsyncNetworkStream):
     """A connection that records the timeout each operation is given."""
 
@@ -418,6 +437,8 @@ async def test_a_problem_document_fills_the_error() -> None:
             "in-body",
         ),
         (problem(500, retryable=False, trace_id="in-body"), "in-body"),
+        (problem(500, code="internal_error", trace_id=""), "trace-header"),
+        (problem(500, code="internal_error", trace_id=7), "trace-header"),
     ],
     ids=[
         "no-body-code",
@@ -425,6 +446,8 @@ async def test_a_problem_document_fills_the_error() -> None:
         "problem-without-trace",
         "problem-trace",
         "codeless-problem-trace",
+        "empty-trace",
+        "trace-not-a-string",
     ],
 )
 async def test_a_refusal_takes_its_trace_id_from_the_header_when_the_body_has_none(
