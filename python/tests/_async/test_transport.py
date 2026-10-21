@@ -5,9 +5,12 @@ the sync transport passes the same tests.
 """
 
 import json
+import ssl
+import time
 import warnings
 from collections.abc import Callable
 
+import httpcore2
 import httpx2
 import pytest
 
@@ -25,9 +28,14 @@ from dfo._errors import (
     RateLimitError,
     ServerError,
 )
-from dfo._transport import USER_AGENT, AsyncTransport
+from dfo._transport import (
+    USER_AGENT,
+    AsyncTransport,
+    _DeadlineBackend,
+    attempt_deadline,
+)
 
-from .._fetch_support import SlowBody, TimedBody
+from .._fetch_support import stalling_server
 
 pytestmark = pytest.mark.anyio
 
@@ -246,50 +254,94 @@ async def test_a_download_reads_until_the_deadline(
     assert recorder.requests[0].extensions["timeout"]["read"] == read
 
 
-async def test_a_deadline_that_passes_while_a_body_is_read_raises() -> None:
-    timeline = Timeline()
-    slow = httpx2.Response(
-        200,
-        headers={"content-type": "application/json"},
-        stream=SlowBody(timeline.advance, 20),
-    )
-    recorder = Recorder(slow, httpx2.Response(200))
-    async with make(recorder, timeline) as transport:
-        with pytest.raises(DfoTimeoutError) as caught:
-            await transport.request(
-                "GET", "/datasets/schema", deadline=transport.deadline(10)
-            )
+async def test_a_body_that_stalls_after_its_first_chunk_raises_at_the_attempt_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real sockets, since httpcore2 times each network read; under a second.
+    monkeypatch.setenv("NO_PROXY", "*")
+    with stalling_server(first_chunk_after=0.4) as origin:
+        async with AsyncTransport(
+            api_key=False, base_url=origin, timeout=0.6, max_retries=0
+        ) as transport:
+            start = time.monotonic()
+            with pytest.raises(DfoTimeoutError) as caught:
+                await transport.request("GET", "/datasets/schema")
+            elapsed = time.monotonic() - start
     assert (caught.value.code, caught.value.retryable) == ("deadline_exceeded", True)
-    assert len(recorder.requests) == 1
+    assert 0.55 < elapsed < 0.85
 
 
-async def test_each_body_chunk_is_read_within_the_time_left_on_the_attempt() -> None:
+class Stream(httpcore2.AsyncNetworkStream):
+    """A connection that records the timeout each operation is given."""
+
+    def __init__(self, timeouts: list[tuple[str, float | None]]) -> None:
+        self.timeouts = timeouts
+
+    async def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        self.timeouts.append(("read", timeout))
+        return b""
+
+    async def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        self.timeouts.append(("write", timeout))
+
+    async def aclose(self) -> None:
+        pass
+
+    async def start_tls(
+        self,
+        ssl_context: ssl.SSLContext,
+        server_hostname: str | None = None,
+        timeout: float | None = None,
+    ) -> httpcore2.AsyncNetworkStream:
+        self.timeouts.append(("tls", timeout))
+        return self
+
+
+class Backend(httpcore2.AsyncNetworkBackend):
+    def __init__(self) -> None:
+        self.timeouts: list[tuple[str, float | None]] = []
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: object = None,
+    ) -> httpcore2.AsyncNetworkStream:
+        self.timeouts.append(("connect", timeout))
+        return Stream(self.timeouts)
+
+
+async def test_each_network_operation_waits_at_most_the_time_left_on_the_attempt() -> (
+    None
+):
     timeline = Timeline()
-    bodies: list[TimedBody] = []
-
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        timeline.advance(4)
-        bodies.append(TimedBody(request, timeline.advance, [3, 1]))
-        return httpx2.Response(200, stream=bodies[0])
-
-    async with make(handler, timeline, timeout=10.0) as transport:
-        await transport.request("GET", "/datasets/schema")
-    assert bodies[0].reads == [6.0, 3.0]
-
-
-async def test_a_body_that_trickles_past_the_timeout_spends_an_attempt() -> None:
-    timeline = Timeline()
-    slow = httpx2.Response(
-        200,
-        headers={"content-type": "application/json"},
-        stream=SlowBody(timeline.advance, 20),
-    )
-    recorder = Recorder(slow, httpx2.Response(200))
-    async with make(recorder, timeline, timeout=10.0) as transport:
-        response = await transport.request("GET", "/datasets/schema")
-    assert response.status_code == 200
-    assert len(recorder.requests) == 2
-    assert timeline.sleeps == [0.5]
+    inner = Backend()
+    backend = _DeadlineBackend(inner)
+    with attempt_deadline(timeline.clock, 1010.0):
+        stream = await backend.connect_tcp("api.example.org", 443, timeout=30.0)
+        timeline.advance(2)
+        stream = await stream.start_tls(ssl.create_default_context(), timeout=30.0)
+        timeline.advance(2)
+        await stream.write(b"GET", timeout=None)
+        await stream.read(1, timeout=3.0)
+        timeline.advance(5)
+        await stream.read(1, timeout=30.0)
+        timeline.advance(1)
+        with pytest.raises(httpcore2.ReadTimeout):
+            await stream.read(1, timeout=30.0)
+        with pytest.raises(httpcore2.WriteTimeout):
+            await stream.write(b"GET", timeout=30.0)
+    await stream.read(1, timeout=30.0)
+    assert inner.timeouts == [
+        ("connect", 10.0),
+        ("tls", 8.0),
+        ("write", 6.0),
+        ("read", 3.0),
+        ("read", 1.0),
+        ("read", 30.0),
+    ]
 
 
 async def test_a_failed_download_is_not_retried() -> None:

@@ -105,8 +105,6 @@ class Session:
 type SessionSource = Callable[[], Session]
 """Returns the session a call goes through, read when the call runs."""
 
-_REDIRECTS = frozenset({301, 302, 303, 307, 308})
-
 # The variable text an identity resubmit sends for a spec no answer part names;
 # Search echoes it onto the part, and it does not change the sentence.
 _UNNAMED_PART = "dataset"
@@ -552,8 +550,8 @@ def _download(
 ) -> bytes:
     """Fetch a file through the route that redirects to it, checked on `digest`.
 
-    The route answers a redirect, whose `Location` resolves against the
-    route's URL and is fetched once, with a bare request on the storage host.
+    The route answers 200, whose body is the file, or a 302, whose `Location`
+    resolves against the route's URL and is fetched once, with a bare request on the storage host.
     A signed fetch that fails retryably, or bytes that do not hash to `digest`,
     ask the route once more for a fresh URL rather than retrying the old one.
 
@@ -561,16 +559,17 @@ def _download(
         ServerError: The bytes did not hash to `digest` on either attempt
             (`digest_mismatch`), or the signed fetch failed on both
             (`download_failed`).
-        ContractError: The route answered neither 200 nor a redirect with a
-            Location, or the Location is on neither the API's origin nor the
-            storage host.
+        ContractError: The route answered another 2xx or 3xx
+            (`unexpected_response`), a 302 with no Location, or a Location on
+            neither the API's origin nor the storage host
+            (`contract_violation`).
     """
     failure: DfoError | None = None
     for _ in range(2):
         response = transport.request("GET", target, params=params, deadline=deadline)
         if response.status_code == 200:
             data = response.content
-        elif response.status_code in _REDIRECTS:
+        elif response.status_code == 302:
             location = response.headers.get("location")
             if not location:
                 raise client_error(
@@ -594,7 +593,7 @@ def _download(
             raise client_error(
                 UNEXPECTED_RESPONSE,
                 f"GET {target} answered HTTP {response.status_code}; "
-                "a file route answers a redirect",
+                "a file route answers 200 or a 302",
                 status=response.status_code,
                 trace_id=trace_id_of(response),
             )

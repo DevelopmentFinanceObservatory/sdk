@@ -481,12 +481,16 @@ async def test_a_file_url_off_its_allowed_origins_raises(off: str, url: str) -> 
     assert caught.value.trace_id == ("route" if off == "location" else "build-trace")
 
 
-async def test_a_files_route_answering_another_2xx_is_unexpected() -> None:
-    server = Server(json_response(200, manifest(POSTED_ID)), httpx2.Response(204))
+@pytest.mark.parametrize("status", [204, 301, 303, 307, 308])
+async def test_a_files_route_answering_another_2xx_or_3xx_is_unexpected(
+    status: int,
+) -> None:
+    other = httpx2.Response(status, headers={"location": SIGNED})
+    server = Server(json_response(200, manifest(POSTED_ID)), other)
     async with make(server) as transport:
         with pytest.raises(ContractError) as caught:
             await fetch(transport, spec(SENTENCE))
-    assert (caught.value.code, caught.value.status) == ("unexpected_response", 204)
+    assert (caught.value.code, caught.value.status) == ("unexpected_response", status)
     assert len(server.requests) == 2
 
 

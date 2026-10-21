@@ -11,7 +11,14 @@ import pytest
 
 import dfo._fetch as fetch_module
 from dfo import _errors
-from dfo._errors import ContractError, DfoTimeoutError, NotFoundError, ServerError
+from dfo._errors import (
+    ContractError,
+    DfoError,
+    DfoTimeoutError,
+    NotFoundError,
+    RateLimitError,
+    ServerError,
+)
 from dfo._fetch import fetch, mint, operation
 from dfo._parse import parse_spec
 from dfo._transport import AsyncTransport
@@ -256,12 +263,22 @@ async def test_poll_failures_beyond_the_retry_count_raise(
     assert server.requests[1].extensions["timeout"]["read"] == 30.0
 
 
-async def test_a_poll_refused_with_a_final_408_raises_that_refusal() -> None:
-    server = Server(accepted(), problem(408, "request_timeout"))
-    async with make(server) as transport:
-        with pytest.raises(DfoTimeoutError) as caught:
+@pytest.mark.parametrize(
+    ("status", "code", "error"),
+    [(408, "request_timeout", DfoTimeoutError), (429, "rate_limited", RateLimitError)],
+)
+async def test_a_poll_refused_for_good_raises_that_refusal_at_once(
+    status: int, code: str, error: type[DfoError]
+) -> None:
+    timeline = Timeline()
+    final = problem(status, code, retryable=False)
+    server = Server(
+        accepted(), json_response(status, final.json(), {"retry-after": "3"}), done()
+    )
+    async with make(server, timeline) as transport:
+        with pytest.raises(error) as caught:
             await fetch(transport, spec())
-    assert (caught.value.code, caught.value.status) == ("request_timeout", 408)
+    assert (caught.value.code, caught.value.status) == (code, status)
     assert len(server.requests) == 2
 
 

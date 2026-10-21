@@ -1,13 +1,15 @@
 """Shared pieces of the fetch and operation tests: mock servers, bodies, fakes.
 
 Nothing here awaits, so the async tests and the sync tests generated from them
-use the same helpers; `SlowBody` serves both flavours of client.
+use the same helpers.
 """
 
 import copy
 import json
+import socket
 import threading
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
+import time
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -325,50 +327,34 @@ def live_server(responses: Mapping[str, LiveResponse]) -> Iterator[LiveServer]:
         server.server_close()
 
 
-class TimedBody(httpx2.SyncByteStream, httpx2.AsyncByteStream):
-    """A response body that records the read timeout each chunk is read under.
+@contextmanager
+def stalling_server(*, first_chunk_after: float) -> Iterator[str]:
+    """Serve one response that sends its headers, one body chunk after
+    `first_chunk_after` seconds, and then nothing until the block ends.
 
-    Before each chunk it notes the request's read timeout, then moves the test's
-    clock by that chunk's wait, as a network read that takes so long would.
+    Yields:
+        The server's `http://127.0.0.1:<port>`.
     """
+    done = threading.Event()
+    listener = socket.create_server(("127.0.0.1", 0))
 
-    def __init__(
-        self,
-        request: httpx2.Request,
-        advance: Callable[[float], None],
-        waits: list[float],
-    ) -> None:
-        self._request = request
-        self._advance = advance
-        self._waits = waits
-        self.reads: list[float | None] = []
+    def serve() -> None:
+        connection, _ = listener.accept()
+        with connection:
+            connection.recv(65536)
+            connection.sendall(
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n"
+                b"transfer-encoding: chunked\r\n\r\n"
+            )
+            time.sleep(first_chunk_after)
+            connection.sendall(b"1\r\n{\r\n")
+            done.wait()
 
-    def __iter__(self) -> Iterator[bytes]:
-        for wait in self._waits:
-            self.reads.append(self._request.extensions["timeout"]["read"])
-            self._advance(wait)
-            yield b" "
-
-    async def __aiter__(self) -> AsyncIterator[bytes]:
-        for chunk in self:
-            yield chunk
-
-
-class SlowBody(httpx2.SyncByteStream, httpx2.AsyncByteStream):
-    """A response body whose second chunk arrives `seconds` after its first.
-
-    `advance` moves the test's clock, so a deadline can pass mid-read.
-    """
-
-    def __init__(self, advance: Callable[[float], None], seconds: float) -> None:
-        self._advance = advance
-        self._seconds = seconds
-
-    def __iter__(self) -> Iterator[bytes]:
-        yield b'{"part": '
-        self._advance(self._seconds)
-        yield b"1}"
-
-    async def __aiter__(self) -> AsyncIterator[bytes]:
-        for chunk in self:
-            yield chunk
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{listener.getsockname()[1]}"
+    finally:
+        done.set()
+        thread.join(timeout=5)
+        listener.close()

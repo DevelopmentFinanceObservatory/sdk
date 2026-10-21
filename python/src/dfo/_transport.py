@@ -10,23 +10,26 @@ storage host. Under
 
 The client's `timeout` bounds one whole attempt, body included, and a call's
 deadline bounds the whole call. An attempt must finish by the earlier of the
-call's deadline and its start plus the timeout. httpx2 times each phase on its
-own, so once the headers arrive the request's read timeout shrinks to the time
-left, which bounds a stalled body. It shrinks again before each chunk, which
-HTTP/2 reads per chunk and HTTP/1.1 reads once, when the body starts; a chunk
-that arrives after the attempt's end raises `deadline_exceeded`. The key resolves when the transport is built, and again
-after a 401.
+call's deadline and its start plus the timeout. The connection pool's network
+backend clamps the connect, the TLS handshake and each read and write to the
+time left on the attempt, so a body that stalls at any point raises
+`deadline_exceeded` at the attempt's end. The key resolves when the transport
+is built, and again after a 401.
 """
 
 import copy
 import math
 import os
-from collections.abc import AsyncIterator, Mapping
+import ssl
+from collections.abc import Generator, Iterable, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, Self
 from urllib.parse import urljoin, urlsplit
 
+import httpcore2
 import httpx2
 
 from dfo._error_map import (
@@ -96,52 +99,131 @@ def retry_after(response: httpx2.Response) -> float | None:
     return max(0.0, (moment - datetime.now(UTC)).total_seconds())
 
 
-def _bound_read(
-    request: httpx2.Request, clock: Clock, deadline: float, what: str
-) -> None:
-    """Shrink `request`'s read timeout to the time left before `deadline`.
+# The clock and the reading the attempt in flight must end by, or None when it
+# has no deadline. `_DeadlineBackend` reads it at each network operation.
+_ATTEMPT: ContextVar[tuple[Clock, float] | None] = ContextVar(
+    "dfo_attempt", default=None
+)
+
+
+@contextmanager
+def attempt_deadline(clock: Clock, deadline: float | None) -> Generator[None]:
+    """Bound every network operation inside the block to `deadline` on `clock`."""
+    token = _ATTEMPT.set(None if deadline is None else (clock, deadline))
+    try:
+        yield
+    finally:
+        _ATTEMPT.reset(token)
+
+
+def _time_left(timeout: float | None, expired: type[Exception]) -> float | None:
+    """Return `timeout` clamped to the time left on the attempt in flight.
 
     Raises:
-        DfoTimeoutError: `deadline` has passed (`deadline_exceeded`).
+        Exception: An `expired` timeout, once the attempt's deadline has passed.
     """
+    bound = _ATTEMPT.get()
+    if bound is None:
+        return timeout
+    clock, deadline = bound
     left = deadline - clock()
     if left <= 0:
-        raise client_error(
-            DEADLINE_EXCEEDED,
-            f"{what} ran past its time limit while its body was read",
-        )
-    request.extensions["timeout"] = {**request.extensions["timeout"], "read": left}
+        raise expired("The attempt's deadline passed")
+    return left if timeout is None else min(timeout, left)
 
 
-class _DeadlineStream(httpx2.AsyncByteStream):
-    """A response body read within its attempt's deadline.
+class _DeadlineStream(httpcore2.AsyncNetworkStream):
+    """A connection whose every read and write waits at most the time left."""
 
-    Before each chunk the request's read timeout shrinks to the time left, so a
-    stalled chunk times out at the deadline, and a chunk that arrives after it
-    raises `deadline_exceeded`.
-    """
-
-    def __init__(
-        self,
-        stream: httpx2.AsyncByteStream,
-        request: httpx2.Request,
-        clock: Clock,
-        deadline: float,
-        what: str,
-    ) -> None:
+    def __init__(self, stream: httpcore2.AsyncNetworkStream) -> None:
         self._stream = stream
-        self._request = request
-        self._clock = clock
-        self._deadline = deadline
-        self._what = what
 
-    async def __aiter__(self) -> AsyncIterator[bytes]:
-        async for chunk in self._stream:
-            _bound_read(self._request, self._clock, self._deadline, self._what)
-            yield chunk
+    async def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        return await self._stream.read(
+            max_bytes, _time_left(timeout, httpcore2.ReadTimeout)
+        )
+
+    async def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        await self._stream.write(buffer, _time_left(timeout, httpcore2.WriteTimeout))
 
     async def aclose(self) -> None:
         await self._stream.aclose()
+
+    async def start_tls(
+        self,
+        ssl_context: ssl.SSLContext,
+        server_hostname: str | None = None,
+        timeout: float | None = None,
+    ) -> httpcore2.AsyncNetworkStream:
+        return _DeadlineStream(
+            await self._stream.start_tls(
+                ssl_context,
+                server_hostname,
+                _time_left(timeout, httpcore2.ConnectTimeout),
+            )
+        )
+
+    def get_extra_info(self, info: str) -> Any:
+        return self._stream.get_extra_info(info)
+
+
+class _DeadlineBackend(httpcore2.AsyncNetworkBackend):
+    """A network backend whose connections keep to the attempt's deadline.
+
+    httpx2 times each phase on its own, and on HTTP/1.1 httpcore2 takes a body's
+    read timeout once, when the body starts. Clamping each operation's timeout
+    here bounds the connect, the TLS handshake and every read and write alike.
+    """
+
+    def __init__(self, backend: httpcore2.AsyncNetworkBackend) -> None:
+        self._backend = backend
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Iterable[Any] | None = None,
+    ) -> httpcore2.AsyncNetworkStream:
+        return _DeadlineStream(
+            await self._backend.connect_tcp(
+                host,
+                port,
+                _time_left(timeout, httpcore2.ConnectTimeout),
+                local_address,
+                socket_options,
+            )
+        )
+
+    async def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,
+        socket_options: Iterable[Any] | None = None,
+    ) -> httpcore2.AsyncNetworkStream:
+        return _DeadlineStream(
+            await self._backend.connect_unix_socket(
+                path, _time_left(timeout, httpcore2.ConnectTimeout), socket_options
+            )
+        )
+
+    async def sleep(self, seconds: float) -> None:
+        await self._backend.sleep(seconds)
+
+
+def _keep_to_deadlines(client: httpx2.AsyncClient) -> None:
+    """Route the connections of every pool `client` holds through `_DeadlineBackend`.
+
+    httpx2 builds the pools, its proxy pools from the environment included, and
+    takes no network backend, so the backend goes in after it builds them. A
+    transport the caller passed in that is not httpx2's own keeps its timing.
+    """
+    for transport in (client._transport, *client._mounts.values()):
+        if isinstance(transport, httpx2.AsyncHTTPTransport):
+            pool = transport._pool
+            assert isinstance(pool, httpcore2.AsyncConnectionPool)
+            pool._network_backend = _DeadlineBackend(pool._network_backend)
 
 
 class AsyncTransport:
@@ -175,7 +257,9 @@ class AsyncTransport:
             default_headers: Headers sent with every API request.
             header_provider: Called before every API request for more headers,
                 such as an identity token.
-            http_transport: The httpx2 transport, for tests and proxies.
+            http_transport: The httpx2 transport, for tests and proxies. An
+                `httpx2.AsyncHTTPTransport` keeps to the attempt's deadline at
+                every network operation; any other transport times itself.
             sleep: Waits between attempts.
             clock: A monotonic clock, in seconds, for deadlines.
 
@@ -198,6 +282,7 @@ class AsyncTransport:
         self._http = httpx2.AsyncClient(
             transport=http_transport, follow_redirects=False
         )
+        _keep_to_deadlines(self._http)
         self._owner = True
 
     @property
@@ -320,17 +405,12 @@ class AsyncTransport:
             NetworkError: The connection failed (`network_error`, retryable).
         """
         try:
-            response = await self._http.send(request, stream=True)
-            try:
-                if deadline is not None:
-                    assert isinstance(response.stream, httpx2.AsyncByteStream)
-                    _bound_read(request, self._clock, deadline, what)
-                    response.stream = _DeadlineStream(
-                        response.stream, request, self._clock, deadline, what
-                    )
-                await response.aread()
-            finally:
-                await response.aclose()
+            with attempt_deadline(self._clock, deadline):
+                response = await self._http.send(request, stream=True)
+                try:
+                    await response.aread()
+                finally:
+                    await response.aclose()
         except httpx2.TimeoutException as exc:
             raise client_error(DEADLINE_EXCEEDED, f"{what} timed out") from exc
         except httpx2.TransportError as exc:

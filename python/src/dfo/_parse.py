@@ -141,15 +141,13 @@ def parse_candidate(
         if isinstance(token, Mapping)
     ]
     heading = "".join(
-        _text(token.get("text"))
-        for token in tokens
-        if token.get("segment", "heading") == "heading"
+        _text(token.get("text")) for token in tokens if _segment(token) == "heading"
     ).strip()
     unit = next(
         (
             token["text"]
             for token in tokens
-            if token.get("segment") == "byline"
+            if _segment(token) == "byline"
             and token.get("kind") == "slot"
             and token.get("axis") == "unit"
             and _text(token.get("text"))
@@ -357,9 +355,19 @@ def _part_fields(part: Wire, status: str) -> dict[str, Any]:
 def _option(option: Wire) -> Option:
     return Option(
         label=_text(option.get("label")),
-        mentions=tuple(_text(mention) for mention in _list(option.get("mentions"))),
+        mentions=tuple(
+            mention
+            for mention in _list(option.get("mentions"))
+            if isinstance(mention, str)
+        ),
         data_query=_object(option.get("data_query")),
     )
+
+
+def _segment(token: Wire) -> str:
+    """A sentence-plan token's segment; a missing or non-string one is the heading."""
+    segment = token.get("segment")
+    return segment if isinstance(segment, str) else "heading"
 
 
 def _text(value: object) -> str:

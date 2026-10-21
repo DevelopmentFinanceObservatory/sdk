@@ -359,6 +359,13 @@ def test_a_malformed_strict_member_raises_at_its_pointer(
     assert (caught.value.code, caught.value.pointer) == ("contract_violation", pointer)
 
 
+def search_3_with(edit: Callable[[dict[str, Any]], object]) -> dict[str, Any]:
+    """search-3.json with `edit` applied to its no-data part."""
+    answer = load("search-3.json")
+    edit(answer["parts"][0])
+    return answer
+
+
 def first_spec(part: dict[str, Any]) -> dict[str, Any]:
     return part["candidates"]["specs"][0]
 
@@ -398,6 +405,32 @@ def first_label(part: Any) -> object:
             first_label,
             first_label(parse_parts(load("search-2.json"))[0]),
         ),
+        *(
+            (
+                lambda segment=segment: search_2_with(
+                    lambda part: first_spec(part)["resolved"]["sentence_plan"].insert(
+                        0, {"kind": "text", "segment": segment, "text": "ZZZ "}
+                    )
+                ),
+                first_label,
+                "ZZZ " + first_label(parse_parts(load("search-2.json"))[0]),
+            )
+            for segment in (None, 5)
+        ),
+        (
+            lambda: search_3_with(
+                lambda part: part["no_data"].update(
+                    options=[{"label": "Congo [DRC]", "mentions": ["Congo", 5, None]}]
+                )
+            ),
+            lambda part: part.options[0].mentions,
+            ("Congo",),
+        ),
+        (
+            lambda: search_1_with(lambda part: part.update(variable_text=5)),
+            lambda part: part.variable_text,
+            None,
+        ),
         (
             lambda: search_2_with(
                 lambda part: part.update(
@@ -427,6 +460,10 @@ def first_label(part: Any) -> object:
         "sentence-plan-object",
         "no-heading-and-an-empty-sentence",
         "sentence-plan-null-token",
+        "segment-null-is-heading",
+        "segment-number-is-heading",
+        "mentions-non-string-item",
+        "variable-text-number",
         "reading-assumptions-object",
         "operations-object",
         "warnings-object",

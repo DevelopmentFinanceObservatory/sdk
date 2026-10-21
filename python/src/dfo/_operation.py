@@ -16,9 +16,10 @@ operation whose document carries no `error` fails with `operation_failed`.
 Polls wait for `retry_after_ms` when the resource carries it, else for the
 `Retry-After` header, else back off from 1 to 8 seconds. A refused poll that
 keeps polling waits for its `Retry-After` when it carries one, whatever its
-status. A 429 spends no retry; any other retryable refused poll, one that times
-out included, spends one of the transport's retries, which a poll that answers
-restores.
+status. A refused poll that is not retryable raises its error at once, a 429
+included. A retryable 429 spends no retry; any other retryable refused poll,
+one that times out included, spends one of the transport's retries, which a poll
+that answers restores.
 """
 
 from collections.abc import Callable
@@ -365,10 +366,12 @@ class Poller:
         if error.code == _OPERATION_FAILED:
             await self._failed(error, deadline)
             return
+        if not error.retryable:
+            raise error
         self._refused_wait = error.retry_after
         if error.status == 429:
             return
-        if not error.retryable or self._retries >= self._transport.max_retries:
+        if self._retries >= self._transport.max_retries:
             raise error
         self._retries += 1
 

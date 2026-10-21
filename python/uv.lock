@@ -224,6 +224,7 @@ name = "development-finance"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "httpcore2" },
     { name = "httpx2" },
     { name = "pyarrow" },
     { name = "typing-extensions" },
@@ -257,6 +258,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpcore2", specifier = ">=2.15" },
     { name = "httpx2", specifier = ">=2.15" },
     { name = "openpyxl", marker = "extra == 'xlsx'", specifier = ">=3.1" },
     { name = "pandas", marker = "extra == 'pandas'", specifier = ">=2.2" },
