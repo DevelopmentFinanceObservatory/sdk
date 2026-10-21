@@ -161,6 +161,26 @@ def scope(
     return result or None
 
 
+def rebind(
+    spec: Spec, entities: Mapping[str, Sequence[str] | None]
+) -> dict[str, Sequence[str]]:
+    """The whole entity binding a fetch posts: the spec's own, with `entities` applied.
+
+    The server replaces a spec's entire binding with the posted one, so the
+    client starts from the roles the spec's definition binds and changes only
+    the roles `entities` names. A role bound to None leaves the binding.
+    """
+    bound: dict[str, Sequence[str]] = dict(
+        spec.definition["identity"].get("entities", {})
+    )
+    for role, dcids in entities.items():
+        if dcids is None:
+            bound.pop(role, None)
+        else:
+            bound[role] = dcids
+    return bound
+
+
 def _window(window: Window) -> dict[str, Any]:
     if window in ("all", "latest"):
         return {"kind": window}

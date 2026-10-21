@@ -164,7 +164,7 @@ def test_a_narrowed_spec_stores_the_built_identity_and_asks_search_its_sentence(
     assert posted["input"]["definition"] == posted_spec()["definition"]
     assert posted["input"]["scope"] == {
         "window": {"kind": "range", "start_year": 2020, "end_year": 2023},
-        "entities": {"destination": ["country/NGA"]},
+        "entities": {"destination": ["country/NGA"], "origin": ["country/DEU"]},
         "facets": {"measurementMethod": {"ref": None}},
     }
     assert posted["options"] == {"format": "parquet", "bundle": False}
@@ -187,6 +187,31 @@ def test_a_narrowed_spec_stores_the_built_identity_and_asks_search_its_sentence(
     assert "2020 to 2023" in member.sentence
     assert member.manifest == body
     assert member.manifest["retention"] == body["retention"]
+
+
+@pytest.mark.parametrize(
+    ("entities", "posted"),
+    [
+        (
+            {"origin": ["country/FRA"]},
+            {"destination": ["country/NGA"], "origin": ["country/FRA"]},
+        ),
+        ({"origin": None}, {"destination": ["country/NGA"]}),
+        (None, None),
+    ],
+)
+def test_entities_rebind_only_the_roles_named(
+    entities: dict | None, posted: dict | None
+) -> None:
+    server = Server(
+        json_response(200, manifest()),
+        json_response(200, resubmitted()),
+        redirect(),
+        parquet(),
+    )
+    with make(server) as transport:
+        fetch(transport, spec(), window="latest", entities=entities)
+    assert server.body(0)["input"]["scope"].get("entities") == posted
 
 
 def test_an_answer_part_resubmits_with_its_first_part() -> None:
@@ -421,6 +446,7 @@ def test_offline_a_spec_reads_its_newest_cached_version_as_stale(
         assert built.members[0].data == DATA
         for target, options in [
             (spec(SENTENCE), {"window": "latest"}),
+            (spec(SENTENCE), {"entities": {"origin": ["country/FRA"]}}),
             (Spec(NARROWED_ID, newer["definition"], SENTENCE), {}),
         ]:
             with pytest.raises(NetworkError) as caught:

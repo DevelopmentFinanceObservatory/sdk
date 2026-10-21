@@ -83,13 +83,11 @@ class Cache:
     Attributes:
         directory: The cache directory, `<root>/v1/dfo/cache1`.
         enabled: Whether the cache reads and writes entries.
-        offline: Whether `DFO_OFFLINE=1` was set when the cache was built, so a
-            fetch reads only the cache.
         max_bytes: The bound on the artifacts kept; the least recently used go
             first.
     """
 
-    __slots__ = ("directory", "enabled", "max_bytes", "offline")
+    __slots__ = ("directory", "enabled", "max_bytes")
 
     def __init__(
         self,
@@ -103,7 +101,6 @@ class Cache:
         self.directory = Path(cache_directory(cache_dir, env=env))
         self.enabled = enabled
         self.max_bytes = max_bytes
-        self.offline = env.get("DFO_OFFLINE") == "1"
 
     def get_bytes(self, digest: str, /) -> bytes | None:
         """The artifact with `digest`, or None when it is absent or its bytes differ."""

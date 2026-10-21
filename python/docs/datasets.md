@@ -27,7 +27,7 @@ print(data.rows)
 Three arguments narrow a spec on the server, so a fetch of four years waits for four years of rows:
 
 - `window`: `"all"`, `"latest"`, or a `(start_year, end_year)` pair.
-- `entities`: role names bound to place dcids, as `{"destination": ["country/ETH"]}`.
+- `entities`: roles rebound to place dcids, as `{"origin": ["country/DEU"]}`. The roles you name change and the spec's other roles keep their places; a role bound to None drops out.
 - `facets`: the `provenance`, `measurementMethod` or `unit` axis bound to a ref; None binds the facets that declare no value on that axis.
 
 ```python
@@ -41,14 +41,13 @@ spec = answer.specs[0]
 data = dfo.fetch(
     spec,
     window=(2020, 2022),
-    entities={"destination": ["country/ETH"], "origin": ["country/DEU", "country/FRA"]},
+    entities={"origin": ["country/DEU", "country/FRA"]},
 )
 print(data.sentence)
 # Gross disbursements to Ethiopia from Germany and France for official development assistance, 2020 to 2022. ...
 ```
 
-> [!WARNING]
-> `entities` replaces every role the spec binds. Binding only `origin` in the example above drops Ethiopia and returns all 225 recipients. Name every role you want to keep. The roles a spec binds are under `spec.definition["identity"]["entities"]`.
+Rebinding `origin` keeps Ethiopia as the recipient, since the client posts the spec's own roles with `origin` replaced. The roles a spec binds are under `spec.definition["identity"]["entities"]`.
 
 A narrowed spec is a new reading with its own `spec_id`, which `data.members[0].spec` holds.
 

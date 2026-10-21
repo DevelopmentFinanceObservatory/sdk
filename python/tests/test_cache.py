@@ -116,12 +116,6 @@ def test_latest_manifest_is_the_newest_prepared_version(cache: Cache) -> None:
     assert cache.latest_manifest(SPEC_ID, Rendering("csv", True)) is None
 
 
-def test_offline_follows_dfo_offline(tmp_path: Path) -> None:
-    assert Cache(tmp_path, env={"DFO_OFFLINE": "1"}).offline
-    assert not Cache(tmp_path, env={"DFO_OFFLINE": "0"}).offline
-    assert not Cache(tmp_path, env={}).offline
-
-
 def test_eviction_drops_the_least_recently_used(tmp_path: Path) -> None:
     cache = Cache(tmp_path, max_bytes=25, env={})
     blobs = [bytes([index]) * 10 for index in range(3)]

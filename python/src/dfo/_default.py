@@ -109,7 +109,7 @@ def fetch(
     /,
     *,
     window: Window | None = None,
-    entities: Mapping[str, Sequence[str]] | None = None,
+    entities: Mapping[str, Sequence[str] | None] | None = None,
     facets: Mapping[str, str | None] | None = None,
     layout: Layout | None = None,
     strict: bool = False,

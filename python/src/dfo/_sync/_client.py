@@ -139,7 +139,7 @@ class Client:
         /,
         *,
         window: Window | None = None,
-        entities: Mapping[str, Sequence[str]] | None = None,
+        entities: Mapping[str, Sequence[str] | None] | None = None,
         facets: Mapping[str, str | None] | None = None,
         layout: Layout | None = None,
         strict: bool = False,
@@ -152,8 +152,9 @@ class Client:
             target: A `Spec` to build, or a `DatasetRef` to read back.
             window: Narrow a spec to `"all"`, `"latest"` or
                 `(start_year, end_year)`.
-            entities: Narrow a spec's roles to dcids, such as
-                `{"recipient": ["country/NGA"]}`.
+            entities: Rebind the named roles of a spec to dcids, such as
+                `{"recipient": ["country/NGA"]}`; None drops a role. The
+                spec's other roles keep their binding.
             facets: Bind a spec's provenance, measurement method or unit.
             layout: `long` or `frame`; None builds a spec in `long` and reads a
                 ref in the layout it holds.

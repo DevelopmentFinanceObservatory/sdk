@@ -35,6 +35,7 @@ from dfo._build import (
     digest_of,
     layout_of,
     pick_artifact,
+    rebind,
     rendering_for,
     rendering_options,
     response_json,
@@ -123,7 +124,7 @@ def fetch(
     target: Spec | DatasetRef,
     *,
     window: Window | None = None,
-    entities: Mapping[str, Sequence[str]] | None = None,
+    entities: Mapping[str, Sequence[str] | None] | None = None,
     facets: Mapping[str, str | None] | None = None,
     layout: Layout | None = None,
     strict: bool = False,
@@ -137,7 +138,8 @@ def fetch(
         transport: The transport requests go through.
         target: A `Spec` to build, or a `DatasetRef` to read back.
         window: Narrow a spec to `"all"`, `"latest"` or `(start_year, end_year)`.
-        entities: Narrow a spec's roles to dcids.
+        entities: Rebind the named roles of a spec to dcids; None drops a role.
+            The spec's other roles keep their binding.
         facets: Bind a spec's provenance, measurement method or unit.
         layout: `long` (the default for a spec) or `frame`. A ref holds its own
             layout; naming another raises.
@@ -175,7 +177,11 @@ def fetch(
         timeout=timeout,
         progress=progress,
         cache=cache,
-        narrowing=scope(window=window, entities=entities, facets=facets),
+        narrowing=scope(
+            window=window,
+            entities=None if entities is None else rebind(target, entities),
+            facets=facets,
+        ),
     )
 
 
