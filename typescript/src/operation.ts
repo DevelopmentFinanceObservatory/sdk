@@ -7,16 +7,17 @@
  *
  * This module owns build retries: the build request goes with no transport retries, a
  * synchronous cut-off (a retryable 504, or the read timing out before the call's deadline) is
- * retried once, other retryable refusals back off from 1 to 8 seconds within the transport's
- * retry count, and a retryable failed operation is resubmitted once. Polls wait for the
- * resource's `retry_after_ms` when it carries one, else for the `Retry-After` header, else
- * back off from 1 to 8 seconds; a 429 waits without spending a retry.
+ * retried once, other retryable refusals wait for their `Retry-After` or back off from 1 to 8
+ * seconds within the transport's retry count, and a retryable failed operation is resubmitted
+ * once. Polls wait for the resource's `retry_after_ms` when it carries one, else for the
+ * `Retry-After` header, else back off from 1 to 8 seconds; a 429 waits for its `Retry-After`
+ * without spending a retry.
  */
 
 import type { Dataset } from "./dataset.ts";
 import { clientError, DfoError, DfoTimeoutError, errorClassFor, serverCode } from "./errors.ts";
 import { checkStrict } from "./strict.ts";
-import { retryAfterMs } from "./transport.ts";
+import { isRetryable, retryAfterMs } from "./transport.ts";
 import type { JsonResponse, Transport } from "./transport.ts";
 
 /** The longest the client reads a synchronous build: the server cuts one off at 120 s. */
@@ -146,7 +147,8 @@ function pollReply(response: JsonResponse): Reply {
   });
 }
 
-/** The error a failed operation's problem document stands for. */
+/** The error a failed operation's problem document stands for, at the document's status or
+ *  else 500, retryable by the rule every refusal follows. */
 function problemError(problem: Readonly<Record<string, unknown>> | null): DfoError {
   const code = typeof problem?.["code"] === "string" ? problem["code"] : OPERATION_FAILED;
   const status = typeof problem?.["status"] === "number" ? problem["status"] : 500;
@@ -156,7 +158,7 @@ function problemError(problem: Readonly<Record<string, unknown>> | null): DfoErr
     status,
     detail: typeof problem?.["detail"] === "string" ? problem["detail"] : "The build failed.",
     traceId: typeof problem?.["trace_id"] === "string" ? problem["trace_id"] : null,
-    retryable: problem?.["retryable"] === true,
+    retryable: isRetryable(status, problem),
     problem,
   });
 }
@@ -198,7 +200,7 @@ async function postBuild(transport: Transport, body: unknown, { deadline, signal
         cutOffRetried = true;
         continue;
       }
-      const wait = pollBackoff(retries);
+      const wait = error.retryAfterMs ?? pollBackoff(retries);
       if (!error.retryable || retries >= transport.maxRetries || !fits(transport, wait, deadline)) {
         throw error;
       }
@@ -218,6 +220,8 @@ class Poller {
   #manifest: Manifest | null = null;
   #state: OperationState | null = null;
   #headerWaitMs: number | null = null;
+  /** The `Retry-After` of a 429 that refused the last poll. */
+  #refusedWaitMs: number | null = null;
   #traceId: string | null = null;
   #error: DfoError | null = null;
   #backoffStep = 0;
@@ -275,6 +279,9 @@ class Poller {
   }
 
   #nextWait(): number {
+    const refused = this.#refusedWaitMs;
+    this.#refusedWaitMs = null;
+    if (refused !== null) return refused;
     const paced = this.#state?.retryAfterMs ?? this.#headerWaitMs;
     if (paced !== null) return paced;
     const backoff = pollBackoff(this.#backoffStep);
@@ -343,7 +350,10 @@ class Poller {
       await this.#failed(error, wait);
       return;
     }
-    if (error.status === 429) return;
+    if (error.status === 429) {
+      this.#refusedWaitMs = error.retryAfterMs;
+      return;
+    }
     if (!error.retryable || this.#retries >= this.#transport.maxRetries) throw error;
     this.#retries += 1;
   }

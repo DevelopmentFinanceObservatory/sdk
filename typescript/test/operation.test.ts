@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import { envFrom } from "../src/env.ts";
+import type { VersionUnavailableError } from "../src/errors.ts";
 import { fetchDataset, mint, resume } from "../src/fetch.ts";
 import type { ProgressEvent } from "../src/operation.ts";
 import { DatasetRef } from "../src/ref.ts";
@@ -111,21 +112,42 @@ describe("a long build", () => {
     assert.deepEqual(waits, [3000, 1000, 2000, 4000, 8000, 8000]);
   });
 
-  test("waits out a 429 on a poll without spending retries", async () => {
+  test("waits out each 429 on a poll for its Retry-After, spending no retries", async () => {
     const { spec, manifest, parquet } = await built();
-    const limited = json({ error: "rate_limited", retry: "retry_after_delay", detail: "" }, 429);
+    const limited = (wait?: string) =>
+      json(
+        { error: "rate_limited", retry: "retry_after_delay", detail: "" },
+        429,
+        wait === undefined ? {} : { "retry-after": wait },
+      );
     const { fetch } = mockFetch(
       json(operation("pending", { retry_after_ms: 1000 }), 202),
-      limited,
-      limited,
-      limited,
+      limited("5"),
+      limited("7"),
+      limited(),
       json({ ...operation("done"), manifest }),
       ...download(parquet),
     );
     const { transport, waits } = client(fetch);
     const dataset = await (await mint(transport, spec)).result();
     assert.equal(dataset.rows, 4);
-    assert.deepEqual(waits, [1000, 1000, 1000, 1000]);
+    // A 429 with no Retry-After falls back to the operation's own pacing.
+    assert.deepEqual(waits, [1000, 5000, 7000, 1000]);
+  });
+
+  test("waits a refused build's Retry-After before posting it again", async () => {
+    const { spec, manifest, parquet } = await built();
+    const { fetch, seen } = mockFetch(
+      problem({ code: "build_capacity", status: 503, retryable: true }, { "retry-after": "7" }),
+      problem({ code: "build_capacity", status: 503, retryable: true }),
+      json(manifest),
+      ...download(parquet),
+    );
+    const { transport, waits } = client(fetch);
+    const dataset = await fetchDataset(transport, spec);
+    assert.equal(dataset.rows, 4);
+    assert.deepEqual(waits, [7000, 2000]);
+    assert.equal(seen[1]!.body, seen[0]!.body);
   });
 
   test("names the call that resumes it when the deadline passes", async () => {
@@ -177,6 +199,21 @@ describe("a long build", () => {
     assert.equal(dataset.rows, 4);
     assert.equal(seen[2]!.method, "POST");
     assert.equal(seen[2]!.body, seen[0]!.body);
+  });
+
+  test("resubmits a failed operation retryable by its status alone", async () => {
+    const { spec, manifest, parquet } = await built();
+    // The problem document carries no `retryable`, so its status decides.
+    const { fetch, seen } = mockFetch(
+      json(operation("pending", { retry_after_ms: 1000 }), 202),
+      json({ ...operation("failed"), error: { code: "build_failed", status: 503 } }),
+      json(manifest),
+      ...download(parquet),
+    );
+    const { transport } = client(fetch);
+    const dataset = await (await mint(transport, spec)).result();
+    assert.equal(dataset.rows, 4);
+    assert.equal(seen[2]!.method, "POST");
   });
 
   test("raises a failure that is not retryable", async () => {
@@ -259,9 +296,10 @@ describe("a stored version's lookup order", () => {
       assert.ok(error instanceof Error && "code" in error);
       assert.equal(error.name, "VersionUnavailableError");
       assert.equal(error.code, "artifact_expired");
+      assert.equal((error as VersionUnavailableError).newestVersion, newest);
       assert.match(error.message, new RegExp(`newest version is ${newest}`));
       return true;
     });
-    assert.equal(seen[2]!.url, `${BASE}/datasets/${member.spec.spec_id}/versions?limit=1`);
+    assert.equal(seen[2]!.url, `${BASE}/datasets/${member.spec.spec_id}/versions`);
   });
 });

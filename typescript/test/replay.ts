@@ -68,7 +68,11 @@ export type DatasetSummary = {
   search_warning?: boolean;
 };
 
-export type ErrorSummary = { class: string; code: string | null };
+export type ErrorSummary = {
+  class: string;
+  code: string | null;
+  newest_version?: string | null;
+};
 
 export type Outcome =
   | { answer: AnswerSummary }

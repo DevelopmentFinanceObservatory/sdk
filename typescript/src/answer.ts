@@ -268,6 +268,7 @@ export class Answer {
    * @throws {IncompleteAnswerError} A part has no reading and `partial` is false, or no part has
    *   one.
    * @throws {SearchWarning} `strict` is true and the reading differs from the question.
+   * @throws {DataWarning} `strict` is true and a manifest carries a warning above `info`.
    */
   async fetch(options: AnswerFetchOptions = {}): Promise<Dataset<Gap>> {
     if (this.kind !== "resolution") {

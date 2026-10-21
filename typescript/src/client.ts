@@ -122,6 +122,7 @@ export class Client {
    *
    * @throws {InvalidRequestError} A ref is narrowed or given another layout.
    * @throws {VersionUnavailableError} A ref's version can no longer be fetched.
+   * @throws {DataWarning} `strict` is true and a manifest carries a warning above `info`.
    * @throws {DfoTimeoutError} The deadline passed; a long build's message names the call that
    *   resumes it.
    * @throws {DfoError} The server refused a request.

@@ -22,7 +22,9 @@ export const DEFAULT_MAX_RETRIES = 2;
 const BACKOFF_START_MS = 500;
 const BACKOFF_CAP_MS = 8_000;
 /** Statuses retried when the body does not say whether the refusal is retryable. */
-const RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
+const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+/** The website proxy's `retry` value for a refusal that clears on its own. */
+const PROXY_RETRY = "retry_after_delay";
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 type Fetch = typeof globalThis.fetch;
@@ -151,6 +153,16 @@ export function retryAfterMs(headers: Headers, now: number = Date.now()): number
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** Whether a refusal is retried: as a problem document's `retryable` says, or the website
+ *  proxy's `retry`, and otherwise by its status. */
+export function isRetryable(status: number, body: unknown): boolean {
+  if (isRecord(body)) {
+    if (!("code" in body) && "error" in body) return body["retry"] === PROXY_RETRY;
+    if (typeof body["retryable"] === "boolean") return body["retryable"];
+  }
+  return RETRYABLE_STATUSES.has(status);
+}
 
 /**
  * The HTTP transport every client call goes through. It resolves URLs, sends the key to the API
@@ -360,7 +372,6 @@ export class Transport {
       }
 
       let error: DfoError;
-      let retryAfter: number | undefined;
       if (outcome instanceof NetworkError) {
         error = outcome;
       } else {
@@ -377,11 +388,15 @@ export class Transport {
           }
         }
         error = await this.#refusal(outcome, options.signal);
-        retryAfter = retryAfterMs(outcome.headers);
       }
 
       if (!error.retryable || attempt >= retries) throw error;
-      await this.#wait(retryAfter ?? this.#backoff(attempt), deadline, options.signal, error);
+      await this.#wait(
+        error.retryAfterMs ?? this.#backoff(attempt),
+        deadline,
+        options.signal,
+        error,
+      );
     }
   }
 
@@ -495,7 +510,8 @@ export class Transport {
     }
     const { status } = response;
     const headerTrace = response.headers.get("x-dfo-trace-id");
-    const byStatus = RETRYABLE_STATUSES.has(status);
+    const retryable = isRetryable(status, body);
+    const retryAfter = retryAfterMs(response.headers) ?? null;
 
     if (isRecord(body) && typeof body["code"] === "string") {
       const code = body["code"];
@@ -505,7 +521,8 @@ export class Transport {
         status,
         detail: typeof body["detail"] === "string" ? body["detail"] : code,
         traceId: typeof body["trace_id"] === "string" ? body["trace_id"] : headerTrace,
-        retryable: typeof body["retryable"] === "boolean" ? body["retryable"] : byStatus,
+        retryable,
+        retryAfterMs: retryAfter,
         problem: body,
         docsUrl: this.#docsUrl(body["type"]),
       });
@@ -519,7 +536,8 @@ export class Transport {
         status,
         detail: typeof body["detail"] === "string" ? body["detail"] : code,
         traceId: headerTrace,
-        retryable: body["retry"] === "retry_after_delay",
+        retryable,
+        retryAfterMs: retryAfter,
         problem: body,
       });
     }
@@ -527,7 +545,8 @@ export class Transport {
       status,
       detail: `HTTP ${status} with no problem document.`,
       traceId: headerTrace,
-      retryable: byStatus,
+      retryable,
+      retryAfterMs: retryAfter,
     });
   }
 

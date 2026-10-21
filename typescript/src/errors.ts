@@ -34,6 +34,8 @@ export type DfoErrorOptions = {
   detail?: string;
   traceId?: string | null;
   retryable?: boolean;
+  /** The wait the response's `Retry-After` header asked for, in milliseconds. */
+  retryAfterMs?: number | null;
   /** The parsed problem document, or the proxy's own refusal body. */
   problem?: Readonly<Record<string, unknown>> | null;
   docsUrl?: string | null;
@@ -47,6 +49,8 @@ export class DfoError extends Error {
   readonly detail: string;
   readonly traceId: string | null;
   readonly retryable: boolean;
+  /** The wait the response's `Retry-After` header asked for, in milliseconds, or null. */
+  readonly retryAfterMs: number | null;
   readonly problem: Readonly<Record<string, unknown>> | null;
   readonly docsUrl: string | null;
 
@@ -58,6 +62,7 @@ export class DfoError extends Error {
     this.detail = detail;
     this.traceId = options.traceId ?? null;
     this.retryable = options.retryable ?? false;
+    this.retryAfterMs = options.retryAfterMs ?? null;
     this.problem = options.problem ?? null;
     this.docsUrl = options.docsUrl ?? null;
   }
@@ -92,7 +97,15 @@ export class IncompleteAnswerError extends DfoError {
 /** Search declined the question or answered with the catalogue; the caller asks a data question. */
 export class DeclinedError extends DfoError {}
 /** A stored version cannot be rebuilt; the caller takes the newest version. */
-export class VersionUnavailableError extends DfoError {}
+export class VersionUnavailableError extends DfoError {
+  /** The newest version the lookup found, which fetching the spec returns, or null. */
+  readonly newestVersion: string | null;
+
+  constructor(options: DfoErrorOptions & { newestVersion?: string | null }) {
+    super(options);
+    this.newestVersion = options.newestVersion ?? null;
+  }
+}
 /** A key is missing, unknown, revoked or expired, or the credentials file is broken. */
 export class AuthenticationError extends DfoError {}
 /** The key lacks a scope; the caller asks for it. */

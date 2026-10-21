@@ -70,5 +70,5 @@ export type {
 export { RawResponse } from "./transport.ts";
 export type { HeaderProvider } from "./transport.ts";
 export { VERSION } from "./version.ts";
-export { DfoDeprecationWarning, DfoWarning } from "./warnings.ts";
+export { DataWarning, DfoDeprecationWarning, DfoWarning } from "./warnings.ts";
 export type { WarningHandler } from "./warnings.ts";

@@ -44,7 +44,7 @@ import type { Layout, RefMember, Rendering, SpecLike } from "./ref.ts";
 import { checkStrict } from "./strict.ts";
 import type { Target, Transport } from "./transport.ts";
 import type { Part } from "./wire.ts";
-import { DfoWarning } from "./warnings.ts";
+import { DataWarning } from "./warnings.ts";
 
 /** A year range, or every year, or the latest year. */
 export type Window = "all" | "latest" | readonly [startYear: number, endYear: number];
@@ -77,7 +77,8 @@ type CallOptions = {
    *  minutes. */
   timeout?: number;
   onProgress?: ProgressHandler;
-  /** Raises the first dataset warning instead of passing it to the warning handler. */
+  /** Raises the first dataset warning, a `DataWarning`, instead of passing it to the warning
+   *  handler. */
   strict?: boolean;
   layout?: Layout;
 };
@@ -234,12 +235,17 @@ function pickArtifact(
     );
 }
 
-/** Passes a manifest's warn-level warnings to the handler, or raises the first under strict. */
+/** Passes a manifest's warnings above `info` to the handler as `DataWarning`s, or raises the
+ *  first under strict. */
 function noteWarnings(transport: Transport, manifest: Manifest, strict: boolean): void {
   const warnings = manifest["warnings"];
   for (const notice of Array.isArray(warnings) ? warnings : []) {
     if (!isRecord(notice) || notice["severity"] === "info") continue;
-    const warning = new DfoWarning(String(notice["code"]), String(notice["message"]));
+    const warning = new DataWarning(
+      String(notice["code"]),
+      String(notice["message"]),
+      String(notice["severity"]),
+    );
     if (strict) throw warning;
     transport.warn(warning);
   }
@@ -353,6 +359,7 @@ function withHint(error: DfoError, hint: string): DfoError {
     detail: `${error.detail}${hint}`,
     traceId: error.traceId,
     retryable: error.retryable,
+    retryAfterMs: error.retryAfterMs,
     problem: error.problem,
     docsUrl: error.docsUrl,
     cause: error,
@@ -680,7 +687,7 @@ async function storedFile(
   }
 }
 
-/** The newest stored version of a spec, from the versions route, or null. */
+/** The newest stored version of a spec, the first the versions route lists, or null. */
 async function newestVersion(
   transport: Transport,
   specId: string,
@@ -690,7 +697,6 @@ async function newestVersion(
   try {
     ({ body } = await transport.request({
       path: `/datasets/${specId}/versions`,
-      query: { limit: 1 },
       deadline,
       ...(signal === undefined ? {} : { signal }),
     }));
@@ -712,7 +718,9 @@ function unavailable(
   const hint =
     newest === null ? "" : `; the newest version is ${newest}, which fetching the spec returns`;
   const detail = `${member.spec.spec_id} at ${member.contentVersion} can no longer be fetched${hint}.`;
-  if (refusal === undefined) return clientError("version_unavailable", { detail });
+  if (refusal === undefined) {
+    return clientError("version_unavailable", { detail, newestVersion: newest });
+  }
   // The server's refusal names why the file is gone; its code stays on the error.
   return new VersionUnavailableError({
     code: refusal.code,
@@ -722,5 +730,6 @@ function unavailable(
     problem: refusal.problem,
     docsUrl: refusal.docsUrl,
     cause: refusal,
+    newestVersion: newest,
   });
 }

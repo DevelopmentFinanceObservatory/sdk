@@ -13,13 +13,16 @@ import { Dataset } from "../src/dataset.ts";
 import type { FetchOptions, Narrowing } from "../src/fetch.ts";
 import { Operation } from "../src/operation.ts";
 import { DatasetRef } from "../src/ref.ts";
-import { DfoError, isDfoError } from "../src/errors.ts";
+import { DfoError, isDfoError, VersionUnavailableError } from "../src/errors.ts";
+import { DfoWarning } from "../src/warnings.ts";
 import { replay, scenarios } from "./replay.ts";
 import type { Outcome, Scenario, Step } from "./replay.ts";
 
 const all = await scenarios();
 
 type Reached = Answer | Dataset<Gap> | Operation;
+
+const WARNING_CLASSES = new Set(["SearchWarning", "DataWarning"]);
 
 /** The narrowing, layout, strictness and timeout members a step sets, as call options. */
 function callOptions(step: Narrowing & { layout?: unknown; strict?: unknown; timeout?: unknown }) {
@@ -126,14 +129,19 @@ async function checkDataset(
   });
 }
 
-/** Checks a refusal's class and code. A strict fetch throws a `SearchWarning`, which is a
- *  `DfoWarning` and whose code is null when the readings differ in several ways. */
+/** Checks a refusal's class and code, and a `VersionUnavailableError`'s newest version. A
+ *  strict fetch throws a `SearchWarning` or a `DataWarning`, each a `DfoWarning`; a
+ *  `SearchWarning`'s code is null when the readings differ in several ways. */
 function checkError(error: unknown, expected: Record<string, unknown>, name: string): void {
-  assert.ok(isDfoError(error) || error instanceof SearchWarning, `${name}: ${String(error)}`);
-  if (expected["class"] !== "SearchWarning") {
+  assert.ok(isDfoError(error) || error instanceof DfoWarning, `${name}: ${String(error)}`);
+  if (!WARNING_CLASSES.has(String(expected["class"]))) {
     assert.ok(error instanceof DfoError, `${name}: ${String(error)}`);
   }
-  checkMembers(name, expected, { class: error.name, code: error.code });
+  checkMembers(name, expected, {
+    class: error.name,
+    code: error.code,
+    ...(error instanceof VersionUnavailableError ? { newest_version: error.newestVersion } : {}),
+  });
 }
 
 /** Checks a step's outcome; the outcome's own kind must be one the replay knows. */

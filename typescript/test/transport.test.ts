@@ -5,6 +5,7 @@ import { envFrom } from "../src/env.ts";
 import {
   AuthenticationError,
   ContractError,
+  DfoError,
   DfoTimeoutError,
   InvalidRequestError,
   NetworkError,
@@ -127,6 +128,27 @@ describe("refusals", () => {
     await assert.rejects(transport({ fetch }).request({ path: "/x" }), ServerError);
     assert.equal(seen.length, 1);
   });
+
+  for (const [status, retried] of [
+    [408, true],
+    [500, true],
+    [503, true],
+    [400, false],
+    [501, false],
+  ] as const) {
+    test(`retry a refusal with no problem document at HTTP ${status}: ${retried}`, async () => {
+      const { sleep } = recordingSleep();
+      const bare = () => new Response("", { status });
+      const { fetch, seen } = mockFetch(bare, bare, bare);
+      const error = await transport({ fetch, sleep })
+        .request({ path: "/x" })
+        .catch((e: unknown) => e);
+      assert.ok(error instanceof DfoError);
+      assert.equal(error.code, "refusal_without_code");
+      assert.equal(error.retryable, retried);
+      assert.equal(seen.length, retried ? 3 : 1);
+    });
+  }
 
   test("map the proxy's 429 body and retry it after Retry-After", async () => {
     const { sleep, waits } = recordingSleep();

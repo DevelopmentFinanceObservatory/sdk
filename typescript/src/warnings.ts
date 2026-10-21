@@ -13,7 +13,23 @@ export class DfoWarning extends Error {
 /** The server marks a route deprecated (`Deprecation`), perhaps with a removal date (`Sunset`). */
 export class DfoDeprecationWarning extends DfoWarning {}
 
-for (const [name, warningClass] of Object.entries({ DfoWarning, DfoDeprecationWarning })) {
+/** A warning the server attached to a dataset's manifest, above `info` severity. */
+export class DataWarning extends DfoWarning {
+  declare readonly code: string;
+  /** The server's severity for it. */
+  readonly severity: string;
+
+  constructor(code: string, message: string, severity: string) {
+    super(code, message);
+    this.severity = severity;
+  }
+}
+
+for (const [name, warningClass] of Object.entries({
+  DfoWarning,
+  DfoDeprecationWarning,
+  DataWarning,
+})) {
   Object.defineProperty(warningClass.prototype, "name", { value: name, configurable: true });
 }
 

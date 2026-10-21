@@ -49,8 +49,7 @@ describe("every scenario Parquet body decodes", async () => {
       assert.equal(rows.length, dataset.rows);
       assert.ok(dataset.rows > 0);
       assert.deepEqual(Object.keys(rows[0]!), dataset.columns);
-      // INT64 columns arrive as numbers, so the rows serialise as JSON.
-      assert.equal(typeof rows[0]!["time_period"], "number");
+      // INT64 columns arrive as numbers, so the rows serialise as JSON: a bigint would throw.
       assert.deepEqual(JSON.parse(JSON.stringify(rows)), rows);
 
       const table = await toArrow(dataset);
@@ -59,11 +58,11 @@ describe("every scenario Parquet body decodes", async () => {
         table.schema.fields.map((field) => field.name),
         dataset.columns,
       );
-      assert.equal(String(table.getChild("time_period")?.type), "Int64");
-      assert.equal(
-        table.getChild("time_period")?.get(0),
-        BigInt(rows[0]!["time_period"] as number),
-      );
+      // The long layout stores time_period as INT64, the frame layout as a string.
+      const period = rows[0]!["time_period"];
+      const int64 = typeof period === "number";
+      assert.equal(String(table.getChild("time_period")?.type), int64 ? "Int64" : "Utf8");
+      assert.equal(table.getChild("time_period")?.get(0), int64 ? BigInt(period) : period);
       assert.equal(table.getChild("value")?.get(0), rows[0]!["value"]);
       assert.equal(table.getChild("stat_var")?.get(0), rows[0]!["stat_var"]);
     });

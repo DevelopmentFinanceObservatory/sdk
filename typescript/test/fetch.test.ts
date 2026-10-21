@@ -4,6 +4,7 @@ import { describe, test } from "node:test";
 import { fetchDataset, fetchMembers } from "../src/fetch.ts";
 import { DatasetRef } from "../src/ref.ts";
 import type { SpecLike } from "../src/ref.ts";
+import { DataWarning } from "../src/warnings.ts";
 import type { DfoWarning } from "../src/warnings.ts";
 import { NO_EXCHANGES, replay, scenario, stepOf } from "./replay.ts";
 import { contractJson } from "./support.ts";
@@ -33,9 +34,11 @@ describe("a manifest's warnings", () => {
       seen.map((warning) => warning.code),
       ["coverage_below_scope"],
     );
+    assert.ok(seen.every((warning) => warning instanceof DataWarning));
     await assert.rejects(fetchDataset(replay(record).transport, spec, { strict: true }), {
-      name: "DfoWarning",
+      name: "DataWarning",
       code: "coverage_below_scope",
+      severity: "warn",
     });
   });
 });
