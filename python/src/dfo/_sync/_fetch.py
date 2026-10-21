@@ -157,7 +157,7 @@ def fetch(
         DfoError: The server refused a request.
     """
     if isinstance(target, DatasetRef):
-        if window is not None or entities or facets is not None:
+        if window is not None or entities or facets:
             raise client_error(
                 INVALID_ARGUMENT,
                 "A DatasetRef names exact versions and takes no narrowing; "
@@ -529,7 +529,7 @@ def _download(
     """Fetch a file through the route that redirects to it, checked on `digest`.
 
     The route answers a redirect, whose `Location` resolves against the
-    route's URL and is fetched once with a bare request. A signed fetch that
+    route's URL and is fetched once, with a bare request on the storage host. A signed fetch that
     fails retryably, or bytes that do not hash to `digest`, ask the route once
     more for a fresh URL rather than retrying the old one.
 

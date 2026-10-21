@@ -3,8 +3,9 @@
 The transport owns the base URL, the key, retries, deadlines and the reading of
 problem documents. A path resolves under the base URL and a root-relative URL
 the server returns resolves against the base URL's origin. The key travels only
-to that origin; a file a files route redirects to, on the API's origin or the
-storage host, is fetched by `download` with a bare request. Under
+to that origin; a file a files route redirects to is fetched by `download`, with
+the client's headers and key on the API's origin and with a bare request on the
+storage host. Under
 `DFO_OFFLINE=1` every request raises `offline` before it is sent.
 
 The client's `timeout` bounds one attempt, and a call's deadline bounds the
@@ -29,14 +30,10 @@ from dfo._error_map import (
     DOWNLOAD_FAILED,
     NETWORK_ERROR,
     OFFLINE,
+    ROUTE_DEPRECATED,
+    SERVER_WARNING,
 )
-from dfo._errors import (
-    DfoDeprecationWarning,
-    DfoError,
-    DfoWarning,
-    client_error,
-    warn_once,
-)
+from dfo._errors import DfoError, client_error, client_warning, warn_once
 from dfo._hooks import AsyncHeaderProvider, AsyncSleep, Clock, async_sleep, monotonic
 from dfo._keys import ApiKeyArgument, KeyState, ResolvedKey
 from dfo._refusals import problem_error
@@ -313,13 +310,9 @@ class AsyncTransport:
             finally:
                 await response.aclose()
         except httpx2.TimeoutException as exc:
-            raise client_error(
-                DEADLINE_EXCEEDED, f"{what} timed out", retryable=True
-            ) from exc
+            raise client_error(DEADLINE_EXCEEDED, f"{what} timed out") from exc
         except httpx2.TransportError as exc:
-            raise client_error(
-                NETWORK_ERROR, f"{what} failed: {exc}", retryable=True
-            ) from exc
+            raise client_error(NETWORK_ERROR, f"{what} failed: {exc}") from exc
         return response
 
     async def _headers(self, extra: Mapping[str, str] | None) -> httpx2.Headers:
@@ -347,13 +340,14 @@ class AsyncTransport:
             )
             warn_once(
                 ("deprecation", deprecation, sunset),
-                DfoDeprecationWarning(
+                client_warning(
+                    ROUTE_DEPRECATED,
                     f"The DFO API marked {route} for removal ({marks}). "
-                    "Upgrade development-finance."
+                    "Upgrade development-finance.",
                 ),
             )
         if notice := response.headers.get("x-dfo-warning"):
-            warn_once(("x-dfo-warning", notice), DfoWarning(notice))
+            warn_once(("x-dfo-warning", notice), client_warning(SERVER_WARNING, notice))
 
     def _retry_wait(
         self, error: DfoError, attempt: int, retries: int, deadline: float | None
@@ -451,10 +445,12 @@ class AsyncTransport:
             attempt += 1
 
     async def download(self, url: str, *, deadline: float | None = None) -> bytes:
-        """Fetch the file a files route redirected to with a bare request, once.
+        """Fetch the file a files route redirected to, once.
 
-        The URL is on the API's origin or the storage host. The request carries
-        no client header, no key and nothing from the header provider, and it
+        The URL is on the API's origin or the storage host. On the API's origin
+        the request carries the client's headers and key, as any API request
+        does; a signed URL on the storage host gets a bare request, with no
+        client header, no key and nothing from the header provider. The fetch
         reads until the deadline, or without limit when there is none. A failed
         fetch is not retried: a signed URL can expire, so the caller asks the
         files route for a fresh one.
@@ -473,16 +469,21 @@ class AsyncTransport:
                 f"at {self._origin} nor the storage host {STORAGE_ORIGIN}",
             )
         _refuse_offline("the signed download")
+        on_api = _origin_of(url) == self._origin
         request = self._http.build_request(
-            "GET", url, timeout=self._attempt_timeout(math.inf, deadline)
+            "GET",
+            url,
+            headers=await self._headers(None) if on_api else None,
+            timeout=self._attempt_timeout(math.inf, deadline),
         )
         response = await self._send(request, deadline, "the signed download")
+        if on_api:
+            self._note_headers("GET", response)
         if response.status_code != 200:
             raise client_error(
                 DOWNLOAD_FAILED,
                 f"The signed download answered HTTP {response.status_code}",
                 status=response.status_code,
-                retryable=True,
             )
         return response.content
 

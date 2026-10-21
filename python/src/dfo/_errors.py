@@ -3,8 +3,10 @@
 Each error class groups codes by what the caller does next. An error the client
 raises itself goes through `client_error`, which takes one of the `ClientCode`
 constants `dfo._error_map` generates from the contract's `client-codes.json`, so
-the code and its class come from one row. `dfo._refusals` reads a server refusal
-into its class.
+the code, its class and its retryable flag come from one row. A warning the
+client issues itself goes through `client_warning`, which takes one of the
+`WarningCode` constants generated from `warning-codes.json`. `dfo._refusals`
+reads a server refusal into its class.
 """
 
 import os
@@ -139,7 +141,16 @@ class DfoTimeoutError(DfoError, TimeoutError):
 
 
 class DfoWarning(UserWarning):
-    """The base of every warning a DFO client issues."""
+    """The base of every warning a DFO client issues.
+
+    Attributes:
+        code: The client's own code from the contract's `warning-codes.json`, or
+            the server's code for a `DataWarning` or `SearchWarning`.
+    """
+
+    def __init__(self, message: str, /, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class DataWarning(DfoWarning):
@@ -151,8 +162,7 @@ class DataWarning(DfoWarning):
     """
 
     def __init__(self, message: str, /, *, code: str, severity: str) -> None:
-        super().__init__(message)
-        self.code = code
+        super().__init__(message, code=code)
         self.severity = severity
 
 
@@ -160,12 +170,9 @@ class SearchWarning(DfoWarning):
     """A departure, skipped operation or default Search applied to an answer.
 
     Attributes:
-        code: The warning or departure code, or None.
+        code: The warning or departure code, or None when the readings differ
+            from the question in several ways.
     """
-
-    def __init__(self, message: str, /, *, code: str | None = None) -> None:
-        super().__init__(message)
-        self.code = code
 
 
 class DfoDeprecationWarning(DfoWarning, DeprecationWarning):
@@ -197,15 +204,30 @@ def status_class(status: int | None) -> type[DfoError]:
 
 @dataclass(frozen=True, slots=True)
 class ClientCode[E: DfoError]:
-    """A code the client raises itself, with the error class its contract row names.
+    """A code the client raises itself, with the class and flag its row names.
 
     Attributes:
         code: The code, as `client-codes.json` lists it.
         error_class: The class an error with this code is raised as.
+        retryable: Whether an error with this code can succeed later.
     """
 
     code: str
     error_class: type[E]
+    retryable: bool
+
+
+@dataclass(frozen=True, slots=True)
+class WarningCode[W: DfoWarning]:
+    """A code the client issues a warning with, and the class its row names.
+
+    Attributes:
+        code: The code, as `warning-codes.json` lists it.
+        warning_class: The class a warning with this code is issued as.
+    """
+
+    code: str
+    warning_class: type[W]
 
 
 def client_error[E: DfoError](
@@ -216,19 +238,18 @@ def client_error[E: DfoError](
     status: int | None = None,
     detail: str | None = None,
     trace_id: str | None = None,
-    retryable: bool = False,
     docs_url: str | None = None,
     retry_after: float | None = None,
 ) -> E:
     """Build the error for a condition the client detects itself.
 
     Args:
-        code: The contract row: the code and the class it raises.
+        code: The contract row: the code, the class it raises and whether the
+            same call can succeed later.
         message: What the caller reads.
         status: The HTTP status of the response the condition was found in.
         detail: The explanation of this occurrence.
         trace_id: The response's trace id.
-        retryable: Whether the same call can succeed later.
         docs_url: The page that documents the condition.
         retry_after: The wait a response asked for, in seconds.
     """
@@ -238,10 +259,20 @@ def client_error[E: DfoError](
         status=status,
         detail=detail,
         trace_id=trace_id,
-        retryable=retryable,
+        retryable=code.retryable,
         docs_url=docs_url,
         retry_after=retry_after,
     )
+
+
+def client_warning[W: DfoWarning](code: WarningCode[W], message: str, /) -> W:
+    """Build the warning for a condition the client notices itself.
+
+    Args:
+        code: The contract row: the code and the class it issues.
+        message: What the caller reads.
+    """
+    return code.warning_class(message, code=code.code)
 
 
 _warned: set[Hashable] = set()

@@ -378,6 +378,9 @@ def test_scenario_bodies_parse(
         path == "/datasets" and status == 202
     ):
         check_operation(json_body)
+    elif path.split("?", maxsplit=1)[0].endswith("/versions"):
+        # The versions page the newest-version lookup reads.
+        assert all(isinstance(v["content_version"], str) for v in json_body["versions"])
     elif path.startswith("/datasets"):
         check_manifest(json_body)
     else:

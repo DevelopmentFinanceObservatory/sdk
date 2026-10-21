@@ -104,6 +104,7 @@ The client raises these codes itself, for conditions it detects before or after 
 | `digest_mismatch`          | `ServerError`             | A downloaded file does not hash to its manifest's digest, twice                                          | Retry; report the `trace_id` if it repeats                                  |
 | `download_failed`          | `ServerError`             | A signed storage URL answered a status other than 2xx                                                    | Retry; report it if it repeats                                              |
 | `invalid_argument`         | `InvalidRequestError`     | An argument breaks a rule the client checks before any request                                           | Fix the argument the message names                                          |
+| `key_empty`                | `AuthenticationError`     | The `api_key` argument is an empty string                                                                | Pass a key, None to look one up, or False for anonymous use                 |
 | `network_error`            | `NetworkError`            | The connection failed before a response arrived                                                          | Check the connection and retry                                              |
 | `offline`                  | `NetworkError`            | `DFO_OFFLINE=1` is set, and the call needs the server                                                    | Fetch a spec or ref the cache holds, or unset `DFO_OFFLINE`                 |
 | `profile_not_found`        | `AuthenticationError`     | `DFO_PROFILE` names a profile the credentials file lacks                                                 | Run `dfo auth login` with that `DFO_PROFILE`                                |
@@ -148,7 +149,9 @@ Warnings derive from `dfo.DfoWarning`, a `UserWarning`, and name the line in you
 
 - `SearchWarning`: the reading differs from the question, by a departure, a computation Search does not run, or a default it applied. `code` names it when there is one.
 - `DataWarning`: the server attached a warning to the data. `code` and `severity` come from the server.
-- `DfoDeprecationWarning`: a call, or a route the server marked, goes away in a later release. It is also a `DeprecationWarning`.
+- `DfoDeprecationWarning`: a call, or a route the server marked, goes away in a later release. It is also a `DeprecationWarning`. A route the server marks with a `Deprecation` or `Sunset` header issues it with `code` `route_deprecated`, once per process for each pair of header values.
+
+The client issues a plain `DfoWarning` of its own with a `code`: `server_warning` for a message the server sends in an `x-dfo-warning` header, once per process per message, and `key_unknown_prefix`, `key_not_base62` or `key_checksum_mismatch` for a key that does not look like a DFO key.
 
 `strict=True` on `fetch` raises the first `SearchWarning` or `DataWarning` instead of issuing it. To turn every DFO warning into an error for a test run:
 

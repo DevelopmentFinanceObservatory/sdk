@@ -443,7 +443,8 @@ def test_a_relative_location_resolves_against_the_files_route(
         ("GET", route),
         ("GET", blob),
     ]
-    assert "authorization" not in {name.lower() for name in server.seen[2][2]}
+    # The file is on the API's origin, so the fetch carries the key.
+    assert "authorization" in {name.lower() for name in server.seen[2][2]}
     assert built.members[0].data == DATA
 
 

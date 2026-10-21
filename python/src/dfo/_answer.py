@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, NoReturn, overload, override
 
 from dfo import _display, _strict
-from dfo._build import Reading
+from dfo._build import Reading, response_json
 from dfo._dataset import Dataset
 from dfo._error_map import (
     ANSWER_DECLINED,
@@ -275,8 +275,8 @@ async def resolve(
             attempt reads until then. None waits without limit.
 
     Raises:
-        ContractError: The answer's kind is unknown, or a member the client acts
-            on is missing.
+        ContractError: The body is not JSON (`unexpected_response`), the
+            answer's kind is unknown, or a member the client acts on is missing.
     """
     transport = source().transport
     response = await transport.request(
@@ -286,7 +286,7 @@ async def resolve(
         timeout=math.inf,
         deadline=transport.deadline(timeout),
     )
-    return answer_from_body(response.json(), question=question, source=source)
+    return answer_from_body(response_json(response), question=question, source=source)
 
 
 def answer_from_body(

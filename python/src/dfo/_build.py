@@ -140,7 +140,8 @@ def scope(
         window: `"all"`, `"latest"` or `(start_year, end_year)`.
         entities: Role names bound to dcids, such as `{"recipient": ["country/NGA"]}`.
         facets: Facet axes (`provenance`, `measurementMethod`, `unit`) bound to a
-            ref; None binds the facets that declare no value on the axis.
+            ref; None binds the facets that declare no value on the axis. An
+            empty map names no axis.
 
     Returns:
         The scope object, or None when the fetch narrows nothing.
@@ -155,7 +156,7 @@ def scope(
         result["window"] = _window(window)
     if entities is not None:
         result["entities"] = _entities(entities)
-    if facets is not None:
+    if facets:
         result["facets"] = {axis: {"ref": ref} for axis, ref in facets.items()}
     return result or None
 

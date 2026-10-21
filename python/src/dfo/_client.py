@@ -158,7 +158,8 @@ class AsyncClient:
                 `{"recipient": ["country/NGA"]}`; None drops a role. The
                 spec's other roles keep their binding, and an empty map
                 narrows nothing.
-            facets: Bind a spec's provenance, measurement method or unit.
+            facets: Bind a spec's provenance, measurement method or unit; an
+                empty map narrows nothing.
             layout: `long` or `frame`; None builds a spec in `long` and reads a
                 ref in the layout it holds.
             strict: Raise the first dataset warning instead of issuing it.

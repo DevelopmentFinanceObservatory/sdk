@@ -298,7 +298,6 @@ class Poller:
             DEADLINE_EXCEEDED,
             f"The build is still running at the deadline. Resume it with "
             f'client.operation("{self.operation_id}").result()',
-            retryable=True,
         )
 
     def _take(self, reply: Reply) -> None:

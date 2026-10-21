@@ -16,16 +16,14 @@ from typing import Literal, NoReturn, Self
 from dfo._credentials import CredentialsFileError, read_profiles
 from dfo._error_map import (
     CREDENTIALS_FILE_INVALID,
+    KEY_CHECKSUM_MISMATCH,
+    KEY_EMPTY,
+    KEY_NOT_BASE62,
+    KEY_UNKNOWN_PREFIX,
     PROFILE_NOT_FOUND,
     PROFILE_WITHOUT_KEY,
 )
-from dfo._errors import (
-    AuthenticationError,
-    ClientCode,
-    DfoWarning,
-    client_error,
-    warn_once,
-)
+from dfo._errors import DfoWarning, WarningCode, client_error, client_warning, warn_once
 from dfo._paths import credentials_path
 
 type KeyFormatProblem = Literal["unknown_prefix", "not_base62", "checksum_mismatch"]
@@ -40,10 +38,12 @@ _CHECKSUM_LENGTH = 6
 _SHOWN_TAIL = 4
 _COLAB_SECRET = "DFO_API_KEY"
 
-# The contract's code for an empty `api_key` argument. It joins client-codes.json
-# at the next contract sync, which makes `scripts/gen_errors.py` generate it in
-# `dfo._error_map`; this constant then gives way to the generated one.
-KEY_EMPTY = ClientCode("key_empty", AuthenticationError)
+# The warning each way a key breaks the format issues.
+_FORMAT_WARNINGS: dict[KeyFormatProblem, WarningCode[DfoWarning]] = {
+    "unknown_prefix": KEY_UNKNOWN_PREFIX,
+    "not_base62": KEY_NOT_BASE62,
+    "checksum_mismatch": KEY_CHECKSUM_MISMATCH,
+}
 
 
 def mask(value: str) -> str:
@@ -263,10 +263,11 @@ def resolve_key(
     ):
         warn_once(
             ("key_format", problem, resolved.key),
-            DfoWarning(
+            client_warning(
+                _FORMAT_WARNINGS[problem],
                 f"The API key {mask(resolved.key.reveal())} from the "
                 f"{resolved.source.replace('_', ' ')} does not look like a DFO "
-                f"key ({problem}); the client sends it anyway."
+                f"key ({problem}); the client sends it anyway.",
             ),
         )
     return resolved

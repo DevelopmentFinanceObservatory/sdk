@@ -12,7 +12,25 @@ import gen_errors
 import gen_sync
 import sync_contract
 
-from dfo._errors import ClientCode, ServerError
+from dfo._errors import ClientCode, DfoWarning, ServerError, WarningCode
+
+_WARNING_CODES = {
+    "format_version": 1,
+    "codes": [{"code": "a_notice", "class": "DfoWarning", "condition": "C."}],
+}
+_REPORT_ACTIONS = {"format_version": 1, "codes": [{"code": "c", "action": "report"}]}
+_REPORT_SCHEMA = {
+    "properties": {
+        "codes": {
+            "items": {
+                "properties": {
+                    "action": {"enum": ["report"]},
+                    "gap_kind": {"enum": []},
+                }
+            }
+        }
+    }
+}
 
 
 def test_the_token_map_rewrites_async_source() -> None:
@@ -108,42 +126,59 @@ def test_the_error_map_takes_its_literals_from_the_schema() -> None:
     client_codes = {
         "format_version": 1,
         "codes": [
-            {"code": "a_failure", "class": "ServerError", "condition": "A."},
-            {"code": "no_code", "class": "by_status", "condition": "B."},
+            {
+                "code": "a_failure",
+                "class": "ServerError",
+                "retryable": True,
+                "condition": "A.",
+            },
+            {
+                "code": "no_code",
+                "class": "by_status",
+                "retryable": "by_status",
+                "condition": "B.",
+            },
         ],
     }
-    source = gen_errors.render(actions, schema, client_codes)
+    source = gen_errors.render(actions, schema, client_codes, _WARNING_CODES)
     namespace: dict[str, object] = {}
     exec(compile(source, "_error_map.py", "exec"), namespace)
     assert namespace["ACTIONS"] == {"a_code": "fix_request", "b_code": "choose"}
     assert namespace["GAP_KINDS"] == {"b_code": "choice"}
     assert '"new_action"' in source
-    assert namespace["A_FAILURE"] == ClientCode("a_failure", ServerError)
+    assert namespace["A_FAILURE"] == ClientCode("a_failure", ServerError, True)
     assert namespace["NO_CODE"] == "no_code"
+    assert namespace["A_NOTICE"] == WarningCode("a_notice", DfoWarning)
 
 
-def test_the_error_map_refuses_client_codes_without_one_by_status_row() -> None:
-    client_codes = {
-        "format_version": 1,
-        "codes": [{"code": "a_failure", "class": "ServerError", "condition": "A."}],
-    }
-    with pytest.raises(SystemExit, match="by_status"):
-        gen_errors.render(
-            {"format_version": 1, "codes": [{"code": "c", "action": "report"}]},
-            {
-                "properties": {
-                    "codes": {
-                        "items": {
-                            "properties": {
-                                "action": {"enum": ["report"]},
-                                "gap_kind": {"enum": []},
-                            }
-                        }
-                    }
-                }
-            },
-            client_codes,
-        )
+_FAILURE = {"code": "a_failure", "class": "ServerError", "condition": "A."}
+_BY_STATUS = {"code": "no_code", "class": "by_status", "condition": "B."}
+
+
+@pytest.mark.parametrize(
+    ("rows", "match"),
+    [
+        ([{**_FAILURE, "retryable": False}], "by_status row"),
+        (
+            [
+                {**_FAILURE, "retryable": "by_status"},
+                {**_BY_STATUS, "retryable": "by_status"},
+            ],
+            "a_failure has retryable",
+        ),
+        (
+            [{**_FAILURE, "retryable": False}, {**_BY_STATUS, "retryable": True}],
+            "no_code has retryable",
+        ),
+    ],
+    ids=["no-by-status-row", "flag-by-status", "by-status-flag-bool"],
+)
+def test_the_error_map_refuses_client_codes_it_cannot_generate(
+    rows: list[dict[str, object]], match: str
+) -> None:
+    client_codes = {"format_version": 1, "codes": rows}
+    with pytest.raises(SystemExit, match=match):
+        gen_errors.render(_REPORT_ACTIONS, _REPORT_SCHEMA, client_codes, _WARNING_CODES)
 
 
 def test_the_contract_check_covers_the_package_readme(tmp_path: Path) -> None:

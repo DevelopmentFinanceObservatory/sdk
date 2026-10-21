@@ -165,9 +165,14 @@ async def test_a_redirect_returns_unfollowed() -> None:
 
 
 @pytest.mark.parametrize(
-    "url", [SIGNED, "https://api.example.org/__e2e__/blob/bucket/object?sig=1"]
+    ("url", "bare"),
+    [
+        (SIGNED, True),
+        ("https://api.example.org/__e2e__/blob/bucket/object?sig=1", False),
+    ],
+    ids=["storage-host", "api-origin"],
 )
-async def test_download_sends_a_bare_request(url: str) -> None:
+async def test_download_is_bare_only_on_the_storage_host(url: str, bare: bool) -> None:
     calls = []
 
     async def provider() -> dict[str, str]:
@@ -184,11 +189,23 @@ async def test_download_sends_a_bare_request(url: str) -> None:
         assert await transport.download(url) == b"PAR1"
     headers = recorder.requests[0].headers
     assert str(recorder.requests[0].url) == url
-    assert "authorization" not in headers
-    assert "x-serverless-authorization" not in headers
-    assert "x-dfo-principal" not in headers
-    assert headers["user-agent"] != USER_AGENT
-    assert calls == []
+    client_headers = {
+        "authorization": headers.get("authorization"),
+        "x-serverless-authorization": headers.get("x-serverless-authorization"),
+        "x-dfo-principal": headers.get("x-dfo-principal"),
+        "user-agent": headers.get("user-agent") == USER_AGENT,
+    }
+    if bare:
+        assert client_headers == dict.fromkeys(client_headers) | {"user-agent": False}
+        assert calls == []
+    else:
+        assert client_headers == {
+            "authorization": f"Bearer {KEY}",
+            "x-serverless-authorization": "Bearer id-token",
+            "x-dfo-principal": "someone",
+            "user-agent": True,
+        }
+        assert calls == [1]
 
 
 @pytest.mark.parametrize(
@@ -242,7 +259,7 @@ async def test_a_deadline_that_passes_while_a_body_is_read_raises() -> None:
             await transport.request(
                 "GET", "/datasets/schema", deadline=transport.deadline(10)
             )
-    assert (caught.value.code, caught.value.retryable) == ("deadline_exceeded", False)
+    assert (caught.value.code, caught.value.retryable) == ("deadline_exceeded", True)
     assert len(recorder.requests) == 1
 
 

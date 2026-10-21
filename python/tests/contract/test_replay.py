@@ -14,7 +14,13 @@ so a scenario added to the contract later is either replayed or refused.
 
 A step's `long_builds` are read from the pollers the client made: each poller
 whose build ran on as an operation, not yet reported by an earlier step, gives
-its last `operation_id`, its `poll_waits` and its `resubmissions`.
+its last `operation_id`, its `poll_waits` and its `resubmissions`. Every other
+wait the client asks the clock for is a retry's, so the step's `retry_waits` are
+the waits it took that no poller counted. A step's `warnings` are the codes of
+the warnings of the client's own it issued. Both are compared on every outcome,
+as an empty list when the outcome leaves them out.
+
+Each scenario starts as a fresh process would: no warning has been issued.
 """
 
 import asyncio
@@ -24,20 +30,26 @@ import warnings
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from itertools import pairwise
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx2
 import pytest
 
-from dfo import _operation
+from dfo import _errors, _fetch, _operation
 from dfo._answer import AsyncAnswer
 from dfo._client import AsyncClient
 from dfo._dataset import Dataset
-from dfo._errors import DfoError, DfoWarning, SearchWarning, VersionUnavailableError
+from dfo._errors import (
+    DataWarning,
+    DfoError,
+    DfoWarning,
+    SearchWarning,
+    VersionUnavailableError,
+)
 from dfo._fetch import Session as AsyncSession
 from dfo._operation import AsyncOperation
+from dfo._sync import _fetch as _sync_fetch
 from dfo._sync import _operation as _sync_operation
 from dfo._sync._answer import Answer
 from dfo._sync._client import Client
@@ -63,23 +75,15 @@ BASE_URLS = {
 
 # The keys each step op takes, by the form of the step.
 STEP_KEYS = {
-    "search": {"op", "question", "timeout"},
+    "search": {"op", "question"},
     "choose": {"op", "part", "option"},
-    "fetch-answer": {"op", "layout", "partial", "strict", "timeout"},
-    "fetch-spec": {
-        "op",
-        "spec",
-        "layout",
-        "strict",
-        "timeout",
-        "window",
-        "entities",
-        "facets",
-    },
-    "fetch-ref": {"op", "ref", "timeout"},
+    "fetch-answer": {"op", "layout", "partial", "strict"},
+    "fetch-spec": {"op", "spec", "layout", "strict", "window", "entities", "facets"},
+    "fetch-ref": {"op", "ref"},
+    "newest_version": {"op", "spec"},
     "mint": {"op", "spec", "layout"},
     "operation": {"op", "operation_id", "layout"},
-    "result": {"op", "timeout"},
+    "result": {"op"},
 }
 
 
@@ -98,16 +102,26 @@ SCENARIOS = _load_scenarios()
 
 @dataclass
 class Clock:
-    """A monotonic clock that a sleep advances at once, recording each wait."""
+    """A monotonic clock that a sleep advances at once, recording retry waits.
 
+    A poller counts each poll wait before it sleeps, so a sleep while
+    `poll_waits()` exceeds the poll waits seen is a poll's, and any other is a
+    retry's.
+    """
+
+    poll_waits: Callable[[], int]
     now: float = 1000.0
-    waits: list[float] = field(default_factory=list)
+    polls_seen: int = 0
+    retry_waits: list[float] = field(default_factory=list)
 
     def read(self) -> float:
         return self.now
 
     def sleep(self, seconds: float) -> None:
-        self.waits.append(seconds)
+        if self.poll_waits() > self.polls_seen:
+            self.polls_seen += 1
+        else:
+            self.retry_waits.append(seconds)
         self.now += seconds
 
     async def async_sleep(self, seconds: float) -> None:
@@ -164,23 +178,6 @@ def _response(answer: Mapping[str, Any]) -> httpx2.Response:
     return httpx2.Response(
         answer["status"], headers=answer.get("headers", {}), content=content
     )
-
-
-def _retry_waits(record: Mapping[str, Any]) -> Counter[float]:
-    """The `Retry-After` waits the client must take before repeating a refused
-    request. A poll that answers paces the next by its resource's
-    `retry_after_ms` first, which `long_builds` checks."""
-    waits: Counter[float] = Counter()
-    for current, following in pairwise(record["exchanges"]):
-        response = current["response"]
-        value = response.get("headers", {}).get("retry-after")
-        if (
-            value is not None
-            and response["status"] >= 400
-            and current["request"] == following["request"]
-        ):
-            waits[float(value)] += 1
-    return waits
 
 
 def _client(
@@ -251,29 +248,37 @@ def _run(
         pytest.fail(f"{form} step keys {sorted(unknown)} have no replay")
     match form:
         case "search":
-            started = client.search(step["question"], **_options(step, "timeout"))
+            started = client.search(step["question"])
         case "choose":
             choice = (
                 (step["part"], step["option"]) if "part" in step else (step["option"],)
             )
             started = answer.choose(*choice)
         case "fetch-answer":
-            options = _options(step, "layout", "partial", "strict", "timeout")
+            options = _options(step, "layout", "partial", "strict")
             started = answer.fetch(**options)
         case "fetch-spec":
-            options = _options(
-                step, "layout", "strict", "timeout", "window", "entities", "facets"
-            )
+            options = _options(step, "layout", "strict", "window", "entities", "facets")
             started = client.fetch(_spec(step["spec"]), **options)
         case "fetch-ref":
-            ref = DatasetRef.from_json(json.dumps(step["ref"]))
-            started = client.fetch(ref, **_options(step, "timeout"))
+            started = client.fetch(DatasetRef.from_json(json.dumps(step["ref"])))
+        case "newest_version":
+            # No public call reads the newest version; a ref's fetch looks it
+            # up through this one, which the step drives directly.
+            lookup = (
+                _fetch._newest
+                if isinstance(client, AsyncClient)
+                else _sync_fetch._newest
+            )
+            started = lookup(
+                client._session.transport, step["spec"]["spec_id"], deadline=None
+            )
         case "mint":
             started = client.mint(_spec(step["spec"]), **_options(step, "layout"))
         case "operation":
             started = client.operation(step["operation_id"], **_options(step, "layout"))
         case _:
-            started = operation.result(**_options(step, "timeout"))
+            started = operation.result()
     return started
 
 
@@ -296,13 +301,35 @@ def _newest_version(error: object) -> str | None:
 type AnyPoller = _operation.Poller | _sync_operation.Poller
 
 
+@dataclass(frozen=True)
+class NewestVersion:
+    """The result of a `newest_version` step."""
+
+    content_version: str | None
+
+
 @dataclass
 class Step:
-    """What one step left besides its result: its warnings, and the pollers of
-    the builds it saw run on."""
+    """What one step left besides its result: its warnings, the pollers of the
+    builds it saw run on, and the waits before its retries."""
 
     issued: list[warnings.WarningMessage]
     pollers: list[AnyPoller]
+    retry_waits: list[float]
+
+
+# The classes of the warnings the client issues itself, which carry a code from
+# `warning-codes.json`; a `DataWarning` or `SearchWarning` carries the server's.
+_SERVER_WARNINGS = (DataWarning, SearchWarning)
+
+
+def _warning_codes(step: Step) -> list[str | None]:
+    return [
+        w.message.code
+        for w in step.issued
+        if isinstance(w.message, DfoWarning)
+        and not isinstance(w.message, _SERVER_WARNINGS)
+    ]
 
 
 class Pollers:
@@ -323,6 +350,10 @@ class Pollers:
 
         return record
 
+    def poll_waits(self) -> int:
+        """How many poll waits every poller made so far has counted."""
+        return sum(len(poller.poll_waits) for poller in self._made)
+
     def take(self) -> list[AnyPoller]:
         """The pollers of builds that ran on, made since the last `take`."""
         made, self._reported = self._made[self._reported :], len(self._made)
@@ -341,6 +372,13 @@ def _long_builds(step: Step) -> list[dict[str, Any]]:
 
 
 type Reader = Callable[[Any, Step], Any]
+
+# The members every outcome may give, read on every step and compared as an empty
+# list when the outcome leaves them out.
+COMMON: dict[str, Reader] = {
+    "retry_waits": lambda _, step: step.retry_waits,
+    "warnings": lambda _, step: _warning_codes(step),
+}
 
 READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
     "answer": (
@@ -386,6 +424,10 @@ READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
             "long_builds": lambda _, step: _long_builds(step),
         },
     ),
+    "newest_version": (
+        (NewestVersion,),
+        {"content_version": lambda found, _: found.content_version},
+    ),
     "operation": (
         (AsyncOperation, Operation),
         {
@@ -409,7 +451,8 @@ def _check(where: str, outcome: Mapping[str, Any], result: object, step: Step) -
     if len(outcome) != 1 or (kind := next(iter(outcome))) not in READERS:
         pytest.fail(f"{where}: outcome {sorted(outcome)} has no replay")
     classes, readers = READERS[kind]
-    expected = outcome[kind]
+    readers = readers | COMMON
+    expected = {member: [] for member in COMMON} | outcome[kind]
     if unknown := set(expected) - readers.keys():
         pytest.fail(f"{where}: {kind} members {sorted(unknown)} have no replay")
     if not isinstance(result, classes):
@@ -419,7 +462,10 @@ def _check(where: str, outcome: Mapping[str, Any], result: object, step: Step) -
 
 
 async def _replay(
-    record: Mapping[str, Any], client: AsyncClient | Client, pollers: Pollers
+    record: Mapping[str, Any],
+    client: AsyncClient | Client,
+    pollers: Pollers,
+    clock: Clock,
 ) -> None:
     calls, outcomes = record["call"], record["expect"]
     assert len(calls) == len(outcomes), "expect holds one outcome per step"
@@ -427,6 +473,7 @@ async def _replay(
     operation: Any = None
     for index, (step, outcome) in enumerate(zip(calls, outcomes, strict=True)):
         where = f"step {index} ({step['op']})"
+        retried = len(clock.retry_waits)
         with warnings.catch_warnings(record=True) as issued:
             warnings.simplefilter("always")
             try:
@@ -437,7 +484,9 @@ async def _replay(
                 result = error
         # A mint's builds run on into the `result` step, which reports them.
         taken = [] if "operation" in outcome else pollers.take()
-        _check(where, outcome, result, Step(issued, taken))
+        if step["op"] == "newest_version" and not isinstance(result, DfoError):
+            result = NewestVersion(result)
+        _check(where, outcome, result, Step(issued, taken, clock.retry_waits[retried:]))
         if isinstance(result, AsyncAnswer | Answer):
             answer = result
         elif isinstance(result, AsyncOperation | Operation):
@@ -448,9 +497,11 @@ async def _replay(
 
 
 @pytest.fixture(autouse=True)
-def online(monkeypatch: pytest.MonkeyPatch) -> None:
+def fresh_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start each scenario online, with no warning issued yet."""
     monkeypatch.delenv("DFO_OFFLINE", raising=False)
     monkeypatch.setenv("DFO_PROGRESS", "0")
+    monkeypatch.setattr(_errors, "_warned", set())
 
 
 @pytest.mark.parametrize("flavour", ["async", "sync"])
@@ -462,10 +513,9 @@ def test_scenario_replays(
     record = SCENARIOS[name]
     assert record["name"] == name
     base_url = BASE_URLS[form]
-    clock = Clock()
     exchanges = Exchanges(record, base_url)
     pollers = Pollers(monkeypatch)
+    clock = Clock(pollers.poll_waits)
     client = _client(flavour, base_url, exchanges, clock)
-    asyncio.run(_replay(record, client, pollers))
+    asyncio.run(_replay(record, client, pollers, clock))
     assert exchanges.pending == [], "the call left exchanges unmade"
-    assert Counter(clock.waits) >= _retry_waits(record), clock.waits
