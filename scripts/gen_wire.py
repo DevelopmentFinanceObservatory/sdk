@@ -29,6 +29,8 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
+import sync_contract
+
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = ROOT / "python"
 OPENAPI = ROOT / "contract" / "served" / "openapi.json"
@@ -300,6 +302,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    sync_contract.require_current()
     document = json.loads(OPENAPI.read_text())
     fields = json.loads(STRICT_FIELDS.read_text())
     generated = {

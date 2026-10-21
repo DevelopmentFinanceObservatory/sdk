@@ -30,12 +30,12 @@ jobs:
           filters: |
             python:
               - 'python/**'
-              - 'contract/**'
+              - 'contract/SOURCE'
               - 'scripts/**'
               - 'ruff.toml'
               - '.github/workflows/ci.yml'
             contract:
-              - 'contract/**'
+              - 'contract/SOURCE'
               - 'scripts/**'
               - '.github/workflows/ci.yml'
             typescript:
@@ -72,6 +72,9 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --frozen --python ${{ matrix.python-version }}
+
+      - name: Fetch the contract at contract/SOURCE
+        run: uv run python ../scripts/sync_contract.py
 
       - name: Run ruff check
         if: matrix.python-version == '3.12'
@@ -181,9 +184,6 @@ jobs:
           ref: ${{ steps.source.outputs.rev }}
           fetch-depth: 0
           path: spec-kit
-
-      - name: Check that contract/ matches spec-kit
-        run: scripts/sync_contract.py spec-kit --check
 
       - name: Check out dfo-apis dev
         uses: actions/checkout@v7

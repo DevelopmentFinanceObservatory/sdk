@@ -1,7 +1,7 @@
 """Tests for the code generators in `scripts/`."""
 
-import shutil
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -181,21 +181,72 @@ def test_the_error_map_refuses_client_codes_it_cannot_generate(
         gen_errors.render(_REPORT_ACTIONS, _REPORT_SCHEMA, client_codes, _WARNING_CODES)
 
 
-def test_the_contract_check_covers_the_package_readme(tmp_path: Path) -> None:
-    contract = sync_contract.CONTRACT
-    package = tmp_path / sync_contract.PACKAGE_DATA
-    shutil.copytree(
-        contract,
-        package,
-        ignore=lambda folder, names: (
-            sync_contract.OWN_FILES if Path(folder) == contract else set()
-        ),
+def _spec_kit_archive(tmp_path: Path, rev: str) -> str:
+    """Write a spec-kit archive at `rev` and return a URL template that reaches it."""
+    top = tmp_path / f"spec-kit-{rev}"
+    package = top / sync_contract.PACKAGE_DATA
+    (package / "rules").mkdir(parents=True)
+    (package / "rules" / "paths.json").write_text("{}")
+    (package / "actions.json").write_text("[]")
+    (package / "__init__.py").write_text("")
+    (package / "py.typed").write_text("")
+    (top / sync_contract.PACKAGE_README).write_text("# Rules\n")
+    (top / "README.md").write_text("# spec-kit\n")
+    with tarfile.open(tmp_path / f"{rev}.tar.gz", "w:gz") as archive:
+        archive.add(top, arcname=top.name)
+    return (tmp_path / "{rev}.tar.gz").as_uri().replace("%7Brev%7D", "{rev}")
+
+
+def test_the_fetch_copies_the_contract_files_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    contract = tmp_path / "repo" / "contract"
+    contract.mkdir(parents=True)
+    (contract / "SOURCE").write_text("abc\n")
+    (contract / "stale.json").write_text("{}")
+    monkeypatch.setattr(sync_contract, "CONTRACT", contract)
+    monkeypatch.setattr(sync_contract, "ARCHIVE", _spec_kit_archive(tmp_path, "abc"))
+
+    sync_contract.ensure_current()
+
+    files = sorted(
+        path.relative_to(contract).as_posix()
+        for path in contract.rglob("*")
+        if path.is_file()
     )
-    readme = tmp_path / sync_contract.PACKAGE_README
-    readme.write_bytes((contract / "README.md").read_bytes())
-    revision = (contract / "SOURCE").read_text().strip()
-    assert sync_contract.differences(tmp_path, revision) == []
-    readme.write_text("# The rules, changed\n")
-    assert sync_contract.differences(tmp_path, revision) == [
-        f"differs: README.md (from {sync_contract.PACKAGE_README})"
+    assert files == [
+        ".synced",
+        "README.md",
+        "SOURCE",
+        "actions.json",
+        "rules/paths.json",
+    ]
+    assert (contract / "README.md").read_text() == "# Rules\n"
+    (tmp_path / "abc.tar.gz").unlink()
+    sync_contract.ensure_current()
+    assert (contract / ".synced").read_text() == "abc\n"
+
+
+def test_a_failed_fetch_leaves_the_copy_and_names_the_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    contract = tmp_path / "contract"
+    contract.mkdir()
+    (contract / "SOURCE").write_text("missing\n")
+    (contract / "actions.json").write_text("[]")
+    monkeypatch.setattr(sync_contract, "CONTRACT", contract)
+    monkeypatch.setattr(sync_contract, "ARCHIVE", _spec_kit_archive(tmp_path, "abc"))
+
+    with pytest.raises(sync_contract.FetchError, match=r"missing\.tar\.gz") as error:
+        sync_contract.ensure_current()
+
+    assert sync_contract.FETCH_COMMAND in str(error.value)
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "abc.tar.gz",
+        "contract",
+        "spec-kit-abc",
+    ]
+    assert sorted(path.name for path in contract.iterdir()) == [
+        "SOURCE",
+        "actions.json",
     ]
