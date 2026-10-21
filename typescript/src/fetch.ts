@@ -47,7 +47,7 @@ import { DatasetRef, layoutOf, renderingFor, renderingMatches, renderingOptions 
 import type { Layout, RefMember, Rendering, SpecLike } from "./ref.ts";
 import { checkStrict } from "./strict.ts";
 import type { Target, Transport } from "./transport.ts";
-import type { EntityGroup, Part } from "./wire.ts";
+import type { EntityGroup, Part, ResolvedSpec } from "./wire.ts";
 import { DataWarning } from "./warnings.ts";
 
 /** A year range, or every year, or the latest year. */
@@ -68,11 +68,11 @@ export type Narrowing = {
  *  `resolved.entity_groups`. */
 export type EntityGroups = Readonly<Record<string, EntityGroup>>;
 
-/** A spec to fetch, with Search's sentence for it and its entity groups when the caller holds
- *  them. */
+/** A spec to fetch, in the wire `Spec`'s shape: `candidate.spec`, a definite part's spec, or one
+ *  read back from JSON. Its `resolved` gives Search's sentence and the entity groups; a spec
+ *  written by hand with only `spec_id` and `definition` has neither. */
 export type SpecInput = SpecLike & {
-  readonly sentence?: string | null | undefined;
-  readonly entity_groups?: EntityGroups | null | undefined;
+  readonly resolved?: Pick<ResolvedSpec, "rendered_sentence" | "entity_groups"> | null | undefined;
 };
 
 /** One reading to build: the answer parts it answers, its spec, and its sentence if known. */
@@ -549,8 +549,8 @@ export async function fetchDataset(
   const member = {
     parts: [],
     spec: target,
-    sentence: target.sentence,
-    entityGroups: target.entity_groups,
+    sentence: target.resolved?.rendered_sentence,
+    entityGroups: target.resolved?.entity_groups,
   };
   return fetchMembers(transport, [member], { ...rest, narrowing });
 }
@@ -569,8 +569,8 @@ export function mint(
   const rendering = renderingFor(layout);
   const finishing = {
     parts: [],
-    posted: { spec, entityGroups: spec.entity_groups },
-    sentence: spec.sentence,
+    posted: { spec, entityGroups: spec.resolved?.entity_groups },
+    sentence: spec.resolved?.rendered_sentence,
     rendering,
     strict,
   };

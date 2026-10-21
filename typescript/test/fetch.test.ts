@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
+import { clientOver } from "../src/client.ts";
 import { envFrom } from "../src/env.ts";
 import { fetchDataset, fetchMembers, mint } from "../src/fetch.ts";
-import type { FetchOptions, SpecInput } from "../src/fetch.ts";
+import type { FetchOptions } from "../src/fetch.ts";
 import { DatasetRef } from "../src/ref.ts";
 import type { SpecLike } from "../src/ref.ts";
 import { Transport } from "../src/transport.ts";
 import { DataWarning } from "../src/warnings.ts";
+import type { Spec } from "../src/wire.ts";
 import type { DfoWarning } from "../src/warnings.ts";
 import { NO_EXCHANGES, replay, scenario, stepOf } from "./replay.ts";
 import { contractJson, json, mockFetch, problem } from "./support.ts";
@@ -82,6 +84,7 @@ describe("arguments a fetch refuses before any request", () => {
 // The build answers the narrowed definition; the resubmit for its sentence is refused, so each
 // row reads the scope the build posted and the groups the resubmit carried.
 const grouped = await scenario("fetch-spec-group-origin-rebound");
+const answered = await scenario("answer-definite-fetch");
 
 describe("a fetch's entities", () => {
   const manifest = grouped.exchanges[0]!.response.json as Record<string, unknown>;
@@ -94,10 +97,17 @@ describe("a fetch's entities", () => {
   const EU = { label: "European Union", group_id: "groups/EU" };
   const WEST = { label: "West Africa", group_id: "groups/WestAfrica" };
   const definition = definitionWith(bound);
-  const spec: SpecInput = {
+  // A wire Spec as Search answers it, passed whole to `client.fetch`: its groups sit under
+  // `resolved`, and it holds no sentence, so the fetch resubmits for one.
+  const held = (answered.exchanges[0]!.response.json as { parts: { spec: Spec }[] }).parts[0]!.spec;
+  const spec: Spec = {
     spec_id: String(definition["spec_id"]),
-    definition,
-    entity_groups: { origin: EU, destination: WEST },
+    definition: definition as Spec["definition"],
+    resolved: {
+      ...held.resolved,
+      rendered_sentence: null,
+      entity_groups: { origin: EU, destination: WEST },
+    },
   };
   const rows: [string, FetchOptions, Record<string, unknown>, unknown][] = [
     [
@@ -146,7 +156,9 @@ describe("a fetch's entities", () => {
         fetch,
         onWarning: () => undefined,
       });
-      await assert.rejects(fetchDataset(transport, spec, options), { code: "request_invalid" });
+      await assert.rejects(clientOver(transport).fetch(spec, options), {
+        code: "request_invalid",
+      });
       const posted = JSON.parse(seen[0]!.body!) as { input: { scope: unknown } };
       assert.deepEqual(posted.input.scope, scope);
       const resubmit = JSON.parse(seen[1]!.body!) as {

@@ -81,7 +81,7 @@ describe("a long build", () => {
 
     assert.deepEqual(waits, [1500, 2500]);
     assert.equal(dataset.rows, 4);
-    assert.equal(dataset.members[0]!.sentence, spec.sentence);
+    assert.equal(dataset.members[0]!.sentence, spec.resolved?.rendered_sentence);
     assert.deepEqual(events, [
       { operationId: OP, progress: { rowsWritten: 10, estimateRows: 100 }, traceId: null },
     ]);

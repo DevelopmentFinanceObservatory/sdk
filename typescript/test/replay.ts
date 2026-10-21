@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 
 import { envFrom } from "../src/env.ts";
-import type { Narrowing, SpecInput } from "../src/fetch.ts";
-import type { Layout } from "../src/ref.ts";
+import type { EntityGroups, Narrowing, SpecInput } from "../src/fetch.ts";
+import type { Layout, SpecLike } from "../src/ref.ts";
 import { Transport } from "../src/transport.ts";
 import type { TransportOptions } from "../src/transport.ts";
 
@@ -12,7 +12,8 @@ export const RECORDED_BASE_URL = "https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app/a
 
 type Json = Record<string, unknown>;
 
-/** The scenario record format, as `contract/scenario.schema.json` defines it. */
+/** The scenario record format, as `contract/scenario.schema.json` defines it, except that a
+ *  step's spec is in the wire `Spec`'s shape (see `readScenario`). */
 export type Scenario = {
   name: string;
   description: string;
@@ -83,8 +84,33 @@ export type Outcome =
 const scenarioUrl = (file: string): URL =>
   new URL(`../../contract/scenarios/${file}`, import.meta.url);
 
-const readScenario = async (file: string): Promise<Scenario> =>
-  JSON.parse(await readFile(scenarioUrl(file), "utf8")) as Scenario;
+/** A step's spec as the scenario format holds it, with the sentence and the entity groups at
+ *  the top level. */
+type ScenarioSpec = SpecLike & { sentence?: string; entity_groups?: EntityGroups };
+
+/** A scenario spec in the wire `Spec`'s shape, the one `client.fetch` and `client.mint` take:
+ *  the sentence and the groups move under `resolved`. */
+function wireSpec({ sentence, entity_groups, ...spec }: ScenarioSpec): SpecInput {
+  if (sentence === undefined && entity_groups === undefined) return spec;
+  return {
+    ...spec,
+    resolved: {
+      ...(sentence === undefined ? {} : { rendered_sentence: sentence }),
+      ...(entity_groups === undefined ? {} : { entity_groups }),
+    },
+  };
+}
+
+/** A scenario record, its fetch and mint specs read into the wire `Spec`'s shape. */
+async function readScenario(file: string): Promise<Scenario> {
+  const record = JSON.parse(await readFile(scenarioUrl(file), "utf8")) as Scenario;
+  const call = record.call.map((step) =>
+    (step.op === "fetch" || step.op === "mint") && step.spec !== undefined
+      ? { ...step, spec: wireSpec(step.spec as ScenarioSpec) }
+      : step,
+  );
+  return { ...record, call };
+}
 
 /** Every scenario record in the contract. */
 export async function scenarios(): Promise<Scenario[]> {
