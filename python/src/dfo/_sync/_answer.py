@@ -5,16 +5,22 @@ An answer holds readings, not data. `fetch` builds the dataset when every part h
 a reading, and raises `IncompleteAnswerError` before any build when one does not.
 `choose` settles a part that awaits a choice and returns a new answer.
 
-A choice in a one-part answer among candidates needs no request. A choice of place
-or source in a one-part answer posts the option's `data_query` unchanged. A choice
-in an answer of several parts posts a `dataset_resubmit` with one entry per part, so
-Search composes the joined sentence and folds the parts again:
+Every choice makes one Search request, and the new answer is Search's response.
+A choice of place or source in a one-part answer posts the option's `data_query`
+unchanged. Any other choice posts a `dataset_resubmit` with one entry per part, so
+Search composes the sentence and folds the parts again; a pick in a one-part answer
+posts one entry:
 
 - a definite part posts its spec's identity and entity groups;
 - the chosen candidate posts its identity, and the chosen option its one parsed part;
 - a candidates part left alone posts its candidate set in the server's order;
 - any other part posts its `restatement`, which Search resolves again and so keeps
   its message and its choices; a part without one is restated as a placeholder.
+
+Each identity echoes its reading's assumptions: a definite part's `assumptions`,
+and a candidate's entry in its part's `reading_assumptions`. Search then states
+the assumptions that still hold, and the new sentence carries them. An identity
+whose part carries no list posts none, and Search computes them afresh.
 """
 
 from __future__ import annotations
@@ -124,7 +130,10 @@ class Answer:
     @overload
     def choose(self, part: int | str, option: int | str, /) -> Answer: ...
     def choose(self, first: int | str, second: int | str | None = None, /) -> Answer:
-        """Settle a part that awaits a choice, and return the new answer.
+        """Settle a part that awaits a choice, and return Search's new answer.
+
+        The choice makes one Search request; the new answer, its sentence and
+        its assumptions are Search's response.
 
         `choose(option)` picks in the only part that awaits a choice;
         `choose(part, option)` names the part. A part is named by its index, its
@@ -142,9 +151,7 @@ class Answer:
             gap = self._gap_named(first)
             option = second
         chosen = _pick(gap, option, mention=first if second is not None else None)
-        if len(self.parts) == 1:
-            if isinstance(chosen, Candidate):
-                return self._with_candidate(gap.part, chosen)
+        if len(self.parts) == 1 and isinstance(chosen, Option):
             return self._resolve(chosen.data_query)
         entries = [
             _entry(part, chosen if index == gap.part_index else None)
@@ -237,16 +244,6 @@ class Answer:
             raise client_error(CHOICE_INVALID, f"Part {key!r} already has a reading.")
         return gap
 
-    def _with_candidate(self, part: Part[Candidate], candidate: Candidate) -> Answer:
-        return _candidate_answer(
-            _AnswerContext(
-                self.kind, self.sentence, self.question, self.warnings, self.raw
-            ),
-            part,
-            candidate,
-            self._source,
-        )
-
     def _resolve(self, request: Mapping[str, Any]) -> Answer:
         return resolve(
             self._source, request, question=self.question, timeout=SEARCH_TIMEOUT
@@ -327,8 +324,7 @@ def answer_from_body(
         if isinstance(sentence, str) and sentence
         else " ".join(part.sentence for part in parsed if part.sentence)
     )
-    context = _AnswerContext(kind, sentence, question, warnings, body)
-    parts = tuple(_bind_candidates(part, context, source) for part in parsed)
+    parts = tuple(_bind_candidates(part, question, source) for part in parsed)
     timed_out = diagnostics.get("timed_out") is True
     gaps = tuple(
         gap
@@ -351,57 +347,14 @@ def answer_from_body(
     )
 
 
-@dataclass(frozen=True, slots=True)
-class _AnswerContext:
-    """What a one-part answer settled from a candidate keeps of its answer."""
-
-    kind: str
-    sentence: str | None
-    question: str | None
-    warnings: tuple[Notice, ...]
-    raw: Mapping[str, Any]
-
-
-def _candidate_answer(
-    context: _AnswerContext,
-    part: Part[Candidate],
-    candidate: Candidate,
-    source: SessionSource,
-) -> Answer:
-    """The one-part answer that reads `part` as `candidate`."""
-    definite = DefinitePart(
-        status=_strict.DEFINITE_PART_STATUS,
-        variable_text=part.variable_text,
-        sentence=candidate.sentence,
-        separate=part.separate,
-        warnings=part.warnings,
-        departures=part.departures,
-        operations=part.operations,
-        raw={
-            **{key: value for key, value in part.raw.items() if key != "candidates"},
-            "status": _strict.DEFINITE_PART_STATUS,
-            "spec": candidate.raw,
-        },
-        spec=candidate.spec,
-    )
-    return Answer(
-        kind=context.kind,
-        status=_strict.DEFINITE_PART_STATUS,
-        sentence=candidate.sentence or context.sentence,
-        parts=(definite,),
-        specs=(candidate.spec,),
-        complete=True,
-        question=context.question,
-        warnings=context.warnings,
-        raw=context.raw,
-        _source=source,
-    )
-
-
 def _bind_candidates(
-    part: ParsedPart, context: _AnswerContext, source: SessionSource
+    part: ParsedPart, question: str | None, source: SessionSource
 ) -> Part[Candidate]:
-    """`part`, its candidates able to fetch through the answer's source."""
+    """`part`, its candidates able to fetch through the answer's source.
+
+    A candidate's fetch asks Search for the reading alone, posting its identity
+    as the one entry of a `dataset_resubmit`, and builds the answer Search gives.
+    """
     if not isinstance(part, CandidatesPart):
         return part
 
@@ -415,7 +368,12 @@ def _bind_candidates(
         timeout: float | None,
         progress: bool | None,
     ) -> Dataset:
-        return _candidate_answer(context, bound, candidate, source).fetch(
+        request = {
+            "kind": "dataset_resubmit",
+            "entries": [_entry(bound, candidate)],
+        }
+        answer = resolve(source, request, question=question, timeout=SEARCH_TIMEOUT)
+        return answer.fetch(
             partial=partial,
             strict=strict,
             layout=layout,
@@ -431,6 +389,7 @@ def _bind_candidates(
         warnings=part.warnings,
         departures=part.departures,
         operations=part.operations,
+        assumptions=part.assumptions,
         raw=part.raw,
         candidates=tuple(
             Candidate(
@@ -440,6 +399,7 @@ def _bind_candidates(
                 candidate.source,
                 candidate.unit,
                 candidate.raw,
+                assumptions=candidate.assumptions,
                 _fetch=fetch,
             )
             for candidate in part.candidates
@@ -650,17 +610,31 @@ def _echo(part: Part[Candidate], **members: Any) -> dict[str, Any]:
     return entry
 
 
-def _identity(spec: Mapping[str, Any]) -> dict[str, Any]:
-    """A spec's identity and entity groups, as Search takes them back."""
+def _identity(part: Part[Candidate], spec: Mapping[str, Any]) -> dict[str, Any]:
+    """A reading of `part` as Search takes it back: the spec's identity, its
+    entity groups when it has any, and the reading's assumptions when the part
+    carries them."""
     item: dict[str, Any] = {"identity": spec["definition"]["identity"]}
     resolved = spec.get("resolved")
     if isinstance(resolved, Mapping) and resolved.get("entity_groups"):
         item["entity_groups"] = resolved["entity_groups"]
+    if (assumptions := _reading_assumptions(part, spec)) is not None:
+        item["assumptions"] = assumptions
     return item
 
 
+def _reading_assumptions(part: Part[Candidate], spec: Mapping[str, Any]) -> object:
+    """The wire's assumptions for one reading of `part`, or None when the part
+    carries none: a candidates part's `reading_assumptions` entry under the
+    spec's id, or any other part's `assumptions`."""
+    if isinstance(part, CandidatesPart):
+        by_spec = part.raw.get("reading_assumptions")
+        return by_spec.get(spec["spec_id"]) if isinstance(by_spec, Mapping) else None
+    return part.raw.get("assumptions")
+
+
 def _identity_entry(part: Part[Candidate], spec: Mapping[str, Any]) -> dict[str, Any]:
-    return _echo(part, entry_kind="identity", **_identity(spec))
+    return _echo(part, entry_kind="identity", **_identity(part, spec))
 
 
 def _candidates_entry(part: CandidatesPart[Candidate]) -> dict[str, Any]:
@@ -670,7 +644,7 @@ def _candidates_entry(part: CandidatesPart[Candidate]) -> dict[str, Any]:
         entry_kind="candidates",
         ordering=candidate_set.get("ordering"),
         truncated=part.truncated,
-        candidates=[_identity(candidate.raw) for candidate in part.candidates],
+        candidates=[_identity(part, candidate.raw) for candidate in part.candidates],
     )
 
 

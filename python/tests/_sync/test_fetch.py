@@ -22,6 +22,7 @@ from dfo._errors import (
     InvalidRequestError,
     NetworkError,
     NotFoundError,
+    PermissionDeniedError,
     ServerError,
     VersionUnavailableError,
 )
@@ -593,7 +594,7 @@ def test_a_rebuild_with_another_version_names_the_newest() -> None:
             ),
             "cv_" + "2" * 32,
         ),
-        (problem(403, "publish_not_permitted"), None),
+        (problem(404, "not_found"), None),
     ],
 )
 def test_a_spec_that_cannot_rebuild_names_the_newest_stored_version(
@@ -610,8 +611,23 @@ def test_a_spec_that_cannot_rebuild_names_the_newest_stored_version(
         with pytest.raises(VersionUnavailableError) as caught:
             fetch(transport, DatasetRef((ref_member(),)))
     assert server.calls()[-1] == f"GET {BASE}/datasets/{NARROWED_ID}/versions"
+    assert dict(server.requests[-1].url.params) == {"limit": "1"}
     assert caught.value.code == "artifact_expired"
     assert caught.value.newest_version == named
+
+
+def test_a_refused_versions_lookup_raises() -> None:
+    server = Server(
+        json_response(200, manifest()),
+        problem(410, "artifact_expired"),
+        problem(404, "not_found"),
+        problem(422, "definition_not_reproducible"),
+        problem(403, "publish_not_permitted"),
+    )
+    with make(server) as transport:
+        with pytest.raises(PermissionDeniedError) as caught:
+            fetch(transport, DatasetRef((ref_member(),)))
+    assert caught.value.code == "publish_not_permitted"
 
 
 def test_a_cached_ref_needs_no_request_and_offline_marks_it_stale(

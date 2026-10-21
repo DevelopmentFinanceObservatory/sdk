@@ -210,7 +210,8 @@ class Poller:
         self._error: DfoError | None = None
         self._backoff_step = 0
         self._retries = 0
-        self._resubmitted = False
+        self._resubmissions = 0
+        self._poll_waits: list[float] = []
         self._take(reply)
 
     @property
@@ -227,6 +228,16 @@ class Poller:
     def progress(self) -> Progress | None:
         """The progress the server last reported, or None."""
         return None if self._state is None else self._state.progress
+
+    @property
+    def poll_waits(self) -> tuple[float, ...]:
+        """The waits taken before each poll, in seconds, in order."""
+        return tuple(self._poll_waits)
+
+    @property
+    def resubmissions(self) -> int:
+        """How many times the build was posted again after a failed operation."""
+        return self._resubmissions
 
     @property
     def status(self) -> str:
@@ -255,6 +266,7 @@ class Poller:
             wait = self._next_wait()
             if not _fits(self._transport, wait, deadline):
                 raise self._still_running()
+            self._poll_waits.append(wait)
             await self._transport.sleep(wait)
             await self._poll(deadline)
         if self._error is not None:
@@ -357,10 +369,10 @@ class Poller:
 
     async def _failed(self, error: DfoError, deadline: float | None) -> None:
         """Resubmit a build that failed retryably, once; else hold the error."""
-        if not error.retryable or self._body is None or self._resubmitted:
+        if not error.retryable or self._body is None or self._resubmissions:
             self._error = error
             return
-        self._resubmitted = True
+        self._resubmissions += 1
         self._error = None
         self._take(await post_build(self._transport, self._body, deadline=deadline))
 

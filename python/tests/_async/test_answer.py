@@ -28,6 +28,7 @@ from dfo._errors import (
     SearchWarning,
 )
 from dfo._fetch import Session
+from dfo._parse import parse_assumptions
 from dfo._search import search
 from dfo._transport import AsyncTransport
 from dfo._types import Candidate, CandidatesPart, DefinitePart, Gap
@@ -281,13 +282,85 @@ async def test_a_part_without_its_payload_names_the_member_missing() -> None:
     )
 
 
-async def test_choosing_a_candidate_in_a_one_part_answer_sends_no_request() -> None:
+AID_TYPE = {
+    "kind": "declared_default",
+    "binding_ref": "how:dac2aAidType",
+    "text": "official development assistance",
+    "refs": ["DAC2aAidType206"],
+}
+
+
+def picked(part: Mapping[str, Any], index: int) -> dict[str, Any]:
+    """Search's answer to a pick of candidate `index`: that reading, definite,
+    with a sentence of its own."""
+    spec = copy.deepcopy(part["candidates"]["specs"][index])
+    sentence = spec["resolved"]["rendered_sentence"] + " Assumed: one reading."
+    spec["resolved"]["rendered_sentence"] = sentence
+    return {
+        "kind": "resolution",
+        "status": "definite",
+        "rendered_sentence": sentence,
+        "parts": [
+            {
+                "status": "definite",
+                "variable_text": part["variable_text"],
+                "spec": spec,
+                "assumptions": [AID_TYPE],
+            }
+        ],
+        "diagnostics": {},
+    }
+
+
+def identity_entry(
+    part: Mapping[str, Any], index: int, **echoed: Any
+) -> dict[str, Any]:
+    """The dataset_resubmit entry a pick of candidate `index` posts."""
+    spec = part["candidates"]["specs"][index]
+    return {
+        "entry_kind": "identity",
+        "identity": spec["definition"]["identity"],
+        "variable_text": part["variable_text"],
+        **echoed,
+    }
+
+
+@pytest.mark.parametrize(
+    ("reading_assumptions", "echoed"),
+    [
+        (None, {}),
+        ({}, {}),
+        ({1: [AID_TYPE]}, {"assumptions": [AID_TYPE]}),
+        ({1: []}, {"assumptions": []}),
+    ],
+)
+async def test_a_pick_in_a_one_part_answer_asks_search_for_the_reading(
+    reading_assumptions: dict[int, Any] | None, echoed: dict[str, Any]
+) -> None:
     wire = load("search-2.json")
-    answer, server = await ask("GNI of Germany from 2015 to 2022", wire)
+    part = wire["parts"][0]
+    specs = part["candidates"]["specs"]
+    if reading_assumptions is not None:
+        part["reading_assumptions"] = {
+            specs[index]["spec_id"]: items
+            for index, items in reading_assumptions.items()
+        }
+    answer, server = await ask(
+        "GNI of Germany from 2015 to 2022", wire, picked(part, 1), picked(part, 1)
+    )
+    assert answer.parts[0].candidates[1].assumptions == tuple(
+        parse_assumptions(echoed.get("assumptions"))
+    )
     chosen = await answer.choose(1)
     by_label = await answer.choose(answer.parts[0].candidates[1].label)
-    assert len(server.posted) == 1
-    candidate = wire["parts"][0]["candidates"]["specs"][1]
+    request = {
+        "schema_version": 1,
+        "input": {
+            "kind": "dataset_resubmit",
+            "entries": [identity_entry(part, 1, **echoed)],
+        },
+    }
+    assert server.posted[1:] == [request, request]
     assert chosen == by_label
     assert summary(chosen) == {
         "kind": "resolution",
@@ -296,11 +369,11 @@ async def test_choosing_a_candidate_in_a_one_part_answer_sends_no_request() -> N
         "specs": 1,
         "gaps": [],
     }
-    assert chosen.sentence == candidate["resolved"]["rendered_sentence"]
-    (part,) = chosen.parts
-    assert isinstance(part, DefinitePart)
-    assert part.spec.spec_id == candidate["spec_id"]
-    assert part.raw["spec"] == candidate
+    assert chosen.sentence == picked(part, 1)["rendered_sentence"]
+    (definite,) = chosen.parts
+    assert isinstance(definite, DefinitePart)
+    assert definite.spec.spec_id == specs[1]["spec_id"]
+    assert definite.assumptions == parse_assumptions([AID_TYPE])
 
 
 async def test_a_candidate_choice_beside_a_definite_part_posts_dataset_resubmit() -> (
@@ -328,40 +401,48 @@ async def test_a_candidate_choice_beside_a_definite_part_posts_dataset_resubmit(
 async def test_a_candidate_fetches_as_the_answer_that_chooses_it(
     fetched: list[tuple[Any, Any, Any]],
 ) -> None:
+    wire = load("search-2.json")
+    part = wire["parts"][0]
     answer, server = await ask(
-        "GNI of Germany from 2015 to 2022", load("search-2.json")
+        "GNI of Germany from 2015 to 2022", wire, picked(part, 1), picked(part, 1)
     )
-    (part,) = answer.parts
-    assert isinstance(part, CandidatesPart)
-    assert await part.candidates[1].fetch(layout="long", timeout=10.0) == "dataset"
+    (candidates,) = answer.parts
+    assert isinstance(candidates, CandidatesPart)
+    assert await candidates.candidates[1].fetch(layout="long", timeout=10.0) == (
+        "dataset"
+    )
     assert await (await answer.choose(1)).fetch(layout="long", timeout=10.0) == (
         "dataset"
     )
-    assert len(server.posted) == 1
+    assert server.posted[1] == server.posted[2]
     (_, by_candidate, options), (_, by_choice, chosen_options) = fetched
     assert by_candidate == by_choice
     assert options == chosen_options
-    assert [m.spec for m in by_candidate] == [part.candidates[1].spec]
+    assert [(m.spec, m.sentence) for m in by_candidate] == [
+        (candidates.candidates[1].spec, picked(part, 1)["rendered_sentence"])
+    ]
 
 
 async def test_a_candidate_beside_a_definite_part_fetches_only_its_reading(
     fetched: list[tuple[Any, Any, Any]],
 ) -> None:
-    answer, server = await ask(TWO_PARTS, load("search-two-parts-candidates.json"))
-    part = answer.parts[1]
-    assert isinstance(part, CandidatesPart)
-    candidate = part.candidates[0]
-    with pytest.warns(SearchWarning, match="direction was dropped"):
-        assert await candidate.fetch(layout="frame") == "dataset"
-    with pytest.raises(SearchWarning):
-        await candidate.fetch(strict=True)
+    wire = load("search-two-parts-candidates.json")
+    part = wire["parts"][1]
+    answer, server = await ask(TWO_PARTS, wire, picked(part, 0))
+    candidates = answer.parts[1]
+    assert isinstance(candidates, CandidatesPart)
+    candidate = candidates.candidates[0]
+    assert await candidate.fetch(layout="frame") == "dataset"
+    assert server.posted[1]["input"] == {
+        "kind": "dataset_resubmit",
+        "entries": [identity_entry(part, 0)],
+    }
     ((_, members, options),) = fetched
-    assert [(m.parts, m.spec, m.sentence) for m in members] == [
-        (("gross national income",), candidate.spec, candidate.sentence)
+    assert [(m.parts, m.spec) for m in members] == [
+        (("gross national income",), candidate.spec)
     ]
     assert (options["layout"], options["missing"]) == ("frame", ())
-    assert len(server.posted) == 1
-    assert answer.gaps[0].part.candidates == part.candidates
+    assert answer.gaps[0].part.candidates == candidates.candidates
 
 
 async def test_a_place_choice_in_a_one_part_answer_posts_the_option_unchanged() -> None:

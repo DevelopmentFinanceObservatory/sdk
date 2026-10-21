@@ -47,6 +47,16 @@ class ArtifactEntryModel(TypedDict):
     url: str
 
 
+type Ref = str
+
+
+class Assumption(TypedDict):
+    kind: Literal["declared_default", "open_role", "place_scope"]
+    binding_ref: str
+    text: str
+    refs: NotRequired[list[Ref]]
+
+
 class Authority(TypedDict):
     name: str
     version: str
@@ -186,7 +196,7 @@ class ColumnOptionModel(TypedDict):
     name: str
     kind: str
     droppable: bool
-    distinct: int | None
+    distinct: NotRequired[int | None]
 
 
 class ComponentBody(TypedDict):
@@ -455,9 +465,6 @@ class Freshness(TypedDict):
     refresh_type: str | None
 
 
-type FrontMatterValue = str | list[FrontMatterValue] | dict[str, FrontMatterValue]
-
-
 class GraphRef(TypedDict):
     ref: str
     label: str
@@ -499,9 +506,6 @@ class HealthResponse(TypedDict):
 class IdentityBindingExact(TypedDict):
     state: NotRequired[Literal["exact"]]
     ref: str
-
-
-type Ref = str
 
 
 class IdentityBindingSet(TypedDict):
@@ -660,7 +664,8 @@ class NotHeldEntry(TypedDict):
 
 
 class ObservationPoint(TypedDict):
-    pass
+    date: str
+    value: float | None
 
 
 class ObservationsOmission(TypedDict):
@@ -965,6 +970,11 @@ class ResubmitPlaceholderEntry(TypedDict):
     operations: NotRequired[list[Operation]]
 
 
+class RetentionModel(TypedDict):
+    pinned: bool
+    held_until: NotRequired[str | None]
+
+
 type RoleAxis = Literal["origin", "destination"]
 
 
@@ -1007,7 +1017,9 @@ class SentenceToken(TypedDict):
     axis: NotRequired[
         Literal["what", "how", "where", "when", "source", "unit", "method"] | None
     ]
-    segment: NotRequired[Literal["heading", "byline", "departure"]]
+    segment: NotRequired[
+        Literal["coverage", "heading", "byline", "departure", "assumption"]
+    ]
     property_dcid: NotRequired[str | None]
     role: NotRequired[RoleAxis | None]
     binding_ref: NotRequired[str | None]
@@ -1063,44 +1075,10 @@ class Skill(TypedDict):
     content_version: str
 
 
-class SkillFileListing(TypedDict):
-    path: str
-    size: int
-    digest: str
-    media_type: str
-
-
-class SkillResourceContent(TypedDict):
-    skill_id: str
-    path: str
-    size: int
-    digest: str
-    media_type: str
-    content_text: str
-
-
-class SkillWarning(TypedDict):
-    code: str
-    severity: Literal["info", "warn", "degraded"]
-    message: str
-    skill_id: str | None
-
-
 class SlotKey(TypedDict):
     axis: Literal["what", "how", "where", "when", "source"]
     property: NotRequired[GraphRef | None]
     label: str
-
-
-class SlotOption(TypedDict):
-    pass
-
-
-class SlotOptions(TypedDict):
-    key: SlotKey
-    options: list[SlotOption]
-    truncated: bool
-    source: Literal["observed", "seed"]
 
 
 class SourceCode(TypedDict):
@@ -1634,10 +1612,12 @@ class DatasetVersion(TypedDict):
     without_party_totals: NotRequired[bool]
 
 
-class DatasetVersionsResponse(TypedDict):
+class DatasetVersionsPage(TypedDict):
     schema_version: NotRequired[Literal[1]]
     spec_id: str
     versions: list[DatasetVersion]
+    next_cursor: str | None
+    complete: bool
 
 
 class DefinitionText(TypedDict):
@@ -1679,14 +1659,6 @@ class EntityCoverage(TypedDict):
     of: int
 
 
-class EntityOptions(TypedDict):
-    entity_ref: NotRequired[str | None]
-    role: RoleAxis
-    options: list[SlotOption]
-    truncated: bool
-    source: Literal["observed", "seed"]
-
-
 class Expansion(TypedDict):
     added: list[GraphRef]
 
@@ -1707,13 +1679,6 @@ class FacetItem(TypedDict):
 
 class FacetNationalCurrencyBinding(TypedDict):
     national_currency: UnitCurrencyRole
-
-
-class FacetOptions(TypedDict):
-    axis: str
-    options: list[SlotOption]
-    truncated: bool
-    source: Literal["observed", "seed"]
 
 
 class FactSummaryModel(TypedDict):
@@ -1807,11 +1772,6 @@ class OperationResource(TypedDict):
     operation: OperationEnvelope
     manifest: NotRequired[dict[str, Any] | None]
     error: NotRequired[dict[str, Any] | None]
-
-
-class OptionsSet(TypedDict):
-    items: list[SlotOption]
-    truncated: bool
 
 
 class OrganisationNode(TypedDict):
@@ -1994,37 +1954,6 @@ class ShapeUpstream(TypedDict):
     data_commons: SearchModelsGrammarDataCommonsRef
 
 
-class SkillBody(TypedDict):
-    id: str
-    name: str
-    description: str
-    frontmatter: dict[str, FrontMatterValue]
-    content_version: str
-    url: str | None
-    attached: bool
-    excluded: bool
-    statvar_count: int
-    statvar_count_truncated: bool
-    warnings: list[SkillWarning]
-    resources: list[SkillFileListing]
-    content_text: str
-
-
-class SkillSummary(TypedDict):
-    id: str
-    name: str
-    description: str
-    frontmatter: dict[str, FrontMatterValue]
-    content_version: str
-    url: str | None
-    attached: bool
-    excluded: bool
-    statvar_count: int
-    statvar_count_truncated: bool
-    warnings: list[SkillWarning]
-    resources: list[SkillFileListing]
-
-
 class SlotValue(TypedDict):
     ref: NotRequired[GraphRef | None]
     value_kind: Literal["entity", "enum_value", "time_window", "source", "literal"]
@@ -2205,6 +2134,7 @@ class UnsupportedPart(TypedDict):
     restatement: NotRequired[ParsedPart | None]
     operations: NotRequired[list[Operation]]
     departures: NotRequired[list[Departure]]
+    assumptions: NotRequired[list[Assumption]]
     status: Literal["unsupported"]
     unsupported: Unsupported
 
@@ -2383,7 +2313,7 @@ class CatalogueAnswer(TypedDict):
     schema_version: NotRequired[Literal[1]]
     query_echo: QueryEcho
     diagnostics: Diagnostics
-    kind: NotRequired[Literal["catalogue"]]
+    kind: Literal["catalogue"]
     scope: ScopeOutput
 
 
@@ -2535,7 +2465,7 @@ class DeclinedAnswer(TypedDict):
     schema_version: NotRequired[Literal[1]]
     query_echo: QueryEcho
     diagnostics: Diagnostics
-    kind: NotRequired[Literal["declined"]]
+    kind: Literal["declined"]
     reason: Literal["out_of_scope", "requires_analysis"]
     scope: ScopeOutput
 
@@ -2583,17 +2513,6 @@ OptionsRequest = TypedDict(
         "identity": BaseIdentity,
         "for": OptionsFor,
         "include_coverage": NotRequired[bool],
-    },
-)
-
-
-OptionsResponse = TypedDict(
-    "OptionsResponse",
-    {
-        "schema_version": NotRequired[Literal[1]],
-        "diagnostics": Diagnostics,
-        "for": OptionsFor,
-        "options": OptionsSet,
     },
 )
 
@@ -2670,6 +2589,7 @@ class ResubmitCandidate(TypedDict):
     entity_groups: NotRequired[
         dict[Literal["observationAbout", "origin", "destination"], EntityGroup] | None
     ]
+    assumptions: NotRequired[list[Assumption] | None]
 
 
 class ResubmitCandidatesEntry(TypedDict):
@@ -2691,6 +2611,7 @@ class ResubmitIdentityEntry(TypedDict):
     ]
     separate: NotRequired[bool]
     operations: NotRequired[list[Operation]]
+    assumptions: NotRequired[list[Assumption] | None]
 
 
 class ScopeInput(TypedDict):
@@ -2725,16 +2646,29 @@ class Shape(TypedDict):
     upstream: NotRequired[ShapeUpstream | None]
 
 
-class SkillListResponse(TypedDict):
-    skills: list[SkillSummary]
-    warnings: list[SkillWarning]
-
-
 class Slot(TypedDict):
     key: SlotKey
     binding: BindingValue | BindingSet | BindingUnbound
     expansion: NotRequired[Expansion | None]
     summable: NotRequired[bool]
+
+
+class SlotOption(TypedDict):
+    value: SlotValue
+    coverage: NotRequired[CoverageExact | CoverageBreadth | CoverageBare | None]
+    relation: NotRequired[Literal["child", "parent", "root"] | None]
+    parent: NotRequired[str | None]
+    member_count: NotRequired[int | None]
+    served_rows: NotRequired[int | None]
+    served_rows_exact: NotRequired[bool | None]
+    party_kind: NotRequired[Literal["party", "total", "residual"] | None]
+
+
+class SlotOptions(TypedDict):
+    key: SlotKey
+    options: list[SlotOption]
+    truncated: bool
+    source: Literal["observed", "seed"]
 
 
 class SourceCatalogue(TypedDict):
@@ -2822,6 +2756,21 @@ class DatasetResubmitInput(TypedDict):
     raw_query: NotRequired[str | None]
 
 
+class EntityOptions(TypedDict):
+    entity_ref: NotRequired[str | None]
+    role: RoleAxis
+    options: list[SlotOption]
+    truncated: bool
+    source: Literal["observed", "seed"]
+
+
+class FacetOptions(TypedDict):
+    axis: str
+    options: list[SlotOption]
+    truncated: bool
+    source: Literal["observed", "seed"]
+
+
 class Manifest(TypedDict):
     schema_version: NotRequired[int]
     definition: DefinitionModel
@@ -2836,12 +2785,19 @@ class Manifest(TypedDict):
     series_count: NotRequired[int | None]
     output_options: NotRequired[OutputOptionsModel | None]
     series_coverage_stamp: NotRequired[str | None]
+    retention: NotRequired[RetentionModel | None]
 
 
 class MintRequest(TypedDict):
     schema_version: NotRequired[Literal[1]]
     input: SpecIdInput | StatVarSetInput
     options: NotRequired[MintOptions]
+
+
+class NoDataOption(TypedDict):
+    mentions: list[str]
+    label: str
+    data_query: ParsedInput
 
 
 class NodesResponse(TypedDict):
@@ -2885,6 +2841,11 @@ class OptionsEnvelope(TypedDict):
     output_options: NotRequired[OutputOptionsModel | None]
     warnings: NotRequired[list[WarningModel]]
     trace: dict[str, Any]
+
+
+class OptionsSet(TypedDict):
+    items: list[SlotOption]
+    truncated: bool
 
 
 class PublishFrameRequest(TypedDict):
@@ -2937,6 +2898,17 @@ class SearchModelsRequestResolveRequest(TypedDict):
     response_options: NotRequired[ResolveOptions | None]
 
 
+OptionsResponse = TypedDict(
+    "OptionsResponse",
+    {
+        "schema_version": NotRequired[Literal[1]],
+        "diagnostics": Diagnostics,
+        "for": OptionsFor,
+        "options": OptionsSet,
+    },
+)
+
+
 class CandidateSet(TypedDict):
     ordering: Literal["broadest_first", "intent_rank"]
     max_candidates: int
@@ -2954,8 +2926,10 @@ class CandidatesPart(TypedDict):
     restatement: NotRequired[ParsedPart | None]
     operations: NotRequired[list[Operation]]
     departures: NotRequired[list[Departure]]
+    assumptions: NotRequired[list[Assumption]]
     status: Literal["candidates"]
     candidates: CandidateSet
+    reading_assumptions: NotRequired[dict[str, list[Assumption]]]
 
 
 class DefinitePart(TypedDict):
@@ -2968,6 +2942,7 @@ class DefinitePart(TypedDict):
     restatement: NotRequired[ParsedPart | None]
     operations: NotRequired[list[Operation]]
     departures: NotRequired[list[Departure]]
+    assumptions: NotRequired[list[Assumption]]
     status: Literal["definite"]
     spec: Spec
 
@@ -3025,7 +3000,7 @@ class NoData(TypedDict):
     unit_alternatives: NotRequired[list[UnitAlternative] | None]
     unbound_qualifiers: NotRequired[list[ResolvedQualifier]]
     denominator: NotRequired[NoDataDenominator | None]
-    data_query: NotRequired[ParsedInput | None]
+    options: NotRequired[list[NoDataOption]]
 
 
 class NoDataPart(TypedDict):
@@ -3038,6 +3013,7 @@ class NoDataPart(TypedDict):
     restatement: NotRequired[ParsedPart | None]
     operations: NotRequired[list[Operation]]
     departures: NotRequired[list[Departure]]
+    assumptions: NotRequired[list[Assumption]]
     status: Literal["no_data"]
     no_data: NoData
 
@@ -3049,7 +3025,7 @@ class Resolution(TypedDict):
     schema_version: NotRequired[Literal[1]]
     query_echo: QueryEcho
     diagnostics: Diagnostics
-    kind: NotRequired[Literal["resolution"]]
+    kind: Literal["resolution"]
     parts: list[Parts]
     rendered_sentence: NotRequired[str | None]
     sentence_plan: NotRequired[list[SentenceToken] | None]

@@ -155,6 +155,29 @@ class RequestedOperation:
 
 
 @dataclass(frozen=True, slots=True)
+class Assumption:
+    """A choice Search made for a reading that the question left open.
+
+    Search's sentence for the reading states it in an "Assumed: ..." clause.
+
+    Attributes:
+        kind: `declared_default` for a default the variable declares, `open_role`
+            for a role the question left open, or `place_scope` for how a place
+            was read; other values pass through.
+        binding_ref: The binding the assumption settles, such as
+            `how:dac2aAidType`.
+        text: The assumption as the sentence words it, such as "official
+            development assistance".
+        refs: The graph ids the assumption binds, when it binds any.
+    """
+
+    kind: str
+    binding_ref: str
+    text: str
+    refs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class Option:
     """One way to settle a part that awaits a choice of place or source.
 
@@ -185,6 +208,8 @@ class _Reading:
         unit: The unit as the byline words it, such as "Current US dollars"; None
             when the byline names no unit.
         raw: The server's spec object, decoded and untouched.
+        assumptions: What Search assumed for this reading, from the part's
+            `reading_assumptions`; a pick posts them back to Search.
     """
 
     spec: Spec
@@ -193,6 +218,7 @@ class _Reading:
     source: str | None
     unit: str | None
     raw: Mapping[str, Any] = field(repr=False, compare=False)
+    assumptions: tuple[Assumption, ...] = field(default=(), kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,8 +244,9 @@ class Candidate(_Reading):
     ) -> "Dataset":
         """Build this reading's dataset, through the `Answer` it came from.
 
-        The fetch is the one-part answer `answer.choose(part, candidate)` would
-        give, and takes `Answer.fetch`'s options.
+        Search answers the reading alone, from one request that posts its
+        identity and assumptions back, and the fetch builds that answer. It
+        takes `Answer.fetch`'s options.
 
         Raises:
             InvalidRequestError: The candidate came from no answer.
@@ -255,8 +282,9 @@ class AsyncCandidate(_Reading):
     ) -> "Dataset":
         """Build this reading's dataset, through the `AsyncAnswer` it came from.
 
-        The fetch is the one-part answer `await answer.choose(part, candidate)`
-        would give, and takes `AsyncAnswer.fetch`'s options.
+        Search answers the reading alone, from one request that posts its
+        identity and assumptions back, and the fetch builds that answer. It
+        takes `AsyncAnswer.fetch`'s options.
 
         Raises:
             InvalidRequestError: The candidate came from no answer.
@@ -327,6 +355,8 @@ class Part[C]:
         warnings: The part's own warnings.
         departures: How the part's reading differs from the question.
         operations: Computations the part asked for, which Search does not run.
+        assumptions: What Search assumed to read the part, as its sentence
+            states them.
         raw: The server's part object, decoded and untouched.
     """
 
@@ -337,6 +367,7 @@ class Part[C]:
     warnings: tuple[Notice, ...] = ()
     departures: tuple[Departure, ...] = ()
     operations: tuple[RequestedOperation, ...] = ()
+    assumptions: tuple[Assumption, ...] = ()
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
 
@@ -434,9 +465,18 @@ def unbound_gap(gap: Gap[Candidate | AsyncCandidate], /) -> Gap[Candidate]:
                 warnings=part.warnings,
                 departures=part.departures,
                 operations=part.operations,
+                assumptions=part.assumptions,
                 raw=part.raw,
                 candidates=tuple(
-                    Candidate(c.spec, c.sentence, c.label, c.source, c.unit, c.raw)
+                    Candidate(
+                        c.spec,
+                        c.sentence,
+                        c.label,
+                        c.source,
+                        c.unit,
+                        c.raw,
+                        assumptions=c.assumptions,
+                    )
                     for c in part.candidates
                 ),
                 truncated=part.truncated,

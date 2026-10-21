@@ -38,6 +38,7 @@ from dfo._sync._answer import Answer
 from dfo._sync._client import Client
 from dfo._sync._operation import Operation
 from dfo._types import (
+    Assumption,
     AsyncCandidate,
     Candidate,
     CandidatesPart,
@@ -66,6 +67,7 @@ from dfo._version import __version__
 __all__ = [
     "Answer",
     "ApiKey",
+    "Assumption",
     "AsyncAnswer",
     "AsyncCandidate",
     "AsyncClient",

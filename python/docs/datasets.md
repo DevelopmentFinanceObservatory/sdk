@@ -105,7 +105,7 @@ A missing extra raises `ImportError` with the install line, such as `pip install
 | `citation`, `sources`, `licence`                    | How to cite the data, and the sources behind it                                                |
 | `rows`                                              | The row count; `len(data)` gives the same                                                      |
 | `warnings`                                          | The datasets surface's warnings about the data, as `Notice` objects                            |
-| `departures`, `requested_operations`, `assumptions` | How the readings differ from the question                                                      |
+| `departures`, `requested_operations`, `assumptions` | How the readings differ from the question, and what Search assumed for them                   |
 | `complete`, `missing`                               | Whether every part has a member, and the gaps a partial fetch left out                         |
 | `held_until`, `pinned`                              | How long the server keeps the versions                                                         |
 | `stale`                                             | Whether the data came from the cache without asking the server                                 |
@@ -156,7 +156,7 @@ A `Spec` has the same pair, for keeping a reading without a version: `spec.to_js
 4. a fresh build, accepted only when it returns the same version;
 5. otherwise `VersionUnavailableError`.
 
-The error names the newest version in its message and in `newest_version`. Fetch the spec for it, and save the new ref:
+The error names the newest version in its message and in `newest_version`: the version the fresh build returned, or else the newest the server stores, or None when it stores none. Any refusal of that lookup other than `NotFoundError` raises in its place. Fetch the spec for it, and save the new ref:
 
 ```python
 from pathlib import Path

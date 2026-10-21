@@ -23,6 +23,7 @@ PART_MEMBERS: dict[str, str | None] = {
     "restatement": None,
     "operations": "operations",
     "departures": "departures",
+    "assumptions": "assumptions",
     "status": "status",
 }
 COVERAGE: list[tuple[type, type, dict[str, str | None]]] = [
@@ -30,7 +31,8 @@ COVERAGE: list[tuple[type, type, dict[str, str | None]]] = [
     (
         _types.CandidatesPart,
         _wire.CandidatesPart,
-        PART_MEMBERS | {"candidates": "candidates"},
+        PART_MEMBERS
+        | {"candidates": "candidates", "reading_assumptions": "candidates"},
     ),
     (
         _types.CandidatesPart,
@@ -63,8 +65,13 @@ COVERAGE: list[tuple[type, type, dict[str, str | None]]] = [
             "unit_alternatives": None,
             "unbound_qualifiers": None,
             "denominator": None,
-            "data_query": None,
+            "options": "options",
         },
+    ),
+    (
+        _types.Option,
+        _wire.NoDataOption,
+        {"label": "label", "mentions": "mentions", "data_query": "data_query"},
     ),
     (
         _types.UnsupportedPart,
@@ -125,6 +132,11 @@ COVERAGE: list[tuple[type, type, dict[str, str | None]]] = [
             "shown": "shown",
             "binding_ref": "binding_ref",
         },
+    ),
+    (
+        _types.Assumption,
+        _wire.Assumption,
+        {"kind": "kind", "binding_ref": "binding_ref", "text": "text", "refs": "refs"},
     ),
     (
         _types.RequestedOperation,

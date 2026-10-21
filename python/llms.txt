@@ -7,7 +7,8 @@ The answer holds readings and no data. `answer.fetch()` raises `dfo.IncompleteAn
 Main calls:
 
 - `dfo.search(question, *, timeout=60.0) -> Answer`; `answer.sentence`, `answer.parts`, `answer.specs`, `answer.complete`, `answer.gaps`
-- `answer.choose(option)` or `answer.choose(part, option) -> Answer`: settle a part with several readings, by index or label
+- `answer.choose(option)` or `answer.choose(part, option) -> Answer`: settle a part with several readings, or a place that matches several (the part's `options`), by index or label; one Search request, and the new answer and its sentence are Search's
+- `candidate.fetch(...) -> Dataset`: one Search request for that reading alone, then the build; `part.assumptions` and `candidate.assumptions` hold what Search assumed, as `dfo.Assumption`
 - `answer.fetch(*, partial=False, strict=False, layout="long", timeout=1800.0, progress=None) -> Dataset`
 - `dfo.fetch(spec_or_ref, *, window=None, entities=None, facets=None, layout=None, strict=False, timeout=1800.0, progress=None) -> Dataset`
 - `Dataset`: `to_arrow()`, `to_pandas()`, `to_polars()`, `save(path)`, `ref`, `members`, `sentence`, `citation`, `complete`, `missing`, `stale`

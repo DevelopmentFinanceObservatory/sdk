@@ -24,6 +24,7 @@ from dfo._error_map import CONTRACT_VIOLATION
 from dfo._errors import client_error
 from dfo._parse import parse_citation, parse_notices, parse_part
 from dfo._types import (
+    Assumption,
     AsyncCandidate,
     Candidate,
     Citation,
@@ -116,8 +117,9 @@ class Dataset:
         departures: How the readings differ from the question.
         requested_operations: Computations the question asked for, which the
             data leaves to the caller.
-        assumptions: What the server assumed to read the question; empty until
-            the server states assumptions.
+        assumptions: What Search assumed to read the question, from the answer
+            parts the members answer; empty for a spec or ref fetched outside an
+            answer.
         complete: Whether every part of the question has a member.
         missing: The parts left out of a partial fetch. Their candidates belong
             to no answer; fetch one with `dfo.fetch(candidate.spec)`.
@@ -144,7 +146,7 @@ class Dataset:
     stale: bool
     layout_version: str
     _table: pa.Table = field(repr=False)
-    assumptions: tuple[str, ...] = ()
+    assumptions: tuple[Assumption, ...] = ()
 
     @property
     def ref(self) -> DatasetRef | None:
@@ -297,7 +299,7 @@ class Dataset:
                     "requested_operations": [
                         asdict(item) for item in self.requested_operations
                     ],
-                    "assumptions": list(self.assumptions),
+                    "assumptions": [asdict(item) for item in self.assumptions],
                     "complete": self.complete,
                     "missing": [_gap_object(gap) for gap in self.missing],
                     "held_until": (
@@ -389,6 +391,9 @@ def build_dataset(
         requested_operations=tuple(
             _unique(op for part in answer_parts for op in part.operations)
         ),
+        assumptions=tuple(
+            _unique(item for part in answer_parts for item in part.assumptions)
+        ),
         complete=complete,
         missing=tuple(unbound_gap(gap) for gap in missing),
         held_until=held_until,
@@ -436,7 +441,15 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
         requested_operations=tuple(
             RequestedOperation(**item) for item in rest["requested_operations"]
         ),
-        assumptions=tuple(rest["assumptions"]),
+        assumptions=tuple(
+            Assumption(
+                kind=item["kind"],
+                binding_ref=item["binding_ref"],
+                text=item["text"],
+                refs=tuple(item["refs"]),
+            )
+            for item in rest["assumptions"]
+        ),
         complete=rest["complete"],
         missing=tuple(_load_gap(gap) for gap in rest["missing"]),
         held_until=date.fromisoformat(held_until) if held_until else None,

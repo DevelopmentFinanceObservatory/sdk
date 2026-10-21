@@ -64,7 +64,7 @@ data = answer.choose(1, 1).fetch()  # part 1, reading 1
 print(data.members)  # one member per reading, each with its version
 ```
 
-The two readings stack into one long table with a `part` column. [Answers and choices](docs/answers.md) covers every shape an answer can take.
+The choice makes one Search request, and the new answer's sentence is Search's. The two readings stack into one long table with a `part` column. [Answers and choices](docs/answers.md) covers every shape an answer can take.
 
 Keep the result. `data.ref` records the exact version of each reading. Save it beside your analysis, and fetching it later returns the same rows after DFO's data has moved on:
 

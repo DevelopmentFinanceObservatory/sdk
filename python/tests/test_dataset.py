@@ -16,6 +16,7 @@ from dfo._dataset import Dataset, FetchedMember, Layout, build_dataset
 from dfo._errors import ContractError
 from dfo._parse import parse_parts
 from dfo._types import (
+    Assumption,
     DatasetRef,
     DefinitePart,
     Departure,
@@ -28,6 +29,12 @@ from ._data import load
 from ._datasets import PARQUET, manifest, other_member, recorded_member, scenario
 
 EXPECTED = scenario()["expect"][0]["dataset"]
+AID_TYPE = Assumption(
+    kind="declared_default",
+    binding_ref="how:dac2aAidType",
+    text="official development assistance",
+    refs=("DAC2aAidType206",),
+)
 
 
 def one(member: FetchedMember | None = None, *, layout: Layout = "long") -> Dataset:
@@ -104,8 +111,16 @@ def test_the_frame_layout_names_its_rendering() -> None:
     assert data.members[0].rendering == Rendering("parquet", False, "frame")
 
 
-def test_retention_absent_reads_none_and_is_not_shown() -> None:
+def test_the_recorded_retention_reads_its_date() -> None:
     data = one()
+    assert data.held_until == date(2026, 11, 20)
+    assert data.pinned is False
+
+
+def test_retention_absent_reads_none_and_is_not_shown() -> None:
+    body = manifest()
+    del body["retention"]
+    data = one(recorded_member(manifest=body))
     assert data.held_until is None
     assert data.pinned is False
     assert "held until" not in repr(data).lower()
@@ -183,7 +198,7 @@ def test_a_member_with_no_part_is_labelled_by_its_sentence() -> None:
     assert data.to_arrow().column("part")[0].as_py() == recorded_member().sentence
 
 
-def test_departures_and_operations_come_from_the_answer_parts() -> None:
+def test_departures_operations_and_assumptions_come_from_the_answer_parts() -> None:
     (part,) = parse_parts(load("search-1.json"))
     assert isinstance(part, DefinitePart)
     departure = Departure(code="closest_match", text="The closest reading.")
@@ -193,10 +208,12 @@ def test_departures_and_operations_come_from_the_answer_parts() -> None:
         spec=part.spec,
         departures=(departure,),
         operations=(operation, operation),
+        assumptions=(AID_TYPE, AID_TYPE),
     )
     data = one(recorded_member(answer_parts=(asked,)))
     assert data.departures == (departure,)
     assert data.requested_operations == (operation,)
+    assert data.assumptions == (AID_TYPE,)
 
 
 def test_a_manifest_without_the_artifact_is_refused() -> None:
@@ -307,6 +324,7 @@ def test_save_then_open_bundle_returns_an_equal_dataset(tmp_path: Path) -> None:
         spec=part.spec,
         departures=(Departure(code="closest_match", text="The closest reading."),),
         operations=(RequestedOperation(verb="rank", phrase="top 5", over="origin"),),
+        assumptions=(AID_TYPE,),
     )
     first = with_retention(
         recorded_member(parts=("ODA",), answer_parts=(asked,)),

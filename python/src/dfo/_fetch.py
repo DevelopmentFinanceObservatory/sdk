@@ -55,7 +55,6 @@ from dfo._errors import (
     DfoError,
     InvalidRequestError,
     NotFoundError,
-    PermissionDeniedError,
     VersionUnavailableError,
     client_error,
     warn,
@@ -794,12 +793,19 @@ async def _stored_file(
 async def _newest(
     transport: AsyncTransport, spec_id: str, *, deadline: float | None
 ) -> str | None:
-    """The newest stored version of a spec, from the versions route, or None."""
+    """The newest stored version of a spec, or None when the spec has none.
+
+    The versions route lists versions newest first, so a page of one holds the
+    newest. Only `NotFoundError` reads as no version; any other refusal raises.
+    """
     try:
         response = await transport.request(
-            "GET", f"/datasets/{spec_id}/versions", deadline=deadline
+            "GET",
+            f"/datasets/{spec_id}/versions",
+            params={"limit": 1},
+            deadline=deadline,
         )
-    except (NotFoundError, PermissionDeniedError):
+    except NotFoundError:
         return None
     body = response_json(response)
     versions = body.get("versions") if isinstance(body, Mapping) else None

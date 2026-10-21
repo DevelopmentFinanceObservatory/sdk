@@ -11,6 +11,10 @@ storage URL gets a bare request.
 Every step's outcome is compared member by member with `expect`. A step op or
 key, or an expect member, that this module has no reader for fails the scenario,
 so a scenario added to the contract later is either replayed or refused.
+
+A step's `long_builds` are read from the pollers the client made: each poller
+whose build ran on as an operation, not yet reported by an earlier step, gives
+its last `operation_id`, its `poll_waits` and its `resubmissions`.
 """
 
 import asyncio
@@ -27,12 +31,14 @@ from urllib.parse import urlsplit
 import httpx2
 import pytest
 
+from dfo import _operation
 from dfo._answer import AsyncAnswer
 from dfo._client import AsyncClient
 from dfo._dataset import Dataset
 from dfo._errors import DfoError, DfoWarning, SearchWarning, VersionUnavailableError
 from dfo._fetch import Session as AsyncSession
 from dfo._operation import AsyncOperation
+from dfo._sync import _operation as _sync_operation
 from dfo._sync._answer import Answer
 from dfo._sync._client import Client
 from dfo._sync._fetch import Session
@@ -47,10 +53,10 @@ SCENARIOS_DIR = CONTRACT / "scenarios"
 KEY = "dfo_k_4f8Kq2ZtR7mWx1NcB9vLp3YhD6sGa0Ue2wanxe"
 CLIENT_HEADER = "x-dfo-replay"
 
-# The base-URL forms each scenario replays under. `recorded` is the URL the
-# scenario, or the recorded scenario it derives from, was recorded against.
+# The base-URL forms each scenario replays under. The replay names its own base
+# URL and never reads a record's `origin.base_url`.
 BASE_URLS = {
-    "recorded": None,
+    "api-path": "https://replay.example.org/api",
     "path-trailing-slash": "https://developmentfinance.org/api/v1/",
     "bare-origin": "http://127.0.0.1:8083",
 }
@@ -72,6 +78,7 @@ STEP_KEYS = {
     },
     "fetch-ref": {"op", "ref", "timeout"},
     "mint": {"op", "spec", "layout"},
+    "operation": {"op", "operation_id", "layout"},
     "result": {"op", "timeout"},
 }
 
@@ -159,19 +166,19 @@ def _response(answer: Mapping[str, Any]) -> httpx2.Response:
     )
 
 
-def _recorded_base_url(record: Mapping[str, Any]) -> str:
-    origin = record["origin"]
-    while origin["kind"] == "synthetic":
-        origin = SCENARIOS[origin["derived_from"]]["origin"]
-    return origin["base_url"]
-
-
 def _retry_waits(record: Mapping[str, Any]) -> Counter[float]:
-    """The `Retry-After` waits the client must take before repeating a request."""
+    """The `Retry-After` waits the client must take before repeating a refused
+    request. A poll that answers paces the next by its resource's
+    `retry_after_ms` first, which `long_builds` checks."""
     waits: Counter[float] = Counter()
     for current, following in pairwise(record["exchanges"]):
-        value = current["response"].get("headers", {}).get("retry-after")
-        if value is not None and current["request"] == following["request"]:
+        response = current["response"]
+        value = response.get("headers", {}).get("retry-after")
+        if (
+            value is not None
+            and response["status"] >= 400
+            and current["request"] == following["request"]
+        ):
             waits[float(value)] += 1
     return waits
 
@@ -263,6 +270,8 @@ def _run(
             started = client.fetch(ref, **_options(step, "timeout"))
         case "mint":
             started = client.mint(_spec(step["spec"]), **_options(step, "layout"))
+        case "operation":
+            started = client.operation(step["operation_id"], **_options(step, "layout"))
         case _:
             started = operation.result(**_options(step, "timeout"))
     return started
@@ -286,7 +295,54 @@ def _newest_version(error: object) -> str | None:
     return error.newest_version
 
 
-type Reader = Callable[[Any, list[warnings.WarningMessage]], Any]
+type AnyPoller = _operation.Poller | _sync_operation.Poller
+
+
+@dataclass
+class Step:
+    """What one step left besides its result: its warnings, and the pollers of
+    the builds it saw run on."""
+
+    issued: list[warnings.WarningMessage]
+    pollers: list[AnyPoller]
+
+
+class Pollers:
+    """Every poller the client makes, handed to the first step that reads them."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._made: list[AnyPoller] = []
+        self._reported = 0
+        for module in (_operation, _sync_operation):
+            monkeypatch.setattr(module.Poller, "__init__", self._recording(module))
+
+    def _recording(self, module: Any) -> Callable[..., None]:
+        init = module.Poller.__init__
+
+        def record(poller: AnyPoller, *args: Any, **kwargs: Any) -> None:
+            init(poller, *args, **kwargs)
+            self._made.append(poller)
+
+        return record
+
+    def take(self) -> list[AnyPoller]:
+        """The pollers of builds that ran on, made since the last `take`."""
+        made, self._reported = self._made[self._reported :], len(self._made)
+        return [poller for poller in made if poller.operation_id is not None]
+
+
+def _long_builds(step: Step) -> list[dict[str, Any]]:
+    return [
+        {
+            "operation_id": poller.operation_id,
+            "poll_waits": list(poller.poll_waits),
+            "resubmissions": poller.resubmissions,
+        }
+        for poller in step.pollers
+    ]
+
+
+type Reader = Callable[[Any, Step], Any]
 
 READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
     "answer": (
@@ -326,9 +382,10 @@ READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
             "missing": lambda data, _: [
                 {"part": gap.part_index, "kind": gap.kind} for gap in data.missing
             ],
-            "search_warning": lambda _, issued: any(
-                isinstance(w.message, SearchWarning) for w in issued
+            "search_warning": lambda _, step: any(
+                isinstance(w.message, SearchWarning) for w in step.issued
             ),
+            "long_builds": lambda _, step: _long_builds(step),
         },
     ),
     "operation": (
@@ -344,17 +401,13 @@ READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
             "class": lambda error, _: type(error).__name__,
             "code": lambda error, _: error.code,
             "newest_version": lambda error, _: _newest_version(error),
+            "long_builds": lambda _, step: _long_builds(step),
         },
     ),
 }
 
 
-def _check(
-    where: str,
-    outcome: Mapping[str, Any],
-    result: object,
-    issued: list[warnings.WarningMessage],
-) -> None:
+def _check(where: str, outcome: Mapping[str, Any], result: object, step: Step) -> None:
     if len(outcome) != 1 or (kind := next(iter(outcome))) not in READERS:
         pytest.fail(f"{where}: outcome {sorted(outcome)} has no replay")
     classes, readers = READERS[kind]
@@ -363,11 +416,13 @@ def _check(
         pytest.fail(f"{where}: {kind} members {sorted(unknown)} have no replay")
     if not isinstance(result, classes):
         pytest.fail(f"{where}: expected {kind} {expected}, got {result!r}")
-    actual = {member: readers[member](result, issued) for member in expected}
+    actual = {member: readers[member](result, step) for member in expected}
     assert actual == expected, where
 
 
-async def _replay(record: Mapping[str, Any], client: AsyncClient | Client) -> None:
+async def _replay(
+    record: Mapping[str, Any], client: AsyncClient | Client, pollers: Pollers
+) -> None:
     calls, outcomes = record["call"], record["expect"]
     assert len(calls) == len(outcomes), "expect holds one outcome per step"
     answer: Any = None
@@ -382,7 +437,9 @@ async def _replay(record: Mapping[str, Any], client: AsyncClient | Client) -> No
                 if "error" not in outcome:
                     raise
                 result = error
-        _check(where, outcome, result, issued)
+        # A mint's builds run on into the `result` step, which reports them.
+        taken = [] if "operation" in outcome else pollers.take()
+        _check(where, outcome, result, Step(issued, taken))
         if isinstance(result, AsyncAnswer | Answer):
             answer = result
         elif isinstance(result, AsyncOperation | Operation):
@@ -401,12 +458,16 @@ def online(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.parametrize("flavour", ["async", "sync"])
 @pytest.mark.parametrize("form", list(BASE_URLS))
 @pytest.mark.parametrize("name", list(SCENARIOS))
-def test_scenario_replays(name: str, form: str, flavour: str) -> None:
+def test_scenario_replays(
+    name: str, form: str, flavour: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     record = SCENARIOS[name]
     assert record["name"] == name
-    base_url = BASE_URLS[form] or _recorded_base_url(record)
+    base_url = BASE_URLS[form]
     clock = Clock()
     exchanges = Exchanges(record, base_url)
-    asyncio.run(_replay(record, _client(flavour, base_url, exchanges, clock)))
+    pollers = Pollers(monkeypatch)
+    client = _client(flavour, base_url, exchanges, clock)
+    asyncio.run(_replay(record, client, pollers))
     assert exchanges.pending == [], "the call left exchanges unmade"
     assert Counter(clock.waits) >= _retry_waits(record), clock.waits

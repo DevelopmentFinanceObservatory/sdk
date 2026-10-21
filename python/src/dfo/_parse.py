@@ -16,6 +16,7 @@ from dfo._error_map import CONTRACT_VIOLATION
 from dfo._errors import ContractError, client_error
 from dfo._strict import require
 from dfo._types import (
+    Assumption,
     Candidate,
     CandidatesPart,
     Citation,
@@ -109,11 +110,15 @@ def parse_spec(spec: object, pointer: str = "", /) -> Spec:
     )
 
 
-def parse_candidate(spec: object, pointer: str = "", /) -> Candidate:
+def parse_candidate(
+    spec: object, pointer: str = "", /, *, reading_assumptions: Wire | None = None
+) -> Candidate:
     """One reading of a candidates part, from its full spec.
 
     The label is the sentence's heading segment, and the unit is the byline's unit
     slot, so a label, unit and source read together say what the sentence says.
+    `reading_assumptions` is the part's map of each reading's assumptions by
+    `spec_id`.
 
     Raises:
         ContractError: `spec_id` or `definition` is missing, null or inconsistent.
@@ -150,6 +155,7 @@ def parse_candidate(spec: object, pointer: str = "", /) -> Candidate:
         source=_optional_text(provenance.get("label")),
         unit=unit,
         raw=spec,
+        assumptions=parse_assumptions((reading_assumptions or {}).get(parsed.spec_id)),
     )
 
 
@@ -177,6 +183,21 @@ def parse_departures(departures: object, /) -> tuple[Departure, ...]:
             binding_ref=_optional_text(departure.get("binding_ref")),
         )
         for departure in _objects(departures)
+    )
+
+
+def parse_assumptions(assumptions: object, /) -> tuple[Assumption, ...]:
+    """What Search assumed for a reading, from a list of the wire's assumptions."""
+    return tuple(
+        Assumption(
+            kind=_text(assumption.get("kind")),
+            binding_ref=_text(assumption.get("binding_ref")),
+            text=_text(assumption.get("text")),
+            refs=tuple(
+                ref for ref in _list(assumption.get("refs")) if isinstance(ref, str)
+            ),
+        )
+        for assumption in _objects(assumptions)
     )
 
 
@@ -266,9 +287,14 @@ def _candidates(part: Wire, pointer: str) -> CandidatesPart[Candidate]:
     specs = candidate_set["specs"]
     if not isinstance(specs, list):
         raise _violation("CandidateSet.specs is not an array in the response")
+    reading_assumptions = _object(part.get("reading_assumptions"))
     return CandidatesPart(
         candidates=tuple(
-            parse_candidate(spec, f"{pointer}/candidates/specs/{index}")
+            parse_candidate(
+                spec,
+                f"{pointer}/candidates/specs/{index}",
+                reading_assumptions=reading_assumptions,
+            )
             for index, spec in enumerate(specs)
         ),
         truncated=candidate_set.get("truncated") is True,
@@ -319,6 +345,7 @@ def _part_fields(part: Wire, status: str) -> dict[str, Any]:
         "warnings": parse_notices(part.get("warnings")),
         "departures": parse_departures(part.get("departures")),
         "operations": parse_operations(part.get("operations")),
+        "assumptions": parse_assumptions(part.get("assumptions")),
         "raw": part,
     }
 

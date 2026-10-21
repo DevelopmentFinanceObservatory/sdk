@@ -60,12 +60,12 @@ for part in answer.parts:
 ```
 
 - `DefinitePart(spec)` has one reading.
-- `CandidatesPart(candidates)` has several, in the server's order. Each `Candidate` has a `spec`, `sentence`, `label`, `source` and `unit`. `truncated` is True when the server left readings out.
+- `CandidatesPart(candidates)` has several, in the server's order. Each `Candidate` has a `spec`, `sentence`, `label`, `source`, `unit` and `assumptions`. `truncated` is True when the server left readings out.
 - `NoDataPart(reason)` has no reading. `reason` is a code such as `variable_not_resolved` or `entity_ambiguous`, and `message` is the server's explanation.
 - `UnsupportedPart(reason)` was understood and is outside what DFO answers.
 - `UnknownPart(status, raw)` has a status newer than this client. Upgrade `development-finance` to read it.
 
-Every part also carries `variable_text` (the question's words for it), `departures`, `operations` and `warnings`.
+Every part also carries `variable_text` (the question's words for it), `departures`, `operations`, `assumptions` and `warnings`. Each `Assumption` is a choice Search made that the question left open, such as the aid type, with its `kind`, `binding_ref`, `text` and `refs`; the sentence states them in an "Assumed: ..." clause.
 
 ## Choose a reading
 
@@ -82,7 +82,7 @@ Search answered 1 of 2 parts of your question.
   Or take the answered part: answer.fetch(partial=True)
 ```
 
-`answer.choose(part, option)` settles the part and returns a new answer. Name the part by its index or its `variable_text`, and the option by its index or its label:
+`answer.choose(part, option)` settles the part and returns Search's new answer, from one Search request. Name the part by its index or its `variable_text`, and the option by its index or its label:
 
 ```python
 import dfo
@@ -103,7 +103,7 @@ data = answer.choose(0).fetch()
 print(data.sentence)
 ```
 
-Choosing among candidates sends no request. Each candidate also fetches on its own, which gives the same result as choosing it in a one-part answer:
+A pick of a candidate makes one Search request, which runs no language model. It posts the reading's identity back with the assumptions Search made for it, and the new answer's sentence, with its "Assumed: ..." clause, is Search's. In an answer of several parts the request carries every part, so Search composes the joined sentence again. Each candidate also fetches on its own: `candidate.fetch()` asks Search for that reading alone, in one request, and builds the answer Search gives:
 
 ```python
 import dfo
@@ -121,7 +121,7 @@ print(data.sentence)
 
 ### A place or source that matches several
 
-A place name such as "Congo" can match two countries. The part is a `NoDataPart` with the reason `entity_ambiguous`, and its gap's kind is `choice`. When the gap carries `options`, choosing one searches again with that place pinned. When it carries none, ask again with the full name:
+A place name such as "Congo" can match two countries. The part is a `NoDataPart` with the reason `entity_ambiguous`, and its gap's kind is `choice`. The gap's `options` are the part's own options, one per place that matches. Choosing one searches again with that place pinned, in one Search request. When the part offers none, ask again with the full name:
 
 ```python
 import dfo
