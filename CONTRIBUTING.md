@@ -39,7 +39,7 @@ pnpm --dir typescript build
 pnpm --dir typescript generate:check
 ```
 
-`pnpm build` writes JavaScript and declaration files to `typescript/dist/`. The package is ESM only. Its `.` export has a `node` condition, whose entry point reads the credentials file from the file system; every other platform loads the entry point without it.
+`pnpm build` writes JavaScript and declaration files to `typescript/dist/`. The package is ESM only. Its `.` export has a `node` condition, whose entry point reads the credentials file from the file system. Every other platform loads the entry point without it.
 
 ### Generated code
 
