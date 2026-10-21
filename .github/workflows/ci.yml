@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # feat/** covers a stacked PR, whose base is the branch below it.
   pull_request:
-    branches: [main]
+    branches: [main, 'feat/**']
 
 permissions:
   contents: read
