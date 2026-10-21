@@ -298,6 +298,6 @@ describe("a stored version's lookup order", () => {
       assert.match(error.message, new RegExp(`newest version is ${newest}`));
       return true;
     });
-    assert.equal(seen[2]!.url, `${BASE}/datasets/${member.spec.spec_id}/versions`);
+    assert.equal(seen[2]!.url, `${BASE}/datasets/${member.spec.spec_id}/versions?limit=1`);
   });
 });

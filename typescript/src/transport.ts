@@ -10,6 +10,7 @@ import {
   resolveApiKey,
 } from "./keys.ts";
 import type { ApiKeyOption, ResolvedKey } from "./keys.ts";
+import type { LongBuild } from "./operation.ts";
 import { VERSION } from "./version.ts";
 import { DfoDeprecationWarning, DfoWarning, emitWarning, warnOnce } from "./warnings.ts";
 import type { WarningHandler } from "./warnings.ts";
@@ -55,6 +56,8 @@ export type TransportOptions = {
   sleep?: Sleep;
   env?: EnvReader;
   readCredentialsFile?: CredentialsFileReader;
+  /** Observes each long build as its polling starts; the contract replay reads its record. */
+  onLongBuild?: (build: LongBuild) => void;
 };
 
 /** A request target: a `path` under the base URL, or a `url` the server returned, which
@@ -204,6 +207,11 @@ export class Transport {
   /** Waits `ms` on the transport's sleep, rejecting with the caller's reason on abort. */
   sleep(ms: number, signal?: AbortSignal): Promise<void> {
     return this.#sleep(ms, signal);
+  }
+
+  /** Passes a long build whose polling starts to the `onLongBuild` observer. */
+  longBuildStarted(build: LongBuild): void {
+    this.#options.onLongBuild?.(build);
   }
 
   /** Passes a warning to the caller's warning handler. */

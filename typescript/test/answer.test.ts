@@ -157,7 +157,10 @@ describe("gaps", () => {
 
 describe("choose", () => {
   test("refuses a part that offers no options, with no request", async () => {
-    const answer = answerOf("search-place-ambiguous");
+    const edited = body("search-place-ambiguous");
+    const [part] = edited["parts"] as { no_data: { options: unknown[] } }[];
+    part!.no_data.options = [];
+    const answer = answerFromBody(edited, offline(), null);
     await assert.rejects(answer.choose(0), (error: unknown) => {
       assert.ok(error instanceof InvalidRequestError);
       assert.equal(error.code, "choice_invalid");
@@ -203,6 +206,7 @@ describe("choose", () => {
           entry_kind: "identity",
           identity: definite.spec.definition.identity,
           entity_groups: groups,
+          assumptions: definite.assumptions,
         },
         {
           variable_text: "GNI",
@@ -211,6 +215,7 @@ describe("choose", () => {
           ...(chosen.resolved.entity_groups
             ? { entity_groups: chosen.resolved.entity_groups }
             : {}),
+          assumptions: candidates.reading_assumptions![chosen.spec_id],
         },
       ],
     });
@@ -269,10 +274,12 @@ describe("candidate.fetch", () => {
     assert.deepEqual(remaining(), []);
   });
 
-  test("in an answer of several parts, builds the candidate's part alone with the options given", async () => {
+  test("in an answer of several parts, asks Search for the candidate alone and builds its answer with the options given", async () => {
     const built: { members: MemberRequest[]; layout: unknown; timeout: unknown }[] = [];
+    const picked = body("answer-definite-fetch");
+    const { fetch, seen } = mockFetch(json(picked));
     const context: AnswerContext = {
-      transport: replay(NO_EXCHANGES).transport,
+      transport: replay(NO_EXCHANGES, { fetch }).transport,
       onWarning: () => undefined,
       fetchMembers: (_, members, options) => {
         built.push({ members: [...members], layout: options.layout, timeout: options.timeout });
@@ -280,16 +287,30 @@ describe("candidate.fetch", () => {
       },
     };
     const answer = answerOf("choose-candidate-two-parts", context);
+    const part = answer.parts[0] as CandidatesPart;
     const candidate = candidatesOf(answer.gaps)[1]!;
     await candidate.fetch({ layout: "frame", timeout: 5_000 });
+
+    const posted = JSON.parse(seen[0]!.body!) as { input: unknown };
+    assert.deepEqual(posted.input, {
+      kind: "dataset_resubmit",
+      entries: [
+        {
+          variable_text: "GNI",
+          entry_kind: "identity",
+          identity: candidate.spec.definition.identity,
+          assumptions: part.reading_assumptions![candidate.spec.spec_id],
+        },
+      ],
+    });
+    const [answered] = picked["parts"] as DefinitePart[];
     assert.deepEqual(
       built.map(({ members, layout, timeout }) => ({
         specs: members.map((member) => member.spec.spec_id),
-        parts: members.map((member) => member.parts),
         layout,
         timeout,
       })),
-      [{ specs: [candidate.spec.spec_id], parts: [["GNI"]], layout: "frame", timeout: 5_000 }],
+      [{ specs: [answered!.spec.spec_id], layout: "frame", timeout: 5_000 }],
     );
   });
 
@@ -345,7 +366,7 @@ describe("fetch", () => {
     await answerOf("answer-several-readings-folded", context).fetch();
     assert.deepEqual(
       context.built[0]!.map((member) => member.parts),
-      [["health ODA disbursements", "education ODA disbursements"], ["GDP"]],
+      [["ODA disbursements for health", "ODA disbursements for education"], ["GDP"]],
     );
   });
 

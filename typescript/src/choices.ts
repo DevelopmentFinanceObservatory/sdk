@@ -1,9 +1,10 @@
 /**
  * Choices: which part and option a `choose` call names, and what it posts to Search.
  *
- * A choice of place or source in a one-part answer posts the option's `data_query` unchanged. A
- * choice in an answer of several parts posts a `dataset_resubmit` with one entry per part, in
- * part order, so Search composes the joined sentence and folds the parts again:
+ * A choice of place or source in a one-part answer posts the option's `data_query` unchanged.
+ * Any other choice, a pick among one part's candidates included, posts a `dataset_resubmit` with
+ * one entry per part, in part order, and Search answers the picked reading with its sentence and
+ * assumptions:
  *
  * - the chosen option posts its one parsed part, and a chosen candidate its identity;
  * - a definite part posts its spec's identity and entity groups;
@@ -11,12 +12,17 @@
  *   and `truncated` echoed, since Search cannot recompute that order from a restatement;
  * - any other part posts its `restatement`, which Search resolves again and so keeps its message
  *   and its choices, or a placeholder of its refusal when it has none.
+ *
+ * Each identity echoes its reading's assumptions: a picked or listed candidate its part's
+ * `reading_assumptions` under its `spec_id`, a definite part its own `assumptions`. A reading
+ * with no list posts none, and Search reads it as a fresh request.
  */
 import type { Answer, Candidate, Gap, QueryOption } from "./answer.ts";
 import { clientError } from "./errors.ts";
 import type { InvalidRequestError } from "./errors.ts";
 import { isKnownPart } from "./parts.ts";
 import type {
+  Assumption,
   DatasetResubmitInput,
   ParsedInput,
   ParsedPart,
@@ -106,7 +112,8 @@ export function pick(gap: Gap, key: ChoiceKey, mention?: ChoiceKey): Candidate |
   );
 }
 
-/** The Search input a choice posts. A one-part answer posts the option's query unchanged. */
+/** The Search input a choice posts. A one-part answer posts a chosen option's query
+ *  unchanged. */
 export function choiceInput(
   answer: Answer,
   gap: Gap,
@@ -121,8 +128,14 @@ export function choiceInput(
   };
 }
 
+/** The identity entry that picks `candidate` in its part, the one entry a pick posts on its
+ *  own. */
+export function pickedEntry(part: Part, candidate: Candidate): ResubmitIdentityEntry {
+  return identityEntry(part, candidate.spec);
+}
+
 function chosenEntry(part: Part, chosen: Candidate | QueryOption): Entry {
-  if (chosen.kind === "candidate") return identityEntry(part, chosen.spec);
+  if (chosen.kind === "candidate") return pickedEntry(part, chosen);
   const parts = chosen.dataQuery.parts as ParsedInput["parts"] | undefined;
   if (!Array.isArray(parts) || parts.length !== 1) {
     throw clientError("contract_violation", {
@@ -140,7 +153,7 @@ function entry(part: Part): Entry {
       entry_kind: "candidates",
       ordering: part.candidates.ordering,
       truncated: part.candidates.truncated,
-      candidates: part.candidates.specs.map(identityOf),
+      candidates: part.candidates.specs.map((spec) => identityOf(spec, readingEcho(part, spec))),
     };
   }
   // Any other part status may carry a restatement, an unknown one included.
@@ -170,16 +183,33 @@ function entry(part: Part): Entry {
   );
 }
 
-function identityOf(spec: Spec): Pick<ResubmitIdentityEntry, "identity" | "entity_groups"> {
+/** A reading's identity, its entity groups when it has any, and its assumptions echo unless it
+ *  has none to echo. */
+function identityOf(
+  spec: Spec,
+  assumptions: readonly Assumption[] | undefined,
+): Pick<ResubmitIdentityEntry, "identity" | "entity_groups" | "assumptions"> {
   const groups = spec.resolved.entity_groups;
   return {
     identity: spec.definition.identity,
     ...(groups != null && Object.keys(groups).length > 0 ? { entity_groups: groups } : {}),
+    ...(assumptions === undefined ? {} : { assumptions: [...assumptions] }),
   };
 }
 
 function identityEntry(part: Part, spec: Spec): ResubmitIdentityEntry {
-  return { ...echoed(part), entry_kind: "identity", ...identityOf(spec) };
+  return { ...echoed(part), entry_kind: "identity", ...identityOf(spec, readingEcho(part, spec)) };
+}
+
+/** The assumptions a resubmitted reading of `part` echoes: a candidates part's
+ *  `reading_assumptions` under the reading's `spec_id`, else the part's own `assumptions`.
+ *  Undefined when the part holds no list for the reading; `[]` states none. */
+function readingEcho(part: Part, spec: Spec): readonly Assumption[] | undefined {
+  const listed =
+    isKnownPart(part) && part.status === "candidates"
+      ? part.reading_assumptions?.[spec.spec_id]
+      : (part.assumptions as Assumption[] | null | undefined);
+  return Array.isArray(listed) ? listed : undefined;
 }
 
 /** The members every entry other than a parsed one echoes from its part. */

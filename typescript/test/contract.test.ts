@@ -12,11 +12,12 @@ import type { Client } from "../src/client.ts";
 import { Dataset } from "../src/dataset.ts";
 import type { FetchOptions, Narrowing } from "../src/fetch.ts";
 import { Operation } from "../src/operation.ts";
+import type { LongBuild } from "../src/operation.ts";
 import { DatasetRef } from "../src/ref.ts";
 import { DfoError, isDfoError, VersionUnavailableError } from "../src/errors.ts";
 import { DfoWarning } from "../src/warnings.ts";
 import { replay, scenarios } from "./replay.ts";
-import type { Outcome, Scenario, Step } from "./replay.ts";
+import type { LongBuildSummary, Outcome, Scenario, Step } from "./replay.ts";
 
 const all = await scenarios();
 
@@ -33,6 +34,16 @@ function callOptions(step: Narrowing & { layout?: unknown; strict?: unknown; tim
   }
   return options;
 }
+
+/** What a step issued beside its outcome: its warnings, and the long builds it polled. */
+type Observed = { warnings: unknown[]; longBuilds: LongBuild[] };
+
+/** A long build as the contract states it, its waits in seconds. */
+const longBuildSummary = (build: LongBuild): LongBuildSummary => ({
+  operation_id: build.operationId ?? "",
+  poll_waits: build.pollWaits.map((ms) => ms / 1000),
+  resubmissions: build.resubmissions,
+});
 
 /** Runs one step from the previous step's outcome. */
 async function run(client: Client, step: Step, previous: Reached | undefined): Promise<Reached> {
@@ -59,6 +70,11 @@ async function run(client: Client, step: Step, previous: Reached | undefined): P
       const { spec, ...rest } = step;
       return client.mint(spec, callOptions(rest));
     }
+    case "operation":
+      return client.operation(
+        step.operation_id,
+        step.layout === undefined ? {} : { layout: step.layout },
+      );
     case "result":
       assert.ok(previous instanceof Operation, "a result follows a mint");
       return previous.result(step.timeout === undefined ? {} : { timeout: step.timeout });
@@ -103,7 +119,7 @@ async function checkDataset(
   dataset: Dataset<Gap>,
   expected: Record<string, unknown>,
   name: string,
-  warnings: readonly unknown[],
+  observed: Observed,
 ): Promise<void> {
   const rows = await dataset.toRows();
   assert.equal(rows.length, dataset.rows, `${name}: decoded rows`);
@@ -125,14 +141,20 @@ async function checkDataset(
     })),
     missing: dataset.missing.map((gap) => ({ part: gap.partIndex, kind: gap.kind })),
     part_rows: [...partRows].map(([part, count]) => ({ part, rows: count })),
-    search_warning: warnings.some((warning) => warning instanceof SearchWarning),
+    search_warning: observed.warnings.some((warning) => warning instanceof SearchWarning),
+    long_builds: observed.longBuilds.map(longBuildSummary),
   });
 }
 
 /** Checks a refusal's class and code, and a `VersionUnavailableError`'s newest version. A
  *  strict fetch throws a `SearchWarning` or a `DataWarning`, each a `DfoWarning`; a
  *  `SearchWarning`'s code is null when the readings differ in several ways. */
-function checkError(error: unknown, expected: Record<string, unknown>, name: string): void {
+function checkError(
+  error: unknown,
+  expected: Record<string, unknown>,
+  name: string,
+  observed: Observed,
+): void {
   assert.ok(isDfoError(error) || error instanceof DfoWarning, `${name}: ${String(error)}`);
   if (!WARNING_CLASSES.has(String(expected["class"]))) {
     assert.ok(error instanceof DfoError, `${name}: ${String(error)}`);
@@ -141,6 +163,7 @@ function checkError(error: unknown, expected: Record<string, unknown>, name: str
     class: error.name,
     code: error.code,
     ...(error instanceof VersionUnavailableError ? { newest_version: error.newestVersion } : {}),
+    long_builds: observed.longBuilds.map(longBuildSummary),
   });
 }
 
@@ -149,7 +172,7 @@ async function checkOutcome(
   reached: Reached,
   expected: Outcome,
   name: string,
-  warnings: readonly unknown[],
+  observed: Observed,
 ): Promise<void> {
   const [kind, ...extra] = Object.keys(expected);
   assert.deepEqual(extra, [], `${name}: an outcome names one kind`);
@@ -160,7 +183,7 @@ async function checkOutcome(
   }
   if ("dataset" in expected) {
     assert.ok(reached instanceof Dataset, `${name}: gave a dataset`);
-    return checkDataset(reached, expected.dataset, name, warnings);
+    return checkDataset(reached, expected.dataset, name, observed);
   }
   if ("operation" in expected) {
     assert.ok(reached instanceof Operation, `${name}: gave an operation`);
@@ -175,26 +198,28 @@ async function checkOutcome(
 
 async function replayScenario(record: Scenario): Promise<void> {
   assert.equal(record.expect.length, record.call.length, `${record.name}: one outcome per step`);
-  const warnings: unknown[] = [];
+  const observed: Observed = { warnings: [], longBuilds: [] };
   const { transport, remaining } = replay(record, {
-    onWarning: (warning) => warnings.push(warning),
+    onWarning: (warning) => observed.warnings.push(warning),
+    onLongBuild: (build) => observed.longBuilds.push(build),
   });
   const client = clientOver(transport);
   let previous: Reached | undefined;
   for (const [index, step] of record.call.entries()) {
     const expected = record.expect[index]!;
     const name = `${record.name}: step ${index} (${step.op})`;
-    warnings.length = 0;
+    observed.warnings.length = 0;
+    observed.longBuilds.length = 0;
     let reached: Reached;
     try {
       reached = await run(client, step, previous);
     } catch (error) {
       if (!("error" in expected)) throw error;
-      checkError(error, expected.error, name);
+      checkError(error, expected.error, name, observed);
       continue;
     }
     assert.ok(!("error" in expected), `${name}: expected ${JSON.stringify(expected)}`);
-    await checkOutcome(reached, expected, name, warnings);
+    await checkOutcome(reached, expected, name, observed);
     previous = reached;
   }
   assert.deepEqual(remaining(), [], `${record.name}: exchanges left unrequested`);

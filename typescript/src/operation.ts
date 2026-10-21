@@ -47,6 +47,14 @@ export type ProgressEvent = {
 
 export type ProgressHandler = (event: ProgressEvent) => void;
 
+/** How the client followed one long build: the operation it polls, each wait before a poll
+ *  in milliseconds, and how many times it posted the build again after a retryable failure. */
+export type LongBuild = {
+  readonly operationId: string | null;
+  readonly pollWaits: readonly number[];
+  readonly resubmissions: number;
+};
+
 /** One reading of an operation resource. */
 type OperationState = {
   readonly operationId: string;
@@ -211,7 +219,7 @@ async function postBuild(transport: Transport, body: unknown, { deadline, signal
 }
 
 /** Polls one build until it is done, at the server's pacing. */
-class Poller {
+class Poller implements LongBuild {
   readonly #transport: Transport;
   /** The build request, resubmitted once when the operation fails retryably; undefined for a
    *  resumed operation. */
@@ -226,7 +234,9 @@ class Poller {
   #error: DfoError | null = null;
   #backoffStep = 0;
   #retries = 0;
-  #resubmitted = false;
+  #resubmissions = 0;
+  readonly #pollWaits: number[] = [];
+  #started = false;
 
   constructor(
     transport: Transport,
@@ -247,6 +257,14 @@ class Poller {
     return this.#state?.progress ?? null;
   }
 
+  get pollWaits(): readonly number[] {
+    return this.#pollWaits;
+  }
+
+  get resubmissions(): number {
+    return this.#resubmissions;
+  }
+
   get status(): string {
     if (this.#error !== null) return FAILED;
     if (this.#manifest !== null) return DONE;
@@ -258,20 +276,31 @@ class Poller {
   }
 
   async done(wait: Wait): Promise<boolean> {
+    this.#start();
     if (!this.#finished()) await this.#poll(wait);
     return this.#finished();
   }
 
   /** Polls until the build is done and returns its manifest. */
   async wait(wait: Wait): Promise<Manifest> {
+    this.#start();
     while (!this.#finished()) {
       const ms = this.#nextWait();
       if (!fits(this.#transport, ms, wait.deadline)) throw this.#stillRunning();
+      this.#pollWaits.push(ms);
       await this.#transport.sleep(ms, wait.signal);
       await this.#poll(wait);
     }
     if (this.#error !== null) throw this.#error;
     return this.#manifest!;
+  }
+
+  /** Reports the long build to the transport's observer when polling first starts; a build the
+   *  server finished inline is none. */
+  #start(): void {
+    if (this.#started || this.operationId === null) return;
+    this.#started = true;
+    this.#transport.longBuildStarted(this);
   }
 
   #finished(): boolean {
@@ -360,11 +389,11 @@ class Poller {
 
   /** Resubmits a build that failed retryably, once; otherwise holds the error. */
   async #failed(error: DfoError, wait: Wait): Promise<void> {
-    if (!error.retryable || this.#body === undefined || this.#resubmitted) {
+    if (!error.retryable || this.#body === undefined || this.#resubmissions > 0) {
       this.#error = error;
       return;
     }
-    this.#resubmitted = true;
+    this.#resubmissions += 1;
     this.#error = null;
     this.#take(await postBuild(this.#transport, this.#body, wait));
   }

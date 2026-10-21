@@ -7,8 +7,8 @@ import type { Layout, SpecLike } from "../src/ref.ts";
 import { Transport } from "../src/transport.ts";
 import type { TransportOptions } from "../src/transport.ts";
 
-/** The base URL recorded scenarios name; synthetic ones were derived from recordings on it. */
-export const RECORDED_BASE_URL = "https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app/api";
+/** The base URL every replay serves its scenario at, whatever base URL the record names. */
+export const REPLAY_BASE_URL = "https://api.replay.test/api";
 
 type Json = Record<string, unknown>;
 
@@ -39,6 +39,7 @@ export type Step =
   | { op: "choose"; part?: number | string; option: number | string }
   | FetchStep
   | { op: "mint"; spec: SpecInput; layout?: Layout }
+  | { op: "operation"; operation_id: string; layout?: Layout }
   | { op: "result"; timeout?: number };
 
 export type Exchange = {
@@ -60,6 +61,13 @@ export type AnswerSummary = {
   gaps: { part: number; kind: string; options: number }[];
 };
 
+/** How the client followed one long build: `poll_waits` in seconds. */
+export type LongBuildSummary = {
+  operation_id: string;
+  poll_waits: number[];
+  resubmissions: number;
+};
+
 export type DatasetSummary = {
   rows: number;
   columns: string[];
@@ -67,12 +75,14 @@ export type DatasetSummary = {
   members: { parts: string[]; spec_id: string; content_version: string; sentence: string }[];
   missing: { part: number; kind: string }[];
   search_warning?: boolean;
+  long_builds?: LongBuildSummary[];
 };
 
 export type ErrorSummary = {
   class: string;
   code: string | null;
   newest_version?: string | null;
+  long_builds?: LongBuildSummary[];
 };
 
 export type Outcome =
@@ -163,9 +173,7 @@ export function replay(
   record: Scenario,
   options: TransportOptions = {},
 ): { transport: Transport; waits: number[]; remaining: () => Exchange[]; urls: string[] } {
-  const base = new URL(
-    record.origin.kind === "recorded" ? record.origin.base_url : RECORDED_BASE_URL,
-  );
+  const base = new URL(REPLAY_BASE_URL);
   const queue = [...record.exchanges];
   const waits: number[] = [];
   const urls: string[] = [];

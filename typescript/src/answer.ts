@@ -6,7 +6,7 @@
  * that awaits a choice and returns a new answer.
  */
 import { answerText, declinedText, incompleteMessage, readingHints } from "./answer-text.ts";
-import { choiceInput, gapNamed, onlyChoice, pick } from "./choices.ts";
+import { choiceInput, gapNamed, onlyChoice, pick, pickedEntry } from "./choices.ts";
 import { clientError } from "./errors.ts";
 import type { IncompleteAnswerError } from "./errors.ts";
 import type { Dataset } from "./dataset.ts";
@@ -23,6 +23,7 @@ import type {
   CandidatesPart,
   DatasetResubmitInput,
   DefinitePart,
+  NoData,
   ParsedInput,
   Part,
   RawTextInput,
@@ -78,8 +79,9 @@ export class Candidate {
   }
 
   /**
-   * Builds this reading's dataset: the one-part answer `answer.choose(part, candidate)` would
-   * give, fetched with `Answer.fetch`'s options.
+   * Builds this reading's dataset. It asks Search for this reading alone, one request with no
+   * model call, and fetches that answer with `Answer.fetch`'s options; in a one-part answer that
+   * is the answer `answer.choose(candidate)` gives.
    *
    * @throws {InvalidRequestError} The candidate came from no answer.
    */
@@ -214,8 +216,18 @@ export class Answer {
     this.#context = init.context;
     const bind =
       (part: CandidatesPart): CandidateFetch =>
-      (candidate, options) =>
-        this.#withCandidate(part, candidate).fetch(options);
+      async (candidate, options) => {
+        const input: DatasetResubmitInput = {
+          kind: "dataset_resubmit",
+          entries: [pickedEntry(part, candidate)],
+        };
+        const signal = options.signal === undefined ? {} : { signal: options.signal };
+        const picked = await resolveAnswer(this.#context, input, {
+          ...signal,
+          question: this.question,
+        });
+        return picked.fetch(options);
+      };
     this.gaps = this.parts.flatMap((part, index) => {
       const gap = gapFor(index, part, this.timedOut, bind);
       return gap === null ? [] : [gap];
@@ -227,9 +239,11 @@ export class Answer {
   }
 
   /**
-   * Settles a part that awaits a choice and returns the new answer. `choose(option)` picks in the
-   * only part that awaits one; `choose(part, option)` names the part by its index, its variable
-   * text, or a word of the question its options settle. An option is named by its index or label.
+   * Settles a part that awaits a choice and returns Search's answer to it, one request with no
+   * model call. `choose(option)` picks in the only part that awaits one; `choose(part, option)`
+   * names the part by its index, its variable text, or a word of the question its options settle.
+   * An option is named by its index or label. The picked answer's sentence and assumptions are
+   * Search's.
    *
    * @throws {InvalidRequestError} No part, or more than one, awaits a choice; the part or option
    *   is unknown; or the part offers no options.
@@ -245,15 +259,6 @@ export class Answer {
     const gap = named ? gapNamed(this, first) : onlyChoice(this);
     const chosen = pick(gap, named ? second : first, named ? first : undefined);
     const options = (named ? third : second) ?? {};
-    const { part } = gap;
-    if (
-      this.parts.length === 1 &&
-      chosen.kind === "candidate" &&
-      isKnownPart(part) &&
-      part.status === "candidates"
-    ) {
-      return this.#withCandidate(part, chosen);
-    }
     return resolveAnswer(this.#context, choiceInput(this, gap, chosen), {
       ...options,
       question: this.question,
@@ -309,23 +314,6 @@ export class Answer {
   /** The answer as a reader sees it: the sentence, or what is missing. */
   toString(): string {
     return answerText(this);
-  }
-
-  /** The answer with a one-part candidates choice settled, which needs no request. */
-  #withCandidate(part: CandidatesPart, candidate: Candidate): Answer {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- a definite part has no candidate set
-    const { candidates, ...shared } = part;
-    const definite: DefinitePart = { ...shared, status: "definite", spec: candidate.spec };
-    return new Answer({
-      kind: this.kind,
-      status: "definite",
-      sentence: candidate.sentence ?? this.sentence,
-      parts: [definite],
-      question: this.question,
-      warnings: this.warnings,
-      raw: this.raw,
-      context: this.#context,
-    });
   }
 }
 
@@ -507,9 +495,10 @@ function gapFor(
   }
 }
 
-/** A refusal's choices, from `no_data.options`, which the served document does not name yet. */
-function queryOptions(noData: object): QueryOption[] {
-  const options = (noData as { options?: unknown }).options;
+/** A refusal's choices, from `no_data.options`, read tolerantly: each option's `data_query` is
+ *  the input that settles it. */
+function queryOptions(noData: NoData): QueryOption[] {
+  const options: unknown = noData.options;
   if (!Array.isArray(options)) return [];
   return options.filter(isRecord).map((option) => ({
     kind: "query",

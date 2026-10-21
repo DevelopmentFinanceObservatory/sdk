@@ -31,6 +31,8 @@ const chosen = await gni.choose(0);
 const data = await chosen.fetch();
 ```
 
+Each choice makes one Search request with no model call, and the answer it returns is Search's: its sentence, with any "Assumed: ..." clause, and its assumptions. Picking a reading echoes the assumptions Search stated for it, so the picked answer states what that reading assumed. `candidate.fetch()` asks Search for that one reading in the same way, then builds it.
+
 `dataset.ref` names the exact versions the dataset holds. `JSON.stringify(ref)` writes the format both DFO clients read, and `client.fetch(ref)` returns those versions again:
 
 ```ts

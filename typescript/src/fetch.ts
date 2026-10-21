@@ -31,7 +31,6 @@ import {
   DfoError,
   InvalidRequestError,
   NotFoundError,
-  PermissionDeniedError,
   VersionUnavailableError,
 } from "./errors.ts";
 import type { ClientErrorCode, DfoErrorOptions } from "./errors.ts";
@@ -771,7 +770,8 @@ async function storedFile(
   }
 }
 
-/** The newest stored version of a spec, the first the versions route lists, or null. */
+/** The newest stored version of a spec, which the versions route lists alone at `limit=1` since
+ *  it lists versions newest first, or null when it lists none or does not know the spec. */
 async function newestVersion(
   transport: Transport,
   specId: string,
@@ -780,12 +780,12 @@ async function newestVersion(
   let body: unknown;
   try {
     ({ body } = await transport.request({
-      path: `/datasets/${specId}/versions`,
+      path: `/datasets/${specId}/versions?limit=1`,
       deadline,
       ...(signal === undefined ? {} : { signal }),
     }));
   } catch (error) {
-    if (error instanceof NotFoundError || error instanceof PermissionDeniedError) return null;
+    if (error instanceof NotFoundError) return null;
     throw error;
   }
   const versions = isRecord(body) ? body["versions"] : undefined;
