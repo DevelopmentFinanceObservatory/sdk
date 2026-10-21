@@ -25,7 +25,7 @@ The client retries failures that can clear before it raises, so an error reaches
 | `code`        | The server's refusal code, or one of the client's own codes below  |
 | `status`      | The HTTP status, or None when no response arrived                  |
 | `detail`      | The server's explanation of this occurrence                        |
-| `trace_id`    | The request's trace id; quote it when you report a fault           |
+| `trace_id`    | The response's trace id, or None; quote it when you report a fault |
 | `retryable`   | Whether the same call can succeed later                            |
 | `retry_after` | The wait the response's `Retry-After` header asked for, in seconds |
 | `problem`     | The parsed problem document, or None                               |
@@ -149,6 +149,8 @@ Warnings derive from `dfo.DfoWarning`, a `UserWarning`, and name the line in you
 
 - `SearchWarning`: the reading differs from the question, by a departure, a computation Search does not run, or a default it applied. `code` names it when there is one.
 - `DataWarning`: the server attached a warning to the data. `code` and `severity` come from the server.
+
+A `SearchWarning` or `DataWarning` carries `trace_id`, the trace id of the response it came from.
 - `DfoDeprecationWarning`: a call, or a route the server marked, goes away in a later release. It is also a `DeprecationWarning`. A route the server marks with a `Deprecation` or `Sunset` header issues it with `code` `route_deprecated`, once per process for each pair of header values.
 
 The client issues a plain `DfoWarning` of its own with a `code`: `server_warning` for a message the server sends in an `x-dfo-warning` header, once per process per message, and `key_unknown_prefix`, `key_not_base62` or `key_checksum_mismatch` for a key that does not look like a DFO key.

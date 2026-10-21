@@ -6,7 +6,8 @@ that serves the scenario's exchanges in order, and an injected clock whose sleep
 advances it at once. A request matches the next exchange on its method and full
 URL: `path` under the base URL, `origin_path` against the base URL's origin, and
 `url` as it stands. API requests carry the key and the client's headers; a signed
-storage URL gets a bare request.
+storage URL gets a bare request. A response that names the recorded API origin,
+in its body or a header, names the replay base URL's origin instead.
 
 Every step's outcome is compared member by member with `expect`. A step op or
 key, or an expect member, that this module has no reader for fails the scenario,
@@ -128,13 +129,31 @@ class Clock:
         self.sleep(seconds)
 
 
+def _origin(url: str) -> str:
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def _recorded_origin(record: Mapping[str, Any]) -> str:
+    """The API origin a scenario's responses name: its recording's, or its
+    parent's for a synthetic scenario."""
+    origin = record["origin"]
+    if origin["kind"] == "synthetic":
+        origin = SCENARIOS[origin["derived_from"]]["origin"]
+    return _origin(origin["base_url"])
+
+
 class Exchanges:
-    """Serves a scenario's exchanges in order, checking each request."""
+    """Serves a scenario's exchanges in order, checking each request.
+
+    A response body or header that names the recorded API origin names the
+    replay's origin instead, as the server under the replay's base URL would.
+    """
 
     def __init__(self, record: Mapping[str, Any], base_url: str) -> None:
-        parts = urlsplit(base_url)
         self.base_url = base_url.rstrip("/")
-        self.origin = f"{parts.scheme}://{parts.netloc}"
+        self.origin = _origin(base_url)
+        self.recorded_origin = _recorded_origin(record)
         self.pending = list(record["exchanges"])
         # A recorded scenario lists every body member the client sent.
         self.whole_bodies = record["origin"]["kind"] == "recorded"
@@ -158,7 +177,10 @@ class Exchanges:
                 assert body.get(key) == value, f"{seen}: body member {key}"
             if self.whole_bodies:
                 assert set(body) == set(expected["json"]), seen
-        return _response(exchange["response"])
+        return _response(exchange["response"], self._on_replay_origin)
+
+    def _on_replay_origin(self, text: str) -> str:
+        return text.replace(f"{self.recorded_origin}/", f"{self.origin}/")
 
     def _target(self, expected: Mapping[str, Any]) -> str:
         if "path" in expected:
@@ -168,16 +190,19 @@ class Exchanges:
         return expected["url"]
 
 
-def _response(answer: Mapping[str, Any]) -> httpx2.Response:
+def _response(
+    answer: Mapping[str, Any], rewrite: Callable[[str], str]
+) -> httpx2.Response:
     if "body_file" in answer:
         content = (SCENARIOS_DIR / answer["body_file"]).read_bytes()
     elif "json" in answer:
-        content = json.dumps(answer["json"]).encode()
+        content = rewrite(json.dumps(answer["json"])).encode()
     else:
         content = b""
-    return httpx2.Response(
-        answer["status"], headers=answer.get("headers", {}), content=content
-    )
+    headers = {
+        name: rewrite(value) for name, value in answer.get("headers", {}).items()
+    }
+    return httpx2.Response(answer["status"], headers=headers, content=content)
 
 
 def _client(
@@ -440,6 +465,7 @@ READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
         {
             "class": lambda error, _: type(error).__name__,
             "code": lambda error, _: error.code,
+            "trace_id": lambda error, _: error.trace_id,
             "newest_version": lambda error, _: _newest_version(error),
             "long_builds": lambda _, step: _long_builds(step),
         },

@@ -89,7 +89,7 @@ with dfo.Client() as client:
 
 ## Retries the client makes
 
-The client retries a failure that can clear, twice by default (`max_retries`), and waits for the response's `Retry-After` when it gives one. One layer owns build retries: a synchronous build the server cut off is retried once, and an operation that failed retryably is resubmitted once. A 429 during a poll waits inside the deadline without spending a retry. You see an error only after these run out.
+The client retries a failure that can clear, twice by default (`max_retries`), and waits for the response's `Retry-After` when it gives one. One layer owns build retries: every refusal of a build shares the same retries, a build the server cut off with a 504 is posted once more only, whatever that post answers, and an operation that failed retryably is resubmitted once. A 429 during a poll waits inside the deadline without spending a retry. You see an error only after these run out.
 
 ## Async
 

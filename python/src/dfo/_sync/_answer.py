@@ -42,6 +42,7 @@ from dfo._error_map import (
 )
 from dfo._errors import IncompleteAnswerError, SearchWarning, client_error, warn
 from dfo._parse import ParsedPart, parse_notices, parse_parts
+from dfo._refusals import describing, trace_id_of
 from dfo._sync._fetch import SessionSource, fetch_members
 from dfo._types import (
     Candidate,
@@ -94,6 +95,7 @@ class Answer:
         reason: Why Search declined, for a declined answer.
         warnings: Search's warnings for the whole answer.
         timed_out: Whether Search stopped at its time limit.
+        trace_id: The Search response's trace id, to quote when reporting it.
         raw: The decoded response body, untouched.
     """
 
@@ -108,6 +110,7 @@ class Answer:
     reason: str | None = None
     warnings: tuple[Notice, ...] = ()
     timed_out: bool = False
+    trace_id: str | None = field(default=None, compare=False)
     raw: Mapping[str, Any] = field(default_factory=dict, compare=False)
     _source: SessionSource = field(compare=False)
 
@@ -144,10 +147,19 @@ class Answer:
 
         Raises:
             InvalidRequestError: No part, or more than one, awaits a choice; the
-                part or option is unknown; or the part offers no options.
+                part or option is unknown; the part offers no options; or a part
+                cannot be posted back.
             ContractError: The chosen option's `data_query` is not a parsed
-                input of one part.
+                input of one part; it carries the answer's trace id.
         """
+        with describing(self.trace_id):
+            request = self._choice_input(first, second)
+        return self._resolve(request)
+
+    def _choice_input(
+        self, first: int | str, second: int | str | None
+    ) -> Mapping[str, Any]:
+        """The Search input a choice posts."""
         if second is None:
             gap = self._only_choice()
             option = first
@@ -157,12 +169,12 @@ class Answer:
         chosen = _pick(gap, option, mention=first if second is not None else None)
         if len(self.parts) == 1 and isinstance(chosen, Option):
             _option_part(chosen)
-            return self._resolve(chosen.data_query)
+            return chosen.data_query
         entries = [
             _entry(part, chosen if index == gap.part_index else None)
             for index, part in enumerate(self.parts)
         ]
-        return self._resolve({"kind": "dataset_resubmit", "entries": entries})
+        return {"kind": "dataset_resubmit", "entries": entries}
 
     def fetch(
         self,
@@ -205,6 +217,7 @@ class Answer:
                 ANSWER_DECLINED,
                 _display.declined_text(self.kind, self.reason),
                 detail=self.reason or self.kind,
+                trace_id=self.trace_id,
             )
         members = _members(self.parts)
         if self.gaps and (not partial or not members):
@@ -227,7 +240,11 @@ class Answer:
 
     def incomplete_error(self) -> IncompleteAnswerError:
         """The error `fetch` raises for this answer's gaps."""
-        error = client_error(ANSWER_INCOMPLETE, _display.incomplete_message(self))
+        error = client_error(
+            ANSWER_INCOMPLETE,
+            _display.incomplete_message(self),
+            trace_id=self.trace_id,
+        )
         error.answer = self
         error.gaps = tuple(unbound_gap(gap) for gap in self.gaps)
         return error
@@ -289,13 +306,25 @@ def resolve(
         timeout=math.inf,
         deadline=transport.deadline(timeout),
     )
-    return answer_from_body(response_json(response), question=question, source=source)
+    body = response_json(response)
+    trace_id = trace_id_of(response, body)
+    with describing(trace_id):
+        return answer_from_body(
+            body, question=question, source=source, trace_id=trace_id
+        )
 
 
 def answer_from_body(
-    body: object, /, *, question: str | None, source: SessionSource
+    body: object,
+    /,
+    *,
+    question: str | None,
+    source: SessionSource,
+    trace_id: str | None = None,
 ) -> Answer:
     """Read a decoded Search response into an answer.
+
+    `trace_id` is the trace id of the response the body came from.
 
     Raises:
         ContractError: The body is not an object, its kind is unknown, or a member
@@ -317,6 +346,7 @@ def answer_from_body(
             question=question,
             reason=reason,
             warnings=warnings,
+            trace_id=trace_id,
             raw=body,
             _source=source,
         )
@@ -352,6 +382,7 @@ def answer_from_body(
         question=question,
         warnings=warnings,
         timed_out=timed_out,
+        trace_id=trace_id,
         raw=body,
         _source=source,
     )
@@ -453,16 +484,15 @@ def _readings(
 def _members(parts: Sequence[Part[Candidate]]) -> list[Reading]:
     """One reading per distinct spec, in query order.
 
-    Parts folded onto one spec share its reading, which names each of them.
+    Parts folded onto one spec share its reading, which names each of them that
+    has variable text; a part without any names nothing.
     """
     grouped: dict[Spec, list[Part[Candidate]]] = {}
     for part, spec in _readings(parts):
         grouped.setdefault(spec, []).append(part)
     return [
         Reading(
-            tuple(
-                part.variable_text or spec.sentence or spec.spec_id for part in folded
-            ),
+            tuple(part.variable_text for part in folded if part.variable_text),
             spec,
             spec.sentence,
             tuple(folded),
@@ -666,4 +696,5 @@ def _search_warning(answer: Answer) -> SearchWarning | None:
         "Search's reading differs from your question:\n  "
         + "\n  ".join(line for _, line in hints),
         code=hints[0][0] if len(hints) == 1 else None,
+        trace_id=answer.trace_id,
     )

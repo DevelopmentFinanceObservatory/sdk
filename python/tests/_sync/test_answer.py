@@ -40,6 +40,8 @@ from .._datasets import recorded_member
 BASE = "https://api.example.org/api"
 RESOLVE = f"{BASE}/search/resolve"
 TWO_PARTS = "Germany's ODA and GNI from 2015 to 2022"
+# The `x-dfo-trace-id` header every Search response here carries.
+TRACE = "7f3c0a5be2d94e1c8a6f0b2d4e6a8c10"
 
 
 class Server:
@@ -55,7 +57,9 @@ class Server:
         self.posted.append(json.loads(request.content))
         self.urls.append(str(request.url))
         self.read_timeouts.append(request.extensions["timeout"]["read"])
-        return httpx2.Response(200, json=self.bodies.pop(0))
+        return httpx2.Response(
+            200, json=self.bodies.pop(0), headers={"x-dfo-trace-id": TRACE}
+        )
 
 
 def transport(server: Server) -> Transport:
@@ -280,9 +284,12 @@ def test_unknown_and_unsupported_parts_are_gaps() -> None:
 def test_an_unknown_answer_kind_raises_contract_error() -> None:
     wire = load("search-1.json")
     wire["kind"] = "essay"
+    wire["trace_id"] = "body-trace"
     with pytest.raises(ContractError) as caught:
         ask("ODA", wire)
     assert (caught.value.code, caught.value.pointer) == ("contract_violation", None)
+    # The body's trace id outranks the header's.
+    assert caught.value.trace_id == "body-trace"
 
 
 def test_a_part_without_its_payload_names_the_member_missing() -> None:
@@ -294,6 +301,7 @@ def test_a_part_without_its_payload_names_the_member_missing() -> None:
         "contract_violation",
         "/parts/1/candidates/specs/2/definition",
     )
+    assert caught.value.trace_id == TRACE
 
 
 AID_TYPE = {
@@ -483,6 +491,8 @@ def test_a_place_option_without_a_one_part_query_raises_before_posting(
     with pytest.raises(ContractError) as caught:
         answer.choose(0)
     assert caught.value.code == "contract_violation"
+    # The option belongs to the answer, so the error carries its response's trace.
+    assert caught.value.trace_id == TRACE
     assert len(server.posted) == 1
 
 
@@ -587,6 +597,8 @@ def test_a_choice_that_cannot_be_made_raises_invalid_request(
     with pytest.raises(InvalidRequestError) as caught:
         answer.choose(*call)
     assert caught.value.code == "choice_invalid"
+    # A choice the caller cannot make describes the caller's input.
+    assert caught.value.trace_id is None
     assert len(server.posted) == 1
 
 
@@ -621,11 +633,8 @@ def test_fetch_builds_one_member_per_distinct_spec(
     oda, gni = wire["parts"][0]["spec"], wire["parts"][1]["spec"]
     assert [(m.parts, m.spec.spec_id, m.sentence) for m in members] == [
         (
-            (
-                "official development assistance",
-                "aid",
-                oda["resolved"]["rendered_sentence"],
-            ),
+            # The part without variable text names nothing.
+            ("official development assistance", "aid"),
             oda["spec_id"],
             oda["resolved"]["rendered_sentence"],
         ),

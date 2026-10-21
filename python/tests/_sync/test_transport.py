@@ -490,13 +490,23 @@ def test_a_timed_out_attempt_raises_a_timeout_error() -> None:
     assert caught.value.code == "deadline_exceeded"
 
 
-def test_a_401_resolves_the_key_again_and_retries_once_with_a_new_key() -> None:
-    keys = [KEY, OTHER_KEY]
-    recorder = Recorder(problem(401, code="key_invalid"), httpx2.Response(200))
-    with make(recorder, api_key=lambda: keys.pop(0)) as transport:
-        transport.request("GET", "/datasets/schema")
+@pytest.mark.parametrize("second", [200, 401], ids=["answered", "refused-again"])
+def test_a_401_with_a_changed_key_is_sent_once_more_at_once(second: int) -> None:
+    # No wait and no retry spent: the resend happens even with no retries left.
+    keys = [KEY, OTHER_KEY, KEY]
+    reply = problem(401, code="key_invalid") if second == 401 else httpx2.Response(200)
+    recorder = Recorder(problem(401, code="key_invalid"), reply)
+    timeline = Timeline()
+    transport = make(recorder, timeline, api_key=lambda: keys.pop(0), max_retries=0)
+    with transport:
+        if second == 401:
+            with pytest.raises(AuthenticationError):
+                transport.request("GET", "/datasets/schema")
+        else:
+            transport.request("GET", "/datasets/schema")
     sent = [request.headers["authorization"] for request in recorder.requests]
     assert sent == [f"Bearer {KEY}", f"Bearer {OTHER_KEY}"]
+    assert timeline.sleeps == []
 
 
 def test_a_401_with_the_same_key_raises() -> None:

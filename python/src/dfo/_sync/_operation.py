@@ -7,15 +7,18 @@ polls at `/datasets/operations/{id}` until it is done or the deadline passes.
 
 One layer owns build retries, and it is this one: the build request is sent with
 no transport retries and reads for up to 150 seconds within the call's deadline.
-A synchronous cut-off (a 504, or the read timing out) is retried once, and other
-retryable refusals within the transport's retry count; each retry waits for the
+Every retryable refusal of the build shares the transport's retry count, and
+once a synchronous cut-off (a 504, or the read timing out) refuses it, the build
+is posted once more only, whatever that post answers. Each retry waits for the
 refusal's `Retry-After`, else the transport's backoff for that attempt, from 0.5
-to 8 seconds. A retryable failed
-operation is resubmitted once, and a failed operation whose document carries no
-`error` fails with `operation_failed`. Polls wait for `retry_after_ms` when the
-resource carries it, else for the `Retry-After` header, else back off from 1 to
-8 seconds; a 429 waits for its `Retry-After` without spending a retry, and a
-poll that times out spends one.
+to 8 seconds. A retryable failed operation is resubmitted once, and a failed
+operation whose document carries no `error` fails with `operation_failed`.
+
+Polls wait for `retry_after_ms` when the resource carries it, else for the
+`Retry-After` header, else back off from 1 to 8 seconds. A 429 waits for its
+`Retry-After` without spending a retry; any other retryable refused poll, one
+that times out included, spends one of the transport's retries, which a poll
+that answers restores.
 """
 
 from collections.abc import Callable
@@ -38,7 +41,7 @@ from dfo._error_map import DEADLINE_EXCEEDED, UNEXPECTED_RESPONSE
 from dfo._errors import DfoError, DfoTimeoutError, client_error
 from dfo._parse import check_manifest
 from dfo._progress import ProgressRenderer
-from dfo._refusals import problem_error
+from dfo._refusals import describing, problem_error, trace_id_of
 from dfo._sync._transport import Transport, retry_after
 
 type ProgressHook = Callable[[str, Progress, str | None], None]
@@ -53,8 +56,11 @@ _FAILED_STATUS = 500
 class Finish(Protocol):
     """Turns a done build's manifest into the dataset an operation returns."""
 
-    def __call__(self, manifest: Wire, deadline: float | None, /) -> Dataset:
-        """Download, check and assemble the dataset for `manifest`."""
+    def __call__(
+        self, manifest: Wire, trace_id: str | None, deadline: float | None, /
+    ) -> Dataset:
+        """Download, check and assemble the dataset for `manifest`, read from
+        the response whose trace id is `trace_id`."""
         ...
 
 
@@ -90,25 +96,30 @@ def progress_hook(renderer: ProgressRenderer) -> ProgressHook:
 
 
 def _reply(response: httpx2.Response) -> Reply:
-    trace_id = response.headers.get("x-dfo-trace-id")
     if response.status_code == 200:
         manifest = response_json(response)
-        check_manifest(manifest)
+        trace_id = trace_id_of(response, manifest)
+        with describing(trace_id):
+            check_manifest(manifest)
         return Reply(manifest, None, trace_id=trace_id)
     if response.status_code == 202:
-        return Reply(
-            None,
-            read_operation(response_json(response)),
-            retry_after(response),
-            trace_id,
-        )
+        return _operation_reply(response)
     raise client_error(
         UNEXPECTED_RESPONSE,
         f"POST /datasets answered HTTP {response.status_code}; "
         "a build answers 200 or 202",
         status=response.status_code,
-        trace_id=trace_id,
+        trace_id=trace_id_of(response),
     )
+
+
+def _operation_reply(response: httpx2.Response) -> Reply:
+    """A response carrying an operation resource, read and checked."""
+    body = response_json(response)
+    trace_id = trace_id_of(response, body)
+    with describing(trace_id):
+        state = read_operation(body)
+    return Reply(None, state, retry_after(response), trace_id)
 
 
 def _problem_status(problem: object) -> int:
@@ -144,9 +155,8 @@ def post_build(transport: Transport, body: Wire, *, deadline: float | None) -> R
         DfoError: The refusal, once the retries the build allows are spent.
         ContractError: The server answered a status a build never answers.
     """
-    cut_off_retried = False
+    cut_off = False
     retries = 0
-    attempts = 0
     while True:
         try:
             response = transport.request(
@@ -158,24 +168,19 @@ def post_build(transport: Transport, body: Wire, *, deadline: float | None) -> R
                 max_retries=0,
             )
         except DfoError as error:
-            cut_off = _is_cut_off(error)
-            if cut_off:
-                allowed = not cut_off_retried
-            else:
-                allowed = error.retryable and retries < transport.max_retries
+            allowed = (
+                error.retryable and retries < transport.max_retries and not cut_off
+            )
             wait = (
-                transport.backoff(attempts)
+                transport.backoff(retries)
                 if error.retry_after is None
                 else error.retry_after
             )
             if not allowed or not _fits(transport, wait, deadline):
                 raise
             transport.sleep(wait)
-            attempts += 1
-            if cut_off:
-                cut_off_retried = True
-            else:
-                retries += 1
+            retries += 1
+            cut_off = _is_cut_off(error)
             continue
         return _reply(response)
 
@@ -232,6 +237,11 @@ class Poller:
     def progress(self) -> Progress | None:
         """The progress the server last reported, or None."""
         return None if self._state is None else self._state.progress
+
+    @property
+    def trace_id(self) -> str | None:
+        """The trace id of the response the build was last read from."""
+        return self._trace_id
 
     @property
     def poll_waits(self) -> tuple[float, ...]:
@@ -303,7 +313,7 @@ class Poller:
     def _take(self, reply: Reply) -> None:
         self._state = reply.state if reply.state is not None else self._state
         self._header_wait = reply.retry_after
-        self._trace_id = reply.trace_id or self._trace_id
+        self._trace_id = reply.trace_id
         state = reply.state
         if reply.manifest is not None or state is None:
             self._manifest = reply.manifest
@@ -341,17 +351,10 @@ class Poller:
                 f"GET /datasets/operations/{operation_id} answered HTTP "
                 f"{response.status_code}; a poll answers 200",
                 status=response.status_code,
-                trace_id=response.headers.get("x-dfo-trace-id"),
+                trace_id=trace_id_of(response),
             )
         self._retries = 0
-        self._take(
-            Reply(
-                None,
-                read_operation(response_json(response)),
-                retry_after(response),
-                response.headers.get("x-dfo-trace-id"),
-            )
-        )
+        self._take(_operation_reply(response))
         if self._error is not None:
             self._failed(self._error, deadline)
 
@@ -441,7 +444,7 @@ class Operation:
         finally:
             if self._renderer is not None:
                 self._renderer.close()
-        return self._finish(manifest, deadline)
+        return self._finish(manifest, self._poller.trace_id, deadline)
 
     def __repr__(self) -> str:
         return f"<Operation {self.operation_id or 'inline'} {self.status}>"
@@ -462,13 +465,4 @@ def resume(
         NotFoundError: The server holds no operation with that id.
     """
     response = transport.request("GET", f"/datasets/operations/{operation_id}")
-    return Poller(
-        transport,
-        Reply(
-            None,
-            read_operation(response_json(response)),
-            retry_after(response),
-            response.headers.get("x-dfo-trace-id"),
-        ),
-        on_progress=on_progress,
-    )
+    return Poller(transport, _operation_reply(response), on_progress=on_progress)

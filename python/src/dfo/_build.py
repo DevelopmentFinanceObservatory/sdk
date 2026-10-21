@@ -16,6 +16,7 @@ import httpx2
 from dfo._error_map import CONTRACT_VIOLATION, INVALID_ARGUMENT, UNEXPECTED_RESPONSE
 from dfo._errors import client_error
 from dfo._parse import check_manifest, check_operation
+from dfo._refusals import trace_id_of
 from dfo._types import Part, Rendering, Spec
 
 type Wire = Mapping[str, Any]
@@ -394,5 +395,5 @@ def response_json(response: httpx2.Response) -> Any:
             f"{response.request.method} {response.request.url.path} answered "
             f"HTTP {response.status_code} with a body that is not JSON",
             status=response.status_code,
-            trace_id=response.headers.get("x-dfo-trace-id"),
+            trace_id=trace_id_of(response),
         ) from error

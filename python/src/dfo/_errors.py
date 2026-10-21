@@ -146,11 +146,16 @@ class DfoWarning(UserWarning):
     Attributes:
         code: The client's own code from the contract's `warning-codes.json`, or
             the server's code for a `DataWarning` or `SearchWarning`.
+        trace_id: For a `DataWarning` or `SearchWarning`, the trace id of the
+            response that carried it, to quote when reporting it; else None.
     """
 
-    def __init__(self, message: str, /, *, code: str | None = None) -> None:
+    def __init__(
+        self, message: str, /, *, code: str | None = None, trace_id: str | None = None
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.trace_id = trace_id
 
 
 class DataWarning(DfoWarning):
@@ -161,8 +166,10 @@ class DataWarning(DfoWarning):
         severity: The server's severity for it.
     """
 
-    def __init__(self, message: str, /, *, code: str, severity: str) -> None:
-        super().__init__(message, code=code)
+    def __init__(
+        self, message: str, /, *, code: str, severity: str, trace_id: str | None = None
+    ) -> None:
+        super().__init__(message, code=code, trace_id=trace_id)
         self.severity = severity
 
 

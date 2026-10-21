@@ -495,6 +495,18 @@ def _artifact(manifest: Mapping[str, Any], digest: str) -> Mapping[str, Any]:
 
 
 def _with_part(table: pa.Table, label: str) -> pa.Table:
+    """`table` with the `part` column first, holding `label` on every row.
+
+    Raises:
+        ContractError: The member's file already holds a `part` column
+            (`contract_violation`), so the stacked table could not tell them apart.
+    """
+    if PART_COLUMN in table.column_names:
+        raise client_error(
+            CONTRACT_VIOLATION,
+            f"A member's file already holds a {PART_COLUMN!r} column, so the "
+            "members cannot stack into one table",
+        )
     column = pa.array([label] * table.num_rows, type=pa.string())
     return table.add_column(0, PART_COLUMN, column)
 

@@ -40,7 +40,7 @@ from dfo._error_map import (
 from dfo._errors import DfoError, client_error, client_warning, warn_once
 from dfo._hooks import Clock, HeaderProvider, Sleep, monotonic, sync_sleep
 from dfo._keys import ApiKeyArgument, KeyState, ResolvedKey
-from dfo._refusals import problem_error
+from dfo._refusals import TRACE_HEADER, json_body, problem_error
 from dfo._version import __version__
 
 DEFAULT_BASE_URL = "https://developmentfinance.org/api/v1"
@@ -48,9 +48,6 @@ USER_AGENT = f"dfo-python/{__version__}"
 
 # The host that serves the signed URLs a files route redirects to.
 STORAGE_ORIGIN = "https://storage.googleapis.com"
-
-# The media types a refusal's body is read as a problem document under.
-_PROBLEM_TYPES = frozenset({"application/problem+json", "application/json"})
 
 _BACKOFF_FIRST = 0.5
 _BACKOFF_CAP = 8.0
@@ -96,17 +93,6 @@ def retry_after(response: httpx2.Response) -> float | None:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=UTC)
     return max(0.0, (moment - datetime.now(UTC)).total_seconds())
-
-
-def _json_body(response: httpx2.Response) -> object:
-    """A refusal's body as JSON, when its media type is a problem document's."""
-    media_type = response.headers.get("content-type", "").split(";")[0].strip()
-    if not response.content or media_type.lower() not in _PROBLEM_TYPES:
-        return None
-    try:
-        return response.json()
-    except ValueError:
-        return None
 
 
 class _DeadlineStream(httpx2.SyncByteStream):
@@ -442,11 +428,11 @@ class Transport:
                     continue
                 error = problem_error(
                     response.status_code,
-                    _json_body(response),
+                    json_body(response),
                     reason=response.reason_phrase,
                     origin=self._origin,
                     retry_after=retry_after(response),
-                    trace_id=response.headers.get("x-dfo-trace-id"),
+                    trace_id=response.headers.get(TRACE_HEADER),
                 )
             wait = self._retry_wait(error, attempt, retries, deadline)
             if wait is None:

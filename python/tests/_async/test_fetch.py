@@ -285,11 +285,15 @@ async def test_a_resubmit_sends_the_groups_of_the_roles_the_build_kept(
 async def test_a_resubmit_that_answers_another_spec_raises() -> None:
     server = Server(
         json_response(200, manifest()),
-        json_response(200, resubmitted(POSTED_ID)),
+        json_response(200, resubmitted(POSTED_ID), {"x-dfo-trace-id": "search"}),
     )
     async with make(server) as transport:
-        with pytest.raises(ContractError, match="did not resolve"):
+        with pytest.raises(ContractError) as caught:
             await fetch(transport, spec(), window="latest")
+    assert (caught.value.code, caught.value.trace_id) == (
+        "contract_violation",
+        "search",
+    )
     assert len(server.requests) == 2
 
 
@@ -464,12 +468,17 @@ async def test_a_file_url_off_its_allowed_origins_raises(off: str, url: str) -> 
     body = manifest(POSTED_ID)
     if off == "artifact":
         body["artifacts"][1]["url"] = url
-    server = Server(json_response(200, body), redirect(url))
+    server = Server(
+        json_response(200, body, {"x-dfo-trace-id": "build-trace"}),
+        httpx2.Response(302, headers={"location": url, "x-dfo-trace-id": "route"}),
+    )
     async with make(server) as transport:
         with pytest.raises(ContractError) as caught:
             await fetch(transport, spec(SENTENCE))
     assert caught.value.code == "contract_violation"
     assert len(server.requests) == (2 if off == "location" else 1)
+    # The error carries the trace id of the response that named the URL.
+    assert caught.value.trace_id == ("route" if off == "location" else "build-trace")
 
 
 async def test_a_files_route_answering_another_2xx_is_unexpected() -> None:

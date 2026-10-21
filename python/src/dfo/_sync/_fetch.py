@@ -66,6 +66,7 @@ from dfo._errors import (
 )
 from dfo._parse import check_manifest, parse_notices, parse_parts
 from dfo._progress import ProgressRenderer
+from dfo._refusals import describing, trace_id_of
 from dfo._strict import RESOLUTION_KIND
 from dfo._sync._operation import (
     Finish,
@@ -248,8 +249,9 @@ def fetch_members(
         for want in wants:
             if stale:
                 manifest = _latest_cached(cache, want.spec.spec_id, rendering)
+                trace_id = None
             else:
-                manifest = _build_latest(
+                manifest, trace_id = _build_latest(
                     transport,
                     build_body(want.spec, rendering, narrowing),
                     deadline=deadline,
@@ -259,6 +261,7 @@ def fetch_members(
                 _finish(
                     transport,
                     manifest,
+                    trace_id,
                     want=want,
                     rendering=rendering,
                     strict=strict,
@@ -277,7 +280,7 @@ def _build_latest(
     *,
     deadline: float | None,
     on_progress: ProgressHook | None,
-) -> Wire:
+) -> tuple[Wire, str | None]:
     """Build a spec's latest version, hinting a search when a member is gone."""
     try:
         return _build(transport, body, deadline=deadline, on_progress=on_progress)
@@ -371,10 +374,13 @@ def _finisher(
     """The step that downloads an operation's done build; it raises no warning."""
     rendering = rendering_for(layout)
 
-    def finish(manifest: Wire, deadline: float | None, /) -> Dataset:
+    def finish(
+        manifest: Wire, trace_id: str | None, deadline: float | None, /
+    ) -> Dataset:
         member = _finish(
             transport,
             manifest,
+            trace_id,
             want=want,
             rendering=rendering,
             strict=False,
@@ -425,18 +431,23 @@ def _build(
     *,
     deadline: float | None,
     on_progress: ProgressHook | None,
-) -> Wire:
-    """Post a build and wait for its manifest, through a long build if needed."""
+) -> tuple[Wire, str | None]:
+    """Post a build and wait for its manifest, through a long build if needed.
+
+    Returns the manifest and the trace id of the response that carried it.
+    """
     reply = post_build(transport, body, deadline=deadline)
     if reply.manifest is not None:
-        return reply.manifest
+        return reply.manifest, reply.trace_id
     poller = Poller(transport, reply, body=body, on_progress=on_progress)
-    return poller.wait(deadline)
+    manifest = poller.wait(deadline)
+    return manifest, poller.trace_id
 
 
 def _finish(
     transport: Transport,
     manifest: Wire,
+    trace_id: str | None,
     *,
     want: Reading | None,
     rendering: Rendering,
@@ -446,19 +457,24 @@ def _finish(
 ) -> FetchedMember:
     """Download a built version's artifact and give it Search's sentence.
 
-    `want` is the reading posted, or None for a build resumed by its id.
+    `want` is the reading posted, or None for a build resumed by its id, and
+    `trace_id` the trace id of the response that carried the manifest, or None
+    for a cached one. The manifest's warnings and its artifact's `url` are
+    checked before any request.
     """
     definition = manifest["definition"]
     spec_id = definition["spec_id"]
     content_version = manifest["content_version"]
-    _note_warnings(manifest, strict=strict)
-    artifact = pick_artifact(manifest, rendering)
-    if artifact is None:
-        raise client_error(
-            CONTRACT_VIOLATION,
-            f"The manifest of {spec_id} at {content_version} lists no "
-            f"{rendering_options(rendering)} artifact",
-        )
+    _note_warnings(manifest, strict=strict, trace_id=trace_id)
+    with describing(trace_id):
+        artifact = pick_artifact(manifest, rendering)
+        if artifact is None:
+            raise client_error(
+                CONTRACT_VIOLATION,
+                f"The manifest of {spec_id} at {content_version} lists no "
+                f"{rendering_options(rendering)} artifact",
+            )
+        route = transport.origin_url(artifact["url"])
     parts = () if want is None else want.parts
     sentence = None if want is None else want.sentence or want.spec.sentence
     if want is None or spec_id != want.spec.spec_id or sentence is None:
@@ -472,9 +488,7 @@ def _finish(
     digest = artifact["artifact_digest"]
     data = cache.get_bytes(digest) if cache is not None else None
     if data is None:
-        data = _download(
-            transport, transport.origin_url(artifact["url"]), digest, deadline=deadline
-        )
+        data = _download(transport, route, digest, deadline=deadline)
         _store(cache, manifest, rendering, digest, data)
     elif cache is not None:
         cache.put_manifest(spec_id, content_version, rendering, manifest)
@@ -508,13 +522,20 @@ def _store(
     )
 
 
-def _note_warnings(manifest: Wire, *, strict: bool) -> None:
-    """Issue a manifest's warn-level warnings, or raise the first under strict."""
+def _note_warnings(manifest: Wire, *, strict: bool, trace_id: str | None) -> None:
+    """Issue a manifest's warn-level warnings, or raise the first under strict.
+
+    Each warning carries `trace_id`, the trace id of the response that carried
+    the manifest, or None for a cached one.
+    """
     for notice in parse_notices(manifest.get("warnings")):
         if notice.severity == "info":
             continue
         warning = DataWarning(
-            notice.message, code=notice.code, severity=notice.severity
+            notice.message,
+            code=notice.code,
+            severity=notice.severity,
+            trace_id=trace_id,
         )
         if strict:
             raise warning
@@ -557,11 +578,13 @@ def _download(
                     f"GET {target} answered HTTP {response.status_code} "
                     "with no Location",
                     status=response.status_code,
+                    trace_id=trace_id_of(response),
                 )
             try:
-                data = transport.download(
-                    urljoin(str(response.url), location), deadline=deadline
-                )
+                with describing(trace_id_of(response)):
+                    data = transport.download(
+                        urljoin(str(response.url), location), deadline=deadline
+                    )
             except DfoError as error:
                 if not error.retryable:
                     raise
@@ -573,6 +596,7 @@ def _download(
                 f"GET {target} answered HTTP {response.status_code}; "
                 "a file route answers a redirect",
                 status=response.status_code,
+                trace_id=trace_id_of(response),
             )
         if (found := sha256_digest(data)) == digest:
             return data
@@ -608,16 +632,17 @@ def _sentence(
     )
     answer = response_json(response)
     found = None
-    if isinstance(answer, Mapping) and answer.get("kind") == RESOLUTION_KIND:
-        resolved = parse_parts(answer)
-        if len(resolved) == 1 and isinstance(part := resolved[0], DefinitePart):
-            found = part.spec
-    if found is None or found.spec_id != spec_id or not found.sentence:
-        raise client_error(
-            CONTRACT_VIOLATION,
-            f"Search did not resolve the built identity {spec_id} to itself "
-            "with a sentence",
-        )
+    with describing(trace_id_of(response, answer)):
+        if isinstance(answer, Mapping) and answer.get("kind") == RESOLUTION_KIND:
+            resolved = parse_parts(answer)
+            if len(resolved) == 1 and isinstance(part := resolved[0], DefinitePart):
+                found = part.spec
+        if found is None or found.spec_id != spec_id or not found.sentence:
+            raise client_error(
+                CONTRACT_VIOLATION,
+                f"Search did not resolve the built identity {spec_id} to itself "
+                "with a sentence",
+            )
     return found.sentence
 
 
@@ -694,7 +719,7 @@ def _fetch_version(
         data = cache.get_bytes(member.digest)
         manifest = cache.get_manifest(spec_id, version, member.rendering)
         if data is not None and manifest is not None:
-            _note_warnings(manifest, strict=strict)
+            _note_warnings(manifest, strict=strict, trace_id=None)
             return _stored(member, manifest, data)
     if cache_only:
         raise client_error(
@@ -703,20 +728,22 @@ def _fetch_version(
     refusal: DfoError | None = None
 
     try:
-        manifest = _snapshot(transport, member, deadline=deadline)
+        manifest, trace_id = _snapshot(transport, member, deadline=deadline)
     except DfoError as error:
         if error.code != _FILE_EXPIRED:
             raise
-        refusal, manifest = error, None
+        refusal, manifest, trace_id = error, None, None
     if manifest is not None:
-        _note_warnings(manifest, strict=strict)
-        data, refusal = _stored_file(transport, member, manifest, deadline=deadline)
+        _note_warnings(manifest, strict=strict, trace_id=trace_id)
+        data, refusal = _stored_file(
+            transport, member, manifest, trace_id, deadline=deadline
+        )
         if data is not None:
             _store(cache, manifest, member.rendering, member.digest, data)
             return _stored(member, manifest, data)
 
     try:
-        manifest = _build(
+        manifest, trace_id = _build(
             transport,
             build_body(member.spec, member.rendering),
             deadline=deadline,
@@ -730,6 +757,7 @@ def _fetch_version(
             return _finish(
                 transport,
                 manifest,
+                trace_id,
                 want=Reading(member.parts, member.spec, member.sentence),
                 rendering=member.rendering,
                 strict=strict,
@@ -742,39 +770,42 @@ def _fetch_version(
 
 def _snapshot(
     transport: Transport, member: RefMember, *, deadline: float | None
-) -> Wire:
+) -> tuple[Wire, str | None]:
+    """A stored version's manifest, and the trace id of the response that carried
+    it."""
     spec_id = member.spec.spec_id
     response = transport.request(
         "GET", f"/datasets/{spec_id}/{member.content_version}", deadline=deadline
     )
     manifest = response_json(response)
-    check_manifest(manifest)
-    check_built(manifest, spec_id, member.content_version)
-    return manifest
+    trace_id = trace_id_of(response, manifest)
+    with describing(trace_id):
+        check_manifest(manifest)
+        check_built(manifest, spec_id, member.content_version)
+    return manifest, trace_id
 
 
 def _stored_file(
     transport: Transport,
     member: RefMember,
     manifest: Wire,
+    trace_id: str | None,
     *,
     deadline: float | None,
 ) -> tuple[bytes | None, DfoError | None]:
     """The stored artifact's bytes, from the files route or else the file selector.
 
+    `trace_id` is the trace id of the response that carried the manifest.
     Returns the bytes, or None when neither route serves bytes with the stored
     digest, and the files route's refusal when it refused.
     """
     refusal = None
     artifact = pick_artifact(manifest, member.rendering, digest=member.digest)
     if artifact is not None:
+        with describing(trace_id):
+            route = transport.origin_url(artifact["url"])
         try:
-            data = _download(
-                transport,
-                transport.origin_url(artifact["url"]),
-                member.digest,
-                deadline=deadline,
-            )
+            data = _download(transport, route, member.digest, deadline=deadline)
         except DfoError as error:
             if error.code not in _FILE_GONE:
                 raise
@@ -822,25 +853,26 @@ def _newest(
     except NotFoundError:
         return None
     body = response_json(response)
+    route = f"GET /datasets/{spec_id}/versions"
+    trace_id = trace_id_of(response, body)
     versions = body.get("versions") if isinstance(body, Mapping) else None
     if not isinstance(versions, list):
-        raise _violation(f"GET /datasets/{spec_id}/versions", "/versions")
+        raise _violation(route, "/versions", trace_id)
     if not versions:
         return None
     newest = (
         versions[0].get("content_version") if isinstance(versions[0], Mapping) else None
     )
     if not isinstance(newest, str):
-        raise _violation(
-            f"GET /datasets/{spec_id}/versions", "/versions/0/content_version"
-        )
+        raise _violation(route, "/versions/0/content_version", trace_id)
     return newest
 
 
-def _violation(route: str, pointer: str) -> ContractError:
+def _violation(route: str, pointer: str, trace_id: str | None) -> ContractError:
     error = client_error(
         CONTRACT_VIOLATION,
         f"{route} answered a page with no {pointer}, which this client acts on",
+        trace_id=trace_id,
     )
     error.pointer = pointer
     return error

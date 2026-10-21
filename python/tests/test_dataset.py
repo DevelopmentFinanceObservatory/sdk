@@ -188,10 +188,12 @@ def test_several_members_stack_with_a_part_column() -> None:
     assert [member.parts for member in data.members] == [first.parts, ("GDP",)]
 
 
-def with_column(member: FetchedMember, values: pa.Array) -> FetchedMember:
-    """`member` with an `extra` column holding `values` in every row."""
+def with_column(
+    member: FetchedMember, values: pa.Array, name: str = "extra"
+) -> FetchedMember:
+    """`member` with a `name` column holding `values` in every row."""
     table = pq.read_table(pa.BufferReader(member.data))
-    table = table.append_column("extra", pa.repeat(values[0], table.num_rows))
+    table = table.append_column(name, pa.repeat(values[0], table.num_rows))
     sink = pa.BufferOutputStream()
     pq.write_table(table, sink)
     data = sink.getvalue().to_pybytes()
@@ -233,6 +235,21 @@ def test_stacking_widens_a_column_or_raises_a_contract_error(
         return
     data = build_dataset(members, layout="long", complete=True, missing=(), stale=False)
     assert data.to_arrow().schema.field("extra").type == widened
+
+
+def test_a_member_file_with_a_part_column_raises_only_when_members_stack() -> None:
+    held = with_column(recorded_member(), pa.array(["theirs"]), name="part")
+    alone = build_dataset([held], layout="long", complete=True, missing=(), stale=False)
+    assert alone.to_arrow().column("part")[0].as_py() == "theirs"
+    with pytest.raises(ContractError) as caught:
+        build_dataset(
+            [held, other_member()],
+            layout="long",
+            complete=True,
+            missing=(),
+            stale=False,
+        )
+    assert caught.value.code == "contract_violation"
 
 
 def test_a_member_with_no_part_is_labelled_by_its_sentence() -> None:
