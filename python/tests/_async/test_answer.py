@@ -626,6 +626,21 @@ async def test_a_resubmit_echoes_a_parts_separate_flag_and_operations() -> None:
     )
 
 
+async def test_a_resubmit_omits_a_candidate_sets_absent_ordering_and_truncated() -> (
+    None
+):
+    wire = load("search-2.json")
+    unchosen = copy.deepcopy(wire["parts"][0])
+    unchosen["variable_text"] = "aid"
+    del unchosen["candidates"]["ordering"], unchosen["candidates"]["truncated"]
+    answer, server = await ask("q", beside_a_candidates_part(unchosen), wire)
+    await answer.choose(0, 0)
+    entry = server.posted[1]["input"]["entries"][1]
+    assert entry["entry_kind"] == "candidates"
+    assert "ordering" not in entry
+    assert "truncated" not in entry
+
+
 def definite_with(member: str, value: object) -> dict[str, Any]:
     """search-1.json's definite part, with `member` set to `value`, beside a
     candidates part."""

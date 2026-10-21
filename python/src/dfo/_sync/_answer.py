@@ -674,13 +674,17 @@ def _identity_entry(part: Part[Candidate], spec: Mapping[str, Any]) -> dict[str,
 
 def _candidates_entry(part: CandidatesPart[Candidate]) -> dict[str, Any]:
     """The part's candidate set posted back, its `ordering` and `truncated` as
-    the server sent them."""
+    the server sent them, each left out when the set lacks it."""
     candidate_set = part.raw["candidates"]
+    echoed = {
+        name: candidate_set[name]
+        for name in ("ordering", "truncated")
+        if name in candidate_set
+    }
     return _echo(
         part,
         entry_kind="candidates",
-        ordering=candidate_set.get("ordering"),
-        truncated=candidate_set.get("truncated"),
+        **echoed,
         candidates=[_identity(part, candidate.raw) for candidate in part.candidates],
     )
 
