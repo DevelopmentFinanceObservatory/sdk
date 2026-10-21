@@ -9,8 +9,12 @@ commits only `contract/SOURCE`, the spec-kit commit; this script fetches the res
 from the GitHub archive of that commit and records it in `contract/.synced`, so a
 second run with the same SOURCE does nothing.
 
-    scripts/sync_contract.py                            fetch spec-kit at SOURCE
-    scripts/sync_contract.py --from PATH_TO_SPEC_KIT    copy a checkout, write SOURCE
+    uv run --no-project --python '>=3.12' scripts/sync_contract.py
+    uv run --no-project --python '>=3.12' scripts/sync_contract.py --from PATH_TO_SPEC_KIT
+
+The first fetches spec-kit at SOURCE. The second copies a spec-kit checkout and writes
+SOURCE. The script needs Python 3.12 or later, which uv provides where the system
+Python is older.
 
 The `--from` form serves a contract change that is not pushed to spec-kit yet.
 Python modules and bytecode in the package are code and stay out of the copy.
