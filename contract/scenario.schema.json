@@ -239,6 +239,9 @@
           "$ref": "#/$defs/fetch_ref_step"
         },
         {
+          "$ref": "#/$defs/newest_version_step"
+        },
+        {
           "$ref": "#/$defs/mint_step"
         },
         {
@@ -263,10 +266,6 @@
         "question": {
           "type": "string",
           "minLength": 1
-        },
-        "timeout": {
-          "type": "number",
-          "exclusiveMinimum": 0
         }
       }
     },
@@ -327,10 +326,6 @@
         },
         "strict": {
           "type": "boolean"
-        },
-        "timeout": {
-          "type": "number",
-          "exclusiveMinimum": 0
         }
       }
     },
@@ -355,10 +350,6 @@
         "strict": {
           "type": "boolean"
         },
-        "timeout": {
-          "type": "number",
-          "exclusiveMinimum": 0
-        },
         "window": true,
         "entities": true,
         "facets": true
@@ -378,10 +369,23 @@
         },
         "ref": {
           "$ref": "dataset-ref.schema.json"
+        }
+      }
+    },
+    "newest_version_step": {
+      "description": "The newest stored version of a spec, the one the versions route lists first.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "spec"
+      ],
+      "properties": {
+        "op": {
+          "const": "newest_version"
         },
-        "timeout": {
-          "type": "number",
-          "exclusiveMinimum": 0
+        "spec": {
+          "$ref": "#/$defs/spec"
         }
       }
     },
@@ -435,10 +439,6 @@
       "properties": {
         "op": {
           "const": "result"
-        },
-        "timeout": {
-          "type": "number",
-          "exclusiveMinimum": 0
         }
       }
     },
@@ -459,7 +459,7 @@
       }
     },
     "request": {
-      "description": "Exactly one of path, a path the client composes under the base URL; origin_path, a root-relative URL the server returned, resolved against the base URL's origin; or url, an absolute URL outside the API, such as a signed storage URL.",
+      "description": "Exactly one of path, a path the client composes under the base URL; origin_path, a root-relative URL the server returned, resolved against the base URL's origin; or url, an absolute URL outside the API, such as a signed storage URL. A POST names its body in json.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -482,6 +482,18 @@
           ]
         }
       ],
+      "if": {
+        "properties": {
+          "method": {
+            "const": "POST"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "json"
+        ]
+      },
       "properties": {
         "method": {
           "enum": [
@@ -605,6 +617,18 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
+            "newest_version"
+          ],
+          "properties": {
+            "newest_version": {
+              "$ref": "#/$defs/newest_version"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
             "error"
           ],
           "properties": {
@@ -675,6 +699,12 @@
               }
             }
           }
+        },
+        "retry_waits": {
+          "$ref": "#/$defs/retry_waits"
+        },
+        "warnings": {
+          "$ref": "#/$defs/warnings"
         }
       }
     },
@@ -785,6 +815,12 @@
         },
         "long_builds": {
           "$ref": "#/$defs/long_builds"
+        },
+        "retry_waits": {
+          "$ref": "#/$defs/retry_waits"
+        },
+        "warnings": {
+          "$ref": "#/$defs/warnings"
         }
       }
     },
@@ -806,6 +842,38 @@
             "done",
             "failed"
           ]
+        },
+        "retry_waits": {
+          "$ref": "#/$defs/retry_waits"
+        },
+        "warnings": {
+          "$ref": "#/$defs/warnings"
+        }
+      }
+    },
+    "newest_version": {
+      "description": "The newest stored version a newest_version step finds, or null when the spec has none.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "content_version"
+      ],
+      "properties": {
+        "content_version": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/content_version"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retry_waits": {
+          "$ref": "#/$defs/retry_waits"
+        },
+        "warnings": {
+          "$ref": "#/$defs/warnings"
         }
       }
     },
@@ -856,6 +924,12 @@
         },
         "long_builds": {
           "$ref": "#/$defs/long_builds"
+        },
+        "retry_waits": {
+          "$ref": "#/$defs/retry_waits"
+        },
+        "warnings": {
+          "$ref": "#/$defs/warnings"
         }
       },
       "if": {
@@ -910,6 +984,28 @@
           }
         }
       }
+    },
+    "retry_waits": {
+      "description": "The seconds a step waited before each retry of a refused request, in order: the refusal's Retry-After, else a backoff that doubles from 0.5 to 8 seconds. Given only when the step retried.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "number",
+        "minimum": 0
+      }
+    },
+    "warnings": {
+      "description": "The codes, from warning-codes.json and in order, of the warnings the step's API responses issued. Given only when they issued any.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/name_code"
+      }
+    },
+    "name_code": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(_[a-z0-9]+)*$",
+      "$ref": "#/$defs/one_line"
     }
   }
 }
