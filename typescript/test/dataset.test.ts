@@ -411,6 +411,22 @@ describe("members whose column types differ", () => {
     );
   });
 
+  test("raise ContractError for a column type the client cannot read", () => {
+    const nested = new Uint8Array(
+      parquetWriteBuffer({
+        columnData: [{ name: "x", data: [new Uint8Array([0])] }],
+        schema: [
+          { name: "root", num_children: 1 },
+          { name: "x", repetition_type: "OPTIONAL", type: "BYTE_ARRAY", converted_type: "BSON" },
+        ],
+      }),
+    );
+    assert.throws(() => new Dataset([member(nested)], { layout: "long" }), {
+      name: "ContractError",
+      code: "contract_violation",
+    });
+  });
+
   test("raise ContractError when a member's file holds its own part column", () => {
     const own = file({ part: { type: "BYTE_ARRAY", logical: { type: "STRING" }, data: ["x"] } });
     const year = file({ year: { type: "INT32", data: [2020] } });
@@ -433,6 +449,11 @@ describe("widen", () => {
     signed,
   });
   const float = (bits: 32 | 64): ColumnType => ({ kind: "float", bits });
+  const decimal = (precision: number, scale: number): ColumnType => ({
+    kind: "decimal",
+    precision,
+    scale,
+  });
   const stamp = (unit: "MILLIS" | "MICROS" | "NANOS", utc = false): ColumnType => ({
     kind: "timestamp",
     unit,
@@ -457,6 +478,20 @@ describe("widen", () => {
     [{ kind: "bool" }, int(8), undefined],
     [{ kind: "date" }, stamp("MILLIS"), undefined],
     [float(64), { kind: "string" }, undefined],
+    [decimal(10, 2), decimal(12, 4), decimal(12, 4)],
+    [decimal(38, 2), decimal(12, 4), decimal(40, 4)],
+    [decimal(76, 0), decimal(10, 5), undefined],
+    [decimal(10, 2), int(8), decimal(10, 2)],
+    [decimal(10, 2), int(32), undefined],
+    [decimal(12, 2), int(32), decimal(12, 2)],
+    [decimal(21, 2), int(64), decimal(21, 2)],
+    [decimal(21, 2), int(64, false), undefined],
+    [decimal(10, 2), float(32), float(32)],
+    [decimal(10, 2), float(64), float(64)],
+    [decimal(10, 2), { kind: "null" }, decimal(10, 2)],
+    [decimal(10, 2), { kind: "bool" }, undefined],
+    [decimal(10, 2), { kind: "string" }, undefined],
+    [decimal(10, 2), stamp("MILLIS"), undefined],
   ];
   for (const [left, right, expected] of rows) {
     test(`${JSON.stringify(left)} with ${JSON.stringify(right)}`, () => {

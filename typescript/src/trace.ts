@@ -9,7 +9,6 @@
  */
 import { DfoError } from "./errors.ts";
 import { isRecord } from "./json.ts";
-import { DfoWarning } from "./warnings.ts";
 
 export const TRACE_HEADER = "x-dfo-trace-id";
 
@@ -27,9 +26,7 @@ export function traceIdOf(headers: Headers, body?: unknown): string | null {
 /** Gives `traceId` to an error that describes the response it names, unless the error carries
  *  one already, and returns the error. */
 function traced(error: unknown, traceId: string | null): unknown {
-  const reads =
-    (error instanceof DfoError && RESPONSE_CODES.has(error.code)) || error instanceof DfoWarning;
-  if (reads && error.traceId === null) {
+  if (error instanceof DfoError && RESPONSE_CODES.has(error.code) && error.traceId === null) {
     // `traceId` is read-only to callers; the client settles it here, once, before it throws.
     (error as { traceId: string | null }).traceId = traceId;
   }

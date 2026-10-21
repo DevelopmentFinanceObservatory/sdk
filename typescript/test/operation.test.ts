@@ -151,6 +151,26 @@ describe("a long build", () => {
     assert.deepEqual(waits, [1000, 5000, 7000, 1000]);
   });
 
+  for (const [header, expected] of [
+    [{ "retry-after": "7" }, [1000, 7000, 2000]],
+    [{}, [1000, 2000, 4000]],
+  ] as const) {
+    test(`waits ${expected[1]} ms after a refused 503 poll, spending a retry`, async () => {
+      const { spec, manifest, parquet } = await built();
+      const refused = problem({ code: "build_capacity", status: 503, retryable: true }, header);
+      const { fetch } = mockFetch(
+        json(operation("pending"), 202),
+        refused,
+        json(operation("running")),
+        json({ ...operation("done"), manifest }),
+        ...download(parquet),
+      );
+      const { transport, waits } = client(fetch);
+      await (await mint(transport, spec)).result();
+      assert.deepEqual(waits, expected);
+    });
+  }
+
   test("reads a mint's POST past the client's timeout", async () => {
     const { spec } = await built();
     const { fetch } = mockFetch(

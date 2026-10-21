@@ -3,6 +3,9 @@
  * `contract/dataset-ref.schema.json`, so a ref saved by one language loads in another.
  */
 
+import { clientError } from "./errors.ts";
+import { isRecord } from "./json.ts";
+
 /** The layouts a dataset comes in: the labelled long table, or the pipeline frame. */
 export type Layout = "long" | "frame";
 
@@ -73,7 +76,11 @@ const FORMATS: readonly string[] = ["csv", "xlsx", "parquet"];
 const isFormat = (value: unknown): value is Rendering["format"] =>
   typeof value === "string" && FORMATS.includes(value);
 
-/** The bare Parquet rendering both clients build for a layout. */
+/**
+ * The bare Parquet rendering both clients build for a layout.
+ *
+ * @throws {InvalidRequestError} The layout is neither `long` nor `frame` (`invalid_argument`).
+ */
 export function renderingFor(layout: Layout): Rendering {
   switch (layout) {
     case "long":
@@ -81,9 +88,9 @@ export function renderingFor(layout: Layout): Rendering {
     case "frame":
       return { format: "parquet", bundle: false, layout: "frame" };
     default:
-      throw new TypeError(
-        `layout is "long" or "frame", not ${JSON.stringify(layout satisfies never)}.`,
-      );
+      throw clientError("invalid_argument", {
+        detail: `layout is "long" or "frame", not ${JSON.stringify(layout satisfies never)}.`,
+      });
   }
 }
 
@@ -174,10 +181,6 @@ export class DatasetRef {
     }
     return new DatasetRef(loaded);
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function objectAt(value: unknown, pointer: string): Record<string, unknown> {

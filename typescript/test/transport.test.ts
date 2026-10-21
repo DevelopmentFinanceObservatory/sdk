@@ -307,17 +307,44 @@ describe("keys", () => {
     );
   });
 
-  test("refuse a secret key in a browser page unless the caller allows it", () => {
-    const global = globalThis as { window?: unknown };
-    global.window = { document: {} };
-    try {
-      assert.throws(() => transport({ apiKey: KEY }), TypeError);
-      assert.doesNotThrow(() => transport({ apiKey: KEY, dangerouslyAllowBrowser: true }));
-      assert.doesNotThrow(() => transport({ apiKey: "dfo_p_publishable" }));
-    } finally {
-      delete global.window;
-    }
-  });
+  const importScripts = (): void => undefined;
+  // Stand-ins for the scope constructors each kind of worker defines.
+  const WorkerGlobalScope = (): void => undefined;
+  const Scope = (): void => undefined;
+  for (const [scope, globals, browser] of [
+    ["a page", { window: { document: {} } }, true],
+    [
+      "a dedicated worker",
+      { WorkerGlobalScope, DedicatedWorkerGlobalScope: Scope, importScripts },
+      true,
+    ],
+    ["a shared worker", { WorkerGlobalScope, SharedWorkerGlobalScope: Scope, importScripts }, true],
+    [
+      "a service worker",
+      { WorkerGlobalScope, ServiceWorkerGlobalScope: Scope, importScripts },
+      true,
+    ],
+    [
+      "a server runtime with worker globals",
+      { WorkerGlobalScope, ServiceWorkerGlobalScope: Scope },
+      false,
+    ],
+  ] as const) {
+    test(`${browser ? "refuse" : "send"} a secret key in ${scope}, with no user-agent in a browser`, async () => {
+      const global = globalThis as Record<string, unknown>;
+      Object.assign(global, globals);
+      try {
+        if (browser) assert.throws(() => transport({ apiKey: KEY }), TypeError);
+        else assert.doesNotThrow(() => transport({ apiKey: KEY }));
+        assert.doesNotThrow(() => transport({ apiKey: KEY, dangerouslyAllowBrowser: true }));
+        const { fetch, seen } = mockFetch(json({}));
+        await transport({ apiKey: "dfo_p_publishable", fetch }).request({ path: "/x" });
+        assert.equal(seen[0]?.headers.has("user-agent"), !browser);
+      } finally {
+        for (const name of Object.keys(globals)) Reflect.deleteProperty(global, name);
+      }
+    });
+  }
 
   test("mask the key when printed or serialised", () => {
     const key = new ApiKey(KEY);
@@ -558,25 +585,51 @@ describe("downloads", () => {
     });
   });
 
-  test("follow a browser's opaque redirect carrying the key alone", async () => {
-    const opaque = () => {
-      const response = new Response(null, { status: 200 });
-      Object.defineProperty(response, "type", { value: "opaqueredirect" });
-      return response;
-    };
-    const { fetch, seen } = mockFetch(opaque, () => new Response("PAR1"));
-    const client = transport({
-      baseUrl: "https://api.example/api/v1",
-      apiKey: KEY,
-      fetch,
-      defaultHeaders: { "x-first-party": "site" },
-      headerProvider: () => ({ "x-identity": "token" }),
+  for (const [status, body] of [
+    [200, "PAR1"],
+    [403, "expired"],
+  ] as const) {
+    test(`follow a browser's opaque redirect once, with the key alone, at HTTP ${status}`, async () => {
+      const opaque = () => {
+        const response = new Response(null, { status: 200 });
+        Object.defineProperty(response, "type", { value: "opaqueredirect" });
+        return response;
+      };
+      const warnings: DfoWarning[] = [];
+      const { fetch, seen } = mockFetch(
+        opaque,
+        () => new Response(body, { status, headers: { "x-dfo-warning": `followed ${status}` } }),
+      );
+      const { sleep, waits } = recordingSleep();
+      const client = transport({
+        baseUrl: "https://api.example/api/v1",
+        apiKey: KEY,
+        fetch,
+        sleep,
+        defaultHeaders: { "x-first-party": "site" },
+        headerProvider: () => ({ "x-identity": "token" }),
+        onWarning: (warning) => warnings.push(warning),
+      });
+      const located = await client.locate({ url: "/api/datasets/files/d" });
+      assert.equal(located.follow, true);
+      assert.ok(located.signed);
+      const fetched = await client
+        .fetchSigned(located.signed, { follow: true })
+        .catch((e: unknown) => e);
+      if (status === 200) {
+        assert.deepEqual(fetched, new TextEncoder().encode(body));
+      } else {
+        assert.ok(fetched instanceof ServerError);
+        assert.equal(fetched.code, "download_failed");
+        assert.equal(fetched.retryable, true);
+      }
+      assert.equal(seen.length, 2);
+      assert.deepEqual(waits, []);
+      assert.deepEqual(warnings, []);
+      assert.equal(seen[0]?.headers.get("x-identity"), "token");
+      assert.deepEqual([...(seen[1]?.headers ?? [])], [["authorization", `Bearer ${KEY}`]]);
     });
-    const located = await client.locate({ url: "/api/datasets/files/d" });
-    assert.deepEqual(located.data, new TextEncoder().encode("PAR1"));
-    assert.equal(seen[0]?.headers.get("x-identity"), "token");
-    assert.deepEqual([...(seen[1]?.headers ?? [])], [["authorization", `Bearer ${KEY}`]]);
-  });
+  }
 
   test("retry the files route as any API request", async () => {
     const { sleep, waits } = recordingSleep();

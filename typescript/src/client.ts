@@ -37,7 +37,7 @@ export type ClientOptions = {
   headerProvider?: HeaderProvider;
   /** Receives each warning; `process.emitWarning`, else `console.warn`, by default. */
   onWarning?: WarningHandler;
-  /** Sends a secret key from a browser page, where every script on the page can read it. */
+  /** Sends a secret key from a browser page or worker, where every visitor can read it. */
   dangerouslyAllowBrowser?: boolean;
 };
 
@@ -82,7 +82,7 @@ export class Client {
    * @throws {AuthenticationError} The `apiKey` argument is empty, or the credentials file is
    *   invalid or lacks the profile or the key the lookup chose.
    * @throws {TypeError} The base URL is relative and no page URL resolves it, or a secret key is
-   *   given in a browser page without `dangerouslyAllowBrowser`.
+   *   given in a browser page or worker without `dangerouslyAllowBrowser`.
    */
   constructor(options: ClientOptions = {}) {
     const { headers, ...rest } = options;

@@ -20,6 +20,7 @@
 import type { Answer, Candidate, Gap, QueryOption } from "./answer.ts";
 import { clientError } from "./errors.ts";
 import type { InvalidRequestError } from "./errors.ts";
+import { isRecord } from "./json.ts";
 import { isKnownPart } from "./parts.ts";
 import type {
   Assumption,
@@ -172,8 +173,8 @@ function entry(part: Part): Entry {
     };
   }
   // Any other part status may carry a restatement, an unknown one included.
-  const restatement = part.restatement as ParsedPart | null | undefined;
-  if (restatement != null) return { entry_kind: "parsed", part: restatement };
+  const restatement: unknown = part.restatement;
+  if (isRecord(restatement)) return { entry_kind: "parsed", part: restatement as ParsedPart };
   if (isKnownPart(part)) {
     switch (part.status) {
       case "no_data":
@@ -204,10 +205,12 @@ function identityOf(
   spec: Spec,
   assumptions: readonly Assumption[] | undefined,
 ): Pick<ResubmitIdentityEntry, "identity" | "entity_groups" | "assumptions"> {
-  const groups = spec.resolved.entity_groups;
+  const groups: unknown = spec.resolved.entity_groups;
   return {
     identity: spec.definition.identity,
-    ...(groups != null && Object.keys(groups).length > 0 ? { entity_groups: groups } : {}),
+    ...(isRecord(groups) && Object.keys(groups).length > 0
+      ? { entity_groups: groups as NonNullable<Spec["resolved"]["entity_groups"]> }
+      : {}),
     ...(assumptions === undefined ? {} : { assumptions: [...assumptions] }),
   };
 }
@@ -220,11 +223,12 @@ function identityEntry(part: Part, spec: Spec): ResubmitIdentityEntry {
  *  `reading_assumptions` under the reading's `spec_id`, else the part's own `assumptions`.
  *  Undefined when the part holds no list for the reading; `[]` states none. */
 function readingEcho(part: Part, spec: Spec): readonly Assumption[] | undefined {
-  const listed =
-    isKnownPart(part) && part.status === "candidates"
-      ? part.reading_assumptions?.[spec.spec_id]
-      : (part.assumptions as Assumption[] | null | undefined);
-  return Array.isArray(listed) ? listed : undefined;
+  let listed: unknown = part.assumptions;
+  if (isKnownPart(part) && part.status === "candidates") {
+    const byReading: unknown = part.reading_assumptions;
+    listed = isRecord(byReading) ? byReading[spec.spec_id] : undefined;
+  }
+  return Array.isArray(listed) ? (listed as Assumption[]) : undefined;
 }
 
 /** The members every entry other than a parsed one echoes from its part. */

@@ -42,7 +42,7 @@ const again = await client.fetch(DatasetRef.fromJSON(JSON.parse(saved)));
 
 `client.fetch(spec, { window: [2020, 2023] })` narrows a spec, and `client.mint(spec)` starts a long build that `client.operation(id)` resumes from another process.
 
-`await dataset.bytes()` returns one Parquet file whose key-value metadata carries the sentence, citation, sources, licence, departures, assumptions, layout version and ref under `dfo.*` keys, the file Python's `Dataset.save` writes and `dfo.open_bundle` reads. Several members stack into one table, `part` first, and a column whose type differs between members widens as pyarrow widens it. `dataset.memberBytes(index)` gives one member's file as the server built it. `toArrow(dataset)` from `@developmentfinance/client/arrow` builds an apache-arrow `Table`; that entry point needs the optional `apache-arrow` package.
+`await dataset.bytes()` returns one Parquet file whose key-value metadata carries the sentence, citation, sources, licence, departures, assumptions, layout version and ref under `dfo.*` keys, the file Python's `Dataset.save` writes and `dfo.open_bundle` reads. Several members stack into one table, `part` first, and a column whose type differs between members widens as pyarrow widens it; a pair pyarrow refuses, or a column the client cannot read, such as a nested one, raises a `ContractError` with `contract_violation`. A DECIMAL column keeps its precision and scale in `bytes()`, and its values read as 64-bit floats in `toRows()` and `toArrow()`. `dataset.memberBytes(index)` gives one member's file as the server built it. `toArrow(dataset)` from `@developmentfinance/client/arrow` builds an apache-arrow `Table`; that entry point needs the optional `apache-arrow` package.
 
 The client also looks up names and codes:
 
@@ -96,16 +96,17 @@ A few calls throw something else:
 
 - A `strict` fetch throws its first `SearchWarning` or `DataWarning`, each a `DfoWarning` and not a `DfoError`, with the `traceId` of the response it came from.
 - An aborted call rejects with the caller's `signal.reason`, untouched.
-- `new Client()` throws a `TypeError` for a relative `baseUrl` no page resolves, or a secret key in a browser page, and an `AuthenticationError` for a key the lookup refuses.
+- `new Client()` throws a `TypeError` for a relative `baseUrl` no page resolves, or a secret key in a browser page or worker, and an `AuthenticationError` for a key the lookup refuses.
 - `DatasetRef.fromJSON` throws a `FormatError`, a `TypeError`, for JSON that is not a ref.
 - `dataset.memberBytes(index)` throws a `RangeError` for an index past the members.
+- `dataset.toRows()` throws a `RangeError` for an INT64 value outside a JavaScript number's exact range; `toArrow(dataset)` keeps it as a `bigint`.
 
 ## Warnings
 
-Warnings go to `onWarning`, else `process.emitWarning`, else `console.warn`. A `Deprecation` or `Sunset` header from the server warns once per process for each distinct value as a `DfoDeprecationWarning`, and an `x-dfo-warning` header once per message. A fetch passes a manifest's warnings above `info` as `DataWarning`s, and an answer's fetch passes one `SearchWarning` when its readings differ from the question.
+Warnings go to `onWarning`, else `process.emitWarning`, else `console.warn`. A `Deprecation` or `Sunset` header from the server warns once per process for each distinct pair of `Deprecation` and `Sunset` values, either header alone included, as a `DfoDeprecationWarning`, and an `x-dfo-warning` header once per message. A fetch passes a manifest's warnings above `info` as `DataWarning`s, and an answer's fetch passes one `SearchWarning` when its readings differ from the question.
 
 ## API keys
 
 The client resolves its key when it is built, and again after a 401. It takes the first key it finds: the `apiKey` option, the `DFO_API_KEY` environment variable, then the `default` profile (or the one `DFO_PROFILE` names) in the credentials file, which Node reads from `$DFO_CREDENTIALS_FILE`, `$XDG_CONFIG_HOME/dfo/credentials.toml` or `~/.config/dfo/credentials.toml` (`%APPDATA%\dfo\credentials.toml` on Windows). Without a key it calls the API anonymously. An empty `DFO_API_KEY` counts as unset, while an empty `apiKey` option, or a profile whose `key` is empty, raises `AuthenticationError` from `new Client()`, as does a credentials file that fails to parse. A key function is called when the client is built; one that returns a promise settles before the first request. After a 401 the client looks the key up again and sends the request once more, at once, when the key changed.
 
-In a browser page the client refuses a secret `dfo_k_` key, which any script on the page could read, unless the caller sets `dangerouslyAllowBrowser: true`.
+In a browser page or worker the client refuses a secret `dfo_k_` key, which every visitor could read, unless the caller sets `dangerouslyAllowBrowser: true`.

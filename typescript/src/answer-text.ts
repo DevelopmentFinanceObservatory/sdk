@@ -4,7 +4,7 @@
  */
 import { definiteParts, partSentence } from "./answer.ts";
 import type { Answer, Candidate, Gap } from "./answer.ts";
-import type { Warning } from "./wire.ts";
+import { objects, text } from "./json.ts";
 
 const SHOWN_SEVERITIES = new Set(["warn", "degraded"]);
 
@@ -31,19 +31,24 @@ export function readingHints(answer: Answer, { departures }: { departures: boole
   const add = (line: string, code: string): void => {
     if (!found.has(line)) found.set(line, code);
   };
-  const addNotices = (warnings: readonly Warning[] | undefined): void => {
-    for (const warning of warnings ?? []) {
-      if (SHOWN_SEVERITIES.has(warning.severity) && warning.message) {
-        add(`Note: ${warning.message}`, warning.code);
+  const field = (item: Record<string, unknown>, name: string): string => text(item[name]) ?? "";
+  const addNotices = (warnings: unknown): void => {
+    for (const warning of objects(warnings)) {
+      const message = field(warning, "message");
+      if (SHOWN_SEVERITIES.has(field(warning, "severity")) && message) {
+        add(`Note: ${message}`, field(warning, "code"));
       }
     }
   };
   for (const part of definiteParts(answer.parts)) {
-    for (const operation of part.operations ?? []) {
-      add(`Not done: ${operation.verb} (${JSON.stringify(operation.phrase)})`, operation.verb);
+    for (const operation of objects(part.operations)) {
+      const verb = field(operation, "verb");
+      add(`Not done: ${verb} (${JSON.stringify(field(operation, "phrase"))})`, verb);
     }
     if (departures) {
-      for (const departure of part.departures ?? []) add(departure.text, departure.code);
+      for (const departure of objects(part.departures)) {
+        add(field(departure, "text"), field(departure, "code"));
+      }
     }
     addNotices(part.warnings);
   }

@@ -12,9 +12,9 @@
  * post answers. Each retry waits its `Retry-After` or else the transport's backoff, and a
  * retryable failed operation is resubmitted once.
  *
- * Polls wait for a 429's `Retry-After`, else the resource's `retry_after_ms`, else the
- * `Retry-After` header, else back off from 1 to 8 seconds, the backoff advancing only when a
- * wait uses it. A 429 spends no retry; any other retryable refused poll, one that runs past the
+ * Polls wait for a refused poll's `Retry-After`, whatever its status, else the resource's
+ * `retry_after_ms`, else the last answered poll's `Retry-After` header, else back off from 1 to
+ * 8 seconds, the backoff advancing only when a wait uses it. A 429 spends no retry; any other retryable refused poll, one that runs past the
  * client's timeout included, spends one of the transport's retries, which a poll that answers
  * restores; a refused poll that is not retryable raises.
  */
@@ -237,7 +237,7 @@ class Poller implements LongBuild {
   #manifest: Manifest | null = null;
   #state: OperationState | null = null;
   #headerWaitMs: number | null = null;
-  /** The `Retry-After` of a 429 that refused the last poll. */
+  /** The `Retry-After` of the refusal of the last poll. */
   #refusedWaitMs: number | null = null;
   #traceId: string | null = null;
   #error: DfoError | null = null;
@@ -391,12 +391,11 @@ class Poller implements LongBuild {
       await this.#failed(error, wait);
       return;
     }
-    if (error.status === 429) {
-      this.#refusedWaitMs = error.retryAfterMs;
-      return;
+    if (error.status !== 429) {
+      if (!error.retryable || this.#retries >= this.#transport.maxRetries) throw error;
+      this.#retries += 1;
     }
-    if (!error.retryable || this.#retries >= this.#transport.maxRetries) throw error;
-    this.#retries += 1;
+    this.#refusedWaitMs = error.retryAfterMs;
   }
 
   /** Resubmits a build that failed retryably, once; otherwise holds the error. */

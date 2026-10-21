@@ -31,6 +31,8 @@ function arrowType(type: ColumnType): arrow.DataType {
       return new arrow.Timestamp(arrow.TimeUnit[TIME_UNITS[type.unit]], type.utc ? "UTC" : null);
     case "float":
       return type.bits === 32 ? new arrow.Float32() : new arrow.Float64();
+    case "decimal":
+      return new arrow.Float64();
     case "int":
       return new arrow.Int(type.signed, type.bits);
   }
@@ -51,6 +53,7 @@ type FixedArray =
 function fixedArray(type: ColumnType, length: number): FixedArray {
   if (type.kind === "float")
     return type.bits === 32 ? new Float32Array(length) : new Float64Array(length);
+  if (type.kind === "decimal") return new Float64Array(length);
   if (type.kind === "date") return new Int32Array(length);
   if (type.kind === "timestamp") return new BigInt64Array(length);
   if (type.kind !== "int") throw new TypeError(`${type.kind} is not a fixed-width type.`);

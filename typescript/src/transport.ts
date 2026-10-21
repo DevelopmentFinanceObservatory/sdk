@@ -40,7 +40,7 @@ export type TransportOptions = {
   /** The API's base URL; a relative one, such as `/api/v1`, resolves against the page. */
   baseUrl?: string;
   apiKey?: ApiKeyOption;
-  /** Sends a secret key from a browser page, where every script on the page can read it. */
+  /** Sends a secret key from a browser page or worker, where every visitor can read it. */
   dangerouslyAllowBrowser?: boolean;
   /** The platform's `fetch`, or one that stands in for it. */
   fetch?: Fetch;
@@ -95,8 +95,17 @@ export type JsonResponse = {
   traceId: string | null;
 };
 
-/** Where a files route sends a download: the bytes it served, or the signed URL it names. */
-export type Located = { data: Uint8Array; signed?: never } | { signed: URL; data?: never };
+/** Where a files route sends a download: the bytes it served, or the URL `fetchSigned` fetches
+ *  them from. That URL is the signed URL the route's redirect names, or, with `follow`, the
+ *  route itself, whose redirect a browser hid and follows on the fetch. */
+export type Located =
+  | { data: Uint8Array; signed?: never; follow?: never }
+  | { signed: URL; follow: boolean; data?: never };
+
+export type SignedFetchOptions = CallOptions & {
+  /** Fetches the files route and lets the browser follow its redirect, carrying the key alone. */
+  follow?: boolean;
+};
 
 /** A response with its whole body, read under the attempt's limit. */
 type Received = { response: Response; body: Uint8Array };
@@ -228,7 +237,7 @@ export class Transport {
    * @throws {AuthenticationError} The key resolves to an empty argument, or the credentials file
    *   is invalid or lacks the profile or the key the lookup chose.
    * @throws {TypeError} The base URL is relative and no page URL resolves it, or a secret key is
-   *   given in a browser page without `dangerouslyAllowBrowser`.
+   *   given in a browser page or worker without `dangerouslyAllowBrowser`.
    */
   constructor(options: TransportOptions = {}) {
     this.#options = options;
@@ -307,8 +316,8 @@ export class Transport {
     return pending;
   }
 
-  /** Refuses a secret key in a browser page, and warns once for a key that fails the format
-   *  check. */
+  /** Refuses a secret key in a browser page or worker, and warns once for a key that fails the
+   *  format check. */
   #checkedKey(resolved: ResolvedKey): ResolvedKey {
     refuseSecretKeyInBrowser(resolved.key, this.#options.dangerouslyAllowBrowser ?? false);
     if (resolved.key !== null) {
@@ -400,9 +409,8 @@ export class Transport {
    * Asks a files route for a file, retrying as every API request does. The route is on the API's
    * origin. It answers the bytes with a 200, or a redirect to a signed storage URL, which
    * resolves against the response's URL; `fetchSigned` fetches it. A browser hides a redirect's
-   * `Location`, so there the client asks the route again and the browser follows the redirect.
-   * That second ask carries the key alone, which the browser drops on the way to another
-   * origin, so none of the client's headers reach the storage host.
+   * `Location`, so there `locate` returns the route with `follow`, and `fetchSigned` asks it
+   * again and lets the browser follow the redirect, as the round's one signed fetch.
    *
    * @throws {ContractError} The route is off the API's origin, or its redirect names a host
    *   other than the API's or the storage host (`contract_violation`); a redirect has no
@@ -414,9 +422,7 @@ export class Transport {
     const target = options.url === undefined ? this.url(options) : this.originUrl(options.url);
     const ask = { ...options, method: "GET" };
     const { response, body } = await this.#send(ask);
-    if (response.type === "opaqueredirect") {
-      return { data: (await this.#send(ask, "follow")).body };
-    }
+    if (response.type === "opaqueredirect") return { signed: target, follow: true };
     if (response.status === 200) return { data: body };
     const traceId = traceIdOf(response.headers, problemBody(response.headers, body));
     if (!REDIRECT_STATUSES.has(response.status)) {
@@ -443,7 +449,7 @@ export class Transport {
           `API's origin nor ${STORAGE_ORIGIN}.`,
       });
     }
-    return { signed };
+    return { signed, follow: false };
   }
 
   /**
@@ -453,31 +459,43 @@ export class Transport {
    * failed fetch is not retried: a signed URL can expire, so the caller asks the files route for
    * a fresh one.
    *
+   * With `follow`, the URL is a files route whose redirect a browser hid. The request carries the
+   * key alone, which the browser drops on the way to another origin, so none of the client's
+   * headers reach the storage host; the browser follows the redirect, and the response's headers
+   * issue no warning, since they come from wherever the redirect led.
+   *
    * @throws {ServerError} The host answered other than 200 (`download_failed`).
    * @throws {NetworkError} The connection failed.
    * @throws {DfoTimeoutError} The attempt or the call's deadline ran out.
    */
-  async fetchSigned(url: URL, options: CallOptions = {}): Promise<Uint8Array> {
+  async fetchSigned(url: URL, options: SignedFetchOptions = {}): Promise<Uint8Array> {
     options.signal?.throwIfAborted();
+    const follow = options.follow ?? false;
     // `#headers` gives no header for a URL off the API's origin.
-    const { headers } = await this.#headers("GET", url, { url: url.href });
-    const outcome = await this.#attempt(url, options, { method: "GET", headers });
+    const { headers } = follow
+      ? await this.#keyHeader()
+      : await this.#headers("GET", url, { url: url.href });
+    const outcome = await this.#attempt(url, options, {
+      method: "GET",
+      headers,
+      redirect: follow ? "follow" : "manual",
+    });
     if (outcome instanceof DfoError) throw outcome;
     const { response, body } = outcome;
-    if (url.origin === this.baseUrl.origin) this.#warnFromHeaders(response.headers, url);
+    if (!follow && url.origin === this.baseUrl.origin) this.#warnFromHeaders(response.headers, url);
     if (response.status !== 200) {
+      const host = response.url === "" ? url.host : new URL(response.url).host;
       throw clientError("download_failed", {
         status: response.status,
-        detail: `The download from ${url.host} answered HTTP ${response.status}.`,
+        detail: `The download from ${host} answered HTTP ${response.status}.`,
       });
     }
     return body;
   }
 
-  /** Sends one request with retries, returning a 2xx response or a redirect with its body.
-   *  Redirects are manual unless a browser has to follow one, and then the request carries the
-   *  key alone, since the browser keeps every other header on the way to another origin. */
-  async #send(options: RequestOptions, redirect: RequestRedirect = "manual"): Promise<Received> {
+  /** Sends one request with retries, returning a 2xx response or a redirect with its body. A
+   *  redirect is never followed. */
+  async #send(options: RequestOptions): Promise<Received> {
     options.signal?.throwIfAborted();
     const method = options.method ?? (options.json === undefined ? "GET" : "POST");
     const url = this.url(options, options.query);
@@ -486,12 +504,11 @@ export class Transport {
     let reauthenticated = false;
 
     for (let attempt = 0; ; attempt += 1) {
-      const { headers, key } =
-        redirect === "follow" ? await this.#keyHeader() : await this.#headers(method, url, options);
+      const { headers, key } = await this.#headers(method, url, options);
       const outcome = await this.#attempt(url, options, {
         method,
         headers,
-        redirect,
+        redirect: "manual",
         ...(options.json === undefined ? {} : { body: JSON.stringify(options.json) }),
       });
 

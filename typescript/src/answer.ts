@@ -32,7 +32,7 @@ import type {
   Spec,
   Warning,
 } from "./wire.ts";
-import { isRecord } from "./json.ts";
+import { isRecord, list, objects, text } from "./json.ts";
 
 export const RESOLVE_PATH = "/search/resolve";
 const SCHEMA_VERSION = 1;
@@ -356,15 +356,14 @@ export async function resolveAnswer(
   return describing(traceId, () => answerFromBody(body, context, options.question, traceId));
 }
 
-const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
-
 /**
  * Reads a decoded Search response into an answer; `traceId` is the trace id of the response
  * the body came from.
  *
  * @throws {ContractError} The body is not an object, its kind is unknown, a member the client
- *   acts on is missing, a part has no string `status`, or a spec's `definition.spec_id` is not
- *   its `spec_id`.
+ *   acts on is missing, `parts` is not an array of objects, a part has no string `status`, a
+ *   candidates part's `specs` is not an array, or a spec's `definition.spec_id` is not its
+ *   `spec_id`. Any other member of the wrong type reads as absent.
  */
 export function answerFromBody(
   body: unknown,
@@ -378,9 +377,7 @@ export function answerFromBody(
     });
   }
   const diagnostics = isRecord(body["diagnostics"]) ? body["diagnostics"] : {};
-  const warnings = Array.isArray(diagnostics["warnings"])
-    ? (diagnostics["warnings"] as unknown[]).filter(isRecord).map((w) => w as Warning)
-    : [];
+  const warnings = objects(diagnostics["warnings"]) as Warning[];
   const kind = body["kind"];
   if (kind === "declined" || kind === "catalogue") {
     return new Answer({
@@ -403,20 +400,23 @@ export function answerFromBody(
     });
   }
   checkStrict("Resolution", body);
-  const parts = body["parts"];
-  if (!Array.isArray(parts) || !parts.every(isRecord)) {
-    throw clientError("contract_violation", {
-      detail: "Resolution.parts is not an array of objects in the response.",
-      pointer: "/parts",
-    });
-  }
+  // The strict check has required `parts` to be an array.
+  const parts = body["parts"] as unknown[];
   if (parts.length === 0) {
     throw clientError("contract_violation", {
       detail: "The Search resolution has no parts, which this client acts on.",
       pointer: "/parts",
     });
   }
-  for (const [index, part] of parts.entries()) checkPart(part, index);
+  for (const [index, part] of parts.entries()) {
+    if (!isRecord(part)) {
+      throw clientError("contract_violation", {
+        detail: `Part ${index} of the Search response is not an object.`,
+        pointer: `/parts/${index}`,
+      });
+    }
+    checkPart(part, index);
+  }
   const typed = parts as Part[];
   const sentence = text(body["rendered_sentence"]);
   const status = text(body["status"]);
@@ -451,9 +451,9 @@ function checkPart(part: Record<string, unknown>, index: number): void {
   const pointer = `/parts/${index}`;
   if (part["status"] === "definite") checkSpec(part["spec"], `${pointer}/spec`);
   if (part["status"] === "candidates") {
-    const candidates = part["candidates"];
-    const specs = isRecord(candidates) ? candidates["specs"] : undefined;
-    for (const [at, spec] of (Array.isArray(specs) ? specs : []).entries()) {
+    // The strict check has required `candidates` to be an object and its `specs` an array.
+    const specs = (part["candidates"] as Record<string, unknown>)["specs"] as unknown[];
+    for (const [at, spec] of specs.entries()) {
       checkSpec(spec, `${pointer}/candidates/specs/${at}`);
     }
   }
@@ -481,7 +481,7 @@ function sharedStatus(parts: readonly Part[]): string {
 /** The sentence a part reads as: its spec's for a definite part, else its own. */
 export function partSentence(part: Part): string | null {
   if (isKnownPart(part) && part.status === "definite") {
-    return part.spec.resolved.rendered_sentence ?? null;
+    return text(part.spec.resolved.rendered_sentence);
   }
   return text(part.rendered_sentence);
 }
@@ -504,13 +504,16 @@ function membersOf(parts: readonly Part[]): (MemberRequest & { readonly spec: Sp
     entry.answerParts.push(part);
     grouped.set(spec.spec_id, entry);
   }
-  return [...grouped.values()].map(({ spec, parts: names, answerParts }) => ({
-    parts: names,
-    spec,
-    sentence: spec.resolved.rendered_sentence,
-    entityGroups: spec.resolved.entity_groups,
-    answerParts,
-  }));
+  return [...grouped.values()].map(({ spec, parts: names, answerParts }) => {
+    const groups = spec.resolved.entity_groups;
+    return {
+      parts: names,
+      spec,
+      sentence: text(spec.resolved.rendered_sentence),
+      entityGroups: isRecord(groups) ? groups : null,
+      answerParts,
+    };
+  });
 }
 
 /** A gap whose candidates belong to no answer, for a dataset or an error, which hold no client. */
@@ -549,8 +552,9 @@ function gapFor(
       return null;
     case "candidates": {
       const fetch = bind(part);
+      const byReading: unknown = part.reading_assumptions;
       const candidates = part.candidates.specs.map((spec) =>
-        candidateFrom(spec, part.reading_assumptions?.[spec.spec_id] ?? [], fetch),
+        candidateFrom(spec, isRecord(byReading) ? objects(byReading[spec.spec_id]) : [], fetch),
       );
       return gap("choice", `${candidates.length} readings`, candidates);
     }
@@ -560,24 +564,20 @@ function gapFor(
       const kind: GapKind = Object.hasOwn(CODE_GAP_KINDS, reason)
         ? CODE_GAP_KINDS[reason as keyof typeof CODE_GAP_KINDS]
         : "no_data";
-      return gap(kind, part.no_data.message || reason, queryOptions(part.no_data));
+      return gap(kind, text(part.no_data.message) || reason, queryOptions(part.no_data));
     }
     case "unsupported":
-      return gap("unsupported", part.unsupported.detail || part.unsupported.code);
+      return gap("unsupported", text(part.unsupported.detail) || part.unsupported.code);
   }
 }
 
 /** A refusal's choices, from `no_data.options`, read tolerantly: each option's `data_query` is
  *  the input that settles it. */
 function queryOptions(noData: NoData): QueryOption[] {
-  const options: unknown = noData.options;
-  if (!Array.isArray(options)) return [];
-  return options.filter(isRecord).map((option) => ({
+  return objects(noData.options).map((option) => ({
     kind: "query",
     label: text(option["label"]) ?? "",
-    mentions: Array.isArray(option["mentions"])
-      ? option["mentions"].filter((m): m is string => typeof m === "string")
-      : [],
+    mentions: list(option["mentions"]).filter((m): m is string => typeof m === "string"),
     dataQuery: isRecord(option["data_query"]) ? (option["data_query"] as ParsedInput) : null,
   }));
 }
@@ -587,29 +587,34 @@ function queryOptions(noData: NoData): QueryOption[] {
  *  sentence says. */
 function candidateFrom(
   spec: Spec,
-  assumptions: readonly Assumption[],
+  assumptions: readonly Record<string, unknown>[],
   fetch: CandidateFetch,
 ): Candidate {
   const { resolved } = spec;
-  const tokens = resolved.sentence_plan ?? [];
+  const tokens = objects(resolved.sentence_plan);
   const heading = tokens
-    .filter((token) => (token.segment ?? "heading") === "heading")
-    .map((token) => token.text)
+    .filter((token) => (token["segment"] ?? "heading") === "heading")
+    .map((token) => text(token["text"]) ?? "")
     .join("")
     .trim();
-  const unit = tokens.find(
-    (token) =>
-      token.segment === "byline" && token.kind === "slot" && token.axis === "unit" && token.text,
-  )?.text;
-  const sentence = resolved.rendered_sentence ?? null;
+  const unit = tokens
+    .filter(
+      (token) =>
+        token["segment"] === "byline" && token["kind"] === "slot" && token["axis"] === "unit",
+    )
+    .map((token) => text(token["text"]))
+    .find(Boolean);
+  const sentence = text(resolved.rendered_sentence);
+  const facets: unknown = resolved.facets;
+  const provenance = isRecord(facets) ? facets["provenance"] : undefined;
   return new Candidate(
     {
       spec,
       sentence,
       label: heading || sentence || null,
-      source: resolved.facets?.["provenance"]?.label ?? null,
+      source: isRecord(provenance) ? text(provenance["label"]) : null,
       unit: unit ?? null,
-      assumptions: Object.freeze([...assumptions]),
+      assumptions: Object.freeze(assumptions as Assumption[]),
     },
     fetch,
   );

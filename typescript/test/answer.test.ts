@@ -156,16 +156,19 @@ describe("gaps", () => {
     assert.deepEqual(candidate.unbound().assumptions, [ASSUMED]);
   });
 
-  test("a candidate with no heading and no sentence has a null label", () => {
-    const edited = body("answer-candidates-choose-fetch");
-    const [part] = edited["parts"] as CandidatesPart[];
-    const { resolved } = part!.candidates.specs[0]!;
-    delete resolved.sentence_plan;
-    delete resolved.rendered_sentence;
-    const [candidate] = answerFromBody(edited, offline(), null).gaps[0]!.options;
-    assert.ok(candidate?.kind === "candidate");
-    assert.equal(candidate.label, null);
-  });
+  for (const sentence of [undefined, ""]) {
+    test(`a candidate with no heading and ${sentence === undefined ? "no" : "an empty"} sentence has a null label`, () => {
+      const edited = body("answer-candidates-choose-fetch");
+      const [part] = edited["parts"] as CandidatesPart[];
+      const { resolved } = part!.candidates.specs[0]!;
+      delete resolved.sentence_plan;
+      if (sentence === undefined) delete resolved.rendered_sentence;
+      else resolved.rendered_sentence = sentence;
+      const [candidate] = answerFromBody(edited, offline(), null).gaps[0]!.options;
+      assert.ok(candidate?.kind === "candidate");
+      assert.equal(candidate.label, null);
+    });
+  }
 
   test("a no_data part with an empty message takes its reason's text", () => {
     const edited = body("answer-mixed-fetch-raises");
@@ -551,6 +554,134 @@ describe("reading a Search response", () => {
         code: "contract_violation",
         pointer,
       });
+    });
+  }
+
+  type BodyEdit = (body: Record<string, unknown>, parts: Record<string, unknown>[]) => void;
+  type Read = (answer: Answer) => void | Promise<void>;
+  const specsOf = (part: Record<string, unknown>): Record<string, unknown>[] =>
+    (part["candidates"] as { specs: Record<string, unknown>[] }).specs;
+  const resolvedOf = (spec: Record<string, unknown>): Record<string, unknown> =>
+    spec["resolved"] as Record<string, unknown>;
+  const sentenceOf = (name: string): string =>
+    String(answerFromBody(body(name), offline(), null).sentence);
+  const malformed: [string, string, BodyEdit, string | Read][] = [
+    [
+      "candidates.specs that is not an array",
+      "answer-candidates-choose-fetch",
+      (_, p) => ((p[0]!["candidates"] as Record<string, unknown>)["specs"] = {}),
+      "/parts/0/candidates/specs",
+    ],
+    ["parts that is not an array", "answer-definite-fetch", (b) => (b["parts"] = {}), "/parts"],
+    [
+      "a part that is not an object",
+      "answer-definite-fetch",
+      (_, p) => p.unshift(null!),
+      "/parts/0",
+    ],
+    [
+      "a null token in a sentence plan",
+      "answer-candidates-choose-fetch",
+      (_, p) => (resolvedOf(specsOf(p[0]!)[0]!)["sentence_plan"] as unknown[]).unshift(null),
+      (answer) => {
+        assert.equal(answer.gaps.length, 1);
+      },
+    ],
+    [
+      "a sentence plan that is not an array",
+      "answer-candidates-choose-fetch",
+      (_, p) => (resolvedOf(specsOf(p[0]!)[0]!)["sentence_plan"] = {}),
+      (answer) => {
+        const [candidate] = answer.gaps[0]!.options as Candidate[];
+        assert.equal(candidate!.label, candidate!.sentence);
+      },
+    ],
+    [
+      "reading assumptions that are not an array",
+      "answer-candidates-choose-fetch",
+      (_, p) => {
+        const id = String(specsOf(p[0]!)[0]!["spec_id"]);
+        (p[0]!["reading_assumptions"] as Record<string, unknown>)[id] = {};
+      },
+      (answer) => {
+        assert.deepEqual((answer.gaps[0]!.options[0] as Candidate).assumptions, []);
+      },
+    ],
+    [
+      "operations that are not an array",
+      "answer-definite-fetch",
+      (_, p) => (p[0]!["operations"] = {}),
+      (answer) => {
+        assert.equal(String(answer), sentenceOf("answer-definite-fetch"));
+      },
+    ],
+    [
+      "warnings that are not an array",
+      "answer-definite-fetch",
+      (_, p) => (p[0]!["warnings"] = {}),
+      (answer) => {
+        assert.equal(String(answer), sentenceOf("answer-definite-fetch"));
+      },
+    ],
+    [
+      "a null departure",
+      "answer-definite-fetch",
+      (_, p) => (p[0]!["departures"] = [null]),
+      async (answer) => {
+        await answer.fetch();
+        assert.equal(String(answer), sentenceOf("answer-definite-fetch"));
+      },
+    ],
+  ];
+  for (const [name, scenarioName, edit, expected] of malformed) {
+    test(`reads ${name} ${typeof expected === "string" ? `as a violation at ${expected}` : "as absent"}`, async () => {
+      const edited = body(scenarioName);
+      edit(edited, edited["parts"] as Record<string, unknown>[]);
+      if (typeof expected === "string") {
+        assert.throws(() => answerFromBody(edited, offline(), null), {
+          name: "ContractError",
+          code: "contract_violation",
+          pointer: expected,
+        });
+      } else {
+        await expected(answerFromBody(edited, offline(), null));
+      }
+    });
+  }
+
+  const resubmits: [string, string, BodyEdit, (entries: Record<string, unknown>[]) => void][] = [
+    [
+      "a restatement that is not an object posts a placeholder",
+      "choose-place-two-parts",
+      (_, p) => (p[1]!["restatement"] = "ODA disbursements"),
+      (entries) => {
+        assert.deepEqual(entries[1], {
+          entry_kind: "placeholder",
+          status: "no_data",
+          reason: "entity_ambiguous",
+          variable_text: "ODA disbursements",
+        });
+      },
+    ],
+    [
+      "assumptions that are not an array post none",
+      "choose-candidate-echoes-assumptions",
+      (_, p) => (p[1]!["assumptions"] = {}),
+      (entries) => {
+        assert.equal("assumptions" in entries[1]!, false);
+      },
+    ],
+  ];
+  for (const [name, scenarioName, edit, check] of resubmits) {
+    test(`choose: ${name}`, async () => {
+      const edited = body(scenarioName);
+      edit(edited, edited["parts"] as Record<string, unknown>[]);
+      const { fetch, seen } = mockFetch(json(record(scenarioName).exchanges[1]!.response.json));
+      await answerFromBody(edited, offline(fetch), null).choose(0, 0);
+      const posted = JSON.parse(seen[0]!.body!) as {
+        input: { entries: Record<string, unknown>[] };
+      };
+      check(posted.input.entries);
     });
   }
 

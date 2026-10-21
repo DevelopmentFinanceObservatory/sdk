@@ -82,3 +82,88 @@ test("an operation without a status raises ContractError", () => {
     checkStrict("OperationResource", { operation: { operation_id: "op_1" } });
   }, violation("/operation/status"));
 });
+
+type Edit = (body: Record<string, unknown>) => void;
+const first = (body: Record<string, unknown>, member: string): Record<string, unknown> =>
+  (body[member] as Record<string, unknown>[])[0]!;
+const wrongTypes: [string, "Manifest" | "Resolution", string, Edit, string][] = [
+  [
+    "a numeric spec_id",
+    "Manifest",
+    "fetch-spec-known-sentence",
+    (b) => ((b["definition"] as Record<string, unknown>)["spec_id"] = 7),
+    "/definition/spec_id",
+  ],
+  [
+    "a non-string artifact_digest",
+    "Manifest",
+    "fetch-spec-known-sentence",
+    (b) => (first(b, "artifacts")["artifact_digest"] = {}),
+    "/artifacts/0/artifact_digest",
+  ],
+  [
+    "a non-string url",
+    "Manifest",
+    "fetch-spec-known-sentence",
+    (b) => (first(b, "artifacts")["url"] = ["/x"]),
+    "/artifacts/0/url",
+  ],
+  [
+    "artifacts that is not an array",
+    "Manifest",
+    "fetch-spec-known-sentence",
+    (b) => (b["artifacts"] = {}),
+    "/artifacts",
+  ],
+  [
+    "an artifact that is not an object",
+    "Manifest",
+    "fetch-spec-known-sentence",
+    (b) => ((b["artifacts"] as unknown[])[0] = "x"),
+    "/artifacts/0",
+  ],
+  [
+    "a string resolved",
+    "Resolution",
+    "answer-definite-fetch",
+    (b) => ((first(b, "parts")["spec"] as Record<string, unknown>)["resolved"] = "x"),
+    "/parts/0/spec/resolved",
+  ],
+  [
+    "a string identity",
+    "Resolution",
+    "answer-definite-fetch",
+    (b) =>
+      ((
+        (first(b, "parts")["spec"] as Record<string, unknown>)["definition"] as Record<
+          string,
+          unknown
+        >
+      )["identity"] = "x"),
+    "/parts/0/spec/definition/identity",
+  ],
+  [
+    "parts that is not an array",
+    "Resolution",
+    "answer-definite-fetch",
+    (b) => (b["parts"] = {}),
+    "/parts",
+  ],
+  [
+    "candidates.specs that is not an array",
+    "Resolution",
+    "answer-candidates-choose-fetch",
+    (b) => ((first(b, "parts")["candidates"] as Record<string, unknown>)["specs"] = {}),
+    "/parts/0/candidates/specs",
+  ],
+];
+for (const [name, schema, scenario, edit, pointer] of wrongTypes) {
+  test(`${name} raises ContractError at ${pointer}`, async () => {
+    const body = structuredClone(await recorded(scenario));
+    checkStrict(schema, body);
+    edit(body);
+    assert.throws(() => {
+      checkStrict(schema, body);
+    }, violation(pointer));
+  });
+}

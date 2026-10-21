@@ -84,6 +84,20 @@ describe("arguments a fetch refuses before any request", () => {
     });
   });
 
+  test("entities for a spec whose definition holds no identity", async () => {
+    await assert.rejects(
+      fetchDataset(transport, spec("spec_1"), { entities: { origin: ["country/DEU"] } }),
+      { name: "InvalidRequestError", code: "invalid_argument" },
+    );
+  });
+
+  test("a layout that is neither long nor frame", async () => {
+    await assert.rejects(fetchDataset(transport, spec("spec_1"), { layout: "wide" as "long" }), {
+      name: "InvalidRequestError",
+      code: "invalid_argument",
+    });
+  });
+
   test("a window that is not a pair of years", async () => {
     await assert.rejects(fetchDataset(transport, spec("spec_1"), { window: [2020.5, 2021] }), {
       name: "InvalidRequestError",
@@ -286,6 +300,39 @@ describe("a download", async () => {
     const dataset = await fetchDataset(transport, spec!, { timeout: 2_000 });
     assert.deepEqual(dataset.memberBytes(0), bytes);
     assert.equal(seen.length, 4);
+  });
+
+  test("asks the files route again after a followed browser redirect answers 403", async () => {
+    const record = await scenario("fetch-spec-known-sentence");
+    const bytes = await scenarioBytes("fetch-spec-known-sentence.parquet");
+    const opaque = () => {
+      const response = new Response(null, { status: 200 });
+      Object.defineProperty(response, "type", { value: "opaqueredirect" });
+      return response;
+    };
+    const { fetch, seen } = mockFetch(
+      json(record.exchanges[0]!.response.json),
+      opaque,
+      () => new Response("<Error>ExpiredToken</Error>", { status: 403 }),
+      opaque,
+      () => new Response(bytes),
+    );
+    const waits: number[] = [];
+    const transport = new Transport({
+      baseUrl: REPLAY_BASE_URL,
+      apiKey: REPLAY_KEY,
+      fetch,
+      sleep: (ms) => {
+        waits.push(ms);
+        return Promise.resolve();
+      },
+      env: envFrom({}),
+      readCredentialsFile: () => null,
+    });
+    const dataset = await fetchDataset(transport, stepOf(record, 0, "fetch").spec!);
+    assert.deepEqual(dataset.memberBytes(0), bytes);
+    assert.equal(seen.length, 5);
+    assert.deepEqual(waits, []);
   });
 
   test("refuses an artifact URL off the API's origin before the sentence and any download", async () => {

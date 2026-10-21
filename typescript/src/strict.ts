@@ -11,12 +11,23 @@ type Shape =
   | { readonly values: Shape }
   | { readonly discriminator: string; readonly mapping: Readonly<Record<string, string>> };
 
+type JsonType = "string" | "array" | "object";
+
 type Entry = {
-  readonly required: readonly string[];
+  readonly required: Readonly<Record<string, JsonType>>;
   readonly children: Readonly<Record<string, Shape>>;
 };
 
 const TABLE: Readonly<Record<string, Entry>> = STRICT_SCHEMAS;
+
+const IS_TYPE: Readonly<Record<JsonType, (value: unknown) => boolean>> = {
+  string: (value) => typeof value === "string",
+  array: Array.isArray,
+  object: isRecord,
+};
+
+const violation = (detail: string, pointer: string) =>
+  clientError("contract_violation", { detail, pointer });
 
 const escape = (member: string): string => member.replaceAll("~", "~0").replaceAll("/", "~1");
 
@@ -46,15 +57,25 @@ function checkShape(shape: Shape, value: unknown, pointer: string): void {
 
 function checkSchema(schema: string, value: unknown, pointer: string): void {
   const entry = TABLE[schema]!;
-  const body = isRecord(value) ? value : {};
-  for (const member of entry.required) {
+  if (!isRecord(value)) {
+    throw violation(`The ${schema} at ${pointer || "/"} is not an object.`, pointer);
+  }
+  const body = value;
+  for (const [member, type] of Object.entries(entry.required)) {
+    const at = `${pointer}/${escape(member)}`;
     if (body[member] === undefined || body[member] === null) {
-      throw clientError("contract_violation", {
-        detail:
-          `The response has no ${member} at ${pointer || "/"}, which ` +
+      throw violation(
+        `The response has no ${member} at ${pointer || "/"}, which ` +
           `${schema} requires and this client acts on. Upgrade the client, or report the trace id.`,
-        pointer: `${pointer}/${escape(member)}`,
-      });
+        at,
+      );
+    }
+    if (!IS_TYPE[type](body[member])) {
+      throw violation(
+        `The ${member} at ${at} is not a JSON ${type}, which ${schema} requires and this ` +
+          "client acts on. Upgrade the client, or report the trace id.",
+        at,
+      );
     }
   }
   for (const [member, shape] of Object.entries(entry.children)) {
@@ -65,7 +86,8 @@ function checkSchema(schema: string, value: unknown, pointer: string): void {
 }
 
 /**
- * Raises `ContractError` when a response body lacks a member the client acts on, as
+ * Raises `ContractError` when a response body lacks a member the client acts on, or holds it as
+ * another JSON type than the served document gives it, as
  * `contract/strict-fields.json` lists them. The check descends only through those members, so a
  * nested spec the client never reads, such as one under a spec's `resolved`, is not checked.
  * Every other member, and every unknown discriminator value, passes untouched.

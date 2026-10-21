@@ -189,13 +189,19 @@ export async function resolveApiKey(lookup: KeyLookup): Promise<ResolvedKey> {
   return lookUpApiKey(lookup);
 }
 
-/** True when the code runs in a browser page. */
-export const inBrowser = (): boolean =>
-  typeof (globalThis as { window?: { document?: unknown } }).window?.document !== "undefined";
+/**
+ * True when the code runs in a browser page or worker: a window with a document, or a dedicated,
+ * shared or service worker, which all define `importScripts`. Server runtimes that borrow the
+ * worker globals, such as Cloudflare's workerd, define no `importScripts`.
+ */
+export const inBrowser = (): boolean => {
+  const scope = globalThis as { window?: { document?: unknown }; importScripts?: unknown };
+  return typeof scope.window?.document !== "undefined" || typeof scope.importScripts === "function";
+};
 
 /**
- * Refuses a secret key in a browser page unless the caller allows it, since any script on the
- * page can read it.
+ * Refuses a secret key in a browser page or worker unless the caller allows it, since the
+ * script that holds it is delivered to every visitor.
  */
 export function refuseSecretKeyInBrowser(
   key: string | ApiKey | null,
@@ -204,7 +210,7 @@ export function refuseSecretKeyInBrowser(
   if (key === null || dangerouslyAllowBrowser || !inBrowser()) return;
   if ((typeof key === "string" ? key : key.reveal()).startsWith(SECRET_PREFIX)) {
     throw new TypeError(
-      "A secret dfo_k_ key in a browser page is readable by every script on the page. Call the " +
+      "A secret dfo_k_ key in a browser page or worker is readable by every visitor. Call the " +
         "API from a server, or pass dangerouslyAllowBrowser: true to send it anyway.",
     );
   }

@@ -10,11 +10,13 @@
 //   node scripts/generate-contract.ts --check   exit 1 when a committed file differs
 //
 // The strict table lists, for every schema that holds a strict field, the strict members it
-// requires and the strict members to descend into: a strict member whose schema holds strict
+// requires, each with the JSON type (string, array or object) the served document gives it
+// directly or through its `$ref`, and the strict members to descend into: a strict member whose schema holds strict
 // fields of its own. The check reaches only the members a client reads, so a nested schema
 // reached through a member the client never reads, such as a spec under `resolved`, is not
 // checked. Generation fails when a strict pointer names a member the served document does not
-// require, or lets be null, or when an enum entry lists a value the served document does not
+// require, or lets be null, or types as other than a string, array or object, or when an enum
+// entry lists a value the served document does not
 // allow.
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -111,7 +113,10 @@ function shapeOf(schema: unknown, relevant: Set<string>): Shape | undefined {
   return undefined;
 }
 
-type StrictEntry = { required: string[]; children: Record<string, Shape> };
+type JsonType = "string" | "array" | "object";
+const JSON_TYPES = new Set<unknown>(["string", "array", "object"]);
+
+type StrictEntry = { required: Record<string, JsonType>; children: Record<string, Shape> };
 
 export function renderStrict(openapiText: string, strictText: string): Record<string, unknown> {
   const schemas = (JSON.parse(openapiText) as { components: { schemas: Record<string, Schema> } })
@@ -129,7 +134,15 @@ export function renderStrict(openapiText: string, strictText: string): Record<st
     return { ...target, node };
   };
 
-  const required = new Map<string, string[]>();
+  /** The JSON type a property must have, through its `$ref`, or undefined when it has no
+   *  string, array or object type. */
+  const jsonType = (node: Schema): JsonType | undefined => {
+    const typed = "$ref" in node ? schemas[refName(node["$ref"])] : node;
+    const type = typed?.["type"];
+    return JSON_TYPES.has(type) ? (type as JsonType) : undefined;
+  };
+
+  const required = new Map<string, Record<string, JsonType>>();
   for (const { pointer } of strict.required) {
     const target = property(pointer);
     const listed = schemas[target.schema]!["required"];
@@ -139,7 +152,11 @@ export function renderStrict(openapiText: string, strictText: string): Record<st
     if (isNullable(target.node)) {
       throw new Error(`${pointer} is strict but served/openapi.json lets it be null`);
     }
-    required.set(target.schema, [...(required.get(target.schema) ?? []), target.property]);
+    const type = jsonType(target.node);
+    if (type === undefined) {
+      throw new Error(`${pointer} is strict but has no string, array or object type`);
+    }
+    required.set(target.schema, { ...required.get(target.schema), [target.property]: type });
   }
 
   const enums: Record<string, Record<string, string[]>> = {};
@@ -160,7 +177,7 @@ export function renderStrict(openapiText: string, strictText: string): Record<st
   for (const name of [...relevant].toSorted()) {
     const members = required.get(name)!;
     const children = Object.fromEntries(
-      members
+      Object.keys(members)
         .map((member) => [member, shapeOf(property(strictPointer(name, member)).node, relevant)])
         .filter((entry): entry is [string, Shape] => entry[1] !== undefined),
     );

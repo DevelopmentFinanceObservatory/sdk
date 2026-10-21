@@ -160,12 +160,22 @@ function boundRoles(definition: Readonly<Record<string, unknown>>): Map<string, 
   return bound;
 }
 
-/** The spec's whole entity binding with the caller's roles replaced and its null roles
- *  dropped, since the server's `scope.entities` replaces the binding outright. */
+/**
+ * The spec's whole entity binding with the caller's roles replaced and its null roles dropped,
+ * since the server's `scope.entities` replaces the binding outright.
+ *
+ * @throws {InvalidRequestError} The spec's definition holds no `identity` object, or a role is
+ *   bound to neither a list nor null (`invalid_argument`).
+ */
 function entityScope(
   spec: SpecLike,
   entities: NonNullable<Narrowing["entities"]>,
 ): Record<string, readonly string[]> {
+  if (!isRecord(spec.definition["identity"])) {
+    throw invalid(
+      `The definition of ${spec.spec_id} holds no identity to rebind; use a spec from a search.`,
+    );
+  }
   const bound = boundRoles(spec.definition);
   for (const [role, dcids] of Object.entries(entities)) {
     if (dcids === null) {
@@ -231,10 +241,11 @@ async function digestOf(data: Uint8Array): Promise<string> {
  * Downloads a file through the route that redirects to it, checked against its digest. The
  * route ask is an API request, which retries as one and waits the client's timeout per attempt;
  * its failure raises. The URL it names is fetched once, bare on the storage host and with the
- * client's headers on the API's origin, reading until the fetch's deadline. A retryable failure
- * of that fetch, or bytes that do not hash to the digest, ask the route again and fetch once
- * more, with no wait of their own, and a second failure raises: `download_failed` for a refused
- * signed URL, `digest_mismatch` for the bytes.
+ * client's headers on the API's origin, reading until the fetch's deadline; in a browser that
+ * hid the redirect, that one fetch asks the route again with the key alone and the browser
+ * follows the redirect. A retryable failure of that fetch, or bytes that do not hash to the
+ * digest, ask the route again and fetch once more, with no wait of their own, and a second
+ * failure raises: `download_failed` for a refused signed URL, `digest_mismatch` for the bytes.
  */
 async function download(
   transport: Transport,
@@ -249,7 +260,11 @@ async function download(
     let data: Uint8Array;
     if (located.data === undefined) {
       try {
-        data = await transport.fetchSigned(located.signed, { ...ask, timeout: Infinity });
+        data = await transport.fetchSigned(located.signed, {
+          ...ask,
+          timeout: Infinity,
+          follow: located.follow,
+        });
       } catch (error) {
         if (!(error instanceof DfoError) || !error.retryable || passedDeadline(error)) throw error;
         failure = error;

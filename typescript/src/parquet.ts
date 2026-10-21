@@ -3,7 +3,8 @@
  * as one Parquet file with hyparquet-writer. Several files stack into one table: a `part`
  * column first, then every file's columns in file order, with a column one file lacks null in
  * that file's rows. A column whose type differs between files widens as pyarrow's permissive
- * promotion widens it, so a table either client stacks has the same types.
+ * promotion widens it, so a table either client stacks has the same types. A DECIMAL column
+ * keeps its precision and scale, and its values read as 64-bit floats.
  */
 
 import { parquetMetadata, parquetReadObjects } from "hyparquet";
@@ -11,6 +12,7 @@ import type { FileMetaData, KeyValue, ParquetParsers, SchemaElement } from "hypa
 import { parquetWriteBuffer } from "hyparquet-writer";
 
 import { clientError } from "./errors.ts";
+import type { ContractError } from "./errors.ts";
 
 /**
  * One cell of `toRows()`. INT64 columns arrive as numbers, so `JSON.stringify` works on the
@@ -28,6 +30,8 @@ export type ColumnType =
   | { readonly kind: "bool" }
   | { readonly kind: "int"; readonly bits: 8 | 16 | 32 | 64; readonly signed: boolean }
   | { readonly kind: "float"; readonly bits: 32 | 64 }
+  /** A DECIMAL column, whose values read as 64-bit floats. */
+  | { readonly kind: "decimal"; readonly precision: number; readonly scale: number }
   | { readonly kind: "date" }
   | {
       readonly kind: "timestamp";
@@ -80,7 +84,12 @@ const RAW_PARSERS: Partial<ParquetParsers> = {
   jsonFromBytes: text,
 };
 
-/** Reads a Parquet file's footer and column types. */
+/**
+ * Reads a Parquet file's footer and column types.
+ *
+ * @throws {ContractError} A column is nested or of a type the client cannot read
+ *   (`contract_violation`).
+ */
 export function readParquet(bytes: Uint8Array): ParquetFile {
   const buffer = bytes.slice().buffer;
   const metadata = parquetMetadata(buffer);
@@ -91,10 +100,10 @@ export function readParquet(bytes: Uint8Array): ParquetFile {
   return { buffer, metadata, columns, rows: Number(metadata.num_rows) };
 }
 
-function unsupported(element: SchemaElement, what: string): TypeError {
-  return new TypeError(
-    `The Parquet column ${element.name} is ${what}, which the client cannot read.`,
-  );
+function unsupported(element: SchemaElement, what: string): ContractError {
+  return clientError("contract_violation", {
+    detail: `The Parquet column ${element.name} is ${what}, which the client cannot read.`,
+  });
 }
 
 function intType(bits: number, signed: boolean, element: SchemaElement): ColumnType {
@@ -118,7 +127,12 @@ export function columnType(element: SchemaElement): ColumnType {
     throw unsupported(element, logical?.type ?? converted ?? "nested");
   }
   if (logical?.type === "NULL") return NULL;
-  if (logical?.type === "DECIMAL" || converted === "DECIMAL") return { kind: "float", bits: 64 };
+  if (logical?.type === "DECIMAL") {
+    return { kind: "decimal", precision: logical.precision, scale: logical.scale };
+  }
+  if (converted === "DECIMAL") {
+    return { kind: "decimal", precision: element.precision ?? 0, scale: element.scale ?? 0 };
+  }
   if (logical?.type === "TIMESTAMP") {
     return { kind: "timestamp", unit: logical.unit, utc: logical.isAdjustedToUTC };
   }
@@ -157,6 +171,15 @@ const sameType = (left: ColumnType, right: ColumnType): boolean =>
 
 type Bits = 8 | 16 | 32 | 64;
 
+/** The decimal digits of each integer width's largest magnitude, which a decimal must hold in
+ *  its integer digits for the integer column to stack with it. */
+const INT_DIGITS = {
+  signed: { 8: 3, 16: 5, 32: 10, 64: 19 },
+  unsigned: { 8: 3, 16: 5, 32: 10, 64: 20 },
+} as const;
+/** The widest decimal pyarrow holds, in digits. */
+const MAX_DECIMAL_PRECISION = 76;
+
 /** Each timestamp unit's ticks per millisecond. */
 const TICKS_PER_MS = { MILLIS: 1n, MICROS: 1_000n, NANOS: 1_000_000n } as const;
 
@@ -166,10 +189,14 @@ const TICKS_PER_MS = { MILLIS: 1n, MICROS: 1_000n, NANOS: 1_000_000n } as const;
  * signed and an unsigned one a signed type that holds both, up to 64 bits; an integer and a
  * float take the float, 64 bits unless a 32-bit float meets an integer of at most 16 bits;
  * timestamps in one time zone take the finer unit; a string and a binary column take binary.
+ * Decimals take the larger scale and the most integer digits, up to 76 digits; a decimal and a
+ * float take the float; a decimal and an integer take the decimal when its integer digits hold
+ * every value of the integer's width, and are refused otherwise, as pyarrow's cast refuses them.
  */
 export function widen(left: ColumnType, right: ColumnType): ColumnType | undefined {
   if (left.kind === "null") return right;
   if (right.kind === "null" || sameType(left, right)) return left;
+  if (left.kind === "decimal" || right.kind === "decimal") return widenDecimal(left, right);
   if (left.kind === "int" && right.kind === "int") {
     if (left.signed === right.signed) {
       return { kind: "int", bits: Math.max(left.bits, right.bits) as Bits, signed: left.signed };
@@ -190,6 +217,22 @@ export function widen(left: ColumnType, right: ColumnType): ColumnType | undefin
   const kinds = new Set([left.kind, right.kind]);
   if (kinds.has("string") && kinds.has("binary")) return { kind: "binary" };
   return undefined;
+}
+
+/** The type a decimal column stacks with another as, or undefined for a pair pyarrow refuses. */
+function widenDecimal(left: ColumnType, right: ColumnType): ColumnType | undefined {
+  const [decimal, other] = left.kind === "decimal" ? [left, right] : [right, left];
+  if (decimal.kind !== "decimal") return undefined;
+  if (other.kind === "float") return other;
+  if (other.kind === "int") {
+    const digits = INT_DIGITS[other.signed ? "signed" : "unsigned"][other.bits];
+    return decimal.precision - decimal.scale >= digits ? decimal : undefined;
+  }
+  if (other.kind !== "decimal") return undefined;
+  const scale = Math.max(decimal.scale, other.scale);
+  const precision =
+    Math.max(decimal.precision - decimal.scale, other.precision - other.scale) + scale;
+  return precision > MAX_DECIMAL_PRECISION ? undefined : { kind: "decimal", precision, scale };
 }
 
 /** The stacked table's columns: `part` first when there are several files, then every
@@ -225,9 +268,12 @@ export function stackedColumns(parts: readonly TablePart[]): Column[] {
 
 const encoder = new TextEncoder();
 
+/** Whether a column's values are numbers with a fraction: a float's, or a decimal's. */
+const isFloating = (type: ColumnType): boolean => type.kind === "float" || type.kind === "decimal";
+
 function rowValue(value: unknown, column: Column): Value {
   if (value === undefined || value === null) return null;
-  if (column.type.kind === "float" && typeof value === "bigint") return Number(value);
+  if (isFloating(column.type) && typeof value === "bigint") return Number(value);
   if (column.type.kind === "binary" && typeof value === "string") return encoder.encode(value);
   if (typeof value === "bigint") {
     if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER)) {
@@ -301,7 +347,7 @@ export async function decodeStored(parts: readonly TablePart[]): Promise<StoredC
 function storedValue(value: unknown, own: ColumnType, type: ColumnType): unknown {
   if (value === null) return null;
   if (type.kind === "string" && value instanceof Uint8Array) return text(value);
-  if (type.kind === "float" && typeof value === "bigint") return Number(value);
+  if (isFloating(type) && typeof value === "bigint") return Number(value);
   if (type.kind === "timestamp" && own.kind === "timestamp" && own.unit !== type.unit) {
     return (BigInt(value as bigint | number) * TICKS_PER_MS[type.unit]) / TICKS_PER_MS[own.unit];
   }
@@ -330,6 +376,21 @@ function schemaElement({ name, type }: Column): SchemaElement {
     }
     case "float":
       return { ...optional, type: type.bits === 32 ? "FLOAT" : "DOUBLE" };
+    case "decimal": {
+      const { precision, scale } = type;
+      const decimal = {
+        ...optional,
+        converted_type: "DECIMAL",
+        logical_type: { type: "DECIMAL", precision, scale },
+        precision,
+        scale,
+      } as const;
+      if (precision <= 9) return { ...decimal, type: "INT32" };
+      if (precision <= 18) return { ...decimal, type: "INT64" };
+      // The fewest bytes whose two's complement holds every value of `precision` digits.
+      const length = Math.ceil((precision * Math.log2(10) + 1) / 8);
+      return { ...decimal, type: "FIXED_LEN_BYTE_ARRAY", type_length: length };
+    }
     case "date":
       return { ...optional, type: "INT32", converted_type: "DATE", logical_type: { type: "DATE" } };
     case "timestamp":
