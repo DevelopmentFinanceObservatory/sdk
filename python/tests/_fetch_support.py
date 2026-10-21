@@ -325,6 +325,35 @@ def live_server(responses: Mapping[str, LiveResponse]) -> Iterator[LiveServer]:
         server.server_close()
 
 
+class TimedBody(httpx2.SyncByteStream, httpx2.AsyncByteStream):
+    """A response body that records the read timeout each chunk is read under.
+
+    Before each chunk it notes the request's read timeout, then moves the test's
+    clock by that chunk's wait, as a network read that takes so long would.
+    """
+
+    def __init__(
+        self,
+        request: httpx2.Request,
+        advance: Callable[[float], None],
+        waits: list[float],
+    ) -> None:
+        self._request = request
+        self._advance = advance
+        self._waits = waits
+        self.reads: list[float | None] = []
+
+    def __iter__(self) -> Iterator[bytes]:
+        for wait in self._waits:
+            self.reads.append(self._request.extensions["timeout"]["read"])
+            self._advance(wait)
+            yield b" "
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self:
+            yield chunk
+
+
 class SlowBody(httpx2.SyncByteStream, httpx2.AsyncByteStream):
     """A response body whose second chunk arrives `seconds` after its first.
 

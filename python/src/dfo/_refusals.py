@@ -8,8 +8,9 @@ trace id the body lacks comes from the response's `x-dfo-trace-id` header.
 An error the client raises itself on reading a response, `unexpected_response`,
 `contract_violation`, or a `DataWarning` or `SearchWarning`, carries that
 response's trace id, read the same way: the body's `trace_id`, else the header.
-Any other client error describes the caller's input or a storage-host fetch and
-carries none.
+`answer_declined` and `answer_incomplete` carry the trace id of the Search
+response that gave the answer. Any other client error describes the caller's
+input or a storage-host fetch and carries none.
 """
 
 from collections.abc import Generator
@@ -29,7 +30,6 @@ from dfo._error_map import (
 from dfo._errors import (
     AuthenticationError,
     ContractError,
-    DataWarning,
     DfoError,
     IncompleteAnswerError,
     InvalidRequestError,
@@ -37,7 +37,6 @@ from dfo._errors import (
     PermissionDeniedError,
     QuotaExceededError,
     RateLimitError,
-    SearchWarning,
     ServerError,
     VersionUnavailableError,
     status_class,
@@ -126,16 +125,16 @@ def trace_id_of(response: httpx2.Response, body: object = None) -> str | None:
 @contextmanager
 def describing(trace_id: str | None) -> Generator[None]:
     """Give `trace_id` to an error raised inside that describes the response
-    it names, unless the error carries a trace id already."""
+    it names, unless the error carries a trace id already.
+
+    A `DataWarning` or `SearchWarning` is built with its response's trace id, so
+    it passes through untouched.
+    """
     try:
         yield
     except DfoError as error:
         if error.trace_id is None and error.code in _RESPONSE_CODES:
             error.trace_id = trace_id
-        raise
-    except (DataWarning, SearchWarning) as warning:
-        if warning.trace_id is None:
-            warning.trace_id = trace_id
         raise
 
 

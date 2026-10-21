@@ -284,8 +284,17 @@ def test_departures_operations_and_assumptions_come_from_the_answer_parts() -> N
 def test_a_manifest_without_the_artifact_is_refused() -> None:
     member = recorded_member()
     member.manifest["artifacts"] = member.manifest["artifacts"][1:]
-    with pytest.raises(ContractError, match="lists no artifact"):
+    with pytest.raises(ContractError) as caught:
         one(member)
+    assert caught.value.code == "contract_violation"
+
+
+def test_a_ref_member_the_manifest_does_not_list_takes_the_refs_rendering() -> None:
+    member = recorded_member(rendering=Rendering("parquet", False))
+    member.manifest["artifacts"] = member.manifest["artifacts"][1:]
+    data = one(member)
+    assert data.layout_version == "long"
+    assert data.members[0].rendering == Rendering("parquet", False)
 
 
 def test_the_frame_layout_refuses_several_members() -> None:

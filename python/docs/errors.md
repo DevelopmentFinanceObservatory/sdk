@@ -57,7 +57,7 @@ with dfo.Client() as client:
 | `PermissionDeniedError`   | The key lacks a scope                                                            | Ask for the scope                                                        |
 | `RateLimitError`          | Over the rate limit after the client's retries                                   | Wait `retry_after` seconds                                               |
 | `QuotaExceededError`      | Over the build quota                                                             | Wait for the quota to reset                                              |
-| `ServerError`             | The server failed after the client's retries, or a download failed its check     | Report the `trace_id`                                                    |
+| `ServerError`             | The server failed after the client's retries, or a download failed its check     | Report the `trace_id`; a failed download carries none                    |
 | `ContractError`           | A response lacks a field the client acts on, or has a form it does not know      | Upgrade `development-finance`; report it if the newest release fails too |
 | `NetworkError`            | The connection failed, or `DFO_OFFLINE=1` blocks a call that needs the server    | Retry later, or fetch from the cache                                     |
 | `DfoTimeoutError`         | A deadline passed                                                                | Raise `timeout`, or resume the build the message names                   |
@@ -68,7 +68,7 @@ Three classes carry more:
 
 - `IncompleteAnswerError.answer` is the answer whose fetch raised it, and `gaps` lists each part without a reading. A refusal from the server carries no answer.
 - `VersionUnavailableError.newest_version` is the newest version the server holds, or None.
-- `ContractError.pointer` is the JSON Pointer of the missing member, or None.
+- `ContractError.pointer` is the JSON Pointer of the missing or mistyped member, or None.
 
 ### Server refusal codes
 
@@ -93,25 +93,25 @@ A code this client does not know maps on its HTTP status: 401 to `Authentication
 
 The client raises these codes itself, for conditions it detects before or after a request. They are the same in every DFO client.
 
-| Code                       | Class                     | Raised when                                                                                              | What you do                                                                 |
-| -------------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `answer_declined`          | `DeclinedError`           | You fetch an answer Search declined or answered with the catalogue                                       | Ask a question that names data; `answer.reason` says why                    |
-| `answer_incomplete`        | `IncompleteAnswerError`   | You fetch an answer with a part that has no reading, without `partial=True` or with no part answered     | Choose a reading, or fetch with `partial=True`                              |
-| `choice_invalid`           | `InvalidRequestError`     | `choose` names no part awaiting a choice, several, or an unknown option, or a part cannot be posted back | Name the part and option by index                                           |
-| `contract_violation`       | `ContractError`           | A response lacks a member the client acts on, or contradicts the request                                 | Upgrade `development-finance`                                               |
-| `credentials_file_invalid` | `AuthenticationError`     | The credentials file breaks the format                                                                   | Fix the line the message names, or delete the file and run `dfo auth login` |
-| `deadline_exceeded`        | `DfoTimeoutError`         | The call's deadline passed before it finished                                                            | Raise `timeout`, or resume with `client.operation(...)`                     |
-| `digest_mismatch`          | `ServerError`             | A downloaded file does not hash to its manifest's digest, twice                                          | Retry; report the `trace_id` if it repeats                                  |
-| `download_failed`          | `ServerError`             | A signed storage URL answered a status other than 2xx                                                    | Retry; report it if it repeats                                              |
-| `invalid_argument`         | `InvalidRequestError`     | An argument breaks a rule the client checks before any request                                           | Fix the argument the message names                                          |
-| `key_empty`                | `AuthenticationError`     | The `api_key` argument is an empty string                                                                | Pass a key, None to look one up, or False for anonymous use                 |
-| `network_error`            | `NetworkError`            | The connection failed before a response arrived                                                          | Check the connection and retry                                              |
-| `offline`                  | `NetworkError`            | `DFO_OFFLINE=1` is set, and the call needs the server                                                    | Fetch a spec or ref the cache holds, or unset `DFO_OFFLINE`                 |
-| `profile_not_found`        | `AuthenticationError`     | `DFO_PROFILE` names a profile the credentials file lacks                                                 | Run `dfo auth login` with that `DFO_PROFILE`                                |
-| `profile_without_key`      | `AuthenticationError`     | The chosen profile has no key                                                                            | Run `dfo auth login` with that `DFO_PROFILE`                                |
-| `refusal_without_code`     | By HTTP status            | A refusal whose body carries no code                                                                     | Act on the class; report the status if it persists                          |
-| `unexpected_response`      | `ContractError`           | A response has a status or form the call does not act on                                                 | Upgrade `development-finance`; check `base_url`                             |
-| `version_unavailable`      | `VersionUnavailableError` | A stored version can no longer be fetched, and no refusal says why                                       | Fetch the spec for `newest_version`                                         |
+| Code                       | Class                     | Raised when                                                                                                            | What you do                                                                 |
+| -------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `answer_declined`          | `DeclinedError`           | You fetch an answer Search declined or answered with the catalogue                                                     | Ask a question that names data; `answer.reason` says why                    |
+| `answer_incomplete`        | `IncompleteAnswerError`   | You fetch an answer with a part that has no reading, without `partial=True` or with no part answered                   | Choose a reading, or fetch with `partial=True`                              |
+| `choice_invalid`           | `InvalidRequestError`     | `choose` names no part awaiting a choice, several, or an unknown option, or a part cannot be posted back               | Name the part and option by index                                           |
+| `contract_violation`       | `ContractError`           | A response lacks a member the client acts on, holds one of another JSON type, or contradicts the request               | Upgrade `development-finance`                                               |
+| `credentials_file_invalid` | `AuthenticationError`     | The credentials file breaks the format                                                                                 | Fix the line the message names, or delete the file and run `dfo auth login` |
+| `deadline_exceeded`        | `DfoTimeoutError`         | The call's deadline passed before it finished                                                                          | Raise `timeout`, or resume with `client.operation(...)`                     |
+| `digest_mismatch`          | `ServerError`             | A downloaded file does not hash to its manifest's digest, after the files route was asked once more                    | Retry; report the spec and version if it repeats                            |
+| `download_failed`          | `ServerError`             | The URL a files route names answered a status other than 200, or its fetch failed, after the route was asked once more | Retry; report it if it repeats                                              |
+| `invalid_argument`         | `InvalidRequestError`     | An argument breaks a rule the client checks before any request                                                         | Fix the argument the message names                                          |
+| `key_empty`                | `AuthenticationError`     | The `api_key` argument is an empty string                                                                              | Pass a key, None to look one up, or False for anonymous use                 |
+| `network_error`            | `NetworkError`            | The connection failed before a response arrived                                                                        | Check the connection and retry                                              |
+| `offline`                  | `NetworkError`            | `DFO_OFFLINE=1` is set, and the call needs the server                                                                  | Fetch a spec or ref the cache holds, or unset `DFO_OFFLINE`                 |
+| `profile_not_found`        | `AuthenticationError`     | `DFO_PROFILE` names a profile the credentials file lacks                                                               | Run `dfo auth login` with that `DFO_PROFILE`                                |
+| `profile_without_key`      | `AuthenticationError`     | The chosen profile has no key                                                                                          | Run `dfo auth login` with that `DFO_PROFILE`                                |
+| `refusal_without_code`     | By HTTP status            | A refusal whose body carries no code                                                                                   | Act on the class; report the status if it persists                          |
+| `unexpected_response`      | `ContractError`           | A response has a status or form the call does not act on                                                               | Upgrade `development-finance`; check `base_url`                             |
+| `version_unavailable`      | `VersionUnavailableError` | A stored version can no longer be fetched, and no refusal says why                                                     | Fetch the spec for `newest_version`                                         |
 
 An `invalid_argument` example:
 
@@ -149,9 +149,9 @@ Warnings derive from `dfo.DfoWarning`, a `UserWarning`, and name the line in you
 
 - `SearchWarning`: the reading differs from the question, by a departure, a computation Search does not run, or a default it applied. `code` names it when there is one.
 - `DataWarning`: the server attached a warning to the data. `code` and `severity` come from the server.
+- `DfoDeprecationWarning`: a call, or a route the server marked, goes away in a later release. It is also a `DeprecationWarning`. A route the server marks with a `Deprecation` or `Sunset` header issues it with `code` `route_deprecated`, once per process for each pair of header values.
 
 A `SearchWarning` or `DataWarning` carries `trace_id`, the trace id of the response it came from.
-- `DfoDeprecationWarning`: a call, or a route the server marked, goes away in a later release. It is also a `DeprecationWarning`. A route the server marks with a `Deprecation` or `Sunset` header issues it with `code` `route_deprecated`, once per process for each pair of header values.
 
 The client issues a plain `DfoWarning` of its own with a `code`: `server_warning` for a message the server sends in an `x-dfo-warning` header, once per process per message, and `key_unknown_prefix`, `key_not_base62` or `key_checksum_mismatch` for a key that does not look like a DFO key.
 

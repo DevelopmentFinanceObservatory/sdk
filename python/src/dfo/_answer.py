@@ -6,9 +6,9 @@ a reading, and raises `IncompleteAnswerError` before any build when one does not
 
 Every choice makes one Search request, and the new answer is Search's response.
 A choice of place or source in a one-part answer posts the option's `data_query`
-unchanged, a parsed input that Search binds again. Any other choice posts a `dataset_resubmit` with one entry per part, so
-Search composes the sentence and folds the parts again; a pick in a one-part answer
-posts one entry:
+unchanged, a parsed input that Search binds again. Any other choice posts a
+`dataset_resubmit` with one entry per part, so Search composes the sentence and
+folds the parts again; a pick in a one-part answer posts one entry:
 
 - a definite part posts its spec's identity and entity groups;
 - the chosen candidate posts its identity, and the chosen option its one parsed part;
@@ -19,7 +19,10 @@ posts one entry:
 Each identity echoes its reading's assumptions: a definite part's `assumptions`,
 and a candidate's entry in its part's `reading_assumptions`. Search then states
 the assumptions that still hold, and the new sentence carries them. An identity
-whose part carries no list posts none, and Search computes them afresh.
+whose part carries no list posts none, and Search computes them afresh. A member
+an entry echoes that has another JSON type than the wire's reads as absent: a
+restatement that is not an object, and `operations` or `assumptions` that are not
+lists.
 """
 
 from __future__ import annotations
@@ -637,7 +640,8 @@ def _echo(part: Part[AsyncCandidate], **members: Any) -> dict[str, Any]:
     entry: dict[str, Any] = {**members, "variable_text": part.variable_text}
     if part.separate:
         entry["separate"] = True
-    if operations := part.raw.get("operations"):
+    operations = part.raw.get("operations")
+    if isinstance(operations, list) and operations:
         entry["operations"] = operations
     return entry
 
@@ -647,22 +651,26 @@ def _identity(part: Part[AsyncCandidate], spec: Mapping[str, Any]) -> dict[str, 
     entity groups when it has any, and the reading's assumptions when the part
     carries them."""
     item: dict[str, Any] = {"identity": spec["definition"]["identity"]}
-    resolved = spec.get("resolved")
-    if isinstance(resolved, Mapping) and resolved.get("entity_groups"):
-        item["entity_groups"] = resolved["entity_groups"]
+    groups = spec["resolved"].get("entity_groups")
+    if isinstance(groups, Mapping) and groups:
+        item["entity_groups"] = groups
     if (assumptions := _reading_assumptions(part, spec)) is not None:
         item["assumptions"] = assumptions
     return item
 
 
-def _reading_assumptions(part: Part[AsyncCandidate], spec: Mapping[str, Any]) -> object:
+def _reading_assumptions(
+    part: Part[AsyncCandidate], spec: Mapping[str, Any]
+) -> list[Any] | None:
     """The wire's assumptions for one reading of `part`, or None when the part
-    carries none: a candidates part's `reading_assumptions` entry under the
-    spec's id, or any other part's `assumptions`."""
+    holds no list for it: a candidates part's `reading_assumptions` entry under
+    the spec's id, or any other part's `assumptions`."""
     if isinstance(part, CandidatesPart):
         by_spec = part.raw.get("reading_assumptions")
-        return by_spec.get(spec["spec_id"]) if isinstance(by_spec, Mapping) else None
-    return part.raw.get("assumptions")
+        listed = by_spec.get(spec["spec_id"]) if isinstance(by_spec, Mapping) else None
+    else:
+        listed = part.raw.get("assumptions")
+    return listed if isinstance(listed, list) else None
 
 
 def _identity_entry(

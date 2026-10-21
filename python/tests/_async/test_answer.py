@@ -626,6 +626,50 @@ async def test_a_resubmit_echoes_a_parts_separate_flag_and_operations() -> None:
     )
 
 
+def definite_with(member: str, value: object) -> dict[str, Any]:
+    """search-1.json's definite part, with `member` set to `value`, beside a
+    candidates part."""
+    part = load("search-1.json")["parts"][0]
+    target = part["spec"]["resolved"] if member == "entity_groups" else part
+    target[member] = value
+    return beside_a_candidates_part(part)
+
+
+def no_data_restated_as(restatement: object) -> dict[str, Any]:
+    part = load("search-4.json")["parts"][1]
+    part["restatement"] = restatement
+    return beside_a_candidates_part(part)
+
+
+@pytest.mark.parametrize(
+    ("body", "member", "entry_kind"),
+    [
+        (
+            lambda: definite_with("operations", {"verb": "share"}),
+            "operations",
+            "identity",
+        ),
+        (lambda: definite_with("assumptions", {}), "assumptions", "identity"),
+        (lambda: definite_with("entity_groups", ["x"]), "entity_groups", "identity"),
+        (lambda: no_data_restated_as("debt"), "part", "placeholder"),
+    ],
+    ids=[
+        "operations-object",
+        "assumptions-object",
+        "entity-groups-array",
+        "restatement-string",
+    ],
+)
+async def test_a_resubmit_reads_a_member_of_another_json_type_as_absent(
+    body: Callable[[], dict[str, Any]], member: str, entry_kind: str
+) -> None:
+    answer, server = await ask("q", body(), load("search-1.json"))
+    await answer.choose(0, 0)
+    entry = server.posted[1]["input"]["entries"][1]
+    assert entry["entry_kind"] == entry_kind
+    assert member not in entry
+
+
 async def test_fetch_builds_one_member_per_distinct_spec(
     fetched: list[tuple[Any, Any, Any]],
 ) -> None:

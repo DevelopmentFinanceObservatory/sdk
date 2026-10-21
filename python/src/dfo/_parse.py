@@ -2,9 +2,10 @@
 
 The parser reads the plain dicts `json.loads` returns. It checks the members the
 client acts on through `dfo._strict.require`, which raises `ContractError` with the
-JSON Pointer of the missing member, and reads
-everything else tolerantly: an unknown member is ignored, an unknown enum value
-passes through as a string, and a part with an unknown status becomes `UnknownPart`.
+JSON Pointer of a member that is missing, null or of another JSON type, and reads
+everything else tolerantly: an unknown member is ignored, a member of another JSON
+type reads as absent, an unknown enum value passes through as a string, and a part
+with an unknown status becomes `UnknownPart`.
 Server JSON the client posts back, such as a spec's `definition`, is kept as decoded.
 """
 
@@ -52,12 +53,10 @@ def parse_parts(resolution: Wire, /) -> tuple[ParsedPart, ...]:
         resolution: A decoded Search response whose `kind` is `resolution`.
 
     Raises:
-        ContractError: A member the client acts on is missing or null, or the
-            answer has no parts.
+        ContractError: A member the client acts on is missing, null or of another
+            JSON type, or the answer has no parts.
     """
     parts = require(resolution, "Resolution")["parts"]
-    if not isinstance(parts, list):
-        raise _violation("Resolution.parts is not an array in the response")
     if not parts:
         raise _violation("Resolution.parts is empty in the response", pointer="/parts")
     return tuple(
@@ -77,7 +76,9 @@ def parse_part(part: object, pointer: str = "", /) -> ParsedPart:
             member its status requires.
     """
     if not isinstance(part, Mapping):
-        raise _violation(f"the part at {pointer or '/'} is not an object")
+        raise _violation(
+            f"the part at {pointer or '/'} is not an object", pointer=pointer
+        )
     status = part.get("status")
     if not isinstance(status, str):
         raise _violation(
@@ -94,7 +95,9 @@ def parse_spec(spec: object, pointer: str = "", /) -> Spec:
     """A spec, with Search's sentence for it when the response carries one.
 
     Raises:
-        ContractError: `spec_id` or `definition` is missing, null or inconsistent.
+        ContractError: `spec_id`, `definition`, `resolved` or `definition.identity`
+            is missing, null or of another JSON type, or `definition.spec_id` is
+            not the spec's `spec_id`.
     """
     spec = require(spec, "Spec", pointer)
     definition = require(spec["definition"], "SpecDefinition", f"{pointer}/definition")
@@ -104,7 +107,7 @@ def parse_spec(spec: object, pointer: str = "", /) -> Spec:
             f"not the spec's {spec['spec_id']}",
             pointer=f"{pointer}/definition/spec_id",
         )
-    resolved = _object(spec.get("resolved"))
+    resolved = spec["resolved"]
     groups = resolved.get("entity_groups")
     return Spec(
         spec["spec_id"],
@@ -125,11 +128,13 @@ def parse_candidate(
     `spec_id`.
 
     Raises:
-        ContractError: `spec_id` or `definition` is missing, null or inconsistent.
+        ContractError: `spec_id`, `definition`, `resolved` or `definition.identity`
+            is missing, null or of another JSON type, or `definition.spec_id` is
+            not the spec's `spec_id`.
     """
     spec = require(spec, "Spec", pointer)
     parsed = parse_spec(spec, pointer)
-    resolved = _object(spec.get("resolved"))
+    resolved = spec["resolved"]
     tokens = [
         token
         for token in _list(resolved.get("sentence_plan"))
@@ -155,7 +160,7 @@ def parse_candidate(
     return Candidate(
         spec=parsed,
         sentence=parsed.sentence,
-        label=heading or parsed.sentence,
+        label=heading or parsed.sentence or None,
         source=_optional_text(provenance.get("label")),
         unit=unit,
         raw=spec,
@@ -246,16 +251,13 @@ def check_manifest(manifest: object, pointer: str = "", /) -> None:
         pointer: The manifest's JSON Pointer in the response body.
 
     Raises:
-        ContractError: The definition, its `spec_id`, the `content_version`, the
-            artifact list, or an artifact's digest, rendering or URL is missing or
-            null.
+        ContractError: The definition, its `spec_id`, its `identity`, the
+            `content_version`, the artifact list, or an artifact's digest,
+            rendering or URL is missing, null or of another JSON type.
     """
     manifest = require(manifest, "Manifest", pointer)
     require(manifest["definition"], "DefinitionModel", f"{pointer}/definition")
-    artifacts = manifest["artifacts"]
-    if not isinstance(artifacts, list):
-        raise _violation("Manifest.artifacts is not an array in the response")
-    for index, artifact in enumerate(artifacts):
+    for index, artifact in enumerate(manifest["artifacts"]):
         require(artifact, "ArtifactEntryModel", f"{pointer}/artifacts/{index}")
 
 
@@ -289,8 +291,6 @@ def _candidates(part: Wire, pointer: str) -> CandidatesPart[Candidate]:
         f"{pointer}/candidates",
     )
     specs = candidate_set["specs"]
-    if not isinstance(specs, list):
-        raise _violation("CandidateSet.specs is not an array in the response")
     reading_assumptions = _object(part.get("reading_assumptions"))
     return CandidatesPart(
         candidates=tuple(

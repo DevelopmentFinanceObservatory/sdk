@@ -182,11 +182,14 @@ def test_a_backlog_refusal_waits_for_its_retry_after() -> None:
     assert timeline.sleeps == [4.0, 4.0]
 
 
-def test_a_429_poll_waits_for_its_retry_after() -> None:
+@pytest.mark.parametrize(
+    ("status", "code"), [(429, "rate_limited"), (503, "service_unavailable")]
+)
+def test_a_refused_poll_waits_for_its_retry_after(status: int, code: str) -> None:
     timeline = Timeline()
     server = Server(
         accepted(retry_after_ms=1000),
-        refused(429, "rate_limited", "6"),
+        refused(status, code, "6"),
         done(),
         redirect(),
         parquet(),

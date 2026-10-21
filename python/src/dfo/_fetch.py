@@ -888,6 +888,7 @@ def _stored(member: RefMember, manifest: Wire, data: bytes) -> FetchedMember:
         manifest=manifest,
         digest=member.digest,
         data=data,
+        rendering=member.rendering,
     )
 
 

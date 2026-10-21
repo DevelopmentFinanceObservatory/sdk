@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from dfo._build import layout_of
 from dfo._error_map import CONTRACT_VIOLATION
 from dfo._errors import client_error
 from dfo._parse import parse_citation, parse_notices, parse_part
@@ -92,6 +93,9 @@ class FetchedMember:
             (`digest_mismatch`), and a cache entry that misses it is a miss.
         answer_parts: The answer parts the member answers, when it came from an
             answer; their departures and requested operations reach the dataset.
+        rendering: The rendering a `DatasetRef` member stores, for a member
+            fetched from a ref; it names the artifact's layout when the manifest
+            does not list `digest`. None for a member a fetch built.
     """
 
     parts: tuple[str, ...]
@@ -102,6 +106,7 @@ class FetchedMember:
     digest: str
     data: bytes = field(repr=False)
     answer_parts: tuple[Part[object], ...] = field(default=(), repr=False)
+    rendering: Rendering | None = None
 
 
 @dataclass(frozen=True, slots=True, eq=False, repr=False)
@@ -338,8 +343,9 @@ def build_dataset(
 ) -> Dataset:
     """Make one dataset from the members a fetch built and downloaded.
 
-    Each member's manifest must list the artifact its bytes came from. Several members stack into one long table, a `part` column
-    first, holding each member's parts joined by "; " (its sentence when it
+    Each member's layout comes from the manifest's artifact for its digest, else
+    from the rendering its `DatasetRef` stores. Several members stack into one
+    long table, a `part` column first, holding each member's parts joined by "; " (its sentence when it
     answers no part); columns one member lacks are null in its rows, and a column
     whose types differ in width widens, as an int32 with an int64 to int64 and an
     integer with a double to double.
@@ -353,7 +359,8 @@ def build_dataset(
 
     Raises:
         ValueError: No members, or several members in the frame layout.
-        ContractError: A member's manifest does not list the artifact, or two
+        ContractError: A member's manifest does not list its artifact and no
+            `DatasetRef` gives its rendering, or two
             members hold a column whose types cannot widen to one
             (`contract_violation`).
     """
@@ -369,8 +376,7 @@ def build_dataset(
     retentions: list[Mapping[str, Any] | None] = []
     warnings: list[Notice] = []
     for fetched in members:
-        artifact = _artifact(fetched.manifest, fetched.digest)
-        layouts.append(str(artifact["rendering"].get("layout", layout)))
+        layouts.append(_layout_version(fetched, layout))
         built.append(
             Member(
                 parts=fetched.parts,
@@ -482,16 +488,26 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
     )
 
 
-def _artifact(manifest: Mapping[str, Any], digest: str) -> Mapping[str, Any]:
-    artifacts = manifest.get("artifacts")
+def _layout_version(fetched: FetchedMember, layout: Layout) -> str:
+    """The layout a member's artifact holds, from its manifest or else its ref.
+
+    Raises:
+        ContractError: The manifest lists no artifact with the member's digest
+            and the member came from no `DatasetRef` (`contract_violation`).
+    """
+    artifacts = fetched.manifest.get("artifacts")
     for artifact in artifacts if isinstance(artifacts, list) else ():
         if (
             isinstance(artifact, Mapping)
-            and artifact.get("artifact_digest") == digest
-            and isinstance(artifact.get("rendering"), Mapping)
+            and artifact.get("artifact_digest") == fetched.digest
+            and isinstance(rendering := artifact.get("rendering"), Mapping)
         ):
-            return artifact
-    raise client_error(CONTRACT_VIOLATION, f"the manifest lists no artifact {digest}")
+            return str(rendering.get("layout", layout))
+    if fetched.rendering is not None:
+        return layout_of(fetched.rendering)
+    raise client_error(
+        CONTRACT_VIOLATION, f"the manifest lists no artifact {fetched.digest}"
+    )
 
 
 def _with_part(table: pa.Table, label: str) -> pa.Table:

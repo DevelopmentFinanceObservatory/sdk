@@ -27,7 +27,7 @@ from dfo._errors import (
 )
 from dfo._transport import USER_AGENT, AsyncTransport
 
-from .._fetch_support import SlowBody
+from .._fetch_support import SlowBody, TimedBody
 
 pytestmark = pytest.mark.anyio
 
@@ -261,6 +261,20 @@ async def test_a_deadline_that_passes_while_a_body_is_read_raises() -> None:
             )
     assert (caught.value.code, caught.value.retryable) == ("deadline_exceeded", True)
     assert len(recorder.requests) == 1
+
+
+async def test_each_body_chunk_is_read_within_the_time_left_on_the_attempt() -> None:
+    timeline = Timeline()
+    bodies: list[TimedBody] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        timeline.advance(4)
+        bodies.append(TimedBody(request, timeline.advance, [3, 1]))
+        return httpx2.Response(200, stream=bodies[0])
+
+    async with make(handler, timeline, timeout=10.0) as transport:
+        await transport.request("GET", "/datasets/schema")
+    assert bodies[0].reads == [6.0, 3.0]
 
 
 async def test_a_body_that_trickles_past_the_timeout_spends_an_attempt() -> None:

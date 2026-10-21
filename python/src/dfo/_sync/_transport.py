@@ -11,9 +11,11 @@ storage host. Under
 
 The client's `timeout` bounds one whole attempt, body included, and a call's
 deadline bounds the whole call. An attempt must finish by the earlier of the
-call's deadline and its start plus the timeout; httpx2 times each phase on its
-own, so the body is read through a stream that raises `deadline_exceeded` once
-that reading passes. The key resolves when the transport is built, and again
+call's deadline and its start plus the timeout. httpx2 times each phase on its
+own, so once the headers arrive the request's read timeout shrinks to the time
+left, which bounds a stalled body. It shrinks again before each chunk, which
+HTTP/2 reads per chunk and HTTP/1.1 reads once, when the body starts; a chunk
+that arrives after the attempt's end raises `deadline_exceeded`. The key resolves when the transport is built, and again
 after a 401.
 """
 
@@ -95,25 +97,48 @@ def retry_after(response: httpx2.Response) -> float | None:
     return max(0.0, (moment - datetime.now(UTC)).total_seconds())
 
 
+def _bound_read(
+    request: httpx2.Request, clock: Clock, deadline: float, what: str
+) -> None:
+    """Shrink `request`'s read timeout to the time left before `deadline`.
+
+    Raises:
+        DfoTimeoutError: `deadline` has passed (`deadline_exceeded`).
+    """
+    left = deadline - clock()
+    if left <= 0:
+        raise client_error(
+            DEADLINE_EXCEEDED,
+            f"{what} ran past its time limit while its body was read",
+        )
+    request.extensions["timeout"] = {**request.extensions["timeout"], "read": left}
+
+
 class _DeadlineStream(httpx2.SyncByteStream):
-    """A response body that raises `deadline_exceeded` once its attempt's
-    deadline passes."""
+    """A response body read within its attempt's deadline.
+
+    Before each chunk the request's read timeout shrinks to the time left, so a
+    stalled chunk times out at the deadline, and a chunk that arrives after it
+    raises `deadline_exceeded`.
+    """
 
     def __init__(
-        self, stream: httpx2.SyncByteStream, clock: Clock, deadline: float, what: str
+        self,
+        stream: httpx2.SyncByteStream,
+        request: httpx2.Request,
+        clock: Clock,
+        deadline: float,
+        what: str,
     ) -> None:
         self._stream = stream
+        self._request = request
         self._clock = clock
         self._deadline = deadline
         self._what = what
 
     def __iter__(self) -> Iterator[bytes]:
         for chunk in self._stream:
-            if self._clock() >= self._deadline:
-                raise client_error(
-                    DEADLINE_EXCEEDED,
-                    f"{self._what} ran past its time limit while its body was read",
-                )
+            _bound_read(self._request, self._clock, self._deadline, self._what)
             yield chunk
 
     def close(self) -> None:
@@ -298,8 +323,9 @@ class Transport:
             try:
                 if deadline is not None:
                     assert isinstance(response.stream, httpx2.SyncByteStream)
+                    _bound_read(request, self._clock, deadline, what)
                     response.stream = _DeadlineStream(
-                        response.stream, self._clock, deadline, what
+                        response.stream, request, self._clock, deadline, what
                     )
                 response.read()
             finally:

@@ -290,17 +290,21 @@ def test_every_strict_schema_has_a_site() -> None:
     assert set(STRICT_SITES) == set(_strict.REQUIRED)
 
 
-@pytest.mark.parametrize("edit", ["renamed", "null"])
+# A value of another JSON type than each strict member's.
+WRONG_TYPE = {"string": [], "array": {}, "object": "x"}
+
+
+@pytest.mark.parametrize("edit", ["renamed", "null", "wrong_type"])
 @pytest.mark.parametrize(
-    ("schema", "member"),
+    ("schema", "member", "json_type"),
     [
-        (schema, member)
+        (schema, member, json_type)
         for schema, members in _strict.REQUIRED.items()
-        for member in members
+        for member, json_type in members
     ],
 )
-def test_a_missing_or_null_strict_member_raises(
-    schema: str, member: str, edit: str
+def test_a_missing_null_or_mistyped_strict_member_raises(
+    schema: str, member: str, json_type: str, edit: str
 ) -> None:
     make, path, reader = STRICT_SITES[schema]
     body = make()
@@ -312,13 +316,128 @@ def test_a_missing_or_null_strict_member_raises(
     if edit == "renamed":
         target[f"{member}_v2"] = value
     else:
-        target[member] = None
+        target[member] = None if edit == "null" else WRONG_TYPE[json_type]
     with pytest.raises(ContractError) as caught:
         reader(body)
     assert (caught.value.code, caught.value.pointer) == (
         "contract_violation",
         "".join(f"/{step}" for step in (*path, member)),
     )
+
+
+def search_2_with(edit: Callable[[dict[str, Any]], object]) -> dict[str, Any]:
+    """search-2.json with `edit` applied to its candidates part."""
+    answer = load("search-2.json")
+    edit(answer["parts"][0])
+    return answer
+
+
+def search_1_with(edit: Callable[[dict[str, Any]], object]) -> dict[str, Any]:
+    """search-1.json with `edit` applied to its definite part."""
+    answer = load("search-1.json")
+    edit(answer["parts"][0])
+    return answer
+
+
+@pytest.mark.parametrize(
+    ("body", "pointer"),
+    [
+        (lambda: {**load("search-1.json"), "parts": {}}, "/parts"),
+        (lambda: {**load("search-1.json"), "parts": ["x"]}, "/parts/0"),
+        (
+            lambda: search_2_with(lambda part: part["candidates"].update(specs={})),
+            "/parts/0/candidates/specs",
+        ),
+    ],
+    ids=["parts-object", "part-string", "specs-object"],
+)
+def test_a_malformed_strict_member_raises_at_its_pointer(
+    body: Callable[[], dict[str, Any]], pointer: str
+) -> None:
+    with pytest.raises(ContractError) as caught:
+        parse_parts(body())
+    assert (caught.value.code, caught.value.pointer) == ("contract_violation", pointer)
+
+
+def first_spec(part: dict[str, Any]) -> dict[str, Any]:
+    return part["candidates"]["specs"][0]
+
+
+def first_label(part: Any) -> object:
+    return part.candidates[0].label
+
+
+@pytest.mark.parametrize(
+    ("body", "read", "absent"),
+    [
+        (
+            lambda: search_2_with(
+                lambda part: first_spec(part)["resolved"].update(sentence_plan={})
+            ),
+            first_label,
+            # With no plan the label falls back to the reading's sentence.
+            first_spec(load("search-2.json")["parts"][0])["resolved"][
+                "rendered_sentence"
+            ],
+        ),
+        (
+            lambda: search_2_with(
+                lambda part: first_spec(part)["resolved"].update(
+                    sentence_plan=[], rendered_sentence=""
+                )
+            ),
+            first_label,
+            None,
+        ),
+        (
+            lambda: search_2_with(
+                lambda part: first_spec(part)["resolved"]["sentence_plan"].insert(
+                    0, None
+                )
+            ),
+            first_label,
+            first_label(parse_parts(load("search-2.json"))[0]),
+        ),
+        (
+            lambda: search_2_with(
+                lambda part: part.update(
+                    reading_assumptions={first_spec(part)["spec_id"]: {}}
+                )
+            ),
+            lambda part: part.candidates[0].assumptions,
+            (),
+        ),
+        (
+            lambda: search_1_with(lambda part: part.update(operations={})),
+            lambda part: part.operations,
+            (),
+        ),
+        (
+            lambda: search_1_with(lambda part: part.update(warnings={})),
+            lambda part: part.warnings,
+            (),
+        ),
+        (
+            lambda: search_1_with(lambda part: part.update(departures=[None])),
+            lambda part: part.departures,
+            (),
+        ),
+    ],
+    ids=[
+        "sentence-plan-object",
+        "no-heading-and-an-empty-sentence",
+        "sentence-plan-null-token",
+        "reading-assumptions-object",
+        "operations-object",
+        "warnings-object",
+        "departures-null-item",
+    ],
+)
+def test_a_malformed_member_outside_the_strict_set_reads_as_absent(
+    body: Callable[[], dict[str, Any]], read: Callable[[Any], object], absent: object
+) -> None:
+    (part, *_) = parse_parts(body())
+    assert read(part) == absent
 
 
 def test_a_part_without_status_raises() -> None:

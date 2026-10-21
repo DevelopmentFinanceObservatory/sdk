@@ -23,17 +23,21 @@ print(len(answer.specs))  # 2: one spec per distinct reading
 
 The attributes an answer carries:
 
-| Attribute  | Holds                                                                                        |
-| ---------- | -------------------------------------------------------------------------------------------- |
-| `sentence` | Search's sentence for the whole answer; None for a declined or catalogue answer              |
-| `parts`    | One part per variable asked, in the question's order                                         |
-| `specs`    | The readings, one per distinct spec                                                          |
-| `complete` | Whether every part has a reading                                                             |
-| `gaps`     | The parts that stop a complete dataset, each a `Gap`                                         |
-| `kind`     | `resolution`, `catalogue` or `declined`                                                      |
-| `status`   | `definite`, `candidates`, `no_data` or `unsupported` when every part shares it, else `mixed` |
-| `warnings` | Search's warnings for the whole answer, as `Notice` objects                                  |
-| `raw`      | The decoded response body, untouched                                                         |
+| Attribute   | Holds                                                                                        |
+| ----------- | -------------------------------------------------------------------------------------------- |
+| `sentence`  | Search's sentence for the whole answer; None for a declined or catalogue answer              |
+| `parts`     | One part per variable asked, in the question's order                                         |
+| `specs`     | The readings, one per distinct spec                                                          |
+| `complete`  | Whether every part has a reading                                                             |
+| `gaps`      | The parts that stop a complete dataset, each a `Gap`                                         |
+| `question`  | The question asked, when the answer came from one                                            |
+| `reason`    | Why Search declined, for a declined answer                                                   |
+| `kind`      | `resolution`, `catalogue` or `declined`                                                      |
+| `status`    | `definite`, `candidates`, `no_data` or `unsupported` when every part shares it, else `mixed` |
+| `warnings`  | Search's warnings for the whole answer, as `Notice` objects                                  |
+| `timed_out` | Whether Search stopped at its time limit                                                     |
+| `trace_id`  | The Search response's trace id; quote it when you report a reading                           |
+| `raw`       | The decoded response body, untouched                                                         |
 
 In a notebook the answer renders as HTML with the same content.
 
