@@ -10,10 +10,10 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    # dfo._transport routes the connection pools through private attributes of
-    # both, so a bump needs the stall tests in tests/_async/test_transport.py to pass.
-    "httpcore2>=2.15,<2.16; sys_platform != 'emscripten'",
-    "httpx2>=2.15,<2.16",
+    # `_keep_to_deadlines` in src/dfo/_transport.py reads the pool's private layout
+    # and raises a RuntimeError naming both versions when a release moves it.
+    "httpcore2>=2.15; sys_platform != 'emscripten'",
+    "httpx2>=2.15",
     "pyarrow>=15",
     "typing-extensions>=4.12",
 ]

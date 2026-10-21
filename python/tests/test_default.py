@@ -21,12 +21,14 @@ import pytest
 
 import dfo
 from dfo import _default
+from dfo._cache import Cache
 from dfo._sync._client import Client
 from dfo._sync._fetch import Session
 from dfo._sync._transport import Transport
 
 from ._fetch_support import Replay
 
+DEFAULT_URL = "https://default.example.org/api"
 QUESTION = "ODA disbursements from Germany to Nigeria for basic health care"
 
 
@@ -69,19 +71,21 @@ def unexpected(request: httpx2.Request) -> httpx2.Response:
 
 
 def mock_clients(
-    monkeypatch: pytest.MonkeyPatch, servers: dict[str, Callable[..., Any]]
+    monkeypatch: pytest.MonkeyPatch,
+    servers: dict[str, Callable[..., Any]],
+    cache: Cache | None = None,
 ) -> list[Client]:
-    """Make the default client serve each base URL from its handler."""
+    """Make the default client serve each base URL from its handler, over `cache`."""
     built: list[Client] = []
 
     def client(**options: Any) -> Client:
-        base_url = options.get("base_url") or "https://default.example.org/api"
+        base_url = options.get("base_url") or DEFAULT_URL
         transport = Transport(
             base_url=base_url,
             api_key=False,
             http_transport=httpx2.MockTransport(servers.get(base_url, unexpected)),
         )
-        built.append(Client._over(Session(transport, None)))
+        built.append(Client._over(Session(transport, cache)))
         return built[-1]
 
     monkeypatch.setattr(_default, "Client", client)
@@ -124,6 +128,81 @@ def test_the_default_client_is_built_once_on_first_use(
     first = _default.default_client()
     assert _default.default_client() is first
     assert clients == [first]
+
+
+def fetch_answer() -> None:
+    """Ask the default client the recorded question and fetch the answer."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        dfo.search(QUESTION).fetch()
+
+
+def cached_files(cache: Cache) -> list[Path]:
+    return [path for path in cache.directory.rglob("*") if path.is_file()]
+
+
+def replay_over_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, passes: list[int]
+) -> tuple[Replay, Cache]:
+    """A default client over a fresh cache, served `passes` of the recorded fetch.
+
+    Each entry of `passes` is how many of the recording's exchanges the pass
+    makes: all four to search, build and download, or the first two to search and
+    build with the download read from the cache.
+    """
+    replay = Replay("answer-definite-fetch", DEFAULT_URL)
+    exchanges = replay.exchanges
+    replay.exchanges = [e for count in passes for e in exchanges[:count]]
+    cache = Cache(tmp_path / "cache", env={})
+    mock_clients(monkeypatch, {DEFAULT_URL: replay}, cache)
+    return replay, cache
+
+
+def test_a_fetch_after_disable_cache_reads_nothing_from_the_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    replay, cache = replay_over_cache(monkeypatch, tmp_path, [4, 4])
+    fetch_answer()
+    assert cached_files(cache)
+
+    dfo.disable_cache()
+    fetch_answer()
+
+    # The second pass downloads again, so it takes all four exchanges.
+    assert (replay.exchanges, len(replay.requests)) == ([], 8)
+
+
+def test_disable_cache_stops_writes_and_enable_cache_restores_both(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    replay, cache = replay_over_cache(monkeypatch, tmp_path, [4, 4, 2])
+
+    dfo.disable_cache()
+    fetch_answer()
+    assert cached_files(cache) == []
+
+    dfo.enable_cache()
+    fetch_answer()
+    assert cached_files(cache)
+    fetch_answer()
+    # The third pass reads the download from the cache, so it takes two exchanges.
+    assert (replay.exchanges, len(replay.requests)) == ([], 10)
+
+
+def test_disable_and_enable_cache_keep_the_configured_client(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    base_url = "https://configured.example.org/api"
+    cache = Cache(tmp_path / "cache", env={})
+    clients = mock_clients(monkeypatch, {}, cache)
+    dfo.configure(base_url=base_url, timeout=7.0, max_retries=5)
+    configured = _default.default_client()
+
+    dfo.disable_cache()
+    assert (_default.default_client(), cache.enabled) == (configured, False)
+    dfo.enable_cache()
+    assert (_default.default_client(), cache.enabled) == (configured, True)
+    assert clients == [configured]
 
 
 FORK = textwrap.dedent(
