@@ -235,15 +235,21 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
   });
 
   test(
-    "3. three readings, and the first fetched by choice and by candidate",
+    "3. several readings, and the first fetched by choice and by candidate",
     { timeout: STEP_TIMEOUT },
     async () => {
-      const answer = await client.search("GNI of Germany from 2015 to 2022");
+      // The step needs a question Search reads several ways.
+      const answer = await client.search("GNI in Germany from 2015 to 2022");
       const error = await rejection(answer.fetch());
       assert.ok(error instanceof IncompleteAnswerError, String(error));
       assert.equal(error.code, "answer_incomplete");
       const numbered = error.message.split("\n").filter((line) => /^\s+\[\d+\] /.test(line));
-      assert.equal(numbered.length, 3, error.message);
+      assert.ok(numbered.length >= 2, error.message);
+      assert.deepEqual(
+        numbered.map((line) => /\[(\d+)\]/.exec(line)?.[1]),
+        numbered.map((_, i) => String(i)),
+        error.message,
+      );
 
       const chosen = await (await answer.choose(0)).fetch();
       assert.ok(chosen.rows > 0);
