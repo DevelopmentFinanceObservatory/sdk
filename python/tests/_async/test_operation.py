@@ -261,7 +261,14 @@ async def test_a_failed_operation_body_raises_its_problem() -> None:
     async with make(server) as transport:
         with pytest.raises(ServerError) as caught:
             await fetch(transport, spec())
-    assert caught.value.code == "upstream_error"
+    assert (caught.value.code, caught.value.status) == ("upstream_error", 502)
+
+    del failed["error"]["status"]
+    server = Server(accepted(), json_response(200, failed))
+    async with make(server) as transport:
+        with pytest.raises(ServerError) as caught:
+            await fetch(transport, spec())
+    assert caught.value.status == 500
 
 
 async def test_the_deadline_names_the_call_that_resumes_the_build() -> None:

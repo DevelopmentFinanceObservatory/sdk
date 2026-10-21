@@ -190,7 +190,7 @@ async def test_a_narrowed_spec_stores_the_built_identity_and_asks_search_its_sen
     assert member.manifest["retention"] == body["retention"]
 
 
-async def test_an_answer_part_resubmits_with_its_variable_text() -> None:
+async def test_an_answer_part_resubmits_with_its_first_part() -> None:
     server = Server(
         json_response(200, manifest()),
         json_response(200, resubmitted()),
@@ -204,7 +204,7 @@ async def test_an_answer_part_resubmits_with_its_variable_text() -> None:
             narrowing={"window": {"kind": "latest"}},
         )
     entry = server.body(1)["input"]["entries"][0]
-    assert entry["variable_text"] == "ODA; aid"
+    assert entry["variable_text"] == "ODA"
     assert built.members[0].parts == ("ODA", "aid")
 
 
@@ -403,14 +403,51 @@ async def test_cached_bytes_skip_the_download_and_new_ones_are_stored() -> None:
     assert built.members[0].data == DATA
 
 
-async def test_a_spec_cannot_build_offline(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_offline_a_spec_reads_its_newest_cached_version_as_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    older = manifest(POSTED_ID, "cv_" + "1" * 32)
+    older["prepared_at"] = "2026-01-01T00:00:00Z"
+    newer = manifest(POSTED_ID)
+    cache = FakeCache()
+    cache.put_bytes(digest_of(DATA), DATA)
+    cache.put_manifest(POSTED_ID, "cv_" + "1" * 32, LONG, older)
+    cache.put_manifest(POSTED_ID, NARROWED_CV, LONG, newer)
     monkeypatch.setenv("DFO_OFFLINE", "1")
     server = Server()
     async with make(server) as transport:
-        with pytest.raises(NetworkError, match="DFO_OFFLINE") as caught:
-            await fetch(transport, spec(SENTENCE), cache=FakeCache())
+        built = await fetch(transport, spec(SENTENCE), cache=cache)
+        assert built.stale is True
+        assert built.members[0].content_version == NARROWED_CV
+        assert built.members[0].data == DATA
+        for target, options in [
+            (spec(SENTENCE), {"window": "latest"}),
+            (Spec(NARROWED_ID, newer["definition"], SENTENCE), {}),
+        ]:
+            with pytest.raises(NetworkError) as caught:
+                await fetch(transport, target, cache=cache, **options)
+            assert caught.value.code == "offline"
+        with pytest.raises(NetworkError) as caught:
+            await fetch(transport, spec(SENTENCE), cache=None)
+        assert caught.value.code == "offline"
     assert server.requests == []
-    assert caught.value.code == "offline"
+
+
+async def test_offline_refuses_every_request_before_it_is_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DFO_OFFLINE", "1")
+    server = Server()
+    async with make(server) as transport:
+        for call in (
+            lambda: transport.request("POST", "/search/resolve", json={}),
+            lambda: transport.download(SIGNED),
+        ):
+            with pytest.raises(NetworkError) as caught:
+                await call()
+            assert caught.value.code == "offline"
+            assert "Signature" not in str(caught.value)
+    assert server.requests == []
 
 
 async def test_a_ref_reads_its_version_through_the_snapshot_and_files_routes() -> None:

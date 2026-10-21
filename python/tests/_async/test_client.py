@@ -15,7 +15,7 @@ import pytest
 
 from dfo._cache import Cache
 from dfo._client import AsyncClient
-from dfo._errors import DataWarning, NotFoundError
+from dfo._errors import DataWarning, NetworkError, NotFoundError
 from dfo._fetch import Session
 from dfo._transport import AsyncTransport
 from dfo._types import DatasetRef, Spec
@@ -38,6 +38,18 @@ def client_over(handler, cache: Cache | None = None) -> AsyncClient:
 def online(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DFO_OFFLINE", raising=False)
     monkeypatch.setenv("DFO_PROGRESS", "0")
+
+
+async def test_offline_search_raises_before_any_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DFO_OFFLINE", "1")
+    server = Server()
+    async with client_over(server) as client:
+        with pytest.raises(NetworkError) as caught:
+            await client.search(QUESTION)
+    assert caught.value.code == "offline"
+    assert server.requests == []
 
 
 async def test_an_answer_fetches_through_the_clients_cache(tmp_path: Path) -> None:

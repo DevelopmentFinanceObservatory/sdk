@@ -47,17 +47,21 @@ data = answer.fetch()
 print(data)
 
 df = data.to_pandas()
-print(df[["financingProvider_label", "financingRecipient_label", "time_period", "value"]].head())
+print(
+    df[
+        ["financingProvider_label", "financingRecipient_label", "time_period", "value"]
+    ].head()
+)
 ```
 
 When a part of the question has several readings, `fetch` stops before it builds anything and says how to settle it. "Germany's ODA and GNI" has two parts, and the second (index 1) has three readings of GNI:
 
 ```python
 answer = dfo.search("Germany's ODA and GNI from 2015 to 2022")
-print(answer)                       # lists the readings, numbered from 0
+print(answer)  # lists the readings, numbered from 0
 
 data = answer.choose(1, 1).fetch()  # part 1, reading 1
-print(data.members)                 # one member per reading, each with its version
+print(data.members)  # one member per reading, each with its version
 ```
 
 The two readings stack into one long table with a `part` column. [Answers and choices](docs/answers.md) covers every shape an answer can take.
@@ -71,7 +75,9 @@ Path("oda-gni.ref.json").write_text(data.ref.to_json())
 
 ref = dfo.DatasetRef.from_json(Path("oda-gni.ref.json").read_text())
 same = dfo.fetch(ref)
-assert [m.content_version for m in same.members] == [m.content_version for m in data.members]
+assert [m.content_version for m in same.members] == [
+    m.content_version for m in data.members
+]
 ```
 
 Store the ref, and leave the reading's index out of your notes. The order of readings can change between searches, and the ref names the version that was built.

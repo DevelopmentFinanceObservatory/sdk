@@ -17,8 +17,8 @@ import dfo
 
 answer = dfo.search("GDP of Kenya and health spending")
 print(answer)
-print(answer.complete)   # True: every part has a reading
-print(len(answer.specs)) # 2: one spec per distinct reading
+print(answer.complete)  # True: every part has a reading
+print(len(answer.specs))  # 2: one spec per distinct reading
 ```
 
 The attributes an answer carries:
@@ -151,7 +151,7 @@ import dfo
 answer = dfo.search("debt service of Kenya and the price of tea in Kenya")
 data = answer.fetch(partial=True)
 
-print(data.complete)          # False
+print(data.complete)  # False
 for gap in data.missing:
     print(gap.kind, gap.message)
 ```
@@ -198,7 +198,7 @@ with warnings.catch_warnings():
     data = answer.fetch()
 
 for operation in data.requested_operations:
-    print(operation.verb, operation.phrase)   # rank top 5 donors
+    print(operation.verb, operation.phrase)  # rank top 5 donors
 
 df = data.to_pandas()
 donors = df[df["financingProvider_party_kind"] == "party"]
@@ -228,7 +228,7 @@ Search declines a question that asks for an argument and names no data, and answ
 import dfo
 
 answer = dfo.search("should donors give more aid to Kenya?")
-print(answer.kind, answer.reason)   # declined requires_analysis
+print(answer.kind, answer.reason)  # declined requires_analysis
 
 try:
     answer.fetch()

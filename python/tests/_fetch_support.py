@@ -232,6 +232,16 @@ class FakeCache:
             dict(manifest)
         )
 
+    def latest_manifest(
+        self, spec_id: str, rendering: Rendering, /
+    ) -> dict[str, Any] | None:
+        stored = [
+            manifest
+            for (stored_id, _, stored_rendering), manifest in self.manifests.items()
+            if (stored_id, stored_rendering) == (spec_id, rendering)
+        ]
+        return max(stored, key=lambda body: body["prepared_at"], default=None)
+
 
 @dataclass
 class Built:

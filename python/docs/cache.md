@@ -50,18 +50,18 @@ import dfo
 with dfo.Client(cache_dir="./dfo-cache") as client:
     data = client.search("GDP of Kenya").fetch()
 
-with dfo.Client(cache=False) as client:   # neither reads nor writes the cache
+with dfo.Client(cache=False) as client:  # neither reads nor writes the cache
     data = client.search("GDP of Kenya").fetch()
     print(data.rows)
 ```
 
 ## What the cache serves
 
-A ref names exact versions, so `fetch(ref)` reads each version from the cache when its file and manifest are there, and asks the server only for the rest. A spec asks for the latest version, so `fetch(spec)` and `answer.fetch()` always go to the server to build it. The download then comes from the cache when that version's file is already there.
+A ref names exact versions, so `fetch(ref)` reads each version from the cache when its file and manifest are there, and asks the server only for the rest. A spec asks for the latest version, so `fetch(spec)` and `answer.fetch()` go to the server to build it, unless `DFO_OFFLINE=1` is set. The download then comes from the cache when that version's file is already there.
 
 ## Offline: DFO_OFFLINE=1
 
-`DFO_OFFLINE=1` limits fetches to the cache. A ref whose versions are all cached loads, and the dataset reports `stale` as True, because the client did not ask the server whether anything changed:
+`DFO_OFFLINE=1` limits the client to the cache. A ref loads the versions it names. A spec, or an answer, loads the newest version the cache holds of each spec, newest by when the server built it. Either way the dataset reports `stale` as True, because the client did not ask the server whether anything changed:
 
 ```python
 import os
@@ -69,31 +69,38 @@ from pathlib import Path
 
 import dfo
 
-data = dfo.search("ODA disbursements from Germany to Nigeria for basic health care").fetch()
+data = dfo.search(
+    "ODA disbursements from Germany to Nigeria for basic health care"
+).fetch()
 Path("health.ref.json").write_text(data.ref.to_json())
+spec = data.members[0].spec
 
 os.environ["DFO_OFFLINE"] = "1"
 
 ref = dfo.DatasetRef.from_json(Path("health.ref.json").read_text())
-offline = dfo.fetch(ref)
-print(offline.stale)    # True
+print(dfo.fetch(ref).stale)  # True
+
+latest = dfo.fetch(spec)
+print(latest.stale)  # True
+print(latest.members[0].content_version == data.members[0].content_version)  # True
 
 try:
-    dfo.fetch(ref.members[0].spec)
+    dfo.search("GDP of Kenya")
 except dfo.NetworkError as error:
-    print(error.code)   # offline
+    print(error.code)  # offline
 ```
 
-Two fetches raise `NetworkError` with the code `offline`:
+Every request raises `NetworkError` with the code `offline` before it is sent, so `dfo.search`, `choose`, `mint`, `operation` and the lookups raise it. A fetch raises it when:
 
-- a spec, or an answer, since its latest version builds on the server;
-- a ref with a version the cache lacks.
+- the cache holds no version of a spec, or the cache is off;
+- a ref names a version the cache lacks;
+- a spec is narrowed with `window`, `entities` or `facets`, since only the server knows which version a narrowing builds.
 
-`DFO_OFFLINE` governs fetches only, so `dfo.search` still sends its request. Set the variable before the fetch runs; the client reads it on each call.
+Set the variable before the call runs; the client reads it on each call.
 
 ## Stale reads
 
-`data.stale` is True only for a dataset read from the cache under `DFO_OFFLINE=1`. The rows are still the exact version the ref names, since a version never changes once built. What `stale` warns of is a check skipped: the server may have revoked the version, or published a newer one. The display adds a line for it:
+`data.stale` is True only for a dataset read from the cache under `DFO_OFFLINE=1`. A ref's rows are still the exact versions it names, since a version never changes once built. A spec's rows are the newest version the cache holds, which the server may since have replaced. What `stale` warns of is a check skipped: the server may have revoked the version, or published a newer one. The display adds a line for it:
 
 ```text
 <Dataset Germany's gross ODA disbursements to Nigeria for basic health care, 1995 to 2024. ...
@@ -103,7 +110,7 @@ Two fetches raise `NetworkError` with the code `offline`:
   Stale: read from the cache without asking for a newer version>
 ```
 
-`stale` travels with the dataset into the file `save` writes. Fetch the ref again online to clear it.
+`stale` travels with the dataset into the file `save` writes. Fetch again online to clear it.
 
 ## Next
 

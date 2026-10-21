@@ -17,7 +17,9 @@ import dfo
 
 logging.basicConfig(level=logging.INFO)
 
-answer = dfo.search("ODA disbursements from every donor to every African country for basic education, 2010 to 2023")
+answer = dfo.search(
+    "ODA disbursements from every donor to every African country for basic education, 2010 to 2023"
+)
 data = answer.fetch(timeout=600, progress=False)
 print(data.rows)
 ```
@@ -40,11 +42,13 @@ The build keeps running on the server. Resuming it costs nothing extra: the serv
 import dfo
 
 with dfo.Client() as client:
-    spec = client.search("CRS commitments from France to every recipient for agriculture").specs[0]
+    spec = client.search(
+        "CRS commitments from France to every recipient for agriculture"
+    ).specs[0]
     operation = client.mint(spec, progress=False)
 
-    print(operation.status)          # pending, running, done or failed
-    print(operation.operation_id)    # op_..., or None when the server built it at once
+    print(operation.status)  # pending, running, done or failed
+    print(operation.operation_id)  # op_..., or None when the server built it at once
     data = operation.result(timeout=900)
     print(data.rows)
 ```
@@ -67,7 +71,9 @@ Store the operation id, and `client.operation(op_id)` picks the build up in any 
 import dfo
 
 with dfo.Client() as client:
-    spec = client.search("CRS commitments from France to every recipient for agriculture").specs[0]
+    spec = client.search(
+        "CRS commitments from France to every recipient for agriculture"
+    ).specs[0]
     operation = client.mint(spec, progress=False)
     op_id = operation.operation_id
 

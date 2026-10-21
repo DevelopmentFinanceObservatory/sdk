@@ -34,7 +34,6 @@ from dfo._build import (
     check_built,
     digest_of,
     layout_of,
-    offline,
     pick_artifact,
     rendering_for,
     rendering_options,
@@ -73,7 +72,7 @@ from dfo._sync._operation import (
     progress_hook,
     resume,
 )
-from dfo._sync._transport import Transport
+from dfo._sync._transport import Transport, offline
 from dfo._types import (
     Candidate,
     DatasetRef,
@@ -210,7 +209,8 @@ def fetch_members(
     Raises:
         InvalidRequestError: `layout="frame"` with several members, or a build
             the server refused as malformed.
-        NetworkError: `DFO_OFFLINE=1` is set, and a spec builds on the server.
+        NetworkError: `DFO_OFFLINE=1` is set, and the cache holds no version of
+            a spec, or the fetch narrows it (`offline`).
         DfoTimeoutError: The deadline passed; a long build's message names the
             call that resumes it.
         DfoError: The server refused a request.
@@ -223,11 +223,12 @@ def fetch_members(
             'layout="frame" holds one reading; fetch each spec on its own for its '
             "frame",
         )
-    if offline():
+    stale = offline()
+    if stale and narrowing is not None:
         raise client_error(
             OFFLINE,
-            "DFO_OFFLINE=1 is set, and a spec builds its latest version on the "
-            "server; fetch a DatasetRef to read a stored version from the cache",
+            "DFO_OFFLINE=1 is set, and a narrowed spec's version is known only to "
+            "the server; fetch it without window, entities or facets",
         )
     deadline = transport.deadline(timeout)
     # Groups resolved for the answer's places do not hold for places rebound here.
@@ -235,18 +236,15 @@ def fetch_members(
     fetched = []
     with ProgressRenderer(enabled=progress) as renderer:
         for want in wants:
-            body = build_body(want.spec, rendering, narrowing)
-            try:
-                manifest = _build(
+            if stale:
+                manifest = _latest_cached(cache, want.spec.spec_id, rendering)
+            else:
+                manifest = _build_latest(
                     transport,
-                    body,
+                    build_body(want.spec, rendering, narrowing),
                     deadline=deadline,
                     on_progress=progress_hook(renderer),
                 )
-            except DfoError as error:
-                if error.code == "member_not_resolvable":
-                    raise _with_hint(error, _SEARCH_AGAIN) from error
-                raise
             fetched.append(
                 _finish(
                     transport,
@@ -260,8 +258,39 @@ def fetch_members(
                 )
             )
     return build_dataset(
-        fetched, layout=layout, complete=not missing, missing=missing, stale=False
+        fetched, layout=layout, complete=not missing, missing=missing, stale=stale
     )
+
+
+def _build_latest(
+    transport: Transport,
+    body: Wire,
+    *,
+    deadline: float | None,
+    on_progress: ProgressHook | None,
+) -> Wire:
+    """Build a spec's latest version, hinting a search when a member is gone."""
+    try:
+        return _build(transport, body, deadline=deadline, on_progress=on_progress)
+    except DfoError as error:
+        if error.code == "member_not_resolvable":
+            raise _with_hint(error, _SEARCH_AGAIN) from error
+        raise
+
+
+def _latest_cached(cache: Cache | None, spec_id: str, rendering: Rendering) -> Wire:
+    """The manifest of the newest version the cache holds of a spec.
+
+    Raises:
+        NetworkError: The cache holds no version of it (`offline`).
+    """
+    manifest = None if cache is None else cache.latest_manifest(spec_id, rendering)
+    if manifest is None:
+        raise client_error(
+            OFFLINE,
+            f"DFO_OFFLINE=1 is set, and the cache holds no version of {spec_id}",
+        )
+    return manifest
 
 
 def mint(
@@ -435,7 +464,9 @@ def _finish(
         data = _download(
             transport, transport.origin_url(artifact["url"]), digest, deadline=deadline
         )
-    _store(cache, manifest, rendering, digest, data)
+        _store(cache, manifest, rendering, digest, data)
+    elif cache is not None:
+        cache.put_manifest(spec_id, content_version, rendering, manifest)
     return FetchedMember(
         parts=parts,
         spec=Spec(spec_id, definition, sentence),
@@ -555,7 +586,7 @@ def _sentence(
         "POST",
         "/search/resolve",
         json=resubmit_body(
-            definition["identity"], "; ".join(parts) or _UNNAMED_PART, entity_groups
+            definition["identity"], parts[0] if parts else _UNNAMED_PART, entity_groups
         ),
         deadline=deadline,
     )

@@ -9,7 +9,7 @@ answer = dfo.search("Germany's ODA and GNI from 2015 to 2022")
 try:
     data = answer.fetch()
 except dfo.IncompleteAnswerError as error:
-    print(error)                      # lists each gap and the line that settles it
+    print(error)  # lists each gap and the line that settles it
     data = error.answer.fetch(partial=True)
 except dfo.RateLimitError as error:
     print(f"over the rate limit; wait {error.retry_after} s")
@@ -40,7 +40,7 @@ with dfo.Client() as client:
     try:
         client.operation("op_00000000000000000000000000000000")
     except dfo.NotFoundError as error:
-        print(error.code, error.status, error.trace_id)   # operation_not_found 404 ...
+        print(error.code, error.status, error.trace_id)  # operation_not_found 404 ...
         print(client.codes.get(error.code)["definition"])
 ```
 
@@ -59,7 +59,7 @@ with dfo.Client() as client:
 | `QuotaExceededError`      | Over the build quota                                                             | Wait for the quota to reset                                              |
 | `ServerError`             | The server failed after the client's retries, or a download failed its check     | Report the `trace_id`                                                    |
 | `ContractError`           | A response lacks a field the client acts on, or has a form it does not know      | Upgrade `development-finance`; report it if the newest release fails too |
-| `NetworkError`            | The connection failed, or `DFO_OFFLINE=1` blocks a call that needs the server    | Retry later, or fetch a ref from the cache                               |
+| `NetworkError`            | The connection failed, or `DFO_OFFLINE=1` blocks a call that needs the server    | Retry later, or fetch from the cache                                     |
 | `DfoTimeoutError`         | A deadline passed                                                                | Raise `timeout`, or resume the build the message names                   |
 
 `NetworkError` is also a `ConnectionError`, and `DfoTimeoutError` is also a `TimeoutError`, so code that already catches those keeps working.
@@ -105,7 +105,7 @@ The client raises these codes itself, for conditions it detects before or after 
 | `download_failed`          | `ServerError`             | A signed storage URL answered a status other than 2xx                                                    | Retry; report it if it repeats                                              |
 | `invalid_argument`         | `InvalidRequestError`     | An argument breaks a rule the client checks before any request                                           | Fix the argument the message names                                          |
 | `network_error`            | `NetworkError`            | The connection failed before a response arrived                                                          | Check the connection and retry                                              |
-| `offline`                  | `NetworkError`            | `DFO_OFFLINE=1` is set, and the fetch needs the server                                                   | Fetch a ref already in the cache, or unset `DFO_OFFLINE`                    |
+| `offline`                  | `NetworkError`            | `DFO_OFFLINE=1` is set, and the call needs the server                                                    | Fetch a spec or ref the cache holds, or unset `DFO_OFFLINE`                 |
 | `profile_not_found`        | `AuthenticationError`     | `DFO_PROFILE` names a profile the credentials file lacks                                                 | Run `dfo auth login` with that `DFO_PROFILE`                                |
 | `profile_without_key`      | `AuthenticationError`     | The chosen profile has no key                                                                            | Run `dfo auth login` with that `DFO_PROFILE`                                |
 | `refusal_without_code`     | By HTTP status            | A refusal whose body carries no code                                                                     | Act on the class; report the status if it persists                          |
@@ -121,8 +121,8 @@ answer = dfo.search("GDP of Kenya and health spending")
 try:
     answer.fetch(layout="frame")
 except dfo.InvalidRequestError as error:
-    print(error.code)   # invalid_argument
-    print(error)        # layout="frame" holds one reading; ...
+    print(error.code)  # invalid_argument
+    print(error)  # layout="frame" holds one reading; ...
 ```
 
 ## Errors outside DfoError
@@ -139,7 +139,7 @@ import dfo
 try:
     dfo.DatasetRef.from_json('{"format_version": 1, "members": []}')
 except dfo.FormatError as error:
-    print(error.reason, error.pointer)   # format_invalid /members
+    print(error.reason, error.pointer)  # format_invalid /members
 ```
 
 ## Warnings

@@ -5,10 +5,11 @@ The transport owns the base URL, the key, retries, deadlines and the reading of
 problem documents. A path resolves under the base URL and a root-relative URL
 the server returns resolves against the base URL's origin. The key travels only
 to that origin; a signed storage URL is fetched by `download` with a bare
-request.
+request. Under `DFO_OFFLINE=1` every request raises `offline` before it is sent.
 """
 
 import copy
+import os
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -17,7 +18,12 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx2
 
-from dfo._error_map import DEADLINE_EXCEEDED, DOWNLOAD_FAILED, NETWORK_ERROR
+from dfo._error_map import (
+    DEADLINE_EXCEEDED,
+    DOWNLOAD_FAILED,
+    NETWORK_ERROR,
+    OFFLINE,
+)
 from dfo._errors import (
     DfoDeprecationWarning,
     DfoError,
@@ -35,6 +41,19 @@ USER_AGENT = f"dfo-python/{__version__}"
 
 _BACKOFF_FIRST = 0.5
 _BACKOFF_CAP = 8.0
+
+
+def offline() -> bool:
+    """Whether `DFO_OFFLINE=1` limits the client to its local cache."""
+    return os.environ.get("DFO_OFFLINE") == "1"
+
+
+def _refuse_offline(request: str) -> None:
+    """Raise `offline` before `request` when `DFO_OFFLINE=1` forbids the network."""
+    if offline():
+        raise client_error(
+            OFFLINE, f"DFO_OFFLINE=1 is set, and {request} needs the network"
+        )
 
 
 def _split_base_url(base_url: str) -> tuple[str, str]:
@@ -283,12 +302,14 @@ class Transport:
 
         Raises:
             DfoError: The class the refusal maps to, once retries are spent.
-            NetworkError: The connection failed on every attempt.
+            NetworkError: The connection failed on every attempt, or
+                `DFO_OFFLINE=1` is set (`offline`).
             DfoTimeoutError: An attempt timed out with no retry left, or the
                 deadline passed.
             ValueError: `target` is neither a path nor a URL on the API's origin.
         """
         url = self._url(target)
+        _refuse_offline(f"{method} {url}")
         retries = self._max_retries if max_retries is None else max_retries
         attempt = 0
         rekeyed = False
@@ -344,9 +365,11 @@ class Transport:
 
         Raises:
             ServerError: The storage host answered anything but 200.
-            NetworkError: The connection failed.
+            NetworkError: The connection failed, or `DFO_OFFLINE=1` is set
+                (`offline`).
             DfoTimeoutError: The fetch timed out or the deadline passed.
         """
+        _refuse_offline("the signed download")
         request = self._http.build_request(
             "GET", url, timeout=self._attempt_timeout(timeout, deadline)
         )

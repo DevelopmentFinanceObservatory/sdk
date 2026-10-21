@@ -8,7 +8,6 @@ client's rendering, checks downloaded bytes against their digest, and paces poll
 """
 
 import hashlib
-import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
@@ -97,10 +96,11 @@ class Cache(Protocol):
         """Store the manifest for one rendering of one version."""
         ...
 
-
-def offline() -> bool:
-    """Whether `DFO_OFFLINE=1` limits fetches to the local cache."""
-    return os.environ.get("DFO_OFFLINE") == "1"
+    def latest_manifest(
+        self, spec_id: str, rendering: Rendering, /
+    ) -> dict[str, Any] | None:
+        """The manifest of a spec's newest stored version in one rendering, or None."""
+        ...
 
 
 def rendering_for(layout: str) -> Rendering:

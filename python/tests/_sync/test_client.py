@@ -15,7 +15,7 @@ import httpx2
 import pytest
 
 from dfo._cache import Cache
-from dfo._errors import DataWarning, NotFoundError
+from dfo._errors import DataWarning, NetworkError, NotFoundError
 from dfo._sync._client import Client
 from dfo._sync._fetch import Session
 from dfo._sync._transport import Transport
@@ -37,6 +37,18 @@ def client_over(handler, cache: Cache | None = None) -> Client:
 def online(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DFO_OFFLINE", raising=False)
     monkeypatch.setenv("DFO_PROGRESS", "0")
+
+
+def test_offline_search_raises_before_any_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DFO_OFFLINE", "1")
+    server = Server()
+    with client_over(server) as client:
+        with pytest.raises(NetworkError) as caught:
+            client.search(QUESTION)
+    assert caught.value.code == "offline"
+    assert server.requests == []
 
 
 def test_an_answer_fetches_through_the_clients_cache(tmp_path: Path) -> None:

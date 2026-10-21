@@ -11,7 +11,9 @@ Each example on this page runs on its own.
 ```python
 import dfo
 
-answer = dfo.search("Gross ODA disbursements to Ethiopia from every provider, 2015 to 2022")
+answer = dfo.search(
+    "Gross ODA disbursements to Ethiopia from every provider, 2015 to 2022"
+)
 spec = answer.specs[0]
 
 data = dfo.fetch(spec)
@@ -31,7 +33,9 @@ Three arguments narrow a spec on the server, so a fetch of four years waits for 
 ```python
 import dfo
 
-answer = dfo.search("Gross ODA disbursements to Ethiopia from every provider, 2015 to 2022")
+answer = dfo.search(
+    "Gross ODA disbursements to Ethiopia from every provider, 2015 to 2022"
+)
 spec = answer.specs[0]
 
 data = dfo.fetch(
@@ -55,10 +59,12 @@ The default `layout="long"` gives the labelled long table: one row per observati
 ```python
 import dfo
 
-spec = dfo.search("ODA disbursements from Germany to Nigeria for basic health care").specs[0]
+spec = dfo.search(
+    "ODA disbursements from Germany to Nigeria for basic health care"
+).specs[0]
 
 frame = dfo.fetch(spec, layout="frame")
-print(frame.layout_version)            # frame
+print(frame.layout_version)  # frame
 print(frame.to_arrow().schema.names[:5])
 ```
 
@@ -71,13 +77,19 @@ import duckdb
 
 import dfo
 
-data = dfo.search("ODA disbursements from Germany to Nigeria for basic health care").fetch()
+data = dfo.search(
+    "ODA disbursements from Germany to Nigeria for basic health care"
+).fetch()
 
-arrow_table = data.to_arrow()   # pyarrow.Table, provenance in the schema metadata
-df = data.to_pandas()           # needs the pandas extra; provenance in df.attrs
-pl = data.to_polars()           # needs the polars extra
+arrow_table = data.to_arrow()  # pyarrow.Table, provenance in the schema metadata
+df = data.to_pandas()  # needs the pandas extra; provenance in df.attrs
+pl = data.to_polars()  # needs the polars extra
 
-print(duckdb.sql("select time_period, value from arrow_table order by time_period desc limit 3"))
+print(
+    duckdb.sql(
+        "select time_period, value from arrow_table order by time_period desc limit 3"
+    )
+)
 ```
 
 `to_pandas()` copies the sentence, citation, sources, licence and ref into `df.attrs`. A merge or a concat drops `attrs`, and the provenance stays on the dataset. The dataset also implements the Arrow PyCapsule stream, so any library that reads `__arrow_c_stream__` takes it directly, such as `polars.DataFrame(data)`. The DuckDB query above needs `pip install duckdb`.
@@ -113,7 +125,9 @@ from pathlib import Path
 
 import dfo
 
-data = dfo.search("ODA disbursements from Germany to Nigeria for basic health care").fetch()
+data = dfo.search(
+    "ODA disbursements from Germany to Nigeria for basic health care"
+).fetch()
 Path("health.ref.json").write_text(data.ref.to_json())
 ```
 
@@ -172,11 +186,13 @@ The server keeps a version's file for 30 days, and after that rebuilds it from s
 ```python
 import dfo
 
-data = dfo.search("ODA disbursements from Germany to Nigeria for basic health care").fetch()
+data = dfo.search(
+    "ODA disbursements from Germany to Nigeria for basic health care"
+).fetch()
 data.save("health.parquet")
 
 opened = dfo.open_bundle("health.parquet")
-print(opened.sentence == data.sentence, opened.ref == data.ref)   # True True
+print(opened.sentence == data.sentence, opened.ref == data.ref)  # True True
 ```
 
 `open_bundle` also reads a bundle downloaded from the website: the ZIP, the folder it extracts to, or its `datapackage.json` or data file. It types the CSV or XLSX columns from `datapackage.json` and checks each file's hash before it reads the data. An XLSX bundle needs the `xlsx` extra.

@@ -30,7 +30,7 @@ import pytest
 from dfo._answer import AsyncAnswer
 from dfo._client import AsyncClient
 from dfo._dataset import Dataset
-from dfo._errors import DfoError, SearchWarning
+from dfo._errors import DfoError, DfoWarning, SearchWarning, VersionUnavailableError
 from dfo._fetch import Session as AsyncSession
 from dfo._operation import AsyncOperation
 from dfo._sync._answer import Answer
@@ -275,6 +275,12 @@ def _part_rows(data: Dataset) -> list[dict[str, Any]]:
     return [{"part": part, "rows": rows} for part, rows in counts.items()]
 
 
+def _newest_version(error: object) -> str | None:
+    if not isinstance(error, VersionUnavailableError):
+        pytest.fail(f"newest_version read from {error!r}")
+    return error.newest_version
+
+
 type Reader = Callable[[Any, list[warnings.WarningMessage]], Any]
 
 READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
@@ -328,10 +334,11 @@ READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
         },
     ),
     "error": (
-        (DfoError, SearchWarning),
+        (DfoError, DfoWarning),
         {
             "class": lambda error, _: type(error).__name__,
             "code": lambda error, _: error.code,
+            "newest_version": lambda error, _: _newest_version(error),
         },
     ),
 }
@@ -366,7 +373,7 @@ async def _replay(record: Mapping[str, Any], client: AsyncClient | Client) -> No
             warnings.simplefilter("always")
             try:
                 result = await _settle(_run(step, client, answer, operation))
-            except (DfoError, SearchWarning) as error:
+            except (DfoError, DfoWarning) as error:
                 if "error" not in outcome:
                     raise
                 result = error

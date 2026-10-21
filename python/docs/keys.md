@@ -101,13 +101,13 @@ import pickle
 import dfo
 
 key = dfo.ApiKey("dfo_k_4Fq8ZtR2mXc7LwN9pVb3HsK6dYg1JeTa2YQjsd")
-print(key)             # ApiKey('dfo_k_***Qjsd')
+print(key)  # ApiKey('dfo_k_***Qjsd')
 print(len(key.reveal()))
 
 try:
     pickle.dumps(key)
 except TypeError as error:
-    print(error)       # An ApiKey cannot be pickled; pass the key to each process
+    print(error)  # An ApiKey cannot be pickled; pass the key to each process
 ```
 
 A DFO secret key starts with `dfo_k_`, then a base62 body, then a six-character checksum: 44 characters in all. The client checks the prefix, characters and checksum when it resolves a key. A key that fails issues a `DfoWarning` and is sent anyway, so a typo shows up as a warning before the server refuses it.

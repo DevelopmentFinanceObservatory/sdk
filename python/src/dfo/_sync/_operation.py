@@ -42,6 +42,8 @@ type ProgressHook = Callable[[str, Progress, str | None], None]
 _DONE = "done"
 _FAILED = "failed"
 _OPERATION_FAILED = "operation_failed"
+# The status a failed operation's error takes when its problem names none.
+_FAILED_STATUS = 500
 
 
 class Finish(Protocol):
@@ -103,6 +105,14 @@ def _reply(response: httpx2.Response) -> Reply:
         status=response.status_code,
         trace_id=trace_id,
     )
+
+
+def _problem_status(problem: object) -> int:
+    """A failed operation's problem's own status, or 500 when it carries none."""
+    status = problem.get("status") if isinstance(problem, dict) else None
+    if isinstance(status, int) and not isinstance(status, bool):
+        return status
+    return _FAILED_STATUS
 
 
 def _is_cut_off(error: DfoError) -> bool:
@@ -286,7 +296,7 @@ class Poller:
             self._manifest = state.manifest
         elif state.status == _FAILED:
             self._error = problem_error(
-                500,
+                _problem_status(state.error),
                 state.error,
                 reason="The build failed",
                 origin=self._transport.origin,
