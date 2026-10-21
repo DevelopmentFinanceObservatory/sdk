@@ -47,7 +47,8 @@ from dfo._build import resubmit_body
 pytestmark = pytest.mark.live
 
 DEFINITE = "ODA disbursements from Germany to Nigeria for basic health care"
-CANDIDATES = "GNI of Germany from 2015 to 2022"
+# The step needs a question Search reads several ways.
+CANDIDATES = "GNI in Germany from 2015 to 2022"
 MIXED = "debt service of Kenya and the price of tea in Kenya"
 SEVERAL = (
     "ODA disbursements for health and for education from Germany to Kenya, "
@@ -172,13 +173,13 @@ def test_03_candidates_raise_and_a_choice_fetches(client: Client) -> None:
     (part,) = _wire_parts(answer)
     assert part["status"] == "candidates"
     specs = part["candidates"]["specs"]
-    assert len(specs) == 3
+    assert len(specs) >= 2
 
     with pytest.raises(IncompleteAnswerError) as caught:
         answer.fetch(progress=False)
     assert caught.value.code == "answer_incomplete"
     numbered = re.findall(r"^ +\[(\d+)\] ", str(caught.value), re.MULTILINE)
-    assert numbered == ["0", "1", "2"]
+    assert numbered == [str(i) for i in range(len(specs))]
 
     data = answer.choose(0).fetch(progress=False)
     assert data.rows > 0

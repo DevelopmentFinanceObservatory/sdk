@@ -102,7 +102,7 @@ When only one part awaits a choice, `answer.choose(option)` picks in that part:
 ```python
 import dfo
 
-answer = dfo.search("GNI of Germany from 2015 to 2022")
+answer = dfo.search("GNI in Germany from 2015 to 2022")
 data = answer.choose(0).fetch()
 print(data.sentence)
 ```
@@ -112,7 +112,7 @@ A pick of a candidate makes one Search request, which runs no language model. It
 ```python
 import dfo
 
-answer = dfo.search("GNI of Germany from 2015 to 2022")
+answer = dfo.search("GNI in Germany from 2015 to 2022")
 candidate = answer.parts[0].candidates[1]
 data = candidate.fetch()
 print(data.sentence)
