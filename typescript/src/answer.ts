@@ -450,6 +450,7 @@ function membersOf(parts: readonly Part[]): MemberRequest[] {
     parts: names,
     spec,
     sentence: spec.resolved.rendered_sentence,
+    entityGroups: spec.resolved.entity_groups,
     answerParts,
   }));
 }

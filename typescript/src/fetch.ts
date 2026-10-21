@@ -16,9 +16,11 @@
  *
  * Each member's sentence is Search's: the one the caller holds when the built `spec_id` equals
  * the posted one, else the sentence Search gives the built identity when it is resubmitted,
- * checked on `spec_id`. Every download is a bare request to the signed URL the files route
- * redirects to, checked against its digest before the fetch returns. Members build one after
- * another, under one deadline.
+ * checked on `spec_id`. The resubmit carries the held spec's entity group for each role the
+ * built identity binds to the same entities, so a window or facets narrowing keeps every group
+ * and a role that `entities` rebound or dropped loses its group. Every download is a bare
+ * request to the signed URL the files route redirects to, checked against its digest before the
+ * fetch returns. Members build one after another, under one deadline.
  */
 
 import type { Gap } from "./answer.ts";
@@ -45,7 +47,7 @@ import { DatasetRef, layoutOf, renderingFor, renderingMatches, renderingOptions 
 import type { Layout, RefMember, Rendering, SpecLike } from "./ref.ts";
 import { checkStrict } from "./strict.ts";
 import type { Target, Transport } from "./transport.ts";
-import type { Part } from "./wire.ts";
+import type { EntityGroup, Part } from "./wire.ts";
 import { DataWarning } from "./warnings.ts";
 
 /** A year range, or every year, or the latest year. */
@@ -62,14 +64,24 @@ export type Narrowing = {
   facets?: Readonly<Record<string, string | null>>;
 };
 
-/** A spec to fetch, with Search's sentence for it when the caller holds one. */
-export type SpecInput = SpecLike & { readonly sentence?: string | null | undefined };
+/** How Search resolved each role's group of places, keyed by role: a spec's
+ *  `resolved.entity_groups`. */
+export type EntityGroups = Readonly<Record<string, EntityGroup>>;
+
+/** A spec to fetch, with Search's sentence for it and its entity groups when the caller holds
+ *  them. */
+export type SpecInput = SpecLike & {
+  readonly sentence?: string | null | undefined;
+  readonly entity_groups?: EntityGroups | null | undefined;
+};
 
 /** One reading to build: the answer parts it answers, its spec, and its sentence if known. */
 export type MemberRequest = {
   readonly parts: readonly string[];
   readonly spec: SpecLike;
   readonly sentence?: string | null | undefined;
+  /** The spec's entity groups, when the caller holds them. */
+  readonly entityGroups?: EntityGroups | null | undefined;
   /** The answer parts the reading answers, when it comes from an answer. */
   readonly answerParts?: readonly Part[];
 };
@@ -137,9 +149,9 @@ function windowScope(window: Window): Record<string, unknown> {
   );
 }
 
-/** The roles a spec's definition binds, each to its dcids. */
-function boundRoles(spec: SpecLike): Map<string, readonly string[]> {
-  const identity = spec.definition["identity"];
+/** The roles a definition binds, each to its dcids. */
+function boundRoles(definition: Readonly<Record<string, unknown>>): Map<string, readonly string[]> {
+  const identity = definition["identity"];
   const entities = isRecord(identity) ? identity["entities"] : undefined;
   const bound = new Map<string, readonly string[]>();
   for (const [role, dcids] of Object.entries(isRecord(entities) ? entities : {})) {
@@ -154,7 +166,7 @@ function entityScope(
   spec: SpecLike,
   entities: NonNullable<Narrowing["entities"]>,
 ): Record<string, readonly string[]> {
-  const bound = boundRoles(spec);
+  const bound = boundRoles(spec.definition);
   for (const [role, dcids] of Object.entries(entities)) {
     if (dcids === null) {
       bound.delete(role);
@@ -279,8 +291,33 @@ function noteWarnings(transport: Transport, manifest: Manifest, strict: boolean)
   }
 }
 
+const sameEntities = (a: readonly string[], b: readonly string[]): boolean => {
+  const left = new Set(a);
+  const right = new Set(b);
+  return left.size === right.size && [...left].every((entity) => right.has(entity));
+};
+
+/** The held entity groups a built definition keeps: the group of each role the built identity
+ *  binds to the same entities as the held definition. A role the build rebound or dropped loses
+ *  its group; the server drops a posted group whose members differ from the role's entities. */
+function keptEntityGroups(
+  held: Held | undefined,
+  built: Readonly<Record<string, unknown>>,
+): Record<string, EntityGroup> {
+  if (held?.entityGroups == null) return {};
+  const before = boundRoles(held.spec.definition);
+  const after = boundRoles(built);
+  return Object.fromEntries(
+    Object.entries(held.entityGroups).filter(([role]) => {
+      const now = after.get(role);
+      return now !== undefined && sameEntities(now, before.get(role) ?? []);
+    }),
+  );
+}
+
 /**
- * Search's sentence for a built identity, from resubmitting it.
+ * Search's sentence for a built identity, from resubmitting it with the held spec's groups that
+ * `keptEntityGroups` keeps; none for a resumed operation.
  *
  * @throws {ContractError} Search did not answer with one definite part of the same `spec_id`
  *   and a sentence.
@@ -289,9 +326,11 @@ async function sentenceFor(
   transport: Transport,
   definition: Readonly<Record<string, unknown>>,
   parts: readonly string[],
+  held: Held | undefined,
   { deadline, signal }: Wait,
 ): Promise<string> {
   const specId = String(definition["spec_id"]);
+  const groups = keptEntityGroups(held, definition);
   const response = await transport.request({
     path: "/search/resolve",
     json: {
@@ -301,8 +340,9 @@ async function sentenceFor(
         entries: [
           {
             entry_kind: "identity",
-            variable_text: parts.join("; ") || UNNAMED_PART,
+            variable_text: parts[0] ?? UNNAMED_PART,
             identity: definition["identity"],
+            ...(Object.keys(groups).length === 0 ? {} : { entity_groups: groups }),
           },
         ],
       },
@@ -332,10 +372,16 @@ async function sentenceFor(
   return sentence;
 }
 
+/** The spec a build posted, with the entity groups the caller holds for it. */
+type Held = {
+  readonly spec: SpecLike;
+  readonly entityGroups?: EntityGroups | null | undefined;
+};
+
 type Finishing = {
   readonly parts: readonly string[];
   /** The spec the build posted, or undefined for a resumed operation. */
-  readonly posted: SpecLike | undefined;
+  readonly posted: Held | undefined;
   readonly sentence: string | null | undefined;
   readonly rendering: Rendering;
   readonly strict: boolean;
@@ -361,8 +407,8 @@ async function finish(
         `${JSON.stringify(renderingOptions(rendering))} artifact.`,
     });
   }
-  const known = posted?.spec_id === specId && typeof sentence === "string" && sentence !== "";
-  const told = known ? sentence : await sentenceFor(transport, definition, parts, wait);
+  const known = posted?.spec.spec_id === specId && typeof sentence === "string" && sentence !== "";
+  const told = known ? sentence : await sentenceFor(transport, definition, parts, posted, wait);
   const digest = String(artifact["artifact_digest"]);
   const data = await download(transport, { url: String(artifact["url"]) }, digest, wait);
   return {
@@ -407,6 +453,7 @@ function distinct(members: readonly MemberRequest[]): MemberRequest[] {
             parts: [...seen.parts, ...member.parts.filter((part) => !seen.parts.includes(part))],
             spec: seen.spec,
             sentence: seen.sentence ?? member.sentence,
+            entityGroups: seen.entityGroups ?? member.entityGroups,
             answerParts: [...(seen.answerParts ?? []), ...(member.answerParts ?? [])],
           },
     );
@@ -438,7 +485,7 @@ export async function fetchMembers<TMissing extends Gap = never>(
   const narrowing = options.narrowing ?? {};
   const wait = { deadline: deadlineOf(transport, options.timeout), signal: options.signal };
   const fetched: FetchedMember[] = [];
-  for (const { parts, spec, sentence, answerParts } of wants) {
+  for (const { parts, spec, sentence, entityGroups, answerParts } of wants) {
     let manifest: Manifest;
     try {
       manifest = await build(transport, buildBody(spec, rendering, scopeOf(spec, narrowing)), {
@@ -457,7 +504,7 @@ export async function fetchMembers<TMissing extends Gap = never>(
         manifest,
         {
           parts,
-          posted: spec,
+          posted: { spec, entityGroups },
           sentence,
           rendering,
           strict: options.strict ?? false,
@@ -499,10 +546,13 @@ export async function fetchDataset(
     }
     return fetchRef(transport, target, rest);
   }
-  return fetchMembers(transport, [{ parts: [], spec: target, sentence: target.sentence }], {
-    ...rest,
-    narrowing,
-  });
+  const member = {
+    parts: [],
+    spec: target,
+    sentence: target.sentence,
+    entityGroups: target.entity_groups,
+  };
+  return fetchMembers(transport, [member], { ...rest, narrowing });
 }
 
 /**
@@ -517,7 +567,13 @@ export function mint(
 ): Promise<Operation> {
   const { layout = "long", strict = false, signal, onProgress } = options;
   const rendering = renderingFor(layout);
-  const finishing = { parts: [], posted: spec, sentence: spec.sentence, rendering, strict };
+  const finishing = {
+    parts: [],
+    posted: { spec, entityGroups: spec.entity_groups },
+    sentence: spec.sentence,
+    rendering,
+    strict,
+  };
   return startOperation(
     transport,
     buildBody(spec, rendering),
@@ -634,7 +690,7 @@ async function fetchVersion(
     if (contentVersionOf(built) === member.contentVersion) {
       const finishing = {
         parts: member.parts,
-        posted: member.spec,
+        posted: { spec: member.spec },
         sentence: member.sentence,
         rendering: member.rendering,
         strict,

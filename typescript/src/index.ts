@@ -29,6 +29,7 @@ export type {
 export { Dataset } from "./dataset.ts";
 export type { Citation, Member } from "./dataset.ts";
 export type {
+  EntityGroups,
   FetchOptions,
   MemberRequest,
   MintOptions,
