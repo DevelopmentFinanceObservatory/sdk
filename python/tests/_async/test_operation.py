@@ -253,6 +253,15 @@ async def test_poll_failures_beyond_the_retry_count_raise(
     assert server.requests[1].extensions["timeout"]["read"] == 30.0
 
 
+async def test_a_poll_refused_with_a_final_408_raises_that_refusal() -> None:
+    server = Server(accepted(), problem(408, "request_timeout"))
+    async with make(server) as transport:
+        with pytest.raises(DfoTimeoutError) as caught:
+            await fetch(transport, spec())
+    assert (caught.value.code, caught.value.status) == ("request_timeout", 408)
+    assert len(server.requests) == 2
+
+
 async def test_a_retryable_failed_operation_is_resubmitted_once() -> None:
     failed = problem(500, "operation_failed", retryable=True)
     server = Server(accepted(), failed, accepted(), done(), redirect(), parquet())

@@ -52,11 +52,14 @@ def parse_parts(resolution: Wire, /) -> tuple[ParsedPart, ...]:
         resolution: A decoded Search response whose `kind` is `resolution`.
 
     Raises:
-        ContractError: A member the client acts on is missing or null.
+        ContractError: A member the client acts on is missing or null, or the
+            answer has no parts.
     """
     parts = require(resolution, "Resolution")["parts"]
     if not isinstance(parts, list):
         raise _violation("Resolution.parts is not an array in the response")
+    if not parts:
+        raise _violation("Resolution.parts is empty in the response", pointer="/parts")
     return tuple(
         parse_part(part, f"/parts/{index}") for index, part in enumerate(parts)
     )
@@ -98,7 +101,8 @@ def parse_spec(spec: object, pointer: str = "", /) -> Spec:
     if definition["spec_id"] != spec["spec_id"]:
         raise _violation(
             f"Spec.definition.spec_id is {definition['spec_id']}, "
-            f"not the spec's {spec['spec_id']}"
+            f"not the spec's {spec['spec_id']}",
+            pointer=f"{pointer}/definition/spec_id",
         )
     resolved = _object(spec.get("resolved"))
     groups = resolved.get("entity_groups")

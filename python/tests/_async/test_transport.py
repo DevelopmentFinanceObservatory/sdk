@@ -263,6 +263,21 @@ async def test_a_deadline_that_passes_while_a_body_is_read_raises() -> None:
     assert len(recorder.requests) == 1
 
 
+async def test_a_body_that_trickles_past_the_timeout_spends_an_attempt() -> None:
+    timeline = Timeline()
+    slow = httpx2.Response(
+        200,
+        headers={"content-type": "application/json"},
+        stream=SlowBody(timeline.advance, 20),
+    )
+    recorder = Recorder(slow, httpx2.Response(200))
+    async with make(recorder, timeline, timeout=10.0) as transport:
+        response = await transport.request("GET", "/datasets/schema")
+    assert response.status_code == 200
+    assert len(recorder.requests) == 2
+    assert timeline.sleeps == [0.5]
+
+
 async def test_a_failed_download_is_not_retried() -> None:
     recorder = Recorder(httpx2.Response(403), httpx2.Response(200))
     async with make(recorder) as transport:
@@ -285,9 +300,13 @@ async def test_a_retryable_refusal_backs_off_then_succeeds() -> None:
     assert timeline.sleeps == [0.5, 1.0]
 
 
-async def test_retryable_false_outranks_a_retryable_status() -> None:
+@pytest.mark.parametrize("code", ["internal_error", None], ids=["coded", "codeless"])
+async def test_retryable_false_outranks_a_retryable_status(code: str | None) -> None:
     timeline = Timeline()
-    recorder = Recorder(problem(503, code="internal_error", retryable=False))
+    members = (
+        {"retryable": False} if code is None else {"code": code, "retryable": False}
+    )
+    recorder = Recorder(problem(503, **members))
     async with make(recorder, timeline) as transport:
         with pytest.raises(ServerError) as caught:
             await transport.request("GET", "/datasets/schema")
@@ -332,8 +351,15 @@ async def test_a_problem_document_fills_the_error() -> None:
             problem(500, code="internal_error", retryable=False, trace_id="in-body"),
             "in-body",
         ),
+        (problem(500, retryable=False, trace_id="in-body"), "in-body"),
     ],
-    ids=["no-body-code", "proxy-body", "problem-without-trace", "problem-trace"],
+    ids=[
+        "no-body-code",
+        "proxy-body",
+        "problem-without-trace",
+        "problem-trace",
+        "codeless-problem-trace",
+    ],
 )
 async def test_a_refusal_takes_its_trace_id_from_the_header_when_the_body_has_none(
     response: httpx2.Response, trace_id: str

@@ -3,8 +3,10 @@
 `open_bundle` reads a Parquet file `Dataset.save` wrote, or a website bundle as a
 ZIP, an extracted folder, or a file inside one. A bundle's `datapackage.json`
 types the data's CSV or XLSX columns and gives each file's hash, which is checked
-before the data is read. Every file it lists lies inside the bundle: a path that
-is absolute or climbs out with `..` is refused before any file is read.
+before the data is read. Every file it lists lies inside the bundle: a path with a
+backslash, a drive, a root or a `..` segment is refused before any file is read,
+and so is a path in an extracted folder that resolves outside it through a
+symlink.
 
 Both clients call this module; it is sync and does no network I/O.
 """
@@ -128,11 +130,18 @@ def _open_zip(path: Path) -> Dataset:
 
 
 def _open_folder(folder: Path) -> Dataset:
+    root = folder.resolve()
+
     def read(name: str) -> bytes | None:
         file = folder.joinpath(*PurePosixPath(name).parts)
         return file.read_bytes() if file.is_file() else None
 
-    return _open_descriptor(read, str(folder), digest=None)
+    def escapes(name: str) -> bool:
+        return (
+            not root.joinpath(*PurePosixPath(name).parts).resolve().is_relative_to(root)
+        )
+
+    return _open_descriptor(read, str(folder), digest=None, escapes=escapes)
 
 
 def _folder_holding(file: Path) -> Path | None:
@@ -153,13 +162,19 @@ def _folder_holding(file: Path) -> Path | None:
 
 
 def _open_descriptor(
-    read: Callable[[str], bytes | None], where: str, *, digest: str | None
+    read: Callable[[str], bytes | None],
+    where: str,
+    *,
+    digest: str | None,
+    escapes: Callable[[str], bool] | None = None,
 ) -> Dataset:
+    """Read a bundle through `read`; `escapes` says whether a listed path
+    resolves outside the bundle, for a folder on disk."""
     raw = read(DESCRIPTOR)
     if raw is None:
         raise BundleError("no_descriptor", f"{where} holds no {DESCRIPTOR}")
     package = json.loads(raw)
-    _check_paths(package, where)
+    _check_paths(package, where, escapes)
     resources = _resources(package)
     files = {
         resource["path"]: _checked(read, resource, where)
@@ -184,16 +199,21 @@ def _open_descriptor(
     return _bundle_dataset(package, data, table, digest=digest)
 
 
-def _check_paths(package: object, where: str) -> None:
+def _check_paths(
+    package: object, where: str, escapes: Callable[[str], bool] | None
+) -> None:
     """Refuse a descriptor that lists a file outside its bundle.
 
     Raises:
-        FormatError: A resource's `path` is absolute or climbs above the bundle.
+        FormatError: A resource's `path` holds a backslash, a drive, a root or
+            a `..` segment, or resolves outside the bundle.
     """
     resources = package.get("resources") if isinstance(package, Mapping) else None
     for index, resource in enumerate(resources if isinstance(resources, list) else ()):
         path = resource.get("path") if isinstance(resource, Mapping) else None
-        if isinstance(path, str) and not _inside(PurePosixPath(path)):
+        if not isinstance(path, str):
+            continue
+        if not _relative(path) or (escapes is not None and escapes(path)):
             raise FormatError(
                 "format_invalid",
                 f"/resources/{index}/path",
@@ -201,16 +221,14 @@ def _check_paths(package: object, where: str) -> None:
             )
 
 
-def _inside(path: PurePosixPath) -> bool:
-    """Whether a relative path stays inside the folder it is joined to."""
-    if path.is_absolute() or PureWindowsPath(str(path)).drive:
+def _relative(path: str) -> bool:
+    """Whether `path` is a plain relative path in both POSIX and Windows terms."""
+    if "\\" in path:
         return False
-    depth = 0
-    for part in path.parts:
-        depth += -1 if part == ".." else 0 if part == "." else 1
-        if depth < 0:
-            return False
-    return True
+    windows = PureWindowsPath(path)
+    if windows.drive or windows.root or PurePosixPath(path).is_absolute():
+        return False
+    return ".." not in PurePosixPath(path).parts
 
 
 def _resources(package: object) -> list[Mapping[str, Any]]:

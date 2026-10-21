@@ -57,7 +57,7 @@ with dfo.Client(api_key=lambda: dfo.ApiKey(os.environ["TEAM_DFO_KEY"])) as clien
     print(client.search("GDP of Kenya").sentence)
 ```
 
-The client calls the callable when it is built and again after a 401. A callable that returns an empty string raises `ValueError`.
+The client calls the callable when it is built and again after a 401. A callable that returns an empty string raises `AuthenticationError` with code `key_empty`.
 
 The key travels as `Authorization: Bearer` to the API host only. Downloads redirect to signed storage URLs, and those requests carry no key.
 

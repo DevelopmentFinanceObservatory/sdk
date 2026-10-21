@@ -104,7 +104,18 @@ def test_a_descriptor_without_the_data_table_is_refused(tmp_path: Path) -> None:
     assert caught.value.reason == "no_data_resource"
 
 
-@pytest.mark.parametrize("escape", ["../secret.csv", "data/../../secret.csv", "abs"])
+@pytest.mark.parametrize(
+    "escape",
+    [
+        "../secret.csv",
+        "data/../../secret.csv",
+        "abs",
+        "..\\secret.csv",
+        "\\secret.csv",
+        f"data/../{DATA_FILE}",
+    ],
+    ids=["parent", "climb", "absolute", "backslash-parent", "backslash-root", "dotdot"],
+)
 def test_a_descriptor_path_outside_the_bundle_is_refused_before_any_read(
     tmp_path: Path, escape: str
 ) -> None:
@@ -130,6 +141,17 @@ def test_a_descriptor_path_outside_the_bundle_is_refused_before_any_read(
             "format_invalid",
             f"/resources/{index}/path",
         )
+
+
+def test_a_symlink_out_of_an_extracted_folder_is_refused(tmp_path: Path) -> None:
+    folder = extracted(CSV_BUNDLE, tmp_path / "bundle")
+    secret = tmp_path / "secret.csv"
+    secret.write_bytes((folder / DATA_FILE).read_bytes())
+    (folder / DATA_FILE).unlink()
+    (folder / DATA_FILE).symlink_to(secret)
+    with pytest.raises(FormatError) as caught:
+        open_bundle(folder)
+    assert caught.value.reason == "format_invalid"
 
 
 def test_a_folder_without_a_descriptor_is_refused(tmp_path: Path) -> None:

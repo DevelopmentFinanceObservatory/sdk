@@ -188,6 +188,53 @@ def test_several_members_stack_with_a_part_column() -> None:
     assert [member.parts for member in data.members] == [first.parts, ("GDP",)]
 
 
+def with_column(member: FetchedMember, values: pa.Array) -> FetchedMember:
+    """`member` with an `extra` column holding `values` in every row."""
+    table = pq.read_table(pa.BufferReader(member.data))
+    table = table.append_column("extra", pa.repeat(values[0], table.num_rows))
+    sink = pa.BufferOutputStream()
+    pq.write_table(table, sink)
+    data = sink.getvalue().to_pybytes()
+    body = copy.deepcopy(dict(member.manifest))
+    body["artifacts"][0]["artifact_digest"] = sha256_digest(data)
+    return FetchedMember(
+        parts=member.parts,
+        spec=member.spec,
+        sentence=member.sentence,
+        content_version=member.content_version,
+        manifest=body,
+        digest=sha256_digest(data),
+        data=data,
+    )
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "widened"),
+    [
+        (pa.array([1], pa.int32()), pa.array([2], pa.int64()), pa.int64()),
+        (pa.array([1], pa.int64()), pa.array([2.5]), pa.float64()),
+        (pa.array([1], pa.int32()), pa.array(["two"]), None),
+    ],
+    ids=["int32-int64", "int64-double", "int32-string"],
+)
+def test_stacking_widens_a_column_or_raises_a_contract_error(
+    first: pa.Array, second: pa.Array, widened: pa.DataType | None
+) -> None:
+    members = [
+        with_column(recorded_member(), first),
+        with_column(other_member(), second),
+    ]
+    if widened is None:
+        with pytest.raises(ContractError) as caught:
+            build_dataset(
+                members, layout="long", complete=True, missing=(), stale=False
+            )
+        assert caught.value.code == "contract_violation"
+        return
+    data = build_dataset(members, layout="long", complete=True, missing=(), stale=False)
+    assert data.to_arrow().schema.field("extra").type == widened
+
+
 def test_a_member_with_no_part_is_labelled_by_its_sentence() -> None:
     data = build_dataset(
         [recorded_member(), other_member()],

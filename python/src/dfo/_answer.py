@@ -196,6 +196,10 @@ class AsyncAnswer:
                 or no part has one.
             SearchWarning: `strict` is True and the reading differs from the
                 question.
+            DataWarning: `strict` is True and a manifest carries a warning
+                above `info`.
+            InvalidRequestError: `layout="frame"` with several readings.
+            DfoError: The server refused a request.
         """
         if self.kind != _strict.RESOLUTION_KIND:
             raise client_error(

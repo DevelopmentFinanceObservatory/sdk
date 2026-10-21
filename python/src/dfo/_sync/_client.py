@@ -15,6 +15,8 @@ from typing import Any, Self
 from dfo._build import Layout, Window
 from dfo._cache import Cache
 from dfo._dataset import Dataset
+from dfo._error_map import INVALID_ARGUMENT
+from dfo._errors import client_error
 from dfo._hooks import HeaderProvider
 from dfo._keys import ApiKeyArgument
 from dfo._sync._answer import SEARCH_TIMEOUT, Answer
@@ -269,9 +271,15 @@ class Client:
 
         Raises:
             DfoError: The class the refusal maps to.
-            ValueError: `path` does not start with `/`, or is a URL off the
-                API's host.
+            InvalidRequestError: `path` is not a path under the base URL: it
+                does not start with `/`, or starts with `//` (`invalid_argument`).
         """
+        if not path.startswith("/") or path.startswith("//"):
+            raise client_error(
+                INVALID_ARGUMENT,
+                f"request takes a path under the base URL, such as "
+                f"'/datasets/capabilities', not {path!r}",
+            )
         response = self._session.transport.request(
             method, path, params=params, json=json
         )

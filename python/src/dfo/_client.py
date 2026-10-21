@@ -15,6 +15,8 @@ from dfo._answer import SEARCH_TIMEOUT, AsyncAnswer
 from dfo._build import Layout, Window
 from dfo._cache import Cache
 from dfo._dataset import Dataset
+from dfo._error_map import INVALID_ARGUMENT
+from dfo._errors import client_error
 from dfo._fetch import Session, fetch, mint, operation
 from dfo._hooks import AsyncHeaderProvider
 from dfo._keys import ApiKeyArgument
@@ -268,9 +270,15 @@ class AsyncClient:
 
         Raises:
             DfoError: The class the refusal maps to.
-            ValueError: `path` does not start with `/`, or is a URL off the
-                API's host.
+            InvalidRequestError: `path` is not a path under the base URL: it
+                does not start with `/`, or starts with `//` (`invalid_argument`).
         """
+        if not path.startswith("/") or path.startswith("//"):
+            raise client_error(
+                INVALID_ARGUMENT,
+                f"request takes a path under the base URL, such as "
+                f"'/datasets/capabilities', not {path!r}",
+            )
         response = await self._session.transport.request(
             method, path, params=params, json=json
         )

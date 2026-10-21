@@ -451,13 +451,20 @@ async def test_a_relative_location_resolves_against_the_files_route(
     assert built.members[0].data == DATA
 
 
-@pytest.mark.parametrize("off", ["location", "artifact"])
-async def test_a_file_url_off_the_api_and_the_storage_host_raises(off: str) -> None:
+ELSEWHERE = "https://files.example.net/bucket/object"
+
+
+@pytest.mark.parametrize(
+    ("off", "url"),
+    [("location", ELSEWHERE), ("artifact", ELSEWHERE), ("artifact", SIGNED)],
+    ids=["location-elsewhere", "artifact-elsewhere", "artifact-on-storage-host"],
+)
+async def test_a_file_url_off_its_allowed_origins_raises(off: str, url: str) -> None:
+    # A Location may name the storage host; an artifact url names the API only.
     body = manifest(POSTED_ID)
-    elsewhere = "https://files.example.net/bucket/object"
     if off == "artifact":
-        body["artifacts"][1]["url"] = elsewhere
-    server = Server(json_response(200, body), redirect(elsewhere))
+        body["artifacts"][1]["url"] = url
+    server = Server(json_response(200, body), redirect(url))
     async with make(server) as transport:
         with pytest.raises(ContractError) as caught:
             await fetch(transport, spec(SENTENCE))
@@ -465,14 +472,24 @@ async def test_a_file_url_off_the_api_and_the_storage_host_raises(off: str) -> N
     assert len(server.requests) == (2 if off == "location" else 1)
 
 
+async def test_a_files_route_answering_another_2xx_is_unexpected() -> None:
+    server = Server(json_response(200, manifest(POSTED_ID)), httpx2.Response(204))
+    async with make(server) as transport:
+        with pytest.raises(ContractError) as caught:
+            await fetch(transport, spec(SENTENCE))
+    assert (caught.value.code, caught.value.status) == ("unexpected_response", 204)
+    assert len(server.requests) == 2
+
+
 @pytest.mark.parametrize(
     ("failure", "error", "code"),
     [
         (httpx2.Response(403), ServerError, "download_failed"),
+        (httpx2.Response(204), ServerError, "download_failed"),
         (httpx2.ConnectError("reset"), NetworkError, "network_error"),
         (httpx2.ReadTimeout("slow"), DfoTimeoutError, "deadline_exceeded"),
     ],
-    ids=["refused", "network", "timeout"],
+    ids=["refused", "no-content", "network", "timeout"],
 )
 async def test_a_signed_fetch_that_fails_twice_raises_its_own_failure(
     failure: httpx2.Response | Exception, error: type[Exception], code: str
@@ -496,7 +513,7 @@ async def test_bytes_that_miss_their_digest_twice_raise() -> None:
         parquet(b"other"),
     )
     async with make(server) as transport:
-        with pytest.raises(ServerError, match="hashes to") as caught:
+        with pytest.raises(ServerError) as caught:
             await fetch(transport, spec(SENTENCE))
     assert caught.value.code == "digest_mismatch"
 

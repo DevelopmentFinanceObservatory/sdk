@@ -9,9 +9,12 @@ the client's headers and key on the API's origin and with a bare request on the
 storage host. Under
 `DFO_OFFLINE=1` every request raises `offline` before it is sent.
 
-The client's `timeout` bounds one attempt, and a call's deadline bounds the
-whole call: each attempt's timeout is clamped to the time left, and a deadline
-that passes while a body is read raises `deadline_exceeded`.
+The client's `timeout` bounds one whole attempt, body included, and a call's
+deadline bounds the whole call. An attempt must finish by the earlier of the
+call's deadline and its start plus the timeout; httpx2 times each phase on its
+own, so the body is read through a stream that raises `deadline_exceeded` once
+that reading passes. The key resolves when the transport is built, and again
+after a 401.
 """
 
 import copy
@@ -107,7 +110,8 @@ def _json_body(response: httpx2.Response) -> object:
 
 
 class _DeadlineStream(httpx2.SyncByteStream):
-    """A response body that raises `deadline_exceeded` once its deadline passes."""
+    """A response body that raises `deadline_exceeded` once its attempt's
+    deadline passes."""
 
     def __init__(
         self, stream: httpx2.SyncByteStream, clock: Clock, deadline: float, what: str
@@ -122,7 +126,7 @@ class _DeadlineStream(httpx2.SyncByteStream):
             if self._clock() >= self._deadline:
                 raise client_error(
                     DEADLINE_EXCEEDED,
-                    f"The call's deadline passed while {self._what} was read",
+                    f"{self._what} ran past its time limit while its body was read",
                 )
             yield chunk
 
@@ -270,31 +274,37 @@ class Transport:
             raise ValueError(f"A request path starts with '/': {target!r}")
         return self._base_url + target
 
-    def _attempt_timeout(
+    def _attempt_bounds(
         self, timeout: float | None, deadline: float | None
-    ) -> float | None:
-        """One attempt's timeout for httpx2: the limit clamped to the time left.
+    ) -> tuple[float | None, float | None]:
+        """One attempt's timeout for httpx2, and the clock reading it must end by.
 
-        None means no limit, for an infinite `timeout` and no deadline.
+        The limit is clamped to the time left before `deadline`, so the attempt
+        ends by the earlier of the deadline and now plus the limit. Both are
+        None for an infinite `timeout` and no deadline.
         """
         limit = self._timeout if timeout is None else timeout
+        now = self._clock()
         if deadline is not None:
-            remaining = deadline - self._clock()
+            remaining = deadline - now
             if remaining <= 0:
                 raise client_error(
                     DEADLINE_EXCEEDED, "The call's deadline passed before it finished"
                 )
             limit = min(limit, remaining)
-        return None if math.isinf(limit) else limit
+        if math.isinf(limit):
+            return None, None
+        return limit, now + limit
 
     def _send(
         self, request: httpx2.Request, deadline: float | None, what: str
     ) -> httpx2.Response:
-        """Send `request` and read its body, mapping httpx2's failures to errors.
+        """Send `request` and read its body by `deadline`, mapping httpx2's
+        failures to errors.
 
         Raises:
-            DfoTimeoutError: The attempt timed out (`deadline_exceeded`,
-                retryable), or the deadline passed while the body was read.
+            DfoTimeoutError: The attempt timed out, or `deadline` passed while
+                the body was read (`deadline_exceeded`, retryable).
             NetworkError: The connection failed (`network_error`, retryable).
         """
         try:
@@ -389,9 +399,9 @@ class Transport:
             params: Query parameters.
             json: The JSON body.
             headers: Headers for this request only.
-            timeout: The longest one attempt waits; defaults to the transport's.
-                `math.inf` lets each attempt run until the deadline, or without
-                limit when there is none.
+            timeout: The longest one attempt takes, body included; defaults to
+                the transport's. `math.inf` lets each attempt run until the
+                deadline, or without limit when there is none.
             deadline: A clock reading the whole call, waits included, must
                 finish by; each attempt's timeout is clamped to it.
             max_retries: Further attempts; defaults to the transport's.
@@ -410,16 +420,17 @@ class Transport:
         attempt = 0
         rekeyed = False
         while True:
+            limit, attempt_deadline = self._attempt_bounds(timeout, deadline)
             request = self._http.build_request(
                 method,
                 url,
                 params=params,
                 json=json,
                 headers=self._headers(headers),
-                timeout=self._attempt_timeout(timeout, deadline),
+                timeout=limit,
             )
             try:
-                response = self._send(request, deadline, f"{method} {url}")
+                response = self._send(request, attempt_deadline, f"{method} {url}")
             except DfoError as failure:
                 error = failure
             else:
@@ -469,11 +480,12 @@ class Transport:
             )
         _refuse_offline("the signed download")
         on_api = _origin_of(url) == self._origin
+        limit, _ = self._attempt_bounds(math.inf, deadline)
         request = self._http.build_request(
             "GET",
             url,
             headers=self._headers(None) if on_api else None,
-            timeout=self._attempt_timeout(math.inf, deadline),
+            timeout=limit,
         )
         response = self._send(request, deadline, "the signed download")
         if on_api:

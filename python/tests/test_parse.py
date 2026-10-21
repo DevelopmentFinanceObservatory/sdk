@@ -105,6 +105,16 @@ def test_candidates_split_each_sentence_into_label_unit_and_source() -> None:
     assert part.truncated is False
 
 
+def test_a_candidate_with_no_heading_and_no_sentence_has_no_label() -> None:
+    answer = load("search-2.json")
+    resolved = answer["parts"][0]["candidates"]["specs"][0]["resolved"]
+    del resolved["rendered_sentence"]
+    resolved["sentence_plan"] = []
+    (part,) = parse_parts(answer)
+    assert isinstance(part, CandidatesPart)
+    assert part.candidates[0].label is None
+
+
 def test_no_data_part_reads_its_reason_and_message() -> None:
     (part,) = parse_parts(load("search-3.json"))
     assert isinstance(part, NoDataPart)
@@ -331,8 +341,20 @@ def test_a_spec_keeps_the_entity_groups_search_resolved() -> None:
 def test_a_spec_whose_definition_names_another_spec_raises() -> None:
     answer = load("search-1.json")
     answer["parts"][0]["spec"]["definition"]["spec_id"] = NARROWED_SPEC_ID
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError) as caught:
         parse_parts(answer)
+    assert (caught.value.code, caught.value.pointer) == (
+        "contract_violation",
+        "/parts/0/spec/definition/spec_id",
+    )
+
+
+def test_a_resolution_without_parts_raises() -> None:
+    answer = load("search-1.json")
+    answer["parts"] = []
+    with pytest.raises(ContractError) as caught:
+        parse_parts(answer)
+    assert (caught.value.code, caught.value.pointer) == ("contract_violation", "/parts")
 
 
 def scenario_bodies() -> list[tuple[str, str, int, Any]]:

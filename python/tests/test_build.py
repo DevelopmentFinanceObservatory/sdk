@@ -4,11 +4,12 @@ import pytest
 
 from dfo._build import (
     read_operation,
+    rebind,
     rendering_for,
     scope,
 )
 from dfo._errors import ContractError, InvalidRequestError
-from dfo._types import Rendering
+from dfo._types import Rendering, Spec
 
 from ._fetch_support import OP_ID, operation
 
@@ -47,6 +48,14 @@ def test_a_malformed_window_is_refused(window) -> None:
 def test_a_role_bound_to_a_string_is_refused() -> None:
     with pytest.raises(InvalidRequestError, match=r"\['country/NGA'\]") as caught:
         scope(entities={"recipient": "country/NGA"})
+    assert caught.value.code == "invalid_argument"
+
+
+def test_rebinding_a_spec_without_an_identity_is_refused() -> None:
+    spec_id = "spec_" + "0" * 32
+    spec = Spec(spec_id, {"spec_id": spec_id})
+    with pytest.raises(InvalidRequestError) as caught:
+        rebind(spec, {"origin": ["country/DEU"]})
     assert caught.value.code == "invalid_argument"
 
 

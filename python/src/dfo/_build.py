@@ -169,10 +169,19 @@ def rebind(
     The server replaces a spec's entire binding with the posted one, so the
     client starts from the roles the spec's definition binds and changes only
     the roles `entities` names. A role bound to None is dropped.
+
+    Raises:
+        InvalidRequestError: The spec's definition holds no `identity` object
+            (`invalid_argument`).
     """
-    bound: dict[str, Sequence[str]] = dict(
-        spec.definition["identity"].get("entities", {})
-    )
+    identity = spec.definition.get("identity")
+    if not isinstance(identity, Mapping):
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"The definition of {spec.spec_id} holds no identity to rebind; use a "
+            "spec from a search, or one Spec.from_json loaded from Spec.to_json",
+        )
+    bound: dict[str, Sequence[str]] = dict(identity.get("entities", {}))
     for role, dcids in entities.items():
         if dcids is None:
             bound.pop(role, None)

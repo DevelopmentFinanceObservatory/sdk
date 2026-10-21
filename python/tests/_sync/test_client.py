@@ -15,7 +15,12 @@ import httpx2
 import pytest
 
 from dfo._cache import Cache
-from dfo._errors import DataWarning, NetworkError, NotFoundError
+from dfo._errors import (
+    DataWarning,
+    InvalidRequestError,
+    NetworkError,
+    NotFoundError,
+)
 from dfo._sync._client import Client
 from dfo._sync._fetch import Session
 from dfo._sync._transport import Transport
@@ -107,6 +112,22 @@ def test_request_returns_the_raw_response_and_raises_a_refusal() -> None:
     ]
     assert server.requests[0].url.params["limit"] == "1"
     assert server.body(1) == {"input": {}}
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["//files.example.net/x", f"{ORIGIN}/api/datasets", "datasets/schema"],
+    ids=["scheme-relative", "absolute-on-origin", "no-slash"],
+)
+def test_request_refuses_what_is_not_a_path_under_the_base_url(
+    path: str,
+) -> None:
+    server = Server()
+    with client_over(server) as client:
+        with pytest.raises(InvalidRequestError) as caught:
+            client.request("GET", path)
+    assert caught.value.code == "invalid_argument"
+    assert server.calls() == []
 
 
 def test_lookups_reach_the_graph_the_registry_and_the_catalogue() -> None:

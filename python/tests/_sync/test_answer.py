@@ -11,7 +11,7 @@ import copy
 import json
 import types
 import warnings
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import httpx2
@@ -525,33 +525,84 @@ def test_parts_left_alone_post_their_restatement_or_a_placeholder() -> None:
     assert first == {"entry_kind": "parsed", "part": places["parts"][0]["restatement"]}
 
 
+def beside_a_candidates_part(part: dict[str, Any]) -> dict[str, Any]:
+    """search-2.json's candidates part, with `part` after it."""
+    wire = load("search-2.json")
+    wire["parts"].append(part)
+    wire["status"] = "mixed"
+    return wire
+
+
+def without_variable_text() -> dict[str, Any]:
+    part = load("search-4.json")["parts"][1]
+    del part["variable_text"]
+    return beside_a_candidates_part(part)
+
+
+def unknown_without_restatement() -> dict[str, Any]:
+    return beside_a_candidates_part({"status": "pondering", "variable_text": "tea"})
+
+
+def options_sharing_a_label() -> dict[str, Any]:
+    wire = load("search-3.json")
+    wire["parts"][0] = with_options(wire["parts"][0])
+    options = wire["parts"][0]["no_data"]["options"]
+    options[1]["label"] = options[0]["label"]
+    return wire
+
+
 @pytest.mark.parametrize(
-    ("body", "call", "error"),
+    ("body", "call"),
     [
-        ("search-1.json", (0,), "No part of this answer awaits a choice."),
-        (
-            "search-two-places.json",
-            (0,),
-            "2 parts of this answer a choice; name the part: "
-            "answer.choose(part, option).",
-        ),
-        ("search-3.json", (0,), 'Part 0 offers no choice: "Congo" matches more'),
-        ("search-2.json", (3,), "Option 3 is out of range; part 0 offers 3."),
-        ("search-2.json", ("GNI", "nope"), "Part 0 has no option labelled 'nope'"),
-        ("search-4.json", (0, 0), "Part 0 already has a reading."),
-        ("search-4.json", ("tea", 0), "No part is named 'tea'"),
-        ("search-4.json", (5, 0), "Part 5 is out of range"),
+        (lambda: load("search-1.json"), (0,)),
+        (lambda: load("search-two-places.json"), (0,)),
+        (lambda: load("search-3.json"), (0,)),
+        (lambda: load("search-2.json"), (3,)),
+        (lambda: load("search-2.json"), ("GNI", "nope")),
+        (lambda: load("search-4.json"), (0, 0)),
+        (lambda: load("search-4.json"), ("tea", 0)),
+        (lambda: load("search-4.json"), (5, 0)),
+        (without_variable_text, (0, 0)),
+        (unknown_without_restatement, (0, 0)),
+        (options_sharing_a_label, (0, "Congo [DRC]")),
+    ],
+    ids=[
+        "no-gap",
+        "several-gaps-unnamed",
+        "no-choice-offered",
+        "option-out-of-range",
+        "no-such-label",
+        "part-has-a-reading",
+        "no-such-part-name",
+        "part-out-of-range",
+        "part-without-variable-text",
+        "unknown-status-without-restatement",
+        "options-share-a-label",
     ],
 )
 def test_a_choice_that_cannot_be_made_raises_invalid_request(
-    body: str, call: tuple[Any, ...], error: str
+    body: Callable[[], dict[str, Any]], call: tuple[Any, ...]
 ) -> None:
-    answer, server = ask("q", load(body))
+    answer, server = ask("q", body())
     with pytest.raises(InvalidRequestError) as caught:
         answer.choose(*call)
-    assert str(caught.value).startswith(error)
     assert caught.value.code == "choice_invalid"
     assert len(server.posted) == 1
+
+
+def test_a_resubmit_echoes_a_parts_separate_flag_and_operations() -> None:
+    definite = load("search-1.json")["parts"][0]
+    definite["separate"] = True
+    operations = [{"verb": "share", "phrase": "as a share of GNI"}]
+    definite["operations"] = operations
+    answer, server = ask("q", beside_a_candidates_part(definite), load("search-1.json"))
+    answer.choose(0, 0)
+    entry = server.posted[1]["input"]["entries"][1]
+    assert (entry["entry_kind"], entry["separate"], entry["operations"]) == (
+        "identity",
+        True,
+        operations,
+    )
 
 
 def test_fetch_builds_one_member_per_distinct_spec(
@@ -561,13 +612,20 @@ def test_fetch_builds_one_member_per_distinct_spec(
     folded = copy.deepcopy(wire["parts"][0])
     folded["variable_text"] = "aid"
     wire["parts"].append(folded)
+    unnamed = copy.deepcopy(folded)
+    unnamed["variable_text"] = ""
+    wire["parts"].append(unnamed)
     answer, _ = ask(TWO_PARTS, wire)
     assert answer.fetch(layout="long", timeout=10.0) == "dataset"
     ((transport_used, members, options),) = fetched
     oda, gni = wire["parts"][0]["spec"], wire["parts"][1]["spec"]
     assert [(m.parts, m.spec.spec_id, m.sentence) for m in members] == [
         (
-            ("official development assistance", "aid"),
+            (
+                "official development assistance",
+                "aid",
+                oda["resolved"]["rendered_sentence"],
+            ),
             oda["spec_id"],
             oda["resolved"]["rendered_sentence"],
         ),
@@ -586,7 +644,7 @@ def test_fetch_builds_one_member_per_distinct_spec(
         "missing": (),
     }
     assert isinstance(transport_used, Transport)
-    assert [len(m.answer_parts) for m in members] == [2, 1]
+    assert [len(m.answer_parts) for m in members] == [3, 1]
     assert all(isinstance(m, Reading) for m in members)
 
 

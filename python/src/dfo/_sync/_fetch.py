@@ -15,9 +15,11 @@ raises at once.
 
 Each member's sentence is Search's: the one the caller holds when the built
 `spec_id` equals the posted one, else the sentence Search gives the built identity
-when it is resubmitted, checked on `spec_id`. Every download is a bare request to
-the signed URL the files route redirects to, checked against its digest before the
-fetch returns. Members build one after another, under one deadline.
+when it is resubmitted, checked on `spec_id`. Every download asks the files route
+and fetches the URL its `Location` names: bare on the storage host, with the
+client's headers on the API's origin, checked against its digest before the fetch
+returns. A manifest artifact's `url` must be on the API's origin. Members build
+one after another, under one deadline.
 """
 
 from collections.abc import Callable, Mapping, Sequence
@@ -152,7 +154,8 @@ def fetch(
         cache: The local cache, or None to fetch without one.
 
     Raises:
-        InvalidRequestError: A ref is narrowed or given another layout.
+        InvalidRequestError: A ref is narrowed or given another layout, or
+            `entities` rebinds a spec whose definition holds no identity.
         VersionUnavailableError: A ref's version can no longer be fetched.
         DfoError: The server refused a request.
     """
@@ -529,9 +532,9 @@ def _download(
     """Fetch a file through the route that redirects to it, checked on `digest`.
 
     The route answers a redirect, whose `Location` resolves against the
-    route's URL and is fetched once, with a bare request on the storage host. A signed fetch that
-    fails retryably, or bytes that do not hash to `digest`, ask the route once
-    more for a fresh URL rather than retrying the old one.
+    route's URL and is fetched once, with a bare request on the storage host.
+    A signed fetch that fails retryably, or bytes that do not hash to `digest`,
+    ask the route once more for a fresh URL rather than retrying the old one.
 
     Raises:
         ServerError: The bytes did not hash to `digest` on either attempt

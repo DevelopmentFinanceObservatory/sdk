@@ -333,11 +333,6 @@ class Poller:
                 deadline=deadline,
                 max_retries=0,
             )
-        except DfoTimeoutError as error:
-            if error.retryable:
-                await self._poll_failed(error, deadline)
-                return
-            raise self._still_running() from error
         except DfoError as error:
             await self._poll_failed(error, deadline)
             return

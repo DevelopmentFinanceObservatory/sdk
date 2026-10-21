@@ -340,7 +340,9 @@ def build_dataset(
 
     Each member's manifest must list the artifact its bytes came from. Several members stack into one long table, a `part` column
     first, holding each member's parts joined by "; " (its sentence when it
-    answers no part); columns one member lacks are null in its rows.
+    answers no part); columns one member lacks are null in its rows, and a column
+    whose types differ in width widens, as an int32 with an int64 to int64 and an
+    integer with a double to double.
 
     Args:
         members: The members, in query order, each with a distinct spec.
@@ -351,7 +353,9 @@ def build_dataset(
 
     Raises:
         ValueError: No members, or several members in the frame layout.
-        ContractError: A member's manifest does not list the artifact.
+        ContractError: A member's manifest does not list the artifact, or two
+            members hold a column whose types cannot widen to one
+            (`contract_violation`).
     """
     if not members:
         raise ValueError("a dataset needs at least one member")
@@ -388,7 +392,13 @@ def build_dataset(
             _with_part(table, "; ".join(member.parts) or member.sentence)
             for table, member in zip(tables, built, strict=True)
         ]
-        table = pa.concat_tables(tables, promote_options="permissive")
+        try:
+            table = pa.concat_tables(tables, promote_options="permissive")
+        except (pa.ArrowTypeError, pa.ArrowInvalid) as error:
+            raise client_error(
+                CONTRACT_VIOLATION,
+                f"The members' tables cannot stack into one: {error}",
+            ) from error
     else:
         table = tables[0]
 
