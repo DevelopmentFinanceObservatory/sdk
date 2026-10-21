@@ -219,8 +219,8 @@ def _keep_to_deadlines(client: httpx2.AsyncClient) -> None:
     takes no network backend, so the backend goes in after it builds them. A
     transport the caller passed in that is not httpx2's own keeps its timing.
 
-    The pools sit in private attributes of httpx2 and httpcore2, so pyproject.toml
-    pins both to the minor series the stall tests ran on.
+    The pools sit in private attributes of httpx2 and httpcore2, and the stall tests
+    run against the locked releases, 2.15 for both.
 
     Raises:
         RuntimeError: When httpx2 or httpcore2 holds its pools differently.
@@ -244,7 +244,7 @@ def _pool_layout_error() -> RuntimeError:
     return RuntimeError(
         f"httpx2 {httpx2.__version__} with httpcore2 {httpcore2.__version__} holds "
         "its connection pools where dfo cannot route them through its deadlines; "
-        "install the httpx2 and httpcore2 versions dfo's pyproject.toml pins"
+        "install httpx2 and httpcore2 2.15, the series dfo is tested on"
     )
 
 

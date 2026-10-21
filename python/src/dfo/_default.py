@@ -1,11 +1,13 @@
-"""The module functions `dfo.search`, `dfo.fetch` and `dfo.configure`, over a default
-client.
+"""The module functions `dfo.search`, `dfo.fetch`, `dfo.configure`,
+`dfo.disable_cache` and `dfo.enable_cache`, over a default client.
 
 The default client is built on first use, under a lock, so importing `dfo` reads
 neither the environment nor the network. `configure` replaces it. An answer from
 `dfo.search` reads the default client when each of its requests runs, so it stays
-usable after `configure`. A replaced client closes once nothing uses it, since
-another thread may still be in a call on it, and the default client closes at exit.
+usable after `configure`. `disable_cache` and `enable_cache` switch the cache of the
+client in place, so its other settings stay. A replaced client closes once nothing
+uses it, since another thread may still be in a call on it, and the default client
+closes at exit.
 A forked child drops the client it inherited without closing it, since the parent
 still owns those connections, and builds its own on first use.
 """
@@ -18,6 +20,7 @@ from os import PathLike
 
 from dfo._answer import SEARCH_TIMEOUT
 from dfo._build import Layout, Window
+from dfo._cache import Cache
 from dfo._dataset import Dataset
 from dfo._hooks import HeaderProvider
 from dfo._keys import ApiKeyArgument
@@ -88,6 +91,22 @@ def configure(
     )
     with _lock:
         _install(client)
+
+
+def _set_cache_enabled(enabled: bool) -> None:
+    cache = default_client()._current().cache
+    if isinstance(cache, Cache):
+        cache.enabled = enabled
+
+
+def disable_cache() -> None:
+    """Make the default client fetch without reading or writing the cache."""
+    _set_cache_enabled(False)
+
+
+def enable_cache() -> None:
+    """Make the default client read and write the cache again."""
+    _set_cache_enabled(True)
 
 
 def search(question: str, /, *, timeout: float | None = SEARCH_TIMEOUT) -> Answer:

@@ -55,6 +55,8 @@ with dfo.Client(cache=False) as client:  # neither reads nor writes the cache
     print(data.rows)
 ```
 
+`dfo.disable_cache()` and `dfo.enable_cache()` switch the cache off and on for the default client behind `dfo.search` and `dfo.fetch`, and leave its other settings alone.
+
 ## What the cache serves
 
 A ref names exact versions, so `fetch(ref)` reads each version from the cache when its file and manifest are there, and asks the server only for the rest. A spec asks for the latest version, so `fetch(spec)` and `answer.fetch()` go to the server to build it, unless `DFO_OFFLINE=1` is set. The download then comes from the cache when that version's file is already there.

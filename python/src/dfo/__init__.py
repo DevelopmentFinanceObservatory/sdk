@@ -11,7 +11,7 @@ from dfo._bundle import BundleError, open_bundle
 from dfo._cli import login
 from dfo._client import AsyncClient
 from dfo._dataset import Dataset
-from dfo._default import configure, fetch, search
+from dfo._default import configure, disable_cache, enable_cache, fetch, search
 from dfo._errors import (
     AuthenticationError,
     ContractError,
@@ -118,6 +118,8 @@ __all__ = [
     "VersionUnavailableError",
     "__version__",
     "configure",
+    "disable_cache",
+    "enable_cache",
     "fetch",
     "login",
     "open_bundle",
