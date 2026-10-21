@@ -74,7 +74,7 @@ describe("a long build", () => {
     );
     const { transport, waits } = client(fetch);
     const events: ProgressEvent[] = [];
-    const op = await mint(transport, spec, { window: [2020, 2023] });
+    const op = await mint(transport, spec);
     assert.equal(op.operationId, OP);
     assert.equal(op.status, "pending");
     const dataset = await op.result({ onProgress: (event) => events.push(event) });
@@ -85,10 +85,8 @@ describe("a long build", () => {
     assert.deepEqual(events, [
       { operationId: OP, progress: { rowsWritten: 10, estimateRows: 100 }, traceId: null },
     ]);
-    const posted = JSON.parse(seen[0]!.body!) as { input: { scope: unknown } };
-    assert.deepEqual(posted.input.scope, {
-      window: { kind: "range", start_year: 2020, end_year: 2023 },
-    });
+    const posted = JSON.parse(seen[0]!.body!) as { input: Record<string, unknown> };
+    assert.equal(posted.input["scope"], undefined);
     assert.equal(seen[1]!.url, `${BASE}/datasets/operations/${OP}`);
     assert.deepEqual([...seen[4]!.headers], []);
   });

@@ -68,6 +68,27 @@ const recording: typeof fetch = async (input, init) => {
 
 const client = new Client({ baseUrl, fetch: recording });
 
+/** Search's spec for `spec` over another year range, from resubmitting its identity. */
+async function specOver(spec: SpecInput, start: number, end: number): Promise<SpecInput> {
+  const identity = {
+    ...(spec.definition["identity"] as Record<string, unknown>),
+    requested_window: { kind: "range", start_year: start, end_year: end },
+  };
+  const response = await client.request("POST", "/search/resolve", {
+    json: {
+      schema_version: 1,
+      input: {
+        kind: "dataset_resubmit",
+        entries: [{ entry_kind: "identity", variable_text: "dataset", identity }],
+      },
+    },
+  });
+  const { parts } = response.json() as { parts: { status: string; spec?: SpecInput }[] };
+  const [part] = parts;
+  assert.ok(part?.status === "definite" && part.spec, `the resubmit of ${start} to ${end}`);
+  return part.spec;
+}
+
 /** The exchanges made while `run` ran. */
 async function exchangesOf<T>(run: () => Promise<T>): Promise<{ value: T; exchanges: Exchange[] }> {
   const start = wire.length;
@@ -225,14 +246,14 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
     { timeout: 900_000 },
     async (t) => {
       // DAC2a for every recipient and provider: 108,798 rows from 2017 to 2024, and more from
-      // any earlier start. A window the server has not stored makes it start a long build.
-      const spec = JSON.parse(
+      // any earlier start. A window the server has not stored makes it start a long build; a
+      // mint builds the spec as it stands, so Search gives the spec of the new window first.
+      const dac2a = JSON.parse(
         await readFile(new URL("dac2a-all.json", import.meta.url), "utf8"),
       ) as SpecInput;
       const start = 1990 + Math.floor(Math.random() * 27);
-      const { value: operation, exchanges } = await exchangesOf(() =>
-        client.mint(spec, { window: [start, 2024] }),
-      );
+      const spec = await specOver(dac2a, start, 2024);
+      const { value: operation, exchanges } = await exchangesOf(() => client.mint(spec));
       const [posted] = exchanges.filter((exchange) => exchange.method === "POST");
       assert.ok(posted, "the mint posted a build");
       if (posted.status !== 202) {

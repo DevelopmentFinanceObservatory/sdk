@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { fetchDataset, fetchMembers } from "../src/fetch.ts";
+import { envFrom } from "../src/env.ts";
+import { fetchDataset, fetchMembers, mint } from "../src/fetch.ts";
+import type { FetchOptions } from "../src/fetch.ts";
 import { DatasetRef } from "../src/ref.ts";
 import type { SpecLike } from "../src/ref.ts";
+import { Transport } from "../src/transport.ts";
 import { DataWarning } from "../src/warnings.ts";
 import type { DfoWarning } from "../src/warnings.ts";
 import { NO_EXCHANGES, replay, scenario, stepOf } from "./replay.ts";
-import { contractJson } from "./support.ts";
+import { contractJson, mockFetch, problem } from "./support.ts";
 
 describe("a fetched spec's ref", () => {
   test("is the contract's ref for that member", async () => {
@@ -73,5 +76,61 @@ describe("arguments a fetch refuses before any request", () => {
     await assert.rejects(fetchDataset(transport, spec("spec_1"), { window: [2020.5, 2021] }), {
       name: "InvalidRequestError",
     });
+  });
+});
+
+describe("a fetch's entities", () => {
+  const spec: SpecLike = {
+    spec_id: "spec_1",
+    definition: {
+      spec_id: "spec_1",
+      identity: { entities: { origin: ["country/DEU"], recipient: ["country/ETH"] } },
+    },
+  };
+  const rows: [string, FetchOptions, unknown][] = [
+    [
+      "replace only the role named",
+      { entities: { origin: ["country/FRA"] } },
+      { entities: { origin: ["country/FRA"], recipient: ["country/ETH"] } },
+    ],
+    [
+      "drop a role bound to null",
+      { entities: { origin: null } },
+      { entities: { recipient: ["country/ETH"] } },
+    ],
+    ["post no entities when none are given", { window: "latest" }, { window: { kind: "latest" } }],
+  ];
+  for (const [name, options, scope] of rows) {
+    test(name, async () => {
+      const { fetch, seen } = mockFetch(problem({ code: "scope_too_broad", status: 400 }));
+      const transport = new Transport({
+        baseUrl: "https://api.example/api",
+        apiKey: false,
+        env: envFrom({}),
+        readCredentialsFile: () => Promise.resolve(null),
+        fetch,
+        onWarning: () => undefined,
+      });
+      await assert.rejects(fetchDataset(transport, spec, options), { code: "scope_too_broad" });
+      const posted = JSON.parse(seen[0]!.body!) as { input: { scope: unknown } };
+      assert.deepEqual(posted.input.scope, scope);
+    });
+  }
+});
+
+describe("a mint", () => {
+  test("takes no narrowing", () => {
+    const spec: SpecLike = { spec_id: "spec_1", definition: { spec_id: "spec_1" } };
+    const { transport } = replay(NO_EXCHANGES);
+    // Only checked by the type checker: the call never runs.
+    const check = () => {
+      // @ts-expect-error -- a mint builds the spec as it stands; a fetch narrows it.
+      void mint(transport, spec, { window: [2020, 2023] });
+      // @ts-expect-error -- a mint builds the spec as it stands; a fetch narrows it.
+      void mint(transport, spec, { entities: { origin: ["country/FRA"] } });
+      // @ts-expect-error -- a mint builds the spec as it stands; a fetch narrows it.
+      void mint(transport, spec, { facets: { unit: null } });
+    };
+    assert.equal(typeof check, "function");
   });
 });

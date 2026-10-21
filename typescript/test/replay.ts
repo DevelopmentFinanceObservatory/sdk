@@ -37,7 +37,7 @@ export type Step =
   | { op: "search"; question: string; timeout?: number }
   | { op: "choose"; part?: number | string; option: number | string }
   | FetchStep
-  | (Narrowing & { op: "mint"; spec: SpecInput; layout?: Layout })
+  | { op: "mint"; spec: SpecInput; layout?: Layout }
   | { op: "result"; timeout?: number };
 
 export type Exchange = {

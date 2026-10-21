@@ -3,7 +3,9 @@
  *
  * A spec builds its latest version as bare Parquet, narrowed by `window`, `entities` and
  * `facets`. A narrowing gives the build its own `spec_id`, so the member keeps the spec, the
- * version and the definition the server answered with.
+ * version and the definition the server answered with. The server replaces the spec's whole
+ * entity binding with the posted `entities`, so the client posts the spec's own bound roles
+ * with the caller's roles replaced.
  *
  * A ref returns the versions it names, found in this order: the snapshot route, then the files
  * route at the stored digest; the file selector, which renders the version again from its
@@ -52,8 +54,9 @@ export type Window = "all" | "latest" | readonly [startYear: number, endYear: nu
 /** How a fetch narrows a spec. The server builds a narrowed spec with its own `spec_id`. */
 export type Narrowing = {
   window?: Window;
-  /** Role names bound to dcids, as `{ recipient: ["country/NGA"] }`. */
-  entities?: Readonly<Record<string, readonly string[]>>;
+  /** Roles to rebind, as `{ origin: ["country/FRA"] }`; null unbinds a role. Every role
+   *  the spec binds and this leaves out keeps its dcids. */
+  entities?: Readonly<Record<string, readonly string[] | null>>;
   /** Facet axes (`provenance`, `measurementMethod`, `unit`) bound to a reference; null binds
    *  the facets that declare no value on the axis. */
   facets?: Readonly<Record<string, string | null>>;
@@ -92,14 +95,15 @@ export type FetchMembersOptions<TMissing extends Gap> = CallOptions & {
   narrowing?: Narrowing;
 };
 
-export type MintOptions = Narrowing & {
+/** How a mint builds a spec. A mint builds the spec as it stands; fetch it to narrow it. */
+export type MintOptions = {
   layout?: Layout;
   strict?: boolean;
   signal?: AbortSignal;
   onProgress?: ProgressHandler;
 };
 
-export type ResumeOptions = Omit<MintOptions, keyof Narrowing>;
+export type ResumeOptions = MintOptions;
 
 type Wait = { readonly deadline: number; readonly signal?: AbortSignal | undefined };
 
@@ -133,20 +137,44 @@ function windowScope(window: Window): Record<string, unknown> {
   );
 }
 
-/** The build request's `scope` for a narrowing, or undefined when it narrows nothing. */
-function scopeOf({ window, entities, facets }: Narrowing): Record<string, unknown> | undefined {
+/** The roles a spec's definition binds, each to its dcids. */
+function boundRoles(spec: SpecLike): Map<string, readonly string[]> {
+  const identity = spec.definition["identity"];
+  const entities = isRecord(identity) ? identity["entities"] : undefined;
+  const bound = new Map<string, readonly string[]>();
+  for (const [role, dcids] of Object.entries(isRecord(entities) ? entities : {})) {
+    if (Array.isArray(dcids)) bound.set(role, dcids.map(String));
+  }
+  return bound;
+}
+
+/** The spec's whole entity binding with the caller's roles replaced and its null roles
+ *  dropped, since the server's `scope.entities` replaces the binding outright. */
+function entityScope(
+  spec: SpecLike,
+  entities: NonNullable<Narrowing["entities"]>,
+): Record<string, readonly string[]> {
+  const bound = boundRoles(spec);
+  for (const [role, dcids] of Object.entries(entities)) {
+    if (dcids === null) {
+      bound.delete(role);
+    } else if (Array.isArray(dcids)) {
+      bound.set(role, dcids);
+    } else {
+      throw invalid(`entities.${role} is not a list; bind the role to a list of dcids or null.`);
+    }
+  }
+  return Object.fromEntries(bound);
+}
+
+/** A spec's build request `scope` for a narrowing, or undefined when it narrows nothing. */
+function scopeOf(
+  spec: SpecLike,
+  { window, entities, facets }: Narrowing,
+): Record<string, unknown> | undefined {
   const scope: Record<string, unknown> = {};
   if (window !== undefined) scope["window"] = windowScope(window);
-  if (entities !== undefined) {
-    for (const [role, dcids] of Object.entries(entities)) {
-      if (!Array.isArray(dcids)) {
-        throw invalid(`entities.${role} is not a list; bind the role to a list of dcids.`);
-      }
-    }
-    scope["entities"] = Object.fromEntries(
-      Object.entries(entities).map(([role, dcids]) => [role, [...dcids]]),
-    );
-  }
+  if (entities !== undefined) scope["entities"] = entityScope(spec, entities);
   if (facets !== undefined) {
     scope["facets"] = Object.fromEntries(
       Object.entries(facets).map(([axis, ref]) => [axis, { ref }]),
@@ -407,13 +435,13 @@ export async function fetchMembers<TMissing extends Gap = never>(
   if (layout === "frame" && wants.length > 1) {
     throw invalid('layout "frame" holds one reading; fetch each spec on its own for its frame.');
   }
-  const scope = options.narrowing === undefined ? undefined : scopeOf(options.narrowing);
+  const narrowing = options.narrowing ?? {};
   const wait = { deadline: deadlineOf(transport, options.timeout), signal: options.signal };
   const fetched: FetchedMember[] = [];
   for (const { parts, spec, sentence, answerParts } of wants) {
     let manifest: Manifest;
     try {
-      manifest = await build(transport, buildBody(spec, rendering, scope), {
+      manifest = await build(transport, buildBody(spec, rendering, scopeOf(spec, narrowing)), {
         ...wait,
         onProgress: options.onProgress,
       });
@@ -487,12 +515,12 @@ export function mint(
   spec: SpecInput,
   options: MintOptions = {},
 ): Promise<Operation> {
-  const { layout = "long", strict = false, signal, onProgress, ...narrowing } = options;
+  const { layout = "long", strict = false, signal, onProgress } = options;
   const rendering = renderingFor(layout);
   const finishing = { parts: [], posted: spec, sentence: spec.sentence, rendering, strict };
   return startOperation(
     transport,
-    buildBody(spec, rendering, scopeOf(narrowing)),
+    buildBody(spec, rendering),
     datasetFinisher(transport, finishing, layout),
     { deadline: transport.deadline(), signal, onProgress },
   );
