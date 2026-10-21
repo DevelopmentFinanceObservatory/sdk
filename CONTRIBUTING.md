@@ -28,7 +28,7 @@ pre-commit run --all-files
 
 ## TypeScript
 
-The package uses pnpm, at the version `packageManager` in `typescript/package.json` names, and Node 22.18 or later, which runs the TypeScript sources, tests and scripts directly. Run the checks from the root:
+The package uses pnpm, at the version `packageManager` in `typescript/package.json` names, Node 22.18 or later, which runs the TypeScript sources, tests and scripts directly, and uv. `pnpm test`, `pnpm test:e2e`, `pnpm generate` and `pnpm generate:check` first run `pnpm fetch-contract`, which brings `contract/` to `SOURCE` by running `scripts/sync_contract.py` through uv on Python 3.12 or later, so a machine whose `python3` is older still works. The fetch does nothing when the copy is current. It stops the command and names the command to rerun when uv is missing or the fetch fails. Run the checks from the root:
 
 ```bash
 pnpm --dir typescript install
@@ -62,7 +62,7 @@ Git tracks only `contract/SOURCE`, the spec-kit commit the clients follow. The r
 scripts/sync_contract.py
 ```
 
-The script downloads the GitHub archive of the commit, extracts the package data into `contract/` and the package's README, which states the contract's rules, to `contract/README.md`, and records the commit in `contract/.synced`. It does nothing when `.synced` already names `SOURCE`. It builds the copy in a scratch directory and swaps it in, so a failed download leaves the old copy in place. The Python tests, `scripts/gen_wire.py` and `scripts/gen_errors.py` run the fetch themselves when the copy is missing or `.synced` differs from `SOURCE`, and stop with the error when the fetch fails.
+The script downloads the GitHub archive of the commit, extracts the package data into `contract/` and the package's README, which states the contract's rules, to `contract/README.md`, and records the commit in `contract/.synced`. It does nothing when `.synced` already names `SOURCE`. It builds the copy in a scratch directory and swaps it in, so a failed download leaves the old copy in place. The Python tests, `scripts/gen_wire.py`, `scripts/gen_errors.py` and the TypeScript package scripts that read `contract/` run the fetch themselves when the copy is missing or `.synced` differs from `SOURCE`, and stop with the error when the fetch fails.
 
 To move the clients to a new contract, change it in spec-kit, push the change, and write the new commit to `contract/SOURCE`. For a change that is not pushed yet, copy it from a spec-kit checkout:
 
