@@ -5,17 +5,19 @@
  * the manifest, and a larger one with a 202 operation the client polls at
  * `/datasets/operations/{id}` until it is done or the deadline passes.
  *
- * This module owns build retries: the build request goes with no transport retries, a
- * synchronous cut-off (a retryable 504, or the read timing out before the call's deadline) is
- * retried once, other retryable refusals wait for their `Retry-After` or back off from 1 to 8
- * seconds within the transport's retry count, and a retryable failed operation is resubmitted
- * once. Polls wait for the resource's `retry_after_ms` when it carries one, else for the
- * `Retry-After` header, else back off from 1 to 8 seconds; a 429 waits for its `Retry-After`
- * without spending a retry.
+ * This module owns build retries: the build request goes with no transport retries and reads
+ * for up to 150 seconds within the call's deadline, a synchronous cut-off (a retryable 504, or
+ * the 150-second read running out) is retried once, other retryable refusals are retried within
+ * the transport's retry count, each retry waiting its `Retry-After` or else the transport's
+ * backoff, and a retryable failed operation is resubmitted once. Polls wait for a 429's
+ * `Retry-After`, else the resource's `retry_after_ms`, else the `Retry-After` header, else back
+ * off from 1 to 8 seconds; a 429 spends no retry, and a poll attempt that runs past the client's
+ * timeout spends one.
  */
 
 import type { Dataset } from "./dataset.ts";
 import { clientError, DfoError, DfoTimeoutError, errorClassFor, serverCode } from "./errors.ts";
+import type { ClientErrorCode } from "./errors.ts";
 import { checkStrict } from "./strict.ts";
 import { isRetryable, retryAfterMs } from "./transport.ts";
 import type { JsonResponse, Transport } from "./transport.ts";
@@ -28,6 +30,7 @@ const POLL_BACKOFF_CAP_MS = 8_000;
 const DONE = "done";
 const FAILED = "failed";
 const OPERATION_FAILED = "operation_failed";
+const DEADLINE_EXCEEDED = "deadline_exceeded" satisfies ClientErrorCode;
 
 /** A manifest as the server sent it, checked for the members the client acts on. */
 export type Manifest = Readonly<Record<string, unknown>>;
@@ -156,8 +159,12 @@ function pollReply(response: JsonResponse): Reply {
 }
 
 /** The error a failed operation's problem document stands for, at the document's status or
- *  else 500, retryable by the rule every refusal follows. */
-function problemError(problem: Readonly<Record<string, unknown>> | null): DfoError {
+ *  else 500, retryable by the rule every refusal follows. A document with no `error` raises
+ *  `operation_failed`; one with no `trace_id` takes the response's `x-dfo-trace-id`. */
+function problemError(
+  problem: Readonly<Record<string, unknown>> | null,
+  headerTrace: string | null,
+): DfoError {
   const code = typeof problem?.["code"] === "string" ? problem["code"] : OPERATION_FAILED;
   const status = typeof problem?.["status"] === "number" ? problem["status"] : 500;
   const ErrorClass = errorClassFor(code, status);
@@ -165,7 +172,7 @@ function problemError(problem: Readonly<Record<string, unknown>> | null): DfoErr
     code: serverCode(code),
     status,
     detail: typeof problem?.["detail"] === "string" ? problem["detail"] : "The build failed.",
-    traceId: typeof problem?.["trace_id"] === "string" ? problem["trace_id"] : null,
+    traceId: typeof problem?.["trace_id"] === "string" ? problem["trace_id"] : headerTrace,
     retryable: isRetryable(status, problem),
     problem,
   });
@@ -178,6 +185,12 @@ const pollBackoff = (step: number): number =>
 const fits = (transport: Transport, wait: number, deadline: number): boolean =>
   transport.now() + wait < deadline;
 
+/** Whether the server, or the 150-second read, cut a synchronous build off. The deadline
+ *  passing is no cut-off: its timeout is not retryable. */
+const isCutOff = (error: DfoError): boolean =>
+  error.retryable &&
+  (error.status === 504 || (error instanceof DfoTimeoutError && error.status === null));
+
 /**
  * Posts a build request, owning its retries.
  *
@@ -185,7 +198,8 @@ const fits = (transport: Transport, wait: number, deadline: number): boolean =>
  */
 async function postBuild(transport: Transport, body: unknown, { deadline, signal }: Wait) {
   let cutOffRetried = false;
-  for (let retries = 0; ;) {
+  let retries = 0;
+  for (let attempt = 0; ; attempt += 1) {
     try {
       const response = await transport.request({
         path: "/datasets",
@@ -198,17 +212,13 @@ async function postBuild(transport: Transport, body: unknown, { deadline, signal
       return buildReply(response);
     } catch (error) {
       if (!(error instanceof DfoError)) throw error;
-      // The server cuts a synchronous build off with a retryable 504; the client's own read
-      // limit cuts it off when the call's deadline has not passed.
-      const cutOff =
-        (error.retryable && error.status === 504) ||
-        (error instanceof DfoTimeoutError && transport.now() < deadline);
-      if (cutOff) {
-        if (cutOffRetried) throw error;
+      const wait = error.retryAfterMs ?? transport.backoff(attempt);
+      if (isCutOff(error)) {
+        if (cutOffRetried || !fits(transport, wait, deadline)) throw error;
         cutOffRetried = true;
+        await transport.sleep(wait, signal);
         continue;
       }
-      const wait = error.retryAfterMs ?? pollBackoff(retries);
       if (!error.retryable || retries >= transport.maxRetries || !fits(transport, wait, deadline)) {
         throw error;
       }
@@ -340,7 +350,7 @@ class Poller implements LongBuild {
     if (state.status === DONE) {
       this.#manifest = state.manifest;
     } else if (state.status === FAILED) {
-      this.#error = problemError(state.error);
+      this.#error = problemError(state.error, this.#traceId);
     } else if (state.progress !== null) {
       this.#onProgress?.({
         operationId: state.operationId,
@@ -361,9 +371,8 @@ class Poller implements LongBuild {
       });
     } catch (error) {
       if (!(error instanceof DfoError)) throw error;
-      if (error instanceof DfoTimeoutError && this.#transport.now() >= wait.deadline) {
-        throw this.#stillRunning(error);
-      }
+      // The deadline's timeout is not retryable; an attempt's own timeout spends a retry.
+      if (error.code === DEADLINE_EXCEEDED && !error.retryable) throw this.#stillRunning(error);
       await this.#pollFailed(error, wait);
       return;
     }
@@ -405,7 +414,8 @@ export type Finish = (manifest: Manifest, wait: Wait) => Promise<Dataset>;
 /** Options for waiting on a long build. */
 export type ResultOptions = {
   /** The longest to wait, polls and downloads included, in milliseconds; `Infinity` waits
-   *  without limit. Defaults to 30 minutes. */
+   *  without limit. Defaults to 30 minutes. Each poll attempt waits the client's timeout
+   *  within it. */
   timeout?: number;
   signal?: AbortSignal;
   onProgress?: ProgressHandler;
@@ -445,9 +455,10 @@ export class Operation {
     return this.#poller.progress;
   }
 
-  /** Whether the build has finished, polling once when it had not. */
+  /** Whether the build has finished, polling once when it had not, for as long as the client's
+   *  timeout lets one poll attempt run. */
   done(options: { signal?: AbortSignal } = {}): Promise<boolean> {
-    return this.#poller.done({ deadline: this.#transport.deadline(), signal: options.signal });
+    return this.#poller.done({ deadline: Infinity, signal: options.signal });
   }
 
   /**
@@ -459,7 +470,7 @@ export class Operation {
    */
   async result(options: ResultOptions = {}): Promise<Dataset> {
     const wait = {
-      deadline: this.#transport.deadline({ timeout: options.timeout ?? DEFAULT_FETCH_TIMEOUT_MS }),
+      deadline: this.#transport.deadlineAfter(options.timeout ?? DEFAULT_FETCH_TIMEOUT_MS),
       signal: options.signal,
     };
     if (options.onProgress !== undefined) this.#poller.onProgress = options.onProgress;

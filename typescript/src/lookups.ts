@@ -22,10 +22,11 @@ export type ResolveKind = NonNullable<GraphApiResolveModelsResolveRequest["kinds
 export type GraphNode =
   paths["/api/graph/node/{dcid}"]["get"]["responses"][200]["content"]["application/json"];
 
-/** A lookup's cancellation and deadline. */
+/** A lookup's cancellation and attempt timeout. */
 export type LookupOptions = {
   readonly signal?: AbortSignal;
-  /** The deadline for the call, retries included, in milliseconds; the client's by default. */
+  /** The longest one request attempt waits, in milliseconds; the client's `timeout` by
+   *  default. */
   readonly timeout?: number;
 };
 

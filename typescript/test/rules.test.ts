@@ -103,6 +103,26 @@ describe("key-lookup", async () => {
   }
 });
 
+describe("an empty key", () => {
+  const file = '[default]\nkey = ""\n';
+  for (const [name, apiKey, code] of [
+    ["argument raises the key-format code", "", "key_empty"],
+    ["argument from a function raises the key-format code", () => "", "key_empty"],
+    ["in the chosen profile raises profile_without_key", undefined, "profile_without_key"],
+  ] as const) {
+    test(name, async () => {
+      await assert.rejects(
+        resolveApiKey({
+          apiKey,
+          env: envFrom({}),
+          readCredentialsFile: () => Promise.resolve(file),
+        }),
+        { name: "AuthenticationError", code },
+      );
+    });
+  }
+});
+
 test("a profile named __proto__ is a profile like any other", () => {
   const parsed = parseCredentialsFile('[__proto__]\nkey = "dfo_k_x"\n');
   assert.ok(parsed.ok);

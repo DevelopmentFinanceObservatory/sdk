@@ -20,6 +20,7 @@ import type { Transport } from "./transport.ts";
 import { DfoWarning, emitWarning } from "./warnings.ts";
 import type { WarningHandler } from "./warnings.ts";
 import type {
+  Assumption,
   CandidatesPart,
   DatasetResubmitInput,
   DefinitePart,
@@ -46,7 +47,8 @@ export type GapKind = (typeof GAP_KINDS)[number] | "timed_out" | "unknown";
 type CandidateFetch = (candidate: Candidate, options: AnswerFetchOptions) => Promise<Dataset<Gap>>;
 
 /**
- * One reading of a part that has several. The label, unit and source split its sentence.
+ * One reading of a part that has several. The label, unit and source split its sentence, and
+ * `assumptions` lists what Search assumed for it, which a pick posts back.
  *
  * A candidate in an `Answer` fetches through that answer. One in `Dataset.missing` or in
  * `IncompleteAnswerError.gaps` belongs to no answer and holds no client; fetch its spec with
@@ -63,11 +65,14 @@ export class Candidate {
   readonly source: string | null;
   /** The byline's unit, such as "Current US dollars". */
   readonly unit: string | null;
+  /** What Search assumed for this reading, from its part's `reading_assumptions`; empty when
+   *  the part lists none. */
+  readonly assumptions: readonly Assumption[];
   readonly #fetch: CandidateFetch | null;
 
   /** Candidates come from an answer; this constructor is the client's. */
   constructor(
-    reading: Pick<Candidate, "spec" | "sentence" | "label" | "source" | "unit">,
+    reading: Pick<Candidate, "spec" | "sentence" | "label" | "source" | "unit" | "assumptions">,
     fetch: CandidateFetch | null = null,
   ) {
     this.spec = reading.spec;
@@ -75,13 +80,14 @@ export class Candidate {
     this.label = reading.label;
     this.source = reading.source;
     this.unit = reading.unit;
+    this.assumptions = reading.assumptions;
     this.#fetch = fetch;
   }
 
   /**
    * Builds this reading's dataset. It asks Search for this reading alone, one request with no
    * model call, and fetches that answer with `Answer.fetch`'s options; in a one-part answer that
-   * is the answer `answer.choose(candidate)` gives.
+   * is the answer `answer.choose(index)` gives for this candidate's index.
    *
    * @throws {InvalidRequestError} The candidate came from no answer.
    */
@@ -109,8 +115,9 @@ export type QueryOption = {
   readonly label: string;
   /** The question's words the choice settles. */
   readonly mentions: readonly string[];
-  /** The parsed question with the choice pinned, posted back to Search unchanged. */
-  readonly dataQuery: ParsedInput;
+  /** The parsed question with the choice pinned, posted back to Search unchanged; null when the
+   *  server sent none, which a choice of the option refuses as a `ContractError`. */
+  readonly dataQuery: ParsedInput | null;
 };
 
 /** A part that stops an answer from building a complete dataset. */
@@ -139,7 +146,8 @@ export type AnswerContext = {
 
 export type SearchOptions = {
   readonly signal?: AbortSignal;
-  /** The deadline for the call, retries included, in milliseconds. */
+  /** The longest the whole call takes, retries included, in milliseconds; each attempt reads
+   *  until then. `Infinity` waits as long as Search takes. 60 seconds by default. */
   readonly timeout?: number;
 };
 
@@ -239,14 +247,16 @@ export class Answer {
   }
 
   /**
-   * Settles a part that awaits a choice and returns Search's answer to it, one request with no
-   * model call. `choose(option)` picks in the only part that awaits one; `choose(part, option)`
-   * names the part by its index, its variable text, or a word of the question its options settle.
-   * An option is named by its index or label. The picked answer's sentence and assumptions are
-   * Search's.
+   * Settles a part that awaits a choice and returns Search's answer to it, in one Search request.
+   * Picking a reading needs no model call; a place choice, and any part restated beside it, asks
+   * Search to bind it again. `choose(option)` picks in the only part that awaits one;
+   * `choose(part, option)` names the part by its index, its variable text, or a word of the
+   * question its options settle. An option is named by its index or label. The picked answer's
+   * sentence and assumptions are Search's.
    *
    * @throws {InvalidRequestError} No part, or more than one, awaits a choice; the part or option
    *   is unknown; or the part offers no options.
+   * @throws {ContractError} The chosen option carries no one-part `data_query`.
    */
   choose(option: ChoiceKey, options?: SearchOptions): Promise<Answer>;
   choose(part: ChoiceKey, option: ChoiceKey, options?: SearchOptions): Promise<Answer>;
@@ -323,10 +333,12 @@ export async function resolveAnswer(
   input: RawTextInput | ParsedInput | DatasetResubmitInput,
   options: SearchOptions & { question: string | null },
 ): Promise<Answer> {
-  const response = await context.transport.request({
+  const { transport } = context;
+  const response = await transport.request({
     path: RESOLVE_PATH,
     json: { schema_version: SCHEMA_VERSION, input },
-    timeout: options.timeout ?? SEARCH_TIMEOUT_MS,
+    timeout: Infinity,
+    deadline: transport.deadlineAfter(options.timeout ?? SEARCH_TIMEOUT_MS),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
   return answerFromBody(response.body, context, options.question);
@@ -340,8 +352,9 @@ const text = (value: unknown): string | null => (typeof value === "string" ? val
 /**
  * Reads a decoded Search response into an answer.
  *
- * @throws {ContractError} The body is not an object, its kind is unknown, or a member the client
- *   acts on is missing.
+ * @throws {ContractError} The body is not an object, its kind is unknown, a member the client
+ *   acts on is missing, a part has no string `status`, or a spec's `definition.spec_id` is not
+ *   its `spec_id`.
  */
 export function answerFromBody(
   body: unknown,
@@ -384,6 +397,7 @@ export function answerFromBody(
       detail: "Resolution.parts is not an array of objects in the response.",
     });
   }
+  for (const [index, part] of parts.entries()) checkPart(part, index);
   const typed = parts as Part[];
   const sentence = text(body["rendered_sentence"]);
   const status = text(body["status"]);
@@ -403,6 +417,40 @@ export function answerFromBody(
     raw: body,
     context,
   });
+}
+
+/** Checks the members of a part the client acts on beyond the strict fields: its `status`, which
+ *  the strict check lets through when absent, and that each spec's definition names it. */
+function checkPart(part: Record<string, unknown>, index: number): void {
+  if (typeof part["status"] !== "string") {
+    throw clientError("contract_violation", {
+      detail: `Part ${index} of the Search response has no status, which this client acts on.`,
+      pointer: `/parts/${index}/status`,
+    });
+  }
+  const pointer = `/parts/${index}`;
+  if (part["status"] === "definite") checkSpec(part["spec"], `${pointer}/spec`);
+  if (part["status"] === "candidates") {
+    const candidates = part["candidates"];
+    const specs = isRecord(candidates) ? candidates["specs"] : undefined;
+    for (const [at, spec] of (Array.isArray(specs) ? specs : []).entries()) {
+      checkSpec(spec, `${pointer}/candidates/specs/${at}`);
+    }
+  }
+}
+
+/** Raises when a Search spec's definition names another spec than its `spec_id`. */
+function checkSpec(spec: unknown, pointer: string): void {
+  if (!isRecord(spec) || !isRecord(spec["definition"])) return;
+  const named = spec["definition"]["spec_id"];
+  if (named !== spec["spec_id"]) {
+    throw clientError("contract_violation", {
+      detail:
+        `The spec ${String(spec["spec_id"])} at ${pointer} has a definition for ` +
+        `${String(named)}.`,
+      pointer: `${pointer}/definition/spec_id`,
+    });
+  }
 }
 
 function sharedStatus(parts: readonly Part[]): string {
@@ -479,7 +527,9 @@ function gapFor(
       return null;
     case "candidates": {
       const fetch = bind(part);
-      const candidates = part.candidates.specs.map((spec) => candidateFrom(spec, fetch));
+      const candidates = part.candidates.specs.map((spec) =>
+        candidateFrom(spec, part.reading_assumptions?.[spec.spec_id] ?? [], fetch),
+      );
       return gap("choice", `${candidates.length} readings`, candidates);
     }
     case "no_data": {
@@ -488,7 +538,7 @@ function gapFor(
       const kind: GapKind = Object.hasOwn(CODE_GAP_KINDS, reason)
         ? CODE_GAP_KINDS[reason as keyof typeof CODE_GAP_KINDS]
         : "no_data";
-      return gap(kind, part.no_data.message ?? reason, queryOptions(part.no_data));
+      return gap(kind, part.no_data.message || reason, queryOptions(part.no_data));
     }
     case "unsupported":
       return gap("unsupported", part.unsupported.detail || part.unsupported.code);
@@ -506,13 +556,18 @@ function queryOptions(noData: NoData): QueryOption[] {
     mentions: Array.isArray(option["mentions"])
       ? option["mentions"].filter((m): m is string => typeof m === "string")
       : [],
-    dataQuery: (isRecord(option["data_query"]) ? option["data_query"] : {}) as ParsedInput,
+    dataQuery: isRecord(option["data_query"]) ? (option["data_query"] as ParsedInput) : null,
   }));
 }
 
-/** A candidate from its full spec: the label is the sentence's heading and the unit the
- *  byline's unit slot, so label, unit and source together say what the sentence says. */
-function candidateFrom(spec: Spec, fetch: CandidateFetch): Candidate {
+/** A candidate from its full spec and what Search assumed for it: the label is the sentence's
+ *  heading and the unit the byline's unit slot, so label, unit and source together say what the
+ *  sentence says. */
+function candidateFrom(
+  spec: Spec,
+  assumptions: readonly Assumption[],
+  fetch: CandidateFetch,
+): Candidate {
   const { resolved } = spec;
   const tokens = resolved.sentence_plan ?? [];
   const heading = tokens
@@ -532,6 +587,7 @@ function candidateFrom(spec: Spec, fetch: CandidateFetch): Candidate {
       label: heading || (sentence ?? ""),
       source: resolved.facets?.["provenance"]?.label ?? null,
       unit: unit ?? null,
+      assumptions: Object.freeze([...assumptions]),
     },
     fetch,
   );

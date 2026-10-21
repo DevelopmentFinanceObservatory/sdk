@@ -2,12 +2,15 @@ import { parseCredentialsFile, platformCredentialsFile } from "./credentials.ts"
 import type { CredentialsFileReader } from "./credentials.ts";
 import { readProcessEnv } from "./env.ts";
 import type { EnvReader } from "./env.ts";
-import { clientError } from "./errors.ts";
+import { AuthenticationError, clientError } from "./errors.ts";
+import type { ClientErrorCode } from "./errors.ts";
 
 const SECRET_PREFIX = "dfo_k_";
 const PUBLISHABLE_PREFIX = "dfo_p_";
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const CHECKSUM_LENGTH = 6;
+/** The key-format code an empty `apiKey` argument raises. */
+const EMPTY_KEY = "key_empty" as ClientErrorCode;
 
 /**
  * An API key. Printing, logging or serialising it shows a masked form; `reveal()` returns the
@@ -111,7 +114,10 @@ const toKey = (value: string | ApiKey): ApiKey =>
 /**
  * Resolves the key by the lookup order in `contract/rules/README.md`: the `apiKey` argument,
  * `DFO_API_KEY`, the credentials file's profile `$DFO_PROFILE` (else `default`), then anonymous.
- * The file is read only when no earlier source wins.
+ * The file is read only when no earlier source wins. An empty `DFO_API_KEY` reads as unset.
+ *
+ * @throws {AuthenticationError} The argument is an empty key, the credentials file is invalid,
+ *   `DFO_PROFILE` names a profile it lacks, or the chosen profile's key is missing or empty.
  */
 export async function resolveApiKey({
   apiKey,
@@ -123,9 +129,15 @@ export async function resolveApiKey({
   readCredentialsFile?: CredentialsFileReader | undefined;
 }): Promise<ResolvedKey> {
   if (apiKey === false) return { source: "anonymous", key: null };
-  if (apiKey !== undefined && apiKey !== "") {
-    const value = typeof apiKey === "function" ? await apiKey() : apiKey;
-    return { source: "argument", key: toKey(value) };
+  if (apiKey !== undefined) {
+    const key = toKey(typeof apiKey === "function" ? await apiKey() : apiKey);
+    if (key.reveal() === "") {
+      throw new AuthenticationError({
+        code: EMPTY_KEY,
+        detail: "The apiKey argument is empty; pass a key, or false for anonymous use.",
+      });
+    }
+    return { source: "argument", key };
   }
 
   const fromEnv = env("DFO_API_KEY");
@@ -149,7 +161,7 @@ export async function resolveApiKey({
     });
   }
   const key = profile["key"];
-  if (key === undefined) {
+  if (key === undefined || key === "") {
     throw clientError("profile_without_key", {
       detail: `The credentials file's profile [${profileName}] has no key.`,
     });

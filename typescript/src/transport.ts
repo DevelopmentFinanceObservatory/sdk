@@ -1,6 +1,6 @@
 import type { CredentialsFileReader } from "./credentials.ts";
 import type { EnvReader } from "./env.ts";
-import { clientError, DfoError, errorClassFor, NetworkError, serverCode } from "./errors.ts";
+import { clientError, DfoError, errorClassFor, serverCode } from "./errors.ts";
 import type { DfoTimeoutError } from "./errors.ts";
 import {
   ApiKey,
@@ -12,21 +12,28 @@ import {
 import type { ApiKeyOption, ResolvedKey } from "./keys.ts";
 import type { LongBuild } from "./operation.ts";
 import { VERSION } from "./version.ts";
-import { DfoDeprecationWarning, DfoWarning, emitWarning, warnOnce } from "./warnings.ts";
-import type { WarningHandler } from "./warnings.ts";
+import { clientWarning, emitWarning, warnOnce } from "./warnings.ts";
+import type { DfoWarning, WarningHandler } from "./warnings.ts";
 
 /** The public API's base URL. */
 export const DEFAULT_BASE_URL = "https://developmentfinance.org/api/v1";
-export const DEFAULT_TIMEOUT_MS = 60_000;
+/** The longest one request attempt waits, in milliseconds, unless a call sets its own. */
+export const DEFAULT_TIMEOUT_MS = 30_000;
 export const DEFAULT_MAX_RETRIES = 2;
+/** The storage host the API's files route redirects a download to. */
+export const STORAGE_ORIGIN = "https://storage.googleapis.com";
 
 const BACKOFF_START_MS = 500;
 const BACKOFF_CAP_MS = 8_000;
+/** The longest delay a platform timer holds, about 24.8 days; a longer limit is clamped to it. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
 /** Statuses retried when the body does not say whether the refusal is retryable. */
 const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 /** The website proxy's `retry` value for a refusal that clears on its own. */
 const PROXY_RETRY = "retry_after_delay";
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+/** The media types a refusal body is read as a problem document under. */
+const PROBLEM_TYPES = new Set(["application/problem+json", "application/json"]);
 
 type Fetch = typeof globalThis.fetch;
 export type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -43,7 +50,8 @@ export type TransportOptions = {
   dangerouslyAllowBrowser?: boolean;
   /** The platform's `fetch`, or one that stands in for it. */
   fetch?: Fetch;
-  /** The deadline for one call, retries and waits included, in milliseconds. */
+  /** The longest one request attempt waits, in milliseconds; `Infinity` for no limit. 30
+   *  seconds by default. */
   timeout?: number;
   maxRetries?: number;
   /** Headers sent with every request to the API, never to a signed storage URL. */
@@ -66,9 +74,11 @@ export type Target = { path: string; url?: never } | { url: string; path?: never
 
 export type CallOptions = {
   signal?: AbortSignal;
-  /** This call's deadline in milliseconds from now, capped by `deadline`. */
+  /** The longest one attempt waits, in milliseconds, within `deadline`; `Infinity` reads until
+   *  the deadline. The transport's `timeout` by default. */
   timeout?: number;
-  /** An absolute deadline on the transport's clock, carried down from an enclosing call. */
+  /** The clock reading the whole call, retries and waits included, must finish by; none by
+   *  default. A passed deadline raises `DfoTimeoutError` with `deadline_exceeded`. */
   deadline?: number;
   maxRetries?: number;
 };
@@ -89,6 +99,16 @@ export type JsonResponse = {
   body: unknown;
 };
 
+/** Where a files route sends a download: the bytes it served, or the signed URL it names. */
+export type Located = { data: Uint8Array; signed?: never } | { signed: URL; data?: never };
+
+/** A response with its whole body, read under the attempt's limit. */
+type Received = { response: Response; body: Uint8Array };
+
+/** How long one attempt may run, and whether the call's deadline or the attempt's own timeout
+ *  sets that. */
+type Limit = { ms: number; byDeadline: boolean };
+
 const defaultSleep: Sleep = (ms, signal) =>
   new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -99,10 +119,13 @@ const defaultSleep: Sleep = (ms, signal) =>
       clearTimeout(timer);
       reject(signal?.reason);
     };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
+    const timer = setTimeout(
+      () => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      },
+      Math.min(ms, MAX_TIMER_MS),
+    );
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 
@@ -167,10 +190,22 @@ export function isRetryable(status: number, body: unknown): boolean {
   return RETRYABLE_STATUSES.has(status);
 }
 
+/** A refusal body as a problem document: parsed when its media type is JSON, else undefined. */
+function problemBody(headers: Headers, body: Uint8Array): unknown {
+  const type = headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+  if (type === undefined || !PROBLEM_TYPES.has(type)) return undefined;
+  try {
+    return JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The HTTP transport every client call goes through. It resolves URLs, sends the key to the API
- * host only, retries what the server says is retryable within one deadline, turns refusals into
- * errors and fetches signed storage URLs bare.
+ * host only, retries what the server says is retryable, bounds each attempt by its timeout and
+ * the whole call by its deadline, turns refusals into errors and fetches signed storage URLs
+ * bare.
  */
 export class Transport {
   readonly baseUrl: URL;
@@ -202,6 +237,11 @@ export class Transport {
   /** The transport's clock, in milliseconds. */
   now(): number {
     return this.#now();
+  }
+
+  /** The clock reading `ms` from now; `Infinity` for no deadline. */
+  deadlineAfter(ms: number): number {
+    return this.#now() + ms;
   }
 
   /** Waits `ms` on the transport's sleep, rejecting with the caller's reason on abort. */
@@ -249,7 +289,7 @@ export class Transport {
       if (verdict.verdict === "warn") {
         warnOnce(
           `key:${verdict.reason}:${resolved.key.masked}`,
-          new DfoWarning(
+          clientWarning(
             `key_${verdict.reason}`,
             `The API key ${resolved.key.masked} from ${resolved.source} fails the key format ` +
               `check (${verdict.reason}); it is sent anyway.`,
@@ -259,12 +299,6 @@ export class Transport {
       }
     }
     return resolved;
-  }
-
-  /** The absolute deadline for a call on this transport's clock. */
-  deadline({ timeout, deadline }: Pick<CallOptions, "timeout" | "deadline"> = {}): number {
-    const own = this.#now() + (timeout ?? this.timeout);
-    return deadline === undefined ? own : Math.min(own, deadline);
   }
 
   /** The absolute URL of a target. */
@@ -285,7 +319,7 @@ export class Transport {
   /** Sends a request and parses its JSON body, raising a `DfoError` for a refusal. A redirect
    *  is never followed, so no client header reaches another host. */
   async request(options: RequestOptions): Promise<JsonResponse> {
-    const response = await this.#send(options, this.deadline(options));
+    const { response, body } = await this.#send(options);
     if (this.#isRedirect(response)) {
       throw clientError("unexpected_response", {
         status: response.status,
@@ -293,7 +327,7 @@ export class Transport {
         traceId: response.headers.get("x-dfo-trace-id"),
       });
     }
-    const text = await this.#read(response, options.signal, () => response.text());
+    const text = new TextDecoder().decode(body);
     const url = new URL(response.url || this.url(options, options.query));
     if (text === "") return { status: response.status, headers: response.headers, url, body: null };
     try {
@@ -311,81 +345,101 @@ export class Transport {
   /** Sends a request and reads its body as bytes, raising a `DfoError` for a refusal. A
    *  redirect is returned, not followed. */
   async requestRaw(options: RequestOptions): Promise<RawResponse> {
-    const response = await this.#send(options, this.deadline(options));
-    const body = await this.#bytes(response, options.signal);
+    const { response, body } = await this.#send(options);
     return new RawResponse(response.status, response.headers, body);
   }
 
   /**
-   * Downloads a file the API serves through a redirect to a signed storage URL. The redirect is
-   * read by hand and the signed URL fetched with no client headers and no key. A failed signed
-   * fetch asks the API again for a fresh URL rather than retrying the old one.
+   * Asks a files route for a file, retrying as every API request does. The route answers the
+   * bytes, or a redirect to a signed storage URL, which resolves against the response's URL;
+   * `fetchSigned` fetches it. A browser hides a redirect's `Location`, so there the browser
+   * follows it and the bytes come back.
+   *
+   * @throws {ContractError} The route or its redirect names a host other than the API's or the
+   *   storage host, or a redirect has no `Location`.
+   * @throws {DfoError} The route refused the request.
    */
-  async download(options: Target & CallOptions): Promise<Uint8Array> {
-    const deadline = this.deadline(options);
-    const retries = options.maxRetries ?? this.maxRetries;
-    for (let attempt = 0; ; attempt += 1) {
-      const response = await this.#send({ ...options, method: "GET" }, deadline);
-      if (response.type === "opaqueredirect") {
-        // A browser hides a manual redirect's Location, so the browser follows it, dropping
-        // the Authorization header on the way to another origin.
-        const followed = await this.#send({ ...options, method: "GET" }, deadline, "follow");
-        return this.#bytes(followed, options.signal);
-      }
-      if (!REDIRECT_STATUSES.has(response.status)) return this.#bytes(response, options.signal);
-
-      const location = response.headers.get("location");
-      if (location === null) {
-        throw clientError("contract_violation", {
-          status: response.status,
-          detail: `The redirect from ${this.url(options).pathname} has no Location header.`,
-        });
-      }
-      const signed = new URL(location, this.url(options));
-      try {
-        return await this.#bare(signed, deadline, options.signal);
-      } catch (error) {
-        if (!(error instanceof DfoError) || !error.retryable || attempt >= retries) throw error;
-        await this.#wait(this.#backoff(attempt), deadline, options.signal, error);
-      }
+  async locate(options: Target & CallOptions): Promise<Located> {
+    const target = this.url(options);
+    this.#checkFileOrigin(target, "The file URL");
+    const ask = { ...options, method: "GET" };
+    const { response, body } = await this.#send(ask);
+    if (response.type === "opaqueredirect") {
+      // The browser follows the redirect, dropping the Authorization header on the way to
+      // another origin.
+      return { data: (await this.#send(ask, "follow")).body };
     }
+    if (!REDIRECT_STATUSES.has(response.status)) return { data: body };
+    const location = response.headers.get("location");
+    if (location === null) {
+      throw clientError("contract_violation", {
+        status: response.status,
+        detail: `The redirect from ${target.pathname} has no Location header.`,
+        traceId: response.headers.get("x-dfo-trace-id"),
+      });
+    }
+    const signed = new URL(location, response.url || target);
+    this.#checkFileOrigin(signed, `The redirect from ${target.pathname}`);
+    return { signed };
   }
 
-  /** Sends one request with retries, returning a 2xx response or a redirect with its body
-   *  unread. Redirects are manual unless a browser has to follow one. */
-  async #send(
-    options: RequestOptions,
-    deadline: number,
-    redirect: RequestRedirect = "manual",
-  ): Promise<Response> {
+  /**
+   * Fetches a signed storage URL once, with no client header and no key. A failed fetch is not
+   * retried: a signed URL can expire, so the caller asks the files route for a fresh one.
+   *
+   * @throws {ServerError} The storage host answered other than 2xx (`download_failed`).
+   * @throws {NetworkError} The connection failed.
+   * @throws {DfoTimeoutError} The attempt or the call's deadline ran out.
+   */
+  async fetchSigned(url: URL, options: CallOptions = {}): Promise<Uint8Array> {
+    options.signal?.throwIfAborted();
+    const outcome = await this.#attempt(url, options, { method: "GET" });
+    if (outcome instanceof DfoError) throw outcome;
+    const { response, body } = outcome;
+    if (!response.ok) {
+      throw clientError("download_failed", {
+        status: response.status,
+        detail: `The signed download from ${url.host} answered HTTP ${response.status}.`,
+        retryable: true,
+      });
+    }
+    return body;
+  }
+
+  #checkFileOrigin(url: URL, what: string): void {
+    if (url.origin === this.baseUrl.origin || url.origin === STORAGE_ORIGIN) return;
+    throw clientError("contract_violation", {
+      detail: `${what} is on ${url.origin}, which is neither the API's origin nor ${STORAGE_ORIGIN}.`,
+    });
+  }
+
+  /** Sends one request with retries, returning a 2xx response or a redirect with its body.
+   *  Redirects are manual unless a browser has to follow one. */
+  async #send(options: RequestOptions, redirect: RequestRedirect = "manual"): Promise<Received> {
     options.signal?.throwIfAborted();
     const method = options.method ?? (options.json === undefined ? "GET" : "POST");
     const url = this.url(options, options.query);
     const retries = options.maxRetries ?? this.maxRetries;
+    const deadline = options.deadline ?? Infinity;
     let reauthenticated = false;
 
     for (let attempt = 0; ; attempt += 1) {
       const { headers, key } = await this.#headers(method, url, options);
-      let outcome: Response | NetworkError;
-      try {
-        outcome = await this.#fetchOnce(url, deadline, options.signal, {
-          method,
-          headers,
-          redirect,
-          ...(options.json === undefined ? {} : { body: JSON.stringify(options.json) }),
-        });
-      } catch (failure) {
-        if (!(failure instanceof NetworkError)) throw failure;
-        outcome = failure;
-      }
+      const outcome = await this.#attempt(url, options, {
+        method,
+        headers,
+        redirect,
+        ...(options.json === undefined ? {} : { body: JSON.stringify(options.json) }),
+      });
 
       let error: DfoError;
-      if (outcome instanceof NetworkError) {
+      if (outcome instanceof DfoError) {
         error = outcome;
       } else {
-        this.#warnFromHeaders(outcome.headers, url);
-        if (outcome.ok || this.#isRedirect(outcome)) return outcome;
-        if (outcome.status === 401 && !reauthenticated) {
+        const { response, body } = outcome;
+        this.#warnFromHeaders(response.headers, url);
+        if (response.ok || this.#isRedirect(response)) return outcome;
+        if (response.status === 401 && !reauthenticated) {
           // The key is resolved again after a 401, and a different key gets one more try.
           reauthenticated = true;
           this.#key.promise = this.#resolveKey();
@@ -395,16 +449,13 @@ export class Transport {
             continue;
           }
         }
-        error = await this.#refusal(outcome, options.signal);
+        error = this.#refusal(response, body);
       }
 
       if (!error.retryable || attempt >= retries) throw error;
-      await this.#wait(
-        error.retryAfterMs ?? this.#backoff(attempt),
-        deadline,
-        options.signal,
-        error,
-      );
+      const wait = error.retryAfterMs ?? this.backoff(attempt);
+      if (this.#now() + wait >= deadline) throw error;
+      await this.#sleep(wait, options.signal);
     }
   }
 
@@ -412,14 +463,10 @@ export class Transport {
     return response.type === "opaqueredirect" || REDIRECT_STATUSES.has(response.status);
   }
 
-  #backoff(attempt: number): number {
+  /** The wait before retrying failed attempt `attempt` (from 0) when its refusal carries no
+   *  `Retry-After`: 0.5 s, doubling to at most 8 s. */
+  backoff(attempt: number): number {
     return Math.min(BACKOFF_START_MS * 2 ** attempt, BACKOFF_CAP_MS);
-  }
-
-  /** Waits before a retry, or raises `error` when the wait would pass the deadline. */
-  async #wait(ms: number, deadline: number, signal: AbortSignal | undefined, error: unknown) {
-    if (this.#now() + ms >= deadline) throw error;
-    await this.#sleep(ms, signal);
   }
 
   async #headers(
@@ -443,79 +490,59 @@ export class Transport {
     return { headers, key };
   }
 
-  /** One fetch under the deadline. A caller's abort rejects with the caller's reason; the
-   *  deadline raises `DfoTimeoutError`; any other failure raises `NetworkError`. */
-  async #fetchOnce(
-    url: URL,
-    deadline: number,
-    signal: AbortSignal | undefined,
-    init: RequestInit,
-  ): Promise<Response> {
-    const remaining = deadline - this.#now();
-    if (remaining <= 0) throw this.#timeout(url);
-    const timer = AbortSignal.timeout(Math.ceil(remaining));
+  /** How long the next attempt may run: its own timeout, or the time left before the deadline
+   *  when that is shorter. */
+  #limit(url: URL, { timeout, deadline }: CallOptions): Limit {
+    const own = timeout ?? this.timeout;
+    const remaining = (deadline ?? Infinity) - this.#now();
+    if (remaining <= 0) throw this.#deadlinePassed(url);
+    return remaining <= own ? { ms: remaining, byDeadline: true } : { ms: own, byDeadline: false };
+  }
+
+  /**
+   * One fetch and the read of its whole body, under the attempt's limit. An infinite limit arms
+   * no timer. A caller's abort rejects with the caller's reason. A failure the next attempt may
+   * clear returns as a retryable error: a network failure, or the attempt's own timeout. The
+   * deadline passing returns a `DfoTimeoutError` that is not retryable.
+   */
+  async #attempt(url: URL, options: CallOptions, init: RequestInit): Promise<Received | DfoError> {
+    const limit = this.#limit(url, options);
+    const timer = Number.isFinite(limit.ms)
+      ? AbortSignal.timeout(Math.min(Math.max(1, Math.ceil(limit.ms)), MAX_TIMER_MS))
+      : undefined;
+    const signals = [options.signal, timer].filter((signal) => signal !== undefined);
+    const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
     try {
-      return await this.#fetch(url, {
-        ...init,
-        signal: signal === undefined ? timer : AbortSignal.any([signal, timer]),
-      });
+      const response = await this.#fetch(url, { ...init, ...(signal ? { signal } : {}) });
+      return { response, body: new Uint8Array(await response.arrayBuffer()) };
     } catch (error) {
-      throw this.#failure(error, url, signal, timer);
+      if (options.signal?.aborted) throw options.signal.reason;
+      if (timer?.aborted) {
+        if (limit.byDeadline) return this.#deadlinePassed(url, error);
+        return clientError("deadline_exceeded", {
+          detail: `One attempt at ${url.pathname} waited ${limit.ms} ms with no whole response.`,
+          retryable: true,
+          cause: error,
+        });
+      }
+      return clientError("network_error", {
+        detail: `The request to ${url.host} failed before its whole response arrived.`,
+        retryable: true,
+        cause: error,
+      });
     }
   }
 
-  #failure(error: unknown, url: URL, signal: AbortSignal | undefined, timer?: AbortSignal) {
-    if (signal?.aborted) return signal.reason as unknown;
-    if (timer?.aborted) return this.#timeout(url, error);
-    return clientError("network_error", {
-      detail: `The request to ${url.host} failed before a response arrived.`,
-      retryable: true,
-      cause: error,
-    });
-  }
-
-  #timeout(url: URL, cause?: unknown): DfoTimeoutError {
+  #deadlinePassed(url: URL, cause?: unknown): DfoTimeoutError {
     return clientError("deadline_exceeded", {
       detail: `The call to ${url.pathname} passed its deadline.`,
       cause,
     });
   }
 
-  /** Reads a body, mapping a failure part way through as `#fetchOnce` does. */
-  async #read<T>(response: Response, signal: AbortSignal | undefined, read: () => Promise<T>) {
-    try {
-      return await read();
-    } catch (error) {
-      throw this.#failure(error, new URL(response.url || this.baseUrl), signal);
-    }
-  }
-
-  async #bytes(response: Response, signal: AbortSignal | undefined): Promise<Uint8Array> {
-    return new Uint8Array(await this.#read(response, signal, () => response.arrayBuffer()));
-  }
-
-  /** Fetches a signed storage URL with no headers at all. */
-  async #bare(url: URL, deadline: number, signal: AbortSignal | undefined): Promise<Uint8Array> {
-    const response = await this.#fetchOnce(url, deadline, signal, { method: "GET" });
-    if (!response.ok) {
-      throw clientError("download_failed", {
-        status: response.status,
-        detail: `The signed download from ${url.host} answered HTTP ${response.status}.`,
-        retryable: true,
-      });
-    }
-    return this.#bytes(response, signal);
-  }
-
   /** The error a refusal stands for: a problem document, the proxy's own body, or neither. */
-  async #refusal(response: Response, signal: AbortSignal | undefined): Promise<DfoError> {
-    const text = await this.#read(response, signal, () => response.text());
-    let body: unknown;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = undefined;
-    }
+  #refusal(response: Response, received: Uint8Array): DfoError {
+    const body = problemBody(response.headers, received);
     const { status } = response;
     const headerTrace = response.headers.get("x-dfo-trace-id");
     const retryable = isRetryable(status, body);
@@ -567,16 +594,22 @@ export class Transport {
     }
   }
 
+  /** Warns once per process for each distinct pair of `Deprecation` and `Sunset` values, on
+   *  either header alone, and once per `x-dfo-warning` message. */
   #warnFromHeaders(headers: Headers, url: URL): void {
     const deprecation = headers.get("deprecation");
-    if (deprecation !== null) {
-      const sunset = headers.get("sunset");
+    const sunset = headers.get("sunset");
+    if (deprecation !== null || sunset !== null) {
+      const marks = [
+        ...(deprecation === null ? [] : [`Deprecation: ${deprecation}`]),
+        ...(sunset === null ? [] : [`Sunset: ${sunset}`]),
+      ].join(", ");
       warnOnce(
-        `deprecation:${url.pathname}`,
-        new DfoDeprecationWarning(
+        `deprecation:${JSON.stringify([deprecation, sunset])}`,
+        clientWarning(
           "route_deprecated",
-          `The API marks ${url.pathname} deprecated (Deprecation: ${deprecation})` +
-            (sunset === null ? "." : `; it is removed after ${sunset}.`),
+          `The DFO API marked ${url.pathname} for removal (${marks}). Upgrade ` +
+            "@developmentfinance/client.",
         ),
         this.#onWarning,
       );
@@ -585,7 +618,7 @@ export class Transport {
     if (warning !== null) {
       warnOnce(
         `x-dfo-warning:${warning}`,
-        new DfoWarning("server_warning", warning),
+        clientWarning("server_warning", warning),
         this.#onWarning,
       );
     }

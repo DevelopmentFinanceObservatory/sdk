@@ -10,6 +10,7 @@ import { Dataset, tableParts } from "../src/dataset.ts";
 import type { FetchedMember } from "../src/dataset.ts";
 import { decodeStored } from "../src/parquet.ts";
 import { DatasetRef } from "../src/ref.ts";
+import type { Part } from "../src/wire.ts";
 import { scenarioBytes } from "./replay.ts";
 
 const SCENARIOS = new URL("../../contract/scenarios/", import.meta.url);
@@ -114,16 +115,45 @@ describe("a dataset of several members", async () => {
   const health = await scenarioBytes("answer-several-readings-folded.parquet");
   const gdp = await scenarioBytes("answer-several-readings-folded-2.parquet");
   const gdpSpec = `spec_${"2".repeat(32)}`;
+  const assumed = {
+    kind: "declared_default",
+    binding_ref: "how:dac2aAidType",
+    text: "official development assistance",
+    refs: ["DAC2aAidType206"],
+  };
+  const answered = (assumptions: unknown[]) => [{ status: "definite", assumptions }] as Part[];
   const dataset = new Dataset(
     [
-      member(health, { parts: ["health ODA", "education ODA"], sentence: "Health." }),
+      member(health, {
+        parts: ["health ODA", "education ODA"],
+        sentence: "Health.",
+        answerParts: answered([assumed]),
+        manifest: {
+          artifacts: [
+            {
+              artifact_digest: digestOf(health),
+              rendering: { format: "parquet", bundle: false, layout: "long_v2" },
+            },
+          ],
+        },
+      }),
       member(gdp, {
         sentence: "GDP.",
         spec: { spec_id: gdpSpec, definition: { spec_id: gdpSpec } },
+        answerParts: answered([
+          { ...assumed },
+          { kind: "place_scope", binding_ref: "where:", text: "every country" },
+        ]),
       }),
     ],
     { layout: "long" },
   );
+  const placeScope = {
+    kind: "place_scope",
+    binding_ref: "where:",
+    text: "every country",
+    refs: [],
+  };
 
   test("stacks into one table with the part column first", async () => {
     const rows = await dataset.toRows();
@@ -148,6 +178,11 @@ describe("a dataset of several members", async () => {
   test("joins the members' sentences and gives each member's file on its own", () => {
     assert.equal(dataset.sentence, "Health. GDP.");
     assert.deepEqual(dataset.memberBytes(1), gdp);
+  });
+
+  test("collects the parts' assumptions once each, and the members' layouts", () => {
+    assert.deepEqual(dataset.assumptions, [assumed, placeScope]);
+    assert.equal(dataset.layoutVersion, "long_v2; long");
   });
 
   test("bytes() writes one Parquet file of the stacked table, with the provenance", async () => {
@@ -190,6 +225,8 @@ describe("a dataset of several members", async () => {
       "warnings",
     ]);
     assert.equal(saved["complete"], true);
+    assert.deepEqual(saved["assumptions"], [assumed, placeScope]);
+    assert.equal(saved["layout_version"], "long_v2; long");
   });
 });
 

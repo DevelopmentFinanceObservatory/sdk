@@ -24,8 +24,9 @@ export type ClientOptions = {
   apiKey?: ApiKeyOption;
   /** The platform's `fetch`, or one that stands in for it. */
   fetch?: typeof globalThis.fetch;
-  /** The deadline for a lookup or `request` call, retries and waits included, in milliseconds;
-   *  60 seconds by default. `search` and `fetch` take their own. */
+  /** The longest one request attempt waits, in milliseconds; `Infinity` for no limit. 30
+   *  seconds by default. A failed attempt is retried as `maxRetries` allows. `search` (60 s)
+   *  and `fetch` (30 min) also bound the whole call, and a build's POST reads for up to 150 s. */
   timeout?: number;
   /** Further attempts after a failure the server says can clear; 2 by default. */
   maxRetries?: number;
@@ -77,9 +78,8 @@ export class Client {
   /**
    * Builds the client. The key resolves on the first call.
    *
-   * @throws {TypeError} The base URL is relative and no page URL resolves it.
-   * @throws {AuthenticationError} A secret key given in a browser page without
-   *   `dangerouslyAllowBrowser`.
+   * @throws {TypeError} The base URL is relative and no page URL resolves it, or a secret key is
+   *   given in a browser page without `dangerouslyAllowBrowser`.
    */
   constructor(options: ClientOptions = {}) {
     const { headers, ...rest } = options;
@@ -132,7 +132,8 @@ export class Client {
   }
 
   /**
-   * Starts a spec's build and returns it as an operation, done or running.
+   * Starts a spec's build and returns it as an operation, done or running. The POST reads for up
+   * to 150 seconds; `operation.result()` waits for the rest.
    *
    * @throws {DfoError} The server refused the build.
    */

@@ -20,7 +20,8 @@
  * built identity binds to the same entities, so a window or facets narrowing keeps every group
  * and a role that `entities` rebound or dropped loses its group. Every download is a bare
  * request to the signed URL the files route redirects to, checked against its digest before the
- * fetch returns. Members build one after another, under one deadline.
+ * fetch returns. Members build one after another, under one deadline: each request attempt waits
+ * the client's timeout within it, and a download reads until it.
  */
 
 import type { Gap } from "./answer.ts";
@@ -56,7 +57,7 @@ export type Window = "all" | "latest" | readonly [startYear: number, endYear: nu
 export type Narrowing = {
   window?: Window;
   /** Roles to rebind, as `{ origin: ["country/FRA"] }`; null unbinds a role. Every role
-   *  the spec binds and this leaves out keeps its dcids. */
+   *  the spec binds and this leaves out keeps its dcids, so `{}` narrows nothing. */
   entities?: Readonly<Record<string, readonly string[] | null>>;
   /** Facet axes (`provenance`, `measurementMethod`, `unit`) bound to a reference; null binds
    *  the facets that declare no value on the axis. */
@@ -87,8 +88,8 @@ export type MemberRequest = {
 
 type CallOptions = {
   signal?: AbortSignal;
-  /** The longest the fetch takes, in milliseconds; `Infinity` for no limit. Defaults to 30
-   *  minutes. */
+  /** The longest the whole fetch takes, builds and downloads included, in milliseconds;
+   *  `Infinity` for no limit. Defaults to 30 minutes. */
   timeout?: number;
   onProgress?: ProgressHandler;
   /** Raises the first dataset warning, a `DataWarning`, instead of passing it to the warning
@@ -109,7 +110,6 @@ export type FetchMembersOptions<TMissing extends Gap> = CallOptions & {
 /** How a mint builds a spec. A mint builds the spec as it stands; fetch it to narrow it. */
 export type MintOptions = {
   layout?: Layout;
-  strict?: boolean;
   signal?: AbortSignal;
   onProgress?: ProgressHandler;
 };
@@ -185,7 +185,7 @@ function scopeOf(
 ): Record<string, unknown> | undefined {
   const scope: Record<string, unknown> = {};
   if (window !== undefined) scope["window"] = windowScope(window);
-  if (entities !== undefined) scope["entities"] = entityScope(spec, entities);
+  if (namesRoles(entities)) scope["entities"] = entityScope(spec, entities);
   if (facets !== undefined) {
     scope["facets"] = Object.fromEntries(
       Object.entries(facets).map(([axis, ref]) => [axis, { ref }]),
@@ -194,8 +194,14 @@ function scopeOf(
   return Object.keys(scope).length === 0 ? undefined : scope;
 }
 
+/** Whether `entities` names a role; `{}` names none, and posts no `entities`. */
+const namesRoles = (
+  entities: Narrowing["entities"],
+): entities is NonNullable<Narrowing["entities"]> =>
+  entities !== undefined && Object.keys(entities).length > 0;
+
 const narrows = ({ window, entities, facets }: Narrowing): boolean =>
-  window !== undefined || entities !== undefined || facets !== undefined;
+  window !== undefined || namesRoles(entities) || facets !== undefined;
 
 /** The `POST /datasets` body that builds a spec's latest version. It always carries the
  *  spec's unmodified definition, so a spec the server has not registered still builds. */
@@ -213,7 +219,7 @@ function buildBody(spec: SpecLike, rendering: Rendering, scope?: Record<string, 
 }
 
 const deadlineOf = (transport: Transport, timeout: number | undefined): number =>
-  transport.deadline({ timeout: timeout ?? DEFAULT_FETCH_TIMEOUT_MS });
+  transport.deadlineAfter(timeout ?? DEFAULT_FETCH_TIMEOUT_MS);
 
 /** The SHA-256 digest of bytes, as the server names stored objects. */
 async function digestOf(data: Uint8Array): Promise<string> {
@@ -223,8 +229,11 @@ async function digestOf(data: Uint8Array): Promise<string> {
 
 /**
  * Downloads a file through the route that redirects to it, checked against its digest. The
- * transport fetches the signed URL bare and asks the route again when that fetch fails; bytes
- * that do not hash to the digest ask the route once more.
+ * route ask is an API request and retries as one; its failure raises. The signed URL is fetched
+ * once, bare. A retryable failure of that fetch, or bytes that do not hash to the digest, ask the
+ * route again and fetch once more, with no wait of their own, and a second failure raises:
+ * `download_failed` for a refused signed URL, `digest_mismatch` for the bytes. Each request reads
+ * until the fetch's deadline.
  */
 async function download(
   transport: Transport,
@@ -232,20 +241,29 @@ async function download(
   digest: string,
   { deadline, signal }: Wait,
 ): Promise<Uint8Array> {
-  let found = "";
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const data = await transport.download({
-      ...target,
-      deadline,
-      ...(signal === undefined ? {} : { signal }),
-    });
-    found = await digestOf(data);
+  const call = { timeout: Infinity, deadline, ...(signal === undefined ? {} : { signal }) };
+  let failure: DfoError | undefined;
+  for (let round = 0; round < 2; round += 1) {
+    const located = await transport.locate({ ...target, ...call });
+    let data: Uint8Array;
+    if (located.data === undefined) {
+      try {
+        data = await transport.fetchSigned(located.signed, call);
+      } catch (error) {
+        if (!(error instanceof DfoError) || !error.retryable) throw error;
+        failure = error;
+        continue;
+      }
+    } else {
+      data = located.data;
+    }
+    const found = await digestOf(data);
     if (found === digest) return data;
+    failure = clientError(DIGEST_MISMATCH, {
+      detail: `The file at ${transport.url(target).pathname} hashes to ${found}, not ${digest}.`,
+    });
   }
-  throw clientError(DIGEST_MISMATCH, {
-    detail: `The file at ${transport.url(target).pathname} hashes to ${found}, not ${digest}.`,
-    retryable: true,
-  });
+  throw failure!;
 }
 
 function definitionOf(manifest: Manifest): Readonly<Record<string, unknown>> {
@@ -564,20 +582,21 @@ export function mint(
   spec: SpecInput,
   options: MintOptions = {},
 ): Promise<Operation> {
-  const { layout = "long", strict = false, signal, onProgress } = options;
+  const { layout = "long", signal, onProgress } = options;
   const rendering = renderingFor(layout);
   const finishing = {
     parts: [],
     posted: { spec, entityGroups: spec.resolved?.entity_groups },
     sentence: spec.resolved?.rendered_sentence,
     rendering,
-    strict,
+    strict: false,
   };
+  // The POST reads for up to the build's own limit; `result` sets the wait's deadline.
   return startOperation(
     transport,
     buildBody(spec, rendering),
     datasetFinisher(transport, finishing, layout),
-    { deadline: transport.deadline(), signal, onProgress },
+    { deadline: Infinity, signal, onProgress },
   );
 }
 
@@ -593,11 +612,11 @@ export function resume(
   operationId: string,
   options: ResumeOptions = {},
 ): Promise<Operation> {
-  const { layout = "long", strict = false, signal, onProgress } = options;
+  const { layout = "long", signal, onProgress } = options;
   const rendering = renderingFor(layout);
-  const finishing = { parts: [], posted: undefined, sentence: undefined, rendering, strict };
+  const finishing = { parts: [], posted: undefined, sentence: undefined, rendering, strict: false };
   return resumeOperation(transport, operationId, datasetFinisher(transport, finishing, layout), {
-    deadline: transport.deadline(),
+    deadline: Infinity,
     signal,
     onProgress,
   });
@@ -770,8 +789,13 @@ async function storedFile(
   }
 }
 
-/** The newest stored version of a spec, which the versions route lists alone at `limit=1` since
- *  it lists versions newest first, or null when it lists none or does not know the spec. */
+/**
+ * The newest stored version of a spec, which the versions route lists alone at `limit=1` since
+ * it lists versions newest first, or null when it lists none or does not know the spec.
+ *
+ * @throws {ContractError} The body is not a `DatasetVersionsPage`: no `versions` list, or a
+ *   listed version with no `content_version`.
+ */
 async function newestVersion(
   transport: Transport,
   specId: string,
@@ -789,9 +813,22 @@ async function newestVersion(
     throw error;
   }
   const versions = isRecord(body) ? body["versions"] : undefined;
-  const listed: unknown[] = Array.isArray(versions) ? versions : [];
-  const newest = isRecord(listed[0]) ? listed[0]["content_version"] : undefined;
-  return typeof newest === "string" ? newest : null;
+  if (!Array.isArray(versions)) {
+    throw clientError("contract_violation", {
+      detail: `The versions of ${specId} are not a DatasetVersionsPage: it has no versions list.`,
+      pointer: "/versions",
+    });
+  }
+  if (versions.length === 0) return null;
+  const [first] = versions as unknown[];
+  const newest = isRecord(first) ? first["content_version"] : undefined;
+  if (typeof newest !== "string") {
+    throw clientError("contract_violation", {
+      detail: `The newest version of ${specId} has no content_version.`,
+      pointer: "/versions/0/content_version",
+    });
+  }
+  return newest;
 }
 
 function unavailable(

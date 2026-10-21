@@ -25,12 +25,30 @@ export class DataWarning extends DfoWarning {
   }
 }
 
-for (const [name, warningClass] of Object.entries({
-  DfoWarning,
-  DfoDeprecationWarning,
-  DataWarning,
-})) {
+const WARNING_CLASSES = { DfoWarning, DfoDeprecationWarning, DataWarning };
+
+for (const [name, warningClass] of Object.entries(WARNING_CLASSES)) {
   Object.defineProperty(warningClass.prototype, "name", { value: name, configurable: true });
+}
+
+/** The code and class of each warning the client issues itself. A `DataWarning` carries a
+ *  manifest warning's code and a `SearchWarning` the code of how a reading differs, both the
+ *  server's, so neither is listed. */
+export const CLIENT_WARNING_CODES = {
+  key_checksum_mismatch: "DfoWarning",
+  key_not_base62: "DfoWarning",
+  key_unknown_prefix: "DfoWarning",
+  route_deprecated: "DfoDeprecationWarning",
+  server_warning: "DfoWarning",
+} as const satisfies Record<string, "DfoWarning" | "DfoDeprecationWarning">;
+
+/** A code the client sets on a warning it issues itself. */
+export type ClientWarningCode = keyof typeof CLIENT_WARNING_CODES;
+
+/** Builds a warning the client issues itself, of the class `CLIENT_WARNING_CODES` gives its
+ *  code. */
+export function clientWarning(code: ClientWarningCode, message: string): DfoWarning {
+  return new WARNING_CLASSES[CLIENT_WARNING_CODES[code]](code, message);
 }
 
 /** Receives each warning the client emits. */

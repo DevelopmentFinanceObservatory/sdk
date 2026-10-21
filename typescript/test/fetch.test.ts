@@ -11,7 +11,9 @@ import { Transport } from "../src/transport.ts";
 import { DataWarning } from "../src/warnings.ts";
 import type { Spec } from "../src/wire.ts";
 import type { DfoWarning } from "../src/warnings.ts";
+import { ServerError } from "../src/errors.ts";
 import { NO_EXCHANGES, replay, scenario, stepOf } from "./replay.ts";
+import type { Exchange } from "./replay.ts";
 import { contractJson, json, mockFetch, problem } from "./support.ts";
 
 describe("a fetched spec's ref", () => {
@@ -140,6 +142,12 @@ describe("a fetch's entities", () => {
       { window: { kind: "latest" } },
       { origin: EU, destination: WEST },
     ],
+    [
+      "post no entities for a map that names no role",
+      { window: "latest", entities: {} },
+      { window: { kind: "latest" } },
+      { origin: EU, destination: WEST },
+    ],
   ];
   for (const [name, options, scope, groups] of rows) {
     test(name, async () => {
@@ -167,6 +175,88 @@ describe("a fetch's entities", () => {
       assert.deepEqual(resubmit.input.entries[0]!.entity_groups, groups);
     });
   }
+});
+
+describe("a download", async () => {
+  // fetch-ref-signed-url-refused: the snapshot, then the files route and the signed URL, whose
+  // first answer is a 403, then both again.
+  const refused = await scenario("fetch-ref-signed-url-refused");
+  const [, , firstSigned, , secondSigned] = refused.exchanges;
+  const forbidden = firstSigned!.response;
+  const wrongBytes = { status: 200, json: "not the stored file" };
+  const rows: [string, Exchange["response"], Exchange["response"], string][] = [
+    ["a signed URL refused twice raises download_failed", forbidden, forbidden, "download_failed"],
+    [
+      "a refused signed URL and then bytes of another digest raise digest_mismatch",
+      forbidden,
+      wrongBytes,
+      "digest_mismatch",
+    ],
+    [
+      "bytes of another digest twice raise digest_mismatch",
+      wrongBytes,
+      wrongBytes,
+      "digest_mismatch",
+    ],
+  ];
+  for (const [name, first, second, code] of rows) {
+    test(`asks the files route twice and waits for nothing: ${name}`, async () => {
+      const record = structuredClone(refused);
+      record.exchanges[2] = { ...firstSigned!, response: first };
+      record.exchanges[4] = { ...secondSigned!, response: second };
+      const { transport, waits, remaining } = replay(record);
+      const ref = DatasetRef.fromJSON(stepOf(record, 0, "fetch").ref);
+      const error = await fetchDataset(transport, ref).catch((e: unknown) => e);
+      assert.ok(error instanceof ServerError);
+      assert.equal(error.code, code);
+      assert.equal(error.retryable, code === "download_failed");
+      assert.deepEqual(remaining(), []);
+      assert.deepEqual(waits, []);
+    });
+  }
+
+  test("raises a files route failure after its retries, with no second round", async () => {
+    const record = structuredClone(refused);
+    const route = record.exchanges[1]!;
+    const unavailable = {
+      status: 503,
+      headers: { "content-type": "application/problem+json" },
+      json: {
+        type: "/codes/upstream_error",
+        title: "Down",
+        status: 503,
+        code: "upstream_error",
+        detail: "Down.",
+        retryable: true,
+      },
+    };
+    record.exchanges = [
+      record.exchanges[0]!,
+      ...[0, 1, 2].map(() => ({ ...route, response: unavailable })),
+    ];
+    const { transport, waits, remaining } = replay(record);
+    const ref = DatasetRef.fromJSON(stepOf(record, 0, "fetch").ref);
+    await assert.rejects(fetchDataset(transport, ref), {
+      name: "ServerError",
+      code: "upstream_error",
+    });
+    assert.deepEqual(remaining(), []);
+    assert.deepEqual(waits, [500, 1000]);
+  });
+
+  test("refuses an artifact URL on another host before any download", async () => {
+    const record = structuredClone(await scenario("fetch-spec-known-sentence"));
+    const manifest = record.exchanges[0]!.response.json as { artifacts: { url: string }[] };
+    for (const artifact of manifest.artifacts) artifact.url = "https://elsewhere.example/file";
+    record.exchanges = record.exchanges.slice(0, 1);
+    const { spec } = stepOf(record, 0, "fetch");
+    const { transport, remaining } = replay(record);
+    await assert.rejects(fetchDataset(transport, spec!), {
+      name: "ContractError",
+      code: "contract_violation",
+    });
+    assert.deepEqual(remaining(), []);
+  });
 });
 
 describe("a mint", () => {

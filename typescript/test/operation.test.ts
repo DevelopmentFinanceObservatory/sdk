@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import { envFrom } from "../src/env.ts";
+import { ContractError } from "../src/errors.ts";
 import type { VersionUnavailableError } from "../src/errors.ts";
 import { fetchDataset, mint, resume } from "../src/fetch.ts";
 import type { ProgressEvent } from "../src/operation.ts";
@@ -12,7 +13,7 @@ import { json, mockFetch, problem } from "./support.ts";
 
 const BASE = "https://api.example/api";
 const OP = `op_${"a".repeat(64)}`;
-const SIGNED = "https://storage.example/object?X-Goog-Signature=s";
+const SIGNED = "https://storage.googleapis.com/bucket/object?X-Goog-Signature=redacted";
 
 /** The build of fetch-spec-known-sentence: its spec, manifest, Parquet body and the Search
  *  answer that resolves its identity (from fetch-spec-narrowed, which built the same spec). */
@@ -27,10 +28,11 @@ async function built() {
   };
 }
 
-function client(fetch: typeof globalThis.fetch) {
+function client(fetch: typeof globalThis.fetch, timeout?: number) {
   let clock = 0;
   const waits: number[] = [];
   const transport = new Transport({
+    ...(timeout === undefined ? {} : { timeout }),
     baseUrl: BASE,
     apiKey: false,
     env: envFrom({}),
@@ -50,6 +52,22 @@ function client(fetch: typeof globalThis.fetch) {
 const operation = (status: string, extra: Record<string, unknown> = {}) => ({
   operation: { operation_id: OP, status, poll: `/api/datasets/operations/${OP}`, ...extra },
 });
+
+/** A response that arrives after `ms` of real time, or rejects when the request aborts first. */
+const answerAfter =
+  (ms: number, respond: () => Response) =>
+  (_request: unknown, init: RequestInit): Promise<Response> =>
+    new Promise((resolve, reject) => {
+      // AbortSignal.timeout does not hold the event loop open; this timer stands in for the
+      // socket a real request holds.
+      const socket = setTimeout(() => {
+        resolve(respond());
+      }, ms);
+      init.signal?.addEventListener("abort", () => {
+        clearTimeout(socket);
+        reject(init.signal?.reason);
+      });
+    });
 
 const download = (parquet: Uint8Array) => [
   () => new Response(null, { status: 302, headers: { location: SIGNED } }),
@@ -133,6 +151,55 @@ describe("a long build", () => {
     assert.deepEqual(waits, [1000, 5000, 7000, 1000]);
   });
 
+  test("reads a mint's POST past the client's timeout", async () => {
+    const { spec } = await built();
+    const { fetch } = mockFetch(
+      answerAfter(60, json(operation("pending", { retry_after_ms: 1000 }), 202)),
+    );
+    const op = await mint(client(fetch, 20).transport, spec);
+    assert.equal(op.operationId, OP);
+  });
+
+  test("spends a retry on a poll attempt that runs past the client's timeout", async () => {
+    const { spec, manifest, parquet } = await built();
+    const { fetch, seen } = mockFetch(
+      json(operation("pending", { retry_after_ms: 1000 }), 202),
+      answerAfter(1_000, json(operation("running"))),
+      json({ ...operation("done"), manifest }),
+      ...download(parquet),
+    );
+    const dataset = await (await mint(client(fetch, 20).transport, spec)).result();
+    assert.equal(dataset.rows, 4);
+    assert.equal(seen.length, 5);
+  });
+
+  for (const [header, waits] of [
+    [{ "retry-after": "3" }, [3000]],
+    [{}, [500]],
+  ] as const) {
+    test(`waits ${waits[0]} ms before posting a cut-off build again`, async () => {
+      const { spec, manifest, parquet } = await built();
+      const { fetch } = mockFetch(
+        problem({ code: "timeout", status: 504, retryable: true }, header),
+        json(manifest),
+        ...download(parquet),
+      );
+      const { transport, waits: waited } = client(fetch);
+      await fetchDataset(transport, spec);
+      assert.deepEqual(waited, waits);
+    });
+  }
+
+  test("raises operation_failed for a failed operation with no error, with the header's trace id", async () => {
+    const { fetch } = mockFetch(json(operation("failed"), 200, { "x-dfo-trace-id": "trace-op" }));
+    const op = await resume(client(fetch).transport, OP);
+    await assert.rejects(op.result(), {
+      name: "ServerError",
+      code: "operation_failed",
+      traceId: "trace-op",
+    });
+  });
+
   test("waits a refused build's Retry-After before posting it again", async () => {
     const { spec, manifest, parquet } = await built();
     const { fetch, seen } = mockFetch(
@@ -144,7 +211,7 @@ describe("a long build", () => {
     const { transport, waits } = client(fetch);
     const dataset = await fetchDataset(transport, spec);
     assert.equal(dataset.rows, 4);
-    assert.deepEqual(waits, [7000, 2000]);
+    assert.deepEqual(waits, [7000, 1000]);
     assert.equal(seen[1]!.body, seen[0]!.body);
   });
 
@@ -275,6 +342,41 @@ describe("a stored version's lookup order", () => {
     });
     assert.equal(seen[2]!.url, `${version}/file?format=parquet&bundle=false`);
   });
+
+  const page = (versions: unknown) => ({
+    schema_version: 1,
+    spec_id: "spec_x",
+    versions,
+    next_cursor: null,
+    complete: true,
+  });
+  for (const [name, body, outcome] of [
+    ["lists none", page([]), null],
+    ["holds no versions list", { spec_id: "spec_x" }, "/versions"],
+    [
+      "lists a version with no content_version",
+      page([{ rendering: "plain" }]),
+      "/versions/0/content_version",
+    ],
+  ] as const) {
+    test(`reads a versions page that ${name}`, async () => {
+      const { ref } = await stored();
+      const { fetch } = mockFetch(
+        expired,
+        problem({ code: "spec_not_found", status: 404 }),
+        json(body),
+      );
+      const error = await fetchDataset(client(fetch).transport, ref).catch((e: unknown) => e);
+      if (outcome === null) {
+        assert.ok(error instanceof Error && error.name === "VersionUnavailableError");
+        assert.equal((error as VersionUnavailableError).newestVersion, null);
+      } else {
+        assert.ok(error instanceof ContractError);
+        assert.equal(error.code, "contract_violation");
+        assert.equal(error.pointer, outcome);
+      }
+    });
+  }
 
   test("names the newest version from the versions route when the build is refused", async () => {
     const { ref, member } = await stored();

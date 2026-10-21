@@ -31,7 +31,7 @@ const chosen = await gni.choose(0);
 const data = await chosen.fetch();
 ```
 
-Each choice makes one Search request with no model call, and the answer it returns is Search's: its sentence, with any "Assumed: ..." clause, and its assumptions. Picking a reading echoes the assumptions Search stated for it, so the picked answer states what that reading assumed. `candidate.fetch()` asks Search for that one reading in the same way, then builds it.
+Each choice makes one Search request, and the answer it returns is Search's: its sentence, with any "Assumed: ..." clause, and its assumptions. Picking a reading needs no model call; a place choice, and any other part restated beside it, asks Search to bind it again. Each candidate's `assumptions` lists what Search assumed for that reading, and picking it echoes them, so the picked answer states what that reading assumed. `candidate.fetch()` asks Search for that one reading in the same way, then builds it.
 
 `dataset.ref` names the exact versions the dataset holds. `JSON.stringify(ref)` writes the format both DFO clients read, and `client.fetch(ref)` returns those versions again:
 
@@ -42,7 +42,7 @@ const again = await client.fetch(DatasetRef.fromJSON(JSON.parse(saved)));
 
 `client.fetch(spec, { window: [2020, 2023] })` narrows a spec, and `client.mint(spec)` starts a long build that `client.operation(id)` resumes from another process.
 
-`await dataset.bytes()` returns one Parquet file. A one-member dataset gives the file the server built; several members stack into one table, `part` first, whose key-value metadata carries the sentence, citation, sources, licence and ref under `dfo.*` keys, the file Python's `Dataset.save` writes. `toArrow(dataset)` from `@developmentfinance/client/arrow` builds an apache-arrow `Table`; that entry point needs the optional `apache-arrow` package.
+`await dataset.bytes()` returns one Parquet file. A one-member dataset gives the file the server built; several members stack into one table, `part` first, whose key-value metadata carries the sentence, citation, sources, licence, departures, assumptions, layout version and ref under `dfo.*` keys, the file Python's `Dataset.save` writes and `dfo.open_bundle` reads. `toArrow(dataset)` from `@developmentfinance/client/arrow` builds an apache-arrow `Table`; that entry point needs the optional `apache-arrow` package.
 
 The client also looks up names and codes:
 
@@ -55,7 +55,11 @@ const catalogue = await client.catalogue({ place: "country/NGA" });
 
 `client.request(method, path, { params, json })` reaches a route the client does not wrap, with the client's key, headers and retries. `client.withOptions({ timeout, maxRetries })` returns a client with other limits that shares this one's fetch, headers and key.
 
-The constructor takes `baseUrl`, `apiKey`, `fetch`, `timeout` (milliseconds, for lookups and `request`), `maxRetries`, `headers`, `headerProvider`, `onWarning` and `dangerouslyAllowBrowser`.
+The constructor takes `baseUrl`, `apiKey`, `fetch`, `timeout`, `maxRetries`, `headers`, `headerProvider`, `onWarning` and `dangerouslyAllowBrowser`.
+
+## Timeouts
+
+Times are in milliseconds, and `Infinity` means no limit. The client's `timeout`, 30 seconds by default, bounds one request attempt, and a failed attempt is retried up to `maxRetries` times. `client.search(question, { timeout })`, 60 seconds by default, bounds the whole search, and each attempt reads until then. `client.fetch(target, { timeout })` and `operation.result({ timeout })`, 30 minutes by default, bound the whole call: builds, polls and downloads, where each download reads for the time left. A build's POST, a mint's included, reads for up to 150 seconds within that. A call that runs out of time raises `DfoTimeoutError` with the code `deadline_exceeded`, even part way through a body; a long build's error names the `client.operation(id)` call that resumes it.
 
 ## Wire types
 
@@ -84,10 +88,22 @@ function describe(part: Part): string {
 
 ## Errors
 
-Every error the client raises is a `DfoError` with a `code`, the HTTP `status`, the server's `detail` and `traceId`, whether it is `retryable`, the parsed `problem` document and a `docsUrl`. `isDfoError(error)` recognises one from any copy of the package. Subclasses group codes by what the caller does next: `InvalidRequestError`, `NotFoundError`, `IncompleteAnswerError`, `DeclinedError`, `VersionUnavailableError`, `AuthenticationError`, `PermissionDeniedError`, `RateLimitError`, `QuotaExceededError`, `ServerError`, `ContractError`, `NetworkError` and `DfoTimeoutError`.
+A refusal, a failed connection, a passed deadline and a response the client cannot act on raise a `DfoError` with a `code`, the HTTP `status`, the server's `detail` and `traceId` (from the `x-dfo-trace-id` header when the body names none), whether it is `retryable`, the parsed `problem` document and a `docsUrl`. `isDfoError(error)` recognises one from any copy of the package. Subclasses group codes by what the caller does next: `InvalidRequestError`, `NotFoundError`, `IncompleteAnswerError`, `DeclinedError`, `VersionUnavailableError`, `AuthenticationError`, `PermissionDeniedError`, `RateLimitError`, `QuotaExceededError`, `ServerError`, `ContractError`, `NetworkError` and `DfoTimeoutError`.
+
+A few calls throw something else:
+
+- A `strict` fetch throws its first `SearchWarning` or `DataWarning`, each a `DfoWarning` and not a `DfoError`.
+- An aborted call rejects with the caller's `signal.reason`, untouched.
+- `new Client()` throws a `TypeError` for a relative `baseUrl` no page resolves, or a secret key in a browser page; `client.request` throws one for a path that does not start with `/`.
+- `DatasetRef.fromJSON` throws a `FormatError`, a `TypeError`, for JSON that is not a ref.
+- `dataset.memberBytes(index)` throws a `RangeError` for an index past the members.
+
+## Warnings
+
+Warnings go to `onWarning`, else `process.emitWarning`, else `console.warn`. A `Deprecation` or `Sunset` header from the server warns once per process for each distinct value as a `DfoDeprecationWarning`, and an `x-dfo-warning` header once per message. A fetch passes a manifest's warnings above `info` as `DataWarning`s, and an answer's fetch passes one `SearchWarning` when its readings differ from the question.
 
 ## API keys
 
-The client takes the first key it finds: the `apiKey` option, the `DFO_API_KEY` environment variable, then the `default` profile (or the one `DFO_PROFILE` names) in the credentials file, which Node reads from `$DFO_CREDENTIALS_FILE`, `$XDG_CONFIG_HOME/dfo/credentials.toml` or `~/.config/dfo/credentials.toml` (`%APPDATA%\dfo\credentials.toml` on Windows). Without a key it calls the API anonymously.
+The client takes the first key it finds: the `apiKey` option, the `DFO_API_KEY` environment variable, then the `default` profile (or the one `DFO_PROFILE` names) in the credentials file, which Node reads from `$DFO_CREDENTIALS_FILE`, `$XDG_CONFIG_HOME/dfo/credentials.toml` or `~/.config/dfo/credentials.toml` (`%APPDATA%\dfo\credentials.toml` on Windows). Without a key it calls the API anonymously. An empty `DFO_API_KEY` counts as unset, while an empty `apiKey` option, or a profile whose `key` is empty, raises `AuthenticationError`.
 
 In a browser page the client refuses a secret `dfo_k_` key, which any script on the page could read, unless the caller sets `dangerouslyAllowBrowser: true`.

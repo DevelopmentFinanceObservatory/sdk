@@ -112,14 +112,18 @@ export function pick(gap: Gap, key: ChoiceKey, mention?: ChoiceKey): Candidate |
   );
 }
 
-/** The Search input a choice posts. A one-part answer posts a chosen option's query
- *  unchanged. */
+/**
+ * The Search input a choice posts. A one-part answer posts a chosen option's query unchanged.
+ *
+ * @throws {ContractError} The chosen option carries no `data_query`, or in a several-part answer
+ *   one that does not hold one part.
+ */
 export function choiceInput(
   answer: Answer,
   gap: Gap,
   chosen: Candidate | QueryOption,
 ): ParsedInput | DatasetResubmitInput {
-  if (answer.parts.length === 1 && chosen.kind === "query") return chosen.dataQuery;
+  if (answer.parts.length === 1 && chosen.kind === "query") return queryOf(chosen);
   return {
     kind: "dataset_resubmit",
     entries: answer.parts.map((part, index) =>
@@ -134,9 +138,17 @@ export function pickedEntry(part: Part, candidate: Candidate): ResubmitIdentityE
   return identityEntry(part, candidate.spec);
 }
 
+/** The query a chosen option posts. */
+function queryOf(option: QueryOption): ParsedInput {
+  if (option.dataQuery !== null) return option.dataQuery;
+  throw clientError("contract_violation", {
+    detail: `The option ${JSON.stringify(option.label)} carries no data_query to post back.`,
+  });
+}
+
 function chosenEntry(part: Part, chosen: Candidate | QueryOption): Entry {
   if (chosen.kind === "candidate") return pickedEntry(part, chosen);
-  const parts = chosen.dataQuery.parts as ParsedInput["parts"] | undefined;
+  const parts = queryOf(chosen).parts as ParsedInput["parts"] | undefined;
   if (!Array.isArray(parts) || parts.length !== 1) {
     throw clientError("contract_violation", {
       detail: `The option ${JSON.stringify(chosen.label)} does not carry a one-part parsed input.`,

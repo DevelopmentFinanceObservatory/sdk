@@ -122,18 +122,45 @@ describe("IncompleteAnswerError", () => {
   });
 });
 
+const ASSUMED = {
+  kind: "declared_default",
+  binding_ref: "how:dac2aAidType",
+  text: "official development assistance",
+  refs: ["DAC2aAidType206"],
+};
+
 describe("gaps", () => {
-  test("a candidate splits its sentence into label, source and unit", () => {
-    const [candidate] = answerOf("answer-candidates-choose-fetch").gaps[0]!.options;
-    assert.ok(candidate?.kind === "candidate");
+  test("a candidate splits its sentence into label, source and unit, and carries its assumptions", () => {
+    const edited = body("answer-candidates-choose-fetch");
+    const [part] = edited["parts"] as CandidatesPart[];
+    const [first, second] = part!.candidates.specs;
+    part!.reading_assumptions = { [first!.spec_id]: [ASSUMED] };
+    const [candidate, other] = answerFromBody(edited, offline(), null).gaps[0]!.options;
+    assert.ok(candidate?.kind === "candidate" && other?.kind === "candidate");
     assert.deepEqual(
-      { label: candidate.label, source: candidate.source, unit: candidate.unit },
+      {
+        label: candidate.label,
+        source: candidate.source,
+        unit: candidate.unit,
+        assumptions: candidate.assumptions,
+      },
       {
         label: "Germany's primary income for gross of fixed capital consumption, 2015 to 2022.",
         source: "OECD DAC1",
         unit: "Current US dollars",
+        assumptions: [ASSUMED],
       },
     );
+    assert.equal(other.spec.spec_id, second!.spec_id);
+    assert.deepEqual(other.assumptions, []);
+    assert.deepEqual(candidate.unbound().assumptions, [ASSUMED]);
+  });
+
+  test("a no_data part with an empty message takes its reason's text", () => {
+    const edited = body("answer-mixed-fetch-raises");
+    const part = (edited["parts"] as { no_data?: { message: string; reason: string } }[])[1]!;
+    part.no_data!.message = "";
+    assert.equal(answerFromBody(edited, offline(), null).gaps[0]?.message, part.no_data!.reason);
   });
 
   test("Search's time limit makes every no_data part a timed_out gap", () => {
@@ -168,6 +195,21 @@ describe("choose", () => {
       return true;
     });
   });
+
+  for (const name of ["choose-place-one-part", "choose-place-two-parts"]) {
+    test(`refuses an option with no data_query in ${name}, with no request`, async () => {
+      const edited = body(name);
+      const parts = edited["parts"] as { no_data?: { options: Record<string, unknown>[] } }[];
+      const part = parts.find((candidate) => candidate.no_data !== undefined)!;
+      for (const option of part.no_data!.options) delete option["data_query"];
+      const answer = answerFromBody(edited, offline(), null);
+      const index = parts.indexOf(part);
+      await assert.rejects(answer.choose(index, 0), {
+        name: "ContractError",
+        code: "contract_violation",
+      });
+    });
+  }
 
   test("refuses an answer with nothing to choose and an option it does not offer", async () => {
     await assert.rejects(answerOf("answer-definite-fetch").choose(0), /No part of this answer/);
@@ -428,6 +470,84 @@ describe("reading a Search response", () => {
     const edited = body("answer-definite-fetch");
     delete (edited["parts"] as { spec: Record<string, unknown> }[])[0]!.spec["spec_id"];
     assert.throws(() => answerFromBody(edited, offline(), null), ContractError);
+  });
+
+  type Edit = (parts: Record<string, unknown>[]) => void;
+  const unlike = "spec_00000000000000000000000000000000";
+  const refusals: [string, string, Edit, string][] = [
+    [
+      "a part with no status",
+      "answer-definite-fetch",
+      (p) => delete p[0]!["status"],
+      "/parts/0/status",
+    ],
+    [
+      "a part whose status is not a string",
+      "answer-definite-fetch",
+      (p) => (p[0]!["status"] = 5),
+      "/parts/0/status",
+    ],
+    [
+      "a definite spec whose definition names another spec",
+      "answer-definite-fetch",
+      (p) =>
+        ((p[0]!["spec"] as Record<string, Record<string, unknown>>)["definition"]!["spec_id"] =
+          unlike),
+      "/parts/0/spec/definition/spec_id",
+    ],
+    [
+      "a candidate whose definition names another spec",
+      "answer-candidates-choose-fetch",
+      (p) => ((p[0] as unknown as CandidatesPart).candidates.specs[1]!.definition.spec_id = unlike),
+      "/parts/0/candidates/specs/1/definition/spec_id",
+    ],
+  ];
+  for (const [name, scenarioName, edit, pointer] of refusals) {
+    test(`refuses ${name}`, () => {
+      const edited = body(scenarioName);
+      edit(edited["parts"] as Record<string, unknown>[]);
+      assert.throws(() => answerFromBody(edited, offline(), null), {
+        name: "ContractError",
+        code: "contract_violation",
+        pointer,
+      });
+    });
+  }
+
+  test("search bounds the whole call, each attempt reading until its deadline", async () => {
+    const answered = record("answer-definite-fetch").exchanges[0]!.response.json;
+    const slow =
+      (ms: number) =>
+      (_request: unknown, init: RequestInit): Promise<Response> =>
+        new Promise((resolve, reject) => {
+          const socket = setTimeout(() => {
+            resolve(json(answered)());
+          }, ms);
+          init.signal?.addEventListener("abort", () => {
+            clearTimeout(socket);
+            reject(init.signal?.reason);
+          });
+        });
+    // The client's 20 ms attempt timeout does not cut off a search that takes 60 ms.
+    const quick = mockFetch(slow(60));
+    const context = {
+      ...offline(),
+      transport: replay(NO_EXCHANGES, { fetch: quick.fetch, timeout: 20 }).transport,
+    };
+    assert.equal((await search(context, "q")).kind, "resolution");
+    // A search past its own timeout raises once, with no retry.
+    const late = mockFetch(slow(1_000), slow(1_000));
+    const stuck = {
+      ...offline(),
+      transport: replay(NO_EXCHANGES, { fetch: late.fetch, now: () => performance.now() })
+        .transport,
+    };
+    await assert.rejects(search(stuck, "q", { timeout: 30 }), {
+      name: "DfoTimeoutError",
+      code: "deadline_exceeded",
+      retryable: false,
+    });
+    assert.equal(late.seen.length, 1);
   });
 
   test("search posts the raw question and keeps it on the answer", async () => {

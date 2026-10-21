@@ -3,7 +3,14 @@ import { decodeRows, encodeStacked, readParquet, stackedColumns } from "./parque
 import type { ParquetFile, Row, TablePart } from "./parquet.ts";
 import { DatasetRef } from "./ref.ts";
 import type { Layout, Rendering, SpecLike } from "./ref.ts";
-import type { CitationSource, Departure, Part, RequestedOperation, WarningModel } from "./wire.ts";
+import type {
+  Assumption,
+  CitationSource,
+  Departure,
+  Part,
+  RequestedOperation,
+  WarningModel,
+} from "./wire.ts";
 
 /** The version of the provenance a stacked file carries under `dfo.*` keys, the one Python's
  *  `Dataset.save` writes. */
@@ -42,8 +49,8 @@ export type FetchedMember = {
   readonly digest: string;
   readonly rendering: Rendering;
   readonly data: Uint8Array;
-  /** The answer parts the member answers, when it came from an answer; their departures and
-   *  requested computations reach the dataset. */
+  /** The answer parts the member answers, when it came from an answer; their departures,
+   *  requested computations and assumptions reach the dataset. */
   readonly answerParts?: readonly Part[];
 };
 
@@ -139,6 +146,8 @@ export class Dataset<TMissing extends Gap = never> {
   readonly departures: readonly Departure[];
   /** Computations the question asked for, which the data leaves to the caller. */
   readonly requestedOperations: readonly RequestedOperation[];
+  /** What Search assumed to read the question, as the answer parts' sentences state it. */
+  readonly assumptions: readonly Assumption[];
   /** Whether every part of the question has a member. */
   readonly complete: boolean;
   /** The parts a partial fetch left out. */
@@ -149,10 +158,10 @@ export class Dataset<TMissing extends Gap = never> {
   /** Whether every member's version is kept without a time limit. */
   readonly pinned: boolean;
   readonly layout: Layout;
+  /** The artifact layout each member's manifest names, distinct ones joined by "; ". */
+  readonly layoutVersion: string;
   readonly #files: readonly ParquetFile[];
   readonly #data: readonly Uint8Array[];
-  /** Each member's artifact layout, as its manifest names it. */
-  readonly #layouts: readonly string[];
 
   static {
     readParts = (dataset) => dataset.#parts();
@@ -189,6 +198,19 @@ export class Dataset<TMissing extends Gap = never> {
     this.requestedOperations = Object.freeze(
       unique(answerParts.flatMap((part) => (part.operations ?? []) as RequestedOperation[])),
     );
+    // Each assumption keeps the four members both clients save, so equal ones count once.
+    this.assumptions = Object.freeze(
+      unique(
+        answerParts.flatMap((part) =>
+          ((part.assumptions ?? []) as Assumption[]).map(({ kind, binding_ref, text, refs }) => ({
+            kind,
+            binding_ref,
+            text,
+            refs: refs ?? [],
+          })),
+        ),
+      ),
+    );
     this.missing = Object.freeze([...(options.missing ?? [])]);
     this.complete = this.missing.length === 0;
     this.heldUntil = retention.heldUntil;
@@ -196,7 +218,9 @@ export class Dataset<TMissing extends Gap = never> {
     this.layout = options.layout;
     this.#data = members.map((member) => member.data.slice());
     this.#files = this.#data.map(readParquet);
-    this.#layouts = members.map((member) => artifactLayout(member, options.layout));
+    this.layoutVersion = [
+      ...new Set(members.map((member) => artifactLayout(member, options.layout))),
+    ].join("; ");
     // Reading the columns checks the members stack before the dataset is returned.
     stackedColumns(this.#parts());
   }
@@ -284,13 +308,13 @@ export class Dataset<TMissing extends Gap = never> {
             target_year: target_year ?? null,
           }),
         ),
-        assumptions: [],
+        assumptions: this.assumptions,
         complete: this.complete,
         missing: this.missing.map(savedGap),
         held_until: this.heldUntil?.toISOString().slice(0, 10) ?? null,
         pinned: this.pinned,
         stale: false,
-        layout_version: [...new Set(this.#layouts)].join("; "),
+        layout_version: this.layoutVersion,
       }),
       "dfo.ref": JSON.stringify(this.ref),
     };
