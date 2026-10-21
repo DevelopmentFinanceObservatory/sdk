@@ -8,7 +8,7 @@ export const STRICT_SCHEMAS = {
     children: { candidates: { ref: "CandidateSet" } },
   },
   DefinitePart: { required: ["status", "spec"], children: { spec: { ref: "Spec" } } },
-  DefinitionModel: { required: ["spec_id"], children: {} },
+  DefinitionModel: { required: ["spec_id", "identity"], children: {} },
   Manifest: {
     required: ["definition", "content_version", "artifacts"],
     children: {
@@ -40,10 +40,10 @@ export const STRICT_SCHEMAS = {
     },
   },
   Spec: {
-    required: ["spec_id", "definition"],
+    required: ["spec_id", "definition", "resolved"],
     children: { definition: { ref: "SpecDefinition" } },
   },
-  SpecDefinition: { required: ["spec_id"], children: {} },
+  SpecDefinition: { required: ["spec_id", "identity"], children: {} },
   Unsupported: { required: ["code"], children: {} },
   UnsupportedPart: {
     required: ["status", "unsupported"],

@@ -26,7 +26,7 @@ const KEY = "dfo_k_4f8Kq2ZtR7mWx1NcB9vLp3YhD6sGa0Ue2wanxe";
 
 /** A transport with no environment and no credentials file, so only `apiKey` supplies a key. */
 const transport = (options: TransportOptions): Transport =>
-  new Transport({ env: envFrom({}), readCredentialsFile: () => Promise.resolve(null), ...options });
+  new Transport({ env: envFrom({}), readCredentialsFile: () => null, ...options });
 
 describe("requests to the API", () => {
   test("go under the base URL's path and carry the key and User-Agent", async () => {
@@ -537,6 +537,18 @@ describe("downloads", () => {
       });
     });
   }
+
+  test("refuse a redirect with no Location, carrying the route's trace id", async () => {
+    const trace = "d".repeat(32);
+    const { fetch } = mockFetch(
+      () => new Response(null, { status: 302, headers: { "x-dfo-trace-id": trace } }),
+    );
+    await assert.rejects(transport({ fetch }).locate({ url: "/api/datasets/files/d" }), {
+      name: "ContractError",
+      code: "contract_violation",
+      traceId: trace,
+    });
+  });
 
   test("refuse a files route answering a 2xx other than 200", async () => {
     const { fetch } = mockFetch(() => new Response(null, { status: 204 }));

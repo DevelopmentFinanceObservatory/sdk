@@ -108,38 +108,50 @@ export type ResolvedKey = { source: KeySource; key: ApiKey | null };
 const toKey = (value: string | ApiKey): ApiKey =>
   value instanceof ApiKey ? value : new ApiKey(value);
 
-/**
- * Resolves the key by the lookup order in `contract/rules/README.md`: the `apiKey` argument,
- * `DFO_API_KEY`, the credentials file's profile `$DFO_PROFILE` (else `default`), then anonymous.
- * The file is read only when no earlier source wins. An empty `DFO_API_KEY` reads as unset.
- *
- * @throws {AuthenticationError} The argument is an empty key, the credentials file is invalid,
- *   `DFO_PROFILE` names a profile it lacks, or the chosen profile's key is missing or empty.
- */
-export async function resolveApiKey({
-  apiKey,
-  env = readProcessEnv,
-  readCredentialsFile = platformCredentialsFile,
-}: {
+type KeyLookup = {
   apiKey?: ApiKeyOption | undefined;
   env?: EnvReader | undefined;
   readCredentialsFile?: CredentialsFileReader | undefined;
-}): Promise<ResolvedKey> {
-  if (apiKey === false) return { source: "anonymous", key: null };
-  if (apiKey !== undefined) {
-    const key = toKey(typeof apiKey === "function" ? await apiKey() : apiKey);
-    if (key.reveal() === "") {
-      throw clientError("key_empty", {
-        detail: "The apiKey argument is empty; pass a key, or false for anonymous use.",
-      });
-    }
-    return { source: "argument", key };
+};
+
+/** The key the `apiKey` argument gives. */
+function argumentKey(value: string | ApiKey): ResolvedKey {
+  const key = toKey(value);
+  if (key.reveal() === "") {
+    throw clientError("key_empty", {
+      detail: "The apiKey argument is empty; pass a key, or false for anonymous use.",
+    });
   }
+  return { source: "argument", key };
+}
+
+/**
+ * @internal Resolves the key by the lookup order in `contract/rules/README.md`, at once: the
+ * `apiKey` argument, `DFO_API_KEY`, the credentials file's profile `$DFO_PROFILE` (else
+ * `default`), then anonymous. A key function is called here, and only one that returns a promise
+ * makes the result a promise. The file is read only when no earlier source wins. An empty
+ * `DFO_API_KEY` reads as unset.
+ *
+ * @throws {AuthenticationError} As `resolveApiKey` raises it, synchronously.
+ */
+export function lookUpApiKey({
+  apiKey,
+  env = readProcessEnv,
+  readCredentialsFile = platformCredentialsFile,
+}: KeyLookup): ResolvedKey | Promise<ResolvedKey> {
+  if (apiKey === false) return { source: "anonymous", key: null };
+  if (typeof apiKey === "function") {
+    const value = apiKey();
+    return typeof value === "string" || value instanceof ApiKey
+      ? argumentKey(value)
+      : Promise.resolve(value).then(argumentKey);
+  }
+  if (apiKey !== undefined) return argumentKey(apiKey);
 
   const fromEnv = env("DFO_API_KEY");
   if (fromEnv !== undefined) return { source: "environment", key: new ApiKey(fromEnv) };
 
-  const text = await readCredentialsFile(env);
+  const text = readCredentialsFile(env);
   if (text === null) return { source: "anonymous", key: null };
   const parsed = parseCredentialsFile(text);
   if (!parsed.ok) {
@@ -163,6 +175,18 @@ export async function resolveApiKey({
     });
   }
   return { source: "credentials_file", key: new ApiKey(key) };
+}
+
+/**
+ * Resolves the key by the lookup order in `contract/rules/README.md`: the `apiKey` argument,
+ * `DFO_API_KEY`, the credentials file's profile `$DFO_PROFILE` (else `default`), then anonymous.
+ * The file is read only when no earlier source wins. An empty `DFO_API_KEY` reads as unset.
+ *
+ * @throws {AuthenticationError} The argument is an empty key, the credentials file is invalid,
+ *   `DFO_PROFILE` names a profile it lacks, or the chosen profile's key is missing or empty.
+ */
+export async function resolveApiKey(lookup: KeyLookup): Promise<ResolvedKey> {
+  return lookUpApiKey(lookup);
 }
 
 /** True when the code runs in a browser page. */

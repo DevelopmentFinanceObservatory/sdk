@@ -16,6 +16,7 @@ import { CODE_GAP_KINDS } from "./generated/actions.ts";
 import type { GAP_KINDS } from "./generated/actions.ts";
 import { isKnownPart } from "./parts.ts";
 import { checkStrict } from "./strict.ts";
+import { describing } from "./trace.ts";
 import type { Transport } from "./transport.ts";
 import { DfoWarning, emitWarning } from "./warnings.ts";
 import type { WarningHandler } from "./warnings.ts";
@@ -178,6 +179,7 @@ type AnswerInit = {
   reason?: string | null;
   warnings?: readonly Warning[];
   timedOut?: boolean;
+  traceId?: string | null;
   raw: unknown;
   context: AnswerContext;
 };
@@ -207,6 +209,8 @@ export class Answer {
   readonly warnings: readonly Warning[];
   /** Whether Search stopped at its time limit. */
   readonly timedOut: boolean;
+  /** The Search response's trace id, to quote when reporting it. */
+  readonly traceId: string | null;
   /** The decoded response body, untouched. */
   readonly raw: unknown;
   readonly #context: AnswerContext;
@@ -221,6 +225,7 @@ export class Answer {
     this.reason = init.reason ?? null;
     this.warnings = init.warnings ?? [];
     this.timedOut = init.timedOut ?? false;
+    this.traceId = init.traceId ?? null;
     this.raw = init.raw;
     this.#context = init.context;
     const bind =
@@ -254,8 +259,9 @@ export class Answer {
    * sentence and assumptions are Search's.
    *
    * @throws {InvalidRequestError} No part, or more than one, awaits a choice; the part or option
-   *   is unknown; or the part offers no options.
-   * @throws {ContractError} The chosen option carries no one-part `data_query`.
+   *   is unknown; the part offers no options; or a part cannot be posted back.
+   * @throws {ContractError} The chosen option carries no one-part `data_query`; it carries the
+   *   answer's trace id.
    */
   choose(option: ChoiceKey, options?: SearchOptions): Promise<Answer>;
   choose(part: ChoiceKey, option: ChoiceKey, options?: SearchOptions): Promise<Answer>;
@@ -265,10 +271,13 @@ export class Answer {
     third?: SearchOptions,
   ): Promise<Answer> {
     const named = typeof second === "number" || typeof second === "string";
-    const gap = named ? gapNamed(this, first) : onlyChoice(this);
-    const chosen = pick(gap, named ? second : first, named ? first : undefined);
+    const input = describing(this.traceId, () => {
+      const gap = named ? gapNamed(this, first) : onlyChoice(this);
+      const chosen = pick(gap, named ? second : first, named ? first : undefined);
+      return choiceInput(this, gap, chosen);
+    });
     const options = (named ? third : second) ?? {};
-    return resolveAnswer(this.#context, choiceInput(this, gap, chosen), {
+    return resolveAnswer(this.#context, input, {
       ...options,
       question: this.question,
     });
@@ -288,6 +297,7 @@ export class Answer {
     if (this.kind !== "resolution") {
       throw clientError("answer_declined", {
         detail: declinedText(this.kind, this.reason),
+        traceId: this.traceId,
       });
     }
     const { partial, ...fetchOptions } = options;
@@ -300,6 +310,7 @@ export class Answer {
       const warning = new SearchWarning(
         hints.length === 1 ? hints[0]!.code : null,
         `Search's reading differs from your question:\n  ${hints.map((h) => h.line).join("\n  ")}`,
+        this.traceId,
       );
       if (options.strict === true) throw warning;
       (this.#context.onWarning ?? emitWarning)(warning);
@@ -315,6 +326,7 @@ export class Answer {
   incompleteError(): IncompleteAnswerError {
     return clientError("answer_incomplete", {
       detail: incompleteMessage(this),
+      traceId: this.traceId,
       answer: this,
       gaps: this.gaps.map(unboundGap),
     });
@@ -340,13 +352,15 @@ export async function resolveAnswer(
     deadline: transport.deadlineAfter(options.timeout ?? SEARCH_TIMEOUT_MS),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
-  return answerFromBody(response.body, context, options.question);
+  const { body, traceId } = response;
+  return describing(traceId, () => answerFromBody(body, context, options.question, traceId));
 }
 
 const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
 
 /**
- * Reads a decoded Search response into an answer.
+ * Reads a decoded Search response into an answer; `traceId` is the trace id of the response
+ * the body came from.
  *
  * @throws {ContractError} The body is not an object, its kind is unknown, a member the client
  *   acts on is missing, a part has no string `status`, or a spec's `definition.spec_id` is not
@@ -356,6 +370,7 @@ export function answerFromBody(
   body: unknown,
   context: AnswerContext,
   question: string | null,
+  traceId: string | null = null,
 ): Answer {
   if (!isRecord(body)) {
     throw clientError("contract_violation", {
@@ -375,6 +390,7 @@ export function answerFromBody(
       question,
       reason: kind === "declined" ? text(body["reason"]) : null,
       warnings,
+      traceId,
       raw: body,
       context,
     });
@@ -417,6 +433,7 @@ export function answerFromBody(
     question,
     warnings,
     timedOut: diagnostics["timed_out"] === true,
+    traceId,
     raw: body,
     context,
   });
@@ -476,14 +493,14 @@ export function definiteParts(parts: readonly Part[]): DefinitePart[] {
 }
 
 /** One member per distinct `spec_id`, in query order, with the first part's spec; folded parts
- *  share their spec's member. Each part is named by its variable text, else its spec's
- *  sentence, else its `spec_id`. */
+ *  share their spec's member, which names each of them that has variable text. A part without
+ *  any names nothing. */
 function membersOf(parts: readonly Part[]): (MemberRequest & { readonly spec: Spec })[] {
   const grouped = new Map<string, { spec: Spec; parts: string[]; answerParts: Part[] }>();
   for (const part of definiteParts(parts)) {
     const { spec } = part;
     const entry = grouped.get(spec.spec_id) ?? { spec, parts: [], answerParts: [] };
-    entry.parts.push(part.variable_text || spec.resolved.rendered_sentence || spec.spec_id);
+    if (part.variable_text) entry.parts.push(part.variable_text);
     entry.answerParts.push(part);
     grouped.set(spec.spec_id, entry);
   }

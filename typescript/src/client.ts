@@ -77,8 +77,10 @@ export class Client {
   }
 
   /**
-   * Builds the client. The key resolves on the first call.
+   * Builds the client and resolves its key, which it resolves again after a 401.
    *
+   * @throws {AuthenticationError} The `apiKey` argument is empty, or the credentials file is
+   *   invalid or lacks the profile or the key the lookup chose.
    * @throws {TypeError} The base URL is relative and no page URL resolves it, or a secret key is
    *   given in a browser page without `dangerouslyAllowBrowser`.
    */

@@ -2,15 +2,10 @@ import type { CredentialsFileReader } from "./credentials.ts";
 import type { EnvReader } from "./env.ts";
 import { clientError, DfoError, errorClassFor, isRetryableStatus, serverCode } from "./errors.ts";
 import type { DfoTimeoutError } from "./errors.ts";
-import {
-  ApiKey,
-  checkKeyFormat,
-  inBrowser,
-  refuseSecretKeyInBrowser,
-  resolveApiKey,
-} from "./keys.ts";
+import { checkKeyFormat, inBrowser, lookUpApiKey, refuseSecretKeyInBrowser } from "./keys.ts";
 import type { ApiKeyOption, ResolvedKey } from "./keys.ts";
 import type { LongBuild } from "./operation.ts";
+import { traceIdOf } from "./trace.ts";
 import { VERSION } from "./version.ts";
 import { clientWarning, emitWarning, warnOnce } from "./warnings.ts";
 import type { DfoWarning, WarningHandler } from "./warnings.ts";
@@ -96,6 +91,8 @@ export type JsonResponse = {
   url: URL;
   /** The parsed JSON body. */
   body: unknown;
+  /** The response's trace id: the body's `trace_id`, else the `x-dfo-trace-id` header. */
+  traceId: string | null;
 };
 
 /** Where a files route sends a download: the bytes it served, or the signed URL it names. */
@@ -222,8 +219,17 @@ export class Transport {
   readonly #sleep: Sleep;
   readonly #onWarning: WarningHandler;
   /** The resolved key, shared with every copy `withOptions` makes. */
-  #key: { promise?: Promise<ResolvedKey> } = {};
+  readonly #key: { promise: Promise<ResolvedKey> };
 
+  /** The key `withOptions` hands the copy it builds, which resolves none of its own. */
+  static #sharing: { promise: Promise<ResolvedKey> } | undefined;
+
+  /**
+   * @throws {AuthenticationError} The key resolves to an empty argument, or the credentials file
+   *   is invalid or lacks the profile or the key the lookup chose.
+   * @throws {TypeError} The base URL is relative and no page URL resolves it, or a secret key is
+   *   given in a browser page without `dangerouslyAllowBrowser`.
+   */
   constructor(options: TransportOptions = {}) {
     this.#options = options;
     this.baseUrl = resolveBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
@@ -233,10 +239,7 @@ export class Transport {
     this.#now = options.now ?? (() => performance.now());
     this.#sleep = options.sleep ?? defaultSleep;
     this.#onWarning = options.onWarning ?? emitWarning;
-    // A key given as a value is refused at once; any other key when it resolves.
-    if (typeof options.apiKey === "string" || options.apiKey instanceof ApiKey) {
-      refuseSecretKeyInBrowser(options.apiKey, options.dangerouslyAllowBrowser ?? false);
-    }
+    this.#key = Transport.#sharing ?? { promise: this.#resolveKey() };
   }
 
   /** The transport's clock, in milliseconds. */
@@ -267,27 +270,46 @@ export class Transport {
   /** A copy with other limits that shares this transport's fetch, headers, warning handler and
    *  resolved key. */
   withOptions(options: Pick<TransportOptions, "timeout" | "maxRetries">): Transport {
-    const copy = new Transport({
-      ...this.#options,
-      timeout: options.timeout ?? this.timeout,
-      maxRetries: options.maxRetries ?? this.maxRetries,
-    });
-    copy.#key = this.#key;
-    return copy;
+    Transport.#sharing = this.#key;
+    try {
+      return new Transport({
+        ...this.#options,
+        timeout: options.timeout ?? this.timeout,
+        maxRetries: options.maxRetries ?? this.maxRetries,
+      });
+    } finally {
+      Transport.#sharing = undefined;
+    }
   }
 
-  /** The key this transport sends, resolved on first use. */
+  /** The key this transport sends, resolved when the transport was built and again after a
+   *  401. */
   apiKey(): Promise<ResolvedKey> {
-    this.#key.promise ??= this.#resolveKey();
     return this.#key.promise;
   }
 
-  async #resolveKey(): Promise<ResolvedKey> {
-    const resolved = await resolveApiKey({
+  /**
+   * Resolves the key by the key-lookup rule, at once: a fault in the argument or the credentials
+   * file raises here. Only a key function that returns a promise settles later, and its failure
+   * rejects the first request.
+   */
+  #resolveKey(): Promise<ResolvedKey> {
+    const found = lookUpApiKey({
       apiKey: this.#options.apiKey,
       env: this.#options.env,
       readCredentialsFile: this.#options.readCredentialsFile,
     });
+    if (!(found instanceof Promise)) return Promise.resolve(this.#checkedKey(found));
+    const pending = found.then((resolved) => this.#checkedKey(resolved));
+    // A client never used must not end the process with an unhandled rejection; a request
+    // awaits `pending` itself and sees the failure.
+    pending.catch(() => undefined);
+    return pending;
+  }
+
+  /** Refuses a secret key in a browser page, and warns once for a key that fails the format
+   *  check. */
+  #checkedKey(resolved: ResolvedKey): ResolvedKey {
     refuseSecretKeyInBrowser(resolved.key, this.#options.dangerouslyAllowBrowser ?? false);
     if (resolved.key !== null) {
       const verdict = checkKeyFormat(resolved.key.reveal());
@@ -302,6 +324,23 @@ export class Transport {
           this.#onWarning,
         );
       }
+    }
+    return resolved;
+  }
+
+  /**
+   * The URL a manifest's artifact `url` names, which must sit on the API's origin, root-relative
+   * or absolute.
+   *
+   * @throws {ContractError} The URL is on another origin, the storage host's included
+   *   (`contract_violation`).
+   */
+  originUrl(url: string): URL {
+    const resolved = this.url({ url });
+    if (resolved.origin !== this.baseUrl.origin) {
+      throw clientError("contract_violation", {
+        detail: `The file URL ${url} is on ${resolved.origin}, which is not the API's origin.`,
+      });
     }
     return resolved;
   }
@@ -330,21 +369,24 @@ export class Transport {
       throw clientError("unexpected_response", {
         status: response.status,
         detail: `${this.url(options).pathname} answered with a redirect, which this call does not follow.`,
-        traceId: response.headers.get("x-dfo-trace-id"),
+        traceId: traceIdOf(response.headers),
       });
     }
     const text = new TextDecoder().decode(body);
     const url = new URL(response.url || this.url(options, options.query));
+    let parsed: unknown;
     try {
-      return { status: response.status, headers: response.headers, url, body: JSON.parse(text) };
+      parsed = JSON.parse(text);
     } catch (error) {
       throw clientError("unexpected_response", {
         status: response.status,
         detail: `The response from ${url.pathname} has no JSON body.`,
-        traceId: response.headers.get("x-dfo-trace-id"),
+        traceId: traceIdOf(response.headers),
         cause: error,
       });
     }
+    const { status, headers } = response;
+    return { status, headers, url, body: parsed, traceId: traceIdOf(headers, parsed) };
   }
 
   /** Sends a request and reads its body as bytes, raising a `DfoError` for a refusal. A
@@ -369,23 +411,19 @@ export class Transport {
    * @throws {DfoError} The route refused the request.
    */
   async locate(options: Target & CallOptions): Promise<Located> {
-    const target = this.url(options);
-    if (target.origin !== this.baseUrl.origin) {
-      throw clientError("contract_violation", {
-        detail: `The file URL is on ${target.origin}, which is not the API's origin.`,
-      });
-    }
+    const target = options.url === undefined ? this.url(options) : this.originUrl(options.url);
     const ask = { ...options, method: "GET" };
     const { response, body } = await this.#send(ask);
     if (response.type === "opaqueredirect") {
       return { data: (await this.#send(ask, "follow")).body };
     }
     if (response.status === 200) return { data: body };
+    const traceId = traceIdOf(response.headers, problemBody(response.headers, body));
     if (!REDIRECT_STATUSES.has(response.status)) {
       throw clientError("unexpected_response", {
         status: response.status,
         detail: `The files route ${target.pathname} answered HTTP ${response.status}, not a 200 or a redirect.`,
-        traceId: response.headers.get("x-dfo-trace-id"),
+        traceId,
       });
     }
     const location = response.headers.get("location");
@@ -393,12 +431,13 @@ export class Transport {
       throw clientError("contract_violation", {
         status: response.status,
         detail: `The redirect from ${target.pathname} has no Location header.`,
-        traceId: response.headers.get("x-dfo-trace-id"),
+        traceId,
       });
     }
     const signed = new URL(location, response.url || target);
     if (signed.origin !== this.baseUrl.origin && signed.origin !== STORAGE_ORIGIN) {
       throw clientError("contract_violation", {
+        traceId,
         detail:
           `The redirect from ${target.pathname} is on ${signed.origin}, which is neither the ` +
           `API's origin nor ${STORAGE_ORIGIN}.`,
@@ -577,7 +616,7 @@ export class Transport {
   #refusal(response: Response, received: Uint8Array): DfoError {
     const body = problemBody(response.headers, received);
     const { status } = response;
-    const headerTrace = response.headers.get("x-dfo-trace-id");
+    const traceId = traceIdOf(response.headers, body);
     const retryable = isRetryable(status, body);
     const retryAfter = retryAfterMs(response.headers) ?? null;
 
@@ -588,7 +627,7 @@ export class Transport {
         code: serverCode(code),
         status,
         detail: typeof body["detail"] === "string" ? body["detail"] : code,
-        traceId: typeof body["trace_id"] === "string" ? body["trace_id"] : headerTrace,
+        traceId,
         retryable,
         retryAfterMs: retryAfter,
         problem: body,
@@ -603,7 +642,7 @@ export class Transport {
         code: serverCode(code),
         status,
         detail: typeof body["detail"] === "string" ? body["detail"] : code,
-        traceId: headerTrace,
+        traceId,
         retryable,
         retryAfterMs: retryAfter,
         problem: body,
@@ -614,7 +653,7 @@ export class Transport {
     return clientError("refusal_without_code", {
       status,
       detail: `HTTP ${status} with no refusal code.`,
-      traceId: typeof problem?.["trace_id"] === "string" ? problem["trace_id"] : headerTrace,
+      traceId,
       retryable,
       retryAfterMs: retryAfter,
       problem: isRecord(body) ? body : null,

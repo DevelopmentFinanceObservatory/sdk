@@ -5,10 +5,14 @@ export class DfoWarning extends Error {
   /** The server's warning or departure code, or null for a `SearchWarning` whose readings
    *  differ from the question in several ways. */
   readonly code: string | null;
+  /** For a `DataWarning` or a `SearchWarning`, the trace id of the response that carried it,
+   *  to quote when reporting it; else null. */
+  readonly traceId: string | null;
 
-  constructor(code: string | null, message: string) {
+  constructor(code: string | null, message: string, traceId: string | null = null) {
     super(message);
     this.code = code;
+    this.traceId = traceId;
   }
 }
 
@@ -21,8 +25,8 @@ export class DataWarning extends DfoWarning {
   /** The server's severity for it. */
   readonly severity: string;
 
-  constructor(code: string, message: string, severity: string) {
-    super(code, message);
+  constructor(code: string, message: string, severity: string, traceId: string | null = null) {
+    super(code, message, traceId);
     this.severity = severity;
   }
 }

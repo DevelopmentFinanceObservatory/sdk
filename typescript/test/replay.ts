@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 
 import { envFrom } from "../src/env.ts";
@@ -93,6 +94,7 @@ export type DatasetSummary = StepSummary & {
 export type ErrorSummary = StepSummary & {
   class: string;
   code: string | null;
+  trace_id: string | null;
   newest_version?: string | null;
   long_builds?: LongBuildSummary[];
 };
@@ -170,6 +172,19 @@ export function stepOf<TOp extends Step["op"]>(
   return step as Extract<Step, { op: TOp }>;
 }
 
+/** The API origin a scenario's responses name: its recording's, or for a synthetic scenario the
+ *  recording's it derives from. */
+function recordedOrigin(record: Scenario): string {
+  let { origin } = record;
+  while (origin.kind === "synthetic") {
+    const parent = JSON.parse(
+      readFileSync(scenarioUrl(`${origin.derived_from}.json`), "utf8"),
+    ) as Scenario;
+    origin = parent.origin;
+  }
+  return new URL(origin.base_url).origin;
+}
+
 /** The URL a recorded request went to, under the replay's base URL. */
 function expectedUrl(base: URL, request: Exchange["request"]): string {
   if (request.url !== undefined) return new URL(request.url).href;
@@ -185,8 +200,9 @@ function expectedUrl(base: URL, request: Exchange["request"]): string {
  * recorded, not waited: `waits` holds every sleep, and `retryWaits` the sleeps that are no
  * long build's poll wait. A poller records each poll wait just before it sleeps it, so a sleep
  * is a poll wait when the long builds' poll waits grew since the last sleep. `remaining` lists
- * the exchanges no request reached. `options` override the transport's; a `fetch` among them
- * replaces the replay.
+ * the exchanges no request reached. A response body or header that names the recorded API origin
+ * names the replay's origin instead, as the server under the replay's base URL would. `options`
+ * override the transport's; a `fetch` among them replaces the replay.
  */
 export function replay(
   record: Scenario,
@@ -199,6 +215,9 @@ export function replay(
   urls: string[];
 } {
   const base = new URL(REPLAY_BASE_URL);
+  const recorded = record.exchanges.length === 0 ? base.origin : recordedOrigin(record);
+  const onReplayOrigin = (text: string): string =>
+    text.replaceAll(`${recorded}/`, `${base.origin}/`);
   const queue = [...record.exchanges];
   const waits: number[] = [];
   const retryWaits: number[] = [];
@@ -238,14 +257,22 @@ export function replay(
         ? await scenarioBytes(response.body_file)
         : response.json === undefined
           ? null
-          : JSON.stringify(response.json);
-    return new Response(body, { status: response.status, headers: new Headers(response.headers) });
+          : onReplayOrigin(JSON.stringify(response.json));
+    const headers = new Headers(
+      Object.fromEntries(
+        Object.entries(response.headers ?? {}).map(([name, value]) => [
+          name,
+          onReplayOrigin(value),
+        ]),
+      ),
+    );
+    return new Response(body, { status: response.status, headers });
   };
   const transport = new Transport({
     baseUrl: base.href,
     apiKey: REPLAY_KEY,
     env: envFrom({}),
-    readCredentialsFile: () => Promise.resolve(null),
+    readCredentialsFile: () => null,
     fetch,
     now: () => clock,
     sleep: (ms) => {

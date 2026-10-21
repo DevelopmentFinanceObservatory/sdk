@@ -36,7 +36,7 @@ function client(fetch: typeof globalThis.fetch, timeout?: number) {
     baseUrl: BASE,
     apiKey: false,
     env: envFrom({}),
-    readCredentialsFile: () => Promise.resolve(null),
+    readCredentialsFile: () => null,
     fetch,
     now: () => clock,
     sleep: (ms) => {

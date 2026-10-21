@@ -88,13 +88,15 @@ function describe(part: Part): string {
 
 ## Errors
 
-A refusal, a failed connection, a passed deadline and a response the client cannot act on raise a `DfoError` with a `code`, the HTTP `status`, the server's `detail` and `traceId` (from the `x-dfo-trace-id` header when the body names none), whether it is `retryable`, the parsed `problem` document and a `docsUrl`. `isDfoError(error)` recognises one from any copy of the package. Subclasses group codes by what the caller does next: `InvalidRequestError`, `NotFoundError`, `IncompleteAnswerError`, `DeclinedError`, `VersionUnavailableError`, `AuthenticationError`, `PermissionDeniedError`, `RateLimitError`, `QuotaExceededError`, `ServerError`, `ContractError`, `NetworkError` and `DfoTimeoutError`.
+A refusal, a failed connection, a passed deadline and a response the client cannot act on raise a `DfoError` with a `code`, the HTTP `status`, the server's `detail` and `traceId`, whether it is `retryable`, the parsed `problem` document and a `docsUrl`. `isDfoError(error)` recognises one from any copy of the package. Subclasses group codes by what the caller does next: `InvalidRequestError`, `NotFoundError`, `IncompleteAnswerError`, `DeclinedError`, `VersionUnavailableError`, `AuthenticationError`, `PermissionDeniedError`, `RateLimitError`, `QuotaExceededError`, `ServerError`, `ContractError`, `NetworkError` and `DfoTimeoutError`.
+
+`traceId` is the trace id of the response the error describes, to quote when you report a fault: the body's `trace_id`, else the `x-dfo-trace-id` header, else null. A refusal, a response the client cannot act on, a failed operation, and a declined or incomplete answer each carry one. An error about the caller's input, or about a download from the storage host, carries null.
 
 A few calls throw something else:
 
-- A `strict` fetch throws its first `SearchWarning` or `DataWarning`, each a `DfoWarning` and not a `DfoError`.
+- A `strict` fetch throws its first `SearchWarning` or `DataWarning`, each a `DfoWarning` and not a `DfoError`, with the `traceId` of the response it came from.
 - An aborted call rejects with the caller's `signal.reason`, untouched.
-- `new Client()` throws a `TypeError` for a relative `baseUrl` no page resolves, or a secret key in a browser page.
+- `new Client()` throws a `TypeError` for a relative `baseUrl` no page resolves, or a secret key in a browser page, and an `AuthenticationError` for a key the lookup refuses.
 - `DatasetRef.fromJSON` throws a `FormatError`, a `TypeError`, for JSON that is not a ref.
 - `dataset.memberBytes(index)` throws a `RangeError` for an index past the members.
 
@@ -104,6 +106,6 @@ Warnings go to `onWarning`, else `process.emitWarning`, else `console.warn`. A `
 
 ## API keys
 
-The client takes the first key it finds: the `apiKey` option, the `DFO_API_KEY` environment variable, then the `default` profile (or the one `DFO_PROFILE` names) in the credentials file, which Node reads from `$DFO_CREDENTIALS_FILE`, `$XDG_CONFIG_HOME/dfo/credentials.toml` or `~/.config/dfo/credentials.toml` (`%APPDATA%\dfo\credentials.toml` on Windows). Without a key it calls the API anonymously. An empty `DFO_API_KEY` counts as unset, while an empty `apiKey` option, or a profile whose `key` is empty, raises `AuthenticationError`.
+The client resolves its key when it is built, and again after a 401. It takes the first key it finds: the `apiKey` option, the `DFO_API_KEY` environment variable, then the `default` profile (or the one `DFO_PROFILE` names) in the credentials file, which Node reads from `$DFO_CREDENTIALS_FILE`, `$XDG_CONFIG_HOME/dfo/credentials.toml` or `~/.config/dfo/credentials.toml` (`%APPDATA%\dfo\credentials.toml` on Windows). Without a key it calls the API anonymously. An empty `DFO_API_KEY` counts as unset, while an empty `apiKey` option, or a profile whose `key` is empty, raises `AuthenticationError` from `new Client()`, as does a credentials file that fails to parse. A key function is called when the client is built; one that returns a promise settles before the first request. After a 401 the client looks the key up again and sends the request once more, at once, when the key changed.
 
 In a browser page the client refuses a secret `dfo_k_` key, which any script on the page could read, unless the caller sets `dangerouslyAllowBrowser: true`.

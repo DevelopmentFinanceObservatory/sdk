@@ -8,6 +8,7 @@ import type { Platform } from "../src/credentials.ts";
 import { envFrom } from "../src/env.ts";
 import { isDfoError } from "../src/errors.ts";
 import { checkKeyFormat, resolveApiKey } from "../src/keys.ts";
+import { Transport } from "../src/transport.ts";
 import { contractJson } from "./support.ts";
 
 type Suite<T> = { rule: string; vectors: (T & { name: string })[] };
@@ -83,7 +84,7 @@ describe("key-lookup", async () => {
         env: envFrom(vector.env),
         readCredentialsFile: () => {
           reads += 1;
-          return Promise.resolve(vector.file);
+          return vector.file;
         },
       });
       if (vector.error !== undefined) {
@@ -100,6 +101,30 @@ describe("key-lookup", async () => {
       const earlier = vector.source === "argument" || vector.source === "environment";
       assert.equal(reads, earlier || vector.api_key === false ? 0 : 1);
     });
+
+    // A client resolves its key when it is built, so a fault raises from the constructor and a
+    // key is resolved before any request.
+    test(`${vector.name}: resolved when the client is built`, async () => {
+      let reads = 0;
+      const build = () =>
+        new Transport({
+          ...(vector.api_key === undefined ? {} : { apiKey: vector.api_key }),
+          env: envFrom(vector.env),
+          readCredentialsFile: () => {
+            reads += 1;
+            return vector.file;
+          },
+          onWarning: () => undefined,
+        });
+      if (vector.error !== undefined) {
+        assert.throws(build, (error) => isDfoError(error) && error.code === vector.error?.reason);
+        return;
+      }
+      const transport = build();
+      const read = reads;
+      assert.equal((await transport.apiKey()).key?.reveal() ?? null, vector.key);
+      assert.equal(reads, read);
+    });
   }
 });
 
@@ -110,7 +135,7 @@ test("an empty key from an apiKey function raises key_empty", async () => {
     resolveApiKey({
       apiKey: () => "",
       env: envFrom({}),
-      readCredentialsFile: () => Promise.resolve(null),
+      readCredentialsFile: () => null,
     }),
     { name: "AuthenticationError", code: "key_empty" },
   );

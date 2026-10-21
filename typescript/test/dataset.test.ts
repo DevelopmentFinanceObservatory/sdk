@@ -407,8 +407,22 @@ describe("members whose column types differ", () => {
         new Dataset([member(flag), member(year, { spec: { spec_id: "s2", definition: {} } })], {
           layout: "long",
         }),
-      { name: "ContractError", code: "unexpected_response" },
+      { name: "ContractError", code: "contract_violation" },
     );
+  });
+
+  test("raise ContractError when a member's file holds its own part column", () => {
+    const own = file({ part: { type: "BYTE_ARRAY", logical: { type: "STRING" }, data: ["x"] } });
+    const year = file({ year: { type: "INT32", data: [2020] } });
+    assert.throws(
+      () =>
+        new Dataset([member(year), member(own, { spec: { spec_id: "s2", definition: {} } })], {
+          layout: "long",
+        }),
+      { name: "ContractError", code: "contract_violation" },
+    );
+    // One member is not stacked, so its own part column is its data.
+    assert.deepEqual(new Dataset([member(own)], { layout: "long" }).columns, ["part"]);
   });
 });
 

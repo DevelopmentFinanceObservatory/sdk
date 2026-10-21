@@ -68,11 +68,12 @@ export function parseCredentialsFile(text: string): ParsedCredentialsFile {
   return { ok: true, profiles };
 }
 
-/** Reads the credentials file's text, or null when no file exists at the credentials path. */
-export type CredentialsFileReader = (env: EnvReader) => Promise<string | null>;
+/** Reads the credentials file's text, or null when no file exists at the credentials path. It
+ *  reads synchronously, since a client resolves its key when it is built. */
+export type CredentialsFileReader = (env: EnvReader) => string | null;
 
 /** The reader for platforms with no file system: there is never a file. */
-export const noCredentialsFile: CredentialsFileReader = () => Promise.resolve(null);
+export const noCredentialsFile: CredentialsFileReader = () => null;
 
 let platformReader: CredentialsFileReader = noCredentialsFile;
 

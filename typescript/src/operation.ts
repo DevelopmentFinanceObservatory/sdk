@@ -6,18 +6,23 @@
  * `/datasets/operations/{id}` until it is done or the deadline passes.
  *
  * This module owns build retries: the build request goes with no transport retries and reads
- * for up to 150 seconds within the call's deadline, a synchronous cut-off (a retryable 504, or
- * the 150-second read running out) is retried once, other retryable refusals are retried within
- * the transport's retry count, each retry waiting its `Retry-After` or else the transport's
- * backoff, and a retryable failed operation is resubmitted once. Polls wait for a 429's
- * `Retry-After`, else the resource's `retry_after_ms`, else the `Retry-After` header, else back
- * off from 1 to 8 seconds; a 429 spends no retry, and a poll attempt that runs past the client's
- * timeout spends one.
+ * for up to 150 seconds within the call's deadline. Every retryable refusal of the build shares
+ * the transport's retry count, and once a synchronous cut-off (a retryable 504, or the
+ * 150-second read running out) refuses it, the build is posted once more only, whatever that
+ * post answers. Each retry waits its `Retry-After` or else the transport's backoff, and a
+ * retryable failed operation is resubmitted once.
+ *
+ * Polls wait for a 429's `Retry-After`, else the resource's `retry_after_ms`, else the
+ * `Retry-After` header, else back off from 1 to 8 seconds, the backoff advancing only when a
+ * wait uses it. A 429 spends no retry; any other retryable refused poll, one that runs past the
+ * client's timeout included, spends one of the transport's retries, which a poll that answers
+ * restores; a refused poll that is not retryable raises.
  */
 
 import type { Dataset } from "./dataset.ts";
 import { clientError, DfoError, DfoTimeoutError, errorClassFor, serverCode } from "./errors.ts";
 import { checkStrict } from "./strict.ts";
+import { describing } from "./trace.ts";
 import { isRetryable, passedDeadline, retryAfterMs } from "./transport.ts";
 import type { JsonResponse, Transport } from "./transport.ts";
 import { isRecord } from "./json.ts";
@@ -122,35 +127,39 @@ function readOperation(body: unknown): OperationState {
   };
 }
 
-const replyHeaders = (response: JsonResponse) => ({
+/** A response carrying an operation resource, read and checked. */
+const operationReply = (response: JsonResponse): Reply => ({
+  manifest: null,
+  state: describing(response.traceId, () => readOperation(response.body)),
   headerWaitMs: retryAfterMs(response.headers) ?? null,
-  traceId: response.headers.get("x-dfo-trace-id"),
+  traceId: response.traceId,
 });
 
 /** A build answers 200 with the manifest, or 202 with the operation it started. */
 function buildReply(response: JsonResponse): Reply {
   if (response.status === 200) {
-    return { manifest: readManifest(response.body), state: null, ...replyHeaders(response) };
+    return {
+      manifest: describing(response.traceId, () => readManifest(response.body)),
+      state: null,
+      headerWaitMs: retryAfterMs(response.headers) ?? null,
+      traceId: response.traceId,
+    };
   }
-  if (response.status === 202) {
-    return { manifest: null, state: readOperation(response.body), ...replyHeaders(response) };
-  }
+  if (response.status === 202) return operationReply(response);
   throw clientError("unexpected_response", {
     status: response.status,
     detail: `POST /datasets answered HTTP ${response.status}; a build answers 200 or 202.`,
-    traceId: response.headers.get("x-dfo-trace-id"),
+    traceId: response.traceId,
   });
 }
 
 /** A poll answers 200 with the operation resource. */
 function pollReply(response: JsonResponse): Reply {
-  if (response.status === 200) {
-    return { manifest: null, state: readOperation(response.body), ...replyHeaders(response) };
-  }
+  if (response.status === 200) return operationReply(response);
   throw clientError("unexpected_response", {
     status: response.status,
     detail: `${response.url.pathname} answered HTTP ${response.status}; a poll answers 200.`,
-    traceId: response.headers.get("x-dfo-trace-id"),
+    traceId: response.traceId,
   });
 }
 
@@ -189,14 +198,14 @@ const isCutOff = (error: DfoError): boolean =>
   (error.status === 504 || (error instanceof DfoTimeoutError && error.status === null));
 
 /**
- * Posts a build request, owning its retries.
+ * Posts a build request, owning its retries: every retryable refusal spends one of the
+ * transport's retries, and after a cut-off the build is posted once more only.
  *
  * @throws {DfoError} The refusal, once the retries a build allows are spent.
  */
 async function postBuild(transport: Transport, body: unknown, { deadline, signal }: Wait) {
-  let cutOffRetried = false;
-  let retries = 0;
-  for (let attempt = 0; ; attempt += 1) {
+  let cutOff = false;
+  for (let retries = 0; ; retries += 1) {
     try {
       const response = await transport.request({
         path: "/datasets",
@@ -209,18 +218,11 @@ async function postBuild(transport: Transport, body: unknown, { deadline, signal
       return buildReply(response);
     } catch (error) {
       if (!(error instanceof DfoError)) throw error;
-      const wait = error.retryAfterMs ?? transport.backoff(attempt);
-      if (isCutOff(error)) {
-        if (cutOffRetried || !fits(transport, wait, deadline)) throw error;
-        cutOffRetried = true;
-        await transport.sleep(wait, signal);
-        continue;
-      }
-      if (!error.retryable || retries >= transport.maxRetries || !fits(transport, wait, deadline)) {
-        throw error;
-      }
+      const wait = error.retryAfterMs ?? transport.backoff(retries);
+      const allowed = error.retryable && retries < transport.maxRetries && !cutOff;
+      if (!allowed || passedDeadline(error) || !fits(transport, wait, deadline)) throw error;
       await transport.sleep(wait, signal);
-      retries += 1;
+      cutOff = isCutOff(error);
     }
   }
 }
@@ -270,6 +272,11 @@ class Poller implements LongBuild {
 
   get resubmissions(): number {
     return this.#resubmissions;
+  }
+
+  /** The trace id of the response the build was last read from. */
+  get traceId(): string | null {
+    return this.#traceId;
   }
 
   get status(): string {
@@ -337,7 +344,7 @@ class Poller implements LongBuild {
   #take(reply: Reply): void {
     this.#state = reply.state ?? this.#state;
     this.#headerWaitMs = reply.headerWaitMs;
-    this.#traceId = reply.traceId ?? this.#traceId;
+    this.#traceId = reply.traceId;
     const { state } = reply;
     if (reply.manifest !== null || state === null) {
       this.#manifest = reply.manifest;
@@ -404,8 +411,9 @@ class Poller implements LongBuild {
   }
 }
 
-/** Turns a done build's manifest into the dataset an operation returns. */
-export type Finish = (manifest: Manifest, wait: Wait) => Promise<Dataset>;
+/** Turns a done build's manifest, read from the response whose trace id is `traceId`, into the
+ *  dataset an operation returns. */
+export type Finish = (manifest: Manifest, traceId: string | null, wait: Wait) => Promise<Dataset>;
 
 /** Options for waiting on a long build. */
 export type ResultOptions = {
@@ -470,19 +478,25 @@ export class Operation {
       signal: options.signal,
     };
     if (options.onProgress !== undefined) this.#poller.onProgress = options.onProgress;
-    return this.#finish(await this.#poller.wait(wait), wait);
+    const manifest = await this.#poller.wait(wait);
+    return this.#finish(manifest, this.#poller.traceId, wait);
   }
 }
+
+/** A built version's manifest and the trace id of the response that carried it. */
+export type Built = { readonly manifest: Manifest; readonly traceId: string | null };
 
 /** Posts a build and waits for its manifest, through a long build when the server starts one. */
 export async function build(
   transport: Transport,
   body: unknown,
   wait: Wait & { onProgress?: ProgressHandler | undefined },
-): Promise<Manifest> {
+): Promise<Built> {
   const reply = await postBuild(transport, body, wait);
-  if (reply.manifest !== null) return reply.manifest;
-  return new Poller(transport, reply, { body, onProgress: wait.onProgress }).wait(wait);
+  if (reply.manifest !== null) return { manifest: reply.manifest, traceId: reply.traceId };
+  const poller = new Poller(transport, reply, { body, onProgress: wait.onProgress });
+  const manifest = await poller.wait(wait);
+  return { manifest, traceId: poller.traceId };
 }
 
 /** Posts a build and returns it as an operation, done or running. */

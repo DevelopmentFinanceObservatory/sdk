@@ -196,7 +196,7 @@ export function widen(left: ColumnType, right: ColumnType): ColumnType | undefin
  *  file's columns in file order, each of the type `widen` gives its files' types.
  *
  * @throws {ContractError} A member's file has its own `part` column, or a column's types in two
- *   files do not widen to one (`unexpected_response`).
+ *   files do not widen to one (`contract_violation`).
  */
 export function stackedColumns(parts: readonly TablePart[]): Column[] {
   const types = new Map<string, ColumnType>();
@@ -204,14 +204,14 @@ export function stackedColumns(parts: readonly TablePart[]): Column[] {
   for (const { file } of parts) {
     for (const { name, type } of file.columns) {
       if (parts.length > 1 && name === PART_COLUMN) {
-        throw clientError("unexpected_response", {
+        throw clientError("contract_violation", {
           detail: `A member's file has its own ${PART_COLUMN} column, so the members do not stack.`,
         });
       }
       const seen = types.get(name);
       const stacked = seen === undefined ? type : widen(seen, type);
       if (stacked === undefined) {
-        throw clientError("unexpected_response", {
+        throw clientError("contract_violation", {
           detail:
             `The column ${name} is ${JSON.stringify(seen)} in one member and ` +
             `${JSON.stringify(type)} in another, so the members do not stack.`,

@@ -442,13 +442,13 @@ describe("fetch", () => {
     assert.equal(answer.specs[0], (answer.parts[0] as DefinitePart).spec);
   });
 
-  test("names a part with empty variable text by its spec's sentence", async () => {
+  test("a part with empty variable text adds nothing to its member's parts", async () => {
     const edited = body("answer-definite-fetch");
     const [part] = edited["parts"] as DefinitePart[];
     part!.variable_text = "";
     const context = offline();
     await answerFromBody(edited, context, null).fetch();
-    assert.deepEqual(context.built[0]![0]!.parts, [part!.spec.resolved.rendered_sentence]);
+    assert.deepEqual(context.built[0]![0]!.parts, []);
   });
 
   test("a departure, a skipped computation and a warn notice arrive as one SearchWarning", async () => {

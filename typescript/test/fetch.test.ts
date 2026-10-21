@@ -168,7 +168,7 @@ describe("a fetch's entities", () => {
         baseUrl: "https://api.example/api",
         apiKey: false,
         env: envFrom({}),
-        readCredentialsFile: () => Promise.resolve(null),
+        readCredentialsFile: () => null,
         fetch,
         onWarning: () => undefined,
       });
@@ -278,7 +278,7 @@ describe("a download", async () => {
       timeout: 50,
       sleep: () => Promise.resolve(),
       env: envFrom({}),
-      readCredentialsFile: () => Promise.resolve(null),
+      readCredentialsFile: () => null,
     });
     const { spec } = stepOf(record, 0, "fetch");
     // The fetch's own deadline is longer than the attempt timeout and short enough to fail fast
@@ -288,22 +288,30 @@ describe("a download", async () => {
     assert.equal(seen.length, 4);
   });
 
-  test("refuses an artifact URL off the API's origin before any download", async () => {
+  test("refuses an artifact URL off the API's origin before the sentence and any download", async () => {
     const record = structuredClone(await scenario("fetch-spec-known-sentence"));
-    const manifest = record.exchanges[0]!.response.json as { artifacts: { url: string }[] };
+    const built = record.exchanges[0]!.response;
+    const trace = "7".repeat(32);
+    built.headers = { ...built.headers, "x-dfo-trace-id": trace };
+    const manifest = built.json as { artifacts: { url: string }[] };
     record.exchanges = record.exchanges.slice(0, 1);
     const { spec } = stepOf(record, 0, "fetch");
-    for (const url of [
-      "https://elsewhere.example/file",
-      "https://storage.googleapis.com/bucket/object?X-Goog-Signature=redacted",
-    ]) {
-      for (const artifact of manifest.artifacts) artifact.url = url;
-      const { transport, remaining } = replay(record);
-      await assert.rejects(fetchDataset(transport, spec!), {
-        name: "ContractError",
-        code: "contract_violation",
-      });
-      assert.deepEqual(remaining(), []);
+    // Without its sentence the spec needs Search's, which the client would ask for next.
+    const unsentenced = { spec_id: spec!.spec_id, definition: spec!.definition };
+    for (const held of [spec!, unsentenced]) {
+      for (const url of [
+        "https://elsewhere.example/file",
+        "https://storage.googleapis.com/bucket/object?X-Goog-Signature=redacted",
+      ]) {
+        for (const artifact of manifest.artifacts) artifact.url = url;
+        const { transport, remaining } = replay(record);
+        await assert.rejects(fetchDataset(transport, held), {
+          name: "ContractError",
+          code: "contract_violation",
+          traceId: trace,
+        });
+        assert.deepEqual(remaining(), []);
+      }
     }
   });
 });

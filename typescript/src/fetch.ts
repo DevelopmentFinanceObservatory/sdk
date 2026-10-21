@@ -43,10 +43,11 @@ import {
   resumeOperation,
   startOperation,
 } from "./operation.ts";
-import type { Manifest, Operation, ProgressHandler } from "./operation.ts";
+import type { Built, Manifest, Operation, ProgressHandler } from "./operation.ts";
 import { DatasetRef, layoutOf, renderingFor, renderingMatches, renderingOptions } from "./ref.ts";
 import type { Layout, RefMember, Rendering, SpecLike } from "./ref.ts";
 import { checkStrict } from "./strict.ts";
+import { describing } from "./trace.ts";
 import { passedDeadline } from "./transport.ts";
 import type { Target, Transport } from "./transport.ts";
 import type { EntityGroup, Part, ResolvedSpec } from "./wire.ts";
@@ -293,8 +294,9 @@ function pickArtifact(
 }
 
 /** Passes a manifest's warnings above `info` to the handler as `DataWarning`s, or raises the
- *  first under strict. */
-function noteWarnings(transport: Transport, manifest: Manifest, strict: boolean): void {
+ *  first under strict. Each carries `traceId`, the trace id of the response that carried the
+ *  manifest. */
+function noteWarnings(transport: Transport, { manifest, traceId }: Built, strict: boolean): void {
   const warnings = manifest["warnings"];
   for (const notice of Array.isArray(warnings) ? warnings : []) {
     if (!isRecord(notice) || notice["severity"] === "info") continue;
@@ -302,6 +304,7 @@ function noteWarnings(transport: Transport, manifest: Manifest, strict: boolean)
       String(notice["code"]),
       String(notice["message"]),
       String(notice["severity"]),
+      traceId,
     );
     if (strict) throw warning;
     transport.warn(warning);
@@ -367,26 +370,27 @@ async function sentenceFor(
     deadline,
     ...(signal === undefined ? {} : { signal }),
   });
-  const answer = response.body;
-  let sentence: unknown;
-  if (isRecord(answer) && answer["kind"] === "resolution") {
-    checkStrict("Resolution", answer);
-    // checkStrict has checked `parts` is a list and a definite part holds a spec.
-    const resolved = answer["parts"] as unknown[];
-    const [part] = resolved;
-    if (resolved.length === 1 && isRecord(part) && part["status"] === "definite") {
-      const spec = part["spec"] as Record<string, unknown>;
-      const meta = spec["resolved"];
-      if (spec["spec_id"] === specId && isRecord(meta)) sentence = meta["rendered_sentence"];
+  return describing(response.traceId, () => {
+    const answer = response.body;
+    let sentence: unknown;
+    if (isRecord(answer) && answer["kind"] === "resolution") {
+      checkStrict("Resolution", answer);
+      // checkStrict has checked `parts` is a list and a definite part holds a spec.
+      const resolved = answer["parts"] as unknown[];
+      const [part] = resolved;
+      if (resolved.length === 1 && isRecord(part) && part["status"] === "definite") {
+        const spec = part["spec"] as Record<string, unknown>;
+        const meta = spec["resolved"];
+        if (spec["spec_id"] === specId && isRecord(meta)) sentence = meta["rendered_sentence"];
+      }
     }
-  }
-  if (typeof sentence !== "string" || sentence === "") {
-    throw clientError("contract_violation", {
-      detail: `Search did not resolve the built identity ${specId} to itself with a sentence.`,
-      traceId: response.headers.get("x-dfo-trace-id"),
-    });
-  }
-  return sentence;
+    if (typeof sentence !== "string" || sentence === "") {
+      throw clientError("contract_violation", {
+        detail: `Search did not resolve the built identity ${specId} to itself with a sentence.`,
+      });
+    }
+    return sentence;
+  });
 }
 
 /** The spec a build posted, with the entity groups the caller holds for it. */
@@ -405,29 +409,34 @@ type Finishing = {
   readonly answerParts?: readonly Part[];
 };
 
-/** Downloads a built version's artifact and gives it Search's sentence. */
+/** Downloads a built version's artifact and gives it Search's sentence. The manifest's warnings
+ *  and its artifact's `url` are checked before any request. */
 async function finish(
   transport: Transport,
-  manifest: Manifest,
+  built: Built,
   { parts, posted, sentence, rendering, strict, answerParts }: Finishing,
   wait: Wait,
 ): Promise<FetchedMember> {
+  const { manifest } = built;
   const definition = definitionOf(manifest);
   const specId = specIdOf(manifest);
   const contentVersion = contentVersionOf(manifest);
-  noteWarnings(transport, manifest, strict);
-  const artifact = pickArtifact(manifest, rendering);
-  if (artifact === undefined) {
-    throw clientError("contract_violation", {
-      detail:
-        `The manifest of ${specId} at ${contentVersion} lists no ` +
-        `${JSON.stringify(renderingOptions(rendering))} artifact.`,
-    });
-  }
+  noteWarnings(transport, built, strict);
+  const { artifact, route } = describing(built.traceId, () => {
+    const found = pickArtifact(manifest, rendering);
+    if (found === undefined) {
+      throw clientError("contract_violation", {
+        detail:
+          `The manifest of ${specId} at ${contentVersion} lists no ` +
+          `${JSON.stringify(renderingOptions(rendering))} artifact.`,
+      });
+    }
+    return { artifact: found, route: transport.originUrl(String(found["url"])) };
+  });
   const known = posted?.spec.spec_id === specId && typeof sentence === "string" && sentence !== "";
   const told = known ? sentence : await sentenceFor(transport, definition, parts, posted, wait);
   const digest = String(artifact["artifact_digest"]);
-  const data = await download(transport, { url: String(artifact["url"]) }, digest, wait);
+  const data = await download(transport, { url: route.href }, digest, wait);
   return {
     parts,
     spec: { spec_id: specId, definition },
@@ -503,9 +512,9 @@ export async function fetchMembers<TMissing extends Gap = never>(
   const wait = { deadline: deadlineOf(transport, options.timeout), signal: options.signal };
   const fetched: FetchedMember[] = [];
   for (const { parts, spec, sentence, entityGroups, answerParts } of wants) {
-    let manifest: Manifest;
+    let built: Built;
     try {
-      manifest = await build(transport, buildBody(spec, rendering, scopeOf(spec, narrowing)), {
+      built = await build(transport, buildBody(spec, rendering, scopeOf(spec, narrowing)), {
         ...wait,
         onProgress: options.onProgress,
       });
@@ -518,7 +527,7 @@ export async function fetchMembers<TMissing extends Gap = never>(
     fetched.push(
       await finish(
         transport,
-        manifest,
+        built,
         {
           parts,
           posted: { spec, entityGroups },
@@ -623,8 +632,8 @@ export function resume(
 }
 
 function datasetFinisher(transport: Transport, finishing: Finishing, layout: Layout) {
-  return async (manifest: Manifest, wait: Wait): Promise<Dataset> =>
-    new Dataset([await finish(transport, manifest, finishing, wait)], { layout });
+  return async (manifest: Manifest, traceId: string | null, wait: Wait): Promise<Dataset> =>
+    new Dataset([await finish(transport, { manifest, traceId }, finishing, wait)], { layout });
 }
 
 function refLayout(ref: DatasetRef): Layout {
@@ -685,17 +694,17 @@ async function fetchVersion(
   const strict = options.strict ?? false;
   let refusal: DfoError | undefined;
 
-  let manifest: Manifest | undefined;
+  let found: Built | undefined;
   try {
-    manifest = await snapshot(transport, member, wait);
+    found = await snapshot(transport, member, wait);
   } catch (error) {
     if (!(error instanceof DfoError) || error.code !== FILE_EXPIRED) throw error;
     refusal = error;
   }
-  if (manifest !== undefined) {
-    noteWarnings(transport, manifest, strict);
-    const file = await storedFile(transport, member, manifest, wait);
-    if (file.data !== undefined) return stored(member, manifest, file.data);
+  if (found !== undefined) {
+    noteWarnings(transport, found, strict);
+    const file = await storedFile(transport, member, found, wait);
+    if (file.data !== undefined) return stored(member, found.manifest, file.data);
     refusal = file.refusal;
   }
 
@@ -705,7 +714,7 @@ async function fetchVersion(
       ...wait,
       onProgress: options.onProgress,
     });
-    if (contentVersionOf(built) === member.contentVersion) {
+    if (contentVersionOf(built.manifest) === member.contentVersion) {
       const finishing = {
         parts: member.parts,
         posted: { spec: member.spec },
@@ -715,7 +724,7 @@ async function fetchVersion(
       };
       return await finish(transport, built, finishing, wait);
     }
-    newest = contentVersionOf(built);
+    newest = contentVersionOf(built.manifest);
   } catch (error) {
     if (
       !(error instanceof InvalidRequestError) &&
@@ -730,27 +739,32 @@ async function fetchVersion(
   throw unavailable(member, newest, refusal);
 }
 
+/** A stored version's manifest, and the trace id of the response that carried it. */
 async function snapshot(
   transport: Transport,
   member: RefMember,
   { deadline, signal }: Wait,
-): Promise<Manifest> {
+): Promise<Built> {
   const response = await transport.request({
     path: `/datasets/${member.spec.spec_id}/${member.contentVersion}`,
     deadline,
     ...(signal === undefined ? {} : { signal }),
   });
-  const manifest = readManifest(response.body);
-  const built = `${specIdOf(manifest)} at ${contentVersionOf(manifest)}`;
-  const asked = `${member.spec.spec_id} at ${member.contentVersion}`;
-  if (built !== asked) {
-    throw clientError("contract_violation", {
-      detail: `The server answered ${built} for ${asked}.`,
-      pointer:
-        specIdOf(manifest) === member.spec.spec_id ? "/content_version" : "/definition/spec_id",
-    });
-  }
-  return manifest;
+  const { traceId } = response;
+  const manifest = describing(traceId, () => {
+    const read = readManifest(response.body);
+    const built = `${specIdOf(read)} at ${contentVersionOf(read)}`;
+    const asked = `${member.spec.spec_id} at ${member.contentVersion}`;
+    if (built !== asked) {
+      throw clientError("contract_violation", {
+        detail: `The server answered ${built} for ${asked}.`,
+        pointer:
+          specIdOf(read) === member.spec.spec_id ? "/content_version" : "/definition/spec_id",
+      });
+    }
+    return read;
+  });
+  return { manifest, traceId };
 }
 
 /** The stored artifact's bytes from the files route, or else from the file selector; the
@@ -758,15 +772,15 @@ async function snapshot(
 async function storedFile(
   transport: Transport,
   member: RefMember,
-  manifest: Manifest,
+  { manifest, traceId }: Built,
   wait: Wait,
 ): Promise<{ data?: Uint8Array; refusal?: DfoError | undefined }> {
   let refusal: DfoError | undefined;
   const artifact = pickArtifact(manifest, member.rendering, member.digest);
   if (artifact !== undefined) {
+    const route = describing(traceId, () => transport.originUrl(String(artifact["url"])));
     try {
-      const url = String(artifact["url"]);
-      return { data: await download(transport, { url }, member.digest, wait) };
+      return { data: await download(transport, { url: route.href }, member.digest, wait) };
     } catch (error) {
       if (!(error instanceof DfoError) || !FILE_GONE.has(error.code)) throw error;
       refusal = error;
@@ -806,8 +820,9 @@ export async function newestVersion(
   { deadline, signal, timeout }: Wait & { readonly timeout?: number | undefined },
 ): Promise<string | null> {
   let body: unknown;
+  let traceId: string | null;
   try {
-    ({ body } = await transport.request({
+    ({ body, traceId } = await transport.request({
       path: `/datasets/${specId}/versions?limit=1`,
       deadline,
       ...(signal === undefined ? {} : { signal }),
@@ -822,6 +837,7 @@ export async function newestVersion(
     throw clientError("contract_violation", {
       detail: `The versions of ${specId} are not a DatasetVersionsPage: it has no versions list.`,
       pointer: "/versions",
+      traceId,
     });
   }
   if (versions.length === 0) return null;
@@ -831,6 +847,7 @@ export async function newestVersion(
     throw clientError("contract_violation", {
       detail: `The newest version of ${specId} has no content_version.`,
       pointer: "/versions/0/content_version",
+      traceId,
     });
   }
   return newest;

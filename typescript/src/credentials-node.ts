@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 
 import { credentialsPath } from "./credentials.ts";
@@ -13,9 +13,9 @@ const ABSENT = new Set(["ENOENT", "ENOTDIR"]);
 const REFUSED = new Set(["PermissionDenied", "NotCapable"]);
 
 /** Reads the credentials file from the file system at the credentials path. */
-export const readCredentialsFile: CredentialsFileReader = async (env) => {
+export const readCredentialsFile: CredentialsFileReader = (env) => {
   try {
-    return await readFile(credentialsPath({ platform: platform(), home: homedir(), env }), "utf8");
+    return readFileSync(credentialsPath({ platform: platform(), home: homedir(), env }), "utf8");
   } catch (error) {
     if (error instanceof Error) {
       const { code } = error as { code?: unknown };

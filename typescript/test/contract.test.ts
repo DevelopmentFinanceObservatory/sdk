@@ -19,6 +19,7 @@ import type { LongBuild } from "../src/operation.ts";
 import { DatasetRef } from "../src/ref.ts";
 import type { Transport } from "../src/transport.ts";
 import { DfoError, isDfoError, VersionUnavailableError } from "../src/errors.ts";
+import { CLIENT_CODE_CLASSES } from "../src/generated/client-codes.ts";
 import { DataWarning, DfoWarning, forgetEmittedWarnings } from "../src/warnings.ts";
 import { replay, scenarios } from "./replay.ts";
 import type { LongBuildSummary, Outcome, Scenario, Step } from "./replay.ts";
@@ -223,6 +224,7 @@ function checkError(
     {
       class: error.name,
       code: error.code,
+      trace_id: error.traceId,
       ...(error instanceof VersionUnavailableError ? { newest_version: error.newestVersion } : {}),
       long_builds: observed.longBuilds.map(longBuildSummary),
     },
@@ -312,6 +314,136 @@ async function replayScenario(record: Scenario): Promise<void> {
 describe("every contract scenario", () => {
   for (const record of all) {
     test(record.name, () => replayScenario(record));
+  }
+});
+
+/** The client codes of errors that describe a response; every other client code describes the
+ *  caller's input or a storage-host fetch. A server's code always describes its refusal. */
+const DESCRIBING_CODES = new Set([
+  "unexpected_response",
+  "contract_violation",
+  "answer_declined",
+  "answer_incomplete",
+  "refusal_without_code",
+]);
+
+const describesResponse = (error: DfoError | DfoWarning): boolean =>
+  error instanceof DfoWarning ||
+  !Object.hasOwn(CLIENT_CODE_CLASSES, error.code) ||
+  DESCRIBING_CODES.has(error.code);
+
+// Each API response of an error scenario gains its own x-dfo-trace-id where it names none, so
+// every error that describes a response must carry the trace id of the last API response the
+// client read before raising it: the refusal, the body it read, or for an error about a held
+// answer, the Search response that answered it. Any other error carries none.
+describe("every error carries the trace id of the response it describes", () => {
+  const traced = (index: number): string => (index + 1).toString(16).padStart(32, "a");
+  for (const original of all.filter((record) =>
+    record.expect.some((outcome) => "error" in outcome),
+  )) {
+    test(original.name, async () => {
+      const record = structuredClone(original);
+      for (const [index, { request, response }] of record.exchanges.entries()) {
+        const body = response.json as { trace_id?: unknown } | undefined;
+        const named = response.headers?.["x-dfo-trace-id"] ?? body?.trace_id;
+        if (request.url === undefined && named === undefined) {
+          response.headers = { ...response.headers, "x-dfo-trace-id": traced(index) };
+        }
+      }
+      forgetEmittedWarnings();
+      const { transport, urls } = replay(record, { onWarning: () => undefined });
+      const client = clientOver(transport);
+      let previous: Reached | undefined;
+      for (const [index, step] of record.call.entries()) {
+        const expected = record.expect[index]!;
+        try {
+          previous = await run(client, transport, step, previous);
+          continue;
+        } catch (error) {
+          if (!("error" in expected)) throw error;
+          assert.ok(isDfoError(error) || error instanceof DfoWarning, String(error));
+          const read = record.exchanges
+            .slice(0, urls.length)
+            .findLastIndex((exchange) => exchange.request.url === undefined);
+          const lastRead = read === -1 ? null : record.exchanges[read]!;
+          const want =
+            expected.error.trace_id ??
+            (describesResponse(error) && lastRead !== null
+              ? (lastRead.response.headers?.["x-dfo-trace-id"] ?? null)
+              : null);
+          assert.equal(error.traceId, want, `${record.name}: step ${index} trace id`);
+        }
+      }
+    });
+  }
+});
+
+describe("an error's trace id is the one of the response it describes", () => {
+  const BODY_TRACE = "b".repeat(32);
+  const HEADER_TRACE = "c".repeat(32);
+  type Row = {
+    name: string;
+    scenario: string;
+    edit: (record: Scenario) => void;
+    code: string;
+    traceId: string | null;
+  };
+  const named = (record: Scenario, index: number): void => {
+    const { response } = record.exchanges[index]!;
+    response.headers = { ...response.headers, "x-dfo-trace-id": HEADER_TRACE };
+  };
+  const rows: Row[] = [
+    {
+      name: "a failed operation, by the response that carried it and not an earlier one",
+      scenario: "operation-failed-without-error",
+      edit: (record) => {
+        named(record, 0);
+      },
+      code: "operation_failed",
+      traceId: null,
+    },
+    {
+      name: "a stored version answered as another version",
+      scenario: "fetch-ref",
+      edit: (record) => {
+        record.exchanges = record.exchanges.slice(0, 1);
+        named(record, 0);
+        (record.exchanges[0]!.response.json as Record<string, unknown>)["content_version"] =
+          `cv_${"0".repeat(32)}`;
+      },
+      code: "contract_violation",
+      traceId: HEADER_TRACE,
+    },
+    {
+      name: "an operation resource without its status, by its body's trace id over the header",
+      scenario: "fetch-spec-async-build",
+      edit: (record) => {
+        record.exchanges = record.exchanges.slice(0, 1);
+        named(record, 0);
+        const resource = record.exchanges[0]!.response.json as Record<string, unknown>;
+        resource["trace_id"] = BODY_TRACE;
+        delete (resource["operation"] as Record<string, unknown>)["status"];
+      },
+      code: "contract_violation",
+      traceId: BODY_TRACE,
+    },
+  ];
+  for (const row of rows) {
+    test(row.name, async () => {
+      const record = structuredClone(all.find((each) => each.name === row.scenario)!);
+      row.edit(record);
+      const { transport, remaining } = replay(record, { onWarning: () => undefined });
+      const client = clientOver(transport);
+      const steps = record.call;
+      let previous: Reached | undefined;
+      for (const step of steps.slice(0, -1))
+        previous = await run(client, transport, step, previous);
+      await assert.rejects(run(client, transport, steps.at(-1)!, previous), {
+        code: row.code,
+        traceId: row.traceId,
+      });
+      assert.deepEqual(remaining(), []);
+    });
   }
 });
 
