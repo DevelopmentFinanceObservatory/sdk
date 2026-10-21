@@ -535,7 +535,7 @@ class AsyncTransport:
         attempt = 0
         rekeyed = False
         while True:
-            limit, attempt_deadline = self._attempt_bounds(timeout, deadline)
+            limit, attempt_end = self._attempt_bounds(timeout, deadline)
             request = self._http.build_request(
                 method,
                 url,
@@ -545,9 +545,7 @@ class AsyncTransport:
                 timeout=limit,
             )
             try:
-                response = await self._send(
-                    request, attempt_deadline, f"{method} {url}"
-                )
+                response = await self._send(request, attempt_end, f"{method} {url}")
             except DfoError as failure:
                 error = failure
             else:
