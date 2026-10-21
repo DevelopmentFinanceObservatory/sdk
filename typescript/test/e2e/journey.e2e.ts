@@ -206,7 +206,7 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
       assert.deepEqual(dataset.columns, await recordedColumns());
       const [member] = dataset.members;
       assert.ok(member);
-      assert.equal(sha256(await dataset.bytes()), member.digest);
+      assert.equal(sha256(dataset.memberBytes(0)), member.digest);
 
       const text = JSON.stringify(dataset.ref);
       const ref = DatasetRef.fromJSON(text);
@@ -225,7 +225,7 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
       assert.ok(fetched);
       assert.equal(fetched.contentVersion, member.contentVersion);
       assert.equal(fetched.digest, member.digest);
-      assert.equal(sha256(await again.bytes()), member.digest);
+      assert.equal(sha256(again.memberBytes(0)), member.digest);
       t.diagnostic(`${dataset.rows} rows, ${member.contentVersion}`);
     },
   );

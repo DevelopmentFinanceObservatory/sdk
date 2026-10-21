@@ -414,8 +414,8 @@ export class Transport {
    *
    * @throws {ContractError} The route is off the API's origin, or its redirect names a host
    *   other than the API's or the storage host (`contract_violation`); a redirect has no
-   *   `Location` (`contract_violation`); the route answered a 2xx other than 200 or a 3xx other
-   *   than 302 (`unexpected_response`).
+   *   `Location` or an empty one (`contract_violation`); the route answered a 2xx other than 200
+   *   or a 3xx other than 302 (`unexpected_response`).
    * @throws {DfoError} The route refused the request.
    */
   async locate(options: Target & CallOptions): Promise<Located> {
@@ -433,7 +433,7 @@ export class Transport {
       });
     }
     const location = response.headers.get("location");
-    if (location === null) {
+    if (location === null || location === "") {
       throw clientError("contract_violation", {
         status: response.status,
         detail: `The redirect from ${target.pathname} has no Location header.`,

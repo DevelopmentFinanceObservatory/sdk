@@ -535,6 +535,7 @@ describe("downloads", () => {
       "https://api.example/api/datasets/blob/object",
       undefined,
     ],
+    ["an empty Location", redirect(""), undefined, "contract_violation"],
     [
       "a Location on another host",
       redirect("https://elsewhere.example/object"),

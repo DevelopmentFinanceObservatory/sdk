@@ -115,3 +115,5 @@ The client resolves its key when it is built, and again after a 401. It takes th
 A browser page holds a publishable `dfo_p_` key. In a browser page or worker the client refuses a secret `dfo_k_` key, which every visitor could read, unless the caller sets `dangerouslyAllowBrowser: true`.
 
 A browser hides a files route's redirect from the page, so the client asks the files route once more with the redirect followed, sending the key alone on that request to the API's origin, and the browser follows the redirect to the signed URL. Browsers drop the `Authorization` header on a redirect to another origin, as the Fetch standard requires, so the key does not reach the storage host. A followed redirect that ends on any host other than the API's origin or `storage.googleapis.com` raises a `ContractError` with the code `contract_violation`.
+
+A browser also hides a redirect's status, so in a page or worker a files route answering 301, 303, 307 or 308 is followed as a 302 is, where Node and Python raise `unexpected_response`. The host check and the digest check still apply.
