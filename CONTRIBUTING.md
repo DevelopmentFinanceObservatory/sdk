@@ -59,7 +59,7 @@ pnpm --dir typescript generate
 Git tracks only `contract/SOURCE`, the spec-kit commit the clients follow. The rest of `contract/` is fetched from the public spec-kit repository at that commit, and git ignores it:
 
 ```bash
-scripts/sync_contract.py
+uv run --no-project --python '>=3.12' scripts/sync_contract.py
 ```
 
 The script downloads the GitHub archive of the commit, extracts the package data into `contract/` and the package's README, which states the contract's rules, to `contract/README.md`, and records the commit in `contract/.synced`. It does nothing when `.synced` already names `SOURCE`. It builds the copy in a scratch directory and swaps it in, so a failed download leaves the old copy in place. The Python tests, `scripts/gen_wire.py`, `scripts/gen_errors.py` and the TypeScript package scripts that read `contract/` run the fetch themselves when the copy is missing or `.synced` differs from `SOURCE`, and stop with the error when the fetch fails.
@@ -67,10 +67,10 @@ The script downloads the GitHub archive of the commit, extracts the package data
 To move the clients to a new contract, change it in spec-kit, push the change, and write the new commit to `contract/SOURCE`. For a change that is not pushed yet, copy it from a spec-kit checkout:
 
 ```bash
-scripts/sync_contract.py --from ../spec-kit
+uv run --no-project --python '>=3.12' scripts/sync_contract.py --from ../spec-kit
 ```
 
-That form copies the same files and writes the checkout's commit to `SOURCE`. It refuses a checkout with uncommitted changes to the package data or the README, because `SOURCE` would then name a commit that does not hold them; `--allow-dirty` overrides the refusal.
+That form copies the same files and writes the checkout's commit to `SOURCE`. It refuses a checkout with uncommitted changes to the package data or the README, because `SOURCE` would then name a commit that does not hold them; `--allow-dirty` overrides the refusal, and the copy it writes stays in place until `SOURCE` changes or `contract/.synced` is deleted.
 
 CI runs `scripts/check_contract_pin.py` on every change to `contract/SOURCE`. It fails unless `SOURCE` is the rev that dfo-apis `dev` pins for `dfo-spec-kit-client-contract`, or an ancestor of it. The clients replay only scenarios that dfo-apis checks.
 

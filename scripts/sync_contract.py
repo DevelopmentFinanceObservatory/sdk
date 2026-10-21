@@ -19,6 +19,8 @@ it into place, so a failed run leaves the old copy as it was.
 """
 
 import argparse
+import http.client
+import re
 import shutil
 import subprocess
 import sys
@@ -40,7 +42,8 @@ OWN_FILES = frozenset({"README.md", "SOURCE", MARKER})
 CODE_SUFFIXES = frozenset({".py", ".pyc", ".typed"})
 IGNORED_NAMES = frozenset({".DS_Store"})
 TIMEOUT_SECONDS = 60
-FETCH_COMMAND = "python scripts/sync_contract.py"
+FETCH_COMMAND = "uv run --no-project --python '>=3.12' scripts/sync_contract.py"
+SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 
 class FetchError(Exception):
@@ -88,17 +91,18 @@ def source_rev() -> str:
     """The spec-kit commit `contract/SOURCE` names.
 
     Raises:
-        FetchError: SOURCE is missing or empty.
+        FetchError: SOURCE is missing, or does not hold a full commit SHA.
     """
     if not (rev := recorded("SOURCE")):
         raise FetchError(f"{CONTRACT / 'SOURCE'} is missing or empty")
+    if not SHA_RE.fullmatch(rev):
+        raise FetchError(f"{CONTRACT / 'SOURCE'} must hold a full commit SHA: {rev!r}")
     return rev
 
 
-def is_current() -> bool:
-    """Whether `contract/` holds the copy of the commit SOURCE names."""
-    rev = recorded("SOURCE")
-    return rev is not None and recorded(MARKER) == rev
+def is_current(rev: str) -> bool:
+    """Whether `contract/` holds the copy of the commit `rev`."""
+    return recorded(MARKER) == rev
 
 
 def install(rev: str, fill: Callable[[Path], int]) -> int:
@@ -113,9 +117,16 @@ def install(rev: str, fill: Callable[[Path], int]) -> int:
         count = fill(staged)
         (staged / "SOURCE").write_text(f"{rev}\n")
         (staged / MARKER).write_text(f"{rev}\n")
-        if CONTRACT.exists():
-            CONTRACT.rename(Path(tmp) / "previous")
-        staged.rename(CONTRACT)
+        previous = Path(tmp) / "previous"
+        replacing = CONTRACT.exists()
+        if replacing:
+            CONTRACT.rename(previous)
+        try:
+            staged.rename(CONTRACT)
+        except OSError:
+            if replacing:
+                previous.rename(CONTRACT)
+            raise
     return count
 
 
@@ -152,7 +163,7 @@ def fetch(rev: str) -> int:
                 tarfile.open(fileobj=response, mode="r|gz") as archive,
             ):
                 count = extract(archive, target)
-        except (OSError, tarfile.TarError) as error:
+        except (OSError, http.client.HTTPException, tarfile.TarError) as error:
             raise FetchError(
                 f"could not fetch the client contract from {url}: {error}"
             ) from error
@@ -163,18 +174,22 @@ def fetch(rev: str) -> int:
     return install(rev, fill)
 
 
-def ensure_current() -> None:
+def ensure_current() -> int | None:
     """Fetch `contract/` unless it already holds the commit SOURCE names.
 
+    Returns:
+        The number of files fetched, or None when the copy is current.
+
     Raises:
-        FetchError: the fetch failed; the message names the command to rerun.
+        FetchError: SOURCE or the fetch failed; the message names the command to
+            rerun.
     """
-    if is_current():
-        return
     try:
         rev = source_rev()
+        if is_current(rev):
+            return None
         print(f"fetching contract/ from spec-kit at {rev}", file=sys.stderr)
-        fetch(rev)
+        return fetch(rev)
     except FetchError as error:
         raise FetchError(
             f"{error}; run `{FETCH_COMMAND}` from the repository root to retry"
@@ -232,15 +247,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.allow_dirty:
             parser.error("--allow-dirty applies to --from only")
         try:
-            rev = source_rev()
-            if is_current():
-                print(f"contract/ is current at {rev}")
-                return 0
-            count = fetch(rev)
+            count = ensure_current()
         except FetchError as error:
             print(error, file=sys.stderr)
             return 1
-        print(f"fetched {count} files at {rev}")
+        rev = source_rev()
+        if count is None:
+            print(f"contract/ is current at {rev}")
+        else:
+            print(f"fetched {count} files at {rev}")
         return 0
 
     spec_kit = args.checkout

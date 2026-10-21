@@ -1,8 +1,11 @@
 """Tests for the code generators in `scripts/`."""
 
+import http.client
+import io
 import sys
 import tarfile
 from pathlib import Path
+from typing import Self
 
 import pytest
 
@@ -181,8 +184,31 @@ def test_the_error_map_refuses_client_codes_it_cannot_generate(
         gen_errors.render(_REPORT_ACTIONS, _REPORT_SCHEMA, client_codes, _WARNING_CODES)
 
 
-def _spec_kit_archive(tmp_path: Path, rev: str) -> str:
-    """Write a spec-kit archive at `rev` and return a URL template that reaches it."""
+_REV = "a" * 40
+_OTHER_REV = "b" * 40
+_ESCAPE = f"{sync_contract.PACKAGE_DATA}/../../ESCAPED.txt"
+
+
+class _CutOffResponse:
+    """A response whose connection drops mid-stream, as a cut chunked body does."""
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        raise http.client.IncompleteRead(b"partial")
+
+
+def _spec_kit_archive(
+    tmp_path: Path, rev: str, extra: dict[str, bytes] | None = None
+) -> str:
+    """Write a spec-kit archive at `rev` and return a URL template that reaches it.
+
+    `extra` maps member paths below the archive's top directory to file content.
+    """
     top = tmp_path / f"spec-kit-{rev}"
     package = top / sync_contract.PACKAGE_DATA
     (package / "rules").mkdir(parents=True)
@@ -194,6 +220,10 @@ def _spec_kit_archive(tmp_path: Path, rev: str) -> str:
     (top / "README.md").write_text("# spec-kit\n")
     with tarfile.open(tmp_path / f"{rev}.tar.gz", "w:gz") as archive:
         archive.add(top, arcname=top.name)
+        for name, content in (extra or {}).items():
+            member = tarfile.TarInfo(f"{top.name}/{name}")
+            member.size = len(content)
+            archive.addfile(member, io.BytesIO(content))
     return (tmp_path / "{rev}.tar.gz").as_uri().replace("%7Brev%7D", "{rev}")
 
 
@@ -202,12 +232,12 @@ def test_the_fetch_copies_the_contract_files_once(
 ) -> None:
     contract = tmp_path / "repo" / "contract"
     contract.mkdir(parents=True)
-    (contract / "SOURCE").write_text("abc\n")
+    (contract / "SOURCE").write_text(f"{_REV}\n")
     (contract / "stale.json").write_text("{}")
     monkeypatch.setattr(sync_contract, "CONTRACT", contract)
-    monkeypatch.setattr(sync_contract, "ARCHIVE", _spec_kit_archive(tmp_path, "abc"))
+    monkeypatch.setattr(sync_contract, "ARCHIVE", _spec_kit_archive(tmp_path, _REV))
 
-    sync_contract.ensure_current()
+    assert sync_contract.ensure_current() == 3
 
     files = sorted(
         path.relative_to(contract).as_posix()
@@ -222,29 +252,53 @@ def test_the_fetch_copies_the_contract_files_once(
         "rules/paths.json",
     ]
     assert (contract / "README.md").read_text() == "# Rules\n"
-    (tmp_path / "abc.tar.gz").unlink()
-    sync_contract.ensure_current()
-    assert (contract / ".synced").read_text() == "abc\n"
+    (tmp_path / f"{_REV}.tar.gz").unlink()
+    assert sync_contract.ensure_current() is None
+    assert (contract / ".synced").read_text() == f"{_REV}\n"
 
 
+@pytest.mark.parametrize(
+    ("source", "extra", "cut_off", "match"),
+    [
+        (_OTHER_REV, None, False, rf"{_OTHER_REV}\.tar\.gz"),
+        (_REV, {_ESCAPE: b"x"}, False, r"ESCAPED\.txt"),
+        (_REV, None, True, rf"{_REV}\.tar\.gz: IncompleteRead"),
+        ("dev", None, False, "full commit SHA"),
+    ],
+    ids=["missing-archive", "escaping-member", "cut-off-response", "branch-name"],
+)
 def test_a_failed_fetch_leaves_the_copy_and_names_the_command(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    source: str,
+    extra: dict[str, bytes] | None,
+    cut_off: bool,
+    match: str,
 ) -> None:
     contract = tmp_path / "contract"
     contract.mkdir()
-    (contract / "SOURCE").write_text("missing\n")
+    (contract / "SOURCE").write_text(f"{source}\n")
     (contract / "actions.json").write_text("[]")
     monkeypatch.setattr(sync_contract, "CONTRACT", contract)
-    monkeypatch.setattr(sync_contract, "ARCHIVE", _spec_kit_archive(tmp_path, "abc"))
+    monkeypatch.setattr(
+        sync_contract, "ARCHIVE", _spec_kit_archive(tmp_path, _REV, extra)
+    )
+    if cut_off:
+        monkeypatch.setattr(
+            sync_contract.urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: _CutOffResponse(),
+        )
 
-    with pytest.raises(sync_contract.FetchError, match=r"missing\.tar\.gz") as error:
+    with pytest.raises(sync_contract.FetchError, match=match) as error:
         sync_contract.ensure_current()
 
     assert sync_contract.FETCH_COMMAND in str(error.value)
     assert sorted(path.name for path in tmp_path.iterdir()) == [
-        "abc.tar.gz",
+        f"{_REV}.tar.gz",
         "contract",
-        "spec-kit-abc",
+        f"spec-kit-{_REV}",
     ]
     assert sorted(path.name for path in contract.iterdir()) == [
         "SOURCE",
