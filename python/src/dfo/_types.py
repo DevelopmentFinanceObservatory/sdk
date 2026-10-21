@@ -8,7 +8,7 @@ sends what the server sent, and stays out of equality, hashing and `repr`.
 import json
 import re
 from collections.abc import Awaitable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any, Literal, Never, Protocol, Self, override
 
 from dfo._error_map import INVALID_ARGUMENT
@@ -31,10 +31,11 @@ type FormatErrorReason = Literal[
 
 
 class FormatError(ValueError):
-    """Stored JSON for a `Spec` or a `DatasetRef` does not match its format.
+    """Stored JSON for a `Spec`, a `DatasetRef` or a bundle breaks its format.
 
     Attributes:
-        reason: `format_invalid` when the JSON breaks the format's shape,
+        reason: `format_invalid` when the JSON breaks the format's shape or a
+            bundle's descriptor lists a file outside the bundle,
             `definition_spec_id_mismatch` when a definition names another spec, or
             `repeated_spec_id` when a ref holds one spec twice.
         pointer: A JSON Pointer to the offending value.
@@ -437,14 +438,27 @@ class Gap[C]:
         kind: `choice`, `no_data`, `not_understood`, `unsupported`, `timed_out` or
             `unknown`.
         message: What the user reads about it.
-        options: The choices that settle it, when `kind` is `choice`.
+        options: The choices that settle it: a candidates part's candidates, or
+            a no_data part's options of place or source; empty when nothing
+            settles it.
     """
 
     part_index: int
     part: Part[C]
     kind: str
     message: str
-    options: tuple[Option, ...] = ()
+    options: tuple[C | Option, ...] = ()
+
+
+def with_candidates[D](
+    part: CandidatesPart[Any], candidates: tuple[D, ...], /
+) -> CandidatesPart[D]:
+    """`part` with its candidates swapped for `candidates`, every other field kept."""
+    kept: dict[str, Any] = {
+        field.name: getattr(part, field.name) for field in fields(part)
+    }
+    kept["candidates"] = candidates
+    return CandidatesPart(**kept)
 
 
 def unbound_gap(gap: Gap[Candidate | AsyncCandidate], /) -> Gap[Candidate]:
@@ -454,38 +468,29 @@ def unbound_gap(gap: Gap[Candidate | AsyncCandidate], /) -> Gap[Candidate]:
     refuse `fetch` and name `dfo.fetch(candidate.spec)` instead.
     """
     part = gap.part
-    unbound: Part[Candidate]
     match part:
         case CandidatesPart():
-            unbound = CandidatesPart(
-                status=part.status,
-                variable_text=part.variable_text,
-                sentence=part.sentence,
-                separate=part.separate,
-                warnings=part.warnings,
-                departures=part.departures,
-                operations=part.operations,
-                assumptions=part.assumptions,
-                raw=part.raw,
-                candidates=tuple(
-                    Candidate(
-                        c.spec,
-                        c.sentence,
-                        c.label,
-                        c.source,
-                        c.unit,
-                        c.raw,
-                        assumptions=c.assumptions,
-                    )
-                    for c in part.candidates
-                ),
-                truncated=part.truncated,
+            candidates = tuple(
+                Candidate(
+                    c.spec,
+                    c.sentence,
+                    c.label,
+                    c.source,
+                    c.unit,
+                    c.raw,
+                    assumptions=c.assumptions,
+                )
+                for c in part.candidates
             )
+            unbound = with_candidates(part, candidates)
+            return Gap(gap.part_index, unbound, gap.kind, gap.message, candidates)
         case DefinitePart() | NoDataPart() | UnsupportedPart() | UnknownPart():
-            unbound = part
+            options = tuple(
+                option for option in gap.options if isinstance(option, Option)
+            )
+            return Gap(gap.part_index, part, gap.kind, gap.message, options)
         case _:
             raise TypeError(f"{type(part).__name__} is not an answer part")
-    return Gap(gap.part_index, unbound, gap.kind, gap.message, gap.options)
 
 
 @dataclass(frozen=True, slots=True)

@@ -34,7 +34,7 @@ pre-commit run --all-files
 scripts/sync_contract.py ../spec-kit
 ```
 
-The script copies the package data into `contract/` and writes the checkout's commit to `contract/SOURCE`. It refuses a checkout with uncommitted changes to the package data, because `SOURCE` would then name a commit that does not hold them. Run it with `--check` to exit non-zero on any difference.
+The script copies the package data into `contract/`, copies the package's README, which states the contract's rules, to `contract/README.md`, and writes the checkout's commit to `contract/SOURCE`. It refuses a checkout with uncommitted changes to the package data or the README, because `SOURCE` would then name a commit that does not hold them. Run it with `--check` to exit non-zero on any difference.
 
 CI runs two checks on every change to `contract/`:
 

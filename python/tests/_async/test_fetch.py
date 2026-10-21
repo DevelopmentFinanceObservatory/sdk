@@ -13,11 +13,12 @@ import pytest
 
 import dfo._fetch as fetch_module
 from dfo import _errors
-from dfo._build import Reading, digest_of
-from dfo._cache import Cache, file_entry
+from dfo._build import Reading
+from dfo._cache import Cache, file_entry, sha256_digest
 from dfo._errors import (
     ContractError,
     DataWarning,
+    DfoTimeoutError,
     InvalidRequestError,
     NetworkError,
     NotFoundError,
@@ -46,6 +47,7 @@ from .._fetch_support import (
     fake_build_dataset,
     files_path,
     json_response,
+    live_server,
     manifest,
     parquet,
     posted_spec,
@@ -107,7 +109,7 @@ def ref_member(content_version: str = NARROWED_CV, data: bytes = DATA) -> RefMem
         sentence=SENTENCE,
         spec=Spec(NARROWED_ID, body["definition"], SENTENCE),
         content_version=content_version,
-        digest=digest_of(data),
+        digest=sha256_digest(data),
         rendering=LONG,
     )
 
@@ -128,7 +130,7 @@ async def test_a_spec_with_its_sentence_replays_the_recorded_build() -> None:
         expected["content_version"],
     )
     assert member.sentence == member.spec.sentence == expected["sentence"]
-    assert member.digest == digest_of(member.data)
+    assert member.digest == sha256_digest(member.data)
     assert member.spec.definition is not target.definition
     assert caught[0].message.code == "coverage_below_scope"
     signed = replay.requests[-1]
@@ -200,6 +202,7 @@ async def test_a_narrowed_spec_stores_the_built_identity_and_asks_search_its_sen
         ),
         ({"origin": None}, {"destination": ["country/NGA"]}),
         (None, None),
+        ({}, None),
     ],
 )
 async def test_entities_rebind_only_the_roles_named(
@@ -407,6 +410,82 @@ async def test_a_signed_download_that_fails_asks_the_files_route_again() -> None
     assert built.members[0].data == DATA
 
 
+@pytest.mark.parametrize(
+    ("location", "path"),
+    [
+        ("/__e2e__/blob/bucket/object?sig=1", "/__e2e__/blob/bucket/object?sig=1"),
+        ("blob?sig=1", "blob?sig=1"),
+    ],
+    ids=["root-relative", "path-relative"],
+)
+async def test_a_relative_location_resolves_against_the_files_route(
+    location: str, path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A real httpx2 client, whose transport refuses a URL with no host; NO_PROXY
+    # keeps a configured proxy off the loopback requests.
+    monkeypatch.setenv("NO_PROXY", "*")
+    body = manifest(POSTED_ID)
+    route = body["artifacts"][1]["url"]
+    blob = path if path.startswith("/") else route.rsplit("/", 1)[0] + "/" + path
+    responses = {
+        "/api/v1/datasets": (
+            200,
+            {"content-type": "application/json"},
+            json.dumps(body).encode(),
+        ),
+        route: (302, {"location": location}, b""),
+        blob: (200, {}, DATA),
+    }
+    with live_server(responses) as server:
+        async with AsyncTransport(
+            base_url=server.origin + "/api/v1", api_key=KEY
+        ) as transport:
+            built = await fetch(transport, spec(SENTENCE))
+    assert [(method, seen) for method, seen, _ in server.seen] == [
+        ("POST", "/api/v1/datasets"),
+        ("GET", route),
+        ("GET", blob),
+    ]
+    assert "authorization" not in {name.lower() for name in server.seen[2][2]}
+    assert built.members[0].data == DATA
+
+
+@pytest.mark.parametrize("off", ["location", "artifact"])
+async def test_a_file_url_off_the_api_and_the_storage_host_raises(off: str) -> None:
+    body = manifest(POSTED_ID)
+    elsewhere = "https://files.example.net/bucket/object"
+    if off == "artifact":
+        body["artifacts"][1]["url"] = elsewhere
+    server = Server(json_response(200, body), redirect(elsewhere))
+    async with make(server) as transport:
+        with pytest.raises(ContractError) as caught:
+            await fetch(transport, spec(SENTENCE))
+    assert caught.value.code == "contract_violation"
+    assert len(server.requests) == (2 if off == "location" else 1)
+
+
+@pytest.mark.parametrize(
+    ("failure", "error", "code"),
+    [
+        (httpx2.Response(403), ServerError, "download_failed"),
+        (httpx2.ConnectError("reset"), NetworkError, "network_error"),
+        (httpx2.ReadTimeout("slow"), DfoTimeoutError, "deadline_exceeded"),
+    ],
+    ids=["refused", "network", "timeout"],
+)
+async def test_a_signed_fetch_that_fails_twice_raises_its_own_failure(
+    failure: httpx2.Response | Exception, error: type[Exception], code: str
+) -> None:
+    body = manifest(POSTED_ID)
+    server = Server(json_response(200, body), redirect(), failure, redirect(), failure)
+    async with make(server) as transport:
+        with pytest.raises(error) as caught:
+            await fetch(transport, spec(SENTENCE))
+    assert caught.value.code == code
+    assert server.calls()[1] == server.calls()[3] == f"GET {files_path(body)}"
+    assert len(server.requests) == 5
+
+
 async def test_bytes_that_miss_their_digest_twice_raise() -> None:
     server = Server(
         json_response(200, manifest(POSTED_ID)),
@@ -425,7 +504,7 @@ async def test_a_cache_entry_that_misses_its_digest_is_downloaded_again(
     tmp_path: Path,
 ) -> None:
     cache = Cache(tmp_path, env={})
-    digest = digest_of(DATA)
+    digest = sha256_digest(DATA)
     cache.put_bytes(digest, DATA)
     (cache.directory / file_entry(digest)).write_bytes(b"damaged")
     server = Server(json_response(200, manifest(POSTED_ID)), redirect(), parquet())
@@ -441,7 +520,7 @@ async def test_cached_bytes_skip_the_download_and_new_ones_are_stored() -> None:
     server = Server(json_response(200, manifest(POSTED_ID)), redirect(), parquet())
     async with make(server) as transport:
         await fetch(transport, spec(SENTENCE), cache=cache)
-        assert cache.files == {digest_of(DATA): DATA}
+        assert cache.files == {sha256_digest(DATA): DATA}
         assert (POSTED_ID, NARROWED_CV, LONG) in cache.manifests
         server.responses.append(json_response(200, manifest(POSTED_ID)))
         built = await fetch(transport, spec(SENTENCE), cache=cache)
@@ -456,7 +535,7 @@ async def test_offline_a_spec_reads_its_newest_cached_version_as_stale(
     older["prepared_at"] = "2026-01-01T00:00:00Z"
     newer = manifest(POSTED_ID)
     cache = FakeCache()
-    cache.put_bytes(digest_of(DATA), DATA)
+    cache.put_bytes(sha256_digest(DATA), DATA)
     cache.put_manifest(POSTED_ID, "cv_" + "1" * 32, LONG, older)
     cache.put_manifest(POSTED_ID, NARROWED_CV, LONG, newer)
     monkeypatch.setenv("DFO_OFFLINE", "1")
@@ -541,7 +620,7 @@ async def test_an_expired_file_is_rendered_again_by_the_file_selector() -> None:
         f"{BASE}/datasets/{NARROWED_ID}/{NARROWED_CV}/file"
     )
     assert dict(selector.url.params) == {"format": "parquet", "bundle": "false"}
-    assert built.members[0].digest == digest_of(DATA)
+    assert built.members[0].digest == sha256_digest(DATA)
 
 
 async def test_an_expired_file_without_the_selector_rebuilds_the_same_version() -> None:
@@ -596,6 +675,18 @@ async def test_a_rebuild_with_another_version_names_the_newest() -> None:
             "cv_" + "2" * 32,
         ),
         (problem(404, "not_found"), None),
+        (
+            json_response(
+                200,
+                {
+                    "spec_id": NARROWED_ID,
+                    "versions": [],
+                    "next_cursor": None,
+                    "complete": True,
+                },
+            ),
+            None,
+        ),
     ],
 )
 async def test_a_spec_that_cannot_rebuild_names_the_newest_stored_version(
@@ -617,6 +708,30 @@ async def test_a_spec_that_cannot_rebuild_names_the_newest_stored_version(
     assert caught.value.newest_version == named
 
 
+@pytest.mark.parametrize(
+    ("page", "pointer"),
+    [
+        ({"spec_id": NARROWED_ID, "items": []}, "/versions"),
+        ({"spec_id": NARROWED_ID, "versions": [{}]}, "/versions/0/content_version"),
+        ({"spec_id": NARROWED_ID, "versions": ["cv"]}, "/versions/0/content_version"),
+    ],
+)
+async def test_a_versions_page_the_client_cannot_read_raises(
+    page: dict, pointer: str
+) -> None:
+    server = Server(
+        json_response(200, manifest()),
+        problem(410, "artifact_expired"),
+        problem(404, "not_found"),
+        problem(422, "definition_not_reproducible"),
+        json_response(200, page),
+    )
+    async with make(server) as transport:
+        with pytest.raises(ContractError) as caught:
+            await fetch(transport, DatasetRef((ref_member(),)))
+    assert (caught.value.code, caught.value.pointer) == ("contract_violation", pointer)
+
+
 async def test_a_refused_versions_lookup_raises() -> None:
     server = Server(
         json_response(200, manifest()),
@@ -636,11 +751,13 @@ async def test_a_cached_ref_needs_no_request_and_offline_marks_it_stale(
 ) -> None:
     body = manifest()
     cache = FakeCache()
-    cache.put_bytes(digest_of(DATA), DATA)
+    cache.put_bytes(sha256_digest(DATA), DATA)
     cache.put_manifest(NARROWED_ID, NARROWED_CV, LONG, body)
     server = Server()
     async with make(server) as transport:
-        built = await fetch(transport, DatasetRef((ref_member(),)), cache=cache)
+        built = await fetch(
+            transport, DatasetRef((ref_member(),)), entities={}, cache=cache
+        )
         assert built.stale is False
         monkeypatch.setenv("DFO_OFFLINE", "1")
         offline = await fetch(transport, DatasetRef((ref_member(),)), cache=cache)
@@ -664,7 +781,7 @@ async def test_a_ref_takes_no_narrowing_and_keeps_its_layout() -> None:
             sentence=SENTENCE,
             spec=ref_member().spec,
             content_version=NARROWED_CV,
-            digest=digest_of(DATA),
+            digest=sha256_digest(DATA),
             rendering=Rendering("csv", True),
         )
         with pytest.raises(InvalidRequestError, match="bare Parquet"):

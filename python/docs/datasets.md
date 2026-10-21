@@ -180,7 +180,7 @@ The server keeps a version's file for 30 days, and after that rebuilds it from s
 
 ## Save and open a file
 
-`data.save(path)` writes one Parquet file whose metadata carries the provenance and the ref. `dfo.open_bundle(path)` reads it back into an equal dataset, without the network:
+`data.save(path)` writes one Parquet file whose metadata carries the provenance and the ref. `dfo.open_bundle(path)` reads it back into a dataset with the same table, provenance and ref, without the network:
 
 ```python
 import dfo
@@ -204,7 +204,9 @@ It raises `BundleError`, a `ValueError`, with a `reason`:
 - `missing_file`: a file the descriptor lists and the bundle lacks.
 - `hash_mismatch`: a file whose bytes differ from its hash. Download the bundle again.
 
-A website bundle opened from a folder has no members and no `ref`, because the folder names no stored file. Open the ZIP to keep them.
+A descriptor that lists a file outside the bundle, by an absolute path or one that climbs out with `..`, raises `FormatError` before any file is read.
+
+A website bundle opened from a folder has no members, because the folder names no stored file, and reading its `ref` raises `ValueError`. Open the ZIP to keep them.
 
 ## Next
 

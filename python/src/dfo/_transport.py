@@ -3,13 +3,19 @@
 The transport owns the base URL, the key, retries, deadlines and the reading of
 problem documents. A path resolves under the base URL and a root-relative URL
 the server returns resolves against the base URL's origin. The key travels only
-to that origin; a signed storage URL is fetched by `download` with a bare
-request. Under `DFO_OFFLINE=1` every request raises `offline` before it is sent.
+to that origin; a file a files route redirects to, on the API's origin or the
+storage host, is fetched by `download` with a bare request. Under
+`DFO_OFFLINE=1` every request raises `offline` before it is sent.
+
+The client's `timeout` bounds one attempt, and a call's deadline bounds the
+whole call: each attempt's timeout is clamped to the time left, and a deadline
+that passes while a body is read raises `deadline_exceeded`.
 """
 
 import copy
+import math
 import os
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, Self
@@ -18,6 +24,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx2
 
 from dfo._error_map import (
+    CONTRACT_VIOLATION,
     DEADLINE_EXCEEDED,
     DOWNLOAD_FAILED,
     NETWORK_ERROR,
@@ -38,6 +45,12 @@ from dfo._version import __version__
 DEFAULT_BASE_URL = "https://developmentfinance.org/api/v1"
 USER_AGENT = f"dfo-python/{__version__}"
 
+# The host that serves the signed URLs a files route redirects to.
+STORAGE_ORIGIN = "https://storage.googleapis.com"
+
+# The media types a refusal's body is read as a problem document under.
+_PROBLEM_TYPES = frozenset({"application/problem+json", "application/json"})
+
 _BACKOFF_FIRST = 0.5
 _BACKOFF_CAP = 8.0
 
@@ -55,11 +68,16 @@ def _refuse_offline(request: str) -> None:
         )
 
 
+def _origin_of(url: str) -> str:
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}".lower()
+
+
 def _split_base_url(base_url: str) -> tuple[str, str]:
     parts = urlsplit(base_url)
     if parts.scheme not in {"http", "https"} or not parts.netloc:
         raise ValueError(f"The base URL must be an http or https URL: {base_url!r}")
-    origin = f"{parts.scheme}://{parts.netloc}".lower()
+    origin = _origin_of(base_url)
     return origin + parts.path.rstrip("/"), origin
 
 
@@ -80,12 +98,38 @@ def retry_after(response: httpx2.Response) -> float | None:
 
 
 def _json_body(response: httpx2.Response) -> object:
-    if not response.content or "json" not in response.headers.get("content-type", ""):
+    """A refusal's body as JSON, when its media type is a problem document's."""
+    media_type = response.headers.get("content-type", "").split(";")[0].strip()
+    if not response.content or media_type.lower() not in _PROBLEM_TYPES:
         return None
     try:
         return response.json()
     except ValueError:
         return None
+
+
+class _DeadlineStream(httpx2.AsyncByteStream):
+    """A response body that raises `deadline_exceeded` once its deadline passes."""
+
+    def __init__(
+        self, stream: httpx2.AsyncByteStream, clock: Clock, deadline: float, what: str
+    ) -> None:
+        self._stream = stream
+        self._clock = clock
+        self._deadline = deadline
+        self._what = what
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        async for chunk in self._stream:
+            if self._clock() >= self._deadline:
+                raise client_error(
+                    DEADLINE_EXCEEDED,
+                    f"The call's deadline passed while {self._what} was read",
+                )
+            yield chunk
+
+    async def aclose(self) -> None:
+        await self._stream.aclose()
 
 
 class AsyncTransport:
@@ -197,9 +241,25 @@ class AsyncTransport:
         """Wait `seconds` through the transport's sleep."""
         await self._sleep(seconds)
 
+    def backoff(self, attempt: int) -> float:
+        """The wait before retry `attempt` (from 0) of a refusal with no
+        `Retry-After`: 0.5 seconds, doubling to 8."""
+        return min(_BACKOFF_FIRST * 2**attempt, _BACKOFF_CAP)
+
     def origin_url(self, reference: str) -> str:
-        """Resolve a URL the server returned against the base URL's origin."""
-        return urljoin(self._origin + "/", reference)
+        """Resolve a URL the server returned against the base URL's origin.
+
+        Raises:
+            ContractError: The URL names another origin (`contract_violation`).
+        """
+        url = urljoin(self._origin + "/", reference)
+        if _origin_of(url) != self._origin:
+            raise client_error(
+                CONTRACT_VIOLATION,
+                f"The server named {reference}, which is outside the API at "
+                f"{self._origin}",
+            )
+        return url
 
     def _url(self, target: str) -> str:
         parts = urlsplit(target)
@@ -214,16 +274,53 @@ class AsyncTransport:
             raise ValueError(f"A request path starts with '/': {target!r}")
         return self._base_url + target
 
-    def _attempt_timeout(self, timeout: float | None, deadline: float | None) -> float:
+    def _attempt_timeout(
+        self, timeout: float | None, deadline: float | None
+    ) -> float | None:
+        """One attempt's timeout for httpx2: the limit clamped to the time left.
+
+        None means no limit, for an infinite `timeout` and no deadline.
+        """
         limit = self._timeout if timeout is None else timeout
-        if deadline is None:
-            return limit
-        remaining = deadline - self._clock()
-        if remaining <= 0:
+        if deadline is not None:
+            remaining = deadline - self._clock()
+            if remaining <= 0:
+                raise client_error(
+                    DEADLINE_EXCEEDED, "The call's deadline passed before it finished"
+                )
+            limit = min(limit, remaining)
+        return None if math.isinf(limit) else limit
+
+    async def _send(
+        self, request: httpx2.Request, deadline: float | None, what: str
+    ) -> httpx2.Response:
+        """Send `request` and read its body, mapping httpx2's failures to errors.
+
+        Raises:
+            DfoTimeoutError: The attempt timed out (`deadline_exceeded`,
+                retryable), or the deadline passed while the body was read.
+            NetworkError: The connection failed (`network_error`, retryable).
+        """
+        try:
+            response = await self._http.send(request, stream=True)
+            try:
+                if deadline is not None:
+                    assert isinstance(response.stream, httpx2.AsyncByteStream)
+                    response.stream = _DeadlineStream(
+                        response.stream, self._clock, deadline, what
+                    )
+                await response.aread()
+            finally:
+                await response.aclose()
+        except httpx2.TimeoutException as exc:
             raise client_error(
-                DEADLINE_EXCEEDED, "The call's deadline passed before it finished"
-            )
-        return min(limit, remaining)
+                DEADLINE_EXCEEDED, f"{what} timed out", retryable=True
+            ) from exc
+        except httpx2.TransportError as exc:
+            raise client_error(
+                NETWORK_ERROR, f"{what} failed: {exc}", retryable=True
+            ) from exc
+        return response
 
     async def _headers(self, extra: Mapping[str, str] | None) -> httpx2.Headers:
         headers = httpx2.Headers(
@@ -265,7 +362,7 @@ class AsyncTransport:
             return None
         wait = error.retry_after
         if wait is None:
-            wait = min(_BACKOFF_FIRST * 2**attempt, _BACKOFF_CAP)
+            wait = self.backoff(attempt)
         if deadline is not None and self._clock() + wait >= deadline:
             return None
         return wait
@@ -288,7 +385,10 @@ class AsyncTransport:
         A refusal retries when its problem document says `retryable` (or, with
         no such member, when its status is one that clears), waiting for
         `Retry-After` or backing off from 0.5 to 8 seconds. A 401 resolves the
-        key again and, when the key changed, sends once more.
+        key again and, when the key changed, sends once more. A refusal's body
+        is read as a problem document when its media type is
+        `application/problem+json` or `application/json`, and its trace id
+        falls back to the `x-dfo-trace-id` header.
 
         Args:
             method: The HTTP method.
@@ -297,6 +397,8 @@ class AsyncTransport:
             json: The JSON body.
             headers: Headers for this request only.
             timeout: The longest one attempt waits; defaults to the transport's.
+                `math.inf` lets each attempt run until the deadline, or without
+                limit when there is none.
             deadline: A clock reading the whole call, waits included, must
                 finish by; each attempt's timeout is clamped to it.
             max_retries: Further attempts; defaults to the transport's.
@@ -306,7 +408,7 @@ class AsyncTransport:
             NetworkError: The connection failed on every attempt, or
                 `DFO_OFFLINE=1` is set (`offline`).
             DfoTimeoutError: An attempt timed out with no retry left, or the
-                deadline passed.
+                deadline passed, while waiting or while a body was read.
             ValueError: `target` is neither a path nor a URL on the API's origin.
         """
         url = self._url(target)
@@ -324,17 +426,9 @@ class AsyncTransport:
                 timeout=self._attempt_timeout(timeout, deadline),
             )
             try:
-                response = await self._http.send(request)
-            except httpx2.TimeoutException as exc:
-                error: DfoError = client_error(
-                    DEADLINE_EXCEEDED, f"{method} {url} timed out", retryable=True
-                )
-                error.__cause__ = exc
-            except httpx2.TransportError as exc:
-                error = client_error(
-                    NETWORK_ERROR, f"{method} {url} failed: {exc}", retryable=True
-                )
-                error.__cause__ = exc
+                response = await self._send(request, deadline, f"{method} {url}")
+            except DfoError as failure:
+                error = failure
             else:
                 self._note_headers(method, response)
                 if response.status_code < 400:
@@ -348,6 +442,7 @@ class AsyncTransport:
                     reason=response.reason_phrase,
                     origin=self._origin,
                     retry_after=retry_after(response),
+                    trace_id=response.headers.get("x-dfo-trace-id"),
                 )
             wait = self._retry_wait(error, attempt, retries, deadline)
             if wait is None:
@@ -355,35 +450,33 @@ class AsyncTransport:
             await self._sleep(wait)
             attempt += 1
 
-    async def download(
-        self, url: str, *, timeout: float | None = None, deadline: float | None = None
-    ) -> bytes:
-        """Fetch a signed storage URL with a bare request, once.
+    async def download(self, url: str, *, deadline: float | None = None) -> bytes:
+        """Fetch the file a files route redirected to with a bare request, once.
 
-        The request carries no client header, no key and nothing from the header
-        provider. A failed fetch is not retried: a signed URL can expire, so the
-        caller asks the files route for a fresh one.
+        The URL is on the API's origin or the storage host. The request carries
+        no client header, no key and nothing from the header provider, and it
+        reads until the deadline, or without limit when there is none. A failed
+        fetch is not retried: a signed URL can expire, so the caller asks the
+        files route for a fresh one.
 
         Raises:
-            ServerError: The storage host answered anything but 200.
+            ContractError: The URL is on neither origin (`contract_violation`).
+            ServerError: The host answered anything but 200 (`download_failed`).
             NetworkError: The connection failed, or `DFO_OFFLINE=1` is set
                 (`offline`).
             DfoTimeoutError: The fetch timed out or the deadline passed.
         """
+        if _origin_of(url) not in (self._origin, STORAGE_ORIGIN):
+            raise client_error(
+                CONTRACT_VIOLATION,
+                f"A files route redirected to {url}, which is on neither the API "
+                f"at {self._origin} nor the storage host {STORAGE_ORIGIN}",
+            )
         _refuse_offline("the signed download")
         request = self._http.build_request(
-            "GET", url, timeout=self._attempt_timeout(timeout, deadline)
+            "GET", url, timeout=self._attempt_timeout(math.inf, deadline)
         )
-        try:
-            response = await self._http.send(request)
-        except httpx2.TimeoutException as exc:
-            raise client_error(
-                DEADLINE_EXCEEDED, "The signed download timed out", retryable=True
-            ) from exc
-        except httpx2.TransportError as exc:
-            raise client_error(
-                NETWORK_ERROR, f"The signed download failed: {exc}", retryable=True
-            ) from exc
+        response = await self._send(request, deadline, "the signed download")
         if response.status_code != 200:
             raise client_error(
                 DOWNLOAD_FAILED,

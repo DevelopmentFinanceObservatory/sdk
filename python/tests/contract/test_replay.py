@@ -45,7 +45,7 @@ from dfo._sync._fetch import Session
 from dfo._sync._operation import Operation
 from dfo._sync._transport import Transport
 from dfo._transport import USER_AGENT, AsyncTransport
-from dfo._types import CandidatesPart, DatasetRef, Gap, Spec
+from dfo._types import DatasetRef, Gap, Spec
 
 from .._data import CONTRACT
 
@@ -278,8 +278,6 @@ def _run(
 
 
 def _option_count(gap: Gap[Any]) -> int:
-    if isinstance(gap.part, CandidatesPart):
-        return len(gap.part.candidates)
     return len(gap.options)
 
 

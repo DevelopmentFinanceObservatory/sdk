@@ -95,8 +95,8 @@ def search(question: str, /, *, timeout: float | None = SEARCH_TIMEOUT) -> Answe
 
     Args:
         question: The question, in your words.
-        timeout: The longest the call waits, retries included, in seconds; None
-            waits as long as Search takes.
+        timeout: The longest the call waits, retries included, in seconds; each
+            attempt reads until then, and None waits as long as Search takes.
 
     Raises:
         ContractError: The answer lacks a member the client acts on.

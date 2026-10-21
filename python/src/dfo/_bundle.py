@@ -3,7 +3,8 @@
 `open_bundle` reads a Parquet file `Dataset.save` wrote, or a website bundle as a
 ZIP, an extracted folder, or a file inside one. A bundle's `datapackage.json`
 types the data's CSV or XLSX columns and gives each file's hash, which is checked
-before the data is read.
+before the data is read. Every file it lists lies inside the bundle: a path that
+is absolute or climbs out with `..` is refused before any file is read.
 
 Both clients call this module; it is sync and does no network I/O.
 """
@@ -14,7 +15,7 @@ import json
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from os import PathLike
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal
 
 import pyarrow as pa
@@ -23,7 +24,14 @@ import pyarrow.parquet as pq
 
 from dfo._cache import sha256_digest
 from dfo._dataset import Dataset, saved_dataset
-from dfo._types import Citation, CitationSource, Member, Rendering, Spec
+from dfo._types import (
+    Citation,
+    CitationSource,
+    FormatError,
+    Member,
+    Rendering,
+    Spec,
+)
 
 DESCRIPTOR = "datapackage.json"
 
@@ -74,6 +82,7 @@ def open_bundle(path: str | PathLike[str], /) -> Dataset:
         BundleError: The path holds no saved dataset or bundle, a lone CSV or
             XLSX has no descriptor beside it, or a file's bytes differ from the
             hash its descriptor gives.
+        FormatError: The descriptor lists a file outside the bundle.
         ValueError: A saved file comes from a later format version.
     """
     target = Path(path)
@@ -150,6 +159,7 @@ def _open_descriptor(
     if raw is None:
         raise BundleError("no_descriptor", f"{where} holds no {DESCRIPTOR}")
     package = json.loads(raw)
+    _check_paths(package, where)
     resources = _resources(package)
     files = {
         resource["path"]: _checked(read, resource, where)
@@ -172,6 +182,35 @@ def _open_descriptor(
         )
     table = _read_table(files[data["path"]], data)
     return _bundle_dataset(package, data, table, digest=digest)
+
+
+def _check_paths(package: object, where: str) -> None:
+    """Refuse a descriptor that lists a file outside its bundle.
+
+    Raises:
+        FormatError: A resource's `path` is absolute or climbs above the bundle.
+    """
+    resources = package.get("resources") if isinstance(package, Mapping) else None
+    for index, resource in enumerate(resources if isinstance(resources, list) else ()):
+        path = resource.get("path") if isinstance(resource, Mapping) else None
+        if isinstance(path, str) and not _inside(PurePosixPath(path)):
+            raise FormatError(
+                "format_invalid",
+                f"/resources/{index}/path",
+                f"{where}: {DESCRIPTOR} lists {path!r}, which is outside the bundle",
+            )
+
+
+def _inside(path: PurePosixPath) -> bool:
+    """Whether a relative path stays inside the folder it is joined to."""
+    if path.is_absolute() or PureWindowsPath(str(path)).drive:
+        return False
+    depth = 0
+    for part in path.parts:
+        depth += -1 if part == ".." else 0 if part == "." else 1
+        if depth < 0:
+            return False
+    return True
 
 
 def _resources(package: object) -> list[Mapping[str, Any]]:

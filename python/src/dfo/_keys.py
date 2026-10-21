@@ -19,7 +19,13 @@ from dfo._error_map import (
     PROFILE_NOT_FOUND,
     PROFILE_WITHOUT_KEY,
 )
-from dfo._errors import DfoWarning, client_error, warn
+from dfo._errors import (
+    AuthenticationError,
+    ClientCode,
+    DfoWarning,
+    client_error,
+    warn_once,
+)
 from dfo._paths import credentials_path
 
 type KeyFormatProblem = Literal["unknown_prefix", "not_base62", "checksum_mismatch"]
@@ -33,6 +39,11 @@ _PREFIX_LENGTH = 6
 _CHECKSUM_LENGTH = 6
 _SHOWN_TAIL = 4
 _COLAB_SECRET = "DFO_API_KEY"
+
+# The contract's code for an empty `api_key` argument. It joins client-codes.json
+# at the next contract sync, which makes `scripts/gen_errors.py` generate it in
+# `dfo._error_map`; this constant then gives way to the generated one.
+KEY_EMPTY = ClientCode("key_empty", AuthenticationError)
 
 
 def mask(value: str) -> str:
@@ -166,10 +177,10 @@ def _from_file(path: str, env: Mapping[str, str]) -> ResolvedKey | None:
             f"DFO_PROFILE names the profile {profile!r}, which {path} lacks. "
             f"Run `dfo auth login` with DFO_PROFILE={profile} to add it.",
         )
-    if "key" not in entries:
+    if not entries.get("key"):
         raise client_error(
             PROFILE_WITHOUT_KEY,
-            f"The profile {profile!r} in {path} has no key. "
+            f"The profile {profile!r} in {path} has no key, or an empty one. "
             f"Run `dfo auth login` with DFO_PROFILE={profile} to add one.",
         )
     return ResolvedKey("credentials_file", ApiKey(entries["key"]), path, profile)
@@ -195,9 +206,14 @@ def _from_argument(api_key: ApiKeyArgument) -> ResolvedKey | None:
         return None
     if api_key is False:
         return _ANONYMOUS
-    if isinstance(api_key, str | ApiKey):
-        return _found("argument", api_key)
-    return _found("argument", api_key())
+    value = api_key if isinstance(api_key, str | ApiKey) else api_key()
+    if value == "":
+        raise client_error(
+            KEY_EMPTY,
+            "The api_key argument is empty. Pass a key, None to look one up, or "
+            "False for anonymous use.",
+        )
+    return _found("argument", value)
 
 
 def _lookup(
@@ -226,8 +242,8 @@ def resolve_key(
     The sources, in order: the `api_key` argument (a key, an `ApiKey`, a callable
     returning one, or False for anonymous use); `DFO_API_KEY`; the credentials
     file, profile `DFO_PROFILE` else `default`; a Colab secret named
-    `DFO_API_KEY`; otherwise anonymous. A key that fails the format check warns
-    and is used anyway.
+    `DFO_API_KEY`; otherwise anonymous. An empty `DFO_API_KEY` counts as unset.
+    A key that fails the format check warns once per process and is used anyway.
 
     Args:
         api_key: The client's `api_key` argument.
@@ -235,21 +251,23 @@ def resolve_key(
         path: The credentials file, defaulting to the contract's path.
 
     Raises:
-        AuthenticationError: The credentials file is invalid
+        AuthenticationError: The `api_key` argument is empty (`key_empty`), the
+            credentials file is invalid
             (`credentials_file_invalid`), `DFO_PROFILE` names a profile it lacks
-            (`profile_not_found`), or the chosen profile has no key
-            (`profile_without_key`).
+            (`profile_not_found`), or the chosen profile has no key or an empty
+            one (`profile_without_key`).
     """
     resolved = _lookup(api_key, os.environ if env is None else env, path)
     if resolved.key is not None and (
         problem := check_key_format(resolved.key.reveal())
     ):
-        warn(
+        warn_once(
+            ("key_format", problem, resolved.key),
             DfoWarning(
                 f"The API key {mask(resolved.key.reveal())} from the "
                 f"{resolved.source.replace('_', ' ')} does not look like a DFO "
                 f"key ({problem}); the client sends it anyway."
-            )
+            ),
         )
     return resolved
 

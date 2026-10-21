@@ -17,6 +17,7 @@ from dfo._errors import ContractError
 from dfo._parse import parse_parts
 from dfo._types import (
     Assumption,
+    CandidatesPart,
     DatasetRef,
     DefinitePart,
     Departure,
@@ -389,7 +390,16 @@ def test_the_html_display_escapes_every_server_string() -> None:
 
 def _gaps() -> tuple[Gap, ...]:
     parts = parse_parts(load("search-4.json"))
+    (candidates,) = parse_parts(load("search-2.json"))
+    assert isinstance(candidates, CandidatesPart)
     return (
+        Gap(
+            part_index=0,
+            part=candidates,
+            kind="choice",
+            message="3 readings",
+            options=candidates.candidates,
+        ),
         Gap(
             part_index=1,
             part=parts[1],

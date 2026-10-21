@@ -3,11 +3,10 @@
 A build posts a spec to the datasets surface with a scope and a rendering, and
 reads back a manifest or a long-build operation. This module writes those request
 bodies, reads the operation resource, picks the artifact a manifest lists for the
-client's rendering, checks downloaded bytes against their digest, and paces polls.
+client's rendering, and paces polls.
 `dfo._fetch` and `dfo._operation` hold the requests themselves.
 """
 
-import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
@@ -168,7 +167,7 @@ def rebind(
 
     The server replaces a spec's entire binding with the posted one, so the
     client starts from the roles the spec's definition binds and changes only
-    the roles `entities` names. A role bound to None leaves the binding.
+    the roles `entities` names. A role bound to None is dropped.
     """
     bound: dict[str, Sequence[str]] = dict(
         spec.definition["identity"].get("entities", {})
@@ -290,11 +289,6 @@ def pick_artifact(
         ):
             return artifact
     return None
-
-
-def digest_of(data: bytes) -> str:
-    """The `sha256:<hex>` digest of `data`, as the server names stored objects."""
-    return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

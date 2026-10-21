@@ -27,6 +27,7 @@ from dfo._types import (
     Assumption,
     AsyncCandidate,
     Candidate,
+    CandidatesPart,
     Citation,
     CitationSource,
     DatasetRef,
@@ -149,11 +150,21 @@ class Dataset:
     assumptions: tuple[Assumption, ...] = ()
 
     @property
-    def ref(self) -> DatasetRef | None:
+    def ref(self) -> DatasetRef:
         """The exact versions the dataset holds, to fetch them again later.
 
-        None for a website bundle opened from a folder, which names no artifact.
+        Raises:
+            ValueError: The dataset is a website bundle opened from a folder,
+                which names no version.
         """
+        if (ref := self._ref()) is None:
+            raise ValueError(
+                "A website bundle opened from a folder names no version, so it has "
+                "no ref; open the bundle's ZIP, or fetch the dataset with dfo.fetch"
+            )
+        return ref
+
+    def _ref(self) -> DatasetRef | None:
         return DatasetRef.of(self.members) if self.members else None
 
     @property
@@ -225,7 +236,8 @@ class Dataset:
     def save(self, path: str | PathLike[str], /) -> None:
         """Write the table to one Parquet file that carries the provenance and the ref.
 
-        `dfo.open_bundle(path)` reads it back into an equal dataset.
+        `dfo.open_bundle(path)` reads it back into a dataset with the same table,
+        provenance and ref.
         """
         pq.write_table(self.to_arrow(), path)
 
@@ -271,7 +283,7 @@ class Dataset:
         )
 
     def _attrs(self) -> dict[str, Any]:
-        ref = self.ref
+        ref = self._ref()
         return {
             "sentence": self.sentence,
             "citation": self.citation.text,
@@ -282,7 +294,7 @@ class Dataset:
 
     def _metadata(self) -> dict[bytes, bytes]:
         """The provenance as the saved file's key-value metadata, under `dfo.*` keys."""
-        ref = self.ref
+        ref = self._ref()
         metadata = {
             "dfo.format_version": str(SAVED_FORMAT_VERSION),
             "dfo.sentence": self.sentence,
@@ -552,24 +564,32 @@ def _gap_object(gap: Gap[object]) -> dict[str, Any]:
                 "data_query": option.data_query,
             }
             for option in gap.options
+            if isinstance(option, Option)
         ],
     }
 
 
 def _load_gap(obj: Mapping[str, Any]) -> Gap[Candidate]:
-    return Gap(
-        part_index=obj["part_index"],
-        part=parse_part(obj["part"]),
-        kind=obj["kind"],
-        message=obj["message"],
-        options=tuple(
+    """A saved gap; a candidates part's options are its candidates, as in an answer."""
+    part = parse_part(obj["part"])
+    options: tuple[Candidate | Option, ...] = (
+        part.candidates
+        if isinstance(part, CandidatesPart)
+        else tuple(
             Option(
                 label=option["label"],
                 mentions=tuple(option["mentions"]),
                 data_query=option["data_query"],
             )
             for option in obj["options"]
-        ),
+        )
+    )
+    return Gap(
+        part_index=obj["part_index"],
+        part=part,
+        kind=obj["kind"],
+        message=obj["message"],
+        options=options,
     )
 
 

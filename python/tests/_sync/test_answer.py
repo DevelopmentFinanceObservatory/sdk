@@ -49,10 +49,12 @@ class Server:
         self.bodies = list(bodies)
         self.posted: list[Any] = []
         self.urls: list[str] = []
+        self.read_timeouts: list[float | None] = []
 
     def __call__(self, request: httpx2.Request) -> httpx2.Response:
         self.posted.append(json.loads(request.content))
         self.urls.append(str(request.url))
+        self.read_timeouts.append(request.extensions["timeout"]["read"])
         return httpx2.Response(200, json=self.bodies.pop(0))
 
 
@@ -98,15 +100,8 @@ def summary(answer: Answer) -> dict[str, Any]:
         "status": answer.status,
         "complete": answer.complete,
         "specs": len(answer.specs),
-        "gaps": [(g.part_index, g.kind, choices(g)) for g in answer.gaps],
+        "gaps": [(g.part_index, g.kind, len(g.options)) for g in answer.gaps],
     }
-
-
-def choices(gap: Gap) -> int:
-    """The choices a gap offers: its candidates, or its place or source options."""
-    if isinstance(gap.part, CandidatesPart):
-        return len(gap.part.candidates)
-    return len(gap.options)
 
 
 @pytest.fixture
@@ -221,6 +216,26 @@ def test_search_posts_the_question_and_reads_the_answer(
     assert answer.question == question
     if wire["kind"] == "resolution":
         assert answer.sentence == wire["rendered_sentence"]
+
+
+@pytest.mark.parametrize(
+    ("timeout", "read"), [(None, None), (60.0, 60.0), (90.0, 90.0)]
+)
+def test_a_search_attempt_reads_until_the_search_deadline(
+    timeout: float | None, read: float | None
+) -> None:
+    server = Server(load("search-1.json"))
+    client = transport(server)
+    search(lambda: Session(client), "ODA", timeout=timeout)
+    assert server.read_timeouts == [pytest.approx(read) if read else None]
+
+
+def test_a_candidates_gap_offers_its_candidates_as_options() -> None:
+    answer, _ = ask("GNI", load("search-2.json"))
+    (gap,) = answer.gaps
+    assert isinstance(gap.part, CandidatesPart)
+    assert gap.options == gap.part.candidates
+    assert all(a is b for a, b in zip(gap.options, gap.part.candidates, strict=True))
 
 
 def test_specs_hold_one_spec_per_distinct_spec_id() -> None:
@@ -453,6 +468,24 @@ def test_a_place_choice_in_a_one_part_answer_posts_the_option_unchanged() -> Non
     assert chosen.complete
 
 
+@pytest.mark.parametrize("data_query", [None, {"parts": []}])
+def test_a_place_option_without_a_one_part_query_raises_before_posting(
+    data_query: dict[str, Any] | None,
+) -> None:
+    wire = load("search-3.json")
+    wire["parts"][0] = with_options(wire["parts"][0])
+    option = wire["parts"][0]["no_data"]["options"][0]
+    if data_query is None:
+        del option["data_query"]
+    else:
+        option["data_query"] = data_query
+    answer, server = ask("ODA disbursements from Germany to Congo", wire)
+    with pytest.raises(ContractError) as caught:
+        answer.choose(0)
+    assert caught.value.code == "contract_violation"
+    assert len(server.posted) == 1
+
+
 def test_a_place_choice_beside_a_definite_part_posts_its_parsed_part() -> None:
     wire = load("search-1.json")
     wire["parts"].append(with_options(load("search-3.json")["parts"][0]))
@@ -633,6 +666,12 @@ def assert_unbound(
             gap.part.candidates, source.part.candidates, strict=True
         )
     ]
+    for gap in held:
+        if isinstance(gap.part, CandidatesPart):
+            assert all(
+                a is b for a, b in zip(gap.options, gap.part.candidates, strict=True)
+            )
+            assert len(gap.options) == len(gap.part.candidates)
     assert candidates
     for candidate, original in candidates:
         assert type(candidate) is Candidate

@@ -14,6 +14,7 @@ import pytest
 from dfo import _errors
 from dfo._errors import (
     AuthenticationError,
+    ContractError,
     DfoDeprecationWarning,
     DfoError,
     DfoTimeoutError,
@@ -26,12 +27,14 @@ from dfo._errors import (
 )
 from dfo._transport import USER_AGENT, AsyncTransport
 
+from .._fetch_support import SlowBody
+
 pytestmark = pytest.mark.anyio
 
 BASE = "https://api.example.org/api/v1"
 KEY = "dfo_k_4f8Kq2ZtR7mWx1NcB9vLp3YhD6sGa0Ue2wanxe"
 OTHER_KEY = "dfo_k_Zz9Yy8Xx7Ww6Vv5Uu4Tt3Ss2Rr1Qq0Pp448bfc"
-SIGNED = "https://storage.example.com/bucket/object?X-Goog-Signature=redacted"
+SIGNED = "https://storage.googleapis.com/bucket/object?X-Goog-Signature=redacted"
 
 type Handler = Callable[[httpx2.Request], httpx2.Response]
 
@@ -48,6 +51,9 @@ class Timeline:
 
     async def sleep(self, seconds: float) -> None:
         self.sleeps.append(seconds)
+        self.now += seconds
+
+    def advance(self, seconds: float) -> None:
         self.now += seconds
 
 
@@ -158,7 +164,10 @@ async def test_a_redirect_returns_unfollowed() -> None:
     assert len(recorder.requests) == 1
 
 
-async def test_download_sends_a_bare_request() -> None:
+@pytest.mark.parametrize(
+    "url", [SIGNED, "https://api.example.org/__e2e__/blob/bucket/object?sig=1"]
+)
+async def test_download_sends_a_bare_request(url: str) -> None:
     calls = []
 
     async def provider() -> dict[str, str]:
@@ -172,14 +181,69 @@ async def test_download_sends_a_bare_request() -> None:
         default_headers={"x-dfo-principal": "someone"},
         header_provider=provider,
     ) as transport:
-        assert await transport.download(SIGNED) == b"PAR1"
+        assert await transport.download(url) == b"PAR1"
     headers = recorder.requests[0].headers
-    assert str(recorder.requests[0].url) == SIGNED
+    assert str(recorder.requests[0].url) == url
     assert "authorization" not in headers
     assert "x-serverless-authorization" not in headers
     assert "x-dfo-principal" not in headers
     assert headers["user-agent"] != USER_AGENT
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://files.example.net/bucket/object",
+        "http://storage.googleapis.com/bucket/object",
+        "https://api.example.org.evil.net/blob",
+    ],
+)
+async def test_a_download_off_the_api_and_the_storage_host_is_refused(
+    url: str,
+) -> None:
+    recorder = Recorder()
+    async with make(recorder, api_key=KEY) as transport:
+        with pytest.raises(ContractError) as caught:
+            await transport.download(url)
+    assert caught.value.code == "contract_violation"
+    assert recorder.requests == []
+
+
+async def test_a_server_url_off_the_api_origin_is_a_contract_violation() -> None:
+    async with make(Recorder()) as transport:
+        assert transport.origin_url("/api/x") == "https://api.example.org/api/x"
+        with pytest.raises(ContractError) as caught:
+            transport.origin_url("https://files.example.net/api/x")
+    assert caught.value.code == "contract_violation"
+
+
+@pytest.mark.parametrize(("seconds", "read"), [(None, None), (1800.0, 1800.0)])
+async def test_a_download_reads_until_the_deadline(
+    seconds: float | None, read: float | None
+) -> None:
+    timeline = Timeline()
+    recorder = Recorder(httpx2.Response(200, content=b"PAR1"))
+    async with make(recorder, timeline, timeout=30.0) as transport:
+        await transport.download(SIGNED, deadline=transport.deadline(seconds))
+    assert recorder.requests[0].extensions["timeout"]["read"] == read
+
+
+async def test_a_deadline_that_passes_while_a_body_is_read_raises() -> None:
+    timeline = Timeline()
+    slow = httpx2.Response(
+        200,
+        headers={"content-type": "application/json"},
+        stream=SlowBody(timeline.advance, 20),
+    )
+    recorder = Recorder(slow, httpx2.Response(200))
+    async with make(recorder, timeline) as transport:
+        with pytest.raises(DfoTimeoutError) as caught:
+            await transport.request(
+                "GET", "/datasets/schema", deadline=transport.deadline(10)
+            )
+    assert (caught.value.code, caught.value.retryable) == ("deadline_exceeded", False)
+    assert len(recorder.requests) == 1
 
 
 async def test_a_failed_download_is_not_retried() -> None:
@@ -236,6 +300,56 @@ async def test_a_problem_document_fills_the_error() -> None:
     )
     assert error.docs_url == "https://api.example.org/codes/spec_not_found"
     assert error.problem == {"status": 404, **body}
+
+
+@pytest.mark.parametrize(
+    ("response", "trace_id"),
+    [
+        (httpx2.Response(502, text="<html>Bad gateway</html>"), "trace-header"),
+        (
+            httpx2.Response(502, json={"error": "transient_unavailable", "retry": "x"}),
+            "trace-header",
+        ),
+        (problem(500, code="internal_error", retryable=False), "trace-header"),
+        (
+            problem(500, code="internal_error", retryable=False, trace_id="in-body"),
+            "in-body",
+        ),
+    ],
+    ids=["no-body-code", "proxy-body", "problem-without-trace", "problem-trace"],
+)
+async def test_a_refusal_takes_its_trace_id_from_the_header_when_the_body_has_none(
+    response: httpx2.Response, trace_id: str
+) -> None:
+    response.headers["x-dfo-trace-id"] = "trace-header"
+    async with make(Recorder(response), max_retries=0) as transport:
+        with pytest.raises(ServerError) as caught:
+            await transport.request("GET", "/datasets/schema")
+    assert caught.value.trace_id == trace_id
+
+
+@pytest.mark.parametrize(
+    ("content_type", "code"),
+    [
+        ("application/problem+json", "spec_not_found"),
+        ("application/json; charset=utf-8", "spec_not_found"),
+        ("Application/Problem+JSON", "spec_not_found"),
+        ("application/x-ndjson", "refusal_without_code"),
+        ("text/plain", "refusal_without_code"),
+    ],
+)
+async def test_a_refusal_body_is_a_problem_document_only_under_its_media_types(
+    content_type: str, code: str
+) -> None:
+    refused = httpx2.Response(
+        404,
+        headers={"content-type": content_type},
+        content=json.dumps({"code": "spec_not_found", "status": 404}).encode(),
+    )
+    async with make(Recorder(refused)) as transport:
+        with pytest.raises(NotFoundError) as caught:
+            await transport.request("GET", "/datasets/spec_1")
+    assert caught.value.code == code
 
 
 async def test_an_unknown_code_maps_on_its_status() -> None:

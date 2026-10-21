@@ -23,6 +23,7 @@ fetch returns. Members build one after another, under one deadline.
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urljoin
 
 from dfo._build import (
     Cache,
@@ -32,7 +33,6 @@ from dfo._build import (
     Wire,
     build_body,
     check_built,
-    digest_of,
     layout_of,
     pick_artifact,
     rebind,
@@ -42,6 +42,7 @@ from dfo._build import (
     resubmit_body,
     scope,
 )
+from dfo._cache import sha256_digest
 from dfo._dataset import Dataset, FetchedMember, build_dataset
 from dfo._error_map import (
     CONTRACT_VIOLATION,
@@ -52,6 +53,7 @@ from dfo._error_map import (
     VERSION_UNAVAILABLE,
 )
 from dfo._errors import (
+    ContractError,
     DataWarning,
     DfoError,
     InvalidRequestError,
@@ -138,12 +140,14 @@ def fetch(
         target: A `Spec` to build, or a `DatasetRef` to read back.
         window: Narrow a spec to `"all"`, `"latest"` or `(start_year, end_year)`.
         entities: Rebind the named roles of a spec to dcids; None drops a role.
-            The spec's other roles keep their binding.
+            The spec's other roles keep their binding, and an empty map
+            narrows nothing.
         facets: Bind a spec's provenance, measurement method or unit.
         layout: `long` (the default for a spec) or `frame`. A ref holds its own
             layout; naming another raises.
         strict: Raise the first dataset warning instead of issuing it.
-        timeout: The longest the fetch takes, in seconds; None for no limit.
+        timeout: The longest the fetch takes, in seconds, downloads included;
+            None for no limit.
         progress: False silences long-build progress.
         cache: The local cache, or None to fetch without one.
 
@@ -153,7 +157,7 @@ def fetch(
         DfoError: The server refused a request.
     """
     if isinstance(target, DatasetRef):
-        if window is not None or entities is not None or facets is not None:
+        if window is not None or entities or facets is not None:
             raise client_error(
                 INVALID_ARGUMENT,
                 "A DatasetRef names exact versions and takes no narrowing; "
@@ -178,7 +182,7 @@ def fetch(
         cache=cache,
         narrowing=scope(
             window=window,
-            entities=None if entities is None else rebind(target, entities),
+            entities=rebind(target, entities) if entities else None,
             facets=facets,
         ),
     )
@@ -300,11 +304,13 @@ def mint(
     spec: Spec,
     *,
     layout: Layout = "long",
-    strict: bool = False,
     progress: bool | None = None,
     cache: Cache | None = None,
 ) -> Operation:
     """Start a spec's build and return it as an operation, done or running.
+
+    The build request reads for up to 150 seconds and has no outer deadline;
+    the operation's `result` bounds the wait for the build.
 
     Raises:
         DfoError: The server refused the build.
@@ -320,7 +326,6 @@ def mint(
             transport,
             Reading((), spec, spec.sentence),
             layout=layout,
-            strict=strict,
             cache=cache,
         ),
         renderer=renderer,
@@ -332,24 +337,23 @@ def operation(
     operation_id: str,
     *,
     layout: Layout = "long",
-    strict: bool = False,
     progress: bool | None = None,
     cache: Cache | None = None,
 ) -> Operation:
     """Resume a build another process started, by its operation id.
 
     The build's rendering is in its id, so `layout` must be the one it was
-    started with.
+    started with. An operation that already failed raises its error from
+    `result`.
 
     Raises:
         NotFoundError: The server holds no operation with that id.
-        DfoError: The operation failed.
     """
     renderer = ProgressRenderer(enabled=progress)
     poller = resume(transport, operation_id, on_progress=progress_hook(renderer))
     return Operation(
         poller,
-        _finisher(transport, None, layout=layout, strict=strict, cache=cache),
+        _finisher(transport, None, layout=layout, cache=cache),
         renderer=renderer,
     )
 
@@ -359,9 +363,9 @@ def _finisher(
     want: Reading | None,
     *,
     layout: Layout,
-    strict: bool,
     cache: Cache | None,
 ) -> Finish:
+    """The step that downloads an operation's done build; it raises no warning."""
     rendering = rendering_for(layout)
 
     def finish(manifest: Wire, deadline: float | None, /) -> Dataset:
@@ -370,7 +374,7 @@ def _finisher(
             manifest,
             want=want,
             rendering=rendering,
-            strict=strict,
+            strict=False,
             cache=cache,
             deadline=deadline,
         )
@@ -524,15 +528,18 @@ def _download(
 ) -> bytes:
     """Fetch a file through the route that redirects to it, checked on `digest`.
 
-    The route answers a redirect to a signed storage URL, fetched with a bare
-    request. A signed fetch that fails, or bytes that do not hash to `digest`,
-    ask the route once more for a fresh URL rather than retrying the old one.
+    The route answers a redirect, whose `Location` resolves against the
+    route's URL and is fetched once with a bare request. A signed fetch that
+    fails retryably, or bytes that do not hash to `digest`, ask the route once
+    more for a fresh URL rather than retrying the old one.
 
     Raises:
         ServerError: The bytes did not hash to `digest` on either attempt
-            (`digest_mismatch`), or the signed fetch failed on both.
+            (`digest_mismatch`), or the signed fetch failed on both
+            (`download_failed`).
         ContractError: The route answered neither 200 nor a redirect with a
-            Location.
+            Location, or the Location is on neither the API's origin nor the
+            storage host.
     """
     failure: DfoError | None = None
     for _ in range(2):
@@ -549,7 +556,9 @@ def _download(
                     status=response.status_code,
                 )
             try:
-                data = transport.download(location, deadline=deadline)
+                data = transport.download(
+                    urljoin(str(response.url), location), deadline=deadline
+                )
             except DfoError as error:
                 if not error.retryable:
                     raise
@@ -562,7 +571,7 @@ def _download(
                 "a file route answers a redirect",
                 status=response.status_code,
             )
-        if (found := digest_of(data)) == digest:
+        if (found := sha256_digest(data)) == digest:
             return data
         failure = client_error(
             DIGEST_MISMATCH, f"The file at {target} hashes to {found}, not {digest}"
@@ -793,7 +802,12 @@ def _newest(
     """The newest stored version of a spec, or None when the spec has none.
 
     The versions route lists versions newest first, so a page of one holds the
-    newest. Only `NotFoundError` reads as no version; any other refusal raises.
+    newest. Only an empty page or `NotFoundError` reads as no version; any other
+    refusal raises.
+
+    Raises:
+        ContractError: The page has no `versions` list, or its first entry has
+            no `content_version` (`contract_violation`).
     """
     try:
         response = transport.request(
@@ -806,10 +820,27 @@ def _newest(
         return None
     body = response_json(response)
     versions = body.get("versions") if isinstance(body, Mapping) else None
-    if not versions or not isinstance(versions[0], Mapping):
+    if not isinstance(versions, list):
+        raise _violation(f"GET /datasets/{spec_id}/versions", "/versions")
+    if not versions:
         return None
-    newest = versions[0].get("content_version")
-    return newest if isinstance(newest, str) else None
+    newest = (
+        versions[0].get("content_version") if isinstance(versions[0], Mapping) else None
+    )
+    if not isinstance(newest, str):
+        raise _violation(
+            f"GET /datasets/{spec_id}/versions", "/versions/0/content_version"
+        )
+    return newest
+
+
+def _violation(route: str, pointer: str) -> ContractError:
+    error = client_error(
+        CONTRACT_VIOLATION,
+        f"{route} answered a page with no {pointer}, which this client acts on",
+    )
+    error.pointer = pointer
+    return error
 
 
 def _stored(member: RefMember, manifest: Wire, data: bytes) -> FetchedMember:

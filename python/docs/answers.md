@@ -162,7 +162,7 @@ A scheduled job should leave `partial` off. A question that resolved in full thi
 
 ## Gap kinds
 
-`answer.gaps` and `IncompleteAnswerError.gaps` hold one `Gap` per part without a reading, with its `part_index`, `part`, `kind`, `message` and `options`.
+`answer.gaps` and `IncompleteAnswerError.gaps` hold one `Gap` per part without a reading, with its `part_index`, `part`, `kind`, `message` and `options`. A candidates part's options are its candidates, and a place or source choice's are its `Option`s.
 
 | `kind`           | What it means                                                     | What to do                              |
 | ---------------- | ----------------------------------------------------------------- | --------------------------------------- |

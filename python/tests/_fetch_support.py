@@ -1,25 +1,28 @@
 """Shared pieces of the fetch and operation tests: mock servers, bodies, fakes.
 
 Nothing here awaits, so the async tests and the sync tests generated from them
-use the same helpers.
+use the same helpers; `SlowBody` serves both flavours of client.
 """
 
 import copy
 import json
-from collections.abc import Mapping, Sequence
+import threading
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import httpx2
 
-from dfo._build import digest_of
+from dfo._cache import sha256_digest
 from dfo._types import Rendering
 
 from ._data import CONTRACT, load
 
 BASE = "https://api.example.org/api/v1"
 ORIGIN = "https://api.example.org"
-SIGNED = "https://storage.example.com/bucket/object?X-Goog-Signature=redacted"
+SIGNED = "https://storage.googleapis.com/bucket/object?X-Goog-Signature=redacted"
 DATA = b"PAR1 long layout PAR1"
 FRAME = b"PAR1 frame layout PAR1"
 POSTED_ID = "spec_774d6c001a6250aa67ca676ab067895e"
@@ -40,7 +43,13 @@ def json_response(
     )
 
 
-def problem(status: int, code: str, *, retryable: bool = False) -> httpx2.Response:
+def problem(
+    status: int,
+    code: str,
+    *,
+    retryable: bool = False,
+    headers: Mapping[str, str] | None = None,
+) -> httpx2.Response:
     return json_response(
         status,
         {
@@ -52,6 +61,7 @@ def problem(status: int, code: str, *, retryable: bool = False) -> httpx2.Respon
             "trace_id": "trace",
             "retryable": retryable,
         },
+        headers,
     )
 
 
@@ -79,7 +89,7 @@ def manifest(
     body["definition"]["spec_id"] = spec_id
     body["content_version"] = content_version
     body["warnings"] = list(warnings)
-    digest = digest_of(data)
+    digest = sha256_digest(data)
     body["artifacts"] = [
         {
             "artifact_digest": "sha256:" + "0" * 64,
@@ -212,7 +222,7 @@ class FakeCache:
         return self.files.get(digest)
 
     def put_bytes(self, digest: str, data: bytes, /) -> None:
-        assert digest_of(data) == digest
+        assert sha256_digest(data) == digest
         self.files[digest] = data
 
     def get_manifest(
@@ -258,3 +268,78 @@ def fake_build_dataset(
     members: Sequence[Any], *, layout: str, complete: bool, missing: Any, stale: bool
 ) -> Built:
     return Built(list(members), layout, complete, tuple(missing), stale)
+
+
+type LiveResponse = tuple[int, Mapping[str, str], bytes]
+
+
+@dataclass
+class LiveServer:
+    """A real HTTP server on 127.0.0.1 that answers each path with a fixed response.
+
+    It exercises httpx2's own URL handling, which `httpx2.MockTransport` skips.
+
+    Attributes:
+        origin: The server's `http://127.0.0.1:<port>`.
+        seen: Each request's method, path and headers, in order.
+    """
+
+    origin: str
+    seen: list[tuple[str, str, dict[str, str]]]
+
+
+@contextmanager
+def live_server(responses: Mapping[str, LiveResponse]) -> Iterator[LiveServer]:
+    """Serve `responses` by request path (query included) until the block ends."""
+    seen: list[tuple[str, str, dict[str, str]]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def _answer(self) -> None:
+            length = int(self.headers.get("content-length") or 0)
+            self.rfile.read(length)
+            seen.append((self.command, self.path, dict(self.headers.items())))
+            status, headers, body = responses.get(self.path, (404, {}, b""))
+            self.send_response(status)
+            for name, value in headers.items():
+                self.send_header(name, value)
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:
+            self._answer()
+
+        def do_POST(self) -> None:
+            self._answer()
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield LiveServer(f"http://127.0.0.1:{server.server_address[1]}", seen)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+class SlowBody(httpx2.SyncByteStream, httpx2.AsyncByteStream):
+    """A response body whose second chunk arrives `seconds` after its first.
+
+    `advance` moves the test's clock, so a deadline can pass mid-read.
+    """
+
+    def __init__(self, advance: Callable[[float], None], seconds: float) -> None:
+        self._advance = advance
+        self._seconds = seconds
+
+    def __iter__(self) -> Iterator[bytes]:
+        yield b'{"part": '
+        self._advance(self._seconds)
+        yield b"1}"
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self:
+            yield chunk

@@ -1,5 +1,6 @@
 """Tests for the code generators in `scripts/`."""
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -9,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 import gen_errors
 import gen_sync
+import sync_contract
 
 from dfo._errors import ClientCode, ServerError
 
@@ -142,3 +144,23 @@ def test_the_error_map_refuses_client_codes_without_one_by_status_row() -> None:
             },
             client_codes,
         )
+
+
+def test_the_contract_check_covers_the_package_readme(tmp_path: Path) -> None:
+    contract = sync_contract.CONTRACT
+    package = tmp_path / sync_contract.PACKAGE_DATA
+    shutil.copytree(
+        contract,
+        package,
+        ignore=lambda folder, names: (
+            sync_contract.OWN_FILES if Path(folder) == contract else set()
+        ),
+    )
+    readme = tmp_path / sync_contract.PACKAGE_README
+    readme.write_bytes((contract / "README.md").read_bytes())
+    revision = (contract / "SOURCE").read_text().strip()
+    assert sync_contract.differences(tmp_path, revision) == []
+    readme.write_text("# The rules, changed\n")
+    assert sync_contract.differences(tmp_path, revision) == [
+        f"differs: README.md (from {sync_contract.PACKAGE_README})"
+    ]

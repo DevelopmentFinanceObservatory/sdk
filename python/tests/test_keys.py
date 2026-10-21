@@ -10,11 +10,17 @@ from typing import Any
 
 import pytest
 
+from dfo import _errors
 from dfo._errors import AuthenticationError, DfoWarning
 from dfo._keys import ApiKey, KeyState, check_key_format, resolve_key
 from tests.rule_vectors import ids, vectors
 
 KEY = "dfo_k_4f8Kq2ZtR7mWx1NcB9vLp3YhD6sGa0Ue2wanxe"
+
+
+@pytest.fixture(autouse=True)
+def fresh_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_errors, "_warned", set())
 
 
 @pytest.mark.parametrize("vector", vectors("key-format"), ids=ids("key-format"))
@@ -33,6 +39,31 @@ def test_a_key_that_fails_the_check_warns_and_is_sent(vector: dict[str, Any]) ->
     if shown:
         assert vector["key"] not in str(shown[0].message)
         assert shown[0].filename == __file__
+
+
+def test_a_key_that_fails_the_check_warns_once_per_process() -> None:
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for _ in range(3):
+            resolve_key("sk-not-a-dfo-key", env={})
+        resolve_key("sk-another-key", env={})
+    assert len([w for w in caught if issubclass(w.category, DfoWarning)]) == 2
+
+
+@pytest.mark.parametrize("entry", ['key = ""\n', 'name = "laptop"\n'])
+def test_a_profile_with_an_empty_or_no_key_raises(entry: str, tmp_path: Path) -> None:
+    path = tmp_path / "credentials.toml"
+    path.write_text(f"[default]\n{entry}", encoding="utf-8")
+    with pytest.raises(AuthenticationError) as caught:
+        resolve_key(env={}, path=str(path))
+    assert caught.value.code == "profile_without_key"
+
+
+@pytest.mark.parametrize("api_key", ["", lambda: ""], ids=["string", "callable"])
+def test_an_empty_key_argument_raises(api_key: Any) -> None:
+    with pytest.raises(AuthenticationError) as caught:
+        resolve_key(api_key, env={"DFO_API_KEY": KEY})
+    assert caught.value.code == "key_empty"
 
 
 def _look_up(vector: dict[str, Any], tmp_path: Path) -> Any:

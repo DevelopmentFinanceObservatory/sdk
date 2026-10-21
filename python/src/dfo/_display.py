@@ -16,10 +16,10 @@ from typing import Any, Protocol
 from dfo._types import (
     AsyncCandidate,
     Candidate,
-    CandidatesPart,
     DefinitePart,
     Gap,
     Notice,
+    Option,
     Part,
 )
 
@@ -179,14 +179,9 @@ def _gap_lines(answer: AnswerView) -> list[str]:
             lines.append(f"  answered {name}: {part.sentence or ''}".rstrip())
             continue
         lines.append(f"  missing  {name}: {gap.message}")
-        if isinstance(part, CandidatesPart):
-            lines.extend(
-                f"    [{number}] {_candidate_line(candidate)}"
-                for number, candidate in enumerate(part.candidates)
-            )
         lines.extend(
-            f"    [{number}] {option.label}"
-            for number, option in enumerate(gap.options)
+            f"    [{number}] {_choice_line(choice)}"
+            for number, choice in enumerate(gap.options)
         )
     lines.extend(
         f"  Choose: {call}.fetch()"
@@ -200,27 +195,25 @@ def _gap_lines(answer: AnswerView) -> list[str]:
     return lines
 
 
-def _candidate_line(candidate: Candidate | AsyncCandidate) -> str:
-    label = (candidate.label or candidate.sentence or "").rstrip(".")
-    return " · ".join(
-        text for text in (label, candidate.source, candidate.unit) if text
-    )
+def _choice_line(choice: Candidate | AsyncCandidate | Option) -> str:
+    if isinstance(choice, Option):
+        return choice.label
+    label = (choice.label or choice.sentence or "").rstrip(".")
+    return " · ".join(text for text in (label, choice.source, choice.unit) if text)
 
 
 def _choose_call(
     answer: AnswerView, gap: Gap[Candidate | AsyncCandidate]
 ) -> str | None:
     """The call that settles a gap with its first choice, or None when none can."""
-    if isinstance(gap.part, CandidatesPart):
-        if not gap.part.candidates:
-            return None
+    if not gap.options:
+        return None
+    first = gap.options[0]
+    if not isinstance(first, Option):
         if len(answer.parts) == 1:
             return "answer.choose(0)"
         return f"answer.choose({_part_key(answer, gap)}, 0)"
-    if not gap.options:
-        return None
-    option = gap.options[0]
-    return f"answer.choose({_option_key(answer, gap)}, {_quote(option.label)})"
+    return f"answer.choose({_option_key(answer, first, gap)}, {_quote(first.label)})"
 
 
 def _part_key(answer: AnswerView, gap: Gap[Candidate | AsyncCandidate]) -> str:
@@ -230,17 +223,19 @@ def _part_key(answer: AnswerView, gap: Gap[Candidate | AsyncCandidate]) -> str:
     return _quote(text) if text and len(named) == 1 else str(gap.part_index)
 
 
-def _option_key(answer: AnswerView, gap: Gap[Candidate | AsyncCandidate]) -> str:
-    """The word the first option settles when it names the part alone, else the
-    part's key."""
-    mentions = gap.options[0].mentions
+def _option_key(
+    answer: AnswerView, option: Option, gap: Gap[Candidate | AsyncCandidate]
+) -> str:
+    """The word `option` settles when it names the part alone, else the part's
+    key."""
+    mentions = option.mentions
     if mentions:
         mention = mentions[0]
         elsewhere = any(part.variable_text == mention for part in answer.parts) or any(
-            mention in option.mentions
+            isinstance(other_option, Option) and mention in other_option.mentions
             for other in answer.gaps
             if other.part_index != gap.part_index
-            for option in other.options
+            for other_option in other.options
         )
         if not elsewhere:
             return _quote(mention)

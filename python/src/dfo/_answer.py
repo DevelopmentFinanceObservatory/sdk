@@ -6,7 +6,7 @@ a reading, and raises `IncompleteAnswerError` before any build when one does not
 
 Every choice makes one Search request, and the new answer is Search's response.
 A choice of place or source in a one-part answer posts the option's `data_query`
-unchanged. Any other choice posts a `dataset_resubmit` with one entry per part, so
+unchanged, a parsed input that Search binds again. Any other choice posts a `dataset_resubmit` with one entry per part, so
 Search composes the sentence and folds the parts again; a pick in a one-part answer
 posts one entry:
 
@@ -24,6 +24,7 @@ whose part carries no list posts none, and Search computes them afresh.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, NoReturn, overload, override
@@ -53,6 +54,7 @@ from dfo._types import (
     Spec,
     UnsupportedPart,
     unbound_gap,
+    with_candidates,
 )
 
 type Layout = Literal["long", "frame"]
@@ -144,6 +146,8 @@ class AsyncAnswer:
         Raises:
             InvalidRequestError: No part, or more than one, awaits a choice; the
                 part or option is unknown; or the part offers no options.
+            ContractError: The chosen option's `data_query` is not a parsed
+                input of one part.
         """
         if second is None:
             gap = self._only_choice()
@@ -153,6 +157,7 @@ class AsyncAnswer:
             option = second
         chosen = _pick(gap, option, mention=first if second is not None else None)
         if len(self.parts) == 1 and isinstance(chosen, Option):
+            _option_part(chosen)
             return await self._resolve(chosen.data_query)
         entries = [
             _entry(part, chosen if index == gap.part_index else None)
@@ -266,7 +271,8 @@ async def resolve(
         request: The `input` member: a raw text, parsed or `dataset_resubmit`
             input.
         question: The question the answer stands for, kept on it.
-        timeout: The longest the call waits, retries included, in seconds.
+        timeout: The longest the call waits, retries included, in seconds; each
+            attempt reads until then. None waits without limit.
 
     Raises:
         ContractError: The answer's kind is unknown, or a member the client acts
@@ -277,7 +283,7 @@ async def resolve(
         "POST",
         RESOLVE_PATH,
         json={"schema_version": SCHEMA_VERSION, "input": request},
-        timeout=timeout or SEARCH_TIMEOUT,
+        timeout=math.inf,
         deadline=transport.deadline(timeout),
     )
     return answer_from_body(response.json(), question=question, source=source)
@@ -384,31 +390,20 @@ def _bind_candidates(
             progress=progress,
         )
 
-    bound = CandidatesPart(
-        status=part.status,
-        variable_text=part.variable_text,
-        sentence=part.sentence,
-        separate=part.separate,
-        warnings=part.warnings,
-        departures=part.departures,
-        operations=part.operations,
-        assumptions=part.assumptions,
-        raw=part.raw,
-        candidates=tuple(
-            AsyncCandidate(
-                candidate.spec,
-                candidate.sentence,
-                candidate.label,
-                candidate.source,
-                candidate.unit,
-                candidate.raw,
-                assumptions=candidate.assumptions,
-                _fetch=fetch,
-            )
-            for candidate in part.candidates
-        ),
-        truncated=part.truncated,
+    candidates = tuple(
+        AsyncCandidate(
+            candidate.spec,
+            candidate.sentence,
+            candidate.label,
+            candidate.source,
+            candidate.unit,
+            candidate.raw,
+            assumptions=candidate.assumptions,
+            _fetch=fetch,
+        )
+        for candidate in part.candidates
     )
+    bound = with_candidates(part, candidates)
     return bound
 
 
@@ -425,7 +420,7 @@ def _gap(
         case DefinitePart():
             return None
         case CandidatesPart(candidates):
-            return Gap(index, part, "choice", f"{len(candidates)} readings")
+            return Gap(index, part, "choice", f"{len(candidates)} readings", candidates)
         case NoDataPart(reason) if timed_out:
             return Gap(index, part, "timed_out", _TIMED_OUT)
         case NoDataPart(reason):
@@ -492,7 +487,7 @@ def _part_index(
         named = [
             gap.part_index
             for gap in gaps
-            if any(key in option.mentions for option in gap.options)
+            if any(key in option.mentions for option in _options(gap))
         ]
     if len(named) == 1:
         return named[0]
@@ -510,15 +505,8 @@ def _pick(
     gap: Gap[AsyncCandidate], key: int | str, *, mention: int | str | None
 ) -> AsyncCandidate | Option:
     """The candidate or option `key` names in a gap."""
-    part = gap.part
-    choices: Sequence[AsyncCandidate | Option]
-    if isinstance(part, CandidatesPart):
-        choices = part.candidates
-        labels = [candidate.label for candidate in part.candidates]
-    elif gap.options:
-        choices = gap.options
-        labels = [option.label for option in gap.options]
-    else:
+    choices = gap.options
+    if not choices:
         raise client_error(
             CHOICE_INVALID, f"Part {gap.part_index} offers no choice: {gap.message}"
         )
@@ -534,8 +522,8 @@ def _pick(
     scope = mention if isinstance(mention, str) and mention in _mentions(gap) else None
     found = [
         choice
-        for choice, label in zip(choices, labels, strict=True)
-        if label == key
+        for choice in choices
+        if choice.label == key
         and (
             scope is None or not isinstance(choice, Option) or scope in choice.mentions
         )
@@ -555,8 +543,13 @@ def _pick(
     )
 
 
+def _options(gap: Gap[AsyncCandidate]) -> list[Option]:
+    """A gap's options of place or source, without its candidates."""
+    return [option for option in gap.options if isinstance(option, Option)]
+
+
 def _mentions(gap: Gap[AsyncCandidate]) -> set[str]:
-    return {mention for option in gap.options for mention in option.mentions}
+    return {mention for option in _options(gap) for mention in option.mentions}
 
 
 def _entry(
@@ -645,12 +638,14 @@ def _identity_entry(
 
 
 def _candidates_entry(part: CandidatesPart[AsyncCandidate]) -> dict[str, Any]:
+    """The part's candidate set posted back, its `ordering` and `truncated` as
+    the server sent them."""
     candidate_set = part.raw["candidates"]
     return _echo(
         part,
         entry_kind="candidates",
         ordering=candidate_set.get("ordering"),
-        truncated=part.truncated,
+        truncated=candidate_set.get("truncated"),
         candidates=[_identity(part, candidate.raw) for candidate in part.candidates],
     )
 

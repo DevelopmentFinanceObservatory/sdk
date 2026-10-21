@@ -2,7 +2,8 @@
 
 A code maps through `dfo._error_map.ACTIONS`, generated from the contract's
 `actions.json`; a code the map lacks maps on its HTTP status. A refusal whose body
-carries no code takes `refusal_without_code`, with the class of its status.
+carries no code takes `refusal_without_code`, with the class of its status, and a
+trace id the body lacks comes from the response's `x-dfo-trace-id` header.
 """
 
 from typing import assert_never
@@ -76,6 +77,8 @@ def problem_error(
     reason: str,
     origin: str,
     retry_after: float | None = None,
+    trace_id: str | None = None,
+    fallback_code: str | None = None,
 ) -> DfoError:
     """Build the error for a refused response.
 
@@ -85,15 +88,19 @@ def problem_error(
         reason: The HTTP reason phrase, the message when the body gives none.
         origin: The API's origin, which a root-relative `type` resolves against.
         retry_after: The wait the response's `Retry-After` header asked for.
+        trace_id: The response's `x-dfo-trace-id` header, used when the body
+            carries no trace id.
+        fallback_code: The code of a body that carries none, such as a failed
+            operation's; None takes `refusal_without_code`.
 
     Returns:
         The error, of the class the code or else the status maps to. A problem
         document's `retryable` outranks the status; the website proxy's
         `{error, retry, detail}` body maps `error` as the code. A body with
-        neither code takes `refusal_without_code`.
+        neither code takes `fallback_code`, else `refusal_without_code`.
     """
     problem = body if isinstance(body, dict) else None
-    code = detail = trace_id = docs_url = None
+    code = detail = docs_url = None
     retryable = status in _RETRYABLE_STATUSES
     if problem is not None and "code" not in problem and "error" in problem:
         code = _text(problem.get("error"))
@@ -102,12 +109,13 @@ def problem_error(
     elif problem is not None:
         code = _text(problem.get("code"))
         detail = _text(problem.get("detail")) or _text(problem.get("title"))
-        trace_id = _text(problem.get("trace_id"))
+        trace_id = _text(problem.get("trace_id")) or trace_id
         if isinstance(flag := problem.get("retryable"), bool):
             retryable = flag
         if type_ := _text(problem.get("type")):
             docs_url = urljoin(origin + "/", type_)
     message = detail or reason or f"HTTP {status}"
+    code = code or fallback_code
     if code is not None:
         message = f"{message} ({code})"
     return error_class(code, status)(

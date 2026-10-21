@@ -1,6 +1,7 @@
 """Tests for the error tree, the generated error map and the warning helpers."""
 
 import ast
+import importlib
 import json
 import pickle
 import warnings
@@ -176,6 +177,12 @@ _CLIENT_CODES = {
     if isinstance(value, ClientCode)
 }
 _SOURCE = Path(dfo.__file__).parent
+
+# Codes the contract adds at its next sync, each held by hand in the module named
+# until `scripts/gen_errors.py` generates it. The sync makes
+# `test_codes_awaiting_the_sync_are_not_yet_generated` fail, and the constant
+# moves to `dfo._error_map`.
+_AWAITING_SYNC = {"KEY_EMPTY": "_keys"}
 _ERROR_CLASSES = {
     name
     for name, value in vars(_errors).items()
@@ -212,7 +219,9 @@ def _raises() -> list[tuple[str, str, ast.Call]]:
 def _constant(call: ast.Call) -> str | None:
     """The generated constant a `client_error` call names, or None."""
     first = call.args[0] if call.args else None
-    if isinstance(first, ast.Name) and first.id in _CLIENT_CODES:
+    if isinstance(first, ast.Name) and (
+        first.id in _CLIENT_CODES or first.id in _AWAITING_SYNC
+    ):
         return first.id
     return None
 
@@ -240,6 +249,13 @@ def test_every_client_raise_names_a_contract_code() -> None:
         if not (isinstance(code, ast.Attribute) and code.attr == "code"):
             problems.append(f"{where}: {callee} built without client_error")
     assert problems == []
+
+
+def test_codes_awaiting_the_sync_are_not_yet_generated() -> None:
+    for name, module in _AWAITING_SYNC.items():
+        assert name not in _CLIENT_CODES, f"{name} is generated; drop its hand copy"
+        held = getattr(importlib.import_module(f"dfo.{module}"), name)
+        assert isinstance(held, ClientCode)
 
 
 def test_every_contract_client_code_is_raised() -> None:

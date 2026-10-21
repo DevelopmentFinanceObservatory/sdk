@@ -6,12 +6,16 @@ limits with the manifest, and a larger one with a 202 operation that the client
 polls at `/datasets/operations/{id}` until it is done or the deadline passes.
 
 One layer owns build retries, and it is this one: the build request is sent with
-no transport retries, a synchronous cut-off (a 504, or the read timing out) is
-retried once, other retryable refusals wait for their `Retry-After` or back off
-from 1 to 8 seconds within the transport's retry count, and a retryable failed
-operation is resubmitted once. Polls wait for `retry_after_ms` when the resource
-carries it, else for the `Retry-After` header, else back off from 1 to 8 seconds;
-a 429 waits for its `Retry-After` without spending a retry.
+no transport retries and reads for up to 150 seconds within the call's deadline.
+A synchronous cut-off (a 504, or the read timing out) is retried once, and other
+retryable refusals within the transport's retry count; each retry waits for the
+refusal's `Retry-After`, else the transport's backoff for that attempt, from 0.5
+to 8 seconds. A retryable failed
+operation is resubmitted once, and a failed operation whose document carries no
+`error` fails with `operation_failed`. Polls wait for `retry_after_ms` when the
+resource carries it, else for the `Retry-After` header, else back off from 1 to
+8 seconds; a 429 waits for its `Retry-After` without spending a retry, and a
+poll that times out spends one.
 """
 
 from collections.abc import Callable
@@ -142,6 +146,7 @@ def post_build(transport: Transport, body: Wire, *, deadline: float | None) -> R
     """
     cut_off_retried = False
     retries = 0
+    attempts = 0
     while True:
         try:
             response = transport.request(
@@ -153,24 +158,24 @@ def post_build(transport: Transport, body: Wire, *, deadline: float | None) -> R
                 max_retries=0,
             )
         except DfoError as error:
-            if _is_cut_off(error):
-                if cut_off_retried:
-                    raise
-                cut_off_retried = True
-                continue
+            cut_off = _is_cut_off(error)
+            if cut_off:
+                allowed = not cut_off_retried
+            else:
+                allowed = error.retryable and retries < transport.max_retries
             wait = (
-                poll_backoff(retries)
+                transport.backoff(attempts)
                 if error.retry_after is None
                 else error.retry_after
             )
-            if (
-                not error.retryable
-                or retries >= transport.max_retries
-                or not _fits(transport, wait, deadline)
-            ):
+            if not allowed or not _fits(transport, wait, deadline):
                 raise
             transport.sleep(wait)
-            retries += 1
+            attempts += 1
+            if cut_off:
+                cut_off_retried = True
+            else:
+                retries += 1
             continue
         return _reply(response)
 
@@ -312,6 +317,8 @@ class Poller:
                 state.error,
                 reason="The build failed",
                 origin=self._transport.origin,
+                trace_id=self._trace_id,
+                fallback_code=_OPERATION_FAILED,
             )
         elif state.progress is not None and self._on_progress is not None:
             self._on_progress(state.operation_id, state.progress, self._trace_id)
@@ -454,9 +461,11 @@ def resume(
 ) -> Poller:
     """Read a running build's operation by id, to poll it from this process.
 
+    An operation that already reads `failed` holds its error, which the
+    operation's `result` raises.
+
     Raises:
         NotFoundError: The server holds no operation with that id.
-        DfoError: The operation failed.
     """
     response = transport.request("GET", f"/datasets/operations/{operation_id}")
     return Poller(

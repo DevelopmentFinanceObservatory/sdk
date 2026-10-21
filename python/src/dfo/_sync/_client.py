@@ -57,7 +57,9 @@ class Client:
                 False for anonymous use; None to look one up in `DFO_API_KEY`,
                 the credentials file, then a Colab secret.
             base_url: The API's base URL; None for the public API.
-            timeout: The longest one request attempt waits, in seconds.
+            timeout: The longest one request attempt waits, in seconds. A
+                search attempt and a download read until their call's
+                deadline instead, and a build request for up to 150 seconds.
             max_retries: Further attempts after a failure that can clear.
             cache_dir: The cache's root directory; None follows `DFO_CACHE_DIR`,
                 then the platform's cache directory.
@@ -126,7 +128,8 @@ class Client:
         Args:
             question: The question, in your words.
             timeout: The longest the call waits, retries included, in seconds;
-                None waits as long as Search takes.
+                each attempt reads until then, and None waits as long as Search
+                takes.
 
         Raises:
             ContractError: The answer lacks a member the client acts on.
@@ -154,12 +157,14 @@ class Client:
                 `(start_year, end_year)`.
             entities: Rebind the named roles of a spec to dcids, such as
                 `{"recipient": ["country/NGA"]}`; None drops a role. The
-                spec's other roles keep their binding.
+                spec's other roles keep their binding, and an empty map
+                narrows nothing.
             facets: Bind a spec's provenance, measurement method or unit.
             layout: `long` or `frame`; None builds a spec in `long` and reads a
                 ref in the layout it holds.
             strict: Raise the first dataset warning instead of issuing it.
-            timeout: The longest the fetch takes, in seconds; None for no limit.
+            timeout: The longest the fetch takes, in seconds, downloads
+                included; None for no limit.
             progress: Show long-build progress; None shows it unless
                 `DFO_PROGRESS=0`.
 
@@ -187,6 +192,9 @@ class Client:
         self, spec: Spec, /, *, layout: Layout = "long", progress: bool | None = None
     ) -> Operation:
         """Start a spec's build and return it as an operation, done or running.
+
+        The build request reads for up to 150 seconds; `result` bounds the wait
+        for the build.
 
         Raises:
             DfoError: The server refused the build.
@@ -216,9 +224,10 @@ class Client:
             progress: Show the build's progress; None shows it unless
                 `DFO_PROGRESS=0`.
 
+        An operation that already failed raises its error from `result`.
+
         Raises:
             NotFoundError: The server holds no operation with that id.
-            DfoError: The operation failed.
         """
         return operation(
             self._session.transport,

@@ -90,10 +90,15 @@ def accepted(**members) -> httpx2.Response:
     return json_response(202, resource("pending", **members), headers)
 
 
-def test_a_cut_off_build_is_rebuilt_once() -> None:
+@pytest.mark.parametrize(
+    ("headers", "sleeps"), [(None, [0.5]), ({"retry-after": "9"}, [9.0])]
+)
+def test_a_cut_off_build_is_rebuilt_once_after_its_wait(
+    headers: dict[str, str] | None, sleeps: list[float]
+) -> None:
     timeline = Timeline()
     server = Server(
-        problem(504, "timeout", retryable=True),
+        problem(504, "timeout", retryable=True, headers=headers),
         json_response(200, manifest(POSTED_ID)),
         redirect(),
         parquet(),
@@ -102,7 +107,7 @@ def test_a_cut_off_build_is_rebuilt_once() -> None:
         built = fetch(transport, spec())
     assert [call.split(" ")[0] for call in server.calls()[:2]] == ["POST", "POST"]
     assert server.body(0) == server.body(1)
-    assert timeline.sleeps == []
+    assert timeline.sleeps == sleeps
     assert built.members[0].spec.spec_id == POSTED_ID
 
 
@@ -157,7 +162,7 @@ def test_a_backlog_refusal_backs_off_within_the_retry_count() -> None:
         with pytest.raises(ServerError):
             fetch(transport, spec())
     assert len(server.requests) == 3
-    assert timeline.sleeps == [1.0, 2.0]
+    assert timeline.sleeps == [0.5, 1.0]
 
 
 def refused(status: int, code: str, wait: str) -> httpx2.Response:
@@ -228,13 +233,23 @@ def test_a_429_poll_waits_without_spending_retries() -> None:
     assert built.members[0].spec.spec_id == POSTED_ID
 
 
-def test_poll_failures_beyond_the_retry_count_raise() -> None:
-    busy = problem(503, "service_unavailable", retryable=True)
-    server = Server(accepted(), busy, busy, busy)
-    with make(server, max_retries=2) as transport:
-        with pytest.raises(ServerError):
+@pytest.mark.parametrize(
+    ("failure", "error"),
+    [
+        (problem(503, "service_unavailable", retryable=True), ServerError),
+        (httpx2.ReadTimeout("hung"), DfoTimeoutError),
+    ],
+    ids=["refused", "hung"],
+)
+def test_poll_failures_beyond_the_retry_count_raise(
+    failure: httpx2.Response | Exception, error: type[Exception]
+) -> None:
+    server = Server(accepted(), failure, failure, failure)
+    with make(server, max_retries=2, timeout=30.0) as transport:
+        with pytest.raises(error):
             fetch(transport, spec())
     assert len(server.requests) == 4
+    assert server.requests[1].extensions["timeout"]["read"] == 30.0
 
 
 def test_a_retryable_failed_operation_is_resubmitted_once() -> None:
@@ -250,6 +265,18 @@ def test_a_retryable_failed_operation_is_resubmitted_once() -> None:
         with pytest.raises(ServerError) as caught:
             fetch(transport, spec())
     assert caught.value.code == "operation_failed"
+    assert len(server.requests) == 4
+
+
+def test_a_failed_operation_without_an_error_fails_with_operation_failed() -> None:
+    failed = json_response(200, resource("failed"), {"x-dfo-trace-id": "trace-op"})
+    server = Server(accepted(), failed, accepted(), failed)
+    with make(server) as transport:
+        with pytest.raises(ServerError) as caught:
+            fetch(transport, spec())
+    assert (caught.value.code, caught.value.status) == ("operation_failed", 500)
+    assert caught.value.trace_id == "trace-op"
+    assert server.calls()[2] == f"POST {BASE}/datasets"
     assert len(server.requests) == 4
 
 

@@ -14,8 +14,8 @@ def search(
     Args:
         source: Returns the session to post through, read when each request runs.
         question: The question, in the user's words.
-        timeout: The longest the call waits, retries included, in seconds; None
-            waits as long as Search takes.
+        timeout: The longest the call waits, retries included, in seconds; each
+            attempt reads until then, and None waits as long as Search takes.
 
     Raises:
         ContractError: The answer lacks a member the client acts on.
