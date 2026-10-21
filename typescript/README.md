@@ -42,7 +42,7 @@ const again = await client.fetch(DatasetRef.fromJSON(JSON.parse(saved)));
 
 `client.fetch(spec, { window: [2020, 2023] })` narrows a spec, and `client.mint(spec)` starts a long build that `client.operation(id)` resumes from another process.
 
-`await dataset.bytes()` returns one Parquet file. A one-member dataset gives the file the server built; several members stack into one table, `part` first, whose key-value metadata carries the sentence, citation, sources, licence, departures, assumptions, layout version and ref under `dfo.*` keys, the file Python's `Dataset.save` writes and `dfo.open_bundle` reads. `toArrow(dataset)` from `@developmentfinance/client/arrow` builds an apache-arrow `Table`; that entry point needs the optional `apache-arrow` package.
+`await dataset.bytes()` returns one Parquet file whose key-value metadata carries the sentence, citation, sources, licence, departures, assumptions, layout version and ref under `dfo.*` keys, the file Python's `Dataset.save` writes and `dfo.open_bundle` reads. Several members stack into one table, `part` first, and a column whose type differs between members widens as pyarrow widens it. `dataset.memberBytes(index)` gives one member's file as the server built it. `toArrow(dataset)` from `@developmentfinance/client/arrow` builds an apache-arrow `Table`; that entry point needs the optional `apache-arrow` package.
 
 The client also looks up names and codes:
 
@@ -53,7 +53,7 @@ const code = await client.codes.get("spec_not_found");
 const catalogue = await client.catalogue({ place: "country/NGA" });
 ```
 
-`client.request(method, path, { params, json })` reaches a route the client does not wrap, with the client's key, headers and retries. `client.withOptions({ timeout, maxRetries })` returns a client with other limits that shares this one's fetch, headers and key.
+`client.request(method, path, { params, json })` reaches a route the client does not wrap, with the client's key, headers and retries. A `path` that does not start with a single `/`, or that resolves to another host, raises `InvalidRequestError` `invalid_argument` before any request. `client.withOptions({ timeout, maxRetries })` returns a client with other limits that shares this one's fetch, headers and key.
 
 The constructor takes `baseUrl`, `apiKey`, `fetch`, `timeout`, `maxRetries`, `headers`, `headerProvider`, `onWarning` and `dangerouslyAllowBrowser`.
 
@@ -94,7 +94,7 @@ A few calls throw something else:
 
 - A `strict` fetch throws its first `SearchWarning` or `DataWarning`, each a `DfoWarning` and not a `DfoError`.
 - An aborted call rejects with the caller's `signal.reason`, untouched.
-- `new Client()` throws a `TypeError` for a relative `baseUrl` no page resolves, or a secret key in a browser page; `client.request` throws one for a path that does not start with `/`.
+- `new Client()` throws a `TypeError` for a relative `baseUrl` no page resolves, or a secret key in a browser page.
 - `DatasetRef.fromJSON` throws a `FormatError`, a `TypeError`, for JSON that is not a ref.
 - `dataset.memberBytes(index)` throws a `RangeError` for an index past the members.
 

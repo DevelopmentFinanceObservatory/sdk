@@ -31,6 +31,7 @@ import type {
   Spec,
   Warning,
 } from "./wire.ts";
+import { isRecord } from "./json.ts";
 
 export const RESOLVE_PATH = "/search/resolve";
 const SCHEMA_VERSION = 1;
@@ -59,8 +60,8 @@ export class Candidate {
   readonly spec: Spec;
   /** Search's sentence for the reading. */
   readonly sentence: string | null;
-  /** The sentence's heading. */
-  readonly label: string;
+  /** The sentence's heading, else the sentence; null when the spec has neither. */
+  readonly label: string | null;
   /** The provenance the reading reads from, such as "OECD DAC1". */
   readonly source: string | null;
   /** The byline's unit, such as "Current US dollars". */
@@ -241,9 +242,7 @@ export class Answer {
       return gap === null ? [] : [gap];
     });
     this.complete = this.kind === "resolution" && this.gaps.length === 0;
-    this.specs = [
-      ...new Map(definiteParts(this.parts).map((p) => [p.spec.spec_id, p.spec])).values(),
-    ];
+    this.specs = membersOf(this.parts).map((member) => member.spec);
   }
 
   /**
@@ -344,9 +343,6 @@ export async function resolveAnswer(
   return answerFromBody(response.body, context, options.question);
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value);
-
 const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
 
 /**
@@ -395,6 +391,13 @@ export function answerFromBody(
   if (!Array.isArray(parts) || !parts.every(isRecord)) {
     throw clientError("contract_violation", {
       detail: "Resolution.parts is not an array of objects in the response.",
+      pointer: "/parts",
+    });
+  }
+  if (parts.length === 0) {
+    throw clientError("contract_violation", {
+      detail: "The Search resolution has no parts, which this client acts on.",
+      pointer: "/parts",
     });
   }
   for (const [index, part] of parts.entries()) checkPart(part, index);
@@ -472,13 +475,15 @@ export function definiteParts(parts: readonly Part[]): DefinitePart[] {
   );
 }
 
-/** One member per distinct `spec_id`, in query order; folded parts share their spec's member. */
-function membersOf(parts: readonly Part[]): MemberRequest[] {
+/** One member per distinct `spec_id`, in query order, with the first part's spec; folded parts
+ *  share their spec's member. Each part is named by its variable text, else its spec's
+ *  sentence, else its `spec_id`. */
+function membersOf(parts: readonly Part[]): (MemberRequest & { readonly spec: Spec })[] {
   const grouped = new Map<string, { spec: Spec; parts: string[]; answerParts: Part[] }>();
   for (const part of definiteParts(parts)) {
     const { spec } = part;
     const entry = grouped.get(spec.spec_id) ?? { spec, parts: [], answerParts: [] };
-    entry.parts.push(part.variable_text ?? spec.resolved.rendered_sentence ?? spec.spec_id);
+    entry.parts.push(part.variable_text || spec.resolved.rendered_sentence || spec.spec_id);
     entry.answerParts.push(part);
     grouped.set(spec.spec_id, entry);
   }
@@ -584,7 +589,7 @@ function candidateFrom(
     {
       spec,
       sentence,
-      label: heading || (sentence ?? ""),
+      label: heading || sentence || null,
       source: resolved.facets?.["provenance"]?.label ?? null,
       unit: unit ?? null,
       assumptions: Object.freeze([...assumptions]),

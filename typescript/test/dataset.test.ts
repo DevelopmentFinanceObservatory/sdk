@@ -4,11 +4,13 @@ import { readdir, readFile } from "node:fs/promises";
 import { describe, test } from "node:test";
 
 import { parquetMetadata } from "hyparquet";
+import { parquetWriteBuffer } from "hyparquet-writer";
 
 import { toArrow } from "../src/arrow.ts";
 import { Dataset, tableParts } from "../src/dataset.ts";
 import type { FetchedMember } from "../src/dataset.ts";
-import { decodeStored } from "../src/parquet.ts";
+import { decodeStored, widen } from "../src/parquet.ts";
+import type { ColumnType } from "../src/parquet.ts";
 import { DatasetRef } from "../src/ref.ts";
 import type { Part } from "../src/wire.ts";
 import { scenarioBytes } from "./replay.ts";
@@ -291,11 +293,161 @@ describe("retention", () => {
   });
 });
 
-test("bytes() of one member returns a copy of the checked file, unchanged", async () => {
+describe("one member", async () => {
   const data = await scenarioBytes("fetch-ref.parquet");
-  const dataset = new Dataset([member(data)], { layout: "long" });
-  const copy = await dataset.bytes();
-  assert.deepEqual(copy, data);
-  copy[0] = 0;
-  assert.deepEqual(await dataset.bytes(), data);
+  const assumed = {
+    kind: "declared_default",
+    binding_ref: "how:dac2aAidType",
+    text: "official development assistance",
+    refs: ["DAC2aAidType206"],
+  };
+  const dataset = new Dataset(
+    [member(data, { answerParts: [{ status: "definite", assumptions: [assumed] }] as Part[] })],
+    { layout: "long" },
+  );
+
+  test("memberBytes(0) returns a copy of the checked file, unchanged", () => {
+    const copy = dataset.memberBytes(0);
+    assert.deepEqual(copy, data);
+    copy[0] = 0;
+    assert.deepEqual(dataset.memberBytes(0), data);
+  });
+
+  test("bytes() writes the member's table with the provenance and no part column", async () => {
+    const written = await dataset.bytes();
+    const metadata = Object.fromEntries(
+      (parquetMetadata(written.slice().buffer).key_value_metadata ?? []).map(({ key, value }) => [
+        key,
+        value,
+      ]),
+    );
+    assert.equal(metadata["dfo.format_version"], "1");
+    const saved = JSON.parse(metadata["dfo.dataset"]!) as Record<string, unknown>;
+    assert.deepEqual(saved["assumptions"], [assumed]);
+    const reread = new Dataset([member(written)], { layout: "long" });
+    assert.deepEqual(reread.columns, dataset.columns);
+    assert.ok(!reread.columns.includes("part"));
+    assert.deepEqual(await reread.toRows(), await dataset.toRows());
+  });
+});
+
+describe("members whose column types differ", () => {
+  type Spec = { type: string; logical?: Record<string, unknown>; data: unknown[] };
+  const file = (columns: Record<string, Spec>): Uint8Array =>
+    new Uint8Array(
+      parquetWriteBuffer({
+        columnData: Object.entries(columns).map(([name, { data }]) => ({ name, data })),
+        schema: [
+          { name: "root", num_children: Object.keys(columns).length },
+          ...Object.entries(columns).map(([name, { type, logical }]) => ({
+            name,
+            repetition_type: "OPTIONAL" as const,
+            type: type as "INT32",
+            ...(logical === undefined ? {} : { logical_type: logical as { type: "NULL" } }),
+          })),
+        ],
+      }),
+    );
+  const stamp = (unit: string) => ({ type: "TIMESTAMP", isAdjustedToUTC: true, unit });
+  const stacked = () =>
+    new Dataset(
+      [
+        member(
+          file({
+            year: { type: "INT32", data: [2020] },
+            value: { type: "INT64", data: [7n] },
+            at: { type: "INT64", logical: stamp("MILLIS"), data: [1_000n] },
+          }),
+          { parts: ["one"] },
+        ),
+        member(
+          file({
+            year: { type: "INT64", data: [2021n] },
+            value: { type: "DOUBLE", data: [0.5] },
+            at: { type: "INT64", logical: stamp("MICROS"), data: [2_000_000n] },
+          }),
+          { parts: ["two"], spec: { spec_id: "s2", definition: {} } },
+        ),
+      ],
+      { layout: "long" },
+    );
+
+  test("stack widened as pyarrow widens them", async () => {
+    const dataset = stacked();
+    const table = await toArrow(dataset);
+    const type = (name: string) => String(table.getChild(name)?.type);
+    assert.equal(type("year"), "Int64");
+    assert.equal(type("value"), "Float64");
+    assert.equal(type("at"), "Timestamp<MICROSECOND, UTC>");
+    assert.deepEqual(
+      (await dataset.toRows()).map(({ year, value, at }) => [year, value, at]),
+      [
+        [2020, 7, new Date(1_000)],
+        [2021, 0.5, new Date(2_000)],
+      ],
+    );
+    const reread = new Dataset([member(await dataset.bytes())], { layout: "long" });
+    assert.deepEqual(await reread.toRows(), await dataset.toRows());
+    const stored = await decodeStored(tableParts(reread));
+    assert.deepEqual(
+      stored.map(({ name, type }) => ({ name, type })),
+      (await decodeStored(tableParts(dataset))).map(({ name, type }) => ({ name, type })),
+    );
+    assert.deepEqual(stored.find((column) => column.name === "at")?.values, [
+      1_000_000n,
+      2_000_000n,
+    ]);
+  });
+
+  test("raise ContractError when a column's types do not widen to one", () => {
+    const flag = file({ year: { type: "BOOLEAN", data: [true] } });
+    const year = file({ year: { type: "INT32", data: [2020] } });
+    assert.throws(
+      () =>
+        new Dataset([member(flag), member(year, { spec: { spec_id: "s2", definition: {} } })], {
+          layout: "long",
+        }),
+      { name: "ContractError", code: "unexpected_response" },
+    );
+  });
+});
+
+describe("widen", () => {
+  const int = (bits: 8 | 16 | 32 | 64, signed = true): ColumnType => ({
+    kind: "int",
+    bits,
+    signed,
+  });
+  const float = (bits: 32 | 64): ColumnType => ({ kind: "float", bits });
+  const stamp = (unit: "MILLIS" | "MICROS" | "NANOS", utc = false): ColumnType => ({
+    kind: "timestamp",
+    unit,
+    utc,
+  });
+  // Each row is what pyarrow 26's concat_tables(promote_options="permissive") gives the pair.
+  const rows: [ColumnType, ColumnType, ColumnType | undefined][] = [
+    [{ kind: "null" }, { kind: "bool" }, { kind: "bool" }],
+    [int(32), int(64), int(64)],
+    [int(8), int(8, false), int(16)],
+    [int(16), int(32, false), int(64)],
+    [int(64), int(64, false), int(64)],
+    [int(8, false), int(32, false), int(32, false)],
+    [int(16), float(32), float(32)],
+    [int(32), float(32), float(64)],
+    [int(64), float(64), float(64)],
+    [float(32), float(64), float(64)],
+    [stamp("MILLIS"), stamp("MICROS"), stamp("MICROS")],
+    [stamp("NANOS", true), stamp("MILLIS", true), stamp("NANOS", true)],
+    [stamp("MILLIS"), stamp("MILLIS", true), undefined],
+    [{ kind: "string" }, { kind: "binary" }, { kind: "binary" }],
+    [{ kind: "bool" }, int(8), undefined],
+    [{ kind: "date" }, stamp("MILLIS"), undefined],
+    [float(64), { kind: "string" }, undefined],
+  ];
+  for (const [left, right, expected] of rows) {
+    test(`${JSON.stringify(left)} with ${JSON.stringify(right)}`, () => {
+      assert.deepEqual(widen(left, right), expected);
+      assert.deepEqual(widen(right, left), expected);
+    });
+  }
 });

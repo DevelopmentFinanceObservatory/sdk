@@ -152,6 +152,32 @@ describe("refusals", () => {
     });
   }
 
+  for (const [status, body, retried, traceId] of [
+    [503, { retryable: false, trace_id: "body-trace", detail: "d" }, false, "body-trace"],
+    [400, { retryable: true }, true, "header-trace"],
+  ] as const) {
+    test(`keep a codeless problem document's retryable and trace id at HTTP ${status}`, async () => {
+      const { sleep } = recordingSleep();
+      const refused = () =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: {
+            "content-type": "application/problem+json",
+            "x-dfo-trace-id": "header-trace",
+          },
+        });
+      const { fetch, seen } = mockFetch(refused, refused, refused);
+      const error = await transport({ fetch, sleep })
+        .request({ path: "/x" })
+        .catch((e: unknown) => e);
+      assert.ok(error instanceof (status === 503 ? ServerError : InvalidRequestError));
+      assert.equal(error.code, "refusal_without_code");
+      assert.equal(error.retryable, retried);
+      assert.equal(error.traceId, traceId);
+      assert.equal(seen.length, retried ? 3 : 1);
+    });
+  }
+
   test("map the proxy's 429 body and retry it after Retry-After", async () => {
     const { sleep, waits } = recordingSleep();
     const limited = json(
@@ -502,12 +528,42 @@ describe("downloads", () => {
     });
   }
 
-  test("refuse a file URL on another host before any request", async () => {
-    const client = transport({ fetch: mockFetch().fetch });
-    await assert.rejects(client.locate({ url: "https://elsewhere.example/files/d" }), {
-      name: "ContractError",
-      code: "contract_violation",
+  for (const url of ["https://elsewhere.example/files/d", SIGNED]) {
+    test(`refuse a file URL on ${new URL(url).host} before any request`, async () => {
+      const client = transport({ fetch: mockFetch().fetch });
+      await assert.rejects(client.locate({ url }), {
+        name: "ContractError",
+        code: "contract_violation",
+      });
     });
+  }
+
+  test("refuse a files route answering a 2xx other than 200", async () => {
+    const { fetch } = mockFetch(() => new Response(null, { status: 204 }));
+    await assert.rejects(transport({ fetch }).locate({ url: "/api/datasets/files/d" }), {
+      name: "ContractError",
+      code: "unexpected_response",
+    });
+  });
+
+  test("follow a browser's opaque redirect carrying the key alone", async () => {
+    const opaque = () => {
+      const response = new Response(null, { status: 200 });
+      Object.defineProperty(response, "type", { value: "opaqueredirect" });
+      return response;
+    };
+    const { fetch, seen } = mockFetch(opaque, () => new Response("PAR1"));
+    const client = transport({
+      baseUrl: "https://api.example/api/v1",
+      apiKey: KEY,
+      fetch,
+      defaultHeaders: { "x-first-party": "site" },
+      headerProvider: () => ({ "x-identity": "token" }),
+    });
+    const located = await client.locate({ url: "/api/datasets/files/d" });
+    assert.deepEqual(located.data, new TextEncoder().encode("PAR1"));
+    assert.equal(seen[0]?.headers.get("x-identity"), "token");
+    assert.deepEqual([...(seen[1]?.headers ?? [])], [["authorization", `Bearer ${KEY}`]]);
   });
 
   test("retry the files route as any API request", async () => {
@@ -521,16 +577,18 @@ describe("downloads", () => {
     assert.deepEqual(waits, [500, 1000]);
   });
 
-  test("fetch a signed URL once, raising a retryable download_failed", async () => {
-    const { fetch, seen } = mockFetch(() => new Response("expired", { status: 403 }));
-    const error = await transport({ fetch })
-      .fetchSigned(new URL(SIGNED))
-      .catch((e: unknown) => e);
-    assert.ok(error instanceof ServerError);
-    assert.equal(error.code, "download_failed");
-    assert.equal(error.retryable, true);
-    assert.equal(seen.length, 1);
-  });
+  for (const status of [403, 206]) {
+    test(`fetch a signed URL once, raising a retryable download_failed at HTTP ${status}`, async () => {
+      const { fetch, seen } = mockFetch(() => new Response("expired", { status }));
+      const error = await transport({ fetch })
+        .fetchSigned(new URL(SIGNED))
+        .catch((e: unknown) => e);
+      assert.ok(error instanceof ServerError);
+      assert.equal(error.code, "download_failed");
+      assert.equal(error.retryable, true);
+      assert.equal(seen.length, 1);
+    });
+  }
 
   for (const [name, url, onApi] of [
     ["bare on the storage host", SIGNED, false],

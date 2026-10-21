@@ -20,6 +20,7 @@ import { clientError, DfoError, DfoTimeoutError, errorClassFor, serverCode } fro
 import { checkStrict } from "./strict.ts";
 import { isRetryable, passedDeadline, retryAfterMs } from "./transport.ts";
 import type { JsonResponse, Transport } from "./transport.ts";
+import { isRecord } from "./json.ts";
 
 /** The longest the client reads a synchronous build: the server cuts one off at 120 s. */
 const BUILD_READ_TIMEOUT_MS = 150_000;
@@ -77,9 +78,6 @@ type Reply = {
 };
 
 type Wait = { readonly deadline: number; readonly signal?: AbortSignal | undefined };
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value);
 
 const count = (value: unknown): number | null =>
   typeof value === "number" && Number.isInteger(value) ? value : null;

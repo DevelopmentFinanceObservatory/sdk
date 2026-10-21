@@ -18,10 +18,11 @@
  * the posted one, else the sentence Search gives the built identity when it is resubmitted,
  * checked on `spec_id`. The resubmit carries the held spec's entity group for each role the
  * built identity binds to the same entities, so a window or facets narrowing keeps every group
- * and a role that `entities` rebound or dropped loses its group. Every download fetches the URL
- * the files route redirects to, bare on the storage host and as an API request on the API's
- * origin, and is checked against its digest before the fetch returns. Members build one after another, under one deadline: each request attempt waits
- * the client's timeout within it, and a download reads until it.
+ * and a role that `entities` rebound or dropped loses its group. Every download asks a files
+ * route on the API's origin, fetches the URL it redirects to, bare on the storage host and as an
+ * API request on the API's origin, and is checked against its digest before the fetch returns.
+ * Members build one after another, under one deadline: each request attempt, the files route
+ * ask included, waits the client's timeout within it, and a download reads until the deadline.
  */
 
 import type { Gap } from "./answer.ts";
@@ -50,6 +51,7 @@ import { passedDeadline } from "./transport.ts";
 import type { Target, Transport } from "./transport.ts";
 import type { EntityGroup, Part, ResolvedSpec } from "./wire.ts";
 import { DataWarning } from "./warnings.ts";
+import { isRecord } from "./json.ts";
 
 /** A year range, or every year, or the latest year. */
 export type Window = "all" | "latest" | readonly [startYear: number, endYear: number];
@@ -131,9 +133,6 @@ const DIGEST_MISMATCH = "digest_mismatch" satisfies ClientErrorCode;
 
 const SEARCH_AGAIN =
   " The server can no longer build this reading; search the question again for a current one.";
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value);
 
 const invalid = (detail: string): InvalidRequestError =>
   clientError("invalid_argument", { detail });
@@ -229,12 +228,12 @@ async function digestOf(data: Uint8Array): Promise<string> {
 
 /**
  * Downloads a file through the route that redirects to it, checked against its digest. The
- * route ask is an API request and retries as one; its failure raises. The URL it names is
- * fetched once, bare on the storage host and with the client's headers on the API's origin. A
- * retryable failure of that fetch, or bytes that do not hash to the digest, ask the
- * route again and fetch once more, with no wait of their own, and a second failure raises:
- * `download_failed` for a refused signed URL, `digest_mismatch` for the bytes. Each request reads
- * until the fetch's deadline.
+ * route ask is an API request, which retries as one and waits the client's timeout per attempt;
+ * its failure raises. The URL it names is fetched once, bare on the storage host and with the
+ * client's headers on the API's origin, reading until the fetch's deadline. A retryable failure
+ * of that fetch, or bytes that do not hash to the digest, ask the route again and fetch once
+ * more, with no wait of their own, and a second failure raises: `download_failed` for a refused
+ * signed URL, `digest_mismatch` for the bytes.
  */
 async function download(
   transport: Transport,
@@ -242,14 +241,14 @@ async function download(
   digest: string,
   { deadline, signal }: Wait,
 ): Promise<Uint8Array> {
-  const call = { timeout: Infinity, deadline, ...(signal === undefined ? {} : { signal }) };
+  const ask = { deadline, ...(signal === undefined ? {} : { signal }) };
   let failure: DfoError | undefined;
   for (let round = 0; round < 2; round += 1) {
-    const located = await transport.locate({ ...target, ...call });
+    const located = await transport.locate({ ...target, ...ask });
     let data: Uint8Array;
     if (located.data === undefined) {
       try {
-        data = await transport.fetchSigned(located.signed, call);
+        data = await transport.fetchSigned(located.signed, { ...ask, timeout: Infinity });
       } catch (error) {
         if (!(error instanceof DfoError) || !error.retryable || passedDeadline(error)) throw error;
         failure = error;
@@ -747,6 +746,8 @@ async function snapshot(
   if (built !== asked) {
     throw clientError("contract_violation", {
       detail: `The server answered ${built} for ${asked}.`,
+      pointer:
+        specIdOf(manifest) === member.spec.spec_id ? "/content_version" : "/definition/spec_id",
     });
   }
   return manifest;

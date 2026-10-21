@@ -12,7 +12,15 @@ import { DataWarning } from "../src/warnings.ts";
 import type { Spec } from "../src/wire.ts";
 import type { DfoWarning } from "../src/warnings.ts";
 import { ServerError } from "../src/errors.ts";
-import { NO_EXCHANGES, replay, scenario, stepOf } from "./replay.ts";
+import {
+  NO_EXCHANGES,
+  REPLAY_BASE_URL,
+  REPLAY_KEY,
+  replay,
+  scenario,
+  scenarioBytes,
+  stepOf,
+} from "./replay.ts";
 import type { Exchange } from "./replay.ts";
 import { contractJson, json, mockFetch, problem } from "./support.ts";
 
@@ -244,18 +252,59 @@ describe("a download", async () => {
     assert.deepEqual(waits, [500, 1000]);
   });
 
-  test("refuses an artifact URL on another host before any download", async () => {
+  test("times a hung files route ask out at the client's timeout and asks again", async () => {
+    const record = await scenario("fetch-spec-known-sentence");
+    const [build, route] = record.exchanges;
+    const bytes = await scenarioBytes("fetch-spec-known-sentence.parquet");
+    const hang = (_request: unknown, init: RequestInit): Promise<Response> =>
+      new Promise((_resolve, reject) => {
+        // The timer stands in for the socket a real hung request holds open.
+        const socket = setTimeout(() => undefined, 5_000);
+        init.signal?.addEventListener("abort", () => {
+          clearTimeout(socket);
+          reject(init.signal?.reason);
+        });
+      });
+    const { fetch, seen } = mockFetch(
+      json(build!.response.json),
+      hang,
+      () => new Response(null, { status: 302, headers: route!.response.headers ?? {} }),
+      () => new Response(bytes),
+    );
+    const transport = new Transport({
+      baseUrl: REPLAY_BASE_URL,
+      apiKey: REPLAY_KEY,
+      fetch,
+      timeout: 50,
+      sleep: () => Promise.resolve(),
+      env: envFrom({}),
+      readCredentialsFile: () => Promise.resolve(null),
+    });
+    const { spec } = stepOf(record, 0, "fetch");
+    // The fetch's own deadline is longer than the attempt timeout and short enough to fail fast
+    // when the route ask waits for the deadline.
+    const dataset = await fetchDataset(transport, spec!, { timeout: 2_000 });
+    assert.deepEqual(dataset.memberBytes(0), bytes);
+    assert.equal(seen.length, 4);
+  });
+
+  test("refuses an artifact URL off the API's origin before any download", async () => {
     const record = structuredClone(await scenario("fetch-spec-known-sentence"));
     const manifest = record.exchanges[0]!.response.json as { artifacts: { url: string }[] };
-    for (const artifact of manifest.artifacts) artifact.url = "https://elsewhere.example/file";
     record.exchanges = record.exchanges.slice(0, 1);
     const { spec } = stepOf(record, 0, "fetch");
-    const { transport, remaining } = replay(record);
-    await assert.rejects(fetchDataset(transport, spec!), {
-      name: "ContractError",
-      code: "contract_violation",
-    });
-    assert.deepEqual(remaining(), []);
+    for (const url of [
+      "https://elsewhere.example/file",
+      "https://storage.googleapis.com/bucket/object?X-Goog-Signature=redacted",
+    ]) {
+      for (const artifact of manifest.artifacts) artifact.url = url;
+      const { transport, remaining } = replay(record);
+      await assert.rejects(fetchDataset(transport, spec!), {
+        name: "ContractError",
+        code: "contract_violation",
+      });
+      assert.deepEqual(remaining(), []);
+    }
   });
 });
 

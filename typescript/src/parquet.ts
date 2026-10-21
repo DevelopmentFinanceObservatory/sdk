@@ -2,12 +2,15 @@
  * Reading the bare Parquet files a dataset holds with hyparquet, and writing a stacked dataset
  * as one Parquet file with hyparquet-writer. Several files stack into one table: a `part`
  * column first, then every file's columns in file order, with a column one file lacks null in
- * that file's rows.
+ * that file's rows. A column whose type differs between files widens as pyarrow's permissive
+ * promotion widens it, so a table either client stacks has the same types.
  */
 
 import { parquetMetadata, parquetReadObjects } from "hyparquet";
 import type { FileMetaData, KeyValue, ParquetParsers, SchemaElement } from "hyparquet";
 import { parquetWriteBuffer } from "hyparquet-writer";
+
+import { clientError } from "./errors.ts";
 
 /**
  * One cell of `toRows()`. INT64 columns arrive as numbers, so `JSON.stringify` works on the
@@ -152,36 +155,84 @@ export function columnType(element: SchemaElement): ColumnType {
 const sameType = (left: ColumnType, right: ColumnType): boolean =>
   JSON.stringify(left) === JSON.stringify(right);
 
+type Bits = 8 | 16 | 32 | 64;
+
+/** Each timestamp unit's ticks per millisecond. */
+const TICKS_PER_MS = { MILLIS: 1n, MICROS: 1_000n, NANOS: 1_000_000n } as const;
+
+/**
+ * The type two files' columns stack as, widened as pyarrow's permissive promotion widens it, or
+ * undefined for a pair it refuses. Null takes the other type; integers take the wider width, a
+ * signed and an unsigned one a signed type that holds both, up to 64 bits; an integer and a
+ * float take the float, 64 bits unless a 32-bit float meets an integer of at most 16 bits;
+ * timestamps in one time zone take the finer unit; a string and a binary column take binary.
+ */
+export function widen(left: ColumnType, right: ColumnType): ColumnType | undefined {
+  if (left.kind === "null") return right;
+  if (right.kind === "null" || sameType(left, right)) return left;
+  if (left.kind === "int" && right.kind === "int") {
+    if (left.signed === right.signed) {
+      return { kind: "int", bits: Math.max(left.bits, right.bits) as Bits, signed: left.signed };
+    }
+    const [signed, unsigned] = left.signed ? [left, right] : [right, left];
+    const bits = Math.min(64, Math.max(signed.bits, unsigned.bits * 2)) as Bits;
+    return { kind: "int", bits, signed: true };
+  }
+  if (left.kind === "float" && right.kind === "float") return { kind: "float", bits: 64 };
+  const float = left.kind === "float" ? left : right.kind === "float" ? right : undefined;
+  const int = left.kind === "int" ? left : right.kind === "int" ? right : undefined;
+  if (float !== undefined && int !== undefined) {
+    return { kind: "float", bits: float.bits === 32 && int.bits <= 16 ? 32 : 64 };
+  }
+  if (left.kind === "timestamp" && right.kind === "timestamp" && left.utc === right.utc) {
+    return TICKS_PER_MS[left.unit] > TICKS_PER_MS[right.unit] ? left : right;
+  }
+  const kinds = new Set([left.kind, right.kind]);
+  if (kinds.has("string") && kinds.has("binary")) return { kind: "binary" };
+  return undefined;
+}
+
 /** The stacked table's columns: `part` first when there are several files, then every
- *  file's columns in file order. A column all null in one file takes another file's type. */
+ *  file's columns in file order, each of the type `widen` gives its files' types.
+ *
+ * @throws {ContractError} A member's file has its own `part` column, or a column's types in two
+ *   files do not widen to one (`unexpected_response`).
+ */
 export function stackedColumns(parts: readonly TablePart[]): Column[] {
   const types = new Map<string, ColumnType>();
   if (parts.length > 1) types.set(PART_COLUMN, STRING);
   for (const { file } of parts) {
     for (const { name, type } of file.columns) {
       if (parts.length > 1 && name === PART_COLUMN) {
-        throw new TypeError(`A member's file has its own ${PART_COLUMN} column.`);
+        throw clientError("unexpected_response", {
+          detail: `A member's file has its own ${PART_COLUMN} column, so the members do not stack.`,
+        });
       }
       const seen = types.get(name);
-      if (seen === undefined || seen.kind === "null") {
-        types.set(name, type);
-      } else if (type.kind !== "null" && !sameType(seen, type)) {
-        throw new TypeError(
-          `The column ${name} is ${JSON.stringify(seen)} in one member and ` +
+      const stacked = seen === undefined ? type : widen(seen, type);
+      if (stacked === undefined) {
+        throw clientError("unexpected_response", {
+          detail:
+            `The column ${name} is ${JSON.stringify(seen)} in one member and ` +
             `${JSON.stringify(type)} in another, so the members do not stack.`,
-        );
+        });
       }
+      types.set(name, stacked);
     }
   }
   return [...types].map(([name, type]) => ({ name, type }));
 }
 
-function rowValue(value: unknown, column: string): Value {
+const encoder = new TextEncoder();
+
+function rowValue(value: unknown, column: Column): Value {
   if (value === undefined || value === null) return null;
+  if (column.type.kind === "float" && typeof value === "bigint") return Number(value);
+  if (column.type.kind === "binary" && typeof value === "string") return encoder.encode(value);
   if (typeof value === "bigint") {
     if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER)) {
       throw new RangeError(
-        `The column ${column} holds ${value}, beyond a JavaScript number's exact range; ` +
+        `The column ${column.name} holds ${value}, beyond a JavaScript number's exact range; ` +
           "read it with toArrow(), which keeps it as a bigint.",
       );
     }
@@ -193,7 +244,7 @@ function rowValue(value: unknown, column: string): Value {
 
 /** Every row of the stacked table. */
 export async function decodeRows(parts: readonly TablePart[]): Promise<Row[]> {
-  const columns = stackedColumns(parts).map(({ name }) => name);
+  const columns = stackedColumns(parts);
   const rows: Row[] = [];
   for (const { file, label } of parts) {
     const decoded = await parquetReadObjects({
@@ -204,8 +255,10 @@ export async function decodeRows(parts: readonly TablePart[]): Promise<Row[]> {
     for (const source of decoded) {
       const row: Row = {};
       for (const column of columns) {
-        row[column] =
-          parts.length > 1 && column === PART_COLUMN ? label : rowValue(source[column], column);
+        row[column.name] =
+          parts.length > 1 && column.name === PART_COLUMN
+            ? label
+            : rowValue(source[column.name], column);
       }
       rows.push(row);
     }
@@ -214,7 +267,8 @@ export async function decodeRows(parts: readonly TablePart[]): Promise<Row[]> {
 }
 
 /** A stacked table's columns, each with its values as stored: integers for dates and
- *  timestamps, `bigint` for INT64, text for strings, null where a file lacks the column. */
+ *  timestamps, in the column's unit, `bigint` for INT64, a number for a float, text for strings,
+ *  null where a file lacks the column. */
 export type StoredColumn = Column & { readonly values: unknown[] };
 
 /** Every column of the stacked table with its stored values, in row order. */
@@ -231,15 +285,27 @@ export async function decodeStored(parts: readonly TablePart[]): Promise<StoredC
   );
   return stackedColumns(parts).map(({ name, type }) => {
     const values: unknown[] = [];
-    for (const [index, { label }] of parts.entries()) {
+    for (const [index, { file, label }] of parts.entries()) {
       const isPart = parts.length > 1 && name === PART_COLUMN;
+      const own = file.columns.find((column) => column.name === name)?.type ?? NULL;
       for (const row of decoded[index]!) {
         const value: unknown = isPart ? label : (row[name] ?? null);
-        values.push(type.kind === "string" && value instanceof Uint8Array ? text(value) : value);
+        values.push(storedValue(value, own, type));
       }
     }
     return { name, type, values };
   });
+}
+
+/** A stored value of a file's column type as the stacked column's type stores it. */
+function storedValue(value: unknown, own: ColumnType, type: ColumnType): unknown {
+  if (value === null) return null;
+  if (type.kind === "string" && value instanceof Uint8Array) return text(value);
+  if (type.kind === "float" && typeof value === "bigint") return Number(value);
+  if (type.kind === "timestamp" && own.kind === "timestamp" && own.unit !== type.unit) {
+    return (BigInt(value as bigint | number) * TICKS_PER_MS[type.unit]) / TICKS_PER_MS[own.unit];
+  }
+  return value;
 }
 
 /** The Parquet schema element a column type is written as; every column is nullable, since a

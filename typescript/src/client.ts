@@ -2,6 +2,7 @@
 
 import type { Answer, AnswerContext, SearchOptions } from "./answer.ts";
 import type { Dataset } from "./dataset.ts";
+import { clientError } from "./errors.ts";
 import { fetchDataset, mint, resume } from "./fetch.ts";
 import type { FetchOptions, MintOptions, ResumeOptions, SpecInput } from "./fetch.ts";
 import type { ApiKeyOption } from "./keys.ts";
@@ -162,15 +163,27 @@ export class Client {
    * carries the client's key and headers and retries as every call does. A redirect is returned,
    * not followed.
    *
-   * @throws {TypeError} `path` does not start with `/`.
+   * @throws {InvalidRequestError} `path` is not a path on the base URL: it does not start with
+   *   one `/`, or names another host (`invalid_argument`).
    * @throws {DfoError} The class the refusal maps to.
    */
-  request(method: string, path: string, options: RawRequestOptions = {}): Promise<RawResponse> {
-    if (!path.startsWith("/")) {
-      throw new TypeError(`The path ${JSON.stringify(path)} does not start with "/".`);
+  async request(
+    method: string,
+    path: string,
+    options: RawRequestOptions = {},
+  ): Promise<RawResponse> {
+    const transport = this.#transport;
+    if (
+      !path.startsWith("/") ||
+      path.startsWith("//") ||
+      transport.url({ path }).origin !== transport.baseUrl.origin
+    ) {
+      throw clientError("invalid_argument", {
+        detail: `${JSON.stringify(path)} is not a path on the API at ${transport.baseUrl.href}.`,
+      });
     }
     const { params, json, signal, timeout } = options;
-    return this.#transport.requestRaw({
+    return transport.requestRaw({
       method: method.toUpperCase(),
       path,
       ...(params === undefined ? {} : { query: params }),

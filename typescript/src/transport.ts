@@ -14,6 +14,7 @@ import type { LongBuild } from "./operation.ts";
 import { VERSION } from "./version.ts";
 import { clientWarning, emitWarning, warnOnce } from "./warnings.ts";
 import type { DfoWarning, WarningHandler } from "./warnings.ts";
+import { isRecord } from "./json.ts";
 
 /** The public API's base URL. */
 export const DEFAULT_BASE_URL = "https://developmentfinance.org/api/v1";
@@ -174,9 +175,6 @@ export function retryAfterMs(headers: Headers, now: number = Date.now()): number
   const date = Date.parse(value);
   return Number.isNaN(date) ? undefined : Math.max(0, date - now);
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value);
 
 /** The timeouts raised because a call's deadline passed, which another attempt cannot clear.
  *  Their code, `deadline_exceeded`, is retryable for the caller, who may call again with a later
@@ -357,26 +355,39 @@ export class Transport {
   }
 
   /**
-   * Asks a files route for a file, retrying as every API request does. The route answers the
-   * bytes, or a redirect to a signed storage URL, which resolves against the response's URL;
-   * `fetchSigned` fetches it. A browser hides a redirect's `Location`, so there the browser
-   * follows it and the bytes come back.
+   * Asks a files route for a file, retrying as every API request does. The route is on the API's
+   * origin. It answers the bytes with a 200, or a redirect to a signed storage URL, which
+   * resolves against the response's URL; `fetchSigned` fetches it. A browser hides a redirect's
+   * `Location`, so there the client asks the route again and the browser follows the redirect.
+   * That second ask carries the key alone, which the browser drops on the way to another
+   * origin, so none of the client's headers reach the storage host.
    *
-   * @throws {ContractError} The route or its redirect names a host other than the API's or the
-   *   storage host, or a redirect has no `Location`.
+   * @throws {ContractError} The route is off the API's origin, or its redirect names a host
+   *   other than the API's or the storage host (`contract_violation`); a redirect has no
+   *   `Location` (`contract_violation`); the route answered a 2xx other than 200
+   *   (`unexpected_response`).
    * @throws {DfoError} The route refused the request.
    */
   async locate(options: Target & CallOptions): Promise<Located> {
     const target = this.url(options);
-    this.#checkFileOrigin(target, "The file URL");
+    if (target.origin !== this.baseUrl.origin) {
+      throw clientError("contract_violation", {
+        detail: `The file URL is on ${target.origin}, which is not the API's origin.`,
+      });
+    }
     const ask = { ...options, method: "GET" };
     const { response, body } = await this.#send(ask);
     if (response.type === "opaqueredirect") {
-      // The browser follows the redirect, dropping the Authorization header on the way to
-      // another origin.
       return { data: (await this.#send(ask, "follow")).body };
     }
-    if (!REDIRECT_STATUSES.has(response.status)) return { data: body };
+    if (response.status === 200) return { data: body };
+    if (!REDIRECT_STATUSES.has(response.status)) {
+      throw clientError("unexpected_response", {
+        status: response.status,
+        detail: `The files route ${target.pathname} answered HTTP ${response.status}, not a 200 or a redirect.`,
+        traceId: response.headers.get("x-dfo-trace-id"),
+      });
+    }
     const location = response.headers.get("location");
     if (location === null) {
       throw clientError("contract_violation", {
@@ -386,7 +397,13 @@ export class Transport {
       });
     }
     const signed = new URL(location, response.url || target);
-    this.#checkFileOrigin(signed, `The redirect from ${target.pathname}`);
+    if (signed.origin !== this.baseUrl.origin && signed.origin !== STORAGE_ORIGIN) {
+      throw clientError("contract_violation", {
+        detail:
+          `The redirect from ${target.pathname} is on ${signed.origin}, which is neither the ` +
+          `API's origin nor ${STORAGE_ORIGIN}.`,
+      });
+    }
     return { signed };
   }
 
@@ -397,7 +414,7 @@ export class Transport {
    * failed fetch is not retried: a signed URL can expire, so the caller asks the files route for
    * a fresh one.
    *
-   * @throws {ServerError} The host answered other than 2xx (`download_failed`).
+   * @throws {ServerError} The host answered other than 200 (`download_failed`).
    * @throws {NetworkError} The connection failed.
    * @throws {DfoTimeoutError} The attempt or the call's deadline ran out.
    */
@@ -409,7 +426,7 @@ export class Transport {
     if (outcome instanceof DfoError) throw outcome;
     const { response, body } = outcome;
     if (url.origin === this.baseUrl.origin) this.#warnFromHeaders(response.headers, url);
-    if (!response.ok) {
+    if (response.status !== 200) {
       throw clientError("download_failed", {
         status: response.status,
         detail: `The download from ${url.host} answered HTTP ${response.status}.`,
@@ -418,15 +435,9 @@ export class Transport {
     return body;
   }
 
-  #checkFileOrigin(url: URL, what: string): void {
-    if (url.origin === this.baseUrl.origin || url.origin === STORAGE_ORIGIN) return;
-    throw clientError("contract_violation", {
-      detail: `${what} is on ${url.origin}, which is neither the API's origin nor ${STORAGE_ORIGIN}.`,
-    });
-  }
-
   /** Sends one request with retries, returning a 2xx response or a redirect with its body.
-   *  Redirects are manual unless a browser has to follow one. */
+   *  Redirects are manual unless a browser has to follow one, and then the request carries the
+   *  key alone, since the browser keeps every other header on the way to another origin. */
   async #send(options: RequestOptions, redirect: RequestRedirect = "manual"): Promise<Received> {
     options.signal?.throwIfAborted();
     const method = options.method ?? (options.json === undefined ? "GET" : "POST");
@@ -436,7 +447,8 @@ export class Transport {
     let reauthenticated = false;
 
     for (let attempt = 0; ; attempt += 1) {
-      const { headers, key } = await this.#headers(method, url, options);
+      const { headers, key } =
+        redirect === "follow" ? await this.#keyHeader() : await this.#headers(method, url, options);
       const outcome = await this.#attempt(url, options, {
         method,
         headers,
@@ -497,6 +509,14 @@ export class Transport {
     if (options.json !== undefined) headers.set("content-type", "application/json");
     if (!inBrowser()) headers.set("user-agent", `dfo-ts/${VERSION}`);
     for (const [name, value] of Object.entries(options.headers ?? {})) headers.set(name, value);
+    const { headers: keyed, key } = await this.#keyHeader();
+    for (const [name, value] of keyed) headers.set(name, value);
+    return { headers, key };
+  }
+
+  /** The key as the one header, for a request whose redirect the browser follows. */
+  async #keyHeader(): Promise<{ headers: Headers; key: string | undefined }> {
+    const headers = new Headers();
     const key = (await this.apiKey()).key?.reveal();
     if (key !== undefined) headers.set("authorization", `Bearer ${key}`);
     return { headers, key };
@@ -589,11 +609,16 @@ export class Transport {
         problem: body,
       });
     }
+    // A body with no code keeps what a problem document says: whether to retry, its trace id.
+    const problem = isRecord(body) && ("code" in body || !("error" in body)) ? body : null;
     return clientError("refusal_without_code", {
       status,
-      detail: `HTTP ${status} with no problem document.`,
-      traceId: headerTrace,
+      detail: `HTTP ${status} with no refusal code.`,
+      traceId: typeof problem?.["trace_id"] === "string" ? problem["trace_id"] : headerTrace,
+      retryable,
       retryAfterMs: retryAfter,
+      problem: isRecord(body) ? body : null,
+      docsUrl: this.#docsUrl(problem?.["type"]),
     });
   }
 

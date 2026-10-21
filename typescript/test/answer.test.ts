@@ -156,6 +156,17 @@ describe("gaps", () => {
     assert.deepEqual(candidate.unbound().assumptions, [ASSUMED]);
   });
 
+  test("a candidate with no heading and no sentence has a null label", () => {
+    const edited = body("answer-candidates-choose-fetch");
+    const [part] = edited["parts"] as CandidatesPart[];
+    const { resolved } = part!.candidates.specs[0]!;
+    delete resolved.sentence_plan;
+    delete resolved.rendered_sentence;
+    const [candidate] = answerFromBody(edited, offline(), null).gaps[0]!.options;
+    assert.ok(candidate?.kind === "candidate");
+    assert.equal(candidate.label, null);
+  });
+
   test("a no_data part with an empty message takes its reason's text", () => {
     const edited = body("answer-mixed-fetch-raises");
     const part = (edited["parts"] as { no_data?: { message: string; reason: string } }[])[1]!;
@@ -191,37 +202,51 @@ describe("choose", () => {
     await assert.rejects(answer.choose(0), (error: unknown) => {
       assert.ok(error instanceof InvalidRequestError);
       assert.equal(error.code, "choice_invalid");
-      assert.match(error.message, /^Part 0 offers no choice: "Congo" matches/);
       return true;
     });
   });
 
+  const queries: [string, (query: { parts: unknown[] }) => unknown][] = [
+    ["no data_query", () => undefined],
+    ["an empty data_query", () => ({})],
+    ["a two-part data_query", (query) => ({ ...query, parts: [query.parts[0], query.parts[0]] })],
+  ];
   for (const name of ["choose-place-one-part", "choose-place-two-parts"]) {
-    test(`refuses an option with no data_query in ${name}, with no request`, async () => {
-      const edited = body(name);
-      const parts = edited["parts"] as { no_data?: { options: Record<string, unknown>[] } }[];
-      const part = parts.find((candidate) => candidate.no_data !== undefined)!;
-      for (const option of part.no_data!.options) delete option["data_query"];
-      const answer = answerFromBody(edited, offline(), null);
-      const index = parts.indexOf(part);
-      await assert.rejects(answer.choose(index, 0), {
-        name: "ContractError",
-        code: "contract_violation",
+    for (const [what, edit] of queries) {
+      test(`refuses an option with ${what} in ${name}, with no request`, async () => {
+        const edited = body(name);
+        const parts = edited["parts"] as { no_data?: { options: Record<string, unknown>[] } }[];
+        const part = parts.find((candidate) => candidate.no_data !== undefined)!;
+        for (const option of part.no_data!.options) {
+          option["data_query"] = edit(option["data_query"] as { parts: unknown[] });
+        }
+        const answer = answerFromBody(edited, offline(), null);
+        const index = parts.indexOf(part);
+        await assert.rejects(answer.choose(index, 0), {
+          name: "ContractError",
+          code: "contract_violation",
+        });
       });
-    });
+    }
   }
 
-  test("refuses an answer with nothing to choose and an option it does not offer", async () => {
-    await assert.rejects(answerOf("answer-definite-fetch").choose(0), /No part of this answer/);
-    await assert.rejects(answerOf("choose-place-one-part").choose("Congo [Nowhere]"), /no option/);
-    await assert.rejects(answerOf("choose-place-one-part").choose(2), /out of range/);
-  });
-
-  test("needs the part when several await a choice, and a word two parts share", async () => {
-    const answer = answerOf("choose-place-two-parts");
-    await assert.rejects(answer.choose("Congo [DRC]"), /2 parts of this answer await a choice/);
-    await assert.rejects(answer.choose("Congo", "Congo [DRC]"), /2 parts are named "Congo"/);
-  });
+  const invalidChoices: [string, () => Promise<Answer>][] = [
+    ["an answer with nothing to choose", () => answerOf("answer-definite-fetch").choose(0)],
+    ["an option label no option has", () => answerOf("choose-place-one-part").choose("Nowhere")],
+    ["an option index out of range", () => answerOf("choose-place-one-part").choose(2)],
+    ["no part when several await a choice", () => answerOf("choose-place-two-parts").choose(0)],
+    [
+      "a word two parts share",
+      () => answerOf("choose-place-two-parts").choose("Congo", "Congo [DRC]"),
+    ],
+    ["a part index out of range", () => answerOf("choose-place-one-part").choose(3, 0)],
+    ["a part that already has a reading", () => answerOf("answer-mixed-fetch-raises").choose(0, 0)],
+  ];
+  for (const [name, choose] of invalidChoices) {
+    test(`refuses ${name}, with no request`, async () => {
+      await assert.rejects(choose(), { name: "InvalidRequestError", code: "choice_invalid" });
+    });
+  }
 
   test("a several-part choice of a candidate posts identities for the definite and the chosen part", async () => {
     const definite = (body("answer-definite-fetch")["parts"] as DefinitePart[])[0]!;
@@ -384,14 +409,16 @@ describe("candidate.fetch", () => {
 });
 
 describe("fetch", () => {
-  test("a declined or catalogue answer raises DeclinedError with its reason", async () => {
+  test("a declined or catalogue answer raises DeclinedError", async () => {
     await assert.rejects(answerOf("answer-declined").fetch(), (error: unknown) => {
       assert.ok(error instanceof DeclinedError);
       assert.equal(error.code, "answer_declined");
-      assert.match(error.message, /^Search declined the question: it asks for an argument/);
       return true;
     });
-    await assert.rejects(answerOf("answer-catalogue").fetch(), /answered with the catalogue/);
+    await assert.rejects(answerOf("answer-catalogue").fetch(), {
+      name: "DeclinedError",
+      code: "answer_declined",
+    });
   });
 
   test("partial with no answered part still raises IncompleteAnswerError", async () => {
@@ -405,11 +432,23 @@ describe("fetch", () => {
 
   test("builds each distinct spec once, naming every folded part", async () => {
     const context = offline();
-    await answerOf("answer-several-readings-folded", context).fetch();
+    const answer = answerOf("answer-several-readings-folded", context);
+    await answer.fetch();
     assert.deepEqual(
       context.built[0]!.map((member) => member.parts),
       [["ODA disbursements for health", "ODA disbursements for education"], ["GDP"]],
     );
+    // A folded reading keeps its first part's spec.
+    assert.equal(answer.specs[0], (answer.parts[0] as DefinitePart).spec);
+  });
+
+  test("names a part with empty variable text by its spec's sentence", async () => {
+    const edited = body("answer-definite-fetch");
+    const [part] = edited["parts"] as DefinitePart[];
+    part!.variable_text = "";
+    const context = offline();
+    await answerFromBody(edited, context, null).fetch();
+    assert.deepEqual(context.built[0]![0]!.parts, [part!.spec.resolved.rendered_sentence]);
   });
 
   test("a departure, a skipped computation and a warn notice arrive as one SearchWarning", async () => {
@@ -475,6 +514,7 @@ describe("reading a Search response", () => {
   type Edit = (parts: Record<string, unknown>[]) => void;
   const unlike = "spec_00000000000000000000000000000000";
   const refusals: [string, string, Edit, string][] = [
+    ["a resolution with no parts", "answer-definite-fetch", (p) => p.splice(0), "/parts"],
     [
       "a part with no status",
       "answer-definite-fetch",

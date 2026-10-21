@@ -16,26 +16,13 @@ export const STRICT_SCHEMAS = {
       artifacts: { items: { ref: "ArtifactEntryModel" } },
     },
   },
-  NearestRealSpec: {
-    required: [],
-    children: { definition: { ref: "SpecDefinition" }, resolved: { ref: "ResolvedSpec" } },
-  },
-  NoData: {
-    required: ["reason"],
-    children: {
-      nearest_real: { items: { ref: "NearestRealSpec" } },
-      flagged_match: { ref: "Spec" },
-      alternate_match: { ref: "Spec" },
-    },
-  },
+  NoData: { required: ["reason"], children: {} },
   NoDataPart: { required: ["status", "no_data"], children: { no_data: { ref: "NoData" } } },
   OperationEnvelope: { required: ["operation_id", "status"], children: {} },
   OperationResource: {
     required: ["operation"],
     children: { operation: { ref: "OperationEnvelope" } },
   },
-  OptionsEnvelope: { required: [], children: { definition: { ref: "DefinitionModel" } } },
-  RelatedMeasure: { required: [], children: { definition: { ref: "SpecDefinition" } } },
   Resolution: {
     required: ["parts"],
     children: {
@@ -52,19 +39,10 @@ export const STRICT_SCHEMAS = {
       },
     },
   },
-  ResolvedSpec: {
-    required: [],
-    children: {
-      equivalent_readings: { items: { ref: "Spec" } },
-      alternative_measures: { items: { ref: "SpecAlternativeMeasure" } },
-      related_measures: { items: { ref: "RelatedMeasure" } },
-    },
-  },
   Spec: {
     required: ["spec_id", "definition"],
-    children: { definition: { ref: "SpecDefinition" }, resolved: { ref: "ResolvedSpec" } },
+    children: { definition: { ref: "SpecDefinition" } },
   },
-  SpecAlternativeMeasure: { required: [], children: { definition: { ref: "SpecDefinition" } } },
   SpecDefinition: { required: ["spec_id"], children: {} },
   Unsupported: { required: ["code"], children: {} },
   UnsupportedPart: {

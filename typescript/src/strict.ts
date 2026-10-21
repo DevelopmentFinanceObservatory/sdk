@@ -1,7 +1,8 @@
 import { clientError } from "./errors.ts";
 import { STRICT_SCHEMAS } from "./generated/strict.ts";
+import { isRecord } from "./json.ts";
 
-/** A schema that holds a strict field, or leads to one. */
+/** A schema that holds a strict field. */
 export type StrictSchema = keyof typeof STRICT_SCHEMAS;
 
 type Shape =
@@ -16,9 +17,6 @@ type Entry = {
 };
 
 const TABLE: Readonly<Record<string, Entry>> = STRICT_SCHEMAS;
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value);
 
 const escape = (member: string): string => member.replaceAll("~", "~0").replaceAll("/", "~1");
 
@@ -67,9 +65,10 @@ function checkSchema(schema: string, value: unknown, pointer: string): void {
 }
 
 /**
- * Raises `ContractError` when a response body lacks a member the client acts on, anywhere the
- * schema leads, as `contract/strict-fields.json` lists them. Every other member, and every
- * unknown discriminator value, passes untouched.
+ * Raises `ContractError` when a response body lacks a member the client acts on, as
+ * `contract/strict-fields.json` lists them. The check descends only through those members, so a
+ * nested spec the client never reads, such as one under a spec's `resolved`, is not checked.
+ * Every other member, and every unknown discriminator value, passes untouched.
  */
 export function checkStrict(schema: StrictSchema, body: unknown): void {
   checkSchema(schema, body, "");

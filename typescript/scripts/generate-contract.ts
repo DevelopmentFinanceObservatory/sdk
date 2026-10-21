@@ -9,10 +9,13 @@
 //   node scripts/generate-contract.ts           rewrite every file
 //   node scripts/generate-contract.ts --check   exit 1 when a committed file differs
 //
-// The strict table lists, for every schema that holds a strict field or leads to one, the strict
-// members it requires and the members to descend into. Generation fails when a strict pointer
-// names a member the served document does not require, or lets be null, or when an enum entry
-// lists a value the served document does not allow.
+// The strict table lists, for every schema that holds a strict field, the strict members it
+// requires and the strict members to descend into: a strict member whose schema holds strict
+// fields of its own. The check reaches only the members a client reads, so a nested schema
+// reached through a member the client never reads, such as a spec under `resolved`, is not
+// checked. Generation fails when a strict pointer names a member the served document does not
+// require, or lets be null, or when an enum entry lists a value the served document does not
+// allow.
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
@@ -40,6 +43,9 @@ function parsePointer(pointer: string): { schema: string; property: string } {
   if (match === null) throw new Error(`${pointer} names no property of a component schema`);
   return { schema: match[1]!, property: match[2]! };
 }
+
+const strictPointer = (schema: string, member: string): string =>
+  `/components/schemas/${schema}/properties/${member}`;
 
 function refName(ref: unknown): string {
   if (typeof ref !== "string" || !ref.startsWith(REF_PREFIX)) {
@@ -148,31 +154,17 @@ export function renderStrict(openapiText: string, strictText: string): Record<st
     (enums[target.schema] ??= {})[target.property] = values;
   }
 
-  // The schemas that hold a strict field or lead to one, grown to a fixed point.
+  // The check descends only through strict members, into the schemas that hold strict fields.
   const relevant = new Set(required.keys());
-  for (let grown = true; grown;) {
-    grown = false;
-    for (const [name, schema] of Object.entries(schemas)) {
-      if (relevant.has(name) || !isRecord(schema["properties"])) continue;
-      const leads = Object.values(schema["properties"]).some(
-        (node) => shapeOf(node, relevant) !== undefined,
-      );
-      if (leads) {
-        relevant.add(name);
-        grown = true;
-      }
-    }
-  }
-
   const table: Record<string, StrictEntry> = {};
   for (const name of [...relevant].toSorted()) {
-    const properties = schemas[name]!["properties"];
+    const members = required.get(name)!;
     const children = Object.fromEntries(
-      Object.entries(isRecord(properties) ? properties : {})
-        .map(([member, node]) => [member, shapeOf(node, relevant)] as const)
-        .filter((entry): entry is readonly [string, Shape] => entry[1] !== undefined),
+      members
+        .map((member) => [member, shapeOf(property(strictPointer(name, member)).node, relevant)])
+        .filter((entry): entry is [string, Shape] => entry[1] !== undefined),
     );
-    table[name] = { required: required.get(name) ?? [], children };
+    table[name] = { required: members, children };
   }
   return { STRICT_SCHEMAS: table, STRICT_ENUMS: enums };
 }

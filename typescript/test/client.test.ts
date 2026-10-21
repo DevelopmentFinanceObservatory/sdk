@@ -89,11 +89,23 @@ describe("request", () => {
     assert.equal(seen.length, 1);
   });
 
-  test("refuses a path that does not start with a slash", () => {
-    const { fetch, seen } = mockFetch();
-    assert.throws(() => client(fetch).request("GET", "datasets"), TypeError);
-    assert.equal(seen.length, 0);
-  });
+  for (const [baseUrl, path] of [
+    [BASE, "datasets"],
+    [BASE, "https://evil.example/x"],
+    [BASE, "//evil.example/x"],
+    ["https://api.example.org", "//evil.example/x"],
+    ["https://api.example.org", "/\\evil.example/x"],
+    ["https://api.example.org", "/\t/evil.example/x"],
+  ] as const) {
+    test(`refuses ${JSON.stringify(path)} on ${baseUrl}, which is not a path on it`, async () => {
+      const { fetch, seen } = mockFetch();
+      await assert.rejects(client(fetch, { baseUrl }).request("GET", path), {
+        name: "InvalidRequestError",
+        code: "invalid_argument",
+      });
+      assert.equal(seen.length, 0);
+    });
+  }
 });
 
 describe("withOptions", () => {

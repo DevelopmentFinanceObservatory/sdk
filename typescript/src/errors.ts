@@ -220,10 +220,13 @@ type ClientClass<C extends ClientErrorCode> = (typeof CLIENT_CLASSES)[Exclude<
 
 /** The options an error with a client code takes: its class's options without the code and
  *  the retryable flag, which the code's row gives, and a status for a code whose class and flag
- *  the status picks. */
+ *  the status picks. Such a code takes a retryable flag the response states over its status's. */
 export type ClientErrorOptions<C extends ClientErrorCode> =
   (typeof CLIENT_CODE_CLASSES)[C] extends "by_status"
-    ? Omit<DfoErrorOptions, "code" | "status" | "retryable"> & { status: number }
+    ? Omit<DfoErrorOptions, "code" | "status" | "retryable"> & {
+        status: number;
+        retryable?: boolean;
+      }
     : Omit<ConstructorParameters<ClientClass<C>>[0], "code" | "retryable">;
 
 /** The error a client code raises. */
@@ -232,7 +235,7 @@ export type ClientError<C extends ClientErrorCode> =
 
 /** Builds an error the client raises itself, of the class and retryable flag
  *  `contract/client-codes.json` assigns to its code, or for `refusal_without_code` the class
- *  and flag its status maps to. */
+ *  its status maps to, and the flag the body states or else its status maps to. */
 export function clientError<C extends ClientErrorCode>(
   code: C,
   options: ClientErrorOptions<C>,
@@ -242,6 +245,6 @@ export function clientError<C extends ClientErrorCode>(
   const built = { ...options, code } as DfoErrorOptions;
   const status = built.status ?? 0;
   const ErrorClass = name === "by_status" ? classForStatus(status) : CLIENT_CLASSES[name];
-  const retryable = flag === "by_status" ? isRetryableStatus(status) : flag;
+  const retryable = flag === "by_status" ? (built.retryable ?? isRetryableStatus(status)) : flag;
   return new ErrorClass({ ...built, retryable }) as ClientError<C>;
 }

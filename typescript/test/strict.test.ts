@@ -61,6 +61,22 @@ test("a part checks against its status's schema, and an unknown status passes", 
   checkStrict("Resolution", resolution);
 });
 
+test("a nested spec the client never reads passes without its strict fields", async () => {
+  const definite = structuredClone(await recorded("answer-definite-fetch"));
+  const [part] = definite["parts"] as { spec: { resolved: Record<string, unknown> } }[];
+  const [alternative] = part!.spec.resolved["alternative_measures"] as {
+    definition: Record<string, unknown>;
+  }[];
+  delete alternative!.definition["spec_id"];
+  checkStrict("Resolution", definite);
+
+  const folded = structuredClone(await recorded("answer-several-readings-folded"));
+  const gdp = (folded["parts"] as { spec: { resolved: Record<string, unknown> } }[])[2]!;
+  const [reading] = gdp.spec.resolved["equivalent_readings"] as Record<string, unknown>[];
+  delete reading!["definition"];
+  checkStrict("Resolution", folded);
+});
+
 test("an operation without a status raises ContractError", () => {
   assert.throws(() => {
     checkStrict("OperationResource", { operation: { operation_id: "op_1" } });

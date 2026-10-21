@@ -115,15 +115,15 @@ export function pick(gap: Gap, key: ChoiceKey, mention?: ChoiceKey): Candidate |
 /**
  * The Search input a choice posts. A one-part answer posts a chosen option's query unchanged.
  *
- * @throws {ContractError} The chosen option carries no `data_query`, or in a several-part answer
- *   one that does not hold one part.
+ * @throws {ContractError} The chosen option carries no `data_query`, or one that does not hold
+ *   one part, in a one-part answer as in a several-part one.
  */
 export function choiceInput(
   answer: Answer,
   gap: Gap,
   chosen: Candidate | QueryOption,
 ): ParsedInput | DatasetResubmitInput {
-  if (answer.parts.length === 1 && chosen.kind === "query") return queryOf(chosen);
+  if (answer.parts.length === 1 && chosen.kind === "query") return onePart(chosen).query;
   return {
     kind: "dataset_resubmit",
     entries: answer.parts.map((part, index) =>
@@ -138,23 +138,26 @@ export function pickedEntry(part: Part, candidate: Candidate): ResubmitIdentityE
   return identityEntry(part, candidate.spec);
 }
 
-/** The query a chosen option posts. */
-function queryOf(option: QueryOption): ParsedInput {
-  if (option.dataQuery !== null) return option.dataQuery;
-  throw clientError("contract_violation", {
-    detail: `The option ${JSON.stringify(option.label)} carries no data_query to post back.`,
-  });
+/** A chosen option's `data_query` and the one part it holds. */
+function onePart(option: QueryOption): { query: ParsedInput; part: ParsedPart } {
+  const query = option.dataQuery;
+  if (query === null) {
+    throw clientError("contract_violation", {
+      detail: `The option ${JSON.stringify(option.label)} carries no data_query to post back.`,
+    });
+  }
+  const parts = query.parts as ParsedInput["parts"] | undefined;
+  if (!Array.isArray(parts) || parts.length !== 1) {
+    throw clientError("contract_violation", {
+      detail: `The option ${JSON.stringify(option.label)} does not carry a one-part parsed input.`,
+    });
+  }
+  return { query, part: parts[0]! };
 }
 
 function chosenEntry(part: Part, chosen: Candidate | QueryOption): Entry {
   if (chosen.kind === "candidate") return pickedEntry(part, chosen);
-  const parts = queryOf(chosen).parts as ParsedInput["parts"] | undefined;
-  if (!Array.isArray(parts) || parts.length !== 1) {
-    throw clientError("contract_violation", {
-      detail: `The option ${JSON.stringify(chosen.label)} does not carry a one-part parsed input.`,
-    });
-  }
-  return { entry_kind: "parsed", part: parts[0]! };
+  return { entry_kind: "parsed", part: onePart(chosen).part };
 }
 
 function entry(part: Part): Entry {

@@ -11,9 +11,10 @@ import type {
   RequestedOperation,
   WarningModel,
 } from "./wire.ts";
+import { isRecord } from "./json.ts";
 
-/** The version of the provenance a stacked file carries under `dfo.*` keys, the one Python's
- *  `Dataset.save` writes. */
+/** The version of the provenance a file from `bytes()` carries under `dfo.*` keys, the one
+ *  Python's `Dataset.save` writes. */
 export const SAVED_FORMAT_VERSION = 1;
 
 /** How to cite the data: the citation text and the cited sources. */
@@ -53,9 +54,6 @@ export type FetchedMember = {
    *  requested computations and assumptions reach the dataset. */
   readonly answerParts?: readonly Part[];
 };
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value);
 
 /** A cited source as the server sent it, with the two members every source carries. */
 const isSource = (value: unknown): value is CitationSource =>
@@ -221,7 +219,8 @@ export class Dataset<TMissing extends Gap = never> {
     this.layoutVersion = [
       ...new Set(members.map((member) => artifactLayout(member, options.layout))),
     ].join("; ");
-    // Reading the columns checks the members stack before the dataset is returned.
+    // Reading the columns checks the members stack before the dataset is returned; a pair of
+    // column types that does not widen raises ContractError.
     stackedColumns(this.#parts());
   }
 
@@ -250,17 +249,16 @@ export class Dataset<TMissing extends Gap = never> {
   }
 
   /**
-   * The dataset as one Parquet file. A one-member dataset returns the file the server built,
-   * checked against its digest. Several members stack into one file, `part` first, whose
-   * key-value metadata carries the provenance and the ref under `dfo.*` keys, as Python's
-   * `Dataset.save` writes it.
+   * The dataset as one Parquet file whose key-value metadata carries the provenance and the ref
+   * under `dfo.*` keys, as Python's `Dataset.save` writes it, so `dfo.open_bundle` reads it
+   * back. Several members stack into the file, `part` first. `memberBytes` gives the file the
+   * server built.
    */
   async bytes(): Promise<Uint8Array> {
-    if (this.#data.length === 1) return this.memberBytes(0);
     return encodeStacked(this.#parts(), this.#metadata());
   }
 
-  /** One member's Parquet file, checked against its digest. */
+  /** One member's Parquet file as the server built it, checked against its digest. */
   memberBytes(index: number): Uint8Array {
     const data = this.#data[index];
     if (data === undefined) {
@@ -274,7 +272,7 @@ export class Dataset<TMissing extends Gap = never> {
     return decodeRows(this.#parts());
   }
 
-  /** The provenance as a stacked file's key-value metadata, in the shape Python's
+  /** The provenance as the file's key-value metadata, in the shape Python's
    *  `Dataset.save` writes, so `dfo.open_bundle` reads the file back. */
   #metadata(): Record<string, string> {
     const sources = this.citation.sources;
