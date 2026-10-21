@@ -42,7 +42,7 @@ const again = await client.fetch(DatasetRef.fromJSON(JSON.parse(saved)));
 
 `client.fetch(spec, { window: [2020, 2023] })` narrows a spec, and `client.mint(spec)` starts a long build that `client.operation(id)` resumes from another process.
 
-`await dataset.bytes()` returns one Parquet file whose key-value metadata carries the sentence, citation, sources, licence, departures, assumptions, layout version and ref under `dfo.*` keys, the file Python's `Dataset.save` writes and `dfo.open_bundle` reads. Several members stack into one table, `part` first, and a column whose type differs between members widens as pyarrow widens it; a pair pyarrow refuses, or a column the client cannot read, such as a nested one, raises a `ContractError` with `contract_violation`. A DECIMAL column keeps its precision and scale in `bytes()`, and its values read as 64-bit floats in `toRows()` and `toArrow()`. `dataset.memberBytes(index)` gives one member's file as the server built it. `toArrow(dataset)` from `@developmentfinance/client/arrow` builds an apache-arrow `Table`; that entry point needs the optional `apache-arrow` package.
+`await dataset.bytes()` returns one Parquet file whose key-value metadata carries the sentence, citation, sources, licence, departures, assumptions, layout version and ref under `dfo.*` keys, the file Python's `Dataset.save` writes and `dfo.open_bundle` reads. Several members stack into one table, `part` first, and a column whose type differs between members widens as pyarrow widens it; a pair pyarrow refuses, or a column the client cannot read, such as a nested one, raises a `ContractError` with `contract_violation`. A DECIMAL column keeps its precision and scale in `bytes()`. `dataset.memberBytes(index)` gives one member's file as the server built it. `toArrow(dataset)` from `@developmentfinance/client/arrow` builds an apache-arrow `Table`; that entry point needs the optional `apache-arrow` package.
 
 The client also looks up names and codes:
 
@@ -90,7 +90,7 @@ function describe(part: Part): string {
 
 A refusal, a failed connection, a passed deadline and a response the client cannot act on raise a `DfoError` with a `code`, the HTTP `status`, the server's `detail` and `traceId`, whether it is `retryable`, the parsed `problem` document and a `docsUrl`. `isDfoError(error)` recognises one from any copy of the package. Subclasses group codes by what the caller does next: `InvalidRequestError`, `NotFoundError`, `IncompleteAnswerError`, `DeclinedError`, `VersionUnavailableError`, `AuthenticationError`, `PermissionDeniedError`, `RateLimitError`, `QuotaExceededError`, `ServerError`, `ContractError`, `NetworkError` and `DfoTimeoutError`.
 
-`traceId` is the trace id of the response the error describes, to quote when you report a fault: the body's `trace_id`, else the `x-dfo-trace-id` header, else null. A refusal, a response the client cannot act on, a failed operation, and a declined or incomplete answer each carry one. An error about the caller's input, or about a download from the storage host, carries null.
+`traceId` is the trace id of the response the error describes, to quote when you report a fault: the top-level `trace_id` of the response body, else the `x-dfo-trace-id` header, else null. A Search answer's `diagnostics.trace_id` is not read. A refusal, a response the client cannot act on, a failed operation, and a declined or incomplete answer each carry one. An error about the caller's input, a download from the storage host, a failed connection or a passed deadline carries null.
 
 A few calls throw something else:
 
@@ -100,6 +100,7 @@ A few calls throw something else:
 - `DatasetRef.fromJSON` throws a `FormatError`, a `TypeError`, for JSON that is not a ref.
 - `dataset.memberBytes(index)` throws a `RangeError` for an index past the members.
 - `dataset.toRows()` throws a `RangeError` for an INT64 value outside a JavaScript number's exact range; `toArrow(dataset)` keeps it as a `bigint`.
+- A DECIMAL value throws nothing: it reads as a 64-bit float in `toRows()` and `toArrow()`, as hyparquet decodes it, so a value of more than 15 significant digits can lose its last ones.
 
 ## Warnings
 
@@ -109,4 +110,8 @@ Warnings go to `onWarning`, else `process.emitWarning`, else `console.warn`. A `
 
 The client resolves its key when it is built, and again after a 401. It takes the first key it finds: the `apiKey` option, the `DFO_API_KEY` environment variable, then the `default` profile (or the one `DFO_PROFILE` names) in the credentials file, which Node reads from `$DFO_CREDENTIALS_FILE`, `$XDG_CONFIG_HOME/dfo/credentials.toml` or `~/.config/dfo/credentials.toml` (`%APPDATA%\dfo\credentials.toml` on Windows). Without a key it calls the API anonymously. An empty `DFO_API_KEY` counts as unset, while an empty `apiKey` option, or a profile whose `key` is empty, raises `AuthenticationError` from `new Client()`, as does a credentials file that fails to parse. A key function is called when the client is built; one that returns a promise settles before the first request. After a 401 the client looks the key up again and sends the request once more, at once, when the key changed.
 
-In a browser page or worker the client refuses a secret `dfo_k_` key, which every visitor could read, unless the caller sets `dangerouslyAllowBrowser: true`.
+## In a browser
+
+A browser page holds a publishable `dfo_p_` key. In a browser page or worker the client refuses a secret `dfo_k_` key, which every visitor could read, unless the caller sets `dangerouslyAllowBrowser: true`.
+
+A browser hides a files route's redirect from the page, so the client asks the files route once more with the redirect followed, sending the key alone on that request to the API's origin, and the browser follows the redirect to the signed URL. Browsers drop the `Authorization` header on a redirect to another origin, as the Fetch standard requires, so the key does not reach the storage host.

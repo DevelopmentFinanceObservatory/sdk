@@ -9,8 +9,17 @@ import type { Layout, SpecLike } from "../src/ref.ts";
 import { Transport } from "../src/transport.ts";
 import type { TransportOptions } from "../src/transport.ts";
 
-/** The base URL every replay serves its scenario at, whatever base URL the record names. */
+/** The base URL a replay serves its scenario at when its options name none. */
 export const REPLAY_BASE_URL = "https://api.replay.test/api";
+
+/** The base URLs the contract suite replays every scenario under, beside the record's own:
+ *  the recorded path on another host, as the contract's validator replays it, and two other
+ *  base URL forms. */
+export const REPLAY_BASE_URLS = {
+  "api-path": "https://replay.example.org/api",
+  "path-trailing-slash": "https://developmentfinance.org/api/v1/",
+  "bare-origin": "http://127.0.0.1:8083",
+} as const;
 
 /** The key every replay's client sends, one that passes the key-format check so it issues no
  *  warning. */
@@ -172,9 +181,9 @@ export function stepOf<TOp extends Step["op"]>(
   return step as Extract<Step, { op: TOp }>;
 }
 
-/** The API origin a scenario's responses name: its recording's, or for a synthetic scenario the
+/** The base URL a scenario was recorded at: its own, or for a synthetic scenario the
  *  recording's it derives from. */
-function recordedOrigin(record: Scenario): string {
+export function recordedBaseUrl(record: Scenario): string {
   let { origin } = record;
   while (origin.kind === "synthetic") {
     const parent = JSON.parse(
@@ -182,7 +191,7 @@ function recordedOrigin(record: Scenario): string {
     ) as Scenario;
     origin = parent.origin;
   }
-  return new URL(origin.base_url).origin;
+  return origin.base_url;
 }
 
 /** The URL a recorded request went to, under the replay's base URL. */
@@ -200,9 +209,11 @@ function expectedUrl(base: URL, request: Exchange["request"]): string {
  * recorded, not waited: `waits` holds every sleep, and `retryWaits` the sleeps that are no
  * long build's poll wait. A poller records each poll wait just before it sleeps it, so a sleep
  * is a poll wait when the long builds' poll waits grew since the last sleep. `remaining` lists
- * the exchanges no request reached. A response body or header that names the recorded API origin
- * names the replay's origin instead, as the server under the replay's base URL would. `options`
- * override the transport's; a `fetch` among them replaces the replay.
+ * the exchanges no request reached. A recorded scenario's request posts exactly the body members
+ * the record lists. The replay serves the scenario at `options.baseUrl`, `REPLAY_BASE_URL` when
+ * it names none, and a response body or header that names the recorded API origin names the
+ * replay's origin instead, as the server under the replay's base URL would. `options` override
+ * the transport's; a `fetch` among them replaces the replay.
  */
 export function replay(
   record: Scenario,
@@ -214,8 +225,9 @@ export function replay(
   remaining: () => Exchange[];
   urls: string[];
 } {
-  const base = new URL(REPLAY_BASE_URL);
-  const recorded = record.exchanges.length === 0 ? base.origin : recordedOrigin(record);
+  const base = new URL(options.baseUrl ?? REPLAY_BASE_URL);
+  const recorded =
+    record.exchanges.length === 0 ? base.origin : new URL(recordedBaseUrl(record)).origin;
   const onReplayOrigin = (text: string): string =>
     text.replaceAll(`${recorded}/`, `${base.origin}/`);
   const queue = [...record.exchanges];
@@ -250,6 +262,13 @@ export function replay(
       const sent = JSON.parse(init.body as string) as Json;
       for (const [key, value] of Object.entries(request.json)) {
         assert.deepEqual(sent[key], value, `${record.name}: ${url} body member ${key}`);
+      }
+      if (record.origin.kind === "recorded") {
+        assert.deepEqual(
+          Object.keys(sent).sort(),
+          Object.keys(request.json).sort(),
+          `${record.name}: ${url} body members`,
+        );
       }
     }
     const body =

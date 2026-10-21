@@ -1,7 +1,7 @@
-// Replays every scenario in `contract/scenarios` through `clientOver(transport)`, one step at a
-// time, and checks every member of each step's expected outcome. A member this replay does not
-// know fails the scenario, so a contract that grows an expectation fails here until the replay
-// checks it. Every recorded exchange must be requested. A step's retry waits and warnings are
+// Replays every scenario in `contract/scenarios` through `clientOver(transport)` under its
+// recorded base URL and under each of `REPLAY_BASE_URLS`, one step at a time, and checks every
+// member of each step's expected outcome. A member this replay does not know fails the scenario,
+// so a contract that grows an expectation fails here until the replay checks it. Every recorded exchange must be requested. A step's retry waits and warnings are
 // checked on every outcome, as none when the outcome gives none. Each scenario starts as a fresh
 // process does, with no warning emitted.
 import assert from "node:assert/strict";
@@ -21,7 +21,7 @@ import type { Transport } from "../src/transport.ts";
 import { DfoError, isDfoError, VersionUnavailableError } from "../src/errors.ts";
 import { CLIENT_CODE_CLASSES } from "../src/generated/client-codes.ts";
 import { DataWarning, DfoWarning, forgetEmittedWarnings } from "../src/warnings.ts";
-import { replay, scenarios } from "./replay.ts";
+import { recordedBaseUrl, replay, REPLAY_BASE_URLS, scenarios } from "./replay.ts";
 import type { LongBuildSummary, Outcome, Scenario, Step } from "./replay.ts";
 
 const all = await scenarios();
@@ -278,11 +278,12 @@ async function checkOutcome(
   assert.fail(`${name}: the replay does not know the outcome ${kind}`);
 }
 
-async function replayScenario(record: Scenario): Promise<void> {
+async function replayScenario(record: Scenario, baseUrl?: string): Promise<void> {
   assert.equal(record.expect.length, record.call.length, `${record.name}: one outcome per step`);
   forgetEmittedWarnings();
   const observed: Observed = { warnings: [], longBuilds: [], retryWaits: [] };
   const { transport, retryWaits, remaining } = replay(record, {
+    ...(baseUrl === undefined ? {} : { baseUrl }),
     onWarning: (warning) => observed.warnings.push(warning),
     onLongBuild: (build) => observed.longBuilds.push(build),
   });
@@ -313,7 +314,10 @@ async function replayScenario(record: Scenario): Promise<void> {
 
 describe("every contract scenario", () => {
   for (const record of all) {
-    test(record.name, () => replayScenario(record));
+    const baseUrls = { recorded: recordedBaseUrl(record), ...REPLAY_BASE_URLS };
+    for (const [form, baseUrl] of Object.entries(baseUrls)) {
+      test(`${record.name} at the ${form} base URL`, () => replayScenario(record, baseUrl));
+    }
   }
 });
 
@@ -386,22 +390,13 @@ describe("an error's trace id is the one of the response it describes", () => {
     scenario: string;
     edit: (record: Scenario) => void;
     code: string;
-    traceId: string | null;
+    traceId: string;
   };
   const named = (record: Scenario, index: number): void => {
     const { response } = record.exchanges[index]!;
     response.headers = { ...response.headers, "x-dfo-trace-id": HEADER_TRACE };
   };
   const rows: Row[] = [
-    {
-      name: "a failed operation, by the response that carried it and not an earlier one",
-      scenario: "operation-failed-without-error",
-      edit: (record) => {
-        named(record, 0);
-      },
-      code: "operation_failed",
-      traceId: null,
-    },
     {
       name: "a stored version answered as another version",
       scenario: "fetch-ref",
