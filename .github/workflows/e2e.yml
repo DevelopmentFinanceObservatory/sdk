@@ -1,11 +1,12 @@
 name: E2E
 
-# The live journey (python/tests/e2e) against the dev API, once directly on its
-# Cloud Run URL and once through the dev website's /api/v1 proxy. Each target
-# keeps the refs its journey wrote under e2e/<target>/ and uploads them, so a
-# TypeScript job for the same target can read ref-python.json and write
-# ref-typescript.json for step 10. Step 6 builds the spec e2e/long-builds.json
-# assigns to the UTC day's parity, the language and the target.
+# The live journeys (python/tests/e2e, typescript/test/e2e) against the dev
+# API, once directly on its Cloud Run URL and once through the dev website's
+# /api/v1 proxy. Each target keeps the refs its journeys wrote under
+# e2e/<target>/ and uploads them, so the TypeScript job for the same target
+# reads ref-python.json and writes ref-typescript.json for step 10. Step 6
+# builds the spec e2e/long-builds.json assigns to the UTC day's parity, the
+# language and the target.
 
 on:
   schedule:
@@ -66,5 +67,89 @@ jobs:
           path: e2e/${{ matrix.target.name }}/
           if-no-files-found: warn
 
-  # typescript: the same matrix, running the TypeScript journey with the same
-  # DFO_BASE_URL and DFO_E2E_DIR.
+  # The TypeScript journey for each target, after the Python jobs. Its step 10
+  # fetches the downloaded ref-python.json and writes ref-typescript.json; the
+  # Python step 10 then runs alone and fetches ref-typescript.json, so one run
+  # crosses the ref both ways.
+  typescript:
+    name: typescript (${{ matrix.target.name }})
+    needs: python
+    # A failed Python job still leaves the TypeScript journey to run.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - name: api
+            base_url: https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app/api
+          - name: website
+            base_url: https://dfo-dev-website-staging-zms5lj4zhq-nn.a.run.app/api/v1
+    env:
+      DFO_BASE_URL: ${{ matrix.target.base_url }}
+      DFO_E2E_DIR: ${{ github.workspace }}/e2e/${{ matrix.target.name }}
+      DFO_E2E_TARGET: ${{ matrix.target.name }}
+      # Step 6 fails a build served inline on a scheduled run and skips it otherwise.
+      DFO_E2E_SCHEDULED: ${{ github.event_name == 'schedule' }}
+      DFO_PROGRESS: "0"
+    steps:
+      - uses: actions/checkout@v7
+
+      # A missing artifact leaves step 10 of the TypeScript journey to skip
+      # with the reason.
+      - name: Download the Python refs
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: e2e-refs-${{ matrix.target.name }}-python
+          path: e2e/${{ matrix.target.name }}/
+
+      # Reads the pnpm version from typescript/package.json's packageManager.
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: typescript/package.json
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: typescript
+        run: pnpm install --frozen-lockfile
+
+      - name: Run the live journey
+        working-directory: typescript
+        run: pnpm test:e2e
+
+      - name: Install uv
+        if: ${{ !cancelled() }}
+        uses: astral-sh/setup-uv@v10.0.0
+
+      - name: Set up Python
+        if: ${{ !cancelled() }}
+        working-directory: python
+        run: uv python install 3.12
+
+      - name: Install Python dependencies
+        if: ${{ !cancelled() }}
+        working-directory: python
+        run: uv sync --frozen --python 3.12
+
+      # Python's step 10 alone: it fetches the ref-typescript.json written above.
+      - name: Fetch the TypeScript ref from Python
+        if: ${{ !cancelled() }}
+        working-directory: python
+        run: uv run pytest -m live --no-cov -rs tests/e2e -k test_10
+
+      - name: Upload the refs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-refs-${{ matrix.target.name }}-typescript
+          path: e2e/${{ matrix.target.name }}/
+          if-no-files-found: warn

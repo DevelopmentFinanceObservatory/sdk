@@ -6,6 +6,12 @@
 //
 // `DFO_E2E_DIR` names a directory both clients share: this suite writes `ref-typescript.json`
 // there, and fetches `ref-python.json` when the Python suite has written it.
+//
+// Step 6 builds the spec `e2e/long-builds.json` assigns to this run by the UTC day's parity, the
+// language and `DFO_E2E_TARGET`. Each spec there is posted every 48 hours, so its stored head is
+// past the server's 24-hour maximum age and the build runs again as an operation.
+// `DFO_E2E_SCHEDULED=true` marks a scheduled run, where a build served inline fails the step; any
+// other run skips it.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -21,13 +27,15 @@ import {
   InvalidRequestError,
   NotFoundError,
 } from "../../src/index.ts";
-import type { Answer, Dataset, Gap, Row, SpecInput } from "../../src/index.ts";
+import type { Answer, Dataset, Gap, Operation, Row, SpecInput } from "../../src/index.ts";
 
 const baseUrl = process.env["DFO_BASE_URL"];
 if (baseUrl === undefined || baseUrl === "") {
   throw new Error("Set DFO_BASE_URL to the API's base URL, such as https://<host>/api.");
 }
 const e2eDir = process.env["DFO_E2E_DIR"];
+const LANGUAGE = "typescript";
+const LONG_BUILDS = new URL("../../../e2e/long-builds.json", import.meta.url);
 
 /** One request the client made and what the server answered. */
 type Exchange = {
@@ -68,25 +76,68 @@ const recording: typeof fetch = async (input, init) => {
 
 const client = new Client({ baseUrl, fetch: recording });
 
-/** Search's spec for `spec` over another year range, from resubmitting its identity. */
-async function specOver(spec: SpecInput, start: number, end: number): Promise<SpecInput> {
-  const identity = {
-    ...(spec.definition["identity"] as Record<string, unknown>),
-    requested_window: { kind: "range", start_year: start, end_year: end },
-  };
+type LongBuild = { day_parity: number; language: string; target: string; spec: SpecInput };
+
+/** The spec `LONG_BUILDS` assigns to this run's UTC day, language and target. */
+async function longBuild(): Promise<SpecInput> {
+  const target = process.env["DFO_E2E_TARGET"];
+  assert.ok(target, "DFO_E2E_TARGET is unset; step 6 picks its spec by target");
+  const parity = Math.floor(Date.now() / 86_400_000) % 2;
+  const entries = JSON.parse(await readFile(LONG_BUILDS, "utf8")) as LongBuild[];
+  const found = entries.filter(
+    (entry) =>
+      entry.day_parity === parity && entry.language === LANGUAGE && entry.target === target,
+  );
+  assert.equal(found.length, 1, `long-builds.json entries for ${parity}, ${LANGUAGE}, ${target}`);
+  return found[0]!.spec;
+}
+
+/** The rows Search says a build of `spec` downloads, from resubmitting its identity. */
+async function downloadRows(spec: SpecInput): Promise<number> {
   const response = await client.request("POST", "/search/resolve", {
     json: {
       schema_version: 1,
       input: {
         kind: "dataset_resubmit",
-        entries: [{ entry_kind: "identity", variable_text: "dataset", identity }],
+        entries: [
+          {
+            entry_kind: "identity",
+            variable_text: "dataset",
+            identity: spec.definition["identity"],
+          },
+        ],
       },
     },
   });
-  const { parts } = response.json() as { parts: { status: string; spec?: SpecInput }[] };
+  const { parts } = response.json() as {
+    parts: {
+      status: string;
+      spec?: { spec_id: string; resolved: { download: { rows: number } } };
+    }[];
+  };
+  assert.equal(parts.length, 1);
   const [part] = parts;
-  assert.ok(part?.status === "definite" && part.spec, `the resubmit of ${start} to ${end}`);
-  return part.spec;
+  assert.ok(part?.status === "definite" && part.spec, `Search read ${spec.spec_id} as definite`);
+  assert.equal(part.spec.spec_id, spec.spec_id);
+  return part.spec.resolved.download.rows;
+}
+
+/** Why the build answered 200, with the age of the version it served. The server publishes no
+ *  head age, so this is the age of the served version's `prepared_at`, at least the head's. */
+async function servedInline(spec: SpecInput, operation: Operation): Promise<string> {
+  const [member] = (await operation.result()).members;
+  assert.ok(member);
+  const snapshot = await client.request(
+    "GET",
+    `/datasets/${member.spec.spec_id}/${member.contentVersion}`,
+  );
+  const { prepared_at } = snapshot.json() as { prepared_at: string };
+  const hours = (Date.now() - Date.parse(prepared_at)) / 3_600_000;
+  return (
+    `POST /datasets served ${spec.spec_id} inline (200) at ${member.contentVersion}, ` +
+    `prepared ${hours.toFixed(1)} h ago; a 48-hour rotation should find its head past the ` +
+    "server's maximum age"
+  );
 }
 
 /** The exchanges made while `run` ran. */
@@ -245,29 +296,39 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
     "6. a long build answers 202, polls at the server's pacing, and resumes elsewhere",
     { timeout: 900_000 },
     async (t) => {
-      // DAC2a for every recipient and provider: 108,798 rows from 2017 to 2024, and more from
-      // any earlier start. A window the server has not stored makes it start a long build; a
-      // mint builds the spec as it stands, so Search gives the spec of the new window first.
-      const dac2a = JSON.parse(
-        await readFile(new URL("dac2a-all.json", import.meta.url), "utf8"),
-      ) as SpecInput;
-      const start = 1990 + Math.floor(Math.random() * 27);
-      const spec = await specOver(dac2a, start, 2024);
+      const spec = await longBuild();
+      const capabilities = await client.request("GET", "/datasets/capabilities");
+      const { caps } = capabilities.json() as {
+        caps: { sync_budget_rows: number; sync_budget_requests: number };
+      };
+      assert.equal(typeof caps.sync_budget_requests, "number");
+      // The server publishes a build's row count before it runs, through Search; it publishes no
+      // request count, so only the rows budget is checked here.
+      const estimate = await downloadRows(spec);
+      assert.ok(
+        estimate > caps.sync_budget_rows,
+        `${spec.spec_id} downloads ${estimate} rows, within the ${caps.sync_budget_rows} budget`,
+      );
+
       const { value: operation, exchanges } = await exchangesOf(() => client.mint(spec));
       const [posted] = exchanges.filter((exchange) => exchange.method === "POST");
       assert.ok(posted, "the mint posted a build");
-      if (posted.status !== 202) {
-        t.skip(
-          `the build of ${start} to 2024 answered ${posted.status}, not 202: the server built it inline`,
-        );
+      if (posted.status === 200) {
+        const reason = await servedInline(spec, operation);
+        if (process.env["DFO_E2E_SCHEDULED"] === "true") assert.fail(reason);
+        t.skip(reason);
         return;
       }
+      assert.equal(posted.status, 202);
       const { operationId } = operation;
       assert.ok(operationId?.startsWith("op_") === true, `operation id ${String(operationId)}`);
 
       const resumed = resumeElsewhere(operationId);
       const { value: dataset, exchanges: polls } = await exchangesOf(() => operation.result());
-      assert.ok(dataset.rows > 100_000, `${dataset.rows} rows`);
+      const [built] = dataset.members;
+      assert.ok(built);
+      assert.equal(built.spec.spec_id, spec.spec_id);
+      assert.ok(dataset.rows > caps.sync_budget_rows, `${dataset.rows} rows`);
 
       const opPolls = [
         posted,
@@ -285,7 +346,8 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
         );
       }
       const other = await resumed;
-      assert.equal(other.content_version, dataset.members[0]?.contentVersion);
+      assert.equal(other.spec_id, spec.spec_id);
+      assert.equal(other.content_version, built.contentVersion);
       assert.equal(other.rows, dataset.rows);
       const hinted = opPolls.filter((poll) => poll.retryAfterMs !== null).length;
       t.diagnostic(
@@ -379,7 +441,7 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
 /** Resumes an operation from a second Node process and returns what its result holds. */
 async function resumeElsewhere(
   operationId: string,
-): Promise<{ content_version: string; rows: number }> {
+): Promise<{ spec_id: string; content_version: string; rows: number }> {
   const entry = new URL("../../src/index.ts", import.meta.url).href;
   const code = `
     const { Client } = await import(${JSON.stringify(entry)});
@@ -387,6 +449,7 @@ async function resumeElsewhere(
     const operation = await client.operation(${JSON.stringify(operationId)});
     const dataset = await operation.result();
     process.stdout.write(JSON.stringify({
+      spec_id: dataset.members[0].spec.spec_id,
       content_version: dataset.members[0].contentVersion,
       rows: dataset.rows,
     }));
@@ -396,5 +459,5 @@ async function resumeElsewhere(
     ["--input-type=module", "--eval", code],
     { maxBuffer: 1 << 20, timeout: 900_000 },
   );
-  return JSON.parse(stdout) as { content_version: string; rows: number };
+  return JSON.parse(stdout) as { spec_id: string; content_version: string; rows: number };
 }
