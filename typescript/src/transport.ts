@@ -391,22 +391,28 @@ export class Transport {
   }
 
   /**
-   * Fetches a signed storage URL once, with no client header and no key. A failed fetch is not
-   * retried: a signed URL can expire, so the caller asks the files route for a fresh one.
+   * Fetches the URL a files route redirected to, once. On the API's origin the request carries
+   * the client's headers and key and its warning headers are read, as any API request's are; a
+   * signed URL on the storage host gets a bare request, with no client header and no key. A
+   * failed fetch is not retried: a signed URL can expire, so the caller asks the files route for
+   * a fresh one.
    *
-   * @throws {ServerError} The storage host answered other than 2xx (`download_failed`).
+   * @throws {ServerError} The host answered other than 2xx (`download_failed`).
    * @throws {NetworkError} The connection failed.
    * @throws {DfoTimeoutError} The attempt or the call's deadline ran out.
    */
   async fetchSigned(url: URL, options: CallOptions = {}): Promise<Uint8Array> {
     options.signal?.throwIfAborted();
-    const outcome = await this.#attempt(url, options, { method: "GET" });
+    // `#headers` gives no header for a URL off the API's origin.
+    const { headers } = await this.#headers("GET", url, { url: url.href });
+    const outcome = await this.#attempt(url, options, { method: "GET", headers });
     if (outcome instanceof DfoError) throw outcome;
     const { response, body } = outcome;
+    if (url.origin === this.baseUrl.origin) this.#warnFromHeaders(response.headers, url);
     if (!response.ok) {
       throw clientError("download_failed", {
         status: response.status,
-        detail: `The signed download from ${url.host} answered HTTP ${response.status}.`,
+        detail: `The download from ${url.host} answered HTTP ${response.status}.`,
       });
     }
     return body;

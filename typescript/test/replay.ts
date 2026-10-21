@@ -11,6 +11,10 @@ import type { TransportOptions } from "../src/transport.ts";
 /** The base URL every replay serves its scenario at, whatever base URL the record names. */
 export const REPLAY_BASE_URL = "https://api.replay.test/api";
 
+/** The key every replay's client sends, one that passes the key-format check so it issues no
+ *  warning. */
+export const REPLAY_KEY = "dfo_k_4f8Kq2ZtR7mWx1NcB9vLp3YhD6sGa0Ue2wanxe";
+
 type Json = Record<string, unknown>;
 
 /** The scenario record format, as `contract/scenario.schema.json` defines it, except that a
@@ -175,7 +179,9 @@ function expectedUrl(base: URL, request: Exchange["request"]): string {
 
 /**
  * A transport whose `fetch` answers a scenario's exchanges in order, checking each request's
- * method, URL and listed JSON members against the record. Sleeps advance a fake clock and are
+ * method, URL and listed JSON members against the record. A request on the API, a `path` or an
+ * `origin_path`, carries the replay's key, and a `url` request on the storage host carries no
+ * header at all; a replay whose `options` name another key skips the key check. Sleeps advance a fake clock and are
  * recorded, not waited: `waits` holds every sleep, and `retryWaits` the sleeps that are no
  * long build's poll wait. A poller records each poll wait just before it sleeps it, so a sleep
  * is a poll wait when the long builds' poll waits grew since the last sleep. `remaining` lists
@@ -208,6 +214,18 @@ export function replay(
     const { request, response } = exchange;
     assert.equal(init.method ?? "GET", request.method, `${record.name}: method of ${url}`);
     assert.equal(url, expectedUrl(base, request), `${record.name}: request URL`);
+    if (options.apiKey === undefined) {
+      const headers = new Headers(init.headers);
+      if (request.url === undefined) {
+        assert.equal(
+          headers.get("authorization"),
+          `Bearer ${REPLAY_KEY}`,
+          `${record.name}: ${url} carries the key`,
+        );
+      } else {
+        assert.deepEqual([...headers], [], `${record.name}: ${url} is bare`);
+      }
+    }
     if (request.json !== undefined) {
       assert.equal(typeof init.body, "string", `${record.name}: ${url} has no JSON body`);
       const sent = JSON.parse(init.body as string) as Json;
@@ -225,7 +243,7 @@ export function replay(
   };
   const transport = new Transport({
     baseUrl: base.href,
-    apiKey: false,
+    apiKey: REPLAY_KEY,
     env: envFrom({}),
     readCredentialsFile: () => Promise.resolve(null),
     fetch,

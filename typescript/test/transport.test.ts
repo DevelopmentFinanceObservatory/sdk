@@ -531,6 +531,32 @@ describe("downloads", () => {
     assert.equal(error.retryable, true);
     assert.equal(seen.length, 1);
   });
+
+  for (const [name, url, onApi] of [
+    ["bare on the storage host", SIGNED, false],
+    ["as an API request on the API's origin", "https://api.example/api/blob/object", true],
+  ] as const) {
+    test(`fetch a file URL ${name}`, async () => {
+      const warnings: DfoWarning[] = [];
+      const { fetch, seen } = mockFetch(
+        () => new Response("PAR1", { headers: { "x-dfo-warning": `file fetch ${name}` } }),
+      );
+      const client = transport({
+        baseUrl: "https://api.example/api/v1",
+        apiKey: KEY,
+        fetch,
+        onWarning: (warning) => warnings.push(warning),
+      });
+      await client.fetchSigned(new URL(url));
+      const headers = seen[0]?.headers;
+      assert.equal(headers?.get("authorization") ?? null, onApi ? `Bearer ${KEY}` : null);
+      if (!onApi) assert.deepEqual([...(headers ?? [])], []);
+      assert.deepEqual(
+        warnings.map((warning) => warning.code),
+        onApi ? ["server_warning"] : [],
+      );
+    });
+  }
 });
 
 describe("server warnings", () => {

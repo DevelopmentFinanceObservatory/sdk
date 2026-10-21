@@ -18,9 +18,9 @@
  * the posted one, else the sentence Search gives the built identity when it is resubmitted,
  * checked on `spec_id`. The resubmit carries the held spec's entity group for each role the
  * built identity binds to the same entities, so a window or facets narrowing keeps every group
- * and a role that `entities` rebound or dropped loses its group. Every download is a bare
- * request to the signed URL the files route redirects to, checked against its digest before the
- * fetch returns. Members build one after another, under one deadline: each request attempt waits
+ * and a role that `entities` rebound or dropped loses its group. Every download fetches the URL
+ * the files route redirects to, bare on the storage host and as an API request on the API's
+ * origin, and is checked against its digest before the fetch returns. Members build one after another, under one deadline: each request attempt waits
  * the client's timeout within it, and a download reads until it.
  */
 
@@ -229,8 +229,9 @@ async function digestOf(data: Uint8Array): Promise<string> {
 
 /**
  * Downloads a file through the route that redirects to it, checked against its digest. The
- * route ask is an API request and retries as one; its failure raises. The signed URL is fetched
- * once, bare. A retryable failure of that fetch, or bytes that do not hash to the digest, ask the
+ * route ask is an API request and retries as one; its failure raises. The URL it names is
+ * fetched once, bare on the storage host and with the client's headers on the API's origin. A
+ * retryable failure of that fetch, or bytes that do not hash to the digest, ask the
  * route again and fetch once more, with no wait of their own, and a second failure raises:
  * `download_failed` for a refused signed URL, `digest_mismatch` for the bytes. Each request reads
  * until the fetch's deadline.
