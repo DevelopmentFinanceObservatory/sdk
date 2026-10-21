@@ -1,4 +1,4 @@
-"""Search: a question in, an answer of what DFO understood out."""
+"""Search takes a question and returns what DFO understood."""
 
 from dfo._answer import SEARCH_TIMEOUT, AsyncAnswer, resolve
 from dfo._display import search_status

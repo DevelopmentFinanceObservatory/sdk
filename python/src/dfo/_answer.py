@@ -1,6 +1,6 @@
 """Answers: what Search understood a question to ask, part by part.
 
-An answer holds readings, not data. `fetch` builds the dataset when every part has
+An answer holds readings. `fetch` builds the dataset when every part has
 a reading, and raises `IncompleteAnswerError` before any build when one does not.
 `choose` settles a part that awaits a choice and returns a new answer.
 
@@ -20,9 +20,9 @@ Each identity echoes its reading's assumptions: a definite part's `assumptions`,
 and a candidate's entry in its part's `reading_assumptions`. Search then states
 the assumptions that still hold, and the new sentence carries them. An identity
 whose part carries no list posts none, and Search computes them afresh. A member
-an entry echoes that has another JSON type than the wire's reads as absent: a
-restatement that is not an object, and `operations` or `assumptions` that are not
-lists.
+an entry echoes with another JSON type than the wire's reads as absent. These are
+a restatement that is not an object, and `operations` or `assumptions` that are
+not lists.
 """
 
 from __future__ import annotations
@@ -141,7 +141,7 @@ class AsyncAnswer:
     ) -> AsyncAnswer:
         """Settle a part that awaits a choice, and return Search's new answer.
 
-        The choice makes one Search request; the new answer, its sentence and
+        The choice makes one Search request. The new answer, its sentence and
         its assumptions are Search's response.
 
         `choose(option)` picks in the only part that awaits a choice;
@@ -196,7 +196,7 @@ class AsyncAnswer:
         and `degraded` warnings arrive as one `SearchWarning`.
 
         Args:
-            partial: Build the parts that have a reading when others do not; the
+            partial: Build the parts that have a reading when others do not. The
                 dataset then lists the gaps in `missing`.
             strict: Raise the `SearchWarning`, and the datasets surface's
                 warnings, instead of issuing them.
@@ -608,8 +608,8 @@ def _entry(
 def _restated_entry(part: Part[AsyncCandidate]) -> dict[str, Any]:
     """A part with no reading, resolved again from its restatement when it has one.
 
-    A placeholder keeps neither the server's message nor the part's choices, so
-    it serves only a part Search gave no restatement.
+    A placeholder loses the server's message and the part's choices, so it
+    serves only a part Search gave no restatement.
     """
     restatement = part.raw.get("restatement")
     if isinstance(restatement, Mapping):
@@ -663,8 +663,8 @@ def _reading_assumptions(
     part: Part[AsyncCandidate], spec: Mapping[str, Any]
 ) -> list[Any] | None:
     """The wire's assumptions for one reading of `part`, or None when the part
-    holds no list for it: a candidates part's `reading_assumptions` entry under
-    the spec's id, or any other part's `assumptions`."""
+    holds no list for it. The list is a candidates part's `reading_assumptions`
+    entry under the spec's id, or any other part's `assumptions`."""
     if isinstance(part, CandidatesPart):
         by_spec = part.raw.get("reading_assumptions")
         listed = by_spec.get(spec["spec_id"]) if isinstance(by_spec, Mapping) else None

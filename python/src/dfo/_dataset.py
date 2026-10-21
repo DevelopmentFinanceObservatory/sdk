@@ -1,12 +1,12 @@
 """The `Dataset` a fetch returns, and how fetched members become one.
 
-A dataset holds its table and its provenance, and no client: its conversions never
-touch the network, and it pickles. Several members stack into one long table with
+A dataset holds its table and its provenance and carries no client, so its
+conversions run offline and it pickles. Several members stack into one long table with
 a leading `part` column naming each row's member. `save` writes one Parquet file
 whose key-value metadata carries the provenance and the ref, which `open_bundle`
 reads back.
 
-Both clients call this module; it is sync and does no network I/O.
+Both clients call this module. It is sync and works on local data only.
 """
 
 import html
@@ -89,7 +89,7 @@ class FetchedMember:
         digest: The digest of the downloaded artifact, `sha256:<hex>`, one of the
             manifest's `artifacts[].artifact_digest`.
         data: The artifact's bytes, a bare Parquet file, already checked against
-            `digest`: a download that misses it raises `ServerError`
+            `digest`. A download that misses it raises `ServerError`
             (`digest_mismatch`), and a cache entry that misses it is a miss.
         answer_parts: The answer parts the member answers, when it came from an
             answer; their departures and requested operations reach the dataset.
@@ -111,12 +111,12 @@ class FetchedMember:
 
 @dataclass(frozen=True, slots=True, eq=False, repr=False)
 class Dataset:
-    """A table of data with its provenance: one exact version per member.
+    """A table of data with its provenance, one exact version per member.
 
     Attributes:
-        sentence: What the data shows, in Search's words; the members' sentences
+        sentence: What the data shows, in Search's words, or the members' sentences
             in order when there are several.
-        members: One member per reading, each an exact version; empty for a
+        members: One member per reading, each an exact version. Empty for a
             website bundle opened from a folder, which names no artifact.
         citation: How to cite the data, every member's sources together.
         warnings: The datasets surface's warnings about the members' data.
@@ -124,13 +124,13 @@ class Dataset:
         requested_operations: Computations the question asked for, which the
             data leaves to the caller.
         assumptions: What Search assumed to read the question, from the answer
-            parts the members answer; empty for a spec or ref fetched outside an
+            parts the members answer. Empty for a spec or ref fetched outside an
             answer.
         complete: Whether every part of the question has a member.
         missing: The parts left out of a partial fetch. Their candidates belong
             to no answer; fetch one with `dfo.fetch(candidate.spec)`.
         held_until: The earliest date any member's version can still be fetched
-            without being pinned; None when every member is pinned or the server
+            without being pinned. None when every member is pinned or the server
             does not say.
         pinned: Whether every member's version is kept without a time limit.
         stale: Whether the data came from the cache without asking the server for
@@ -184,7 +184,7 @@ class Dataset:
 
     @property
     def licence(self) -> str:
-        """The licences the sources publish under, joined by "; "; empty when none says."""
+        """The licences the sources publish under, joined by "; ", or empty when none says."""
         return "; ".join(
             _unique(
                 source.licence
@@ -207,7 +207,7 @@ class Dataset:
     def to_pandas(self) -> "pandas.DataFrame":
         """The table as a pandas DataFrame, with the provenance in `attrs`.
 
-        A merge or a concat drops `attrs`; the provenance stays on the dataset.
+        A merge or a concat drops `attrs`. The provenance stays on the dataset.
 
         Raises:
             ImportError: pandas is not installed.
@@ -345,10 +345,10 @@ def build_dataset(
 
     Each member's layout comes from the manifest's artifact for its digest, else
     from the rendering its `DatasetRef` stores. Several members stack into one
-    long table, a `part` column first, holding each member's parts joined by "; " (its sentence when it
-    answers no part); columns one member lacks are null in its rows, and a column
-    whose types differ in width widens, as an int32 with an int64 to int64 and an
-    integer with a double to double.
+    long table, a `part` column first, holding each member's parts joined by "; "
+    (its sentence when it answers no part). Columns one member lacks are null in
+    its rows, and a column whose types differ in width widens, as an int32 with an
+    int64 to int64 and an integer with a double to double.
 
     Args:
         members: The members, in query order, each with a distinct spec.
@@ -360,9 +360,8 @@ def build_dataset(
     Raises:
         ValueError: No members, or several members in the frame layout.
         ContractError: A member's manifest does not list its artifact and no
-            `DatasetRef` gives its rendering, or two
-            members hold a column whose types cannot widen to one
-            (`contract_violation`).
+            `DatasetRef` gives its rendering, or two members hold a column whose
+            types cannot widen to one (`contract_violation`).
     """
     if not members:
         raise ValueError("a dataset needs at least one member")
@@ -608,7 +607,7 @@ def _gap_object(gap: Gap[object]) -> dict[str, Any]:
 
 
 def _load_gap(obj: Mapping[str, Any]) -> Gap[Candidate]:
-    """A saved gap; a candidates part's options are its candidates, as in an answer."""
+    """A saved gap. A candidates part's options are its candidates, as in an answer."""
     part = parse_part(obj["part"])
     options: tuple[Candidate | Option, ...] = (
         part.candidates

@@ -1,6 +1,6 @@
 """Python client for the Development Finance Observatory APIs.
 
-`dfo.search(question)` returns an `Answer` that says what DFO understood;
+`dfo.search(question)` returns an `Answer` that says what DFO understood.
 `answer.fetch()` or `dfo.fetch(spec_or_ref)` returns a `Dataset`. `Client` and
 `AsyncClient` carry the same calls for one configuration each.
 """

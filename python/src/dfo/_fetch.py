@@ -1,4 +1,4 @@
-"""Fetching datasets: building a spec's latest version, or a ref's exact versions.
+"""Fetching datasets by building a spec's latest version or reading a ref's versions.
 
 A `Spec` builds its latest version as bare Parquet, narrowed by `window`,
 `entities` and `facets`. A narrowing gives the build its own `spec_id`, so the
@@ -9,10 +9,10 @@ by digest; the snapshot route and the files route at the stored digest; the file
 selector, which renders the version again from its stored frame; a fresh build,
 which must return the same version; and otherwise `VersionUnavailableError`,
 naming the newest version. The steps after the snapshot run only for a version
-whose file has expired: a version the server never built (`snapshot_not_found`)
+whose file has expired. A version the server never built (`snapshot_not_found`)
 raises at once.
 
-Each member's sentence is Search's: the one the caller holds when the built
+Each member's sentence is Search's. It is the one the caller holds when the built
 `spec_id` equals the posted one, else the sentence Search gives the built identity
 when it is resubmitted, checked on `spec_id`. Every download asks the files route
 and fetches the URL its `Location` names: bare on the storage host, with the
@@ -312,8 +312,8 @@ async def mint(
 ) -> AsyncOperation:
     """Start a spec's build and return it as an operation, done or running.
 
-    The build request reads for up to 150 seconds and has no outer deadline;
-    the operation's `result` bounds the wait for the build.
+    The build request reads for up to 150 seconds and has no outer deadline.
+    The operation's `result` bounds the wait for the build.
 
     Raises:
         DfoError: The server refused the build.
@@ -550,9 +550,9 @@ async def _download(
     """Fetch a file through the route that redirects to it, checked on `digest`.
 
     The route answers 200, whose body is the file, or a 302, whose `Location`
-    resolves against the route's URL and is fetched once, with a bare request on the storage host.
-    A signed fetch that fails retryably, or bytes that do not hash to `digest`,
-    ask the route once more for a fresh URL rather than retrying the old one.
+    resolves against the route's URL and is fetched once, with a bare request on
+    the storage host. A signed fetch that fails retryably, or bytes that do not
+    hash to `digest`, ask the route once more for a fresh URL.
 
     Raises:
         ServerError: The bytes did not hash to `digest` on either attempt
@@ -836,7 +836,7 @@ async def _newest(
     """The newest stored version of a spec, or None when the spec has none.
 
     The versions route lists versions newest first, so a page of one holds the
-    newest. Only an empty page or `NotFoundError` reads as no version; any other
+    newest. Only an empty page or `NotFoundError` reads as no version. Any other
     refusal raises.
 
     Raises:

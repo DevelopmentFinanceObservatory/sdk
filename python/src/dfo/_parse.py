@@ -365,7 +365,7 @@ def _option(option: Wire) -> Option:
 
 
 def _segment(token: Wire) -> str:
-    """A sentence-plan token's segment; a missing or non-string one is the heading."""
+    """A sentence-plan token's segment, or the heading when it is missing or not a string."""
     segment = token.get("segment")
     return segment if isinstance(segment, str) else "heading"
 

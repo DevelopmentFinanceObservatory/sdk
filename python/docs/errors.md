@@ -87,7 +87,7 @@ A server refusal carries a code from the platform's code registry, and the clien
 
 A code this client does not know maps on its HTTP status: 401 to `AuthenticationError`, 403 to `PermissionDeniedError`, 404 and 410 to `NotFoundError`, 408 to `DfoTimeoutError`, 429 to `RateLimitError`, any other 4xx to `InvalidRequestError`, and 5xx to `ServerError`.
 
-`member_not_resolvable` means the graph no longer holds a place or code the reading names. Search the question again for a current reading.
+`member_not_resolvable` means the graph holds no place or code that the reading names. Search the question again for a current reading.
 
 ## Client codes
 

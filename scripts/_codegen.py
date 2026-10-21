@@ -1,4 +1,4 @@
-"""Helpers the code generators share: formatting their output and writing or checking it."""
+"""Helpers the code generators share for formatting their output and writing or checking it."""
 
 import shutil
 import subprocess

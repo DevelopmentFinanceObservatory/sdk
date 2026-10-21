@@ -10,7 +10,7 @@ copy of them from `contract/`, the README as `contract/README.md`, and
     scripts/sync_contract.py PATH_TO_SPEC_KIT           copy and write SOURCE
     scripts/sync_contract.py PATH_TO_SPEC_KIT --check   exit 1 on any difference
 
-Python modules and bytecode in the package are code, not contract, and stay out of
+Python modules and bytecode in the package are code and stay out of
 the copy.
 """
 
@@ -41,7 +41,7 @@ def git(checkout: Path, *args: str) -> str:
 
 
 def is_contract_file(path: Path) -> bool:
-    """Whether a package file is contract data rather than code."""
+    """Whether a package file is contract data and belongs in the copy."""
     return (
         path.name not in IGNORED_NAMES
         and path.suffix not in CODE_SUFFIXES

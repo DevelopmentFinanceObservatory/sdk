@@ -13,7 +13,7 @@ generator refuses, naming the file and line:
   timeouts have no sync form (members build one after another, and deadlines
   come from the transport's clock);
 - a token in `SUBS` that no source uses, so a renamed async name in httpx2 or in
-  this package fails here rather than slipping through;
+  this package fails here;
 - an async name left in the output (`async`, `await`, `Async*`, `__aenter__`,
   `aclose`, ...), which means `SUBS` lacks a token.
 """
@@ -49,7 +49,7 @@ ASYNC_MODULES = (
 KEPT_NAMES = frozenset({"__init__.py", "conftest.py"})
 
 # (async token, sync token), matched on word boundaries. Add a token when a
-# source first uses it; an unused token fails the run.
+# source first uses it. An unused token fails the run.
 SUBS: tuple[tuple[str, str], ...] = (
     ("async def", "def"),
     ("async with", "with"),
@@ -177,7 +177,7 @@ def stale(generated: set[Path]) -> list[Path]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Write or check the sync files; return the exit status."""
+    """Write or check the sync files and return the exit status."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true", help="exit 1 on a difference")
     args = parser.parse_args(argv)

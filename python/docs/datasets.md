@@ -1,6 +1,6 @@
 # Datasets and versions
 
-`fetch` returns a `Dataset`: a table with its provenance, holding one exact version of each reading. DFO data changes as sources publish, so `fetch` settles "latest" to one version when it builds, and the dataset keeps that version. `data.ref` records it, and fetching the ref later returns the same rows.
+`fetch` returns a `Dataset`, a table with its provenance that holds one exact version of each reading. DFO data changes as sources publish, so `fetch` settles "latest" to one version when it builds, and the dataset keeps that version. `data.ref` records it, and fetching the ref later returns the same rows.
 
 Each example on this page runs on its own.
 
@@ -53,7 +53,7 @@ A narrowed spec is a new reading with its own `spec_id`, which `data.members[0].
 
 ### The two layouts
 
-The default `layout="long"` gives the labelled long table: one row per observation, each code beside its label (`financingProvider` and `financingProvider_label`), then `time_period`, `value` and the unit. `layout="frame"` gives the pipeline frame, with codes only:
+The default `layout="long"` gives the labelled long table, with one row per observation, each code beside its label (`financingProvider` and `financingProvider_label`), then `time_period`, `value` and the unit. `layout="frame"` gives the pipeline frame, with codes only:
 
 ```python
 import dfo

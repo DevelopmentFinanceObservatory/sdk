@@ -6,7 +6,7 @@ in its own directory and renamed into place, so a reader never sees a partial en
 Entries are keyed by content, so two processes writing one entry write the same
 bytes and need no lock. A read re-hashes an artifact, and a mismatch is a miss.
 
-Both clients call this module; it is sync and does no network I/O.
+Both clients call this module. It is sync and works on local files only.
 """
 
 import hashlib
@@ -77,8 +77,9 @@ def sha256_digest(data: bytes, /) -> str:
 class Cache:
     """The cache one client reads and writes.
 
-    A disabled cache misses every read and drops every write. Writing never fails
-    a fetch: an entry the disk refuses is logged to the `dfo` logger and skipped.
+    A disabled cache misses every read and drops every write. An entry the disk
+    refuses is logged to the `dfo` logger and skipped, so a write cannot fail a
+    fetch.
 
     Attributes:
         directory: The cache directory, `<root>/v1/dfo/cache1`.
@@ -159,7 +160,7 @@ class Cache:
     ) -> dict[str, Any] | None:
         """The cached manifest of a spec's newest version in one rendering, or None.
 
-        Newest is the latest `prepared_at`; an offline fetch of a spec with no
+        Newest is the latest `prepared_at`. An offline fetch of a spec with no
         version returns it, marked stale.
         """
         if not self.enabled:

@@ -65,20 +65,20 @@ class DfoError(Exception):
 
 
 class InvalidRequestError(DfoError):
-    """The request is malformed; the caller fixes it."""
+    """The request is malformed. The caller fixes it."""
 
 
 class NotFoundError(DfoError):
-    """A spec, version, operation or other id is unknown; the caller checks it."""
+    """A spec, version, operation or other id is unknown. The caller checks it."""
 
 
 class IncompleteAnswerError(DfoError):
-    """A part of the question has no reading; the caller chooses or takes the rest.
+    """A part of the question has no reading. The caller chooses or takes the rest.
 
     Attributes:
         answer: The answer whose fetch raised it, or None for a server refusal.
         gaps: The parts with no reading, each with its kind, message and options.
-            Their candidates belong to no answer; choose through `answer`, or
+            Their candidates belong to no answer. Choose through `answer`, or
             fetch one with `dfo.fetch(candidate.spec)`.
     """
 
@@ -91,7 +91,7 @@ class DeclinedError(DfoError):
 
 
 class VersionUnavailableError(DfoError):
-    """A stored version cannot be rebuilt; the caller takes the newest version.
+    """A stored version cannot be rebuilt. The caller takes the newest version.
 
     Attributes:
         newest_version: The newest version of the spec the server holds, or None
@@ -102,27 +102,27 @@ class VersionUnavailableError(DfoError):
 
 
 class AuthenticationError(DfoError):
-    """A key is missing, unknown, revoked or expired; the caller logs in."""
+    """A key is missing, unknown, revoked or expired. The caller logs in."""
 
 
 class PermissionDeniedError(DfoError):
-    """The key lacks a scope; the caller asks for it."""
+    """The key lacks a scope. The caller asks for it."""
 
 
 class RateLimitError(DfoError):
-    """The caller is over the rate limit after the client's retries; it waits."""
+    """The caller is over the rate limit after the client's retries. It waits."""
 
 
 class QuotaExceededError(DfoError):
-    """The caller is over the build quota; it waits for the reset."""
+    """The caller is over the build quota. It waits for the reset."""
 
 
 class ServerError(DfoError):
-    """The server failed after the client's retries; the caller reports the trace id."""
+    """The server failed after the client's retries. The caller reports the trace id."""
 
 
 class ContractError(DfoError):
-    """A field the client acts on is missing or renamed; the caller upgrades.
+    """A field the client acts on is missing or renamed. The caller upgrades.
 
     Attributes:
         pointer: The JSON Pointer, into the response body, of the member the
@@ -133,11 +133,11 @@ class ContractError(DfoError):
 
 
 class NetworkError(DfoError, ConnectionError):
-    """The connection failed; the caller retries later."""
+    """The connection failed. The caller retries later."""
 
 
 class DfoTimeoutError(DfoError, TimeoutError):
-    """A deadline passed; the caller extends the timeout or resumes."""
+    """A deadline passed. The caller extends the timeout or resumes."""
 
 
 class DfoWarning(UserWarning):
@@ -147,7 +147,7 @@ class DfoWarning(UserWarning):
         code: The client's own code from the contract's `warning-codes.json`, or
             the server's code for a `DataWarning` or `SearchWarning`.
         trace_id: For a `DataWarning` or `SearchWarning`, the trace id of the
-            response that carried it, to quote when reporting it; else None.
+            response that carried it, to quote when reporting it. None for any other warning.
     """
 
     def __init__(

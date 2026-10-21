@@ -67,7 +67,7 @@ def read_profiles(path: str | os.PathLike[str]) -> Profiles | None:
     """Return the profiles in the file at `path`, or None when there is none.
 
     Raises:
-        CredentialsFileError: The file breaks the format; a file that is not
+        CredentialsFileError: The file breaks the format. A file that is not
             UTF-8 counts as broken at line 1.
     """
     try:

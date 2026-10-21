@@ -1,4 +1,4 @@
-"""API keys: the masked key type, the format check and the lookup order.
+"""The masked API key type, the key format check and the key lookup order.
 
 The format and the lookup order are the contract's (`contract/rules/README.md`).
 """
@@ -57,8 +57,8 @@ def mask(value: str) -> str:
 class ApiKey:
     """An API key that keeps its value out of reprs, logs and pickles.
 
-    `ApiKey` is not a `str`: `repr` and `str` show a masked form, `reveal()`
-    returns the value, and pickling raises `TypeError`.
+    `ApiKey` is a separate type from `str`. `repr` and `str` show a masked form,
+    `reveal()` returns the value, and pickling raises `TypeError`.
     """
 
     __slots__ = ("_value",)
@@ -117,7 +117,7 @@ def _base62(number: int) -> str:
 def check_key_format(key: str) -> KeyFormatProblem | None:
     """Return the first way `key` breaks the DFO key format, or None.
 
-    The check ignores length: after the prefix, the last six characters are the
+    The check ignores length. After the prefix, the last six characters are the
     checksum and the rest is the body.
     """
     if not key.startswith(_PREFIXES):
@@ -277,12 +277,12 @@ class KeyState:
     """The key a transport sends, shared by the copies `with_options` makes."""
 
     def __init__(self, api_key: ApiKeyArgument) -> None:
-        """Resolve the key for `api_key` now, at build."""
+        """Resolve the key for `api_key` at build."""
         self._argument = api_key
         self.resolved = resolve_key(api_key)
 
     def refresh(self) -> bool:
-        """Resolve the key again, after a 401; return whether it changed."""
+        """Resolve the key again after a 401 and return whether it changed."""
         previous = self.resolved.key
         self.resolved = resolve_key(self._argument)
         return self.resolved.key != previous

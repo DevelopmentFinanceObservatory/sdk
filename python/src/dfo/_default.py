@@ -95,7 +95,7 @@ def search(question: str, /, *, timeout: float | None = SEARCH_TIMEOUT) -> Answe
 
     Args:
         question: The question, in your words.
-        timeout: The longest the call waits, retries included, in seconds; each
+        timeout: The longest the call waits, retries included, in seconds. Each
             attempt reads until then, and None waits as long as Search takes.
 
     Raises:
@@ -124,7 +124,7 @@ def fetch(
     Raises:
         InvalidRequestError: A ref is narrowed or given another layout.
         VersionUnavailableError: A ref's version can no longer be fetched.
-        DfoTimeoutError: The deadline passed; a long build's message names the
+        DfoTimeoutError: The deadline passed. A long build's message names the
             call that resumes it.
         DfoError: The server refused a request.
     """

@@ -1,5 +1,4 @@
-"""Lookups for names and codes: the graph's resolver and nodes, the code registry and
-Search's catalogue.
+"""Lookups for names and codes in the graph, the code registry and Search's catalogue.
 
 Each lookup returns the decoded response body, typed by the served OpenAPI
 document's schema. The client reads none of it, so an unknown member or enum value
@@ -87,12 +86,12 @@ class AsyncGraph:
         """Resolve names, such as "Nigeria" or "Sahel", to graph nodes.
 
         Args:
-            texts: One to 25 names, resolved as one batch; `results` follows
+            texts: One to 25 names, resolved as one batch. `results` follows
                 their order.
             kinds: The node kinds a name may resolve to; None takes the server's
                 default of every kind of place and group.
             code_system: Narrow `code` matches to one code system's graph id,
-                such as `CRSPurposeCodeEnum`; needs `code` in `kinds`.
+                such as `CRSPurposeCodeEnum`. Needs `code` in `kinds`.
             expand_members: Inline each group's or region's members.
 
         Raises:
@@ -148,7 +147,7 @@ class AsyncCodes:
 async def catalogue(
     transport: AsyncTransport, *, place: str | None = None
 ) -> CatalogueResponse:
-    """What Search holds data on: counts and example questions.
+    """The catalogue of what Search holds data on, with counts and example questions.
 
     Args:
         transport: The transport the request goes through.

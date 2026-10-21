@@ -68,7 +68,7 @@ def cache_root(
     platform: Platform | None = None,
     home: str | None = None,
 ) -> str:
-    """Return the cache root: the argument, a variable, or the platform's cache."""
+    """Return the cache root, from the argument, a variable, or the platform's cache."""
     env, platform, home = _context(env, platform, home)
     path = ntpath if platform == "windows" else posixpath
     chosen = (

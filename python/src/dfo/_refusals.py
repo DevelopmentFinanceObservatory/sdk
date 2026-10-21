@@ -45,7 +45,8 @@ from dfo._errors import (
 TRACE_HEADER = "x-dfo-trace-id"
 
 # The media types a response's body is read as JSON under when it is not one the
-# client asked for: a refusal's problem document, or the website proxy's body.
+# client asked for. They cover a refusal's problem document and the website
+# proxy's body.
 _JSON_TYPES = frozenset({"application/problem+json", "application/json"})
 
 # The client codes of errors that describe a response the client read.
@@ -59,7 +60,7 @@ _PROXY_RETRY = "retry_after_delay"
 
 
 def error_class(code: str | None, status: int | None) -> type[DfoError]:
-    """Return the class for a refusal: on its code when known, else on its status."""
+    """Return the class for a refusal, from its code when known, else its status."""
     if code is not None and (action := ACTIONS.get(code)) is not None:
         return _class_for_action(action)
     return status_class(status)
@@ -108,7 +109,7 @@ def json_body(response: httpx2.Response) -> object:
 
 
 def trace_id_of(response: httpx2.Response, body: object = None) -> str | None:
-    """A response's trace id: the body's `trace_id`, else the `x-dfo-trace-id`
+    """A response's trace id, from the body's `trace_id`, else the `x-dfo-trace-id`
     header, else None.
 
     Args:
@@ -163,7 +164,7 @@ def problem_error(
 
     Returns:
         The error, of the class the code or else the status maps to. A problem
-        document's `retryable` outranks the status; the website proxy's
+        document's `retryable` outranks the status. The website proxy's
         `{error, retry, detail}` body maps `error` as the code. A body with
         neither code takes `fallback_code`, else `refusal_without_code`.
     """

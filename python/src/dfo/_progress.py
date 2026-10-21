@@ -1,11 +1,11 @@
-"""Show a long build's progress: a line in a terminal, a display in a notebook.
+"""Show a long build's progress as a line in a terminal or a display in a notebook.
 
-In a terminal the line redraws in place with `\\r`; in IPython it updates one
+In a terminal the line redraws in place with `\\r`. In IPython it updates one
 display. Anywhere else the `dfo` logger records the operation id, the trace id
 and the rows written. `progress=False`, or `DFO_PROGRESS=0` when the argument is
 not given, silences all three.
 
-Both clients call this module; it is sync and does no network I/O.
+Both clients call this module. It is sync and does no network I/O.
 """
 
 import importlib
@@ -28,7 +28,7 @@ def progress_mode(
     stream: TextIO,
     env: Mapping[str, str] | None = None,
 ) -> Mode:
-    """Where progress goes: the argument wins, then `DFO_PROGRESS`, then the context."""
+    """Where progress goes. The argument wins, then `DFO_PROGRESS`, then the context."""
     env = os.environ if env is None else env
     if enabled is False or (enabled is None and env.get("DFO_PROGRESS") == "0"):
         return "silent"
@@ -58,10 +58,10 @@ def progress_line(
 
 
 class ProgressRenderer:
-    """Renders one operation's progress until closed; a context manager.
+    """Renders one operation's progress until closed. It is a context manager.
 
     Args:
-        enabled: True or False to show or silence progress; None to follow
+        enabled: True shows progress, False silences it, and None follows
             `DFO_PROGRESS`.
         stream: The terminal stream, `sys.stderr` by default.
         env: The environment, this process's by default.
@@ -95,7 +95,7 @@ class ProgressRenderer:
         estimate_rows: int | None = None,
         trace_id: str | None = None,
     ) -> None:
-        """Show the operation's latest progress; a repeat of the last one shows nothing."""
+        """Show the operation's latest progress, or nothing when it repeats the last."""
         line = progress_line(operation_id, rows_written, estimate_rows)
         if self._mode == "silent" or line == self._last:
             return

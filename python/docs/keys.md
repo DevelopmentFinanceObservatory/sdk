@@ -1,6 +1,6 @@
 # Keys and credentials
 
-The client works without a key, under a small per-IP quota. A key raises the quota, and code written without one keeps working when you add it: the client finds the key itself.
+The client works without a key, under a small per-IP quota. A key raises the quota. Code written without one keeps working when you add it, because the client finds the key itself.
 
 ## Store a key
 
@@ -110,7 +110,7 @@ except TypeError as error:
     print(error)  # An ApiKey cannot be pickled; pass the key to each process
 ```
 
-A DFO secret key starts with `dfo_k_`, then a base62 body, then a six-character checksum: 44 characters in all. The client checks the prefix, characters and checksum when it resolves a key. A key that fails issues a `DfoWarning` and is sent anyway, so a typo shows up as a warning before the server refuses it.
+A DFO secret key is 44 characters long. It starts with `dfo_k_`, then a base62 body, then a six-character checksum. The client checks the prefix, characters and checksum when it resolves a key. A key that fails issues a `DfoWarning` and is sent anyway, so a typo shows up as a warning before the server refuses it.
 
 ## When the server refuses a key
 

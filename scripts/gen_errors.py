@@ -38,7 +38,7 @@ def _literal(values: list[str]) -> str:
 
 
 def _retryable_fits(row: dict) -> bool:
-    """A by-status row is retryable by status; any other row is true or false."""
+    """A by-status row is retryable by status. Any other row is true or false."""
     if row["class"] == BY_STATUS:
         return row["retryable"] == BY_STATUS
     return isinstance(row["retryable"], bool)
@@ -137,7 +137,7 @@ def render(actions: dict, schema: dict, client_codes: dict, warning_codes: dict)
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Write or check `_error_map.py`; return the exit status."""
+    """Write or check `_error_map.py` and return the exit status."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true", help="exit 1 on a difference")
     args = parser.parse_args(argv)

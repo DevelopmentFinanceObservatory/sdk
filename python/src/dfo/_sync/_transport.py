@@ -4,10 +4,10 @@
 The transport owns the base URL, the key, retries, deadlines and the reading of
 problem documents. A path resolves under the base URL and a root-relative URL
 the server returns resolves against the base URL's origin. The key travels only
-to that origin; a file a files route redirects to is fetched by `download`, with
+to that origin. A file a files route redirects to is fetched by `download`, with
 the client's headers and key on the API's origin and with a bare request on the
-storage host. Under
-`DFO_OFFLINE=1` every request raises `offline` before it is sent.
+storage host. Under `DFO_OFFLINE=1` every request raises `offline` before it is
+sent.
 
 The client's `timeout` bounds one whole attempt, body included, and a call's
 deadline bounds the whole call. An attempt must finish by the earlier of the
@@ -251,7 +251,7 @@ class Transport:
     """One HTTP client with the DFO API's base URL, key, retries and deadlines.
 
     A transport is built once per client. `with_options` makes copies that share
-    its connection pool and key; only the transport that built the pool closes it.
+    its connection pool and key. Only the transport that built the pool closes it.
     """
 
     def __init__(
@@ -359,7 +359,7 @@ class Transport:
 
     def backoff(self, attempt: int) -> float:
         """The wait before retry `attempt` (from 0) of a refusal with no
-        `Retry-After`: 0.5 seconds, doubling to 8."""
+        `Retry-After`, starting at 0.5 seconds and doubling to 8."""
         return min(_BACKOFF_FIRST * 2**attempt, _BACKOFF_CAP)
 
     def origin_url(self, reference: str) -> str:
@@ -496,7 +496,7 @@ class Transport:
     ) -> httpx2.Response:
         """Send one API request, retrying what can succeed later.
 
-        A 2xx or 3xx response returns as it is; a redirect is never followed.
+        A 2xx or 3xx response, a redirect included, returns as it is.
         A refusal retries when its problem document says `retryable` (or, with
         no such member, when its status is one that clears), waiting for
         `Retry-After` or backing off from 0.5 to 8 seconds. A 401 resolves the
@@ -511,7 +511,7 @@ class Transport:
             params: Query parameters.
             json: The JSON body.
             headers: Headers for this request only.
-            timeout: The longest one attempt takes, body included; defaults to
+            timeout: The longest one attempt takes, body included. Defaults to
                 the transport's. `math.inf` lets each attempt run until the
                 deadline, or without limit when there is none.
             deadline: A clock reading the whole call, waits included, must
@@ -571,10 +571,10 @@ class Transport:
 
         The URL is on the API's origin or the storage host. On the API's origin
         the request carries the client's headers and key, as any API request
-        does; a signed URL on the storage host gets a bare request, with no
+        does. A signed URL on the storage host gets a bare request, with no
         client header, no key and nothing from the header provider. The fetch
         reads until the deadline, or without limit when there is none. A failed
-        fetch is not retried: a signed URL can expire, so the caller asks the
+        fetch is not retried. A signed URL can expire, so the caller asks the
         files route for a fresh one.
 
         Raises:

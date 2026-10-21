@@ -23,7 +23,7 @@ type Wire = Mapping[str, Any]
 type Layout = Literal["long", "frame"]
 type Window = Literal["all", "latest"] | tuple[int, int]
 
-# The longest the client reads a synchronous build: the server cuts off at 120 s.
+# The longest the client reads a synchronous build. The server cuts off at 120 s.
 BUILD_READ_TIMEOUT = 150.0
 
 # Poll backoff when the server sends no pacing, doubling from the first to the cap.
@@ -165,7 +165,7 @@ def scope(
 def rebind(
     spec: Spec, entities: Mapping[str, Sequence[str] | None]
 ) -> dict[str, Sequence[str]]:
-    """The whole entity binding a fetch posts: the spec's own, with `entities` applied.
+    """The whole entity binding a fetch posts, the spec's own with `entities` applied.
 
     The server replaces a spec's entire binding with the posted one, so the
     client starts from the roles the spec's definition binds and changes only
@@ -242,7 +242,7 @@ def build_body(
 
 
 def kept_entity_groups(held: Spec | None, built: Wire) -> dict[str, Any]:
-    """The held spec's entity groups that still hold for a built definition.
+    """The held spec's entity groups that hold for a built definition.
 
     A role keeps its group when the built identity binds it to the same entities
     as `held`'s definition, so a window or facets narrowing keeps every group and
@@ -287,9 +287,9 @@ def pick_artifact(
 ) -> Wire | None:
     """The artifact a manifest lists for `rendering`, or for `digest` when given.
 
-    Artifacts match on their rendering's format, bundle and frame layout, never on
-    the whole rendering object, which carries members that change with layout
-    versions.
+    Artifacts match on their rendering's format, bundle and frame layout. The
+    rendering object's other members change with layout versions, so they are
+    ignored.
     """
     for artifact in manifest["artifacts"]:
         if digest is not None:

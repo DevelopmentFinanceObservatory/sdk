@@ -3,12 +3,12 @@
 `open_bundle` reads a Parquet file `Dataset.save` wrote, or a website bundle as a
 ZIP, an extracted folder, or a file inside one. A bundle's `datapackage.json`
 types the data's CSV or XLSX columns and gives each file's hash, which is checked
-before the data is read. Every file it lists lies inside the bundle: a path with a
-backslash, a drive, a root or a `..` segment is refused before any file is read,
-and so is a path in an extracted folder that resolves outside it through a
+before the data is read. Every file it lists must lie inside the bundle. A path
+with a backslash, a drive, a root or a `..` segment is refused before any file is
+read, and so is a path in an extracted folder that resolves outside it through a
 symlink.
 
-Both clients call this module; it is sync and does no network I/O.
+Both clients call this module. It is sync and works on local files only.
 """
 
 import hashlib
@@ -168,7 +168,7 @@ def _open_descriptor(
     digest: str | None,
     escapes: Callable[[str], bool] | None = None,
 ) -> Dataset:
-    """Read a bundle through `read`; `escapes` says whether a listed path
+    """Read a bundle through `read`. `escapes` says whether a listed path
     resolves outside the bundle, for a folder on disk."""
     raw = read(DESCRIPTOR)
     if raw is None:

@@ -52,7 +52,7 @@ class Spec:
     """One reading of a question, the unit the server builds a dataset from.
 
     Equal and hashed on `spec_id`. `definition` is the server's JSON for the spec,
-    decoded and never modified, because the server needs its `identity` back as it
+    decoded and left as received, because the server needs its `identity` back as it
     sent it.
 
     Attributes:
@@ -60,7 +60,7 @@ class Spec:
         definition: The server's definition, `{schema_version, spec_id, identity}`.
         sentence: Search's sentence for the reading, when known.
         entity_groups: How Search resolved each role's group of places, keyed by
-            role, when the spec came from an answer; posted back with its
+            role, when the spec came from an answer. It is posted back with its
             identity so Search reads the groups the same way.
     """
 
@@ -106,7 +106,7 @@ class Notice:
 
     Attributes:
         code: The warning's code in the platform registry.
-        severity: `info`, `warn` or `degraded` for Search; the datasets surface may
+        severity: `info`, `warn` or `degraded` for Search. The datasets surface may
             send others.
         message: The server's message.
         spec_id: The spec the warning concerns, when the server names one.
@@ -164,7 +164,7 @@ class Assumption:
     Attributes:
         kind: `declared_default` for a default the variable declares, `open_role`
             for a role the question left open, or `place_scope` for how a place
-            was read; other values pass through.
+            was read. Other values pass through.
         binding_ref: The binding the assumption settles, such as
             `how:dac2aAidType`.
         text: The assumption as the sentence words it, such as "official
@@ -198,8 +198,8 @@ class Option:
 class _Reading:
     """The members `Candidate` and `AsyncCandidate` share.
 
-    `label`, `unit` and `source` split the sentence: the label is its heading, the
-    unit and source come from its byline.
+    `label`, `unit` and `source` split the sentence. The label is its heading, and
+    the unit and source come from its byline.
 
     Attributes:
         spec: The reading.
@@ -210,7 +210,7 @@ class _Reading:
             when the byline names no unit.
         raw: The server's spec object, decoded and untouched.
         assumptions: What Search assumed for this reading, from the part's
-            `reading_assumptions`; a pick posts them back to Search.
+            `reading_assumptions`. A pick posts them back to Search.
     """
 
     spec: Spec
@@ -342,11 +342,11 @@ class _AsyncCandidateFetch(Protocol):
 # `__match_args__` on `Part`, which type checkers would hold each subclass to.
 @dataclass(frozen=True, slots=True, kw_only=True, match_args=False)
 class Part[C]:
-    """One part of an answer: the reading, or lack of one, for one variable asked.
+    """One part of an answer, the reading or lack of one for one variable asked.
 
-    Generic over the candidate type: `Answer.parts` hold `Part[Candidate]` and
+    Generic over the candidate type. `Answer.parts` hold `Part[Candidate]` and
     `AsyncAnswer.parts` hold `Part[AsyncCandidate]`. Only `CandidatesPart` holds
-    candidates; the other parts are `Part[Never]`, which fits either answer.
+    candidates. The other parts are `Part[Never]`, which fits either answer.
 
     Attributes:
         status: The server's part status.
@@ -398,7 +398,7 @@ class NoDataPart(Part[Never]):
     """A part with no reading. Matches as `NoDataPart(reason)`.
 
     `options` lists the choices that settle the part, when it awaits a choice of
-    place or source; it is empty otherwise.
+    place or source. It is empty otherwise.
     """
 
     __match_args__ = ("reason",)
@@ -411,7 +411,7 @@ class NoDataPart(Part[Never]):
 class UnsupportedPart(Part[Never]):
     """A part understood but not supported. Matches as `UnsupportedPart(reason)`.
 
-    `reason` is the refusal code; `message` is the server's explanation.
+    `reason` is the refusal code. `message` is the server's explanation.
     """
 
     __match_args__ = ("reason",)
@@ -439,7 +439,7 @@ class Gap[C]:
             `unknown`.
         message: What the user reads about it.
         options: The choices that settle it: a candidates part's candidates, or
-            a no_data part's options of place or source; empty when nothing
+            a no_data part's options of place or source. Empty when nothing
             settles it.
     """
 
@@ -465,7 +465,7 @@ def unbound_gap(gap: Gap[Candidate | AsyncCandidate], /) -> Gap[Candidate]:
     """`gap` with its candidates bound to no answer, for a dataset or an error.
 
     A dataset and an `IncompleteAnswerError` hold no client, so their candidates
-    refuse `fetch` and name `dfo.fetch(candidate.spec)` instead.
+    refuse `fetch` and point to `dfo.fetch(candidate.spec)`.
     """
     part = gap.part
     match part:
@@ -514,7 +514,7 @@ class CitationSource:
 
 @dataclass(frozen=True, slots=True)
 class Citation:
-    """How to cite a dataset: the citation text and the sources behind it."""
+    """How to cite a dataset, as the citation text and the sources behind it."""
 
     text: str
     sources: tuple[CitationSource, ...] = ()
@@ -527,7 +527,7 @@ class Rendering:
     Attributes:
         format: `csv`, `xlsx` or `parquet`.
         bundle: Whether the artifact is a bundle with its descriptor.
-        layout: `frame` for the pipeline frame; None for the long layout.
+        layout: `frame` for the pipeline frame, None for the long layout.
     """
 
     format: str
@@ -549,11 +549,11 @@ class Rendering:
 
 @dataclass(frozen=True, slots=True)
 class RefMember:
-    """One member of a `DatasetRef`: the exact version of one reading.
+    """One member of a `DatasetRef`, the exact version of one reading.
 
     Attributes:
         parts: The variable text of each answer part the member answers, in query
-            order; empty for a spec fetched outside an answer.
+            order. Empty for a spec fetched outside an answer.
         sentence: Search's sentence for the built reading.
         spec: The built reading.
         content_version: The version's id.
@@ -575,7 +575,7 @@ class Member:
 
     Attributes:
         parts: The variable text of each answer part the member answers, in query
-            order; empty for a spec fetched outside an answer.
+            order. Empty for a spec fetched outside an answer.
         spec: The built reading.
         content_version: The version's id.
         sentence: Search's sentence for the built reading.
@@ -608,7 +608,7 @@ class Member:
 class DatasetRef:
     """The exact versions a dataset holds, in the format every DFO client reads.
 
-    The format is fixed: a ref saved by one client or language loads in another.
+    The format is fixed, so a ref saved by one client or language loads in another.
 
     Attributes:
         members: One member per reading, each with a distinct spec.
@@ -806,7 +806,7 @@ class RawResponse:
     """A response from `client.request`, for a route the client does not wrap.
 
     Attributes:
-        status_code: The HTTP status; a 2xx or 3xx, since a refusal raises.
+        status_code: The HTTP status, always a 2xx or 3xx since a refusal raises.
         headers: The response headers, keyed in lower case.
         content: The body's bytes.
     """

@@ -160,7 +160,7 @@ for gap in data.missing:
     print(gap.kind, gap.message)
 ```
 
-The dataset's display leads with the parts it left out, and the gaps travel with it into `to_pandas().attrs` and the file `save` writes. `fetch(partial=True)` still raises `IncompleteAnswerError` when no part has a reading.
+The dataset's display leads with the parts it left out, and the gaps travel with it into `to_pandas().attrs` and the file `save` writes. `fetch(partial=True)` raises `IncompleteAnswerError` when no part has a reading.
 
 A scheduled job should leave `partial` off. A question that resolved in full this month can come back half-answered next month, and the job then stops with a message instead of publishing half the data.
 

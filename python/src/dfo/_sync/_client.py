@@ -30,7 +30,7 @@ from dfo._wire import CatalogueResponse
 
 
 class Client:
-    """A connection to the DFO API, with its key and its local cache; a context manager.
+    """A connection to the DFO API, with its key and cache, used as a context manager.
 
     Attributes:
         graph: Names to graph nodes, and a node by its dcid.
@@ -112,7 +112,7 @@ class Client:
     ) -> Self:
         """A copy with other limits, sharing this client's connections and cache.
 
-        Closing the copy leaves the connections open; close this client instead.
+        Closing the copy leaves the connections open. Close this client to close them.
 
         Raises:
             ValueError: The timeout or retry count is invalid.
@@ -129,8 +129,8 @@ class Client:
 
         Args:
             question: The question, in your words.
-            timeout: The longest the call waits, retries included, in seconds;
-                each attempt reads until then, and None waits as long as Search
+            timeout: The longest the call waits, retries included, in seconds.
+                Each attempt reads until then, and None waits as long as Search
                 takes.
 
         Raises:
@@ -158,10 +158,10 @@ class Client:
             window: Narrow a spec to `"all"`, `"latest"` or
                 `(start_year, end_year)`.
             entities: Rebind the named roles of a spec to dcids, such as
-                `{"recipient": ["country/NGA"]}`; None drops a role. The
+                `{"recipient": ["country/NGA"]}`. None drops a role. The
                 spec's other roles keep their binding, and an empty map
                 narrows nothing.
-            facets: Bind a spec's provenance, measurement method or unit; an
+            facets: Bind a spec's provenance, measurement method or unit. An
                 empty map narrows nothing.
             layout: `long` or `frame`; None builds a spec in `long` and reads a
                 ref in the layout it holds.
@@ -174,7 +174,7 @@ class Client:
         Raises:
             InvalidRequestError: A ref is narrowed or given another layout.
             VersionUnavailableError: A ref's version can no longer be fetched.
-            DfoTimeoutError: The deadline passed; a long build's message names
+            DfoTimeoutError: The deadline passed. A long build's message names
                 the call that resumes it.
             DfoError: The server refused a request.
         """
@@ -196,7 +196,7 @@ class Client:
     ) -> Operation:
         """Start a spec's build and return it as an operation, done or running.
 
-        The build request reads for up to 150 seconds; `result` bounds the wait
+        The build request reads for up to 150 seconds. `result` bounds the wait
         for the build.
 
         Raises:
@@ -261,7 +261,7 @@ class Client:
         """Send a request to a route the client does not wrap.
 
         The request carries the client's key and headers and retries as every
-        call does. A redirect is returned, not followed.
+        call does. A redirect comes back as the response.
 
         Args:
             method: The HTTP method.
@@ -271,8 +271,8 @@ class Client:
 
         Raises:
             DfoError: The class the refusal maps to.
-            InvalidRequestError: `path` is not a path under the base URL: it
-                does not start with `/`, or starts with `//` (`invalid_argument`).
+            InvalidRequestError: `path` does not start with `/`, or starts
+                with `//` (`invalid_argument`).
         """
         if not path.startswith("/") or path.startswith("//"):
             raise client_error(

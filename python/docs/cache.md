@@ -96,11 +96,11 @@ Every request raises `NetworkError` with the code `offline` before it is sent, s
 - a ref names a version the cache lacks;
 - a spec is narrowed with `window`, `entities` or `facets`, since only the server knows which version a narrowing builds.
 
-Set the variable before the call runs; the client reads it on each call.
+Set the variable before the call runs. The client reads it on each call.
 
 ## Stale reads
 
-`data.stale` is True only for a dataset read from the cache under `DFO_OFFLINE=1`. A ref's rows are still the exact versions it names, since a version never changes once built. A spec's rows are the newest version the cache holds, which the server may since have replaced. What `stale` warns of is a check skipped: the server may have revoked the version, or published a newer one. The display adds a line for it:
+`data.stale` is True only for a dataset read from the cache under `DFO_OFFLINE=1`. A ref's rows are the exact versions it names, since a version never changes once built. A spec's rows are the newest version the cache holds, which the server may have replaced. `stale` warns that a check was skipped, so the server may have revoked the version or published a newer one. The display adds a line for it:
 
 ```text
 <Dataset Germany's gross ODA disbursements to Nigeria for basic health care, 1995 to 2024. ...
