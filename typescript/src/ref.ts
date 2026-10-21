@@ -9,8 +9,8 @@ import { isRecord } from "./json.ts";
 /** The layouts a dataset comes in: the labelled long table, or the pipeline frame. */
 export type Layout = "long" | "frame";
 
-/** Which rendering of a version an artifact is, as a ref stores it: the selector triple,
- *  never the server's rendering object. */
+/** Which rendering of a version an artifact is, as a ref stores it: the selector triple of
+ *  format, bundle and layout. */
 export type Rendering = {
   readonly format: "csv" | "xlsx" | "parquet";
   readonly bundle: boolean;

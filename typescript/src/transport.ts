@@ -37,7 +37,7 @@ export type HeaderProvider = (request: {
 }) => HeadersInit | Promise<HeadersInit>;
 
 export type TransportOptions = {
-  /** The API's base URL; a relative one, such as `/api/v1`, resolves against the page. */
+  /** The API's base URL. A relative one, such as `/api/v1`, resolves against the page. */
   baseUrl?: string;
   apiKey?: ApiKeyOption;
   /** Sends a secret key from a browser page or worker, where every visitor can read it. */
@@ -48,9 +48,9 @@ export type TransportOptions = {
    *  seconds by default. */
   timeout?: number;
   maxRetries?: number;
-  /** Headers sent with every request to the API, never to a signed storage URL. */
+  /** Headers sent with every request to the API. A signed storage URL gets none. */
   defaultHeaders?: Record<string, string>;
-  /** Headers computed for each request to the API, never to a signed storage URL. */
+  /** Headers computed for each request to the API. A signed storage URL gets none. */
   headerProvider?: HeaderProvider;
   onWarning?: WarningHandler;
   /** The clock and sleep the retry waits use. */
@@ -58,7 +58,7 @@ export type TransportOptions = {
   sleep?: Sleep;
   env?: EnvReader;
   readCredentialsFile?: CredentialsFileReader;
-  /** Observes each long build as its polling starts; the contract replay reads its record. */
+  /** Observes each long build as its polling starts. The contract replay reads its record. */
   onLongBuild?: (build: LongBuild) => void;
 };
 
@@ -298,7 +298,7 @@ export class Transport {
   }
 
   /**
-   * Resolves the key by the key-lookup rule, at once: a fault in the argument or the credentials
+   * Resolves the key by the key-lookup rule, at once. A fault in the argument or the credentials
    * file raises here. Only a key function that returns a promise settles later, and its failure
    * rejects the first request.
    */
@@ -310,7 +310,7 @@ export class Transport {
     });
     if (!(found instanceof Promise)) return Promise.resolve(this.#checkedKey(found));
     const pending = found.then((resolved) => this.#checkedKey(resolved));
-    // A client never used must not end the process with an unhandled rejection; a request
+    // A client never used must not end the process with an unhandled rejection. A request
     // awaits `pending` itself and sees the failure.
     pending.catch(() => undefined);
     return pending;
@@ -399,7 +399,7 @@ export class Transport {
   }
 
   /** Sends a request and reads its body as bytes, raising a `DfoError` for a refusal. A
-   *  redirect is returned, not followed. */
+   *  redirect is returned to the caller. */
   async requestRaw(options: RequestOptions): Promise<RawResponse> {
     const { response, body } = await this.#send(options);
     return new RawResponse(response.status, response.headers, body);
@@ -454,14 +454,14 @@ export class Transport {
 
   /**
    * Fetches the URL a files route redirected to, once. On the API's origin the request carries
-   * the client's headers and key and its warning headers are read, as any API request's are; a
+   * the client's headers and key and its warning headers are read, as any API request's are. A
    * signed URL on the storage host gets a bare request, with no client header and no key. A
-   * failed fetch is not retried: a signed URL can expire, so the caller asks the files route for
+   * failed fetch is not retried. A signed URL can expire, so the caller asks the files route for
    * a fresh one.
    *
    * With `follow`, the URL is a files route whose redirect a browser hid. The request carries the
    * key alone, which the browser drops on the way to another origin, so none of the client's
-   * headers reach the storage host; the browser follows the redirect, and the response's headers
+   * headers reach the storage host. The browser follows the redirect, and the response's headers
    * issue no warning, since they come from wherever the redirect led. The followed response must
    * end on the API's origin or the storage host.
    *

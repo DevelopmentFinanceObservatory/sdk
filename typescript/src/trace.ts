@@ -1,5 +1,5 @@
 /**
- * The trace id an error carries: the id a user quotes to find the fault in the server's logs.
+ * The trace id an error carries is the id a user quotes to find the fault in the server's logs.
  *
  * A refusal, and an error the client raises on reading an API response, carries that response's
  * trace id: the body's `trace_id`, else the `x-dfo-trace-id` header, else null. The errors that
@@ -27,7 +27,7 @@ export function traceIdOf(headers: Headers, body?: unknown): string | null {
  *  one already, and returns the error. */
 function traced(error: unknown, traceId: string | null): unknown {
   if (error instanceof DfoError && RESPONSE_CODES.has(error.code) && error.traceId === null) {
-    // `traceId` is read-only to callers; the client settles it here, once, before it throws.
+    // `traceId` is read-only to callers. The client settles it here, once, before it throws.
     (error as { traceId: string | null }).traceId = traceId;
   }
   return error;

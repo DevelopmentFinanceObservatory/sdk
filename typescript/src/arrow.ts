@@ -1,7 +1,7 @@
 /**
- * `toArrow(dataset)`: a dataset as an apache-arrow table, decoded with hyparquet and built
+ * `toArrow(dataset)` returns a dataset as an apache-arrow table, decoded with hyparquet and built
  * column by column. This is the `@developmentfinance/client/arrow` entry point, the one module
- * that needs the optional apache-arrow package, so the main entry point's types and code never
+ * that needs the optional apache-arrow package, so the main entry point's types and code do not
  * name it.
  */
 
@@ -91,7 +91,7 @@ function arrowVector(type: ColumnType, values: readonly unknown[]): arrow.Vector
     validity[index >> 3]! |= 1 << (index & 7);
   }
   return arrow.makeVector(
-    // makeData has one overload per concrete type; `data` is the typed array `type` stores.
+    // makeData has one overload per concrete type, and `data` is the typed array `type` stores.
     arrow.makeData({ type: dataType, length, nullCount, nullBitmap: validity, data } as never),
   );
 }

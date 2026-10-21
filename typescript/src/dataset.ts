@@ -25,7 +25,7 @@ export type Citation = {
 
 /** One reading inside a dataset: the exact version built for it. */
 export type Member = {
-  /** The variable text of each answer part the member answers, in query order; empty for a
+  /** The variable text of each answer part the member answers, in query order, or empty for a
    *  spec fetched outside an answer. */
   readonly parts: readonly string[];
   /** The spec the server built, which a narrowing gives its own `spec_id`. */
@@ -130,7 +130,7 @@ let readParts: (dataset: Dataset<Gap>) => TablePart[];
 /**
  * A table of data with its provenance: one exact version per member. It holds no client, so its
  * conversions never touch the network. `TMissing` is the type of the parts a partial fetch left
- * out; a dataset fetched from a spec or a ref leaves none out.
+ * out. A dataset fetched from a spec or a ref leaves none out.
  */
 export class Dataset<TMissing extends Gap = never> {
   /** What the data shows, in Search's words: the members' sentences in order. */
@@ -150,8 +150,8 @@ export class Dataset<TMissing extends Gap = never> {
   readonly complete: boolean;
   /** The parts a partial fetch left out. */
   readonly missing: readonly TMissing[];
-  /** The earliest time any member's version can still be fetched; null when every member is
-   *  pinned, or while the server does not say. */
+  /** The earliest time any member's version can still be fetched, or null when every member is
+   *  pinned or while the server does not say. */
   readonly heldUntil: Date | null;
   /** Whether every member's version is kept without a time limit. */
   readonly pinned: boolean;
@@ -219,7 +219,7 @@ export class Dataset<TMissing extends Gap = never> {
     this.layoutVersion = [
       ...new Set(members.map((member) => artifactLayout(member, options.layout))),
     ].join("; ");
-    // Reading the columns checks the members stack before the dataset is returned; a pair of
+    // Reading the columns checks the members stack before the dataset is returned. A pair of
     // column types that does not widen raises ContractError.
     stackedColumns(this.#parts());
   }
@@ -353,7 +353,7 @@ const savedCitation = ({ text, sources }: Citation) => ({
   })),
 });
 
-/** A gap as Python's `Dataset.save` writes it: a choice of place or source keeps its options. */
+/** A gap as Python's `Dataset.save` writes it, where a choice of place or source keeps its options. */
 const savedGap = (gap: Gap) => ({
   part_index: gap.partIndex,
   part: gap.part,

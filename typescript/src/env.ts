@@ -1,4 +1,4 @@
-/** Reads one environment variable; an empty value reads as unset. */
+/** Reads one environment variable. An empty value reads as unset. */
 export type EnvReader = (name: string) => string | undefined;
 
 type ProcessLike = { env?: Record<string, string | undefined> };

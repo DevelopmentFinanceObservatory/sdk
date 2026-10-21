@@ -11,13 +11,12 @@
 //
 // The strict table lists, for every schema that holds a strict field, the strict members it
 // requires, each with the JSON type (string, array or object) the served document gives it
-// directly or through its `$ref`, and the strict members to descend into: a strict member whose schema holds strict
-// fields of its own. The check reaches only the members a client reads, so a nested schema
-// reached through a member the client never reads, such as a spec under `resolved`, is not
-// checked. Generation fails when a strict pointer names a member the served document does not
-// require, or lets be null, or types as other than a string, array or object, or when an enum
-// entry lists a value the served document does not
-// allow.
+// directly or through its `$ref`, and the strict members to descend into, which are those whose
+// schema holds strict fields of its own. The check reaches only the members a client reads, so
+// a nested schema reached through a member the client never reads, such as a spec under
+// `resolved`, is not checked. Generation fails when a strict pointer names a member the served
+// document does not require, lets be null, or types as other than a string, array or object,
+// or when an enum entry lists a value the served document does not allow.
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 

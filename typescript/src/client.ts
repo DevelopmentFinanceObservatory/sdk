@@ -162,11 +162,11 @@ export class Client {
 
   /**
    * Sends a request to a route the client does not wrap, such as `/datasets/capabilities`. It
-   * carries the client's key and headers and retries as every call does. A redirect is returned,
-   * not followed.
+   * carries the client's key and headers and retries as every call does. A redirect comes back
+   * as the response.
    *
-   * @throws {InvalidRequestError} `path` is not a path on the base URL: it does not start with
-   *   one `/`, or names another host (`invalid_argument`).
+   * @throws {InvalidRequestError} `path` does not start with one `/` or names another
+   *   host (`invalid_argument`).
    * @throws {DfoError} The class the refusal maps to.
    */
   async request(

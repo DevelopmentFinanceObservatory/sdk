@@ -12,15 +12,15 @@ export type ClientErrorCode = keyof typeof CLIENT_CODE_CLASSES;
 
 declare const SERVER_CODE: unique symbol;
 
-/** A refusal code read from a server response: one of `contract/actions.json`, or any other
- *  string a newer server sends. `serverCode` is the only way to make one, so an error the
+/** A refusal code read from a server response, either one of `contract/actions.json` or any
+ *  other string a newer server sends. `serverCode` is the only way to make one, so an error the
  *  client raises itself takes a `ClientErrorCode`. */
 export type ServerErrorCode = string & { readonly [SERVER_CODE]: true };
 
 /** Marks a code read from a server response. */
 export const serverCode = (code: string): ServerErrorCode => code as ServerErrorCode;
 
-/** An error's code: one the client raises, or one the server sent. */
+/** An error's code, whether the client raised it or the server sent it. */
 export type DfoErrorCode = ClientErrorCode | ServerErrorCode;
 
 /** The brand `isDfoError` checks. `Symbol.for` returns one symbol for every copy of the package
@@ -77,11 +77,11 @@ export function isDfoError(value: unknown): value is DfoError {
   );
 }
 
-/** The request is malformed; the caller fixes it. */
+/** The request is malformed. The caller fixes it. */
 export class InvalidRequestError extends DfoError {}
-/** A spec, version or operation is unknown; the caller checks the id. */
+/** A spec, version or operation is unknown. The caller checks the id. */
 export class NotFoundError extends DfoError {}
-/** A part of the question has no reading; the caller chooses one or takes the answered parts. */
+/** A part of the question has no reading. The caller chooses one or takes the answered parts. */
 export class IncompleteAnswerError extends DfoError {
   /** The answer whose fetch raised it, or null for a server refusal. */
   readonly answer: Answer | null;
@@ -94,9 +94,9 @@ export class IncompleteAnswerError extends DfoError {
     this.gaps = options.gaps ?? [];
   }
 }
-/** Search declined the question or answered with the catalogue; the caller asks a data question. */
+/** Search declined the question or answered with the catalogue. The caller asks a data question. */
 export class DeclinedError extends DfoError {}
-/** A stored version cannot be rebuilt; the caller takes the newest version. */
+/** A stored version cannot be rebuilt. The caller takes the newest version. */
 export class VersionUnavailableError extends DfoError {
   /** The newest version the lookup found, which fetching the spec returns, or null. */
   readonly newestVersion: string | null;
@@ -108,13 +108,13 @@ export class VersionUnavailableError extends DfoError {
 }
 /** A key is missing, unknown, revoked or expired, or the credentials file is broken. */
 export class AuthenticationError extends DfoError {}
-/** The key lacks a scope; the caller asks for it. */
+/** The key lacks a scope. The caller asks for it. */
 export class PermissionDeniedError extends DfoError {}
-/** Over the rate limit after retries; the caller waits. */
+/** Over the rate limit after retries. The caller waits. */
 export class RateLimitError extends DfoError {}
-/** Over the build quota; the caller waits for the reset. */
+/** Over the build quota. The caller waits for the reset. */
 export class QuotaExceededError extends DfoError {}
-/** A 5xx after retries; the caller reports the trace id. */
+/** A 5xx after retries. The caller reports the trace id. */
 export class ServerError extends DfoError {}
 /** A field the client acts on is missing or renamed, or the server needs a newer client. */
 export class ContractError extends DfoError {
@@ -126,9 +126,9 @@ export class ContractError extends DfoError {
     this.pointer = options.pointer ?? null;
   }
 }
-/** The connection failed; the caller retries later. The platform's error is the `cause`. */
+/** The connection failed. The caller retries later. The platform's error is the `cause`. */
 export class NetworkError extends DfoError {}
-/** A deadline passed; the caller extends the timeout or resumes. */
+/** A deadline passed. The caller extends the timeout or resumes. */
 export class DfoTimeoutError extends DfoError {}
 
 // Names set on each prototype from the source names, which survive minification.

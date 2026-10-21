@@ -18,8 +18,8 @@ import type { ContractError } from "./errors.ts";
 
 /**
  * One cell of `toRows()`. INT64 columns arrive as numbers, so `JSON.stringify` works on the
- * rows; a value beyond `Number.MAX_SAFE_INTEGER` raises rather than lose precision, and
- * `toArrow()` keeps it as a `bigint`. Timestamps and dates are `Date`s, JSON columns their text.
+ * rows. A value beyond `Number.MAX_SAFE_INTEGER` raises, and `toArrow()` keeps it as a
+ * `bigint`. Timestamps and dates are `Date`s, JSON columns their text.
  */
 export type Value = string | number | boolean | Date | Uint8Array | null;
 
@@ -112,7 +112,7 @@ function intType(bits: number, signed: boolean, element: SchemaElement): ColumnT
   return { kind: "int", bits, signed };
 }
 
-/** A column's type from its schema element. Nested columns raise: dataset files are flat. */
+/** A column's type from its schema element. Nested columns raise, since dataset files are flat. */
 export function columnType(element: SchemaElement): ColumnType {
   const logical = element.logical_type;
   const converted = element.converted_type;
@@ -393,7 +393,7 @@ export async function decodeRows(parts: readonly TablePart[]): Promise<Row[]> {
   return rows;
 }
 
-/** The Parquet schema element a column type is written as; every column is nullable, since a
+/** The Parquet schema element a column type is written as. Every column is nullable, since a
  *  column one member lacks is null in its rows. */
 function schemaElement({ name, type }: Column): SchemaElement {
   const optional = { name, repetition_type: "OPTIONAL" } as const;
@@ -464,7 +464,7 @@ export async function encodeStacked(
   const buffer = parquetWriteBuffer({
     columnData: columns.map(({ name, type, values }) => ({
       name,
-      // INT64 and timestamp columns hold bigints; a value decoded as a number is written as one.
+      // INT64 and timestamp columns hold bigints. A value decoded as a number is written as one.
       // A DECIMAL column holds unscaled bigints, which hyparquet-writer writes unchanged.
       data:
         (type.kind === "int" && type.bits === 64) || type.kind === "timestamp"

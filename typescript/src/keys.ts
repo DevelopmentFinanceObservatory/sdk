@@ -10,7 +10,7 @@ const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const CHECKSUM_LENGTH = 6;
 
 /**
- * An API key. Printing, logging or serialising it shows a masked form; `reveal()` returns the
+ * An API key. Printing, logging or serialising it shows a masked form. `reveal()` returns the
  * key itself.
  */
 export class ApiKey {
@@ -79,7 +79,7 @@ function base62(value: number): string {
 
 /**
  * Checks a key's prefix, characters and checksum, per `contract/rules/README.md`. A failure is
- * a warning: the client sends the key anyway, so a new key format forces no upgrade.
+ * a warning. The client sends the key anyway, so a new key format forces no upgrade.
  */
 export function checkKeyFormat(key: string): KeyFormatVerdict {
   const prefix = [SECRET_PREFIX, PUBLISHABLE_PREFIX].find((p) => key.startsWith(p));

@@ -71,7 +71,7 @@ export function warnOnce(key: string, warning: DfoWarning, handler: WarningHandl
   handler(warning);
 }
 
-/** @internal Forgets every warning `warnOnce` has emitted, as a fresh process starts; the
+/** @internal Forgets every warning `warnOnce` has emitted, as a fresh process starts. The
  *  contract replay calls it before each scenario. */
 export function forgetEmittedWarnings(): void {
   shown.clear();

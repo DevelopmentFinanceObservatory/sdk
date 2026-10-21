@@ -5,7 +5,7 @@
 //   node scripts/generate-wire.ts --check   exit 1 when the committed file differs
 //
 // Two transforms run during generation. Every string `enum` becomes an open union, so a value
-// added by the server still typechecks; `const` members stay closed, since they discriminate
+// added by the server still typechecks. `const` members stay closed, since they discriminate
 // unions. Every array of parts discriminated on `status` gains the hand-written `UnknownPart`, so
 // a part status added by the server narrows to it.
 import { readFile, writeFile } from "node:fs/promises";

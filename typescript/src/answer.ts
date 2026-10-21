@@ -1,7 +1,7 @@
 /**
- * Answers: what Search understood a question to ask, part by part.
+ * An answer is what Search understood a question to ask, part by part.
  *
- * An answer holds readings, not data. `fetch` builds the dataset when every part has a reading,
+ * An answer holds readings. `fetch` builds the dataset when every part has a reading,
  * and raises `IncompleteAnswerError` before any build when one does not. `choose` settles a part
  * that awaits a choice and returns a new answer.
  */
@@ -61,7 +61,7 @@ export class Candidate {
   readonly spec: Spec;
   /** Search's sentence for the reading. */
   readonly sentence: string | null;
-  /** The sentence's heading, else the sentence; null when the spec has neither. */
+  /** The sentence's heading, else the sentence, or null when the spec has neither. */
   readonly label: string | null;
   /** The provenance the reading reads from, such as "OECD DAC1". */
   readonly source: string | null;
@@ -72,7 +72,7 @@ export class Candidate {
   readonly assumptions: readonly Assumption[];
   readonly #fetch: CandidateFetch | null;
 
-  /** Candidates come from an answer; this constructor is the client's. */
+  /** Candidates come from an answer. This constructor is the client's. */
   constructor(
     reading: Pick<Candidate, "spec" | "sentence" | "label" | "source" | "unit" | "assumptions">,
     fetch: CandidateFetch | null = null,
@@ -215,7 +215,7 @@ export class Answer {
   readonly raw: unknown;
   readonly #context: AnswerContext;
 
-  /** Answers come from `client.search`; this constructor is the client's. */
+  /** Answers come from `client.search`. This constructor is the client's. */
   constructor(init: AnswerInit) {
     this.kind = init.kind;
     this.status = init.status;
@@ -252,7 +252,7 @@ export class Answer {
 
   /**
    * Settles a part that awaits a choice and returns Search's answer to it, in one Search request.
-   * Picking a reading needs no model call; a place choice, and any part restated beside it, asks
+   * Picking a reading needs no model call. A place choice, and any part restated beside it, asks
    * Search to bind it again. `choose(option)` picks in the only part that awaits one;
    * `choose(part, option)` names the part by its index, its variable text, or a word of the
    * question its options settle. An option is named by its index or label. The picked answer's
@@ -260,7 +260,7 @@ export class Answer {
    *
    * @throws {InvalidRequestError} No part, or more than one, awaits a choice; the part or option
    *   is unknown; the part offers no options; or a part cannot be posted back.
-   * @throws {ContractError} The chosen option carries no one-part `data_query`; it carries the
+   * @throws {ContractError} The chosen option carries no one-part `data_query`. The error carries the
    *   answer's trace id.
    */
   choose(option: ChoiceKey, options?: SearchOptions): Promise<Answer>;
@@ -357,7 +357,7 @@ export async function resolveAnswer(
 }
 
 /**
- * Reads a decoded Search response into an answer; `traceId` is the trace id of the response
+ * Reads a decoded Search response into an answer. `traceId` is the trace id of the response
  * the body came from.
  *
  * @throws {ContractError} The body is not an object, its kind is unknown, a member the client
@@ -572,7 +572,7 @@ function gapFor(
   }
 }
 
-/** A refusal's choices, from `no_data.options`, read tolerantly: each option's `data_query` is
+/** A refusal's choices, from `no_data.options`, read tolerantly. Each option's `data_query` is
  *  the input that settles it. */
 function queryOptions(noData: NoData): QueryOption[] {
   return objects(noData.options).map((option) => ({
@@ -583,7 +583,7 @@ function queryOptions(noData: NoData): QueryOption[] {
   }));
 }
 
-/** A candidate from its full spec and what Search assumed for it: the label is the sentence's
+/** A candidate from its full spec and what Search assumed for it. The label is the sentence's
  *  heading and the unit the byline's unit slot, so label, unit and source together say what the
  *  sentence says. */
 function candidateFrom(

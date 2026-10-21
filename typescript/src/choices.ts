@@ -1,5 +1,5 @@
 /**
- * Choices: which part and option a `choose` call names, and what it posts to Search.
+ * Which part and option a `choose` call names, and what it posts to Search.
  *
  * A choice of place or source in a one-part answer posts the option's `data_query` unchanged.
  * Any other choice, a pick among one part's candidates included, posts a `dataset_resubmit` with
@@ -221,7 +221,7 @@ function identityEntry(part: Part, spec: Spec): ResubmitIdentityEntry {
 
 /** The assumptions a resubmitted reading of `part` echoes: a candidates part's
  *  `reading_assumptions` under the reading's `spec_id`, else the part's own `assumptions`.
- *  Undefined when the part holds no list for the reading; `[]` states none. */
+ *  Undefined when the part holds no list for the reading. `[]` states none. */
 function readingEcho(part: Part, spec: Spec): readonly Assumption[] | undefined {
   let listed: unknown = part.assumptions;
   if (isKnownPart(part) && part.status === "candidates") {

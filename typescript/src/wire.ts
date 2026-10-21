@@ -15,7 +15,7 @@ import type {
 } from "./generated/openapi.ts";
 import type { UnknownPart } from "./unknown-part.ts";
 
-/** A part whose status this release knows; its `status` narrows it. */
+/** A part whose status this release knows. Its `status` narrows it. */
 export type KnownPart = DefinitePart | CandidatesPart | NoDataPart | UnsupportedPart;
 
 /** One part of a resolution, as `Resolution["parts"]` holds it. */

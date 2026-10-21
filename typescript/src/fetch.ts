@@ -11,7 +11,7 @@
  * route at the stored digest; the file selector, which renders the version again from its
  * stored frame; a fresh build, which must return the same version; otherwise
  * `VersionUnavailableError`, naming the newest version. The steps after the snapshot run only
- * for a version whose file has expired: a version the server never built
+ * for a version whose file has expired. A version the server never built
  * (`snapshot_not_found`) raises at once.
  *
  * Each member's sentence is Search's: the one the caller holds when the built `spec_id` equals
@@ -60,10 +60,10 @@ export type Window = "all" | "latest" | readonly [startYear: number, endYear: nu
 /** How a fetch narrows a spec. The server builds a narrowed spec with its own `spec_id`. */
 export type Narrowing = {
   window?: Window;
-  /** Roles to rebind, as `{ origin: ["country/FRA"] }`; null unbinds a role. Every role
+  /** Roles to rebind, as `{ origin: ["country/FRA"] }`. null unbinds a role. Every role
    *  the spec binds and this leaves out keeps its dcids, so `{}` narrows nothing. */
   entities?: Readonly<Record<string, readonly string[] | null>>;
-  /** Facet axes (`provenance`, `measurementMethod`, `unit`) bound to a reference; null binds
+  /** Facet axes (`provenance`, `measurementMethod`, `unit`) bound to a reference. null binds
    *  the facets that declare no value on the axis. `{}` narrows nothing. */
   facets?: Readonly<Record<string, string | null>>;
 };
@@ -105,13 +105,13 @@ type CallOptions = {
 export type FetchOptions = CallOptions & Narrowing;
 
 export type FetchMembersOptions<TMissing extends Gap> = CallOptions & {
-  /** The parts a partial fetch leaves out; the dataset is complete when there are none. */
+  /** The parts a partial fetch leaves out. The dataset is complete when there are none. */
   missing?: readonly TMissing[];
   /** The build request's `scope`, applied to every member. */
   narrowing?: Narrowing;
 };
 
-/** How a mint builds a spec. A mint builds the spec as it stands; fetch it to narrow it. */
+/** How a mint builds a spec. A mint builds the spec as it stands. Fetch it to narrow it. */
 export type MintOptions = {
   layout?: Layout;
   signal?: AbortSignal;
@@ -126,7 +126,7 @@ type Wait = { readonly deadline: number; readonly signal?: AbortSignal | undefin
  *  echoes it onto the part, and it does not change the sentence. */
 const UNNAMED_PART = "dataset";
 
-/** Refusals after which a stored version's lookup goes on: the version exists, but its file
+/** Refusals after which a stored version's lookup goes on. The version exists, but its file
  *  has expired. An unknown version (`snapshot_not_found`) ends the lookup. */
 const FILE_EXPIRED = "artifact_expired";
 const FILE_GONE = new Set([FILE_EXPIRED, "artifact_not_found", "not_found"]);
@@ -291,7 +291,7 @@ const specIdOf = (manifest: Manifest): string => String(definitionOf(manifest)["
 const contentVersionOf = (manifest: Manifest): string => String(manifest["content_version"]);
 
 /** The artifact a manifest lists for a rendering, or for a digest when given. Artifacts match
- *  on format, bundle and frame layout, never on the whole rendering object. */
+ *  on format, bundle and frame layout alone. */
 function pickArtifact(
   manifest: Manifest,
   rendering: Rendering,
@@ -334,7 +334,7 @@ const sameEntities = (a: readonly string[], b: readonly string[]): boolean => {
 
 /** The held entity groups a built definition keeps: the group of each role the built identity
  *  binds to the same entities as the held definition. A role the build rebound or dropped loses
- *  its group; the server drops a posted group whose members differ from the role's entities. */
+ *  its group, since the server drops a posted group whose members differ from the role's entities. */
 function keptEntityGroups(
   held: Held | undefined,
   built: Readonly<Record<string, unknown>>,
@@ -352,7 +352,7 @@ function keptEntityGroups(
 
 /**
  * Search's sentence for a built identity, from resubmitting it with the held spec's groups that
- * `keptEntityGroups` keeps; none for a resumed operation.
+ * `keptEntityGroups` keeps, which are none for a resumed operation.
  *
  * @throws {ContractError} Search did not answer with one definite part of the same `spec_id`
  *   and a sentence.
@@ -615,7 +615,7 @@ export function mint(
     rendering,
     strict: false,
   };
-  // The POST reads for up to the build's own limit; `result` sets the wait's deadline.
+  // The POST reads for up to the build's own limit. `result` sets the wait's deadline.
   return startOperation(
     transport,
     buildBody(spec, rendering),
@@ -782,7 +782,7 @@ async function snapshot(
   return { manifest, traceId };
 }
 
-/** The stored artifact's bytes from the files route, or else from the file selector; the
+/** The stored artifact's bytes from the files route, or else from the file selector, or the
  *  files route's refusal when neither serves bytes with the stored digest. */
 async function storedFile(
   transport: Transport,
@@ -812,7 +812,7 @@ async function storedFile(
     return { data: await download(transport, { path: selector }, member.digest, wait) };
   } catch (error) {
     if (!(error instanceof DfoError)) throw error;
-    // The selector renders the version again; bytes with another digest are not the stored
+    // The selector renders the version again, so bytes with another digest are not the stored
     // version's file.
     if (error.code === DIGEST_MISMATCH) return { refusal };
     if (FILE_GONE.has(error.code)) return { refusal: refusal ?? error };

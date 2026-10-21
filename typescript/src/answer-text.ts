@@ -67,7 +67,7 @@ export function answerText(answer: Answer): string {
   return [answered(answer, "Answered"), ...gapLines(answer)].join("\n");
 }
 
-/** Why Search gave a declined or catalogue answer instead of readings. */
+/** Why Search gave a declined or catalogue answer, which holds no readings. */
 export function declinedText(kind: string, reason: string | null): string {
   if (kind === "catalogue") return CATALOGUE;
   if (kind === "declined") {

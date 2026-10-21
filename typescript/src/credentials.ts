@@ -72,7 +72,7 @@ export function parseCredentialsFile(text: string): ParsedCredentialsFile {
  *  reads synchronously, since a client resolves its key when it is built. */
 export type CredentialsFileReader = (env: EnvReader) => string | null;
 
-/** The reader for platforms with no file system: there is never a file. */
+/** The reader for platforms with no file system, which finds no file. */
 export const noCredentialsFile: CredentialsFileReader = () => null;
 
 let platformReader: CredentialsFileReader = noCredentialsFile;

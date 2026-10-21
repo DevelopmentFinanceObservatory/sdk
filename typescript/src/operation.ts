@@ -5,7 +5,7 @@
  * the manifest, and a larger one with a 202 operation the client polls at
  * `/datasets/operations/{id}` until it is done or the deadline passes.
  *
- * This module owns build retries: the build request goes with no transport retries and reads
+ * This module owns build retries. The build request goes with no transport retries and reads
  * for up to 150 seconds within the call's deadline. Every retryable refusal of the build shares
  * the transport's retry count, and once a synchronous cut-off (a retryable 504, or the
  * 150-second read running out) refuses it, the build is posted once more only, whatever that
@@ -15,7 +15,7 @@
  * Polls wait for a refused poll's `Retry-After`, whatever its status, else the resource's
  * `retry_after_ms`, else the last answered poll's `Retry-After` header, else back off from 1 to
  * 8 seconds, the backoff advancing only when a wait uses it. A refused poll that is not
- * retryable raises at once, a 429 included. A retryable 429 spends no retry; any other retryable
+ * retryable raises at once, a 429 included. A retryable 429 spends no retry. Any other retryable
  * refused poll, one that runs past the client's timeout included, spends one of the transport's
  * retries, which a poll that answers restores.
  */
@@ -28,7 +28,7 @@ import { isRetryable, passedDeadline, retryAfterMs } from "./transport.ts";
 import type { JsonResponse, Transport } from "./transport.ts";
 import { isRecord } from "./json.ts";
 
-/** The longest the client reads a synchronous build: the server cuts one off at 120 s. */
+/** The longest the client reads a synchronous build. The server cuts one off at 120 s. */
 const BUILD_READ_TIMEOUT_MS = 150_000;
 const POLL_BACKOFF_FIRST_MS = 1_000;
 const POLL_BACKOFF_CAP_MS = 8_000;
@@ -199,7 +199,7 @@ const isCutOff = (error: DfoError): boolean =>
   (error.status === 504 || (error instanceof DfoTimeoutError && error.status === null));
 
 /**
- * Posts a build request, owning its retries: every retryable refusal spends one of the
+ * Posts a build request and owns its retries. Every retryable refusal spends one of the
  * transport's retries, and after a cut-off the build is posted once more only.
  *
  * @throws {DfoError} The refusal, once the retries a build allows are spent.
@@ -231,7 +231,7 @@ async function postBuild(transport: Transport, body: unknown, { deadline, signal
 /** Polls one build until it is done, at the server's pacing. */
 class Poller implements LongBuild {
   readonly #transport: Transport;
-  /** The build request, resubmitted once when the operation fails retryably; undefined for a
+  /** The build request, resubmitted once when the operation fails retryably. Undefined for a
    *  resumed operation. */
   readonly #body: unknown;
   #onProgress: ProgressHandler | undefined;
@@ -310,8 +310,8 @@ class Poller implements LongBuild {
     return this.#manifest!;
   }
 
-  /** Reports the long build to the transport's observer when polling first starts; a build the
-   *  server finished inline is none. */
+  /** Reports the long build to the transport's observer when polling first starts. A build the
+   *  server finished inline reports none. */
   #start(): void {
     if (this.#started || this.operationId === null) return;
     this.#started = true;
@@ -375,7 +375,7 @@ class Poller implements LongBuild {
       });
     } catch (error) {
       if (!(error instanceof DfoError)) throw error;
-      // The deadline passing ends the wait; an attempt's own timeout spends a retry.
+      // The deadline passing ends the wait. An attempt's own timeout spends a retry.
       if (passedDeadline(error)) throw this.#stillRunning(error);
       await this.#pollFailed(error, wait);
       return;
@@ -400,7 +400,7 @@ class Poller implements LongBuild {
     this.#refusedWaitMs = error.retryAfterMs;
   }
 
-  /** Resubmits a build that failed retryably, once; otherwise holds the error. */
+  /** Resubmits a build that failed retryably, once, and otherwise holds the error. */
   async #failed(error: DfoError, wait: Wait): Promise<void> {
     if (!error.retryable || this.#body === undefined || this.#resubmissions > 0) {
       this.#error = error;
@@ -469,7 +469,7 @@ export class Operation {
   /**
    * Waits for the build and returns its dataset.
    *
-   * @throws {DfoTimeoutError} The build was still running at the deadline; the message names
+   * @throws {DfoTimeoutError} The build was still running at the deadline. The message names
    *   the call that resumes it.
    * @throws {DfoError} The build failed.
    */

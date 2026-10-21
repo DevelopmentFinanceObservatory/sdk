@@ -25,16 +25,16 @@ export type GraphNode =
 /** A lookup's cancellation and attempt timeout. */
 export type LookupOptions = {
   readonly signal?: AbortSignal;
-  /** The longest one request attempt waits, in milliseconds; the client's `timeout` by
-   *  default. */
+  /** The longest one request attempt waits, in milliseconds. Defaults to the client's
+   *  `timeout`. */
   readonly timeout?: number;
 };
 
 export type ResolveOptions = LookupOptions & {
-  /** The node kinds a name may resolve to; the server's default is every kind of place and
+  /** The node kinds a name may resolve to. The server's default is every kind of place and
    *  group. */
   readonly kinds?: readonly ResolveKind[];
-  /** Narrows `code` matches to one code system's graph id, such as `CRSPurposeCodeEnum`; needs
+  /** Narrows `code` matches to one code system's graph id, such as `CRSPurposeCodeEnum`. Needs
    *  `code` in `kinds`. */
   readonly codeSystem?: string;
   /** Inlines each group's or region's members. */
@@ -60,7 +60,7 @@ const callOptions = ({ signal, timeout }: LookupOptions) => ({
 export class Graph {
   readonly #transport: Transport;
 
-  /** Graphs come from `client.graph`; this constructor is the client's. */
+  /** Graphs come from `client.graph`. The client calls this constructor. */
   constructor(transport: Transport) {
     this.#transport = transport;
   }
@@ -110,7 +110,7 @@ export class Graph {
 export class Codes {
   readonly #transport: Transport;
 
-  /** Code lookups come from `client.codes`; this constructor is the client's. */
+  /** Code lookups come from `client.codes`. The client calls this constructor. */
   constructor(transport: Transport) {
     this.#transport = transport;
   }
