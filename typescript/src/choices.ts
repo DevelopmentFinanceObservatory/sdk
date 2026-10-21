@@ -21,7 +21,7 @@ import type { Answer, Candidate, Gap, QueryOption } from "./answer.ts";
 import { clientError } from "./errors.ts";
 import type { InvalidRequestError } from "./errors.ts";
 import { isRecord } from "./json.ts";
-import { isKnownPart } from "./parts.ts";
+import { isKnownPart, partText } from "./parts.ts";
 import type {
   Assumption,
   DatasetResubmitInput,
@@ -63,7 +63,7 @@ function partIndex(answer: Answer, key: ChoiceKey): number {
     if (Number.isInteger(key) && key >= 0 && key < parts.length) return key;
     throw refuse(`Part ${key} is out of range; the answer has ${parts.length} parts.`);
   }
-  let named = parts.flatMap((part, index) => (part.variable_text === key ? [index] : []));
+  let named = parts.flatMap((part, index) => (partText(part) === key ? [index] : []));
   if (named.length === 0) {
     named = gaps
       .filter((gap) => gap.options.some((option) => mentionsOf(option).includes(key)))
@@ -194,7 +194,7 @@ function entry(part: Part): Entry {
     }
   }
   throw refuse(
-    `Part ${JSON.stringify(part.variable_text)} has status ${JSON.stringify(part.status)}, ` +
+    `Part ${JSON.stringify(partText(part) ?? "")} has status ${JSON.stringify(part.status)}, ` +
       "which this client cannot post back; upgrade @developmentfinance/client.",
   );
 }
@@ -237,8 +237,8 @@ function echoed(part: Part): {
   separate?: boolean;
   operations?: RequestedOperation[];
 } {
-  const variableText = part.variable_text;
-  if (typeof variableText !== "string" || variableText === "") {
+  const variableText = partText(part);
+  if (variableText === null || variableText === "") {
     throw refuse("A part without variable text cannot be posted back; search again.");
   }
   const operations = part.operations as RequestedOperation[] | undefined;

@@ -14,9 +14,10 @@
  *
  * Polls wait for a refused poll's `Retry-After`, whatever its status, else the resource's
  * `retry_after_ms`, else the last answered poll's `Retry-After` header, else back off from 1 to
- * 8 seconds, the backoff advancing only when a wait uses it. A 429 spends no retry; any other retryable refused poll, one that runs past the
- * client's timeout included, spends one of the transport's retries, which a poll that answers
- * restores; a refused poll that is not retryable raises.
+ * 8 seconds, the backoff advancing only when a wait uses it. A refused poll that is not
+ * retryable raises at once, a 429 included. A retryable 429 spends no retry; any other retryable
+ * refused poll, one that runs past the client's timeout included, spends one of the transport's
+ * retries, which a poll that answers restores.
  */
 
 import type { Dataset } from "./dataset.ts";
@@ -391,8 +392,9 @@ class Poller implements LongBuild {
       await this.#failed(error, wait);
       return;
     }
+    if (!error.retryable) throw error;
     if (error.status !== 429) {
-      if (!error.retryable || this.#retries >= this.#transport.maxRetries) throw error;
+      if (this.#retries >= this.#transport.maxRetries) throw error;
       this.#retries += 1;
     }
     this.#refusedWaitMs = error.retryAfterMs;

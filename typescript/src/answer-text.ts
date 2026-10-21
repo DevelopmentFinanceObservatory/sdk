@@ -5,6 +5,7 @@
 import { definiteParts, partSentence } from "./answer.ts";
 import type { Answer, Candidate, Gap } from "./answer.ts";
 import { objects, text } from "./json.ts";
+import { partText } from "./parts.ts";
 
 const SHOWN_SEVERITIES = new Set(["warn", "degraded"]);
 
@@ -96,7 +97,7 @@ function gapLines(answer: Answer): string[] {
   const gaps = new Map(answer.gaps.map((gap) => [gap.partIndex, gap]));
   const lines: string[] = [];
   for (const [index, part] of answer.parts.entries()) {
-    const name = quote(part.variable_text);
+    const name = quote(partText(part));
     const gap = gaps.get(index);
     if (gap === undefined) {
       lines.push(`  answered ${name}: ${partSentence(part) ?? ""}`.trimEnd());
@@ -141,9 +142,9 @@ function chooseCall(answer: Answer, gap: Gap): string | null {
 
 /** The part's words when they name it alone, else its index. */
 function partKey(answer: Answer, gap: Gap): string {
-  const words = gap.part.variable_text;
-  const named = answer.parts.filter((part) => part.variable_text === words);
-  return typeof words === "string" && words !== "" && named.length === 1
+  const words = partText(gap.part);
+  const named = answer.parts.filter((part) => partText(part) === words);
+  return words !== null && words !== "" && named.length === 1
     ? quote(words)
     : String(gap.partIndex);
 }
@@ -153,7 +154,7 @@ function optionKey(answer: Answer, gap: Gap, mentions: readonly string[]): strin
   const mention = mentions[0];
   if (mention !== undefined) {
     const elsewhere =
-      answer.parts.some((part) => part.variable_text === mention) ||
+      answer.parts.some((part) => partText(part) === mention) ||
       answer.gaps.some(
         (other) =>
           other.partIndex !== gap.partIndex &&

@@ -4,7 +4,9 @@
  * column first, then every file's columns in file order, with a column one file lacks null in
  * that file's rows. A column whose type differs between files widens as pyarrow's permissive
  * promotion widens it, so a table either client stacks has the same types. A DECIMAL column
- * keeps its precision and scale, and its values read as 64-bit floats.
+ * keeps its precision and scale. Its values are read as the unscaled integers the file stores,
+ * so `bytes()` writes them exact, and `toRows()` and `toArrow()` give each the nearest 64-bit
+ * float.
  */
 
 import { parquetMetadata, parquetReadObjects } from "hyparquet";
@@ -30,7 +32,7 @@ export type ColumnType =
   | { readonly kind: "bool" }
   | { readonly kind: "int"; readonly bits: 8 | 16 | 32 | 64; readonly signed: boolean }
   | { readonly kind: "float"; readonly bits: 32 | 64 }
-  /** A DECIMAL column, whose values read as 64-bit floats. */
+  /** A DECIMAL column, whose values `toRows()` and `toArrow()` read as 64-bit floats. */
   | { readonly kind: "decimal"; readonly precision: number; readonly scale: number }
   | { readonly kind: "date" }
   | {
@@ -71,9 +73,6 @@ const TEXT = new Set(["UTF8", "STRING", "ENUM", "JSON", "UUID"]);
 const decoder = new TextDecoder();
 
 const text = (bytes: Uint8Array | undefined): string | undefined => bytes && decoder.decode(bytes);
-
-/** Parsers for `toRows()`: hyparquet's defaults, with JSON columns kept as text. */
-const ROW_PARSERS: Partial<ParquetParsers> = { jsonFromBytes: text };
 
 /** Parsers for stored values: timestamps and dates as their stored integers, JSON as text. */
 const RAW_PARSERS: Partial<ParquetParsers> = {
@@ -268,53 +267,44 @@ export function stackedColumns(parts: readonly TablePart[]): Column[] {
 
 const encoder = new TextEncoder();
 
-/** Whether a column's values are numbers with a fraction: a float's, or a decimal's. */
-const isFloating = (type: ColumnType): boolean => type.kind === "float" || type.kind === "decimal";
+const DAY_MS = 86_400_000;
 
-function rowValue(value: unknown, column: Column): Value {
-  if (value === undefined || value === null) return null;
-  if (isFloating(column.type) && typeof value === "bigint") return Number(value);
-  if (column.type.kind === "binary" && typeof value === "string") return encoder.encode(value);
-  if (typeof value === "bigint") {
-    if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER)) {
-      throw new RangeError(
-        `The column ${column.name} holds ${value}, beyond a JavaScript number's exact range; ` +
-          "read it with toArrow(), which keeps it as a bigint.",
-      );
-    }
-    return Number(value);
-  }
-  // hyparquet decodes every other Parquet type to one of the `Value` types.
-  return value as Value;
+/** A DECIMAL's stored value as its unscaled integer: an INT32 or INT64 as read, a byte array
+ *  as the big-endian two's complement it holds. */
+function unscaledOf(value: unknown): bigint {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number") return BigInt(value);
+  const bytes = value as Uint8Array;
+  let unscaled = 0n;
+  for (const byte of bytes) unscaled = (unscaled << 8n) | BigInt(byte);
+  const negative = bytes.length > 0 && (bytes[0]! & 0x80) !== 0;
+  return negative ? unscaled - (1n << BigInt(bytes.length * 8)) : unscaled;
 }
 
-/** Every row of the stacked table. */
-export async function decodeRows(parts: readonly TablePart[]): Promise<Row[]> {
-  const columns = stackedColumns(parts);
-  const rows: Row[] = [];
-  for (const { file, label } of parts) {
-    const decoded = await parquetReadObjects({
-      file: file.buffer,
-      metadata: file.metadata,
-      parsers: ROW_PARSERS,
-    });
-    for (const source of decoded) {
-      const row: Row = {};
-      for (const column of columns) {
-        row[column.name] =
-          parts.length > 1 && column.name === PART_COLUMN
-            ? label
-            : rowValue(source[column.name], column);
-      }
-      rows.push(row);
+/** The 64-bit float nearest a decimal of `scale` holding `unscaled`. */
+export const decimalNumber = (unscaled: bigint, scale: number): number =>
+  Number(`${unscaled}e-${scale}`);
+
+/** A file's metadata with its DECIMAL columns stripped of their annotations, so hyparquet reads
+ *  their physical values and leaves the unscaled integers whole, where it would otherwise scale
+ *  each through a 64-bit float. */
+function physicalDecimals(metadata: FileMetaData): FileMetaData {
+  const schema = metadata.schema.map((element) => {
+    if (element.converted_type !== "DECIMAL" && element.logical_type?.type !== "DECIMAL") {
+      return element;
     }
-  }
-  return rows;
+    const physical = { ...element };
+    delete physical.converted_type;
+    delete physical.logical_type;
+    return physical;
+  });
+  return { ...metadata, schema };
 }
 
 /** A stacked table's columns, each with its values as stored: integers for dates and
- *  timestamps, in the column's unit, `bigint` for INT64, a number for a float, text for strings,
- *  null where a file lacks the column. */
+ *  timestamps, in the column's unit, `bigint` for INT64, the unscaled `bigint` at the column's
+ *  scale for a DECIMAL, a number for a float, text for strings, null where a file lacks the
+ *  column. */
 export type StoredColumn = Column & { readonly values: unknown[] };
 
 /** Every column of the stacked table with its stored values, in row order. */
@@ -323,7 +313,7 @@ export async function decodeStored(parts: readonly TablePart[]): Promise<StoredC
     parts.map(({ file }) =>
       parquetReadObjects({
         file: file.buffer,
-        metadata: file.metadata,
+        metadata: physicalDecimals(file.metadata),
         parsers: RAW_PARSERS,
         utf8: false,
       }),
@@ -347,11 +337,60 @@ export async function decodeStored(parts: readonly TablePart[]): Promise<StoredC
 function storedValue(value: unknown, own: ColumnType, type: ColumnType): unknown {
   if (value === null) return null;
   if (type.kind === "string" && value instanceof Uint8Array) return text(value);
-  if (isFloating(type) && typeof value === "bigint") return Number(value);
+  if (type.kind === "decimal") {
+    const ownScale = own.kind === "decimal" ? own.scale : 0;
+    return unscaledOf(value) * 10n ** BigInt(type.scale - ownScale);
+  }
+  if (type.kind === "float" && own.kind === "decimal") {
+    return decimalNumber(unscaledOf(value), own.scale);
+  }
+  if (type.kind === "float" && typeof value === "bigint") return Number(value);
   if (type.kind === "timestamp" && own.kind === "timestamp" && own.unit !== type.unit) {
     return (BigInt(value as bigint | number) * TICKS_PER_MS[type.unit]) / TICKS_PER_MS[own.unit];
   }
   return value;
+}
+
+/** A stored value as `toRows()` gives it. */
+function rowValue(value: unknown, column: Column): Value {
+  if (value === null) return null;
+  const { type } = column;
+  switch (type.kind) {
+    case "decimal":
+      return decimalNumber(value as bigint, type.scale);
+    case "date":
+      return new Date((value as number) * DAY_MS);
+    case "timestamp":
+      return new Date(Number(BigInt(value as bigint | number) / TICKS_PER_MS[type.unit]));
+    case "binary":
+      return typeof value === "string" ? encoder.encode(value) : (value as Uint8Array);
+    default:
+      break;
+  }
+  if (typeof value === "bigint") {
+    if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER)) {
+      throw new RangeError(
+        `The column ${column.name} holds ${value}, beyond a JavaScript number's exact range; ` +
+          "read it with toArrow(), which keeps it as a bigint.",
+      );
+    }
+    return Number(value);
+  }
+  // hyparquet decodes every other Parquet type to one of the `Value` types.
+  return value as Value;
+}
+
+/** Every row of the stacked table. */
+export async function decodeRows(parts: readonly TablePart[]): Promise<Row[]> {
+  const columns = await decodeStored(parts);
+  const count = parts.reduce((total, { file }) => total + file.rows, 0);
+  const rows: Row[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const row: Row = {};
+    for (const column of columns) row[column.name] = rowValue(column.values[index], column);
+    rows.push(row);
+  }
+  return rows;
 }
 
 /** The Parquet schema element a column type is written as; every column is nullable, since a
@@ -426,6 +465,7 @@ export async function encodeStacked(
     columnData: columns.map(({ name, type, values }) => ({
       name,
       // INT64 and timestamp columns hold bigints; a value decoded as a number is written as one.
+      // A DECIMAL column holds unscaled bigints, which hyparquet-writer writes unchanged.
       data:
         (type.kind === "int" && type.bits === 64) || type.kind === "timestamp"
           ? values.map((value) => (typeof value === "number" ? BigInt(value) : value))

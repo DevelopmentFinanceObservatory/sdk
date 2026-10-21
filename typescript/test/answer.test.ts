@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import { Answer, answerFromBody, Candidate, SearchWarning } from "../src/answer.ts";
-import type { AnswerContext, Gap } from "../src/answer.ts";
+import type { AnswerContext, Gap, QueryOption } from "../src/answer.ts";
 import {
   ContractError,
   DeclinedError,
@@ -558,7 +558,7 @@ describe("reading a Search response", () => {
   }
 
   type BodyEdit = (body: Record<string, unknown>, parts: Record<string, unknown>[]) => void;
-  type Read = (answer: Answer) => void | Promise<void>;
+  type Read = (answer: Answer, context: ReturnType<typeof offline>) => void | Promise<void>;
   const specsOf = (part: Record<string, unknown>): Record<string, unknown>[] =>
     (part["candidates"] as { specs: Record<string, unknown>[] }).specs;
   const resolvedOf = (spec: Record<string, unknown>): Record<string, unknown> =>
@@ -623,6 +623,48 @@ describe("reading a Search response", () => {
         assert.equal(String(answer), sentenceOf("answer-definite-fetch"));
       },
     ],
+    ...[null, 5].map((segment): [string, string, BodyEdit, Read] => [
+      `a sentence-plan token whose segment is ${String(segment)}`,
+      "answer-candidates-choose-fetch",
+      (_, p) =>
+        (resolvedOf(specsOf(p[0]!)[0]!)["sentence_plan"] as unknown[]).unshift({
+          segment,
+          text: "ZZZ ",
+        }),
+      (answer) => {
+        const [candidate] = answer.gaps[0]!.options as Candidate[];
+        assert.equal(candidate!.label?.startsWith("ZZZ "), true);
+      },
+    ]),
+    [
+      "an option mention that is not a string",
+      "choose-place-one-part",
+      (_, p) => {
+        for (const option of (p[0]!["no_data"] as { options: Record<string, unknown>[] }).options) {
+          option["mentions"] = [5, "Congo"];
+        }
+      },
+      (answer) => {
+        assert.deepEqual((answer.gaps[0]!.options[0] as QueryOption).mentions, ["Congo"]);
+      },
+    ],
+    [
+      "a variable_text that is not a string, in a fetched member",
+      "answer-definite-fetch",
+      (_, p) => (p[0]!["variable_text"] = 5),
+      async (answer, { built }) => {
+        await answer.fetch();
+        assert.deepEqual(built[0]![0]!.parts, []);
+      },
+    ],
+    [
+      "a variable_text that is not a string, in a gap line",
+      "choose-place-one-part",
+      (_, p) => (p[0]!["variable_text"] = 7),
+      (answer) => {
+        assert.match(String(answer), /^ {2}missing {2}"": /m);
+      },
+    ],
     [
       "a null departure",
       "answer-definite-fetch",
@@ -644,7 +686,8 @@ describe("reading a Search response", () => {
           pointer: expected,
         });
       } else {
-        await expected(answerFromBody(edited, offline(), null));
+        const context = offline();
+        await expected(answerFromBody(edited, context, null), context);
       }
     });
   }

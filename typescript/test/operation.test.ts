@@ -151,6 +151,17 @@ describe("a long build", () => {
     assert.deepEqual(waits, [1000, 5000, 7000, 1000]);
   });
 
+  test("raises a 429 poll that is not retryable at once", async () => {
+    const { spec } = await built();
+    const { fetch, seen } = mockFetch(
+      json(operation("pending", { retry_after_ms: 1000 }), 202),
+      problem({ code: "quota_exceeded", status: 429, retryable: false }, { "retry-after": "5" }),
+    );
+    const op = await mint(client(fetch).transport, spec);
+    await assert.rejects(op.result(), { name: "RateLimitError", code: "quota_exceeded" });
+    assert.equal(seen.length, 2);
+  });
+
   for (const [header, expected] of [
     [{ "retry-after": "7" }, [1000, 7000, 2000]],
     [{}, [1000, 2000, 4000]],

@@ -10,7 +10,7 @@ import * as arrow from "apache-arrow";
 import type { Gap } from "./answer.ts";
 import { tableParts } from "./dataset.ts";
 import type { Dataset } from "./dataset.ts";
-import { decodeStored } from "./parquet.ts";
+import { decimalNumber, decodeStored } from "./parquet.ts";
 import type { ColumnType } from "./parquet.ts";
 
 const TIME_UNITS = { MILLIS: "MILLISECOND", MICROS: "MICROSECOND", NANOS: "NANOSECOND" } as const;
@@ -83,6 +83,8 @@ function arrowVector(type: ColumnType, values: readonly unknown[]): arrow.Vector
     }
     if (data instanceof BigInt64Array || data instanceof BigUint64Array) {
       data[index] = BigInt(value as bigint | number);
+    } else if (type.kind === "decimal") {
+      data[index] = decimalNumber(value as bigint, type.scale);
     } else {
       data[index] = Number(value);
     }
@@ -96,7 +98,8 @@ function arrowVector(type: ColumnType, values: readonly unknown[]): arrow.Vector
 
 /**
  * The dataset's table as an apache-arrow `Table`, `part` first when several members stack.
- * INT64 columns keep their `bigint` values, and timestamps their stored unit.
+ * INT64 columns keep their `bigint` values, and timestamps their stored unit. A DECIMAL column
+ * reads as `Float64`, each value the float nearest the stored decimal.
  */
 export async function toArrow(dataset: Dataset<Gap>): Promise<arrow.Table> {
   const vectors: Record<string, arrow.Vector> = {};

@@ -407,15 +407,15 @@ export class Transport {
 
   /**
    * Asks a files route for a file, retrying as every API request does. The route is on the API's
-   * origin. It answers the bytes with a 200, or a redirect to a signed storage URL, which
-   * resolves against the response's URL; `fetchSigned` fetches it. A browser hides a redirect's
+   * origin. It answers the bytes with a 200, or a 302 to a signed storage URL, which resolves
+   * against the response's URL; `fetchSigned` fetches it. A browser hides a redirect's
    * `Location`, so there `locate` returns the route with `follow`, and `fetchSigned` asks it
    * again and lets the browser follow the redirect, as the round's one signed fetch.
    *
    * @throws {ContractError} The route is off the API's origin, or its redirect names a host
    *   other than the API's or the storage host (`contract_violation`); a redirect has no
-   *   `Location` (`contract_violation`); the route answered a 2xx other than 200
-   *   (`unexpected_response`).
+   *   `Location` (`contract_violation`); the route answered a 2xx other than 200 or a 3xx other
+   *   than 302 (`unexpected_response`).
    * @throws {DfoError} The route refused the request.
    */
   async locate(options: Target & CallOptions): Promise<Located> {
@@ -425,10 +425,10 @@ export class Transport {
     if (response.type === "opaqueredirect") return { signed: target, follow: true };
     if (response.status === 200) return { data: body };
     const traceId = traceIdOf(response.headers, problemBody(response.headers, body));
-    if (!REDIRECT_STATUSES.has(response.status)) {
+    if (response.status !== 302) {
       throw clientError("unexpected_response", {
         status: response.status,
-        detail: `The files route ${target.pathname} answered HTTP ${response.status}, not a 200 or a redirect.`,
+        detail: `The files route ${target.pathname} answered HTTP ${response.status}, not a 200 or a 302.`,
         traceId,
       });
     }
@@ -462,8 +462,10 @@ export class Transport {
    * With `follow`, the URL is a files route whose redirect a browser hid. The request carries the
    * key alone, which the browser drops on the way to another origin, so none of the client's
    * headers reach the storage host; the browser follows the redirect, and the response's headers
-   * issue no warning, since they come from wherever the redirect led.
+   * issue no warning, since they come from wherever the redirect led. The followed response must
+   * end on the API's origin or the storage host.
    *
+   * @throws {ContractError} A followed redirect ended on another host (`contract_violation`).
    * @throws {ServerError} The host answered other than 200 (`download_failed`).
    * @throws {NetworkError} The connection failed.
    * @throws {DfoTimeoutError} The attempt or the call's deadline ran out.
@@ -482,9 +484,18 @@ export class Transport {
     });
     if (outcome instanceof DfoError) throw outcome;
     const { response, body } = outcome;
+    const ended = response.url === "" ? url : new URL(response.url);
+    if (follow && ended.origin !== this.baseUrl.origin && ended.origin !== STORAGE_ORIGIN) {
+      throw clientError("contract_violation", {
+        status: response.status,
+        detail:
+          `The redirect from ${url.pathname} ended on ${ended.origin}, which is neither the ` +
+          `API's origin nor ${STORAGE_ORIGIN}.`,
+      });
+    }
     if (!follow && url.origin === this.baseUrl.origin) this.#warnFromHeaders(response.headers, url);
     if (response.status !== 200) {
-      const host = response.url === "" ? url.host : new URL(response.url).host;
+      const host = ended.host;
       throw clientError("download_failed", {
         status: response.status,
         detail: `The download from ${host} answered HTTP ${response.status}.`,

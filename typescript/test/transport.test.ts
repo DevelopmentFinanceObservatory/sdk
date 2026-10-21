@@ -577,13 +577,41 @@ describe("downloads", () => {
     });
   });
 
-  test("refuse a files route answering a 2xx other than 200", async () => {
-    const { fetch } = mockFetch(() => new Response(null, { status: 204 }));
-    await assert.rejects(transport({ fetch }).locate({ url: "/api/datasets/files/d" }), {
-      name: "ContractError",
-      code: "unexpected_response",
+  for (const status of [204, 301, 307]) {
+    test(`refuse a files route answering HTTP ${status}, which is neither 200 nor 302`, async () => {
+      const { fetch } = mockFetch(
+        () => new Response(null, { status, headers: { location: SIGNED } }),
+      );
+      await assert.rejects(transport({ fetch }).locate({ url: "/api/datasets/files/d" }), {
+        name: "ContractError",
+        code: "unexpected_response",
+        status,
+      });
     });
-  });
+  }
+
+  for (const [ended, code] of [
+    ["https://elsewhere.example/object", "contract_violation"],
+    [SIGNED, undefined],
+    ["https://api.example/api/datasets/files/d", undefined],
+  ] as const) {
+    test(`read a followed browser redirect that ends on ${new URL(ended).host}`, async () => {
+      const { fetch } = mockFetch(() => {
+        const response = new Response("PAR1", { status: 200 });
+        Object.defineProperty(response, "url", { value: ended });
+        return response;
+      });
+      const client = transport({ baseUrl: "https://api.example/api/v1", fetch });
+      const fetched = client.fetchSigned(new URL("https://api.example/api/datasets/files/d"), {
+        follow: true,
+      });
+      if (code === undefined) {
+        assert.deepEqual(await fetched, new TextEncoder().encode("PAR1"));
+      } else {
+        await assert.rejects(fetched, { name: "ContractError", code });
+      }
+    });
+  }
 
   for (const [status, body] of [
     [200, "PAR1"],

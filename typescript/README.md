@@ -42,7 +42,7 @@ const again = await client.fetch(DatasetRef.fromJSON(JSON.parse(saved)));
 
 `client.fetch(spec, { window: [2020, 2023] })` narrows a spec, and `client.mint(spec)` starts a long build that `client.operation(id)` resumes from another process.
 
-`await dataset.bytes()` returns one Parquet file whose key-value metadata carries the sentence, citation, sources, licence, departures, assumptions, layout version and ref under `dfo.*` keys, the file Python's `Dataset.save` writes and `dfo.open_bundle` reads. Several members stack into one table, `part` first, and a column whose type differs between members widens as pyarrow widens it; a pair pyarrow refuses, or a column the client cannot read, such as a nested one, raises a `ContractError` with `contract_violation`. A DECIMAL column keeps its precision and scale in `bytes()`. `dataset.memberBytes(index)` gives one member's file as the server built it. `toArrow(dataset)` from `@developmentfinance/client/arrow` builds an apache-arrow `Table`; that entry point needs the optional `apache-arrow` package.
+`await dataset.bytes()` returns one Parquet file whose key-value metadata carries the sentence, citation, sources, licence, departures, assumptions, layout version and ref under `dfo.*` keys, the file Python's `Dataset.save` writes and `dfo.open_bundle` reads. Several members stack into one table, `part` first, and a column whose type differs between members widens as pyarrow widens it; a pair pyarrow refuses, or a column the client cannot read, such as a nested one, raises a `ContractError` with `contract_violation`. A DECIMAL column keeps its precision, its scale and every value exact in `bytes()`. `dataset.memberBytes(index)` gives one member's file as the server built it. `toArrow(dataset)` from `@developmentfinance/client/arrow` builds an apache-arrow `Table`; that entry point needs the optional `apache-arrow` package.
 
 The client also looks up names and codes:
 
@@ -100,7 +100,7 @@ A few calls throw something else:
 - `DatasetRef.fromJSON` throws a `FormatError`, a `TypeError`, for JSON that is not a ref.
 - `dataset.memberBytes(index)` throws a `RangeError` for an index past the members.
 - `dataset.toRows()` throws a `RangeError` for an INT64 value outside a JavaScript number's exact range; `toArrow(dataset)` keeps it as a `bigint`.
-- A DECIMAL value throws nothing: it reads as a 64-bit float in `toRows()` and `toArrow()`, as hyparquet decodes it, so a value of more than 15 significant digits can lose its last ones.
+- A DECIMAL value throws nothing: it reads as the nearest 64-bit float in `toRows()` and `toArrow()`, so a value of more than 15 significant digits can lose its last ones.
 
 ## Warnings
 
@@ -114,4 +114,4 @@ The client resolves its key when it is built, and again after a 401. It takes th
 
 A browser page holds a publishable `dfo_p_` key. In a browser page or worker the client refuses a secret `dfo_k_` key, which every visitor could read, unless the caller sets `dangerouslyAllowBrowser: true`.
 
-A browser hides a files route's redirect from the page, so the client asks the files route once more with the redirect followed, sending the key alone on that request to the API's origin, and the browser follows the redirect to the signed URL. Browsers drop the `Authorization` header on a redirect to another origin, as the Fetch standard requires, so the key does not reach the storage host.
+A browser hides a files route's redirect from the page, so the client asks the files route once more with the redirect followed, sending the key alone on that request to the API's origin, and the browser follows the redirect to the signed URL. Browsers drop the `Authorization` header on a redirect to another origin, as the Fetch standard requires, so the key does not reach the storage host. A followed redirect that ends on any host other than the API's origin or `storage.googleapis.com` raises a `ContractError` with the code `contract_violation`.

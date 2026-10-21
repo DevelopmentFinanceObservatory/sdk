@@ -14,7 +14,7 @@ import { fetchMembers as defaultFetchMembers } from "./fetch.ts";
 import type { FetchMembersOptions, MemberRequest } from "./fetch.ts";
 import { CODE_GAP_KINDS } from "./generated/actions.ts";
 import type { GAP_KINDS } from "./generated/actions.ts";
-import { isKnownPart } from "./parts.ts";
+import { isKnownPart, partText } from "./parts.ts";
 import { checkStrict } from "./strict.ts";
 import { describing } from "./trace.ts";
 import type { Transport } from "./transport.ts";
@@ -500,7 +500,8 @@ function membersOf(parts: readonly Part[]): (MemberRequest & { readonly spec: Sp
   for (const part of definiteParts(parts)) {
     const { spec } = part;
     const entry = grouped.get(spec.spec_id) ?? { spec, parts: [], answerParts: [] };
-    if (part.variable_text) entry.parts.push(part.variable_text);
+    const name = partText(part);
+    if (name) entry.parts.push(name);
     entry.answerParts.push(part);
     grouped.set(spec.spec_id, entry);
   }
@@ -593,7 +594,7 @@ function candidateFrom(
   const { resolved } = spec;
   const tokens = objects(resolved.sentence_plan);
   const heading = tokens
-    .filter((token) => (token["segment"] ?? "heading") === "heading")
+    .filter((token) => (text(token["segment"]) ?? "heading") === "heading")
     .map((token) => text(token["text"]) ?? "")
     .join("")
     .trim();

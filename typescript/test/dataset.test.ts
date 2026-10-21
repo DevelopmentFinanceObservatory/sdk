@@ -113,6 +113,91 @@ describe("Parquet types", () => {
   });
 });
 
+describe("DECIMAL values", async () => {
+  // Written by pyarrow 26 with store_decimal_as_integer: wide decimal128(22, 4) as a
+  // FIXED_LEN_BYTE_ARRAY holding 12345678901234567.8912, -0.0001 and null; mid
+  // decimal128(18, 3) as INT64 holding 123456789012345.678, -1.000 and null; narrow
+  // decimal128(9, 2) as INT32 holding 1234567.89, null and -0.01.
+  const data = new Uint8Array(await readFile(new URL("data/decimals.parquet", import.meta.url)));
+  const unscaled = {
+    wide: [123456789012345678912n, -1n, null],
+    mid: [123456789012345678n, -1000n, null],
+    narrow: [123456789n, null, -1n],
+  };
+  const valuesOf = async (dataset: Dataset) =>
+    Object.fromEntries(
+      (await decodeStored(tableParts(dataset))).map(({ name, values }) => [name, values]),
+    );
+
+  test("bytes() writes each decimal exact, as the unscaled integer the file stores", async () => {
+    const dataset = new Dataset([member(data)], { layout: "long" });
+    assert.deepEqual(await valuesOf(dataset), unscaled);
+    const written = new Dataset([member(await dataset.bytes())], { layout: "long" });
+    assert.deepEqual(await valuesOf(written), unscaled);
+    assert.deepEqual(written.columns, dataset.columns);
+  });
+
+  test("toRows() and toArrow() give each decimal the nearest float", async () => {
+    // Number() parses decimal text to the nearest float.
+    const nearest = { wide: Number("12345678901234567.8912"), mid: Number("123456789012345.678") };
+    const dataset = new Dataset([member(data)], { layout: "long" });
+    const rows = await dataset.toRows();
+    assert.deepEqual(rows[0], {
+      ...nearest,
+      narrow: 1234567.89,
+    });
+    assert.deepEqual(rows[1], { wide: -0.0001, mid: -1, narrow: null });
+    const table = await toArrow(dataset);
+    assert.equal(table.getChild("wide")?.get(0), nearest.wide);
+    assert.equal(table.getChild("narrow")?.get(2), -0.01);
+  });
+
+  test("a stacked decimal rescales each member's unscaled integers to the stacked scale", async () => {
+    const other = new Uint8Array(
+      parquetWriteBuffer({
+        columnData: [
+          { name: "wide", data: [150n] },
+          { name: "narrow", data: [7] },
+        ],
+        schema: [
+          { name: "root", num_children: 2 },
+          {
+            name: "wide",
+            repetition_type: "OPTIONAL",
+            type: "INT32",
+            converted_type: "DECIMAL",
+            precision: 10,
+            scale: 2,
+          },
+          { name: "narrow", repetition_type: "OPTIONAL", type: "INT32", converted_type: "INT_8" },
+        ],
+      }),
+    );
+    const dataset = new Dataset(
+      [
+        member(data, { parts: ["one"] }),
+        member(other, { parts: ["two"], spec: { spec_id: "s2", definition: {} } }),
+      ],
+      { layout: "long" },
+    );
+    const expected = {
+      part: ["one", "one", "one", "two"],
+      wide: [...unscaled.wide, 15000n],
+      mid: [...unscaled.mid, null],
+      narrow: [...unscaled.narrow, 700n],
+    };
+    assert.deepEqual(await valuesOf(dataset), expected);
+    const written = new Dataset([member(await dataset.bytes())], { layout: "long" });
+    assert.deepEqual(await valuesOf(written), expected);
+    assert.deepEqual((await written.toRows()).at(-1), {
+      part: "two",
+      wide: 1.5,
+      mid: null,
+      narrow: 7,
+    });
+  });
+});
+
 describe("a dataset of several members", async () => {
   const health = await scenarioBytes("answer-several-readings-folded.parquet");
   const gdp = await scenarioBytes("answer-several-readings-folded-2.parquet");
