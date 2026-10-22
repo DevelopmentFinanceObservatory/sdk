@@ -26,7 +26,7 @@ print(data.rows)
 
 ## Deadlines
 
-`timeout` bounds the whole fetch, polls and downloads included, in seconds. It defaults to 1,800 (30 minutes), and None waits without limit. When the deadline passes on a running operation, `fetch` raises `DfoTimeoutError` with the code `deadline_exceeded`, and the message names the call that resumes the build:
+`timeout` bounds the whole fetch, polls and downloads included, in seconds. It defaults to 1,800 (30 minutes), and None waits without limit. In the synchronous client, blocking platform name resolution can run past this bound; the asynchronous client can cancel name resolution. Once resolution returns, the deadline still bounds the connection, TLS handshake, reads and writes. When the deadline passes on a running operation, `fetch` raises `DfoTimeoutError` with the code `deadline_exceeded`, and the message names the call that resumes the build:
 
 ```text
 dfo.DfoTimeoutError: The build is still running at the deadline. Resume it with client.operation("op_...").result()

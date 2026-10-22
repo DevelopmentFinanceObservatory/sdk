@@ -113,7 +113,23 @@ def test_latest_manifest_is_the_newest_prepared_version(cache: Cache) -> None:
     cache.put_manifest(SPEC_ID, CV_NEW, PARQUET, new)
     cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, old)
     assert cache.latest_manifest(SPEC_ID, PARQUET) == new
+    assert cache.manifest_candidates(SPEC_ID, PARQUET) == [new, old]
     assert cache.latest_manifest(SPEC_ID, Rendering("csv", True)) is None
+    assert cache.manifest_candidates(SPEC_ID, Rendering("csv", True)) == []
+
+
+def test_manifest_candidates_accept_versions_with_the_same_prepared_time(
+    cache: Cache,
+) -> None:
+    timestamp = "2026-10-01T00:00:00Z"
+    old = {"content_version": CV_OLD, "prepared_at": timestamp}
+    new = {"content_version": CV_NEW, "prepared_at": timestamp}
+    cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, old)
+    cache.put_manifest(SPEC_ID, CV_NEW, PARQUET, new)
+    assert {
+        manifest["content_version"]
+        for manifest in cache.manifest_candidates(SPEC_ID, PARQUET)
+    } == {CV_OLD, CV_NEW}
 
 
 def test_eviction_drops_the_least_recently_used(tmp_path: Path) -> None:

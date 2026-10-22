@@ -545,15 +545,19 @@ def test_a_cache_entry_that_misses_its_digest_is_downloaded_again(
 
 def test_cached_bytes_skip_the_download_and_new_ones_are_stored() -> None:
     cache = FakeCache()
-    server = Server(json_response(200, manifest(POSTED_ID)), redirect(), parquet())
+    body = manifest(POSTED_ID)
+    server = Server(json_response(200, body), redirect(), parquet())
     with make(server) as transport:
         fetch(transport, spec(SENTENCE), cache=cache)
         assert cache.files == {sha256_digest(DATA): DATA}
         assert (POSTED_ID, NARROWED_CV, LONG) in cache.manifests
-        server.responses.append(json_response(200, manifest(POSTED_ID)))
+        server.responses.append(json_response(200, body))
         built = fetch(transport, spec(SENTENCE), cache=cache)
     assert len(server.requests) == 4
     assert built.members[0].data == DATA
+    assert cache.manifests[(POSTED_ID, NARROWED_CV, LONG)]["artifacts"] == [
+        body["artifacts"][1]
+    ]
 
 
 def test_offline_a_spec_reads_its_newest_cached_version_as_stale(
@@ -584,6 +588,84 @@ def test_offline_a_spec_reads_its_newest_cached_version_as_stale(
         with pytest.raises(NetworkError) as caught:
             fetch(transport, spec(SENTENCE), cache=None)
         assert caught.value.code == "offline"
+    assert server.requests == []
+
+
+def test_offline_a_spec_skips_a_newer_projected_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    older_version = "cv_" + "1" * 32
+    older = manifest(POSTED_ID, older_version)
+    older["prepared_at"] = "2026-01-01T00:00:00Z"
+    newer = manifest(POSTED_ID)
+    newer["prepared_at"] = "2026-02-01T00:00:00Z"
+    projected = b"PAR1 projected version PAR1"
+    projected_artifact = {
+        "artifact_digest": sha256_digest(projected),
+        "rendering": {
+            "format": "parquet",
+            "bundle": False,
+            "layout": 3,
+            "columns": ["value"],
+        },
+        "url": f"/api/datasets/{POSTED_ID}/{NARROWED_CV}/files/projected",
+    }
+    cache = FakeCache()
+    cache.put_bytes(sha256_digest(DATA), DATA)
+    cache.put_manifest(POSTED_ID, older_version, LONG, older)
+    cache.put_bytes(sha256_digest(projected), projected)
+    newer["artifacts"] = [projected_artifact]
+    cache.put_manifest(POSTED_ID, NARROWED_CV, LONG, newer)
+    monkeypatch.setenv("DFO_OFFLINE", "1")
+    server = Server()
+    with make(server) as transport:
+        built = fetch(transport, spec(SENTENCE), cache=cache)
+    assert built.members[0].content_version == older_version
+    assert built.members[0].data == DATA
+    assert server.requests == []
+
+
+def test_offline_a_spec_falls_back_when_its_newest_file_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    older_version = "cv_" + "1" * 32
+    older = manifest(POSTED_ID, older_version)
+    older["prepared_at"] = "2026-01-01T00:00:00Z"
+    newer = manifest(POSTED_ID, data=b"PAR1 newest version PAR1")
+    newer["prepared_at"] = "2026-02-01T00:00:00Z"
+    cache = FakeCache()
+    cache.put_bytes(sha256_digest(DATA), DATA)
+    cache.put_manifest(POSTED_ID, older_version, LONG, older)
+    cache.put_manifest(POSTED_ID, NARROWED_CV, LONG, newer)
+    monkeypatch.setenv("DFO_OFFLINE", "1")
+    server = Server()
+    with make(server) as transport:
+        built = fetch(transport, spec(SENTENCE), cache=cache)
+    assert built.members[0].content_version == older_version
+    assert server.requests == []
+
+
+def test_offline_a_spec_falls_back_when_its_newest_file_is_damaged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    older_version = "cv_" + "1" * 32
+    older = manifest(POSTED_ID, older_version)
+    older["prepared_at"] = "2026-01-01T00:00:00Z"
+    newest_data = b"PAR1 newest version PAR1"
+    newer = manifest(POSTED_ID, data=newest_data)
+    newer["prepared_at"] = "2026-02-01T00:00:00Z"
+    cache = Cache(tmp_path, env={})
+    cache.put_bytes(sha256_digest(DATA), DATA)
+    cache.put_manifest(POSTED_ID, older_version, LONG, older)
+    newest_digest = sha256_digest(newest_data)
+    cache.put_bytes(newest_digest, newest_data)
+    cache.put_manifest(POSTED_ID, NARROWED_CV, LONG, newer)
+    (cache.directory / file_entry(newest_digest)).write_bytes(b"damaged")
+    monkeypatch.setenv("DFO_OFFLINE", "1")
+    server = Server()
+    with make(server) as transport:
+        built = fetch(transport, spec(SENTENCE), cache=cache)
+    assert built.members[0].content_version == older_version
     assert server.requests == []
 
 
@@ -792,6 +874,183 @@ def test_a_cached_ref_needs_no_request_and_offline_marks_it_stale(
             fetch(transport, DatasetRef((ref_member(),)), cache=FakeCache())
     assert server.requests == []
     assert offline.members[0].manifest == body
+
+
+def test_exact_refs_merge_projected_and_plain_artifacts_for_offline_spec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    projected = b"PAR1 projected columns PAR1"
+    retention = {"pinned": False, "held_until": "2026-11-19T13:59:18Z"}
+    body = manifest(POSTED_ID, retention=retention)
+    projected_digest = sha256_digest(projected)
+    body["artifacts"].insert(
+        1,
+        {
+            "artifact_digest": projected_digest,
+            "rendering": {
+                "format": "parquet",
+                "bundle": False,
+                "layout": 3,
+                "columns": ["value"],
+            },
+            "url": f"/api/datasets/{POSTED_ID}/{NARROWED_CV}/files/{projected_digest}",
+        },
+    )
+    projected_member = RefMember(
+        parts=(),
+        sentence=SENTENCE,
+        spec=Spec(POSTED_ID, body["definition"], SENTENCE),
+        content_version=NARROWED_CV,
+        digest=projected_digest,
+        rendering=LONG,
+    )
+    plain_member = RefMember(
+        parts=(),
+        sentence=SENTENCE,
+        spec=Spec(POSTED_ID, body["definition"], SENTENCE),
+        content_version=NARROWED_CV,
+        digest=sha256_digest(DATA),
+        rendering=LONG,
+    )
+    cache = FakeCache()
+    server = Server(
+        json_response(200, body),
+        redirect(),
+        parquet(projected),
+        json_response(200, body),
+        redirect(),
+        parquet(),
+    )
+    with make(server) as transport:
+        restored = fetch(transport, DatasetRef((projected_member,)), cache=cache)
+        stored = cache.get_manifest(POSTED_ID, NARROWED_CV, LONG)
+        assert stored is not None
+        assert stored["artifacts"] == [body["artifacts"][1]]
+        assert stored["warnings"] == body["warnings"]
+        assert stored["retention"] == retention
+        assert stored["prepared_at"] == body["prepared_at"]
+        assert restored.members[0].data == projected
+
+        restored = fetch(transport, DatasetRef((plain_member,)), cache=cache)
+        assert restored.members[0].data == DATA
+        stored = cache.get_manifest(POSTED_ID, NARROWED_CV, LONG)
+        assert stored is not None
+        assert stored["artifacts"] == body["artifacts"][1:]
+
+        monkeypatch.setenv("DFO_OFFLINE", "1")
+        restored = fetch(transport, DatasetRef((projected_member,)), cache=cache)
+        assert restored.members[0].data == projected
+        restored = fetch(transport, DatasetRef((plain_member,)), cache=cache)
+        assert restored.members[0].data == DATA
+        restored = fetch(
+            transport,
+            Spec(POSTED_ID, body["definition"], SENTENCE),
+            cache=cache,
+        )
+    assert restored.members[0].data == DATA
+    assert len(server.requests) == 6
+
+
+def test_same_version_projected_download_keeps_a_plain_cached_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plain = manifest(POSTED_ID)
+    plain["prepared_at"] = "2026-01-01T00:00:00Z"
+    projected = b"PAR1 projected columns PAR1"
+    later = manifest(POSTED_ID, retention={"pinned": True, "held_until": None})
+    later["prepared_at"] = "2026-02-01T00:00:00Z"
+    projected_digest = sha256_digest(projected)
+    later["artifacts"].append(
+        {
+            "artifact_digest": projected_digest,
+            "rendering": {
+                "format": "parquet",
+                "bundle": False,
+                "layout": 3,
+                "columns": ["value"],
+            },
+            "url": f"/api/datasets/{POSTED_ID}/{NARROWED_CV}/files/{projected_digest}",
+        }
+    )
+    projected_member = RefMember(
+        parts=(),
+        sentence=SENTENCE,
+        spec=Spec(POSTED_ID, later["definition"], SENTENCE),
+        content_version=NARROWED_CV,
+        digest=projected_digest,
+        rendering=LONG,
+    )
+    cache = FakeCache()
+    server = Server(
+        json_response(200, plain),
+        redirect(),
+        parquet(),
+        json_response(200, later),
+        redirect(),
+        parquet(projected),
+    )
+    with make(server) as transport:
+        fetch(transport, spec(SENTENCE), cache=cache)
+        fetch(transport, DatasetRef((projected_member,)), cache=cache)
+        stored = cache.get_manifest(POSTED_ID, NARROWED_CV, LONG)
+        assert stored is not None
+        assert stored["prepared_at"] == later["prepared_at"]
+        assert stored["retention"] == later["retention"]
+        assert stored["artifacts"] == [plain["artifacts"][1], later["artifacts"][2]]
+
+        monkeypatch.setenv("DFO_OFFLINE", "1")
+        restored = fetch(transport, spec(SENTENCE), cache=cache)
+    assert restored.members[0].data == DATA
+
+
+def test_same_bytes_under_two_renderings_keep_the_plain_offline_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transformed = manifest(POSTED_ID)
+    transformed["artifacts"][1]["rendering"]["without_party_totals"] = True
+    plain = manifest(POSTED_ID)
+    transformed_member = RefMember(
+        parts=(),
+        sentence=SENTENCE,
+        spec=Spec(POSTED_ID, transformed["definition"], SENTENCE),
+        content_version=NARROWED_CV,
+        digest=sha256_digest(DATA),
+        rendering=LONG,
+    )
+    cache = FakeCache()
+    server = Server(
+        json_response(200, transformed),
+        redirect(),
+        parquet(),
+        json_response(200, plain),
+    )
+    with make(server) as transport:
+        fetch(transport, DatasetRef((transformed_member,)), cache=cache)
+        fetch(transport, spec(SENTENCE), cache=cache)
+        stored = cache.get_manifest(POSTED_ID, NARROWED_CV, LONG)
+        assert stored is not None
+        assert stored["artifacts"] == [
+            transformed["artifacts"][1],
+            plain["artifacts"][1],
+        ]
+
+        monkeypatch.setenv("DFO_OFFLINE", "1")
+        restored = fetch(transport, spec(SENTENCE), cache=cache)
+    assert restored.members[0].data == DATA
+
+
+def test_incomplete_metadata_artifact_stays_eligible_offline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = manifest(POSTED_ID)
+    body["artifacts"][1]["rendering"]["metadata"] = "incomplete"
+    cache = FakeCache()
+    server = Server(json_response(200, body), redirect(), parquet())
+    with make(server) as transport:
+        fetch(transport, spec(SENTENCE), cache=cache)
+        monkeypatch.setenv("DFO_OFFLINE", "1")
+        restored = fetch(transport, spec(SENTENCE), cache=cache)
+    assert restored.members[0].data == DATA
 
 
 def test_a_ref_takes_no_narrowing_and_keeps_its_layout() -> None:

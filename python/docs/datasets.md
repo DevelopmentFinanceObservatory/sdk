@@ -196,6 +196,30 @@ print(opened.sentence == data.sentence, opened.ref == data.ref)  # True True
 
 `open_bundle` also reads a bundle downloaded from the website: the ZIP, the folder it extracts to, or its `datapackage.json` or data file. It types the CSV or XLSX columns from `datapackage.json` and checks each file's hash before it reads the data. An XLSX bundle needs the `xlsx` extra.
 
+## `open_bundle` limits
+
+`dfo.open_bundle(path, *, limits=dfo.BundleLimits())` streams the ZIP and its resources. `BundleLimits` is immutable and keyword-only:
+
+```python
+limits = dfo.BundleLimits(
+    max_descriptor_bytes=1 * 1024**2,
+    max_zip_entries=256,
+    max_resources=128,
+    max_archive_bytes=512 * 1024**2,
+    max_resource_bytes=256 * 1024**2,
+    max_total_bytes=512 * 1024**2,
+    max_xlsx_entries=128,
+    max_xlsx_expanded_bytes=32 * 1024**2,
+    max_xlsx_rows=100_000,
+    max_xlsx_cells=1_000_000,
+)
+opened = dfo.open_bundle("health.zip", limits=limits)
+```
+
+The descriptor, every resource, and the aggregate are checked against bytes actually read. ZIP entry count is checked after Python reads the ZIP central directory. Services that accept untrusted uploads should use a much smaller `max_archive_bytes` and an isolated worker with CPU and memory limits.
+
+For an XLSX resource, `max_xlsx_entries` and `max_xlsx_expanded_bytes` check the inner ZIP's public entry metadata before `openpyxl` opens the workbook. The expanded-byte value is the ZIP entries' declared uncompressed size. `max_xlsx_rows` limits data rows, and `max_xlsx_cells` limits header and data cells that the reader visits before it retains another row. These limits reduce the workbook work, but do not provide hard memory or CPU guarantees for CSV conversion or XLSX parsing.
+
 It raises `BundleError`, a `ValueError`, with a `reason`:
 
 - `not_a_bundle`: a Parquet file without a saved dataset's provenance.
@@ -203,6 +227,7 @@ It raises `BundleError`, a `ValueError`, with a `reason`:
 - `no_data_resource`: a descriptor that names no data table.
 - `missing_file`: a file the descriptor lists and the bundle lacks.
 - `hash_mismatch`: a file whose bytes differ from its hash. Download the bundle again.
+- `resource_limit`: a bundle exceeded a `BundleLimits` bound.
 
 A descriptor that lists a file outside the bundle, by an absolute path or one that climbs out with `..`, raises `FormatError` before any file is read.
 

@@ -11,7 +11,9 @@ import os
 import subprocess
 import sys
 import textwrap
+import threading
 import warnings
+import weakref
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -118,6 +120,53 @@ def test_an_answer_stays_usable_after_configure(
     clients.clear()
     gc.collect()
     assert replaced._http.is_closed
+
+
+def test_an_in_flight_search_keeps_the_replaced_default_client_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, second = "https://first.example.org/api", "https://second.example.org/api"
+    replay = Replay("answer-definite-fetch", first)
+    replay.exchanges = replay.exchanges[:1]
+    started = threading.Event()
+    resume = threading.Event()
+
+    def paused(request: httpx2.Request) -> httpx2.Response:
+        started.set()
+        assert resume.wait(timeout=5)
+        return replay(request)
+
+    clients = mock_clients(monkeypatch, {first: paused})
+    dfo.configure(base_url=first)
+    result: list[object] = []
+    failures: list[BaseException] = []
+
+    def search() -> None:
+        try:
+            result.append(dfo.search(QUESTION))
+        except BaseException as error:
+            failures.append(error)
+
+    worker = threading.Thread(target=search)
+    worker.start()
+    try:
+        assert started.wait(timeout=5)
+        transport = clients[0]._current().transport
+        replaced = weakref.ref(clients[0])
+        dfo.configure(base_url=second)
+        clients.clear()
+        gc.collect()
+        assert replaced() is not None
+        assert not transport._http.is_closed
+    finally:
+        resume.set()
+        worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert failures == []
+    assert len(result) == 1
+    gc.collect()
+    assert replaced() is None
+    assert transport._http.is_closed
 
 
 def test_the_default_client_is_built_once_on_first_use(

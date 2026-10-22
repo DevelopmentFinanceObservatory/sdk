@@ -1,10 +1,13 @@
 """The download cache: artifacts by digest, manifests by built version and rendering.
 
 The layout follows the contract's cache-layout rule (`contract/rules/README.md`), so
-every DFO client reads the others' entries. An entry is written to a temporary name
-in its own directory and renamed into place, so a reader never sees a partial entry.
-Entries are keyed by content, so two processes writing one entry write the same
-bytes and need no lock. A read re-hashes an artifact, and a mismatch is a miss.
+clients that implement cache1 read the others' entries. An entry is written to a
+temporary name in its own directory and renamed into place, so a reader never sees a
+partial entry.
+Entries are keyed by content, so two processes writing one artifact write the same
+bytes and need no lock. Concurrent manifest updates can lose a cache candidate,
+but never make an artifact name different bytes. A read re-hashes an artifact, and
+a mismatch is a miss.
 
 Both clients call this module. It is sync and works on local files only.
 """
@@ -163,8 +166,19 @@ class Cache:
         Newest is the latest `prepared_at`. An offline fetch of a spec with no
         version returns it, marked stale.
         """
+        candidates = self.manifest_candidates(spec_id, rendering)
+        return candidates[0] if candidates else None
+
+    def manifest_candidates(
+        self, spec_id: str, rendering: Rendering, /
+    ) -> list[dict[str, Any]]:
+        """Cached manifests of a spec in one rendering, newest first.
+
+        Invalid or partial manifest files are omitted. Callers that need an
+        artifact still verify its bytes before choosing a candidate.
+        """
         if not self.enabled:
-            return None
+            return []
         if SPEC_ID.fullmatch(spec_id) is None:
             raise ValueError(f"{spec_id!r} is not a spec id")
         found: list[tuple[str, dict[str, Any]]] = []
@@ -173,7 +187,10 @@ class Cache:
             manifest = _read_json(path)
             if manifest is not None and isinstance(manifest.get("prepared_at"), str):
                 found.append((manifest["prepared_at"], manifest))
-        return max(found, key=lambda item: item[0])[1] if found else None
+        return [
+            manifest
+            for _, manifest in sorted(found, key=lambda item: item[0], reverse=True)
+        ]
 
     def _evict(self, *, keep: Path) -> None:
         files = self.directory / "files"

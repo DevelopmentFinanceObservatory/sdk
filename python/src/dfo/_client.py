@@ -61,6 +61,8 @@ class AsyncClient:
             timeout: The longest one request attempt waits, in seconds. A
                 search attempt and a download read until their call's
                 deadline instead, and a build request for up to 150 seconds.
+                In the synchronous client, platform name resolution can run
+                past this bound; the asynchronous client can cancel it.
             max_retries: Further attempts after a failure that can clear.
             cache_dir: The cache's root directory; None follows `DFO_CACHE_DIR`,
                 then the platform's cache directory.
@@ -130,7 +132,8 @@ class AsyncClient:
             question: The question, in your words.
             timeout: The longest the call waits, retries included, in seconds.
                 Each attempt reads until then, and None waits as long as Search
-                takes.
+                takes. In the synchronous client, platform name resolution can
+                run past this bound; the asynchronous client can cancel it.
 
         Raises:
             ContractError: The answer lacks a member the client acts on.
@@ -166,7 +169,9 @@ class AsyncClient:
                 ref in the layout it holds.
             strict: Raise the first dataset warning instead of issuing it.
             timeout: The longest the fetch takes, in seconds, downloads
-                included; None for no limit.
+                included; None for no limit. In the synchronous client,
+                platform name resolution can run past this bound; the
+                asynchronous client can cancel it.
             progress: Show long-build progress; None shows it unless
                 `DFO_PROGRESS=0`.
 

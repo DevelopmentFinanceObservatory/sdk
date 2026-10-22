@@ -435,7 +435,9 @@ class Operation:
 
         Args:
             timeout: The longest to wait, in seconds, polls and downloads
-                included; None waits without limit.
+                included; None waits without limit. In the synchronous client,
+                platform name resolution can run past this bound; the
+                asynchronous client can cancel it.
 
         Raises:
             DfoTimeoutError: The build was still running at the deadline. The

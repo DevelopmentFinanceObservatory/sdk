@@ -10,12 +10,12 @@ storage host. Under `DFO_OFFLINE=1` every request raises `offline` before it is
 sent.
 
 The client's `timeout` bounds one whole attempt, body included, and a call's
-deadline bounds the whole call. An attempt must finish by the earlier of the
-call's deadline and its start plus the timeout. The connection pool's network
-backend clamps the connect, the TLS handshake and each read and write to the
-time left on the attempt, so a body that stalls at any point raises
-`deadline_exceeded` at the attempt's end. The key resolves when the transport
-is built, and again after a 401.
+deadline bounds the whole call. The asynchronous transport can cancel platform
+name resolution at those limits. Its generated synchronous form cannot: blocking
+platform name resolution may run past a timeout or deadline. After name
+resolution, both forms clamp the connect, TLS handshake, and each read and write
+to the time left on the attempt. The key resolves when the transport is built,
+and again after a 401.
 """
 
 import copy
@@ -109,7 +109,7 @@ _ATTEMPT: ContextVar[tuple[Clock, float] | None] = ContextVar(
 
 @contextmanager
 def attempt_deadline(clock: Clock, deadline: float | None) -> Generator[None]:
-    """Bound every network operation inside the block to `deadline` on `clock`."""
+    """Bound post-resolution network operations inside the block to `deadline`."""
     token = _ATTEMPT.set(None if deadline is None else (clock, deadline))
     try:
         yield
@@ -171,7 +171,9 @@ class _DeadlineBackend(httpcore2.NetworkBackend):
 
     httpx2 times each phase on its own, and on HTTP/1.1 httpcore2 takes a body's
     read timeout once, when the body starts. Clamping each operation's timeout
-    here bounds the connect, the TLS handshake and every read and write alike.
+    here bounds the connect, TLS handshake, and every read and write after name
+    resolution. The asynchronous backend can cancel name resolution; the
+    generated synchronous backend cannot.
     """
 
     def __init__(self, backend: httpcore2.NetworkBackend) -> None:
@@ -393,11 +395,13 @@ class Transport:
     def _attempt_bounds(
         self, timeout: float | None, deadline: float | None
     ) -> tuple[float | None, float | None]:
-        """One attempt's timeout for httpx2, and the clock reading it must end by.
+        """One attempt's timeout for httpx2, and its post-resolution end time.
 
         The limit is clamped to the time left before `deadline`, so the attempt
-        ends by the earlier of the deadline and now plus the limit. Both are
-        None for an infinite `timeout` and no deadline.
+        ends by the earlier of the deadline and now plus the limit after platform
+        name resolution. The generated synchronous transport cannot interrupt a
+        blocking platform resolver; its asynchronous source can. Both are None
+        for an infinite `timeout` and no deadline.
         """
         limit = self._timeout if timeout is None else timeout
         now = self._clock()
@@ -415,8 +419,7 @@ class Transport:
     def _send(
         self, request: httpx2.Request, deadline: float | None, what: str
     ) -> httpx2.Response:
-        """Send `request` and read its body by `deadline`, mapping httpx2's
-        failures to errors.
+        """Send `request` and read its body by `deadline`, after name resolution.
 
         Raises:
             DfoTimeoutError: The attempt timed out, or `deadline` passed while
@@ -511,11 +514,14 @@ class Transport:
             params: Query parameters.
             json: The JSON body.
             headers: Headers for this request only.
-            timeout: The longest one attempt takes, body included. Defaults to
-                the transport's. `math.inf` lets each attempt run until the
-                deadline, or without limit when there is none.
-            deadline: A clock reading the whole call, waits included, must
-                finish by; each attempt's timeout is clamped to it.
+            timeout: The longest one attempt takes after platform name
+                resolution, body included. Defaults to the transport's.
+                `math.inf` lets each attempt run until the deadline, or without
+                limit when there is none. The generated synchronous transport
+                cannot interrupt blocking platform name resolution.
+            deadline: A clock reading the whole call, waits included, that
+                bounds every phase after name resolution; each attempt's timeout
+                is clamped to it.
             max_retries: Further attempts; defaults to the transport's.
 
         Raises:
@@ -573,9 +579,10 @@ class Transport:
         the request carries the client's headers and key, as any API request
         does. A signed URL on the storage host gets a bare request, with no
         client header, no key and nothing from the header provider. The fetch
-        reads until the deadline, or without limit when there is none. A failed
-        fetch is not retried. A signed URL can expire, so the caller asks the
-        files route for a fresh one.
+        reads until the deadline after platform name resolution, or without limit
+        when there is none. The generated synchronous transport cannot interrupt
+        blocking platform name resolution. A failed fetch is not retried. A
+        signed URL can expire, so the caller asks the files route for a fresh one.
 
         Raises:
             ContractError: The URL is on neither origin (`contract_violation`).

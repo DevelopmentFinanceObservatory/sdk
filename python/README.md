@@ -95,7 +95,7 @@ with dfo.Client(timeout=60.0, max_retries=3) as client:
     print(data.rows)
 ```
 
-`timeout` bounds one request attempt, 30 seconds by default. A call's own `timeout` bounds the whole call: 60 seconds for `search`, whose attempts each read until that deadline, and 1,800 for `fetch` and `result`, downloads included. A build request reads for up to 150 seconds within it. `dfo.configure(...)` takes the same options and replaces the default client. `dfo.AsyncClient` has the same methods as coroutines, and its answers are `dfo.AsyncAnswer`. `base_url=` points the client at another DFO deployment.
+`timeout` bounds one request attempt, 30 seconds by default. A call's own `timeout` bounds the whole call: 60 seconds for `search`, whose attempts each read until that deadline, and 1,800 for `fetch` and `result`, downloads included. A build request reads for up to 150 seconds within it. In synchronous code, blocking platform name resolution can run past either limit; the connect, TLS handshake, reads and writes are bounded once resolution returns. The asynchronous client can cancel name resolution. `dfo.configure(...)` takes the same options and replaces the default client. `dfo.AsyncClient` has the same methods as coroutines, and its answers are `dfo.AsyncAnswer`. `base_url=` points the client at another DFO deployment.
 
 ## Documentation
 

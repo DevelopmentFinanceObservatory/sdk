@@ -200,7 +200,9 @@ class Answer:
             strict: Raise the `SearchWarning`, and the datasets surface's
                 warnings, instead of issuing them.
             layout: `long`, or `frame` for one reading's pipeline frame.
-            timeout: The longest the whole build waits, in seconds.
+            timeout: The longest the whole build waits, in seconds. In the
+                synchronous client, platform name resolution can run past this
+                bound; the asynchronous client can cancel it.
             progress: Show progress; None shows it in a terminal or notebook.
 
         Raises:
@@ -295,13 +297,16 @@ def resolve(
             input.
         question: The question the answer stands for, kept on it.
         timeout: The longest the call waits, retries included, in seconds; each
-            attempt reads until then. None waits without limit.
+            attempt reads until then. None waits without limit. In the
+            synchronous client, platform name resolution can run past this bound;
+            the asynchronous client can cancel it.
 
     Raises:
         ContractError: The body is not JSON (`unexpected_response`), the
             answer's kind is unknown, or a member the client acts on is missing.
     """
-    transport = source().transport
+    session = source()
+    transport = session.transport
     response = transport.request(
         "POST",
         RESOLVE_PATH,
