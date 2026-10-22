@@ -9,7 +9,7 @@ client's rendering, and paces polls.
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 
 import httpx2
 
@@ -17,11 +17,7 @@ from dfo._error_map import CONTRACT_VIOLATION, INVALID_ARGUMENT, UNEXPECTED_RESP
 from dfo._errors import client_error
 from dfo._parse import check_manifest, check_operation
 from dfo._refusals import trace_id_of
-from dfo._types import Part, Rendering, Spec
-
-type Wire = Mapping[str, Any]
-type Layout = Literal["long", "frame"]
-type Window = Literal["all", "latest"] | tuple[int, int]
+from dfo._types import Layout, Part, Rendering, Spec, Window, Wire
 
 # The longest the client reads a synchronous build. The server cuts off at 120 s.
 BUILD_READ_TIMEOUT = 150.0

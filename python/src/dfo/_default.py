@@ -19,7 +19,6 @@ from collections.abc import Mapping, Sequence
 from os import PathLike
 
 from dfo._answer import SEARCH_TIMEOUT
-from dfo._build import Layout, Window
 from dfo._cache import Cache
 from dfo._dataset import Dataset
 from dfo._hooks import HeaderProvider
@@ -28,7 +27,7 @@ from dfo._sync._answer import Answer
 from dfo._sync._client import Client
 from dfo._sync._fetch import Session
 from dfo._sync._search import search as _search
-from dfo._types import DatasetRef, Spec
+from dfo._types import DatasetRef, Layout, Spec, Window
 
 _lock = threading.Lock()
 _client: Client | None = None

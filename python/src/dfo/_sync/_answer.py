@@ -31,7 +31,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, NoReturn, overload, override
+from typing import Any, NoReturn, overload, override
 
 from dfo import _display, _strict
 from dfo._build import Reading, response_json
@@ -52,6 +52,7 @@ from dfo._types import (
     CandidatesPart,
     DefinitePart,
     Gap,
+    Layout,
     NoDataPart,
     Notice,
     Option,
@@ -61,8 +62,6 @@ from dfo._types import (
     unbound_gap,
     with_candidates,
 )
-
-type Layout = Literal["long", "frame"]
 
 RESOLVE_PATH = "/search/resolve"
 SCHEMA_VERSION = 1

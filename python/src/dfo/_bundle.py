@@ -9,8 +9,11 @@ lie inside the bundle. A path with a backslash, a drive, a root or a `..` segmen
 is refused before any file is read, and so is a path in an extracted folder that
 resolves outside it through a symlink.
 
-Both clients call this module. It is sync and works on local files only.
+Both clients call this module. It is sync and works on local files only. It imports
+pyarrow inside the functions that read a table, so `import dfo` stays light.
 """
+
+from __future__ import annotations
 
 import hashlib
 import io
@@ -20,11 +23,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import IO, Any, Literal
-
-import pyarrow as pa
-import pyarrow.csv as pa_csv
-import pyarrow.parquet as pq
+from typing import IO, TYPE_CHECKING, Any, Literal
 
 from dfo._dataset import Dataset, saved_dataset
 from dfo._types import (
@@ -36,6 +35,9 @@ from dfo._types import (
     Spec,
 )
 
+if TYPE_CHECKING:
+    import pyarrow as pa
+
 DESCRIPTOR = "datapackage.json"
 
 type BundleErrorReason = Literal[
@@ -46,18 +48,6 @@ type BundleErrorReason = Literal[
     "hash_mismatch",
     "resource_limit",
 ]
-
-# Table Schema field types and the Arrow types their columns read as. A type not
-# listed reads as a string.
-_FIELD_TYPES: Mapping[str, pa.DataType] = {
-    "string": pa.string(),
-    "integer": pa.int64(),
-    "number": pa.float64(),
-    "boolean": pa.bool_(),
-    "date": pa.date32(),
-    "datetime": pa.timestamp("us"),
-    "year": pa.int64(),
-}
 
 _ZIP_MAGIC = b"PK\x03\x04"
 _PARQUET_MAGIC = b"PAR1"
@@ -186,6 +176,8 @@ def open_bundle(
 
 
 def _open_saved(path: Path) -> Dataset:
+    import pyarrow.parquet as pq  # noqa: PLC0415 - pyarrow loads on first use
+
     parquet = pq.ParquetFile(path)
     metadata = parquet.schema_arrow.metadata or {}
     if b"dfo.format_version" not in metadata:
@@ -472,13 +464,35 @@ def _read_limited(
     return bytes(content) if content is not None else None
 
 
+def _field_types() -> Mapping[str, pa.DataType]:
+    """Table Schema field types and the Arrow types their columns read as.
+
+    A type not listed reads as a string.
+    """
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+
+    return {
+        "string": pa.string(),
+        "integer": pa.int64(),
+        "number": pa.float64(),
+        "boolean": pa.bool_(),
+        "date": pa.date32(),
+        "datetime": pa.timestamp("us"),
+        "year": pa.int64(),
+    }
+
+
 def _read_table(
     content: bytes, resource: Mapping[str, Any], limits: BundleLimits
 ) -> pa.Table:
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+    import pyarrow.csv as pa_csv  # noqa: PLC0415 - pyarrow loads on first use
+
     schema = resource.get("schema")
     fields = schema.get("fields", []) if isinstance(schema, Mapping) else []
+    field_types = _field_types()
     types = {
-        field["name"]: _FIELD_TYPES.get(field.get("type", "string"), pa.string())
+        field["name"]: field_types.get(field.get("type", "string"), pa.string())
         for field in fields
         if isinstance(field, Mapping) and isinstance(field.get("name"), str)
     }
@@ -502,6 +516,8 @@ def _read_xlsx(
     missing: Sequence[str],
     limits: BundleLimits,
 ) -> pa.Table:
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+
     path = str(resource.get("path", "XLSX resource"))
     _check_xlsx_archive(content, path, limits)
     try:
@@ -598,6 +614,8 @@ def _check_xlsx_dimensions(sheet: Any, path: str, limits: BundleLimits) -> None:
 
 def _cells(values: list[Any], kind: pa.DataType) -> list[Any]:
     """XLSX cells as the column's Arrow type takes them."""
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+
     if pa.types.is_string(kind):
         return [None if value is None else str(value) for value in values]
     if pa.types.is_date32(kind):

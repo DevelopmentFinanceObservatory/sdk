@@ -79,3 +79,9 @@ A release is a tag on `main`:
 - `typescript-v<version>` publishes `@developmentfinance/client` to npm.
 
 Publishing uses OIDC trusted publishing from `.github/workflows/release.yml`, so the repository stores no token.
+
+## Dependency ranges
+
+A runtime dependency in `python/pyproject.toml` takes a lower bound and no upper bound, so the package installs beside the newest releases of what it uses. `uv.lock` pins the versions the tests run against.
+
+`httpx2` and `httpcore2` are the one exception, bounded to `>=2.15,<2.16`. `_keep_to_deadlines` in `python/src/dfo/_transport.py` reads the connection pool's private layout, which a minor release may move. To take a new minor, run the Python suite against it and move both bounds and the lock in one change.
