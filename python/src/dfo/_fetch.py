@@ -28,10 +28,7 @@ from urllib.parse import urljoin
 
 from dfo._build import (
     Cache,
-    Layout,
     Reading,
-    Window,
-    Wire,
     build_body,
     check_built,
     layout_of,
@@ -82,9 +79,12 @@ from dfo._types import (
     DatasetRef,
     DefinitePart,
     Gap,
+    Layout,
     RefMember,
     Rendering,
     Spec,
+    Window,
+    Wire,
 )
 
 
@@ -313,9 +313,9 @@ def _latest_cached(
     )
 
 
-_RESHAPING_RENDERINGS = frozenset(
-    {"columns", "pivot", "groupby", "without_party_totals"}
-)
+# The rendering selectors a plain artifact may carry, besides `metadata` set to
+# `incomplete`. Any other selector, such as `columns`, `pivot` or `groupby`,
+# reshapes the rows.
 _BASE_RENDERINGS = frozenset({"format", "bundle", "layout"})
 
 
@@ -346,8 +346,6 @@ def _plain_cached_manifest(
 def _is_plain_rendering(rendering: Mapping[str, Any], /) -> bool:
     """Whether an artifact has no rendering selector that changes its rows."""
     for key, value in rendering.items():
-        if key in _RESHAPING_RENDERINGS:
-            return False
         if key == "metadata" and value == "incomplete":
             continue
         if key not in _BASE_RENDERINGS:

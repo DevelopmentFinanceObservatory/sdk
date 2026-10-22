@@ -32,10 +32,13 @@ from dfo._errors import (
     ServerError,
     VersionUnavailableError,
 )
-from dfo._keys import ApiKey
+from dfo._hooks import AsyncHeaderProvider, HeaderProvider
+from dfo._keys import ApiKey, ApiKeyArgument
+from dfo._lookups import AsyncCodes, AsyncGraph, Node, ResolveKind
 from dfo._operation import AsyncOperation
 from dfo._sync._answer import Answer
 from dfo._sync._client import Client
+from dfo._sync._lookups import Codes, Graph
 from dfo._sync._operation import Operation
 from dfo._types import (
     Assumption,
@@ -49,6 +52,7 @@ from dfo._types import (
     Departure,
     FormatError,
     Gap,
+    Layout,
     Member,
     NoDataPart,
     Notice,
@@ -61,25 +65,34 @@ from dfo._types import (
     Spec,
     UnknownPart,
     UnsupportedPart,
+    Window,
 )
 from dfo._version import __version__
+from dfo._wire import CatalogueResponse, CodeRegistryEntry, ResolveResponse
 
 __all__ = [
     "Answer",
     "ApiKey",
+    "ApiKeyArgument",
     "Assumption",
     "AsyncAnswer",
     "AsyncCandidate",
     "AsyncClient",
+    "AsyncCodes",
+    "AsyncGraph",
+    "AsyncHeaderProvider",
     "AsyncOperation",
     "AuthenticationError",
     "BundleError",
     "BundleLimits",
     "Candidate",
     "CandidatesPart",
+    "CatalogueResponse",
     "Citation",
     "CitationSource",
     "Client",
+    "CodeRegistryEntry",
+    "Codes",
     "ContractError",
     "DataWarning",
     "Dataset",
@@ -93,11 +106,15 @@ __all__ = [
     "DfoWarning",
     "FormatError",
     "Gap",
+    "Graph",
+    "HeaderProvider",
     "IncompleteAnswerError",
     "InvalidRequestError",
+    "Layout",
     "Member",
     "NetworkError",
     "NoDataPart",
+    "Node",
     "NotFoundError",
     "Notice",
     "Operation",
@@ -111,12 +128,15 @@ __all__ = [
     "RefMember",
     "Rendering",
     "RequestedOperation",
+    "ResolveKind",
+    "ResolveResponse",
     "SearchWarning",
     "ServerError",
     "Spec",
     "UnknownPart",
     "UnsupportedPart",
     "VersionUnavailableError",
+    "Window",
     "__version__",
     "configure",
     "disable_cache",

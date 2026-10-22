@@ -1,13 +1,18 @@
 """The `Dataset` a fetch returns, and how fetched members become one.
 
 A dataset holds its table and its provenance and carries no client, so its
-conversions run offline and it pickles. Several members stack into one long table with
-a leading `part` column naming each row's member. `save` writes one Parquet file
-whose key-value metadata carries the provenance and the ref, which `open_bundle`
-reads back.
+conversions run offline. Several members stack into one long table with a leading
+`part` column naming each row's member. `save` writes one Parquet file whose
+key-value metadata carries the provenance and the ref, which `open_bundle` reads
+back. That file is the durable form. A dataset also pickles, for transfer between
+processes that run the same client version, as `multiprocessing` does. Another
+version may fail to load the pickle or load it wrong.
 
-Both clients call this module. It is sync and works on local data only.
+Both clients call this module. It is sync and works on local data only. It imports
+pyarrow inside the functions that read or build a table, so `import dfo` stays light.
 """
+
+from __future__ import annotations
 
 import html
 import json
@@ -15,10 +20,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from os import PathLike
-from typing import TYPE_CHECKING, Any, Literal
-
-import pyarrow as pa
-import pyarrow.parquet as pq
+from typing import TYPE_CHECKING, Any
 
 from dfo._build import layout_of
 from dfo._error_map import CONTRACT_VIOLATION
@@ -34,6 +36,7 @@ from dfo._types import (
     DatasetRef,
     Departure,
     Gap,
+    Layout,
     Member,
     Notice,
     Option,
@@ -47,8 +50,7 @@ from dfo._types import (
 if TYPE_CHECKING:
     import pandas
     import polars
-
-type Layout = Literal["long", "frame"]
+    import pyarrow as pa
 
 # The column that names each row's member in a dataset of several members.
 PART_COLUMN = "part"
@@ -204,7 +206,7 @@ class Dataset:
         """A fresh Arrow C stream of the table, read by pandas, polars and DuckDB."""
         return self.to_arrow().__arrow_c_stream__(requested_schema)
 
-    def to_pandas(self) -> "pandas.DataFrame":
+    def to_pandas(self) -> pandas.DataFrame:
         """The table as a pandas DataFrame, with the provenance in `attrs`.
 
         A merge or a concat drops `attrs`. The provenance stays on the dataset.
@@ -222,7 +224,7 @@ class Dataset:
         frame.attrs.update(self._attrs())
         return frame
 
-    def to_polars(self) -> "polars.DataFrame":
+    def to_polars(self) -> polars.DataFrame:
         """The table as a polars DataFrame.
 
         Raises:
@@ -244,6 +246,8 @@ class Dataset:
         `dfo.open_bundle(path)` reads it back into a dataset with the same table,
         provenance and ref.
         """
+        import pyarrow.parquet as pq  # noqa: PLC0415 - pyarrow loads on first use
+
         pq.write_table(self.to_arrow(), path)
 
     def __repr__(self) -> str:
@@ -363,6 +367,9 @@ def build_dataset(
             `DatasetRef` gives its rendering, or two members hold a column whose
             types cannot widen to one (`contract_violation`).
     """
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+    import pyarrow.parquet as pq  # noqa: PLC0415 - pyarrow loads on first use
+
     if not members:
         raise ValueError("a dataset needs at least one member")
     if layout == "frame" and len(members) > 1:
@@ -522,6 +529,8 @@ def _with_part(table: pa.Table, label: str) -> pa.Table:
             f"A member's file already holds a {PART_COLUMN!r} column, so the "
             "members cannot stack into one table",
         )
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+
     column = pa.array([label] * table.num_rows, type=pa.string())
     return table.add_column(0, PART_COLUMN, column)
 

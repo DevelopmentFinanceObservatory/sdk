@@ -32,7 +32,6 @@ from dfo._build import (
     BUILD_READ_TIMEOUT,
     OperationState,
     Progress,
-    Wire,
     poll_backoff,
     read_operation,
     response_json,
@@ -44,6 +43,7 @@ from dfo._parse import check_manifest
 from dfo._progress import ProgressRenderer
 from dfo._refusals import describing, problem_error, trace_id_of
 from dfo._transport import AsyncTransport, retry_after
+from dfo._types import Wire
 
 type ProgressHook = Callable[[str, Progress, str | None], None]
 

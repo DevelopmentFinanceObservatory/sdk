@@ -20,7 +20,7 @@ data = dfo.fetch(spec)
 print(data.rows)
 ```
 
-`fetch` downloads the file through a signed URL and checks it against the digest its manifest names before it returns. A `Dataset` holds no client, its conversions never touch the network, and it pickles.
+`fetch` downloads the file through a signed URL and checks it against the digest its manifest names before it returns. A `Dataset` holds no client, and its conversions run offline. It pickles for transfer between processes that run the same version of `development-finance`, as `multiprocessing` does. Keep data with `save`, since another version may fail to load a pickle or load it wrong.
 
 ### Narrow before the build
 
@@ -105,7 +105,7 @@ A missing extra raises `ImportError` with the install line, such as `pip install
 | `citation`, `sources`, `licence`                    | How to cite the data, and the sources behind it                                                |
 | `rows`                                              | The row count; `len(data)` gives the same                                                      |
 | `warnings`                                          | The datasets surface's warnings about the data, as `Notice` objects                            |
-| `departures`, `requested_operations`, `assumptions` | How the readings differ from the question, and what Search assumed for them                   |
+| `departures`, `requested_operations`, `assumptions` | How the readings differ from the question, and what Search assumed for them                    |
 | `complete`, `missing`                               | Whether every part has a member, and the gaps a partial fetch left out                         |
 | `held_until`, `pinned`                              | How long the server keeps the versions                                                         |
 | `stale`                                             | Whether the data came from the cache without asking the server                                 |

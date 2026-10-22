@@ -12,7 +12,6 @@ from os import PathLike
 from typing import Any, Self
 
 from dfo._answer import SEARCH_TIMEOUT, AsyncAnswer
-from dfo._build import Layout, Window
 from dfo._cache import Cache
 from dfo._dataset import Dataset
 from dfo._error_map import INVALID_ARGUMENT
@@ -24,7 +23,7 @@ from dfo._lookups import AsyncCodes, AsyncGraph, catalogue
 from dfo._operation import AsyncOperation
 from dfo._search import search
 from dfo._transport import AsyncTransport
-from dfo._types import DatasetRef, RawResponse, Spec
+from dfo._types import DatasetRef, Layout, RawResponse, Spec, Window
 from dfo._wire import CatalogueResponse
 
 

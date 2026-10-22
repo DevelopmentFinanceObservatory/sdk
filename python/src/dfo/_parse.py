@@ -31,9 +31,8 @@ from dfo._types import (
     Spec,
     UnknownPart,
     UnsupportedPart,
+    Wire,
 )
-
-type Wire = Mapping[str, Any]
 
 # A part as read, before an answer binds its candidates. The parts other than
 # `CandidatesPart` are `Part[Never]`, so each fits an answer of either form.

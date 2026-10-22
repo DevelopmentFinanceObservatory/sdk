@@ -15,8 +15,7 @@ from dfo._error_map import INVALID_ARGUMENT
 from dfo._errors import client_error
 
 if TYPE_CHECKING:
-    # Both modules read these classes, so the imports are for types only.
-    from dfo._build import Layout
+    # `dfo._dataset` reads these classes, so the import is for types only.
     from dfo._dataset import Dataset
 
 FORMAT_VERSION = 1
@@ -24,6 +23,15 @@ SPEC_ID = re.compile(r"spec_[0-9a-f]{32}")
 CONTENT_VERSION = re.compile(r"cv_[0-9a-f]{32}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 FORMATS = ("csv", "xlsx", "parquet")
+
+# A decoded JSON object as the server sent it.
+type Wire = Mapping[str, Any]
+
+# The column set a dataset build renders, `long` rows or the pipeline `frame`.
+type Layout = Literal["long", "frame"]
+
+# The periods a fetch asks for: every period, the latest, or (start_year, end_year).
+type Window = Literal["all", "latest"] | tuple[int, int]
 
 type FormatErrorReason = Literal[
     "format_invalid", "definition_spec_id_mismatch", "repeated_spec_id"
@@ -239,7 +247,7 @@ class Candidate(_Reading):
         *,
         partial: bool = False,
         strict: bool = False,
-        layout: "Layout" = "long",
+        layout: Layout = "long",
         timeout: float | None = 1800.0,
         progress: bool | None = None,
     ) -> "Dataset":
@@ -277,7 +285,7 @@ class AsyncCandidate(_Reading):
         *,
         partial: bool = False,
         strict: bool = False,
-        layout: "Layout" = "long",
+        layout: Layout = "long",
         timeout: float | None = 1800.0,
         progress: bool | None = None,
     ) -> "Dataset":
@@ -318,7 +326,7 @@ class _CandidateFetch(Protocol):
         *,
         partial: bool,
         strict: bool,
-        layout: "Layout",
+        layout: Layout,
         timeout: float | None,
         progress: bool | None,
     ) -> "Dataset": ...
@@ -332,7 +340,7 @@ class _AsyncCandidateFetch(Protocol):
         *,
         partial: bool,
         strict: bool,
-        layout: "Layout",
+        layout: Layout,
         timeout: float | None,
         progress: bool | None,
     ) -> Awaitable["Dataset"]: ...

@@ -12,7 +12,7 @@ import pytest
 
 from dfo._bundle import open_bundle
 from dfo._cache import sha256_digest
-from dfo._dataset import Dataset, FetchedMember, Layout, build_dataset
+from dfo._dataset import Dataset, FetchedMember, build_dataset
 from dfo._errors import ContractError
 from dfo._parse import parse_parts
 from dfo._types import (
@@ -22,6 +22,7 @@ from dfo._types import (
     DefinitePart,
     Departure,
     Gap,
+    Layout,
     Rendering,
     RequestedOperation,
 )

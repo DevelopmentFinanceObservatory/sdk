@@ -12,8 +12,11 @@ requires-python = ">=3.12"
 dependencies = [
     # `_keep_to_deadlines` in src/dfo/_transport.py reads the pool's private layout
     # and raises a RuntimeError naming both versions when a release moves it.
-    "httpcore2>=2.15; sys_platform != 'emscripten'",
-    "httpx2>=2.15",
+    # The `<2.16` bounds are the one exception to the no-upper-bound policy in
+    # CONTRIBUTING.md. A minor release may move that private layout, so each new
+    # minor is tested before the bound moves.
+    "httpcore2>=2.15,<2.16; sys_platform != 'emscripten'",
+    "httpx2>=2.15,<2.16",
     "pyarrow>=15",
     "typing-extensions>=4.12",
 ]
