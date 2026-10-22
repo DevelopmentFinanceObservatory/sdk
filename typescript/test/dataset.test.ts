@@ -9,7 +9,7 @@ import { parquetWriteBuffer } from "hyparquet-writer";
 import { toArrow } from "../src/arrow.ts";
 import { Dataset, tableParts } from "../src/dataset.ts";
 import type { FetchedMember } from "../src/dataset.ts";
-import { decodeStored, widen } from "../src/parquet.ts";
+import { decodeStored, readParquet, widen } from "../src/parquet.ts";
 import type { ColumnType } from "../src/parquet.ts";
 import { DatasetRef } from "../src/ref.ts";
 import type { Part } from "../src/wire.ts";
@@ -398,6 +398,29 @@ describe("one member", async () => {
     assert.deepEqual(dataset.memberBytes(0), data);
   });
 
+  test("copies input once at construction and keeps an exact input buffer while reading", () => {
+    const raw = data.slice();
+    const dataset = new Dataset([member(raw)], { layout: "long" });
+    raw[0] = 0;
+    assert.deepEqual(dataset.memberBytes(0), data);
+
+    const exact = readParquet(data);
+    assert.equal(exact.buffer, data.buffer);
+    const backed = new Uint8Array(data.length + 2);
+    backed.set(data, 1);
+    const view = backed.subarray(1, data.length + 1);
+    assert.notEqual(readParquet(view).buffer, backed.buffer);
+
+    const nodeBuffer = Buffer.from(data);
+    const fromBuffer = new Dataset([member(nodeBuffer)], { layout: "long" });
+    nodeBuffer.fill(0);
+    assert.deepEqual(fromBuffer.memberBytes(0), data);
+    const slicedBuffer = Buffer.from(backed).subarray(1, data.length + 1);
+    const parsed = readParquet(slicedBuffer);
+    assert.notEqual(parsed.buffer, slicedBuffer.buffer);
+    assert.equal(parsed.buffer.byteLength, data.length);
+  });
+
   test("bytes() writes the member's table with the provenance and no part column", async () => {
     const written = await dataset.bytes();
     const metadata = Object.fromEntries(
@@ -417,18 +440,24 @@ describe("one member", async () => {
 });
 
 describe("members whose column types differ", () => {
-  type Spec = { type: string; logical?: Record<string, unknown>; data: unknown[] };
+  type Spec = {
+    type: string;
+    logical?: Record<string, unknown>;
+    converted?: "UINT_32" | "UINT_64";
+    data: unknown[];
+  };
   const file = (columns: Record<string, Spec>): Uint8Array =>
     new Uint8Array(
       parquetWriteBuffer({
         columnData: Object.entries(columns).map(([name, { data }]) => ({ name, data })),
         schema: [
           { name: "root", num_children: Object.keys(columns).length },
-          ...Object.entries(columns).map(([name, { type, logical }]) => ({
+          ...Object.entries(columns).map(([name, { type, logical, converted }]) => ({
             name,
             repetition_type: "OPTIONAL" as const,
             type: type as "INT32",
             ...(logical === undefined ? {} : { logical_type: logical as { type: "NULL" } }),
+            ...(converted === undefined ? {} : { converted_type: converted }),
           })),
         ],
       }),
@@ -525,6 +554,48 @@ describe("members whose column types differ", () => {
     // One member is not stacked, so its own part column is its data.
     assert.deepEqual(new Dataset([member(own)], { layout: "long" }).columns, ["part"]);
   });
+
+  test("stacks UINT32 with INT64, converts it to INT64, and saves the widened table", async () => {
+    const unsigned = file({ count: { type: "INT32", converted: "UINT_32", data: [2 ** 32 - 1] } });
+    const signed = file({ count: { type: "INT64", data: [-1n] } });
+    const dataset = new Dataset(
+      [
+        member(unsigned, { parts: ["unsigned"] }),
+        member(signed, { parts: ["signed"], spec: { spec_id: "s2", definition: {} } }),
+      ],
+      { layout: "long" },
+    );
+    assert.equal(String((await toArrow(dataset)).getChild("count")?.type), "Int64");
+    assert.deepEqual(
+      (await dataset.toRows()).map(({ count }) => count),
+      [2 ** 32 - 1, -1],
+    );
+    const saved = new Dataset([member(await dataset.bytes())], { layout: "long" });
+    assert.deepEqual(await saved.toRows(), await dataset.toRows());
+  });
+
+  test("refuses UINT64 with a signed member while accepting UINT64 alone", () => {
+    const unsigned = file({ count: { type: "INT64", converted: "UINT_64", data: [1n] } });
+    const signed = file({ count: { type: "INT64", data: [-1n] } });
+    assert.deepEqual(new Dataset([member(unsigned)], { layout: "long" }).columns, ["count"]);
+    assert.throws(
+      () =>
+        new Dataset(
+          [member(unsigned), member(signed, { spec: { spec_id: "s2", definition: {} } })],
+          { layout: "long" },
+        ),
+      { name: "ContractError", code: "contract_violation" },
+    );
+  });
+
+  test("preserves the UINT64 maximum through Arrow conversion and save", async () => {
+    const maximum = (1n << 64n) - 1n;
+    const unsigned = file({ count: { type: "INT64", converted: "UINT_64", data: [maximum] } });
+    const dataset = new Dataset([member(unsigned)], { layout: "long" });
+    assert.equal((await toArrow(dataset)).getChild("count")?.get(0), maximum);
+    const saved = new Dataset([member(await dataset.bytes())], { layout: "long" });
+    assert.equal((await toArrow(saved)).getChild("count")?.get(0), maximum);
+  });
 });
 
 describe("widen", () => {
@@ -550,7 +621,7 @@ describe("widen", () => {
     [int(32), int(64), int(64)],
     [int(8), int(8, false), int(16)],
     [int(16), int(32, false), int(64)],
-    [int(64), int(64, false), int(64)],
+    [int(64), int(64, false), undefined],
     [int(8, false), int(32, false), int(32, false)],
     [int(16), float(32), float(32)],
     [int(32), float(32), float(64)],

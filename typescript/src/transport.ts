@@ -475,8 +475,8 @@ export class Transport {
     const follow = options.follow ?? false;
     // `#headers` gives no header for a URL off the API's origin.
     const { headers } = follow
-      ? await this.#keyHeader()
-      : await this.#headers("GET", url, { url: url.href });
+      ? await this.#keyHeader(url, options)
+      : await this.#headers("GET", url, { url: url.href, ...options });
     const outcome = await this.#attempt(url, options, {
       method: "GET",
       headers,
@@ -534,7 +534,9 @@ export class Transport {
           // The key is resolved again after a 401, and a different key gets one more try.
           reauthenticated = true;
           this.#key.promise = this.#resolveKey();
-          const next = (await this.#key.promise).key?.reveal();
+          const next = (
+            await this.#waitForProvider(() => this.#key.promise, url, options)
+          ).key?.reveal();
           if (next !== undefined && next !== key) {
             attempt -= 1;
             continue;
@@ -570,23 +572,93 @@ export class Transport {
     for (const [name, value] of Object.entries(this.#options.defaultHeaders ?? {})) {
       headers.set(name, value);
     }
-    const provided = await this.#options.headerProvider?.({ method, url });
+    const provided = await this.#waitForProvider(
+      () => this.#options.headerProvider?.({ method, url }),
+      url,
+      options,
+    );
     for (const [name, value] of new Headers(provided)) headers.set(name, value);
     headers.set("accept", "application/json");
     if (options.json !== undefined) headers.set("content-type", "application/json");
     if (!inBrowser()) headers.set("user-agent", `dfo-ts/${VERSION}`);
     for (const [name, value] of Object.entries(options.headers ?? {})) headers.set(name, value);
-    const { headers: keyed, key } = await this.#keyHeader();
+    const { headers: keyed, key } = await this.#keyHeader(url, options);
     for (const [name, value] of keyed) headers.set(name, value);
     return { headers, key };
   }
 
   /** The key as the one header, for a request whose redirect the browser follows. */
-  async #keyHeader(): Promise<{ headers: Headers; key: string | undefined }> {
+  async #keyHeader(
+    url: URL,
+    options: CallOptions,
+  ): Promise<{ headers: Headers; key: string | undefined }> {
     const headers = new Headers();
-    const key = (await this.apiKey()).key?.reveal();
+    const key = (await this.#waitForProvider(() => this.#key.promise, url, options)).key?.reveal();
     if (key !== undefined) headers.set("authorization", `Bearer ${key}`);
     return { headers, key };
+  }
+
+  /** Waits for a header or key provider without letting it outlive this call's deadline or
+   * caller signal. The provider itself is never cancelled: a shared key resolution may serve a
+   * later request after this caller has stopped waiting. */
+  async #waitForProvider<T>(
+    provider: () => T | Promise<T>,
+    url: URL,
+    { deadline, signal }: CallOptions,
+  ): Promise<T> {
+    signal?.throwIfAborted();
+    if (deadline === undefined && signal === undefined) return provider();
+    if (deadline !== undefined && deadline !== Infinity && deadline - this.#now() <= 0) {
+      throw this.#deadlinePassed(url);
+    }
+
+    const pending = Promise.resolve().then(provider);
+    return new Promise<T>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let settled = false;
+      let onAbort: () => void = () => undefined;
+      const finish = (settle: (value: T) => void, value: T): void => {
+        if (settled) return;
+        settled = true;
+        if (timer !== undefined) clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        settle(value);
+      };
+      const fail = (error: unknown): void => {
+        if (settled) return;
+        settled = true;
+        if (timer !== undefined) clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        reject(error);
+      };
+      onAbort = (): void => {
+        fail(signal?.reason);
+      };
+      const armDeadline = (): void => {
+        if (deadline === undefined || deadline === Infinity || settled) return;
+        const remaining = deadline - this.#now();
+        if (remaining <= 0) {
+          fail(this.#deadlinePassed(url));
+          return;
+        }
+        const wait = Math.min(Math.max(1, Math.ceil(remaining)), MAX_TIMER_MS);
+        timer = setTimeout(() => {
+          if (wait === Math.ceil(remaining)) fail(this.#deadlinePassed(url));
+          else armDeadline();
+        }, wait);
+      };
+
+      signal?.addEventListener("abort", onAbort, { once: true });
+      armDeadline();
+      pending.then(
+        (value) => {
+          finish(resolve, value);
+        },
+        (error: unknown) => {
+          fail(error);
+        },
+      );
+    });
   }
 
   /** How long the next attempt may run: its own timeout, or the time left before the deadline

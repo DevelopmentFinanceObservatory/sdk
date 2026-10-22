@@ -412,6 +412,38 @@ describe("candidate.fetch", () => {
 });
 
 describe("fetch", () => {
+  test("normalizes malformed optional part metadata through Search, fetch, and bytes", async () => {
+    const scenario = structuredClone(record("answer-definite-fetch"));
+    const search = scenario.exchanges[0]!.response.json as { parts: Record<string, unknown>[] };
+    const [part] = search.parts;
+    part!["assumptions"] = [
+      null,
+      { kind: "declared_default", binding_ref: 3, text: "bad" },
+      { kind: "declared_default", binding_ref: "how:aid", text: "aid", refs: ["A", 2] },
+    ];
+    part!["departures"] = [
+      null,
+      { code: 3, text: "bad" },
+      { code: "operation_not_applied", text: "Not ranked.", asked: 2, shown: {} },
+    ];
+    part!["operations"] = [
+      null,
+      { verb: 3, phrase: "bad" },
+      { verb: "rank", phrase: "top 5", over: 2, target_year: "2030" },
+    ];
+    const { transport, remaining } = replay(scenario);
+
+    const answer = await clientOver(transport).search(stepOf(scenario, 0, "search").question);
+    const dataset = await answer.fetch();
+    assert.deepEqual(dataset.assumptions, [
+      { kind: "declared_default", binding_ref: "how:aid", text: "aid", refs: ["A"] },
+    ]);
+    assert.deepEqual(dataset.departures, [{ code: "operation_not_applied", text: "Not ranked." }]);
+    assert.deepEqual(dataset.requestedOperations, [{ verb: "rank", phrase: "top 5" }]);
+    assert.ok((await dataset.bytes()).byteLength > 0);
+    assert.deepEqual(remaining(), []);
+  });
+
   test("a declined or catalogue answer raises DeclinedError", async () => {
     await assert.rejects(answerOf("answer-declined").fetch(), (error: unknown) => {
       assert.ok(error instanceof DeclinedError);

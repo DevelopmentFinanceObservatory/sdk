@@ -90,7 +90,14 @@ const RAW_PARSERS: Partial<ParquetParsers> = {
  *   (`contract_violation`).
  */
 export function readParquet(bytes: Uint8Array): ParquetFile {
-  const buffer = bytes.slice().buffer;
+  // Dataset has already copied each public input into an owned, full-span ArrayBuffer. Keep that
+  // one copy; callers of this standalone reader can still pass a view or shared backing store.
+  const buffer =
+    bytes.buffer instanceof ArrayBuffer &&
+    bytes.byteOffset === 0 &&
+    bytes.byteLength === bytes.buffer.byteLength
+      ? bytes.buffer
+      : new Uint8Array(bytes).buffer;
   const metadata = parquetMetadata(buffer);
   const columns = metadata.schema.slice(1).map((element) => ({
     name: element.name,
@@ -201,7 +208,11 @@ export function widen(left: ColumnType, right: ColumnType): ColumnType | undefin
       return { kind: "int", bits: Math.max(left.bits, right.bits) as Bits, signed: left.signed };
     }
     const [signed, unsigned] = left.signed ? [left, right] : [right, left];
-    const bits = Math.min(64, Math.max(signed.bits, unsigned.bits * 2)) as Bits;
+    // A signed N-bit integer reaches 2**(N - 1) - 1, so it needs one more bit than the unsigned
+    // member. There is no signed Parquet integer that holds both an UINT64 and any signed type.
+    const required = Math.max(signed.bits, unsigned.bits + 1);
+    const bits = ([8, 16, 32, 64] as const).find((width) => width >= required);
+    if (bits === undefined) return undefined;
     return { kind: "int", bits, signed: true };
   }
   if (left.kind === "float" && right.kind === "float") return { kind: "float", bits: 64 };

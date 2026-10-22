@@ -387,6 +387,30 @@ describe("failures and cancellation", () => {
       (error: unknown) => error === reason,
     );
   });
+
+  test("stops waiting for a header provider with the caller's abort reason", async () => {
+    const controller = new AbortController();
+    const reason = { mine: true };
+    const { fetch, seen } = mockFetch(json({ ok: true }));
+    const request = transport({
+      fetch,
+      headerProvider: () => new Promise<HeadersInit>(() => undefined),
+    }).request({ path: "/x", signal: controller.signal });
+    controller.abort(reason);
+    await assert.rejects(request, (error: unknown) => error === reason);
+    assert.deepEqual(seen, []);
+  });
+
+  test("keeps a provider rejection intact", async () => {
+    const reason = new Error("identity provider failed");
+    await assert.rejects(
+      transport({
+        fetch: mockFetch(json({ ok: true })).fetch,
+        headerProvider: async () => Promise.reject(reason),
+      }).request({ path: "/x" }),
+      (error: unknown) => error === reason,
+    );
+  });
 });
 
 /** A response that arrives after `ms`, or rejects with the abort reason when the request's
@@ -422,6 +446,100 @@ const stalledBody = (_request: unknown, init: RequestInit): Response => {
 };
 
 describe("timeouts", () => {
+  test("bounds a stalled header provider by the whole-call deadline", async () => {
+    const { fetch, seen } = mockFetch(json({ ok: true }));
+    const client = transport({
+      fetch,
+      timeout: Infinity,
+      headerProvider: () => new Promise<HeadersInit>(() => undefined),
+    });
+    const error = await client
+      .request({ path: "/x", deadline: client.deadlineAfter(20) })
+      .catch((value: unknown) => value);
+    assert.ok(error instanceof DfoTimeoutError);
+    assert.equal(error.code, "deadline_exceeded");
+    assert.deepEqual(seen, []);
+  });
+
+  test("bounds an initial key provider by the whole-call deadline", async () => {
+    const { fetch, seen } = mockFetch(json({ ok: true }));
+    const client = transport({
+      fetch,
+      timeout: Infinity,
+      apiKey: () => new Promise<string>(() => undefined),
+    });
+    const error = await client
+      .request({ path: "/x", deadline: client.deadlineAfter(20) })
+      .catch((value: unknown) => value);
+    assert.ok(error instanceof DfoTimeoutError);
+    assert.equal(error.code, "deadline_exceeded");
+    assert.deepEqual(seen, []);
+  });
+
+  test("bounds a browser followed download's shared key and keeps it for the next caller", async () => {
+    let resolveKey: (value: string) => void = () => undefined;
+    const key = new Promise<string>((resolve) => {
+      resolveKey = resolve;
+    });
+    const { fetch, seen } = mockFetch(() => {
+      const response = new Response(new Uint8Array([80, 65, 82, 49]));
+      Object.defineProperty(response, "url", {
+        value: "https://api.example/api/v1/datasets/files/artifact",
+      });
+      return response;
+    });
+    const client = transport({
+      baseUrl: "https://api.example/api/v1",
+      fetch,
+      timeout: Infinity,
+      apiKey: () => key,
+    });
+    const url = new URL("https://api.example/api/v1/datasets/files/artifact");
+    const controller = new AbortController();
+    const reason = { mine: true };
+    const cancelled = client.fetchSigned(url, { follow: true, signal: controller.signal });
+    const deadline = client.fetchSigned(url, { follow: true, deadline: client.deadlineAfter(20) });
+
+    controller.abort(reason);
+    await assert.rejects(cancelled, (error: unknown) => error === reason);
+    await assert.rejects(deadline, { name: "DfoTimeoutError", code: "deadline_exceeded" });
+    assert.equal(seen.length, 0);
+
+    resolveKey("dfo_k_new");
+    assert.deepEqual(
+      await client.fetchSigned(url, { follow: true }),
+      new Uint8Array([80, 65, 82, 49]),
+    );
+    assert.equal(seen[0]?.headers.get("authorization"), "Bearer dfo_k_new");
+  });
+
+  test("bounds a refresh key provider and lets its shared resolution serve the next request", async () => {
+    let resolveRefresh: (value: string) => void = () => undefined;
+    const refresh = new Promise<string>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    let calls = 0;
+    const { fetch, seen } = mockFetch(
+      problem({ code: "key_revoked", status: 401 }),
+      json({ ok: true }),
+    );
+    const client = transport({
+      fetch,
+      timeout: Infinity,
+      apiKey: () => (calls++ === 0 ? "dfo_k_old" : refresh),
+    });
+    const error = await client
+      .request({ path: "/x", deadline: client.deadlineAfter(20) })
+      .catch((value: unknown) => value);
+    assert.ok(error instanceof DfoTimeoutError);
+    assert.equal(error.code, "deadline_exceeded");
+    assert.equal(seen.length, 1);
+
+    resolveRefresh("dfo_k_new");
+    await client.request({ path: "/x" });
+    assert.equal(seen[1]?.headers.get("authorization"), "Bearer dfo_k_new");
+  });
+
   test("retry an attempt that runs past the client's timeout", async () => {
     const { sleep } = recordingSleep();
     const { fetch, seen } = mockFetch(answerAfter(1_000), json({ ok: true }));

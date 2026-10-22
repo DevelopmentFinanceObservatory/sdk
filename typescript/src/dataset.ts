@@ -11,7 +11,7 @@ import type {
   RequestedOperation,
   WarningModel,
 } from "./wire.ts";
-import { isRecord } from "./json.ts";
+import { isRecord, objects } from "./json.ts";
 
 /** The version of the provenance a file from `bytes()` carries under `dfo.*` keys, the one
  *  Python's `Dataset.save` writes. */
@@ -73,8 +73,65 @@ const unique = <T>(items: readonly T[]): T[] => [
   ...new Map(items.map((item) => [JSON.stringify(item), item])).values(),
 ];
 
-const objects = (value: unknown): Record<string, unknown>[] =>
-  Array.isArray(value) ? value.filter(isRecord) : [];
+const strings = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+
+const optionalString = (value: unknown): string | null | undefined =>
+  typeof value === "string" || value === null ? value : undefined;
+
+function assumptionsOf(parts: readonly Record<string, unknown>[]): Assumption[] {
+  return parts.flatMap((part) =>
+    objects(part["assumptions"]).flatMap((assumption) => {
+      const { kind, binding_ref: bindingRef, text } = assumption;
+      if (typeof kind !== "string" || typeof bindingRef !== "string" || typeof text !== "string") {
+        return [];
+      }
+      return [{ kind, binding_ref: bindingRef, text, refs: strings(assumption["refs"]) }];
+    }),
+  );
+}
+
+function departuresOf(parts: readonly Record<string, unknown>[]): Departure[] {
+  return parts.flatMap((part) =>
+    objects(part["departures"]).flatMap((departure) => {
+      const { code, text } = departure;
+      if (typeof code !== "string" || typeof text !== "string") return [];
+      const bindingRef = optionalString(departure["binding_ref"]);
+      const asked = optionalString(departure["asked"]);
+      const shown = optionalString(departure["shown"]);
+      return [
+        {
+          code,
+          text,
+          ...(bindingRef === undefined ? {} : { binding_ref: bindingRef }),
+          ...(asked === undefined ? {} : { asked }),
+          ...(shown === undefined ? {} : { shown }),
+        },
+      ];
+    }),
+  );
+}
+
+function operationsOf(parts: readonly Record<string, unknown>[]): RequestedOperation[] {
+  return parts.flatMap((part) =>
+    objects(part["operations"]).flatMap((operation) => {
+      const { verb, phrase } = operation;
+      if (typeof verb !== "string" || typeof phrase !== "string") return [];
+      const over = optionalString(operation["over"]);
+      const targetYear = operation["target_year"];
+      return [
+        {
+          verb,
+          phrase,
+          ...(over === undefined ? {} : { over }),
+          ...(typeof targetYear === "number" || targetYear === null
+            ? { target_year: targetYear }
+            : {}),
+        },
+      ];
+    }),
+  );
+}
 
 /** The datasets surface's warnings in the manifests, each with the members every warning has. */
 const warningsOf = (manifests: readonly Readonly<Record<string, unknown>>[]): WarningModel[] =>
@@ -184,37 +241,22 @@ export class Dataset<TMissing extends Gap = never> {
       rendering: member.rendering,
     }));
     const manifests = members.map((member) => member.manifest);
-    const answerParts = members.flatMap((member) => member.answerParts ?? []);
+    const answerParts = members.flatMap((member) => objects(member.answerParts));
     const retention = retentionOf(manifests);
     this.sentence = built.map((member) => member.sentence).join(" ");
     this.members = Object.freeze(built);
     this.citation = mergeCitations(built.map((member) => member.citation));
     this.warnings = Object.freeze(warningsOf(manifests));
-    this.departures = Object.freeze(
-      unique(answerParts.flatMap((part) => (part.departures ?? []) as Departure[])),
-    );
-    this.requestedOperations = Object.freeze(
-      unique(answerParts.flatMap((part) => (part.operations ?? []) as RequestedOperation[])),
-    );
+    this.departures = Object.freeze(unique(departuresOf(answerParts)));
+    this.requestedOperations = Object.freeze(unique(operationsOf(answerParts)));
     // Each assumption keeps the four members both clients save, so equal ones count once.
-    this.assumptions = Object.freeze(
-      unique(
-        answerParts.flatMap((part) =>
-          ((part.assumptions ?? []) as Assumption[]).map(({ kind, binding_ref, text, refs }) => ({
-            kind,
-            binding_ref,
-            text,
-            refs: refs ?? [],
-          })),
-        ),
-      ),
-    );
+    this.assumptions = Object.freeze(unique(assumptionsOf(answerParts)));
     this.missing = Object.freeze([...(options.missing ?? [])]);
     this.complete = this.missing.length === 0;
     this.heldUntil = retention.heldUntil;
     this.pinned = retention.pinned;
     this.layout = options.layout;
-    this.#data = members.map((member) => member.data.slice());
+    this.#data = members.map((member) => new Uint8Array(member.data));
     this.#files = this.#data.map(readParquet);
     this.layoutVersion = [
       ...new Set(members.map((member) => artifactLayout(member, options.layout))),
