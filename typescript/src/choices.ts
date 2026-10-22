@@ -14,13 +14,15 @@
  *   and its choices, or a placeholder of its refusal when it has none.
  *
  * Each identity echoes its reading's assumptions: a picked or listed candidate its part's
- * `reading_assumptions` under its `spec_id`, a definite part its own `assumptions`. A reading
- * with no list posts none, and Search reads it as a fresh request.
+ * `reading_assumptions` under its `spec_id`, a definite part its own `assumptions`. Each list
+ * posts as the server sent it, and so do the part's `operations`. A reading with no list posts
+ * none, and Search reads it as a fresh request.
  */
 import type { Answer, Candidate, Gap, QueryOption } from "./answer.ts";
 import { clientError } from "./errors.ts";
 import type { InvalidRequestError } from "./errors.ts";
 import { isRecord } from "./json.ts";
+import { parsedPartOf } from "./part-facts.ts";
 import { isKnownPart, partText } from "./parts.ts";
 import type {
   Assumption,
@@ -147,8 +149,8 @@ function onePart(option: QueryOption): { query: ParsedInput; part: ParsedPart } 
       detail: `The option ${JSON.stringify(option.label)} carries no data_query to post back.`,
     });
   }
-  const parts = query.parts as ParsedInput["parts"] | undefined;
-  if (!Array.isArray(parts) || parts.length !== 1) {
+  const { parts } = query;
+  if (parts.length !== 1) {
     throw clientError("contract_violation", {
       detail: `The option ${JSON.stringify(option.label)} does not carry a one-part parsed input.`,
     });
@@ -173,8 +175,8 @@ function entry(part: Part): Entry {
     };
   }
   // Any other part status may carry a restatement, an unknown one included.
-  const restatement: unknown = part.restatement;
-  if (isRecord(restatement)) return { entry_kind: "parsed", part: restatement as ParsedPart };
+  const restatement = parsedPartOf(part.restatement);
+  if (restatement !== null) return { entry_kind: "parsed", part: restatement };
   if (isKnownPart(part)) {
     switch (part.status) {
       case "no_data":
@@ -205,12 +207,10 @@ function identityOf(
   spec: Spec,
   assumptions: readonly Assumption[] | undefined,
 ): Pick<ResubmitIdentityEntry, "identity" | "entity_groups" | "assumptions"> {
-  const groups: unknown = spec.resolved.entity_groups;
+  const groups = spec.resolved.entity_groups;
   return {
     identity: spec.definition.identity,
-    ...(isRecord(groups) && Object.keys(groups).length > 0
-      ? { entity_groups: groups as NonNullable<Spec["resolved"]["entity_groups"]> }
-      : {}),
+    ...(isRecord(groups) && Object.keys(groups).length > 0 ? { entity_groups: groups } : {}),
     ...(assumptions === undefined ? {} : { assumptions: [...assumptions] }),
   };
 }
@@ -219,9 +219,9 @@ function identityEntry(part: Part, spec: Spec): ResubmitIdentityEntry {
   return { ...echoed(part), entry_kind: "identity", ...identityOf(spec, readingEcho(part, spec)) };
 }
 
-/** The assumptions a resubmitted reading of `part` echoes: a candidates part's
- *  `reading_assumptions` under the reading's `spec_id`, else the part's own `assumptions`.
- *  Undefined when the part holds no list for the reading. `[]` states none. */
+/** The assumptions a resubmitted reading of `part` echoes, as the server sent them: a
+ *  candidates part's `reading_assumptions` under the reading's `spec_id`, else the part's own
+ *  `assumptions`. Undefined when the part holds no list for the reading. `[]` states none. */
 function readingEcho(part: Part, spec: Spec): readonly Assumption[] | undefined {
   let listed: unknown = part.assumptions;
   if (isKnownPart(part) && part.status === "candidates") {
@@ -241,10 +241,12 @@ function echoed(part: Part): {
   if (variableText === null || variableText === "") {
     throw refuse("A part without variable text cannot be posted back; search again.");
   }
-  const operations = part.operations as RequestedOperation[] | undefined;
+  const operations: unknown = part.operations;
   return {
     variable_text: variableText,
     ...(part.separate === true ? { separate: true } : {}),
-    ...(Array.isArray(operations) && operations.length > 0 ? { operations } : {}),
+    ...(Array.isArray(operations) && operations.length > 0
+      ? { operations: operations as RequestedOperation[] }
+      : {}),
   };
 }

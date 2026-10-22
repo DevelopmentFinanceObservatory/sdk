@@ -3,11 +3,12 @@ import { decodeRows, encodeStacked, readParquet, stackedColumns } from "./parque
 import type { ParquetFile, Row, TablePart } from "./parquet.ts";
 import { DatasetRef } from "./ref.ts";
 import type { Layout, Rendering, SpecLike } from "./ref.ts";
+import { manifestWarningsOf } from "./part-facts.ts";
+import type { PartFacts } from "./part-facts.ts";
 import type {
   Assumption,
   CitationSource,
   Departure,
-  Part,
   RequestedOperation,
   WarningModel,
 } from "./wire.ts";
@@ -50,9 +51,10 @@ export type FetchedMember = {
   readonly digest: string;
   readonly rendering: Rendering;
   readonly data: Uint8Array;
-  /** The answer parts the member answers, when it came from an answer; their departures,
-   *  requested computations and assumptions reach the dataset. */
-  readonly answerParts?: readonly Part[];
+  /** What the answer parts the member answers state, as `partFacts` reads them, when it came
+   *  from an answer. Their departures, requested computations and assumptions reach the
+   *  dataset. */
+  readonly answerFacts?: readonly PartFacts[];
 };
 
 /** A cited source as the server sent it, with the two members every source carries. */
@@ -73,79 +75,9 @@ const unique = <T>(items: readonly T[]): T[] => [
   ...new Map(items.map((item) => [JSON.stringify(item), item])).values(),
 ];
 
-const strings = (value: unknown): string[] =>
-  Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-
-const optionalString = (value: unknown): string | null | undefined =>
-  typeof value === "string" || value === null ? value : undefined;
-
-function assumptionsOf(parts: readonly Record<string, unknown>[]): Assumption[] {
-  return parts.flatMap((part) =>
-    objects(part["assumptions"]).flatMap((assumption) => {
-      const { kind, binding_ref: bindingRef, text } = assumption;
-      if (typeof kind !== "string" || typeof bindingRef !== "string" || typeof text !== "string") {
-        return [];
-      }
-      return [{ kind, binding_ref: bindingRef, text, refs: strings(assumption["refs"]) }];
-    }),
-  );
-}
-
-function departuresOf(parts: readonly Record<string, unknown>[]): Departure[] {
-  return parts.flatMap((part) =>
-    objects(part["departures"]).flatMap((departure) => {
-      const { code, text } = departure;
-      if (typeof code !== "string" || typeof text !== "string") return [];
-      const bindingRef = optionalString(departure["binding_ref"]);
-      const asked = optionalString(departure["asked"]);
-      const shown = optionalString(departure["shown"]);
-      return [
-        {
-          code,
-          text,
-          ...(bindingRef === undefined ? {} : { binding_ref: bindingRef }),
-          ...(asked === undefined ? {} : { asked }),
-          ...(shown === undefined ? {} : { shown }),
-        },
-      ];
-    }),
-  );
-}
-
-function operationsOf(parts: readonly Record<string, unknown>[]): RequestedOperation[] {
-  return parts.flatMap((part) =>
-    objects(part["operations"]).flatMap((operation) => {
-      const { verb, phrase } = operation;
-      if (typeof verb !== "string" || typeof phrase !== "string") return [];
-      const over = optionalString(operation["over"]);
-      const targetYear = operation["target_year"];
-      return [
-        {
-          verb,
-          phrase,
-          ...(over === undefined ? {} : { over }),
-          ...(typeof targetYear === "number" || targetYear === null
-            ? { target_year: targetYear }
-            : {}),
-        },
-      ];
-    }),
-  );
-}
-
 /** The datasets surface's warnings in the manifests, each with the members every warning has. */
 const warningsOf = (manifests: readonly Readonly<Record<string, unknown>>[]): WarningModel[] =>
-  unique(
-    manifests.flatMap((manifest) =>
-      objects(manifest["warnings"]).flatMap((notice) =>
-        typeof notice["code"] === "string" &&
-        typeof notice["severity"] === "string" &&
-        typeof notice["message"] === "string"
-          ? [notice as WarningModel]
-          : [],
-      ),
-    ),
-  );
+  unique(manifests.flatMap((manifest) => manifestWarningsOf(manifest["warnings"])));
 
 function mergeCitations(citations: readonly Citation[]): Citation {
   const texts = new Set<string>();
@@ -241,16 +173,16 @@ export class Dataset<TMissing extends Gap = never> {
       rendering: member.rendering,
     }));
     const manifests = members.map((member) => member.manifest);
-    const answerParts = members.flatMap((member) => objects(member.answerParts));
+    const facts = members.flatMap((member) => member.answerFacts ?? []);
     const retention = retentionOf(manifests);
     this.sentence = built.map((member) => member.sentence).join(" ");
     this.members = Object.freeze(built);
     this.citation = mergeCitations(built.map((member) => member.citation));
     this.warnings = Object.freeze(warningsOf(manifests));
-    this.departures = Object.freeze(unique(departuresOf(answerParts)));
-    this.requestedOperations = Object.freeze(unique(operationsOf(answerParts)));
+    this.departures = Object.freeze(unique(facts.flatMap((part) => part.departures)));
+    this.requestedOperations = Object.freeze(unique(facts.flatMap((part) => part.operations)));
     // Each assumption keeps the four members both clients save, so equal ones count once.
-    this.assumptions = Object.freeze(unique(assumptionsOf(answerParts)));
+    this.assumptions = Object.freeze(unique(facts.flatMap((part) => part.assumptions ?? [])));
     this.missing = Object.freeze([...(options.missing ?? [])]);
     this.complete = this.missing.length === 0;
     this.heldUntil = retention.heldUntil;
@@ -294,7 +226,7 @@ export class Dataset<TMissing extends Gap = never> {
    * The dataset as one Parquet file whose key-value metadata carries the provenance and the ref
    * under `dfo.*` keys, as Python's `Dataset.save` writes it, so `dfo.open_bundle` reads it
    * back. Several members stack into the file, `part` first. `memberBytes` gives the file the
-   * server built.
+   * server built. It decodes every member and encodes the whole table in memory.
    */
   async bytes(): Promise<Uint8Array> {
     return encodeStacked(this.#parts(), this.#metadata());
@@ -309,7 +241,8 @@ export class Dataset<TMissing extends Gap = never> {
     return data.slice();
   }
 
-  /** Every row as an object keyed by column name. `JSON.stringify` works on the result. */
+  /** Every row as an object keyed by column name. `JSON.stringify` works on the result. It
+   *  decodes the whole table in memory, one object per row. */
   toRows(): Promise<Row[]> {
     return decodeRows(this.#parts());
   }

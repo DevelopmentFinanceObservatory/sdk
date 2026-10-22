@@ -14,6 +14,7 @@ import { fetchMembers as defaultFetchMembers } from "./fetch.ts";
 import type { FetchMembersOptions, MemberRequest } from "./fetch.ts";
 import { CODE_GAP_KINDS } from "./generated/actions.ts";
 import type { GAP_KINDS } from "./generated/actions.ts";
+import { parsedInputOf, partFacts, warningsOf } from "./part-facts.ts";
 import { isKnownPart, partText } from "./parts.ts";
 import { checkStrict } from "./strict.ts";
 import { describing } from "./trace.ts";
@@ -38,6 +39,8 @@ export const RESOLVE_PATH = "/search/resolve";
 const SCHEMA_VERSION = 1;
 /** Longer than Search's 45-second soft deadline, so a slow answer arrives whole. */
 export const SEARCH_TIMEOUT_MS = 60_000;
+
+const NO_ASSUMPTIONS: readonly Assumption[] = Object.freeze([]);
 
 const TIMED_OUT =
   "Search reached its time limit before this part resolved; search again, or ask for less at once.";
@@ -117,8 +120,9 @@ export type QueryOption = {
   readonly label: string;
   /** The question's words the choice settles. */
   readonly mentions: readonly string[];
-  /** The parsed question with the choice pinned, posted back to Search unchanged; null when the
-   *  server sent none, which a choice of the option refuses as a `ContractError`. */
+  /** The parsed question with the choice pinned, posted back to Search unchanged. Null when the
+   *  server sent none or sent one that is not a parsed input, and a choice of the option then
+   *  refuses as a `ContractError`. */
   readonly dataQuery: ParsedInput | null;
 };
 
@@ -377,7 +381,7 @@ export function answerFromBody(
     });
   }
   const diagnostics = isRecord(body["diagnostics"]) ? body["diagnostics"] : {};
-  const warnings = objects(diagnostics["warnings"]) as Warning[];
+  const warnings = warningsOf(diagnostics["warnings"]);
   const kind = body["kind"];
   if (kind === "declined" || kind === "catalogue") {
     return new Answer({
@@ -400,24 +404,14 @@ export function answerFromBody(
     });
   }
   checkStrict("Resolution", body);
-  // The strict check has required `parts` to be an array.
-  const parts = body["parts"] as unknown[];
+  const parts = list(body["parts"]);
   if (parts.length === 0) {
     throw clientError("contract_violation", {
       detail: "The Search resolution has no parts, which this client acts on.",
       pointer: "/parts",
     });
   }
-  for (const [index, part] of parts.entries()) {
-    if (!isRecord(part)) {
-      throw clientError("contract_violation", {
-        detail: `Part ${index} of the Search response is not an object.`,
-        pointer: `/parts/${index}`,
-      });
-    }
-    checkPart(part, index);
-  }
-  const typed = parts as Part[];
+  const typed = parts.map(readPart);
   const sentence = text(body["rendered_sentence"]);
   const status = text(body["status"]);
   return new Answer({
@@ -439,24 +433,33 @@ export function answerFromBody(
   });
 }
 
-/** Checks the members of a part the client acts on beyond the strict fields: its `status`, which
- *  the strict check lets through when absent, and that each spec's definition names it. */
-function checkPart(part: Record<string, unknown>, index: number): void {
-  if (typeof part["status"] !== "string") {
+/** A part, once it passes the checks the client makes beyond the strict fields: that it is an
+ *  object, that it has a `status`, which the strict check lets through when absent, and that each
+ *  spec's definition names it. */
+function readPart(part: unknown, index: number): Part {
+  const pointer = `/parts/${index}`;
+  if (!isRecord(part)) {
     throw clientError("contract_violation", {
-      detail: `Part ${index} of the Search response has no status, which this client acts on.`,
-      pointer: `/parts/${index}/status`,
+      detail: `Part ${index} of the Search response is not an object.`,
+      pointer,
     });
   }
-  const pointer = `/parts/${index}`;
-  if (part["status"] === "definite") checkSpec(part["spec"], `${pointer}/spec`);
-  if (part["status"] === "candidates") {
-    // The strict check has required `candidates` to be an object and its `specs` an array.
-    const specs = (part["candidates"] as Record<string, unknown>)["specs"] as unknown[];
+  const { status } = part;
+  if (typeof status !== "string") {
+    throw clientError("contract_violation", {
+      detail: `Part ${index} of the Search response has no status, which this client acts on.`,
+      pointer: `${pointer}/status`,
+    });
+  }
+  if (status === "definite") checkSpec(part["spec"], `${pointer}/spec`);
+  if (status === "candidates") {
+    const candidates = part["candidates"];
+    const specs = list(isRecord(candidates) ? candidates["specs"] : undefined);
     for (const [at, spec] of specs.entries()) {
       checkSpec(spec, `${pointer}/candidates/specs/${at}`);
     }
   }
+  return { ...part, status };
 }
 
 /** Raises when a Search spec's definition names another spec than its `spec_id`. */
@@ -553,9 +556,9 @@ function gapFor(
       return null;
     case "candidates": {
       const fetch = bind(part);
-      const byReading: unknown = part.reading_assumptions;
+      const { readingAssumptions } = partFacts(part);
       const candidates = part.candidates.specs.map((spec) =>
-        candidateFrom(spec, isRecord(byReading) ? objects(byReading[spec.spec_id]) : [], fetch),
+        candidateFrom(spec, readingAssumptions.get(spec.spec_id) ?? NO_ASSUMPTIONS, fetch),
       );
       return gap("choice", `${candidates.length} readings`, candidates);
     }
@@ -579,7 +582,7 @@ function queryOptions(noData: NoData): QueryOption[] {
     kind: "query",
     label: text(option["label"]) ?? "",
     mentions: list(option["mentions"]).filter((m): m is string => typeof m === "string"),
-    dataQuery: isRecord(option["data_query"]) ? (option["data_query"] as ParsedInput) : null,
+    dataQuery: parsedInputOf(option["data_query"]),
   }));
 }
 
@@ -588,7 +591,7 @@ function queryOptions(noData: NoData): QueryOption[] {
  *  sentence says. */
 function candidateFrom(
   spec: Spec,
-  assumptions: readonly Record<string, unknown>[],
+  assumptions: readonly Assumption[],
   fetch: CandidateFetch,
 ): Candidate {
   const { resolved } = spec;
@@ -615,7 +618,7 @@ function candidateFrom(
       label: heading || sentence || null,
       source: isRecord(provenance) ? text(provenance["label"]) : null,
       unit: unit ?? null,
-      assumptions: Object.freeze(assumptions as Assumption[]),
+      assumptions,
     },
     fetch,
   );

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
+import { parquetMetadata } from "hyparquet";
+
 import { Answer, answerFromBody, Candidate, SearchWarning } from "../src/answer.ts";
 import type { AnswerContext, Gap, QueryOption } from "../src/answer.ts";
 import {
@@ -9,6 +11,7 @@ import {
   IncompleteAnswerError,
   InvalidRequestError,
 } from "../src/errors.ts";
+import { toArrow } from "../src/arrow.ts";
 import { clientOver } from "../src/client.ts";
 import { Dataset } from "../src/dataset.ts";
 import type { MemberRequest } from "../src/fetch.ts";
@@ -344,6 +347,33 @@ describe("candidate.fetch", () => {
     assert.deepEqual(remaining(), []);
   });
 
+  test("a malformed assumption reads parsed on the candidate and its dataset, and its echo posts the list as sent", async () => {
+    const scenario = structuredClone(record("answer-candidates-choose-fetch"));
+    const [search, resubmit] = scenario.exchanges;
+    const assumed = {
+      kind: "declared_default",
+      binding_ref: "how:fixedCapitalConsumptionBasis",
+      text: "gross of fixed capital consumption",
+      refs: ["GrossOfFixedCapitalConsumption"],
+    };
+    const listed = [null, { kind: "declared_default", binding_ref: 3, text: "bad" }, assumed];
+    const offered = (search!.response.json as { parts: Record<string, unknown>[] }).parts[0]!;
+    const specId = (offered as CandidatesPart).candidates.specs[0]!.spec_id;
+    offered["reading_assumptions"] = { [specId]: listed };
+    (resubmit!.response.json as { parts: Record<string, unknown>[] }).parts[0]!["assumptions"] =
+      listed;
+    const posted = resubmit!.request.json as { input: { entries: { assumptions: unknown }[] } };
+    posted.input.entries[0]!.assumptions = listed;
+    const { transport, remaining } = replay(scenario);
+
+    const answer = await clientOver(transport).search("GNI of Germany from 2015 to 2022");
+    const candidate = candidatesOf(answer.gaps)[0]!;
+    const dataset = await candidate.fetch();
+    assert.deepEqual(remaining(), []);
+    assert.deepEqual(candidate.assumptions, [assumed]);
+    assert.deepEqual(dataset.assumptions, candidate.assumptions);
+  });
+
   test("in an answer of several parts, asks Search for the candidate alone and builds its answer with the options given", async () => {
     const built: { members: MemberRequest[]; layout: unknown; timeout: unknown }[] = [];
     const picked = body("answer-definite-fetch");
@@ -412,7 +442,7 @@ describe("candidate.fetch", () => {
 });
 
 describe("fetch", () => {
-  test("normalizes malformed optional part metadata through Search, fetch, and bytes", async () => {
+  test("normalizes malformed optional part metadata through Search, fetch, toRows, toArrow and a bytes() reopen", async () => {
     const scenario = structuredClone(record("answer-definite-fetch"));
     const search = scenario.exchanges[0]!.response.json as { parts: Record<string, unknown>[] };
     const [part] = search.parts;
@@ -434,14 +464,59 @@ describe("fetch", () => {
     const { transport, remaining } = replay(scenario);
 
     const answer = await clientOver(transport).search(stepOf(scenario, 0, "search").question);
+    // The answer's hints read the same operations the dataset keeps.
+    assert.deepEqual(String(answer).split("\n").slice(1), ['  Not done: rank ("top 5")']);
     const dataset = await answer.fetch();
+    assert.deepEqual(remaining(), []);
     assert.deepEqual(dataset.assumptions, [
       { kind: "declared_default", binding_ref: "how:aid", text: "aid", refs: ["A"] },
     ]);
     assert.deepEqual(dataset.departures, [{ code: "operation_not_applied", text: "Not ranked." }]);
     assert.deepEqual(dataset.requestedOperations, [{ verb: "rank", phrase: "top 5" }]);
-    assert.ok((await dataset.bytes()).byteLength > 0);
-    assert.deepEqual(remaining(), []);
+
+    const rows = await dataset.toRows();
+    assert.equal(rows.length, dataset.rows);
+    const table = await toArrow(dataset);
+    assert.equal(table.numRows, dataset.rows);
+    assert.deepEqual(
+      table.schema.fields.map((field) => field.name),
+      dataset.columns,
+    );
+
+    const saved = await dataset.bytes();
+    const reopened = new Dataset([{ ...dataset.members[0]!, manifest: {}, data: saved }], {
+      layout: "long",
+    });
+    assert.deepEqual(await reopened.toRows(), rows);
+    const metadata = new Map(
+      (parquetMetadata(saved.slice().buffer).key_value_metadata ?? []).map(({ key, value }) => [
+        key,
+        value,
+      ]),
+    );
+    const provenance = JSON.parse(metadata.get("dfo.dataset")!) as Record<string, unknown>;
+    assert.deepEqual(
+      {
+        assumptions: provenance["assumptions"],
+        departures: provenance["departures"],
+        requested_operations: provenance["requested_operations"],
+      },
+      {
+        assumptions: [
+          { kind: "declared_default", binding_ref: "how:aid", text: "aid", refs: ["A"] },
+        ],
+        departures: [
+          {
+            code: "operation_not_applied",
+            text: "Not ranked.",
+            asked: null,
+            shown: null,
+            binding_ref: null,
+          },
+        ],
+        requested_operations: [{ verb: "rank", phrase: "top 5", over: null, target_year: null }],
+      },
+    );
   });
 
   test("a declined or catalogue answer raises DeclinedError", async () => {
@@ -517,6 +592,18 @@ describe("fetch", () => {
 
     await assert.rejects(answer.fetch({ strict: true }), SearchWarning);
     assert.equal(context.built.length, 1);
+  });
+
+  test('a warn notice with no code shows its note and raises under strict with the code ""', async () => {
+    const edited = body("answer-definite-fetch");
+    (edited["diagnostics"] as { warnings: unknown[] }).warnings = [
+      { severity: "warn", message: "One source answered slowly." },
+    ];
+    const context = offline();
+    const answer = answerFromBody(edited, context, null);
+    assert.equal(answer.toString(), `${answer.sentence!}\n  Note: One source answered slowly.`);
+    await assert.rejects(answer.fetch({ strict: true }), { name: "SearchWarning", code: "" });
+    assert.equal(context.built.length, 0);
   });
 
   test("a strict fetch with one departure throws a SearchWarning with its code", async () => {

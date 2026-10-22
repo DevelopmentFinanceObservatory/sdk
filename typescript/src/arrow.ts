@@ -99,7 +99,8 @@ function arrowVector(type: ColumnType, values: readonly unknown[]): arrow.Vector
 /**
  * The dataset's table as an apache-arrow `Table`, `part` first when several members stack.
  * INT64 columns keep their `bigint` values, and timestamps their stored unit. A DECIMAL column
- * reads as `Float64`, each value the float nearest the stored decimal.
+ * reads as `Float64`, each value the float nearest the stored decimal. It decodes every member
+ * and builds the whole table in memory.
  */
 export async function toArrow(dataset: Dataset<Gap>): Promise<arrow.Table> {
   const vectors: Record<string, arrow.Vector> = {};

@@ -56,6 +56,24 @@ describe("a manifest's warnings", () => {
       severity: "warn",
     });
   });
+
+  test('a warning with no code raises under strict with the code ""', async () => {
+    const record = structuredClone(await scenario("fetch-spec-known-sentence"));
+    const { spec } = stepOf(record, 0, "fetch");
+    assert.ok(spec);
+    const withWarnings = record.exchanges
+      .map((exchange) => exchange.response.json)
+      .filter((body): body is { warnings: Record<string, unknown>[] } =>
+        Array.isArray((body as { warnings?: unknown } | undefined)?.warnings),
+      );
+    assert.ok(withWarnings.length > 0);
+    for (const body of withWarnings) for (const warning of body.warnings) delete warning["code"];
+    await assert.rejects(fetchDataset(replay(record).transport, spec, { strict: true }), {
+      name: "DataWarning",
+      code: "",
+      severity: "warn",
+    });
+  });
 });
 
 describe("arguments a fetch refuses before any request", () => {

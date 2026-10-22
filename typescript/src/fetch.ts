@@ -44,6 +44,8 @@ import {
   startOperation,
 } from "./operation.ts";
 import type { Built, Manifest, Operation, ProgressHandler } from "./operation.ts";
+import { manifestWarningsOf, partFacts } from "./part-facts.ts";
+import type { PartFacts } from "./part-facts.ts";
 import { DatasetRef, layoutOf, renderingFor, renderingMatches, renderingOptions } from "./ref.ts";
 import type { Layout, RefMember, Rendering, SpecLike } from "./ref.ts";
 import { checkStrict } from "./strict.ts";
@@ -312,15 +314,9 @@ function pickArtifact(
  *  first under strict. Each carries `traceId`, the trace id of the response that carried the
  *  manifest. */
 function noteWarnings(transport: Transport, { manifest, traceId }: Built, strict: boolean): void {
-  const warnings = manifest["warnings"];
-  for (const notice of Array.isArray(warnings) ? warnings : []) {
-    if (!isRecord(notice) || notice["severity"] === "info") continue;
-    const warning = new DataWarning(
-      String(notice["code"]),
-      String(notice["message"]),
-      String(notice["severity"]),
-      traceId,
-    );
+  for (const { code, message, severity } of manifestWarningsOf(manifest["warnings"])) {
+    if (severity === "info") continue;
+    const warning = new DataWarning(code, message, severity, traceId);
     if (strict) throw warning;
     transport.warn(warning);
   }
@@ -421,7 +417,7 @@ type Finishing = {
   readonly sentence: string | null | undefined;
   readonly rendering: Rendering;
   readonly strict: boolean;
-  readonly answerParts?: readonly Part[];
+  readonly answerFacts?: readonly PartFacts[];
 };
 
 /** Downloads a built version's artifact and gives it Search's sentence. The manifest's warnings
@@ -429,7 +425,7 @@ type Finishing = {
 async function finish(
   transport: Transport,
   built: Built,
-  { parts, posted, sentence, rendering, strict, answerParts }: Finishing,
+  { parts, posted, sentence, rendering, strict, answerFacts }: Finishing,
   wait: Wait,
 ): Promise<FetchedMember> {
   const { manifest } = built;
@@ -461,7 +457,7 @@ async function finish(
     digest,
     rendering,
     data,
-    ...(answerParts === undefined ? {} : { answerParts }),
+    ...(answerFacts === undefined ? {} : { answerFacts }),
   };
 }
 
@@ -549,7 +545,7 @@ export async function fetchMembers<TMissing extends Gap = never>(
           sentence,
           rendering,
           strict: options.strict ?? false,
-          ...(answerParts === undefined ? {} : { answerParts }),
+          ...(answerParts === undefined ? {} : { answerFacts: answerParts.map(partFacts) }),
         },
         wait,
       ),

@@ -10,9 +10,9 @@ import { toArrow } from "../src/arrow.ts";
 import { Dataset, tableParts } from "../src/dataset.ts";
 import type { FetchedMember } from "../src/dataset.ts";
 import { decodeStored, readParquet, widen } from "../src/parquet.ts";
+import { partFacts } from "../src/part-facts.ts";
 import type { ColumnType } from "../src/parquet.ts";
 import { DatasetRef } from "../src/ref.ts";
-import type { Part } from "../src/wire.ts";
 import { scenarioBytes } from "./replay.ts";
 
 const SCENARIOS = new URL("../../contract/scenarios/", import.meta.url);
@@ -208,13 +208,13 @@ describe("a dataset of several members", async () => {
     text: "official development assistance",
     refs: ["DAC2aAidType206"],
   };
-  const answered = (assumptions: unknown[]) => [{ status: "definite", assumptions }] as Part[];
+  const answered = (assumptions: unknown[]) => [partFacts({ status: "definite", assumptions })];
   const dataset = new Dataset(
     [
       member(health, {
         parts: ["health ODA", "education ODA"],
         sentence: "Health.",
-        answerParts: answered([assumed]),
+        answerFacts: answered([assumed]),
         manifest: {
           artifacts: [
             {
@@ -227,7 +227,7 @@ describe("a dataset of several members", async () => {
       member(gdp, {
         sentence: "GDP.",
         spec: { spec_id: gdpSpec, definition: { spec_id: gdpSpec } },
-        answerParts: answered([
+        answerFacts: answered([
           { ...assumed },
           { kind: "place_scope", binding_ref: "where:", text: "every country" },
         ]),
@@ -387,7 +387,7 @@ describe("one member", async () => {
     refs: ["DAC2aAidType206"],
   };
   const dataset = new Dataset(
-    [member(data, { answerParts: [{ status: "definite", assumptions: [assumed] }] as Part[] })],
+    [member(data, { answerFacts: [partFacts({ status: "definite", assumptions: [assumed] })] })],
     { layout: "long" },
   );
 
