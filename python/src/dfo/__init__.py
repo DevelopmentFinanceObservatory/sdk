@@ -7,7 +7,7 @@
 
 from dfo._answer import AsyncAnswer
 from dfo._build import Progress
-from dfo._bundle import BundleError, open_bundle
+from dfo._bundle import BundleError, BundleLimits, open_bundle
 from dfo._cli import login
 from dfo._client import AsyncClient
 from dfo._dataset import Dataset
@@ -74,6 +74,7 @@ __all__ = [
     "AsyncOperation",
     "AuthenticationError",
     "BundleError",
+    "BundleLimits",
     "Candidate",
     "CandidatesPart",
     "Citation",

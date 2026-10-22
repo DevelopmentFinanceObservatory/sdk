@@ -247,12 +247,18 @@ class FakeCache:
     def latest_manifest(
         self, spec_id: str, rendering: Rendering, /
     ) -> dict[str, Any] | None:
+        candidates = self.manifest_candidates(spec_id, rendering)
+        return candidates[0] if candidates else None
+
+    def manifest_candidates(
+        self, spec_id: str, rendering: Rendering, /
+    ) -> list[dict[str, Any]]:
         stored = [
             manifest
             for (stored_id, _, stored_rendering), manifest in self.manifests.items()
             if (stored_id, stored_rendering) == (spec_id, rendering)
         ]
-        return max(stored, key=lambda body: body["prepared_at"], default=None)
+        return sorted(stored, key=lambda body: body["prepared_at"], reverse=True)
 
 
 @dataclass

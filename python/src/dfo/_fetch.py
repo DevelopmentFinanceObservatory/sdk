@@ -22,7 +22,7 @@ one after another, under one deadline.
 """
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urljoin
 
@@ -99,6 +99,9 @@ class Session:
 
     transport: AsyncTransport
     cache: Cache | None = None
+    # A default-client session holds its client only while an operation uses it.
+    # That keeps a replaced default client's transport open through its request.
+    owner: object | None = field(default=None, compare=False, repr=False)
 
 
 type SessionSource = Callable[[], Session]
@@ -245,7 +248,9 @@ async def fetch_members(
     with ProgressRenderer(enabled=progress) as renderer:
         for want in wants:
             if stale:
-                manifest = _latest_cached(cache, want.spec.spec_id, rendering)
+                manifest, cached_data = _latest_cached(
+                    cache, want.spec.spec_id, rendering
+                )
                 trace_id = None
             else:
                 manifest, trace_id = await _build_latest(
@@ -254,6 +259,7 @@ async def fetch_members(
                     deadline=deadline,
                     on_progress=progress_hook(renderer),
                 )
+                cached_data = None
             fetched.append(
                 await _finish(
                     transport,
@@ -264,6 +270,7 @@ async def fetch_members(
                     strict=strict,
                     cache=cache,
                     deadline=deadline,
+                    cached_data=cached_data,
                 )
             )
     return build_dataset(
@@ -287,19 +294,65 @@ async def _build_latest(
         raise
 
 
-def _latest_cached(cache: Cache | None, spec_id: str, rendering: Rendering) -> Wire:
-    """The manifest of the newest version the cache holds of a spec.
+def _latest_cached(
+    cache: Cache | None, spec_id: str, rendering: Rendering
+) -> tuple[Wire, bytes]:
+    """The newest plain cached manifest and its verified artifact bytes.
 
     Raises:
         NetworkError: The cache holds no version of it (`offline`).
     """
-    manifest = None if cache is None else cache.latest_manifest(spec_id, rendering)
-    if manifest is None:
-        raise client_error(
-            OFFLINE,
-            f"DFO_OFFLINE=1 is set, and the cache holds no version of {spec_id}",
-        )
-    return manifest
+    if cache is not None:
+        for manifest in cache.manifest_candidates(spec_id, rendering):
+            cached = _plain_cached_manifest(cache, manifest, rendering)
+            if cached is not None:
+                return cached
+    raise client_error(
+        OFFLINE,
+        f"DFO_OFFLINE=1 is set, and the cache holds no version of {spec_id}",
+    )
+
+
+_RESHAPING_RENDERINGS = frozenset(
+    {"columns", "pivot", "groupby", "without_party_totals"}
+)
+_BASE_RENDERINGS = frozenset({"format", "bundle", "layout"})
+
+
+def _plain_cached_manifest(
+    cache: Cache, manifest: Wire, rendering: Rendering, /
+) -> tuple[Wire, bytes] | None:
+    """A plain artifact from a cached manifest, with verified bytes.
+
+    A `DatasetRef` records only the coarse selector, while an artifact can also
+    record a column projection or pivot. Such an artifact remains available to
+    its exact-digest ref, but cannot stand in for a plain spec fetch.
+    """
+    for artifact in manifest["artifacts"]:
+        artifact_rendering = artifact["rendering"]
+        if not rendering.matches(artifact_rendering) or not _is_plain_rendering(
+            artifact_rendering
+        ):
+            continue
+        data = cache.get_bytes(artifact["artifact_digest"])
+        if data is None:
+            continue
+        cached = dict(manifest)
+        cached["artifacts"] = [artifact]
+        return cached, data
+    return None
+
+
+def _is_plain_rendering(rendering: Mapping[str, Any], /) -> bool:
+    """Whether an artifact has no rendering selector that changes its rows."""
+    for key, value in rendering.items():
+        if key in _RESHAPING_RENDERINGS:
+            return False
+        if key == "metadata" and value == "incomplete":
+            continue
+        if key not in _BASE_RENDERINGS:
+            return False
+    return True
 
 
 async def mint(
@@ -451,6 +504,7 @@ async def _finish(
     strict: bool,
     cache: Cache | None,
     deadline: float | None,
+    cached_data: bytes | None = None,
 ) -> FetchedMember:
     """Download a built version's artifact and give it Search's sentence.
 
@@ -483,12 +537,14 @@ async def _finish(
             deadline=deadline,
         )
     digest = artifact["artifact_digest"]
-    data = cache.get_bytes(digest) if cache is not None else None
+    data = cached_data
+    if data is None and cache is not None:
+        data = cache.get_bytes(digest)
     if data is None:
         data = await _download(transport, route, digest, deadline=deadline)
         _store(cache, manifest, rendering, digest, data)
     elif cache is not None:
-        cache.put_manifest(spec_id, content_version, rendering, manifest)
+        _store(cache, manifest, rendering, digest)
     return FetchedMember(
         parts=parts,
         spec=Spec(spec_id, definition, sentence),
@@ -506,17 +562,46 @@ def _store(
     manifest: Wire,
     rendering: Rendering,
     digest: str,
-    data: bytes,
+    data: bytes | None = None,
 ) -> None:
     if cache is None:
         return
-    cache.put_bytes(digest, data)
+    if data is not None:
+        cache.put_bytes(digest, data)
+    spec_id = manifest["definition"]["spec_id"]
+    content_version = manifest["content_version"]
+    stored = cache.get_manifest(spec_id, content_version, rendering)
+    cached = dict(manifest)
+    downloaded = [
+        artifact
+        for artifact in manifest["artifacts"]
+        if artifact["artifact_digest"] == digest
+    ]
+    prior = [] if stored is None else stored.get("artifacts", [])
+    cached["artifacts"] = _merge_artifacts(prior, downloaded)
     cache.put_manifest(
-        manifest["definition"]["spec_id"],
-        manifest["content_version"],
+        spec_id,
+        content_version,
         rendering,
-        manifest,
+        cached,
     )
+
+
+def _merge_artifacts(prior: object, downloaded: Sequence[Wire], /) -> list[Wire]:
+    """Keep same-version artifact records distinct by digest and rendering."""
+    artifacts: list[Wire] = []
+    if isinstance(prior, list):
+        artifacts = [artifact for artifact in prior if isinstance(artifact, dict)]
+    artifacts.extend(
+        artifact
+        for artifact in downloaded
+        if not any(
+            artifact["artifact_digest"] == seen.get("artifact_digest")
+            and artifact["rendering"] == seen.get("rendering")
+            for seen in artifacts
+        )
+    )
+    return artifacts
 
 
 def _note_warnings(manifest: Wire, *, strict: bool, trace_id: str | None) -> None:

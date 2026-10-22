@@ -102,6 +102,12 @@ class Cache(Protocol):
         """The manifest of a spec's newest stored version in one rendering, or None."""
         ...
 
+    def manifest_candidates(
+        self, spec_id: str, rendering: Rendering, /
+    ) -> list[dict[str, Any]]:
+        """Stored manifests for a spec and rendering, newest first."""
+        ...
+
 
 def rendering_for(layout: str) -> Rendering:
     """The bare Parquet rendering both clients build for `layout`.

@@ -56,7 +56,9 @@ def _install(client: Client) -> None:
 
 
 def _session() -> Session:
-    return default_client()._current()
+    client = default_client()
+    session = client._current()
+    return Session(session.transport, session.cache, owner=client)
 
 
 def configure(
@@ -116,6 +118,8 @@ def search(question: str, /, *, timeout: float | None = SEARCH_TIMEOUT) -> Answe
         question: The question, in your words.
         timeout: The longest the call waits, retries included, in seconds. Each
             attempt reads until then, and None waits as long as Search takes.
+            In the synchronous client, platform name resolution can run past
+            this bound; the asynchronous client can cancel it.
 
     Raises:
         ContractError: The answer lacks a member the client acts on.
@@ -138,7 +142,9 @@ def fetch(
     """Fetch a spec's latest version, or the exact versions a ref names, with the
     default client.
 
-    Takes `Client.fetch`'s arguments.
+    Takes `Client.fetch`'s arguments, including its timeout behavior: platform
+    name resolution can run past a synchronous deadline, while the asynchronous
+    client can cancel it.
 
     Raises:
         InvalidRequestError: A ref is narrowed or given another layout.

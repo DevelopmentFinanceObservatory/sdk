@@ -24,9 +24,9 @@ v1/dfo/cache1/
             └── parquet.json
 ```
 
-`files/sha256/<hex>` holds a downloaded file under its digest. `manifests/<spec_id>/<content_version>/<rendering>.json` holds the version's manifest, where the rendering is `parquet` for the long layout and `parquet-frame` for the frame. Every DFO client uses this layout, so a Python script and a TypeScript service on one machine share their downloads.
+`files/sha256/<hex>` holds a downloaded file under its digest. `manifests/<spec_id>/<content_version>/<rendering>.json` holds the version's manifest, where the rendering is `parquet` for the long layout and `parquet-frame` for the frame. Clients that implement cache1 use this layout, so they can share downloads on one machine.
 
-Each entry is written to a temporary name and renamed into place, so a reader never sees half a file, and two processes can fill one cache without a lock. A read hashes the file again, and a file whose bytes differ from its digest counts as a miss and downloads afresh.
+Each entry is written to a temporary name and renamed into place, so a reader never sees half a file. Two processes can write the same content-addressed file without a lock. Concurrent manifest replacements can lose a cache candidate, but cannot make a digest name different bytes. A read hashes the file again, and a file whose bytes differ from its digest counts as a miss and downloads afresh.
 
 ## Size and clearing
 
