@@ -3,7 +3,7 @@
 ## Layout
 
 - `python/` holds the `development-finance` package, which imports as `dfo`.
-- `typescript/` will hold the `@developmentfinance/client` package.
+- `typescript/` holds the `@developmentfinance/client` package.
 - `contract/` holds the client contract, a copy of the `dfo_client_contract` package data from the spec-kit repository at the commit `contract/SOURCE` names. Git tracks only `SOURCE`; `scripts/sync_contract.py` fetches the rest. Both clients generate code from the copy and replay its scenarios.
 - `scripts/` holds the tools shared by the clients.
 
@@ -26,6 +26,34 @@ uv run --directory python ty check
 pre-commit run --all-files
 ```
 
+## TypeScript
+
+The package uses pnpm, at the version `packageManager` in `typescript/package.json` names, Node 22.18 or later, which runs the TypeScript sources, tests and scripts directly, and uv. `pnpm test`, `pnpm test:e2e`, `pnpm generate` and `pnpm generate:check` first run `scripts/fetch-contract.ts`, also `pnpm fetch-contract`, which brings `contract/` to `SOURCE` by running `scripts/sync_contract.py` through uv on Python 3.12 or later, so a machine whose `python3` is older still works. The fetch does nothing when the copy is current. When uv is missing or the fetch fails, it stops the command and says what to run. Run the checks from the root:
+
+```bash
+pnpm --dir typescript install
+pnpm --dir typescript lint
+pnpm --dir typescript typecheck
+pnpm --dir typescript test
+pnpm --dir typescript build
+pnpm --dir typescript generate:check
+```
+
+`pnpm build` writes JavaScript and declaration files to `typescript/dist/`. The package is ESM only. Its `.` export has a `node` condition, whose entry point reads the credentials file from the file system. Every other platform loads the entry point without it.
+
+### Generated code
+
+`typescript/src/generated/` is never edited by hand. After a contract sync, regenerate it and commit the result:
+
+```bash
+pnpm --dir typescript generate
+```
+
+- `scripts/generate-wire.ts` writes `openapi.ts`, the wire types, from `contract/served/openapi.json` with openapi-typescript. It opens every string enum into a union with any other string, joins `UnknownPart` to the array of parts discriminated on `status`, and exports one type per schema, with `Operation` named `RequestedOperation`.
+- `scripts/generate-contract.ts` writes `strict.ts` from `contract/strict-fields.json` and `actions.ts` from `contract/actions.json`. It fails when a strict field is not required, or is nullable, in `contract/served/openapi.json`.
+
+`pnpm generate:check` exits non-zero when a generated file differs from what the contract generates. CI and the pre-commit hooks run it.
+
 ## Syncing the contract
 
 Git tracks only `contract/SOURCE`, the spec-kit commit the clients follow. The rest of `contract/` is fetched from the public spec-kit repository at that commit, and git ignores it:
@@ -34,7 +62,7 @@ Git tracks only `contract/SOURCE`, the spec-kit commit the clients follow. The r
 uv run --no-project --python '>=3.12' scripts/sync_contract.py
 ```
 
-The script downloads the GitHub archive of the commit, extracts the package data into `contract/` and the package's README, which states the contract's rules, to `contract/README.md`, and records the commit in `contract/.synced`. It does nothing when `.synced` already names `SOURCE`. It builds the copy in a scratch directory and swaps it in, so a failed download leaves the old copy in place. The Python tests, `scripts/gen_wire.py` and `scripts/gen_errors.py` run the fetch themselves when the copy is missing or `.synced` differs from `SOURCE`, and stop with the error when the fetch fails.
+The script downloads the GitHub archive of the commit, extracts the package data into `contract/` and the package's README, which states the contract's rules, to `contract/README.md`, and records the commit in `contract/.synced`. It does nothing when `.synced` already names `SOURCE`. It builds the copy in a scratch directory and swaps it in, so a failed download leaves the old copy in place. The Python tests, `scripts/gen_wire.py`, `scripts/gen_errors.py` and the TypeScript package scripts that read `contract/` run the fetch themselves when the copy is missing or `.synced` differs from `SOURCE`, and stop with the error when the fetch fails.
 
 To move the clients to a new contract, change it in spec-kit, push the change, and write the new commit to `contract/SOURCE`. For a change that is not pushed yet, copy it from a spec-kit checkout:
 

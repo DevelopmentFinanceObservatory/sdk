@@ -1,0 +1,41 @@
+// Generated from contract/client-codes.json by `pnpm generate`. Do not edit by hand.
+
+export const CLIENT_CODE_CLASSES = {
+  answer_declined: "DeclinedError",
+  answer_incomplete: "IncompleteAnswerError",
+  choice_invalid: "InvalidRequestError",
+  contract_violation: "ContractError",
+  credentials_file_invalid: "AuthenticationError",
+  deadline_exceeded: "DfoTimeoutError",
+  digest_mismatch: "ServerError",
+  download_failed: "ServerError",
+  invalid_argument: "InvalidRequestError",
+  key_empty: "AuthenticationError",
+  network_error: "NetworkError",
+  offline: "NetworkError",
+  profile_not_found: "AuthenticationError",
+  profile_without_key: "AuthenticationError",
+  refusal_without_code: "by_status",
+  unexpected_response: "ContractError",
+  version_unavailable: "VersionUnavailableError",
+} as const;
+
+export const CLIENT_CODE_RETRYABLE = {
+  answer_declined: false,
+  answer_incomplete: false,
+  choice_invalid: false,
+  contract_violation: false,
+  credentials_file_invalid: false,
+  deadline_exceeded: true,
+  digest_mismatch: false,
+  download_failed: true,
+  invalid_argument: false,
+  key_empty: false,
+  network_error: true,
+  offline: false,
+  profile_not_found: false,
+  profile_without_key: false,
+  refusal_without_code: "by_status",
+  unexpected_response: false,
+  version_unavailable: false,
+} as const;
