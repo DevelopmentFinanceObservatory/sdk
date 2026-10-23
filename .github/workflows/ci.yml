@@ -108,14 +108,15 @@ jobs:
       - name: Run tests
         run: uv run pytest --cov='src/dfo' --cov-report=xml --cov-report=term
 
-      # The package must satisfy the bblocks family contract. The doctor comes
-      # from the branch that adds subdirectory packages until it is released.
+      # The package must satisfy the bblocks family contract. The doctor is
+      # pinned to the bblocks-projects commit that checks subdirectory packages
+      # until a release carries it.
       - name: Run the family doctor
         if: matrix.python-version == '3.12'
         working-directory: .
         run: >-
           uvx --from
-          "git+https://github.com/ONEcampaign/bblocks-projects@feat/subdirectory-packages#subdirectory=bblocks-projects"
+          "git+https://github.com/ONEcampaign/bblocks-projects@e260942acaae5a3a8773665f0592391e2a76e6c8#subdirectory=bblocks-projects"
           bblocks-projects doctor --family --strict --path python
 
       - name: Upload coverage
