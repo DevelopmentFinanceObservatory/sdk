@@ -41,6 +41,7 @@ from dfo._core.types import (
     Departure,
     FormatError,
     Gap,
+    GapKind,
     Layout,
     NoDataPart,
     Node,
@@ -60,7 +61,13 @@ from dfo._datasets.build import Progress
 from dfo._datasets.bundle import BundleError, BundleLimits, open_bundle
 from dfo._datasets.dataset import Dataset
 from dfo._datasets.operation import AsyncOperation
-from dfo._generated.wire import CatalogueResponse, CodeRegistryEntry, ResolveResponse
+from dfo._generated.wire import (
+    Alternative,
+    CatalogueResponse,
+    CodeRegistryEntry,
+    ProblemIssue,
+    ResolveResponse,
+)
 from dfo._http.hooks import AsyncHeaderProvider, HeaderProvider
 from dfo._search.answer import AsyncAnswer
 from dfo._search.lookups import AsyncCodes, AsyncGraph
@@ -71,6 +78,7 @@ from dfo._sync._search.lookups import Codes, Graph
 from dfo._version import __version__
 
 __all__ = [
+    "Alternative",
     "Answer",
     "ApiKey",
     "ApiKeyArgument",
@@ -106,6 +114,7 @@ __all__ = [
     "DfoWarning",
     "FormatError",
     "Gap",
+    "GapKind",
     "Graph",
     "HeaderProvider",
     "IncompleteAnswerError",
@@ -121,6 +130,7 @@ __all__ = [
     "Option",
     "Part",
     "PermissionDeniedError",
+    "ProblemIssue",
     "Progress",
     "QuotaExceededError",
     "RateLimitError",

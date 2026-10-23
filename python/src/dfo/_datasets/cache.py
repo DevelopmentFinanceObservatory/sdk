@@ -35,6 +35,7 @@ from typing import Any
 from dfo._config.paths import cache_directory
 from dfo._core.codes import INVALID_ARGUMENT
 from dfo._core.errors import ContractError, client_error
+from dfo._core.json_text import loads
 from dfo._core.types import CONTENT_VERSION, DIGEST, SPEC_ID, Rendering
 from dfo._datasets.build import check_served_manifest, read_held_until
 from dfo._http.hooks import Hold, KeyedLock
@@ -376,7 +377,7 @@ def _held_manifest(
 
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
-        value = json.loads(path.read_bytes())
+        value = loads(path.read_bytes())
     except (OSError, ValueError):
         return None
     return value if isinstance(value, dict) else None

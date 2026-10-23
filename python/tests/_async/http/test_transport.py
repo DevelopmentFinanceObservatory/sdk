@@ -30,6 +30,7 @@ from dfo._core.errors import (
     RateLimitError,
     ServerError,
 )
+from dfo._core.json_text import JSON_MAX_DEPTH
 from dfo._http.transport import (
     JSON_BODY_MAX_BYTES,
     USER_AGENT,
@@ -943,6 +944,9 @@ async def test_a_call_timeout_that_is_not_a_finite_positive_number_is_refused(
         "http://127.1/api",
         "http://0x7f.1/api",
         "http://2130706433/api",
+        "https://127.1/api",
+        "https://0x7f.1/api",
+        "https://2130706433/api",
         "http://0177.0.0.1/api",
         "http://127.0.0.01/api",
         "https://api.example.0x10/api",
@@ -1209,8 +1213,8 @@ async def test_a_cyclic_json_body_is_refused_unsent() -> None:
     assert recorder.requests == []
 
 
-async def test_a_refusal_nested_past_the_stack_is_still_typed() -> None:
-    deep = b"[" * 100_000 + b"]" * 100_000
+async def test_a_refusal_nested_past_the_depth_bound_is_still_typed() -> None:
+    deep = b"[" * (JSON_MAX_DEPTH + 1) + b"]" * (JSON_MAX_DEPTH + 1)
     refusal = httpx2.Response(
         400, headers={"content-type": "application/problem+json"}, content=deep
     )

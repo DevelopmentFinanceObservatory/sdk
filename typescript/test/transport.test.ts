@@ -376,6 +376,21 @@ describe("refusals", () => {
     });
   }
 
+  test("type a refusal nested past the depth bound, which redacting it would overflow", async () => {
+    const deep = `{"code":"snapshot_not_found","a":${"[".repeat(100_000)}${"]".repeat(100_000)}}`;
+    const { fetch } = mockFetch(
+      () =>
+        new Response(deep, {
+          status: 400,
+          headers: { "content-type": "application/problem+json" },
+        }),
+    );
+    await assert.rejects(transport({ apiKey: KEY, fetch }).request({ path: "/x" }), {
+      name: "InvalidRequestError",
+      code: "refusal_without_code",
+    });
+  });
+
   test("take the trace id from x-dfo-trace-id when the problem names none", async () => {
     const { fetch } = mockFetch(
       problem(
@@ -821,6 +836,18 @@ describe("downloads", () => {
     ],
     ["an empty Location", redirect(""), undefined, "contract_violation"],
     [
+      "a Location with a malformed IPv6 host",
+      redirect("https://[::1/x"),
+      undefined,
+      "unexpected_response",
+    ],
+    [
+      "a Location with a port out of range",
+      redirect("https://api.example:99999/x"),
+      undefined,
+      "unexpected_response",
+    ],
+    [
       "a Location on another host",
       redirect("https://elsewhere.example/object"),
       undefined,
@@ -1125,6 +1152,9 @@ describe("base URLs", () => {
     "http://127.1/api",
     "http://0x7f.1:8080/api",
     "http://2130706433/api",
+    "https://127.1/api",
+    "https://0x7f.1/api",
+    "https://2130706433:8443/api",
     "https://127.000.0.1/api",
     "http:\\\\0177.0.0.1\\api",
   ]) {

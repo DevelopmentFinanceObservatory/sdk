@@ -5,9 +5,9 @@
  * Each lookup returns the decoded response body, typed by the served OpenAPI document's schema.
  * The body must be an object holding the members that schema requires and that tell it from a
  * problem document. A body that does not, and is a problem document (a `code` and no `kind`),
- * raises the class the contract's actions give its code, or `ContractError`
- * (`contract_violation`) for a code they lack; any other body raises `contract_violation`. The client reads no more
- * of it, so an unknown member or enum value passes through untouched.
+ * raises the class `errorClassFor` gives its code, or `ContractError` (`contract_violation`) for a
+ * code the contract does not map; any other body raises `contract_violation`. The client reads no
+ * more of it, so an unknown member or enum value passes through untouched.
  */
 
 import { clientError, problemAt200 } from "../core/errors.ts";

@@ -1,7 +1,8 @@
 """How a server refusal maps to its error class, and the trace id an error carries.
 
 A code maps through `dfo._generated.error_map.ACTIONS`, generated from the contract's
-`actions.json`; a code the map lacks maps on its HTTP status. A refusal whose body
+`actions.json`; a code the website proxy answers itself maps on the status
+`proxy-codes.json` gives it; any other code maps on its HTTP status. A refusal whose body
 carries no code, or a code that is not lower-case snake case, takes
 `refusal_without_code`, with the class of its status, and a trace id the body
 lacks comes from the response's `x-dfo-trace-id` header. The stored problem
@@ -40,8 +41,14 @@ from dfo._core.errors import (
     VersionUnavailableError,
     status_class,
 )
+from dfo._core.json_text import loads
 from dfo._core.text import origin_of, printable, redacted
-from dfo._generated.error_map import ACTIONS, REFUSAL_WITHOUT_CODE, Action
+from dfo._generated.error_map import (
+    ACTIONS,
+    PROXY_STATUSES,
+    REFUSAL_WITHOUT_CODE,
+    Action,
+)
 
 TRACE_HEADER = "x-dfo-trace-id"
 
@@ -72,10 +79,19 @@ _METHOD_NOT_ALLOWED = "method_not_allowed"
 
 
 def error_class(code: str | None, status: int | None) -> type[DfoError]:
-    """Return the class for a refusal, from its code when known, else its status."""
+    """Return the class for a refusal: its code's action, the class of the status
+    the website proxy answers its code with, else the class of `status`."""
     if code is not None and (action := ACTIONS.get(code)) is not None:
         return _class_for_action(action)
+    if code is not None and (proxy_status := PROXY_STATUSES.get(code)) is not None:
+        return status_class(proxy_status)
     return status_class(status)
+
+
+def maps_to_class(code: str) -> bool:
+    """Whether the contract maps `code` to a class whatever the status: it has an
+    action, or the website proxy answers it with a fixed status."""
+    return code in ACTIONS or code in PROXY_STATUSES
 
 
 # One return per action keeps the match exhaustive, so ty fails on a new action.
@@ -171,8 +187,8 @@ def json_body(response: httpx2.Response) -> object:
     if not response.content or media_type.lower() not in _JSON_TYPES:
         return None
     try:
-        return response.json()
-    except (ValueError, RecursionError):  # not JSON, or nested past the stack
+        return loads(response.content)
+    except ValueError:  # not JSON, or nested past JSON_MAX_DEPTH
         return None
 
 

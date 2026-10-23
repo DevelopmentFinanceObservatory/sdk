@@ -69,7 +69,13 @@ from dfo._core.codes import (
     UNEXPECTED_RESPONSE,
 )
 from dfo._core.errors import DfoError, client_error, client_warning, warn_once
-from dfo._core.refusals import TRACE_HEADER, json_body, problem_error, trace_id_of
+from dfo._core.refusals import (
+    TRACE_HEADER,
+    json_body,
+    maps_to_class,
+    problem_error,
+    trace_id_of,
+)
 from dfo._core.text import (
     control_fault,
     has_dot_segment,
@@ -78,7 +84,6 @@ from dfo._core.text import (
     origin_of,
     redacted,
 )
-from dfo._generated.error_map import ACTIONS
 from dfo._http.hooks import (
     AsyncHeaderProvider,
     AsyncSleep,
@@ -865,12 +870,13 @@ class AsyncTransport:
     ) -> DfoError:
         """The error for a problem document the server sent with a 2xx status.
 
-        A code the contract's registry holds gives the class it maps to, with the
-        body's trace id; any other code gives `contract_violation`, since a
-        success status leaves no status to map it on.
+        A code the contract maps to a class, through its action or the status the
+        website proxy answers it with, gives that class, with the body's trace
+        id; any other code gives `contract_violation`, since a success status
+        leaves no status to map it on.
         """
         code = body.get("code")
-        if isinstance(code, str) and code in ACTIONS:
+        if isinstance(code, str) and maps_to_class(code):
             return problem_error(
                 response.status_code,
                 body,

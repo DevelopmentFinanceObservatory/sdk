@@ -46,11 +46,17 @@ CANDIDATES = textwrap.dedent(
         assert_type(part.candidates[0].fetch(), dfo.Dataset)
         kind: GapKind = answer.gaps[0].kind
         missing: GapKind = part.candidates[0].fetch().missing[0].kind
+        exported: dfo.GapKind = kind
         match answer.gaps[0].part:
             case dfo.CandidatesPart(candidates):
                 assert_type(candidates, tuple[dfo.Candidate, ...])
             case _:
                 pass
+
+
+    def remedies(error: dfo.InvalidRequestError) -> None:
+        assert_type(error.issues, tuple[dfo.ProblemIssue, ...])
+        assert_type(error.alternatives, tuple[dfo.Alternative, ...])
 
 
     async def awaits_the_sync_form(candidate: dfo.Candidate) -> None:

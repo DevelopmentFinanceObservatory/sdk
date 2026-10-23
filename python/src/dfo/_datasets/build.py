@@ -18,6 +18,7 @@ import httpx2
 
 from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT, UNEXPECTED_RESPONSE
 from dfo._core.errors import ContractError, client_error
+from dfo._core.json_text import loads
 from dfo._core.parse import check_manifest, check_operation
 from dfo._core.refusals import trace_id_of
 from dfo._core.types import (
@@ -554,8 +555,8 @@ def response_json(response: httpx2.Response) -> Any:
         ContractError: The body is not JSON.
     """
     try:
-        return response.json()
-    except (ValueError, RecursionError) as error:  # not JSON, or nested past the stack
+        return loads(response.content)
+    except ValueError as error:  # not JSON, or nested past JSON_MAX_DEPTH
         raise client_error(
             UNEXPECTED_RESPONSE,
             f"{response.request.method} {response.request.url.path} answered "

@@ -9,7 +9,7 @@ part with an unknown status becomes `UnknownPart`.
 Server JSON the client posts back, such as a spec's `definition`, is kept as decoded.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Final
 
 from dfo._core.codes import CONTRACT_VIOLATION
@@ -73,12 +73,30 @@ def require(
             null or of another JSON type; the error's `pointer` names `obj` or
             that member.
     """
+    return require_members(obj, schema, REQUIRED[schema], pointer)
+
+
+def require_members(
+    obj: object,
+    schema: str,
+    members: Iterable[tuple[str, JsonType]],
+    pointer: str = "",
+    /,
+) -> Mapping[str, Any]:
+    """Return `obj` when it is an object carrying each of `members` as its JSON type.
+
+    `require` checks a schema `dfo._generated.strict` lists; a lookup names the
+    members of the schema its response has.
+
+    Raises:
+        ContractError: As `require` does.
+    """
     if not isinstance(obj, Mapping):
         raise _violation(
             f"{schema} at {pointer or '/'} is not an object in the response",
             pointer=pointer,
         )
-    for member, json_type in REQUIRED[schema]:
+    for member, json_type in members:
         value = obj.get(member)
         if value is None:
             raise _violation(

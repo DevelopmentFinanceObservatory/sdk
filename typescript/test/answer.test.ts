@@ -914,7 +914,8 @@ describe("reading a Search response", () => {
 
   for (const [code, name, errorCode] of [
     ["internal_error", "ServerError", "internal_error"],
-    ["rate_limited", "ContractError", "contract_violation"],
+    ["query_too_long", "InvalidRequestError", "query_too_long"],
+    ["rate_limited", "RateLimitError", "rate_limited"],
     ["code_from_a_newer_server", "ContractError", "contract_violation"],
   ] as const) {
     test(`search raises a 200 problem document with the code ${code} as ${name}`, async () => {

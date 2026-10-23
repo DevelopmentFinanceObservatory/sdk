@@ -15,8 +15,16 @@ const PACKAGE = fileURLToPath(new URL("..", import.meta.url));
 const TSC = join(PACKAGE, "node_modules", "typescript", "bin", "tsc");
 
 const CONSUMER = `
-import { Client, Dataset, isDfoError } from "@developmentfinance/client";
-import type { Answer, AnswerKind, AnswerStatus, GapKind, GraphNode } from "@developmentfinance/client";
+import { Client, Dataset, InvalidRequestError, isDfoError } from "@developmentfinance/client";
+import type {
+  Alternative,
+  Answer,
+  AnswerKind,
+  AnswerStatus,
+  GapKind,
+  GraphNode,
+  ProblemIssue,
+} from "@developmentfinance/client";
 import type { Part } from "@developmentfinance/client/wire";
 
 export async function rows(question: string): Promise<number> {
@@ -46,6 +54,13 @@ export function described(answer: Answer): string {
 }
 
 export const known = (error: unknown): boolean => isDfoError(error);
+
+// A refusal's issues and alternatives are typed from the package root.
+export function remedies(error: InvalidRequestError): number {
+  const issues: readonly ProblemIssue[] = error.issues;
+  const alternatives: readonly Alternative[] = error.alternatives;
+  return issues.length + alternatives.length;
+}
 `;
 
 const ARROW_CONSUMER = `

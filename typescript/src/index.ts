@@ -35,6 +35,7 @@ export type {
   DfoErrorOptions,
   ServerErrorCode,
 } from "./core/errors.ts";
+export type { Alternative, ProblemIssue } from "./wire.ts";
 export { Dataset } from "./datasets/dataset.ts";
 export type { Citation, Member } from "./datasets/dataset.ts";
 export type {

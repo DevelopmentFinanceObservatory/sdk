@@ -19,6 +19,10 @@ _WARNING_CODES = {
     "format_version": 1,
     "codes": [{"code": "a_notice", "class": "DfoWarning", "condition": "C."}],
 }
+_PROXY_CODES = {
+    "format_version": 1,
+    "codes": [{"code": "a_limit", "status": 429, "condition": "D."}],
+}
 _REPORT_ACTIONS = {"format_version": 1, "codes": [{"code": "c", "action": "report"}]}
 _REPORT_SCHEMA = {
     "properties": {
@@ -158,7 +162,9 @@ def test_the_error_map_takes_its_literals_from_the_schema() -> None:
             },
         ],
     }
-    source = gen_errors.render(actions, schema, client_codes, _WARNING_CODES)
+    source = gen_errors.render(
+        actions, schema, client_codes, _WARNING_CODES, _PROXY_CODES
+    )
     namespace: dict[str, object] = {}
     exec(compile(source, "_error_map.py", "exec"), namespace)
     assert namespace["ACTIONS"] == {"a_code": "fix_request", "b_code": "choose"}
@@ -167,6 +173,7 @@ def test_the_error_map_takes_its_literals_from_the_schema() -> None:
     assert namespace["CLIENT_CODES"] == {"a_failure": ("ServerError", True)}
     assert namespace["NO_CODE"] == "no_code"
     assert namespace["WARNING_CODES"] == {"a_notice": "DfoWarning"}
+    assert namespace["PROXY_STATUSES"] == {"a_limit": 429}
 
 
 _FAILURE = {"code": "a_failure", "class": "ServerError", "condition": "A."}
@@ -196,7 +203,34 @@ def test_the_error_map_refuses_client_codes_it_cannot_generate(
 ) -> None:
     client_codes = {"format_version": 1, "codes": rows}
     with pytest.raises(SystemExit, match=match):
-        gen_errors.render(_REPORT_ACTIONS, _REPORT_SCHEMA, client_codes, _WARNING_CODES)
+        gen_errors.render(
+            _REPORT_ACTIONS, _REPORT_SCHEMA, client_codes, _WARNING_CODES, _PROXY_CODES
+        )
+
+
+_CLIENT_CODES = {
+    "format_version": 1,
+    "codes": [{**_BY_STATUS, "retryable": "by_status"}],
+}
+_LIMIT = {"code": "a_limit", "status": 429, "condition": "D."}
+
+
+@pytest.mark.parametrize(
+    ("rows", "match"),
+    [
+        ([_LIMIT, _LIMIT], "a_limit is listed twice"),
+        ([{**_LIMIT, "code": "c"}], "c has a row in"),
+    ],
+    ids=["twice", "has-action"],
+)
+def test_the_error_map_refuses_proxy_codes_it_cannot_generate(
+    rows: list[dict[str, object]], match: str
+) -> None:
+    proxy_codes = {"format_version": 1, "codes": rows}
+    with pytest.raises(SystemExit, match=match):
+        gen_errors.render(
+            _REPORT_ACTIONS, _REPORT_SCHEMA, _CLIENT_CODES, _WARNING_CODES, proxy_codes
+        )
 
 
 _REV = "a" * 40

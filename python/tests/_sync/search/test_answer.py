@@ -24,6 +24,7 @@ from dfo._core.errors import (
     DfoError,
     IncompleteAnswerError,
     InvalidRequestError,
+    RateLimitError,
     SearchWarning,
     ServerError,
 )
@@ -304,6 +305,7 @@ def test_an_unknown_answer_kind_raises_contract_error(
     [
         ("query_too_long", InvalidRequestError, "query_too_long"),
         ("service_unavailable", ServerError, "service_unavailable"),
+        ("rate_limited", RateLimitError, "rate_limited"),
         ("a_code_from_the_future", ContractError, "contract_violation"),
         ("query\ntoo_long", ContractError, "contract_violation"),
     ],

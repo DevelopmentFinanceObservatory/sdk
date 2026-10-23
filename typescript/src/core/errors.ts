@@ -2,6 +2,7 @@ import type { Answer, Gap } from "../search/answer.ts";
 import { CODE_ACTIONS } from "../generated/actions.ts";
 import type { ACTIONS } from "../generated/actions.ts";
 import { CLIENT_CODE_CLASSES, CLIENT_CODE_RETRYABLE } from "../generated/client-codes.ts";
+import { PROXY_CODE_STATUSES } from "../generated/proxy-codes.ts";
 import type { Alternative, ProblemIssue } from "../wire.ts";
 import { isRecord, objects } from "./json.ts";
 import { printable } from "./text.ts";
@@ -249,14 +250,14 @@ export function refusalMessage(
 
 /**
  * The error a 200 response's problem document stands for, or undefined when the body is none. A
- * problem document holds a string `code` and no `kind`. Its class is the one the contract's
- * actions give the code; a code they lack raises `contract_violation`, since a 200 has no status
- * to read a class from.
+ * problem document holds a string `code` and no `kind`. Its class is the one `errorClassFor`
+ * gives a code the contract maps to a class; any other code raises `contract_violation`, since a
+ * 200 has no status to read a class from.
  */
 export function problemAt200(body: unknown, traceId: string | null): DfoError | undefined {
   if (!isRecord(body) || typeof body["code"] !== "string" || "kind" in body) return undefined;
   const code = body["code"];
-  if (actionFor(code) === undefined) {
+  if (actionFor(code) === undefined && proxyStatusFor(code) === undefined) {
     return clientError("contract_violation", {
       detail:
         `The response is a problem document with the code ${JSON.stringify(code)}, which this ` +
@@ -278,11 +279,19 @@ export function problemAt200(body: unknown, traceId: string | null): DfoError | 
   });
 }
 
-/** The class for a refusal: by its code through the contract's actions, else by HTTP status. */
+/** The class for a refusal: by its code through the contract's actions, else by the status the
+ *  website proxy answers its code with, else by HTTP status. */
 export function errorClassFor(code: string, status: number): ErrorClass {
   const action = actionFor(code);
-  return action === undefined ? classForStatus(status) : CLASS_BY_ACTION[action];
+  if (action !== undefined) return CLASS_BY_ACTION[action];
+  return classForStatus(proxyStatusFor(code) ?? status);
 }
+
+/** The status `contract/proxy-codes.json` gives a code the website proxy answers itself. */
+const proxyStatusFor = (code: string): number | undefined =>
+  Object.hasOwn(PROXY_CODE_STATUSES, code)
+    ? PROXY_CODE_STATUSES[code as keyof typeof PROXY_CODE_STATUSES]
+    : undefined;
 
 type ClientClassName = Exclude<(typeof CLIENT_CODE_CLASSES)[ClientErrorCode], "by_status">;
 

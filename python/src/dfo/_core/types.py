@@ -23,6 +23,7 @@ from typing import (
 
 from dfo._core.codes import INVALID_ARGUMENT
 from dfo._core.errors import client_error
+from dfo._core.json_text import loads
 from dfo._generated.error_map import GapKind as SearchGapKind
 from dfo._generated.wire import (
     AggregateNode,
@@ -635,14 +636,13 @@ def decode(text: str | bytes, pointer: str = "") -> Mapping[str, Any]:
             pointer of an error.
 
     Raises:
-        FormatError: The text is not JSON, or not an object.
+        FormatError: The text is not JSON, nests deeper than 256 levels, or is
+            not an object.
     """
     try:
-        obj = json.loads(text, parse_constant=_no_constant)
-    except ValueError as error:  # JSONDecodeError, or bytes that are not UTF-8
+        obj = loads(text, parse_constant=_no_constant)
+    except ValueError as error:  # not JSON, nested too deeply, or not UTF-8
         raise FormatError("format_invalid", pointer, f"not JSON: {error}") from error
-    except RecursionError as error:
-        raise FormatError("format_invalid", pointer, "nested too deeply") from error
     return object_at(obj, pointer)
 
 
@@ -734,9 +734,10 @@ class RawResponse:
         """The body decoded as JSON.
 
         Raises:
-            ValueError: The body is not JSON.
+            ValueError: The body is not JSON, or nests arrays and objects deeper
+                than 256 levels.
         """
-        return json.loads(self.content)
+        return loads(self.content)
 
 
 type ResolveKind = Literal[

@@ -117,21 +117,30 @@ describe("lookups", () => {
 
   const problem200 = { type: "about:blank", code: "internal_error", status: 500, detail: "down" };
   const unknown200 = { ...problem200, code: "code_from_a_newer_server" };
-  for (const [name, call, body] of [
-    ["catalogue", (dfo: Client) => dfo.catalogue(), problem200],
-    ["codes.get", (dfo: Client) => dfo.codes.get("spec_not_found"), problem200],
-    ["graph.node", (dfo: Client) => dfo.graph.node("country/NGA"), problem200],
-  ] as const) {
-    test(`${name} raises a 200 problem document as the class its code maps to`, async () => {
-      const { fetch } = mockFetch(json(body, 200, { "x-dfo-trace-id": "trace-200" }));
-      await assert.rejects(call(client(fetch)), {
-        name: "ServerError",
-        code: "internal_error",
-        status: 200,
-        detail: "down",
-        traceId: "trace-200",
+  const lookups = [
+    ["catalogue", (dfo: Client) => dfo.catalogue()],
+    ["codes.get", (dfo: Client) => dfo.codes.get("spec_not_found")],
+    ["graph.node", (dfo: Client) => dfo.graph.node("country/NGA")],
+    ["graph.resolve", (dfo: Client) => dfo.graph.resolve("Kenya")],
+  ] as const;
+  for (const [name, call] of lookups) {
+    for (const [code, errorName] of [
+      ["internal_error", "ServerError"],
+      ["query_too_long", "InvalidRequestError"],
+      ["rate_limited", "RateLimitError"],
+    ] as const) {
+      test(`${name} raises a 200 problem document with the code ${code} as ${errorName}`, async () => {
+        const body = { ...problem200, code };
+        const { fetch } = mockFetch(json(body, 200, { "x-dfo-trace-id": "trace-200" }));
+        await assert.rejects(call(client(fetch)), {
+          name: errorName,
+          code,
+          status: 200,
+          detail: "down",
+          traceId: "trace-200",
+        });
       });
-    });
+    }
   }
 
   for (const [name, call, body, pointer] of [

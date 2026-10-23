@@ -20,6 +20,7 @@ from dfo._core.errors import (
     RateLimitError,
     ServerError,
 )
+from dfo._core.json_text import JSON_MAX_DEPTH
 from dfo._core.parse import parse_spec
 from dfo._core.types import Spec
 from dfo._datasets.cache import sha256_digest
@@ -130,9 +131,11 @@ async def test_a_cut_off_build_is_rebuilt_once_after_its_wait(
     [
         httpx2.Response(201, json={}),
         httpx2.Response(200, content=b"<html>", headers={"content-type": "text/html"}),
-        httpx2.Response(200, content=b"[" * 100_000 + b"]" * 100_000),
+        httpx2.Response(
+            200, content=b"[" * (JSON_MAX_DEPTH + 1) + b"]" * (JSON_MAX_DEPTH + 1)
+        ),
     ],
-    ids=["status", "not-json", "nested-past-the-stack"],
+    ids=["status", "not-json", "nested-past-the-depth-bound"],
 )
 async def test_a_build_answer_the_client_cannot_read_is_unexpected(
     response: httpx2.Response,

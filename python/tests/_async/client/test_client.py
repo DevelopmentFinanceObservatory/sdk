@@ -21,6 +21,7 @@ from dfo._core.errors import (
     InvalidRequestError,
     NetworkError,
     NotFoundError,
+    RateLimitError,
     ServerError,
 )
 from dfo._core.refs import DatasetRef, RefMember
@@ -282,6 +283,8 @@ LOOKUPS = {
     ("code", "error", "raised"),
     [
         ("service_unavailable", ServerError, "service_unavailable"),
+        ("query_too_long", InvalidRequestError, "query_too_long"),
+        ("rate_limited", RateLimitError, "rate_limited"),
         ("a_code_from_the_future", ContractError, "contract_violation"),
     ],
 )
@@ -295,12 +298,42 @@ async def test_a_lookup_answering_a_problem_document_raises_its_error(
     assert (caught.value.code, caught.value.trace_id) == (raised, "t-1")
 
 
+CATALOGUE = {"catalogue_version": "v1", "counts": {}, "examples": []}
+
+
+@pytest.mark.parametrize(
+    ("lookup", "body", "pointer"),
+    [
+        ("resolve", [], ""),
+        ("resolve", {"results": {}}, "/results"),
+        ("node", {"kind": 1, "ref": "country/NGA"}, "/kind"),
+        ("node", {"kind": "country"}, "/ref"),
+        ("codes", None, ""),
+        ("catalogue", {"counts": {}, "examples": []}, "/catalogue_version"),
+        ("catalogue", {**CATALOGUE, "counts": []}, "/counts"),
+        ("catalogue", {**CATALOGUE, "examples": None}, "/examples"),
+    ],
+)
+async def test_a_lookup_refuses_a_body_its_schema_does_not_fit(
+    lookup: str, body: object, pointer: str
+) -> None:
+    server = Server(json_response(200, body, headers={"x-dfo-trace-id": "t-1"}))
+    async with client_over(server) as client:
+        with pytest.raises(ContractError) as caught:
+            await LOOKUPS[lookup](client)
+    assert (caught.value.code, caught.value.pointer, caught.value.trace_id) == (
+        "contract_violation",
+        pointer,
+        "t-1",
+    )
+
+
 async def test_lookups_reach_the_graph_the_registry_and_the_catalogue() -> None:
     server = Server(
         json_response(200, {"results": []}),
         json_response(200, {"ref": "country/NGA", "kind": "country"}),
         json_response(200, {"code": "spec_not_found", "mappings": []}),
-        json_response(200, {"counts": {}}),
+        json_response(200, CATALOGUE),
     )
     async with client_over(server) as client:
         resolved = await client.graph.resolve(
@@ -313,7 +346,7 @@ async def test_lookups_reach_the_graph_the_registry_and_the_catalogue() -> None:
         {"results": []},
         "country/NGA",
         "spec_not_found",
-        {"counts": {}},
+        CATALOGUE,
     )
     assert [str(request.url) for request in server.requests] == [
         f"{BASE}/graph/resolve",

@@ -4,7 +4,7 @@
  */
 
 import { clientError } from "./errors.ts";
-import { isRecord } from "./json.ts";
+import { isRecord, parseJson } from "./json.ts";
 
 /** The layouts a dataset comes in: the labelled long table, or the pipeline frame. */
 export type Layout = "long" | "frame";
@@ -183,7 +183,7 @@ export class DatasetRef {
     let parsed: unknown = value;
     if (typeof value === "string") {
       try {
-        parsed = JSON.parse(value);
+        parsed = parseJson(value);
       } catch (error) {
         throw Object.assign(new FormatError("format_invalid", "", "not JSON"), { cause: error });
       }

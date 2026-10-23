@@ -22,7 +22,7 @@ import { traceIdOf } from "../core/trace.ts";
 import { VERSION } from "../version.ts";
 import { clientWarning, emitWarning, warnOnce } from "../core/warnings.ts";
 import type { DfoWarning, WarningHandler } from "../core/warnings.ts";
-import { isRecord } from "../core/json.ts";
+import { isRecord, parseJson } from "../core/json.ts";
 import { controlFault, hasDotSegment, headerFault, keyFault } from "../core/text.ts";
 
 /** The public API's base URL. */
@@ -337,10 +337,10 @@ export class RawResponse {
   /**
    * The body decoded as JSON.
    *
-   * @throws {SyntaxError} The body is not JSON.
+   * @throws {SyntaxError} The body is not JSON, or nests arrays and objects deeper than 256 levels.
    */
   json(): unknown {
-    return JSON.parse(this.text());
+    return parseJson(this.text());
   }
 }
 
@@ -505,7 +505,7 @@ function problemBody(headers: Headers, body: Uint8Array): unknown {
   const type = headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
   if (type === undefined || !PROBLEM_TYPES.has(type)) return undefined;
   try {
-    return JSON.parse(new TextDecoder().decode(body));
+    return parseJson(new TextDecoder().decode(body));
   } catch {
     return undefined;
   }
@@ -736,7 +736,7 @@ export class Transport {
     const url = new URL(response.url || this.url(options, options.query));
     let parsed: unknown;
     try {
-      parsed = JSON.parse(text);
+      parsed = parseJson(text);
     } catch (error) {
       throw clientError("unexpected_response", {
         status: response.status,
@@ -766,7 +766,8 @@ export class Transport {
    * @throws {ContractError} The route is off the API's origin, or its redirect names a host
    *   other than the API's or the storage host (`contract_violation`); a redirect has no
    *   `Location` or an empty one (`contract_violation`); the route answered a 2xx other than 200
-   *   or a 3xx other than 302 (`unexpected_response`).
+   *   or a 3xx other than 302, or a `Location` that is not a URL, such as one with a malformed
+   *   IPv6 host or port (`unexpected_response`).
    * @throws {DfoError} The route refused the request.
    */
   async locate(options: Target & CallOptions): Promise<Located> {
@@ -791,7 +792,17 @@ export class Transport {
         traceId,
       });
     }
-    const signed = new URL(location, response.url || target);
+    let signed: URL;
+    try {
+      signed = new URL(location, response.url || target);
+    } catch (error) {
+      throw clientError("unexpected_response", {
+        status: response.status,
+        detail: `The redirect from ${target.pathname} has a Location that is not a URL.`,
+        traceId,
+        cause: error,
+      });
+    }
     if (signed.origin !== this.baseUrl.origin && signed.origin !== STORAGE_ORIGIN) {
       throw clientError("contract_violation", {
         traceId,

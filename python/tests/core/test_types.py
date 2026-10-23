@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from dfo._core.json_text import JSON_MAX_DEPTH
 from dfo._core.parse import parse_citation, parse_parts
 from dfo._core.refs import DatasetRef, Member
 from dfo._core.types import DefinitePart, FormatError, Rendering, Spec
@@ -92,7 +93,9 @@ def test_refs_breaking_the_format_name_the_pointer(pointer: str, value: object) 
 
 
 @pytest.mark.parametrize(
-    "text", ["", "[]", "{", b"\xff", "[" * 100_000 + "]" * 100_000]
+    "text",
+    ["", "[]", "{", b"\xff", "[" * (JSON_MAX_DEPTH + 1) + "]" * (JSON_MAX_DEPTH + 1)],
+    ids=["empty", "array", "cut-off", "not-utf-8", "past-the-depth-bound"],
 )
 def test_text_that_is_not_a_json_object_raises(text: str | bytes) -> None:
     with pytest.raises(FormatError) as raised:
