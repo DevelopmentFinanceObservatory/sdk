@@ -21,9 +21,12 @@ Each identity echoes its reading's assumptions: a definite part's `assumptions`,
 and a candidate's entry in its part's `reading_assumptions`. Search then states
 the assumptions that still hold, and the new sentence carries them. An identity
 whose part carries no list posts none, and Search computes them afresh. A member
-an entry echoes with another JSON type than the wire's reads as absent. These are
-a restatement that is not an object, and `operations` or `assumptions` that are
-not lists.
+an entry echoes with another JSON type than the wire's reads as absent: a
+restatement that is not an object, and `operations` or `assumptions` that are not
+lists. Each list posts the items the client reads, in the read forms
+`dfo._core.parse.read_requested_operation` and `read_assumption` give, so an item whose
+required members are not strings, and an optional member of another type, are
+left out.
 """
 
 from __future__ import annotations
@@ -40,7 +43,14 @@ from dfo._core.codes import (
     CONTRACT_VIOLATION,
 )
 from dfo._core.errors import IncompleteAnswerError, SearchWarning, client_error, warn
-from dfo._core.parse import ParsedPart, parse_notices, parse_parts
+from dfo._core.parse import (
+    ParsedPart,
+    parse_notices,
+    parse_parts,
+    read_assumption,
+    read_items,
+    read_requested_operation,
+)
 from dfo._core.refusals import describing, trace_id_of
 from dfo._core.types import (
     Candidate,
@@ -514,6 +524,10 @@ def _part_index(
     gaps: Sequence[Gap[Candidate]],
     key: int | str,
 ) -> int:
+    if isinstance(key, bool):
+        raise client_error(
+            CHOICE_INVALID, f"Part {key!r} is not an index or the part's words."
+        )
     if isinstance(key, int):
         if 0 <= key < len(parts):
             return key
@@ -543,7 +557,12 @@ def _part_index(
 def _pick(
     gap: Gap[Candidate], key: int | str, *, mention: int | str | None
 ) -> Candidate | Option:
-    """The candidate or option `key` names in a gap."""
+    """The candidate or option `key` names in a gap. A boolean is neither an
+    index nor a label."""
+    if isinstance(key, bool):
+        raise client_error(
+            CHOICE_INVALID, f"Option {key!r} is not an index or a label."
+        )
     choices = gap.options
     if not choices:
         raise client_error(
@@ -631,7 +650,9 @@ def _restated_entry(part: Part[Candidate]) -> dict[str, Any]:
 
 
 def _echo(part: Part[Candidate], **members: Any) -> dict[str, Any]:
-    """An entry with the members every non-parsed entry echoes from its part."""
+    """An entry with the members every non-parsed entry echoes from its part:
+    `variable_text`, `separate` when true, and `operations` in their read forms
+    when any item reads."""
     if not part.variable_text:
         raise client_error(
             CHOICE_INVALID,
@@ -640,8 +661,7 @@ def _echo(part: Part[Candidate], **members: Any) -> dict[str, Any]:
     entry: dict[str, Any] = {**members, "variable_text": part.variable_text}
     if part.separate:
         entry["separate"] = True
-    operations = part.raw.get("operations")
-    if isinstance(operations, list) and operations:
+    if operations := read_items(part.raw.get("operations"), read_requested_operation):
         entry["operations"] = operations
     return entry
 
@@ -662,15 +682,17 @@ def _identity(part: Part[Candidate], spec: Mapping[str, Any]) -> dict[str, Any]:
 def _reading_assumptions(
     part: Part[Candidate], spec: Mapping[str, Any]
 ) -> list[Any] | None:
-    """The wire's assumptions for one reading of `part`, or None when the part
-    holds no list for it. The list is a candidates part's `reading_assumptions`
-    entry under the spec's id, or any other part's `assumptions`."""
+    """The assumptions one reading of `part` echoes, or None when the part holds
+    no list for it. The list is a candidates part's `reading_assumptions` entry
+    under the spec's id, or any other part's `assumptions`, each item in its read
+    form and an item that does not read left out, so a list with none read
+    echoes `[]`."""
     if isinstance(part, CandidatesPart):
         by_spec = part.raw.get("reading_assumptions")
         listed = by_spec.get(spec["spec_id"]) if isinstance(by_spec, Mapping) else None
     else:
         listed = part.raw.get("assumptions")
-    return listed if isinstance(listed, list) else None
+    return read_items(listed, read_assumption) if isinstance(listed, list) else None
 
 
 def _identity_entry(part: Part[Candidate], spec: Mapping[str, Any]) -> dict[str, Any]:

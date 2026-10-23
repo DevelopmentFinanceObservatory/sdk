@@ -14,7 +14,7 @@ type the served document gives each, which `dfo._core.parse.require` checks, and
 enum values the client branches on. It holds literals only and imports nothing
 from `dfo`. Each pointer must name a property of a component schema; a
 `required` pointer must sit in its schema's `required` list, admit no null and have
-a string, array or object type, directly or through its `$ref`, and an `enums`
+a string, integer, array or object type, directly or through its `$ref`, and an `enums`
 pointer's values must all be in the property's enum. The generator refuses a
 contract that breaks any of these rules.
 
@@ -41,7 +41,7 @@ WIRE = PACKAGE / "src" / "dfo" / "_generated" / "wire.py"
 STRICT = PACKAGE / "src" / "dfo" / "_generated" / "strict.py"
 POINTER_PREFIX = "/components/schemas/"
 # The JSON types a required member can be checked for.
-JSON_TYPES = frozenset({"string", "array", "object"})
+JSON_TYPES = frozenset({"string", "integer", "array", "object"})
 
 CODEGEN_ARGS = (
     "--input-file-type=openapi",
@@ -74,7 +74,7 @@ from collections.abc import Mapping
 from typing import Final, Literal
 
 type StrictSchema = Literal[{schema_names}]
-type JsonType = Literal["string", "array", "object"]
+type JsonType = Literal["string", "integer", "array", "object"]
 
 # Each schema's required members, with the JSON type each must have.
 REQUIRED: Final[Mapping[StrictSchema, tuple[tuple[str, JsonType], ...]]] = {{
@@ -113,7 +113,7 @@ def enum_values(prop: Mapping[str, Any]) -> set[Any]:
 
 def json_type(prop: Mapping[str, Any], schemas: Mapping[str, Any]) -> str | None:
     """The JSON type a required property must have, through its `$ref`, or None
-    when it has no string, array or object type."""
+    when it has no string, integer, array or object type."""
     if ref := prop.get("$ref"):
         prop = schemas.get(ref.removeprefix("#" + POINTER_PREFIX), {})
     kind = prop.get("type")
@@ -142,7 +142,7 @@ def strict_fields(
         kind = json_type(prop, schemas)
         if kind is None:
             raise SystemExit(
-                f"{entry['pointer']}: has no string, array or object type in {schema}"
+                f"{entry['pointer']}: has no string, integer, array or object type in {schema}"
             )
         required.setdefault(schema, []).append((member, kind))
 

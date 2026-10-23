@@ -13,9 +13,13 @@ from dfo._core.parse import (
     check_operation,
     parse_citation,
     parse_notices,
+    parse_operations,
     parse_parts,
+    read_assumption,
+    read_requested_operation,
 )
 from dfo._core.types import (
+    Assumption,
     CandidatesPart,
     DefinitePart,
     NoDataPart,
@@ -290,7 +294,7 @@ def test_every_strict_schema_has_a_site() -> None:
 
 
 # A value of another JSON type than each strict member's.
-WRONG_TYPE = {"string": [], "array": {}, "object": "x"}
+WRONG_TYPE = {"string": [], "integer": True, "array": {}, "object": "x"}
 
 
 @pytest.mark.parametrize("edit", ["renamed", "null", "wrong_type"])
@@ -322,6 +326,20 @@ def test_a_missing_null_or_mistyped_strict_member_raises(
         "contract_violation",
         "".join(f"/{step}" for step in (*path, member)),
     )
+
+
+@pytest.mark.parametrize(("value", "reads"), [(1.0, True), (1.5, False), (True, False)])
+def test_a_strict_integer_is_a_whole_number_other_than_a_boolean(
+    value: object, reads: bool
+) -> None:
+    manifest = load("probe-mint-narrowed.json")
+    manifest["definition"]["schema_version"] = value
+    if reads:
+        check_manifest(manifest)
+        return
+    with pytest.raises(ContractError) as caught:
+        check_manifest(manifest)
+    assert caught.value.pointer == "/definition/schema_version"
 
 
 def search_2_with(edit: Callable[[dict[str, Any]], object]) -> dict[str, Any]:
@@ -474,6 +492,86 @@ def test_a_malformed_member_outside_the_strict_set_reads_as_absent(
 ) -> None:
     (part, *_) = parse_parts(body())
     assert read(part) == absent
+
+
+_ASSUMED = {"kind": "declared_default", "binding_ref": "how:x", "text": "grants"}
+_RANK = {"verb": "rank", "phrase": "top 5 donors"}
+
+
+@pytest.mark.parametrize(
+    ("item", "read"),
+    [
+        ({**_ASSUMED, "refs": ["A", 1, None]}, {**_ASSUMED, "refs": ["A"]}),
+        ({**_ASSUMED, "refs": "A"}, _ASSUMED),
+        ({**_ASSUMED, "refs": None}, _ASSUMED),
+        ({**_ASSUMED, "note": "x"}, _ASSUMED),
+        ({**_ASSUMED, "text": None}, None),
+        ({"kind": "declared_default", "text": "grants"}, None),
+        ("assumed", None),
+    ],
+    ids=[
+        "refs-string-items",
+        "refs-not-a-list",
+        "refs-null",
+        "unknown-member",
+        "text-null",
+        "binding-ref-missing",
+        "not-an-object",
+    ],
+)
+def test_an_assumption_reads_as_its_schema_members(item: Any, read: Any) -> None:
+    assert read_assumption(item) == read
+
+
+@pytest.mark.parametrize(
+    ("item", "read"),
+    [
+        (
+            {**_RANK, "over": "place", "target_year": 2020},
+            {**_RANK, "over": "place", "target_year": 2020},
+        ),
+        (
+            {**_RANK, "over": None, "target_year": None},
+            {**_RANK, "over": None, "target_year": None},
+        ),
+        ({**_RANK, "over": 3, "target_year": True}, _RANK),
+        ({**_RANK, "target_year": 2020.0}, {**_RANK, "target_year": 2020}),
+        ({**_RANK, "target_year": 2020.5}, _RANK),
+        ({**_RANK, "note": "x"}, _RANK),
+        ({"verb": 7, "phrase": "top 5 donors"}, None),
+        ({"verb": "rank"}, None),
+        (42, None),
+    ],
+    ids=[
+        "whole",
+        "optional-null",
+        "optional-of-another-type",
+        "target-year-a-whole-float",
+        "target-year-a-fraction",
+        "unknown-member",
+        "verb-a-number",
+        "phrase-missing",
+        "not-an-object",
+    ],
+)
+def test_an_operation_reads_as_its_schema_members(item: Any, read: Any) -> None:
+    # json.dumps tells 2020 from 2020.0, which == does not.
+    assert json.dumps(read_requested_operation(item)) == json.dumps(read)
+
+
+def test_assumptions_and_operations_parse_from_their_read_forms() -> None:
+    """An item that does not read is dropped, and a member that reads as absent
+    takes the field's default."""
+    (part, *_) = parse_parts(
+        search_1_with(
+            lambda part: part.update(
+                assumptions=[{**_ASSUMED, "text": 5}, {**_ASSUMED, "refs": "A"}],
+                operations=[{"verb": 7, "phrase": "x"}, {**_RANK, "target_year": True}],
+            )
+        )
+    )
+    assert part.assumptions == (Assumption("declared_default", "how:x", "grants"),)
+    assert part.operations == parse_operations([_RANK])
 
 
 def test_a_part_without_status_raises() -> None:

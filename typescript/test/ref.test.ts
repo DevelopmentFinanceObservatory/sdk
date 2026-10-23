@@ -43,6 +43,16 @@ describe("the contract's DatasetRef records", async () => {
 });
 
 describe("DatasetRef.fromJSON", () => {
+  test("keeps a definition of another integer schema_version as stored", async () => {
+    const { ref } = await contractJson<{ ref: { members: Record<string, unknown>[] } }>(
+      "refs/ref-one-member.json",
+    );
+    const stored = structuredClone(ref);
+    const spec = stored.members[0]!["spec"] as { definition: Record<string, unknown> };
+    spec.definition["schema_version"] = 2;
+    assert.equal(JSON.stringify(DatasetRef.fromJSON(stored)), JSON.stringify(stored));
+  });
+
   test("refuses text that is not JSON with a pointer to the root", () => {
     assert.throws(() => DatasetRef.fromJSON("{"), { name: "FormatError", pointer: "" });
   });
@@ -51,11 +61,25 @@ describe("DatasetRef.fromJSON", () => {
     const { ref } = await contractJson<{ ref: { members: Record<string, unknown>[] } }>(
       "refs/ref-one-member.json",
     );
-    const broken = structuredClone(ref);
-    broken.members[0]!["content_version"] = "cv_short";
-    assert.throws(() => DatasetRef.fromJSON(broken), {
-      reason: "format_invalid",
-      pointer: "/members/0/content_version",
-    });
+    const cases: [path: string[], value: unknown][] = [
+      [["content_version"], "cv_short"],
+      [["spec", "definition", "schema_version"], true],
+      [["spec", "definition", "schema_version"], 1.5],
+      [["spec", "definition", "sentence"], "a sentence"],
+      [["spec", "definition", "identity"], "spec1"],
+    ];
+    for (const [path, value] of cases) {
+      const broken = structuredClone(ref);
+      const key = path.at(-1)!;
+      let holder: Record<string, unknown> = broken.members[0]!;
+      for (const step of path.slice(0, -1)) {
+        holder = holder[step] as Record<string, unknown>;
+      }
+      holder[key] = value;
+      assert.throws(() => DatasetRef.fromJSON(broken), {
+        reason: "format_invalid",
+        pointer: `/members/0/${path.join("/")}`,
+      });
+    }
   });
 });

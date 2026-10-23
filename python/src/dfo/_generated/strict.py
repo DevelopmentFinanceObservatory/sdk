@@ -26,7 +26,7 @@ type StrictSchema = Literal[
     "OperationResource",
     "OperationEnvelope",
 ]
-type JsonType = Literal["string", "array", "object"]
+type JsonType = Literal["string", "integer", "array", "object"]
 
 # Each schema's required members, with the JSON type each must have.
 REQUIRED: Final[Mapping[StrictSchema, tuple[tuple[str, JsonType], ...]]] = {
@@ -45,7 +45,11 @@ REQUIRED: Final[Mapping[StrictSchema, tuple[tuple[str, JsonType], ...]]] = {
         ("content_version", "string"),
         ("artifacts", "array"),
     ),
-    "DefinitionModel": (("spec_id", "string"), ("identity", "object")),
+    "DefinitionModel": (
+        ("schema_version", "integer"),
+        ("spec_id", "string"),
+        ("identity", "object"),
+    ),
     "ArtifactEntryModel": (
         ("artifact_digest", "string"),
         ("rendering", "object"),

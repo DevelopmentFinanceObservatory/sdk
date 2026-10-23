@@ -95,8 +95,8 @@ class VersionUnavailableError(DfoError):
     """A stored version cannot be rebuilt. The caller takes the newest version.
 
     Attributes:
-        newest_version: The newest version of the spec the server holds, or None
-            when it names none.
+        newest_version: The version a fresh build returned, or else the newest
+            plain version of the spec the server holds, or None when it names none.
     """
 
     newest_version: str | None = None

@@ -57,7 +57,7 @@ def other_member(**changes: Any) -> FetchedMember:
     """
     table = pq.read_table(PARQUET).replace_schema_metadata(None)
     table = table.drop_columns(
-        ["financingProvider", "financingProvider_label", "financingProvider_party_kind"]
+        [name for name in table.column_names if name.startswith("financingProvider")]
     )
     table = table.append_column(
         "observationAbout", pa.array(["country/KEN"] * table.num_rows)

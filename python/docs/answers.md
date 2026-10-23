@@ -205,12 +205,12 @@ for operation in data.requested_operations:
     print(operation.verb, operation.phrase)  # rank top 5 donors
 
 df = data.to_pandas()
-donors = df[df["financingProvider_party_kind"] == "party"]
+donors = df[df["financingProvider_kind"].isin(["official", "private"])]
 top = donors.groupby("financingProvider_label")["value"].sum().nlargest(5)
 print(top)
 ```
 
-The provider column also holds totals such as "DAC countries" and "Group of Seven", marked `total` in `financingProvider_party_kind`. Keep the `party` rows before you rank.
+The provider column also holds totals. `financingProvider_kind` marks "DAC countries" and "Group of Seven" as `total`, and "official donors (DAC)" as `whole total`, the source's figure for every official donor. A single donor reads `official` or `private`. Keep those rows before you rank.
 
 `fetch(strict=True)` raises the `SearchWarning` instead of issuing it, and does the same for the dataset's own warnings. Use it where a reading that differs from the question should stop the run:
 

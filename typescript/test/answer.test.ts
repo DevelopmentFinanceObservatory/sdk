@@ -102,10 +102,9 @@ describe("IncompleteAnswerError", () => {
     assert.ok(error instanceof IncompleteAnswerError);
     assert.deepEqual(error.message.split("\n"), [
       "Search answered 0 of 1 part of your question.",
-      `  missing  "GNI": 3 readings`,
-      "    [0] Germany's primary income for gross of fixed capital consumption, 2015 to 2022 · OECD DAC1 · Current US dollars",
-      "    [1] Germany's gross national income based on purchasing power parity in international dollars, 2015 to 2022 · World Development Indicators",
-      "    [2] Germany's gross national income based on purchasing power parity per capita in international dollars, 2015 to 2022 · World Development Indicators",
+      `  missing  "mortality": 2 readings`,
+      "    [0] Kenya's deaths rate per capita, 2013 to 2022 · World Development Indicators",
+      "    [1] Kenya's number of deaths, 2018 to 2022 · Kenya Census",
       "  Choose: (await answer.choose(0)).fetch()",
     ]);
   });
@@ -138,6 +137,12 @@ describe("gaps", () => {
     const [part] = edited["parts"] as CandidatesPart[];
     const [first, second] = part!.candidates.specs;
     part!.reading_assumptions = { [first!.spec_id]: [ASSUMED] };
+    // The recorded readings name no unit in their byline, so the first is given one.
+    const unit = "Deaths per 1,000 people";
+    first!.resolved.sentence_plan = [
+      ...(first!.resolved.sentence_plan ?? []),
+      { kind: "slot", axis: "unit", segment: "byline", text: unit },
+    ];
     const [candidate, other] = answerFromBody(edited, offline(), null).gaps[0]!.options;
     assert.ok(candidate?.kind === "candidate" && other?.kind === "candidate");
     assert.deepEqual(
@@ -148,13 +153,14 @@ describe("gaps", () => {
         assumptions: candidate.assumptions,
       },
       {
-        label: "Germany's primary income for gross of fixed capital consumption, 2015 to 2022.",
-        source: "OECD DAC1",
-        unit: "Current US dollars",
+        label: "Kenya's deaths rate per capita, 2013 to 2022.",
+        source: "World Development Indicators",
+        unit,
         assumptions: [ASSUMED],
       },
     );
     assert.equal(other.spec.spec_id, second!.spec_id);
+    assert.equal(other.unit, null);
     assert.deepEqual(other.assumptions, []);
     assert.deepEqual(candidate.unbound().assumptions, [ASSUMED]);
   });
@@ -240,12 +246,20 @@ describe("choose", () => {
     ["an answer with nothing to choose", () => answerOf("answer-definite-fetch").choose(0)],
     ["an option label no option has", () => answerOf("choose-place-one-part").choose("Nowhere")],
     ["an option index out of range", () => answerOf("choose-place-one-part").choose(2)],
+    [
+      "a boolean option key",
+      () => answerOf("choose-place-one-part").choose(false as unknown as number),
+    ],
     ["no part when several await a choice", () => answerOf("choose-place-two-parts").choose(0)],
     [
       "a word two parts share",
       () => answerOf("choose-place-two-parts").choose("Congo", "Congo [DRC]"),
     ],
     ["a part index out of range", () => answerOf("choose-place-one-part").choose(3, 0)],
+    [
+      "a boolean part key",
+      () => answerOf("choose-place-two-parts").choose(true as unknown as number, 0),
+    ],
     ["a part that already has a reading", () => answerOf("answer-mixed-fetch-raises").choose(0, 0)],
   ];
   for (const [name, choose] of invalidChoices) {
@@ -268,7 +282,7 @@ describe("choose", () => {
     const { fetch, seen } = mockFetch(json(body("answer-definite-fetch")));
     const answer = answerFromBody(resolution, offline(fetch), null);
 
-    await answer.choose("GNI", 1);
+    await answer.choose(candidates.variable_text!, 1);
 
     const posted = JSON.parse(seen[0]!.body!) as { input: unknown };
     assert.deepEqual(posted.input, {
@@ -282,7 +296,7 @@ describe("choose", () => {
           assumptions: definite.assumptions,
         },
         {
-          variable_text: "GNI",
+          variable_text: candidates.variable_text,
           entry_kind: "identity",
           identity: chosen.definition.identity,
           ...(chosen.resolved.entity_groups
@@ -327,7 +341,7 @@ describe("candidate.fetch", () => {
   test("builds the dataset choosing the candidate builds", async () => {
     const scenario = record("answer-candidates-choose-fetch");
     const { transport, remaining } = replay(scenario);
-    const answer = await clientOver(transport).search("GNI of Germany from 2015 to 2022");
+    const answer = await clientOver(transport).search(stepOf(scenario, 0, "search").question);
     const dataset = await candidatesOf(answer.gaps)[0]!.fetch();
     const expected = scenario.expect[2]!;
     assert.ok("dataset" in expected);
@@ -347,14 +361,14 @@ describe("candidate.fetch", () => {
     assert.deepEqual(remaining(), []);
   });
 
-  test("a malformed assumption reads parsed on the candidate and its dataset, and its echo posts the list as sent", async () => {
+  test("a malformed assumption reads as absent on the candidate and its dataset, and its echo posts the read items", async () => {
     const scenario = structuredClone(record("answer-candidates-choose-fetch"));
     const [search, resubmit] = scenario.exchanges;
     const assumed = {
       kind: "declared_default",
-      binding_ref: "how:fixedCapitalConsumptionBasis",
-      text: "gross of fixed capital consumption",
-      refs: ["GrossOfFixedCapitalConsumption"],
+      binding_ref: "how:causeOfDeath",
+      text: "every cause of death",
+      refs: ["AllCauses"],
     };
     const listed = [null, { kind: "declared_default", binding_ref: 3, text: "bad" }, assumed];
     const offered = (search!.response.json as { parts: Record<string, unknown>[] }).parts[0]!;
@@ -363,10 +377,10 @@ describe("candidate.fetch", () => {
     (resubmit!.response.json as { parts: Record<string, unknown>[] }).parts[0]!["assumptions"] =
       listed;
     const posted = resubmit!.request.json as { input: { entries: { assumptions: unknown }[] } };
-    posted.input.entries[0]!.assumptions = listed;
+    posted.input.entries[0]!.assumptions = [assumed];
     const { transport, remaining } = replay(scenario);
 
-    const answer = await clientOver(transport).search("GNI of Germany from 2015 to 2022");
+    const answer = await clientOver(transport).search(stepOf(scenario, 0, "search").question);
     const candidate = candidatesOf(answer.gaps)[0]!;
     const dataset = await candidate.fetch();
     assert.deepEqual(remaining(), []);
@@ -396,9 +410,10 @@ describe("candidate.fetch", () => {
       kind: "dataset_resubmit",
       entries: [
         {
-          variable_text: "GNI",
+          variable_text: part.variable_text,
           entry_kind: "identity",
           identity: candidate.spec.definition.identity,
+          entity_groups: candidate.spec.resolved.entity_groups,
           assumptions: part.reading_assumptions![candidate.spec.spec_id],
         },
       ],
@@ -459,7 +474,7 @@ describe("fetch", () => {
     part!["operations"] = [
       null,
       { verb: 3, phrase: "bad" },
-      { verb: "rank", phrase: "top 5", over: 2, target_year: "2030" },
+      { verb: "rank", phrase: "top 5", over: 2, target_year: 2030.5 },
     ];
     const { transport, remaining } = replay(scenario);
 
@@ -544,9 +559,12 @@ describe("fetch", () => {
     const context = offline();
     const answer = answerOf("answer-several-readings-folded", context);
     await answer.fetch();
+    const [health, education, gdp] = (answer.parts as DefinitePart[]).map(
+      (part) => part.variable_text,
+    );
     assert.deepEqual(
       context.built[0]!.map((member) => member.parts),
-      [["ODA disbursements for health", "ODA disbursements for education"], ["GDP"]],
+      [[health, education], [gdp]],
     );
     // A folded reading keeps its first part's spec.
     assert.equal(answer.specs[0], (answer.parts[0] as DefinitePart).spec);

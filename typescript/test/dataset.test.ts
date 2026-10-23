@@ -27,7 +27,7 @@ function member(
   const specId = `spec_${"0".repeat(32)}`;
   return {
     parts: [],
-    spec: { spec_id: specId, definition: { spec_id: specId } },
+    spec: { spec_id: specId, definition: { schema_version: 1, spec_id: specId, identity: {} } },
     sentence: "A sentence.",
     contentVersion: `cv_${"0".repeat(32)}`,
     manifest: {},
@@ -226,7 +226,10 @@ describe("a dataset of several members", async () => {
       }),
       member(gdp, {
         sentence: "GDP.",
-        spec: { spec_id: gdpSpec, definition: { spec_id: gdpSpec } },
+        spec: {
+          spec_id: gdpSpec,
+          definition: { schema_version: 1, spec_id: gdpSpec, identity: {} },
+        },
         answerFacts: answered([
           { ...assumed },
           { kind: "place_scope", binding_ref: "where:", text: "every country" },

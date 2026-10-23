@@ -17,11 +17,12 @@ from dfo._core.types import FormatError, Rendering
 from dfo._datasets.bundle import BundleError, BundleLimits, open_bundle
 from dfo._datasets.cache import sha256_digest
 from tests._data import DATA
-from tests._datasets import PARQUET
 
-# Website bundles of the version the recorded fetch built, downloaded from dev.
+# Website bundles of one version, downloaded from dev, and that version's bare
+# long Parquet file at layout 3, whose columns the bundles type like.
 CSV_BUNDLE = DATA / "bundle-csv.zip"
 XLSX_BUNDLE = DATA / "bundle-xlsx.zip"
+PARQUET = DATA / "bundle-bare.parquet"
 DATA_FILE = "data/oecd-creditor-reporting-system.csv"
 XLSX_DATA_FILE = "data/oecd-creditor-reporting-system.xlsx"
 SPEC_ID = "spec_cb5baa4161de718f18583060674dbca6"

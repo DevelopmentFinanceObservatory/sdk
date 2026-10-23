@@ -65,6 +65,10 @@ def accepted_ref() -> dict[str, Any]:
         ("/members/0/sentence", ""),
         ("/members/0/spec/sentence", "a sentence"),
         ("/members/0/spec/spec_id", "spec_short"),
+        ("/members/0/spec/definition/schema_version", 1.5),
+        ("/members/0/spec/definition/schema_version", True),
+        ("/members/0/spec/definition/sentence", "a sentence"),
+        ("/members/0/spec/definition/identity", "spec1"),
         ("/members/0/content_version", "cv_short"),
         ("/members/0/artifact/digest", "sha256:abc"),
         ("/members/0/artifact/rendering/format", "json"),
@@ -92,17 +96,22 @@ def test_text_that_is_not_a_json_object_raises(text: str | bytes) -> None:
     assert raised.value.reason == "format_invalid"
 
 
-def test_a_ref_keeps_the_definition_as_stored() -> None:
+@pytest.mark.parametrize("schema_version", [2, 1.0])
+def test_a_ref_keeps_the_definition_as_stored(schema_version: float) -> None:
     ref_json = accepted_ref()
     definition = ref_json["members"][0]["spec"]["definition"]
-    definition["novel"] = {"kept": [1, 2]}
+    definition["schema_version"] = schema_version
+    definition["identity"]["novel"] = {"kept": [1, 2]}
     ref = DatasetRef.from_json(json.dumps(ref_json))
     assert ref.members[0].spec.definition == definition
     assert json.loads(ref.to_json())["members"][0]["spec"]["definition"] == definition
 
 
 def test_a_ref_of_dataset_members_writes_the_stored_format() -> None:
-    manifest = load("probe-mint-narrowed.json")
+    # The manifest of the build the contract's ref names, which serves its member.
+    record = example(CONTRACT / "refs" / "ref-answer-member.json")
+    scenario = example(CONTRACT / "scenarios" / f"{record['scenario']}.json")
+    manifest = scenario["exchanges"][0]["response"]["json"]
     (part,) = parse_parts(load("probe-resubmit-identity.json"))
     assert isinstance(part, DefinitePart)
     assert part.spec.sentence is not None

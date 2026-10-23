@@ -14,15 +14,16 @@
  *   and its choices, or a placeholder of its refusal when it has none.
  *
  * Each identity echoes its reading's assumptions: a picked or listed candidate its part's
- * `reading_assumptions` under its `spec_id`, a definite part its own `assumptions`. Each list
- * posts as the server sent it, and so do the part's `operations`. A reading with no list posts
- * none, and Search reads it as a fresh request.
+ * `reading_assumptions` under its `spec_id`, a definite part its own `assumptions`. Each list,
+ * and the part's `operations`, posts the items the client reads, each in its read form, so an
+ * item whose required members are not strings, and an optional member of another type, are left
+ * out. A reading with no list posts none, and Search reads it as a fresh request.
  */
 import type { Answer, Candidate, Gap, QueryOption } from "./answer.ts";
 import { clientError } from "../core/errors.ts";
 import type { InvalidRequestError } from "../core/errors.ts";
 import { isRecord } from "../core/json.ts";
-import { parsedPartOf } from "../core/parse.ts";
+import { assumptionsReadOf, operationsOf, parsedPartOf } from "../core/parse.ts";
 import { isKnownPart, partText } from "../core/parts.ts";
 import type {
   Assumption,
@@ -219,19 +220,20 @@ function identityEntry(part: Part, spec: Spec): ResubmitIdentityEntry {
   return { ...echoed(part), entry_kind: "identity", ...identityOf(spec, readingEcho(part, spec)) };
 }
 
-/** The assumptions a resubmitted reading of `part` echoes, as the server sent them: a
- *  candidates part's `reading_assumptions` under the reading's `spec_id`, else the part's own
- *  `assumptions`. Undefined when the part holds no list for the reading. `[]` states none. */
+/** The assumptions a resubmitted reading of `part` echoes, each in its read form and an item that
+ *  does not read left out: a candidates part's `reading_assumptions` under the reading's
+ *  `spec_id`, else the part's own `assumptions`. Undefined when the part holds no list for the
+ *  reading. `[]` states none. */
 function readingEcho(part: Part, spec: Spec): readonly Assumption[] | undefined {
-  let listed: unknown = part.assumptions;
   if (isKnownPart(part) && part.status === "candidates") {
     const byReading: unknown = part.reading_assumptions;
-    listed = isRecord(byReading) ? byReading[spec.spec_id] : undefined;
+    return isRecord(byReading) ? assumptionsReadOf(byReading[spec.spec_id]) : undefined;
   }
-  return Array.isArray(listed) ? (listed as Assumption[]) : undefined;
+  return assumptionsReadOf(part.assumptions);
 }
 
-/** The members every entry other than a parsed one echoes from its part. */
+/** The members every entry other than a parsed one echoes from its part: `variable_text`,
+ *  `separate` when true, and `operations` in their read forms when any item reads. */
 function echoed(part: Part): {
   variable_text: string;
   separate?: boolean;
@@ -241,12 +243,10 @@ function echoed(part: Part): {
   if (variableText === null || variableText === "") {
     throw refuse("A part without variable text cannot be posted back; search again.");
   }
-  const operations: unknown = part.operations;
+  const operations = operationsOf(part.operations);
   return {
     variable_text: variableText,
     ...(part.separate === true ? { separate: true } : {}),
-    ...(Array.isArray(operations) && operations.length > 0
-      ? { operations: operations as RequestedOperation[] }
-      : {}),
+    ...(operations.length > 0 ? { operations: [...operations] } : {}),
   };
 }

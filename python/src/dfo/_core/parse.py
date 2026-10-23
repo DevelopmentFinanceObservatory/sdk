@@ -30,6 +30,7 @@ from dfo._core.types import (
     UnknownPart,
     UnsupportedPart,
     Wire,
+    is_integer,
 )
 from dfo._generated import strict as _strict
 from dfo._generated.strict import REQUIRED, JsonType, StrictSchema
@@ -45,11 +46,12 @@ type ParsedPart = (
 )
 
 
-# The Python type a decoded JSON value of each type has.
-_PYTHON_TYPES: Final[Mapping[JsonType, type]] = {
-    "string": str,
-    "array": list,
-    "object": Mapping,
+# Whether a decoded JSON value has each type.
+_IS_TYPE: Final[Mapping[JsonType, Callable[[object], bool]]] = {
+    "string": lambda value: isinstance(value, str),
+    "integer": is_integer,
+    "array": lambda value: isinstance(value, list),
+    "object": lambda value: isinstance(value, Mapping),
 }
 
 
@@ -84,7 +86,7 @@ def require(
                 "the response; upgrade development-finance",
                 pointer=f"{pointer}/{member}",
             )
-        if not isinstance(value, _PYTHON_TYPES[json_type]):
+        if not _IS_TYPE[json_type](value):
             raise _violation(
                 f"{schema}.{member} is not an {json_type} at {pointer}/{member} "
                 "in the response; upgrade development-finance",
@@ -244,14 +246,12 @@ def parse_assumptions(assumptions: object, /) -> tuple[Assumption, ...]:
     """What Search assumed for a reading, from a list of the wire's assumptions."""
     return tuple(
         Assumption(
-            kind=_text(assumption.get("kind")),
-            binding_ref=_text(assumption.get("binding_ref")),
-            text=_text(assumption.get("text")),
-            refs=tuple(
-                ref for ref in _list(assumption.get("refs")) if isinstance(ref, str)
-            ),
+            kind=read["kind"],
+            binding_ref=read["binding_ref"],
+            text=read["text"],
+            refs=tuple(read.get("refs", ())),
         )
-        for assumption in _objects(assumptions)
+        for read in read_items(assumptions, read_assumption)
     )
 
 
@@ -259,15 +259,61 @@ def parse_operations(operations: object, /) -> tuple[RequestedOperation, ...]:
     """The computations a part asked for."""
     return tuple(
         RequestedOperation(
-            verb=_text(operation.get("verb")),
-            phrase=_text(operation.get("phrase")),
-            over=_optional_text(operation.get("over")),
-            target_year=target_year
-            if isinstance(target_year := operation.get("target_year"), int)
-            else None,
+            verb=read["verb"],
+            phrase=read["phrase"],
+            over=read.get("over"),
+            target_year=read.get("target_year"),
         )
-        for operation in _objects(operations)
+        for read in read_items(operations, read_requested_operation)
     )
+
+
+def read_assumption(item: object, /) -> dict[str, Any] | None:
+    """An `Assumption` item as the client reads it, or None when it does not read.
+
+    The item reads when it is an object whose `kind`, `binding_ref` and `text` are
+    strings. The read form holds those members, and `refs` as its string items when
+    the item holds `refs` as a list. A resubmit posts this form back.
+    """
+    if (
+        not isinstance(item, Mapping)
+        or (read := _required_strings(item, "kind", "binding_ref", "text")) is None
+    ):
+        return None
+    if isinstance(refs := item.get("refs"), list):
+        read["refs"] = [ref for ref in refs if isinstance(ref, str)]
+    return read
+
+
+def read_requested_operation(item: object, /) -> dict[str, Any] | None:
+    """An `Operation` item as the client reads it, or None when it does not read.
+
+    The item reads when it is an object whose `verb` and `phrase` are strings. The
+    read form holds those members, `over` when the item holds it as a string or
+    null, and `target_year` when the item holds it as null or as a number other
+    than a boolean with no fractional part, read as that integer, so `2020.0`
+    reads as `2020`. A resubmit posts this form back.
+    """
+    if (
+        not isinstance(item, Mapping)
+        or (read := _required_strings(item, "verb", "phrase")) is None
+    ):
+        return None
+    if "over" in item and ((over := item["over"]) is None or isinstance(over, str)):
+        read["over"] = over
+    if "target_year" in item:
+        year = item["target_year"]
+        if year is None or is_integer(year):
+            read["target_year"] = None if year is None else int(year)
+    return read
+
+
+def read_items(
+    value: object, read: Callable[[object], dict[str, Any] | None], /
+) -> list[dict[str, Any]]:
+    """The read forms of a wire list's items that `read` reads, in order; none when
+    the value is not a list."""
+    return [found for item in _list(value) if (found := read(item)) is not None]
 
 
 def parse_citation(citation: object, /) -> Citation:
@@ -435,3 +481,10 @@ def _list(value: object) -> list[Any]:
 
 def _objects(value: object) -> list[Wire]:
     return [item for item in _list(value) if isinstance(item, Mapping)]
+
+
+def _required_strings(item: Wire, *names: str) -> dict[str, Any] | None:
+    """`item`'s members `names`, or None when one is not a string."""
+    if not all(isinstance(item.get(name), str) for name in names):
+        return None
+    return {name: item[name] for name in names}

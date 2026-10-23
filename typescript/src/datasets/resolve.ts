@@ -7,7 +7,8 @@
  * stored frame; a fresh build, which must return the same version; otherwise
  * `VersionUnavailableError`, naming the newest version. The steps after the snapshot run only
  * for a version whose file has expired. A version the server never built
- * (`snapshot_not_found`) raises at once.
+ * (`snapshot_not_found`) raises at once. A snapshot or build that answers another spec raises
+ * `ContractError`, so a recovered member keeps the ref's identity.
  *
  * The lookup reuses the build path's download, warnings and finishing steps, so this module
  * imports `fetch.ts` and `fetch.ts` imports nothing from here.
@@ -162,6 +163,15 @@ async function fetchVersion(
       ...wait,
       onProgress: options.onProgress,
     });
+    describing(built.traceId, () => {
+      const rebuilt = specIdOf(built.manifest);
+      if (rebuilt !== member.spec.spec_id) {
+        throw clientError("contract_violation", {
+          detail: `The server rebuilt ${rebuilt} for ${member.spec.spec_id}.`,
+          pointer: "/definition/spec_id",
+        });
+      }
+    });
     if (contentVersionOf(built.manifest) === member.contentVersion) {
       const finishing = {
         parts: member.parts,
@@ -253,52 +263,80 @@ async function storedFile(
   }
 }
 
+/** The versions one page of the versions route lists, the route's default page size. */
+const VERSIONS_PAGE = 100;
+
 /**
- * @internal The newest stored version of a spec, which the versions route lists alone at
- * `limit=1` since it lists versions newest first, or null when it lists none or does not know
- * the spec. A ref's lookup reads it, and the contract replay runs its `newest_version` step
- * through it.
+ * @internal The newest stored version of a spec, its newest plain build, or null. The versions
+ * route lists versions newest first, `VERSIONS_PAGE` to a page, and each page's `next_cursor`
+ * names the next. The newest version is the first listed with a null `base_content_version`, so
+ * a derived version, a groupby collapse or party-totals cut of a plain build, is skipped. A list
+ * that ends without a plain version, or a `NotFoundError`, reads as none. A ref's lookup reads
+ * it, and the contract replay runs its `newest_version` step through it.
  *
- * @throws {ContractError} The body is not a `DatasetVersionsPage`: no `versions` list, or a
- *   listed version with no `content_version`.
+ * @throws {ContractError} A page is not a `DatasetVersionsPage` this client can read: no
+ *   `versions` list, a listed version with no `content_version` string or no
+ *   `base_content_version` that is a string or null, or a `next_cursor` that is neither.
  */
 export async function newestVersion(
   transport: Transport,
   specId: string,
   { deadline, signal, timeout }: Wait & { readonly timeout?: number | undefined },
 ): Promise<string | null> {
-  let body: unknown;
-  let traceId: string | null;
-  try {
-    ({ body, traceId } = await transport.request({
-      path: `/datasets/${specId}/versions?limit=1`,
-      deadline,
-      ...(signal === undefined ? {} : { signal }),
-      ...(timeout === undefined ? {} : { timeout }),
-    }));
-  } catch (error) {
-    if (error instanceof NotFoundError) return null;
-    throw error;
-  }
+  let cursor: string | null = null;
+  do {
+    const query = new URLSearchParams({ limit: String(VERSIONS_PAGE) });
+    if (cursor !== null) query.set("cursor", cursor);
+    let body: unknown;
+    let traceId: string | null;
+    try {
+      ({ body, traceId } = await transport.request({
+        path: `/datasets/${specId}/versions?${query}`,
+        deadline,
+        ...(signal === undefined ? {} : { signal }),
+        ...(timeout === undefined ? {} : { timeout }),
+      }));
+    } catch (error) {
+      if (error instanceof NotFoundError) return null;
+      throw error;
+    }
+    const page = readVersionsPage(body, specId, traceId);
+    if (page.plain !== null) return page.plain;
+    cursor = page.nextCursor;
+  } while (cursor !== null);
+  return null;
+}
+
+/** The first plain version a versions page lists, or null, and the page's `next_cursor`. */
+function readVersionsPage(
+  body: unknown,
+  specId: string,
+  traceId: string | null,
+): { plain: string | null; nextCursor: string | null } {
+  const unreadable = (pointer: string): DfoError =>
+    clientError("contract_violation", {
+      detail: `The versions of ${specId} are not a DatasetVersionsPage: ${pointer} cannot be read.`,
+      pointer,
+      traceId,
+    });
   const versions = isRecord(body) ? body["versions"] : undefined;
-  if (!Array.isArray(versions)) {
-    throw clientError("contract_violation", {
-      detail: `The versions of ${specId} are not a DatasetVersionsPage: it has no versions list.`,
-      pointer: "/versions",
-      traceId,
-    });
+  if (!isRecord(body) || !Array.isArray(versions)) throw unreadable("/versions");
+  let plain: string | null = null;
+  for (const [index, version] of (versions as unknown[]).entries()) {
+    const entry = isRecord(version) ? version : {};
+    const contentVersion = entry["content_version"];
+    if (typeof contentVersion !== "string") {
+      throw unreadable(`/versions/${index}/content_version`);
+    }
+    const base = entry["base_content_version"];
+    if (base !== null && typeof base !== "string") {
+      throw unreadable(`/versions/${index}/base_content_version`);
+    }
+    if (base === null) plain ??= contentVersion;
   }
-  if (versions.length === 0) return null;
-  const [first] = versions as unknown[];
-  const newest = isRecord(first) ? first["content_version"] : undefined;
-  if (typeof newest !== "string") {
-    throw clientError("contract_violation", {
-      detail: `The newest version of ${specId} has no content_version.`,
-      pointer: "/versions/0/content_version",
-      traceId,
-    });
-  }
-  return newest;
+  const nextCursor = body["next_cursor"] ?? null;
+  if (nextCursor !== null && typeof nextCursor !== "string") throw unreadable("/next_cursor");
+  return { plain, nextCursor };
 }
 
 function unavailable(

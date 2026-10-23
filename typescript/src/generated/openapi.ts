@@ -1073,6 +1073,11 @@ export interface components {
        * @description the artifact's stable download link, `/api/datasets/{id}/{content_version}/files/{artifact_digest}`, relative to the API host. It never expires: each request checks the version and answers 302 to a signed URL valid for five minutes, or refuses snapshot_revoked once the version is taken down
        */
       url: string;
+      /**
+       * Enrichment Stamp
+       * @description the digest of the code index's party kinds, classes and whole-total markers this file's party cells ({role}_kind, or {role}_party_kind, {role}_party_class and {role}_party_whole) were read under. Present on a file whose frame holds a party role and whose layout writes party cells (a long-layout file, or one whose columns name a party field), when it was rendered under the serving code index. Absent on every other file, including a pinned or older-layout file rendered under an earlier index, whose kinds may be out of date. A caller naming a frame by this file's rendering adds the stamp to the name, so a change to a party's kind names a new frame
+       */
+      enrichment_stamp?: string | null;
     };
     /**
      * Assumption
@@ -1246,7 +1251,7 @@ export interface components {
         components["schemas"]["IdentityShapeSchema"] | components["schemas"]["IdentityShapePin"];
       /**
        * Slots
-       * @description the what/how slots that feed identity -- where/when/source are excluded
+       * @description the what/how slots that feed identity -- where/when/source are excluded. A what/how property the identity leaves out is one no member it serves asserts: an identity over a family with no total carries only the slots the request binds or opens, or its one breakdown, so a member asserting any other is excluded
        */
       slots: components["schemas"]["IdentitySlot"][];
       /**
@@ -1443,7 +1448,7 @@ export interface components {
       operations?: components["schemas"]["Operation"][];
       /**
        * Departures
-       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, year_unavailable, modelled_values, group_read_as_members, direction_discarded, direction_inferred, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
+       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, direction_inferred, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
        */
       departures?: components["schemas"]["Departure"][];
       /**
@@ -2832,6 +2837,11 @@ export interface components {
        * @default false
        */
       without_party_totals?: boolean;
+      /**
+       * Enrichment Stamp
+       * @description the `enrichment_stamp` a file of this version holding party-kind cells, rendered now, carries (`ArtifactEntryModel.enrichment_stamp`): the answering code index's digest, the page's `enrichment_stamp`, when the version's frame holds a party role. Absent when it holds none, since a file of it then holds no party-kind cell and carries no stamp under any code index. A version that stored neither an output profile nor a party-free link lists the digest
+       */
+      enrichment_stamp?: string | null;
     };
     /** DatasetVersionsPage */
     DatasetVersionsPage: {
@@ -2843,6 +2853,11 @@ export interface components {
       schema_version?: 1;
       /** Spec Id */
       spec_id: string;
+      /**
+       * Enrichment Stamp
+       * @description the digest of the party kinds, classes and whole-total markers the answering code index holds, the one a file rendered now carries (`ArtifactEntryModel.enrichment_stamp`). A frame naming a file that asks for a party-kind column adds it to its name, so a frame named under another stamp does not match
+       */
+      enrichment_stamp: string;
       /**
        * Versions
        * @description stored versions that are not revoked, newest first
@@ -2946,7 +2961,7 @@ export interface components {
       operations?: components["schemas"]["Operation"][];
       /**
        * Departures
-       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, year_unavailable, modelled_values, group_read_as_members, direction_discarded, direction_inferred, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
+       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, direction_inferred, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
        */
       departures?: components["schemas"]["Departure"][];
       /**
@@ -3047,7 +3062,7 @@ export interface components {
     Departure: {
       /**
        * Code
-       * @description what kind of departure this is. 'closest_match': the answer shows the nearest measure the graph holds, not the one asked; a client draws a muted 'Closest match:' lead before the heading, and on a candidates part, whose readings stand in for a measure with no data, once before the first reading. 'measure_not_applied': a named measure qualifier was not applied. 'operation_not_applied': an operation the request named (a share, a ranking) was not run, so the amounts behind it are shown. 'breakdown_not_applied': a breakdown the request named was not applied, so the total is shown. 'entity_unavailable': an entity the request named holds no values in the series the answer reads, one departure per role; for a role the request named as a group, asked is the request's words for the group and the text counts the members without values; the text names any source holding values there that Search does not read. 'year_unavailable': a named year or range falls outside the years served. 'modelled_values': the served values are modelled or estimated. 'group_read_as_members': a named group was read as its member entities; on a flow role the text names the amounts the group's published total counts that no member holds, and, for a group whose published total is not its members' sum, says the source publishes its own figure for the group. 'direction_discarded': a flow direction the request's own words named was not applied. 'direction_inferred': a place the request named without a direction is read on the one direction that holds data, which over names. 'scope_limited': a no_data answer's check covered only values the engine chose, which the request did not name; its text names only what the check covered ('This check covered only ODA.')
+       * @description what kind of departure this is. 'closest_match': the answer shows the nearest measure the graph holds, not the one asked; a client draws a muted 'Closest match:' lead before the heading, and on a candidates part, whose readings stand in for a measure with no data, once before the first reading. 'measure_not_applied': a named measure qualifier was not applied. 'operation_not_applied': an operation the request named (a share, a ranking) was not run, so the amounts behind it are shown. 'breakdown_not_applied': a breakdown the request named was not applied, so the total is shown. 'entity_unavailable': an entity the request named holds no values in the series the answer reads, one departure per role; for a role the request named as a group, asked is the request's words for the group and the text counts the members without values; the text names any source holding values there that Search does not read. 'year_unavailable': a named year or range falls outside the years served. 'modelled_values': the served values are modelled or estimated. 'group_read_as_members': a named group was read as its member entities; on a flow role the text names the amounts the group's published total counts that no member holds, and, for a group whose published total is not its members' sum, says the source publishes its own figure for the group. 'whole_total_read': a flow side is read as its whole population, the total its source publishes for every party of that side (official donors (DAC) for 'official donors' or a donor side the request named nothing on or summed over; official and private donors (DAC) for 'all donors'); the text says what the total holds and how to list the side's members with open_roles. 'whole_total_unpublished': the request named a whole population ('all donors', 'all recipients') on a side whose dataset publishes no total of it and holds no party outside it, so the side is left unnamed and the answer covers every party the dataset holds there; asked is the request's words, and the text names the dataset. 'direction_discarded': a flow direction the request's own words named was not applied. 'direction_inferred': a place the request named without a direction is read on the one direction that holds data, which over names. 'scope_limited': a no_data answer's check covered only values the engine chose, which the request did not name; its text names only what the check covered ('This check covered only ODA.')
        */
       code:
         | (
@@ -3059,6 +3074,8 @@ export interface components {
             | "year_unavailable"
             | "modelled_values"
             | "group_read_as_members"
+            | "whole_total_read"
+            | "whole_total_unpublished"
             | "direction_discarded"
             | "direction_inferred"
             | "scope_limited"
@@ -3180,7 +3197,7 @@ export interface components {
       timing_ms?: components["schemas"]["Timing"] | null;
       /**
        * Llm Usage
-       * @description per-request LLM token counts {input_tokens, output_tokens, cached_tokens}
+       * @description per-request LLM token counts {input_tokens, output_tokens, cached_tokens}, plus {jev_input_tokens, jev_output_tokens} when Jev answered a call
        */
       llm_usage?: {
         [key: string]: number;
@@ -3333,6 +3350,11 @@ export interface components {
        */
       parties: number;
       /**
+       * Private
+       * @description the parties whose class is private, a subset of parties
+       */
+      private: number;
+      /**
        * Totals
        * @description entities that hold other entities' figures
        */
@@ -3374,7 +3396,12 @@ export interface components {
      *     type. `entity_type` is informational, and the reading keys on `ref`. When
      *     the role binds the total its dataset publishes
      *     for the group ("Africa (DAC)") in place of the members, `total` names that
-     *     party and the role's one dcid is it. A Spec serves its groups on
+     *     party and the role's one dcid is it. A role read as the whole population of
+     *     its side, the source's total of every party there ("Official Donors, Total")
+     *     or a union of such totals ("all donors including private"), states the
+     *     classes of party that population covers in `whole_of`, and the classes the answer's
+     *     dataset publishes on that side in `side_classes`; a resubmit derives both from the
+     *     identity and the code index, whatever it posts. A Spec serves its groups on
      *     `ResolvedSpec.entity_groups`, and a resubmit posts them beside the identity
      *     (`ResubmitIdentityEntry.entity_groups`, `ResubmitCandidate.entity_groups`).
      */
@@ -3404,6 +3431,16 @@ export interface components {
        * @description the membership registry's id for a group the graph holds no node for, e.g. groups/OECD.DAC.Region.Asia; null when ref is set or the group is no registry group
        */
       group_id?: string | null;
+      /**
+       * Whole Of
+       * @description the classes of party the role's whole population covers, sorted: official, private or residual, e.g. ["official"] for Official Donors, Total, which holds every official donor and no private one; absent for any other group
+       */
+      whole_of?: (("official" | "private" | "residual") | (string & {}))[] | null;
+      /**
+       * Side Classes
+       * @description for a role read as its whole population, the classes of party, totals aside, the answer's dataset publishes on that side, sorted, e.g. ["official", "private", "residual"] for donors in DAC2a; a class here and not in whole_of, such as "private", is outside the total. Absent for any other group. Derived from the identity on every answer; a posted value is ignored
+       */
+      side_classes?: (("official" | "private" | "residual") | (string & {}))[] | null;
     };
     /**
      * EntityOptions
@@ -4912,7 +4949,7 @@ export interface components {
       elected_count?: number | null;
       /**
        * Entity Terms
-       * @description the query entity text responsible for an entity-resolution outcome, in query order: every entity the engine could not resolve for entity_not_resolved, every ambiguous wording for entity_ambiguous, every resolved-but-unadmitted entity for entity_role_not_admitted, or every name whose flow direction the query leaves untold for role_not_resolved. Empty for every other no_data reason. This structured list is the client-facing source of those terms; rendered_sentence may quote the same wording for people, but clients must not parse it.
+       * @description the query entity text responsible for the outcome, in query order: every entity the engine could not resolve for entity_not_resolved, every ambiguous wording for entity_ambiguous, every resolved-but-unadmitted entity for entity_role_not_admitted, every name whose flow direction the query leaves untold for role_not_resolved, and every whole population the query directs to the other side of the flow for role_incompatible, which is empty when the refusal has another cause. Empty for every other no_data reason. This structured list is the client-facing source of those terms; rendered_sentence may quote the same wording for people, but clients must not parse it.
        */
       entity_terms?: string[];
       /**
@@ -5020,7 +5057,7 @@ export interface components {
       operations?: components["schemas"]["Operation"][];
       /**
        * Departures
-       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, year_unavailable, modelled_values, group_read_as_members, direction_discarded, direction_inferred, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
+       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, direction_inferred, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
        */
       departures?: components["schemas"]["Departure"][];
       /**
@@ -5728,12 +5765,12 @@ export interface components {
       enrichments: components["schemas"]["EnrichmentOptionModel"][];
       /**
        * Long Layout Defaults
-       * @description the enrichment tokens a long-layout download writes with no columns option, in column order: every role's {role}_label, and {role}_party_kind for every role on a flow axis. Naming one in columns gives the same column once
+       * @description the enrichment tokens a long-layout download writes with no columns option, in column order: every role's {role}_label, and {role}_kind for every role on a flow axis, the party's kind in words: official or private on the provider or creditor side, country or organisation on the recipient or debtor side, total, whole total (a total that holds every party of its group in that row's dataset and year) or unallocated. Naming one in columns gives the same column once
        */
       long_layout_defaults: string[];
       /**
        * Long Layout Totals
-       * @description the roles whose total rows ({role}_party_kind is total) a long-layout CSV or XLSX download keeps out of its main table. A role is listed when the definition binds it to several entities one of which the code index declares a total, or leaves it open and the code index lists a total on its axis in a dataset the definition read (any dataset, when the read selected none). A role bound to several parties holds no total row and is not listed. A bundle's CSV writes those rows to a second data file, data/<name>-totals.csv; an XLSX writes them on a second sheet, totals. A bare CSV has no README and drops them, so this list names the roles whose totals it drops. Parquet, a pivot and the frame layout keep every row. Empty when no role can hold a total row
+       * @description the roles whose total rows ({role}_kind is total or whole total) a long-layout CSV or XLSX download keeps out of its main table. A private party stays in it. A role is listed when the definition binds it to several entities one of which the code index declares a total, or leaves it open and the code index lists a total on its axis in a dataset the definition read (any dataset, when the read selected none). A role bound to several parties holds no total row and is not listed. A bundle's CSV writes those rows to a second data file, data/<name>-totals.csv; an XLSX writes them on a second sheet, totals. A bare CSV has no README and drops them, so this list names the roles whose totals it drops. Parquet, a pivot and the frame layout keep every row. Empty when no role can hold a total row
        */
       long_layout_totals: string[];
       /** Pivots */
@@ -6880,8 +6917,10 @@ export interface components {
      *     `"bound"` when some final binding on a named row's code system covers
      *     it (that row or a descendant), `"unbound"` when a row was named but no
      *     binding covers it, and `"no_vocabulary"` when the term names no code at
-     *     all -- an LLM-reported phrase (`bind`'s own `unplaced` output) that no
-     *     taxonomy in this deployment's index can express.
+     *     all: an LLM-reported phrase (`bind`'s own `unplaced` output) that no
+     *     taxonomy in this deployment's index can express, an exclusion or comparison
+     *     phrase (`"unsupported"`), or words beside no code the binder rated as not
+     *     stated on the elected shape (`"uncovered"`).
      *
      *     `start` and `end` locate the term in the part's variable phrase. `evidence` says what
      *     read it, and `None` means a code's label or synonym matched the term as the query
@@ -6892,9 +6931,12 @@ export interface components {
      *     - `"model"` marks a phrase the bind model read through a code it chose from the
      *       phrase's candidate menu, a lexical hit of the menu or a descendant of one
      *       (`phase_rank_bind._model_records`); `named` holds the chosen codes.
-     *     - `"uncovered"` marks words no reader covers beside a recognised code
-     *       (`phase_rank_bind._coverage_records`), recorded `"unbound"` with that code's rows as
-     *       `named`.
+     *     - `"uncovered"` marks words no reader covers on the elected shape
+     *       (`phase_rank_bind._coverage_records`). Beside a recognised code they are recorded
+     *       `"unbound"` with that code's rows as `named`. Beside no code they are recorded
+     *       `"no_vocabulary"` with `named` empty when the binder rates them below
+     *       `SearchSettings.stated_word_bar` as not stated by the shape's series; a word it rates
+     *       at the bar or above, or leaves unrated, reads as stated.
      *     - `"unavailable"` marks a code term the elected shape cannot apply: one naming only
      *       codes no shape can bind, or, on a part naming a dataset, one no row of that dataset
      *       holds (`phase_rank_bind._unavailable_qualifiers`), recorded `"unbound"`.
@@ -6938,7 +6980,7 @@ export interface components {
       end?: number | null;
       /**
        * Evidence
-       * @description what read the term: a code label or synonym, the bind model, "uncovered" for words no reader covers beside a recognised code, "unavailable" for a code no table holds, "unsupported" for a distinction no binding expresses
+       * @description what read the term: a code label or synonym, the bind model, "uncovered" for words no reader covers on the elected shape, unbound beside a recognised code and no_vocabulary beside none when the binder rated them as not stated by its series, "unavailable" for a code no table holds, "unsupported" for a distinction no binding expresses
        */
       evidence?:
         | (
@@ -7003,7 +7045,7 @@ export interface components {
       shape: components["schemas"]["Shape"];
       /**
        * Slots
-       * @description one entry per slot the shape defines, each in a binding state
+       * @description one entry per slot the shape defines, each in a binding state. Its what/how entries are the identity's slots, so a what/how property it leaves out is one no served member asserts
        */
       slots: components["schemas"]["Slot"][];
       /**
@@ -7092,9 +7134,10 @@ export interface components {
       confidence?: (("high" | "medium" | "low") | (string & {})) | null;
       /**
        * Basis
-       * @description why the part offers this Spec as one of its candidates: 'structural', a reading that differs from the elected one only on a stat type, price basis or denominator the request leaves open; 'nominated', a reading the model named as a genuine reading of the request's phrase; 'twin', an equivalent reading of the elected one, offered where the elected one holds no data; 'direction', the same reading with the other direction for a place the request names without one, which a client shows as a direction prompt. The elected reading, listed first, carries none. None on a definite answer and on every Spec outside CandidateSet.specs.
+       * @description why the part offers this Spec as one of its candidates: 'structural', a reading that differs from the elected one only on a stat type, price basis or denominator the request leaves open; 'nominated', a reading the model named as a genuine reading of the request's phrase; 'twin', an equivalent reading of the elected one, offered where the elected one holds no data; 'direction', the same reading with the other direction for a place the request names without one, which a client shows as a direction prompt; 'breakdown', the same measure broken down by another set of slots, offered when its family holds no total and the request names no breakdown that serves a member. The elected reading, listed first, carries none. None on a definite answer and on every Spec outside CandidateSet.specs.
        */
-      basis?: (("structural" | "nominated" | "twin" | "direction") | (string & {})) | null;
+      basis?:
+        (("structural" | "nominated" | "twin" | "direction" | "breakdown") | (string & {})) | null;
       /**
        * Available At Place
        * @description whether this spec has lifetime availability at the resolved place, independent of the coverage window. True = confirmed at place; False = the variable matched but has no observation here (the flagged_match case); None = not assessed (no place entity, or a named family such as dev-finance). CoverageExact.has_data may be False for a requested window even when this field is True.
@@ -8788,10 +8831,13 @@ export interface components {
      * @description Latency breakdown, reused at two scopes: the envelope's own
      *     diagnostics.timing_ms, where total is the whole request's wall-clock
      *     elapsed time and by_step names the steps that run once per request,
-     *     shared across every part (e.g. extract), and a part's own timing_ms,
-     *     where total sums that part's own by_step values and by_step names only
-     *     the phases that part ran, excluding the shared steps already reported
-     *     on the envelope. A part's shape_arcs, shape_probe, shape_probe_coverage,
+     *     shared across every part (coverage; extract; cache_lookup on a raw-text
+     *     request with the response cache active; entity_check on a request that
+     *     runs the place check), and a part's own timing_ms, where total sums
+     *     that part's own by_step values and by_step names the steps that part
+     *     ran plus a phase_<name> entry for each phase it ran, holding the time
+     *     no step booked, excluding the shared steps already reported on the
+     *     envelope. A part's shape_arcs, shape_probe, shape_probe_coverage,
      *     shape_labels, shape_groups and shape_admission steps are nested inside
      *     its shape step, so its total leaves them out.
      */
@@ -9161,7 +9207,7 @@ export interface components {
       operations?: components["schemas"]["Operation"][];
       /**
        * Departures
-       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, year_unavailable, modelled_values, group_read_as_members, direction_discarded, direction_inferred, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
+       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, direction_inferred, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
        */
       departures?: components["schemas"]["Departure"][];
       /**
@@ -9303,8 +9349,8 @@ export interface components {
      * Warning
      * @description A run-health signal. Note: this name shadows the Python builtin Warning.
      *
-     *     Only `observations_series_truncated`, `elected_shape_no_data` and `un_system_unavailable`
-     *     set `params`. A `None` `params` is left out of every dump, so other codes' warnings stay
+     *     Only `observations_series_truncated`, `elected_shape_no_data`, `un_system_unavailable`
+     *     and `whole_total_available` set `params`. A `None` `params` is left out of every dump, so other codes' warnings stay
      *     exactly `{code, severity, message}` plus `spec_id` where one applies.
      */
     Warning: {
@@ -9330,7 +9376,7 @@ export interface components {
       spec_id?: string | null;
       /**
        * Params
-       * @description the counts and labels the message states, for a client to compose its own text. observations_series_truncated: {shown, total, order}, the series shown, the confirmed series behind them, and how the shown series were chosen: 'ranked' (the most recent and largest) or 'fixed' (a selection made before values were read, not ranked by value). elected_shape_no_data: {no_data, elected}, the labels of the readings with no data and of the readings answered instead. un_system_unavailable: {places, variables, variable_labels}, the place dcids the UN front door refused, the variables of the UN reads that failed, each empty when none, and each variable's graph name, in variables order, '' where the graph holds none; a warning without params says the UN search itself was unavailable. Omitted for every other code
+       * @description the counts and labels the message states, for a client to compose its own text. observations_series_truncated: {shown, total, order}, the series shown, the confirmed series behind them, and how the shown series were chosen: 'ranked' (the most recent and largest) or 'fixed' (a selection made before values were read, not ranked by value). elected_shape_no_data: {no_data, elected}, the labels of the readings with no data and of the readings answered instead. un_system_unavailable: {places, variables, variable_labels}, the place dcids the UN front door refused, the variables of the UN reads that failed, each empty when none, and each variable's graph name, in variables order, '' where the graph holds none; a warning without params says the UN search itself was unavailable. whole_total_available: {total, total_label, whole_of}, the dcid and label of the total the source publishes for the side the answer lists member by member, and the classes of party it covers, comma-joined (official, private, residual). Omitted for every other code
        */
       params?: {
         [key: string]: number | string | string[];
@@ -9533,7 +9579,7 @@ export interface components {
       programmatic_pinning: boolean;
       /**
        * Enrichment Fields
-       * @description enrichment field names this deployment enables. A live token qualifies one as {entity_column}_{field} on the columns option. party_kind is a party's kind (party, total, residual) from the code index's declaration for it. Long output writes {role}_party_kind beside {role}_label for every role on a flow axis without a token; a bare party_kind token requests it for every role on a flow axis the table has. party_kind qualifies no subject role, so observationAbout_party_kind refuses column_unknown. A party the index does not list gets an empty cell and an enrichment_unavailable warning
+       * @description enrichment field names this deployment enables. A live token qualifies one as {entity_column}_{field} on the columns option. Three fields come from the code index's declaration of a party: party_kind is its kind (party, total, residual); party_class is official, private or residual, and for a total the one class its whole markers cover, empty when they cover none or several; party_whole is true on a row whose party is a total that holds every party of its classes on its axis in that row's dataset and year, such as Official Donors, Total, false on a row where it is not, and empty where the row names no one dataset and year, as in a pivot. A bare party field token requests it for every role on a flow axis the table has, and a file holds a party field only when a token asks for it. Long output writes one {role}_kind beside {role}_label for every role on a flow axis instead, in words: official or private for a provider or creditor, country or organisation for a recipient or debtor, total, whole total or unallocated, and ignores party field tokens. A party field qualifies no subject role, so observationAbout_party_kind refuses column_unknown. A party the index does not list gets an empty cell and an enrichment_unavailable warning
        */
       enrichment_fields: string[];
       /**

@@ -3,9 +3,10 @@
  * how the reading departs from the question, the computations it left undone, and the part's
  * warnings. Answer, Candidate, hints, fetch and Dataset all read them here, so one rule
  * applies to each field. A holder of the wrong type reads as absent, and an item that lacks a
- * required member or holds one of the wrong type is dropped. The resubmit echo posts the part's
- * own lists as the server sent them. The strict check (`strict.ts`) owns the strict members and
- * raises `ContractError` at their pointer.
+ * required member or holds one of the wrong type is dropped. A read item holds its schema's
+ * members alone, an optional member of another type left out, and the resubmit echo posts these
+ * read forms. The strict check (`strict.ts`) owns the strict members and raises `ContractError`
+ * at their pointer.
  */
 import { isRecord, list, objects, text } from "./json.ts";
 import type {
@@ -43,7 +44,7 @@ export function partFacts(part: Readonly<Record<string, unknown>>): PartFacts {
     assumptions: assumptionsOf(part["assumptions"]),
     readingAssumptions: readings,
     departures: itemsOf(part["departures"], departureOf),
-    operations: itemsOf(part["operations"], operationOf),
+    operations: operationsOf(part["operations"]),
     warnings: warningsOf(part["warnings"]),
   });
 }
@@ -67,17 +68,34 @@ const strings = (value: unknown): string[] =>
 const optionalString = (value: unknown): string | null | undefined =>
   typeof value === "string" || value === null ? value : undefined;
 
-/** A list of assumptions, or undefined when the value is not a list. */
+/** A list of assumptions, or undefined when the value is not a list. Each item holds `refs`, `[]`
+ *  when the wire item holds no list, as the Python client's `Assumption` does. */
 function assumptionsOf(value: unknown): readonly Assumption[] | undefined {
-  return Array.isArray(value) ? itemsOf(value, assumptionOf) : undefined;
+  return Array.isArray(value)
+    ? itemsOf(value, (item) => {
+        const read = assumptionReadOf(item);
+        return read === null ? null : { ...read, refs: read.refs ?? [] };
+      })
+    : undefined;
 }
 
-function assumptionOf(item: Record<string, unknown>): Assumption | null {
-  const { kind, binding_ref: bindingRef, text: said } = item;
+/** A list of assumptions in their read forms, as a resubmit echoes them, or undefined when the
+ *  value is not a list. A read form holds `refs` only when the wire item holds a list. */
+export function assumptionsReadOf(value: unknown): readonly Assumption[] | undefined {
+  return Array.isArray(value) ? itemsOf(value, assumptionReadOf) : undefined;
+}
+
+function assumptionReadOf(item: Record<string, unknown>): Assumption | null {
+  const { kind, binding_ref: bindingRef, text: said, refs } = item;
   if (typeof kind !== "string" || typeof bindingRef !== "string" || typeof said !== "string") {
     return null;
   }
-  return { kind, binding_ref: bindingRef, text: said, refs: strings(item["refs"]) };
+  return {
+    kind,
+    binding_ref: bindingRef,
+    text: said,
+    ...(Array.isArray(refs) ? { refs: strings(refs) } : {}),
+  };
 }
 
 function departureOf(item: Record<string, unknown>): Departure | null {
@@ -95,6 +113,11 @@ function departureOf(item: Record<string, unknown>): Departure | null {
   };
 }
 
+/** A list of operations, each in its read form; empty when the value is not a list. */
+export function operationsOf(value: unknown): readonly RequestedOperation[] {
+  return itemsOf(value, operationOf);
+}
+
 function operationOf(item: Record<string, unknown>): RequestedOperation | null {
   const { verb, phrase } = item;
   if (typeof verb !== "string" || typeof phrase !== "string") return null;
@@ -104,7 +127,9 @@ function operationOf(item: Record<string, unknown>): RequestedOperation | null {
     verb,
     phrase,
     ...(over === undefined ? {} : { over }),
-    ...(typeof targetYear === "number" || targetYear === null ? { target_year: targetYear } : {}),
+    ...((typeof targetYear === "number" && Number.isInteger(targetYear)) || targetYear === null
+      ? { target_year: targetYear }
+      : {}),
   };
 }
 

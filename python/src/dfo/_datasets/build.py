@@ -369,18 +369,26 @@ def poll_backoff(step: int) -> float:
     return min(POLL_BACKOFF_FIRST * 2**step, POLL_BACKOFF_CAP)
 
 
-def check_built(manifest: Wire, spec_id: str, content_version: str) -> None:
-    """Check a version's manifest names the spec and version it was asked for.
+def check_built(
+    manifest: Wire, spec_id: str, content_version: str | None = None
+) -> None:
+    """Check a manifest names the spec it was asked for, and the version when
+    `content_version` names one. A rebuild asks for no version.
 
     Raises:
         ContractError: The manifest names another spec or version.
     """
-    built = (manifest["definition"]["spec_id"], manifest["content_version"])
-    if built != (spec_id, content_version):
+    built_spec, built_version = (
+        manifest["definition"]["spec_id"],
+        manifest["content_version"],
+    )
+    if built_spec != spec_id or content_version not in (None, built_version):
+        asked = (
+            spec_id if content_version is None else f"{spec_id} at {content_version}"
+        )
         raise client_error(
             CONTRACT_VIOLATION,
-            f"The server answered {built[0]} at {built[1]} for "
-            f"{spec_id} at {content_version}",
+            f"The server answered {built_spec} at {built_version} for {asked}",
         )
 
 

@@ -95,6 +95,20 @@ const wrongTypes: [string, "Manifest" | "Resolution", string, Edit, string][] = 
     "/definition/spec_id",
   ],
   [
+    "a boolean schema_version",
+    "Manifest",
+    "fetch-spec-known-sentence",
+    (b) => ((b["definition"] as Record<string, unknown>)["schema_version"] = true),
+    "/definition/schema_version",
+  ],
+  [
+    "a fractional schema_version",
+    "Manifest",
+    "fetch-spec-known-sentence",
+    (b) => ((b["definition"] as Record<string, unknown>)["schema_version"] = 1.5),
+    "/definition/schema_version",
+  ],
+  [
     "a non-string artifact_digest",
     "Manifest",
     "fetch-spec-known-sentence",

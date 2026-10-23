@@ -558,6 +558,12 @@ def unknown_without_restatement() -> dict[str, Any]:
     return beside_a_candidates_part({"status": "pondering", "variable_text": "tea"})
 
 
+def second_place_with_options() -> dict[str, Any]:
+    wire = load("search-two-places.json")
+    wire["parts"][1] = with_options(wire["parts"][1])
+    return wire
+
+
 def options_sharing_a_label() -> dict[str, Any]:
     wire = load("search-3.json")
     wire["parts"][0] = with_options(wire["parts"][0])
@@ -573,26 +579,32 @@ def options_sharing_a_label() -> dict[str, Any]:
         (lambda: load("search-two-places.json"), (0,)),
         (lambda: load("search-3.json"), (0,)),
         (lambda: load("search-2.json"), (3,)),
+        (lambda: load("search-2.json"), (True,)),
         (lambda: load("search-2.json"), ("GNI", "nope")),
         (lambda: load("search-4.json"), (0, 0)),
         (lambda: load("search-4.json"), ("tea", 0)),
         (lambda: load("search-4.json"), (5, 0)),
+        (second_place_with_options, (True, 0)),
         (without_variable_text, (0, 0)),
         (unknown_without_restatement, (0, 0)),
         (options_sharing_a_label, (0, "Congo [DRC]")),
+        (options_sharing_a_label, (0, False)),
     ],
     ids=[
         "no-gap",
         "several-gaps-unnamed",
         "no-choice-offered",
         "option-out-of-range",
+        "candidate-key-a-boolean",
         "no-such-label",
         "part-has-a-reading",
         "no-such-part-name",
         "part-out-of-range",
+        "part-key-a-boolean",
         "part-without-variable-text",
         "unknown-status-without-restatement",
         "options-share-a-label",
+        "option-key-a-boolean",
     ],
 )
 def test_a_choice_that_cannot_be_made_raises_invalid_request(

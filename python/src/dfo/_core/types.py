@@ -592,6 +592,14 @@ def is_text(value: object) -> bool:
     return isinstance(value, str) and bool(value)
 
 
+def is_integer(value: object) -> bool:
+    """Whether a decoded JSON value is an integer: a number with no fractional
+    part, `1.0` included, that is not a boolean."""
+    if isinstance(value, float):
+        return value.is_integer()
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def matches(pattern: re.Pattern[str], value: object) -> bool:
     return isinstance(value, str) and pattern.fullmatch(value) is not None
 
@@ -622,8 +630,19 @@ def load_spec(obj: Mapping[str, Any], pointer: str) -> Spec:
     if not matches(SPEC_ID, spec_id):
         raise FormatError("format_invalid", f"{pointer}/spec_id", "not a spec id")
     definition = object_at(obj["definition"], f"{pointer}/definition")
-    if "spec_id" not in definition:
-        raise FormatError("format_invalid", f"{pointer}/definition/spec_id", "missing")
+    check_keys(
+        definition,
+        f"{pointer}/definition",
+        required=("schema_version", "spec_id", "identity"),
+    )
+    schema_version = definition["schema_version"]
+    if not is_integer(schema_version):
+        raise FormatError(
+            "format_invalid",
+            f"{pointer}/definition/schema_version",
+            "not an integer",
+        )
+    object_at(definition["identity"], f"{pointer}/definition/identity")
     if not matches(SPEC_ID, definition["spec_id"]):
         raise FormatError(
             "format_invalid", f"{pointer}/definition/spec_id", "not a spec id"
