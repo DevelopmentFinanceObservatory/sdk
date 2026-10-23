@@ -5,14 +5,11 @@
 `AsyncClient` carry the same calls for one configuration each.
 """
 
-from dfo._answer import AsyncAnswer
-from dfo._build import Progress
-from dfo._bundle import BundleError, BundleLimits, open_bundle
-from dfo._cli import login
-from dfo._client import AsyncClient
-from dfo._dataset import Dataset
-from dfo._default import configure, disable_cache, enable_cache, fetch, search
-from dfo._errors import (
+from dfo._client.cli import login
+from dfo._client.client import AsyncClient
+from dfo._client.default import configure, disable_cache, enable_cache, fetch, search
+from dfo._config.keys import ApiKey, ApiKeyArgument
+from dfo._core.errors import (
     AuthenticationError,
     ContractError,
     DataWarning,
@@ -32,43 +29,46 @@ from dfo._errors import (
     ServerError,
     VersionUnavailableError,
 )
-from dfo._hooks import AsyncHeaderProvider, HeaderProvider
-from dfo._keys import ApiKey, ApiKeyArgument
-from dfo._lookups import AsyncCodes, AsyncGraph, Node, ResolveKind
-from dfo._operation import AsyncOperation
-from dfo._sync._answer import Answer
-from dfo._sync._client import Client
-from dfo._sync._lookups import Codes, Graph
-from dfo._sync._operation import Operation
-from dfo._types import (
+from dfo._core.refs import DatasetRef, Member, RefMember
+from dfo._core.types import (
     Assumption,
     AsyncCandidate,
     Candidate,
     CandidatesPart,
     Citation,
     CitationSource,
-    DatasetRef,
     DefinitePart,
     Departure,
     FormatError,
     Gap,
     Layout,
-    Member,
     NoDataPart,
+    Node,
     Notice,
     Option,
     Part,
     RawResponse,
-    RefMember,
     Rendering,
     RequestedOperation,
+    ResolveKind,
     Spec,
     UnknownPart,
     UnsupportedPart,
     Window,
 )
+from dfo._datasets.build import Progress
+from dfo._datasets.bundle import BundleError, BundleLimits, open_bundle
+from dfo._datasets.dataset import Dataset
+from dfo._datasets.operation import AsyncOperation
+from dfo._generated.wire import CatalogueResponse, CodeRegistryEntry, ResolveResponse
+from dfo._http.hooks import AsyncHeaderProvider, HeaderProvider
+from dfo._search.answer import AsyncAnswer
+from dfo._search.lookups import AsyncCodes, AsyncGraph
+from dfo._sync._client.client import Client
+from dfo._sync._datasets.operation import Operation
+from dfo._sync._search.answer import Answer
+from dfo._sync._search.lookups import Codes, Graph
 from dfo._version import __version__
-from dfo._wire import CatalogueResponse, CodeRegistryEntry, ResolveResponse
 
 __all__ = [
     "Answer",

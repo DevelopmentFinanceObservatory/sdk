@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readdir } from "node:fs/promises";
 import { describe, test } from "node:test";
 
-import { DatasetRef, FormatError } from "../src/ref.ts";
+import { DatasetRef, FormatError } from "../src/core/ref.ts";
 import { contractJson } from "./support.ts";
 
 type RefRecord = {

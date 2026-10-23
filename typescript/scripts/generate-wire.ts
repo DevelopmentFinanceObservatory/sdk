@@ -25,7 +25,7 @@ const PART_SCHEMAS = ["DefinitePart", "CandidatesPart", "NoDataPart", "Unsupport
 const RENAMED: Record<string, string> = { Operation: "RequestedOperation" };
 
 const HEADER = `// Generated from contract/served/openapi.json by \`pnpm generate\`. Do not edit by hand.
-import type { UnknownPart } from "../unknown-part.ts";
+import type { UnknownPart } from "../core/unknown-part.ts";
 
 `;
 

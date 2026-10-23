@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { isKnownPart, PART_STATUSES } from "../src/parts.ts";
+import { isKnownPart, PART_STATUSES } from "../src/core/parts.ts";
 import type {
   DefinitePart,
   OperationEnvelope,

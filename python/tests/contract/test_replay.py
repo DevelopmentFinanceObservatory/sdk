@@ -37,30 +37,32 @@ from urllib.parse import urlsplit
 import httpx2
 import pytest
 
-from dfo import _errors, _fetch, _operation
-from dfo._answer import AsyncAnswer
-from dfo._client import AsyncClient
-from dfo._dataset import Dataset
-from dfo._errors import (
+from dfo._client.client import AsyncClient
+from dfo._core import errors as _errors
+from dfo._core.errors import (
     DataWarning,
     DfoError,
     DfoWarning,
     SearchWarning,
     VersionUnavailableError,
 )
-from dfo._fetch import Session as AsyncSession
-from dfo._operation import AsyncOperation
-from dfo._sync import _fetch as _sync_fetch
-from dfo._sync import _operation as _sync_operation
-from dfo._sync._answer import Answer
-from dfo._sync._client import Client
-from dfo._sync._fetch import Session
-from dfo._sync._operation import Operation
-from dfo._sync._transport import Transport
-from dfo._transport import USER_AGENT, AsyncTransport
-from dfo._types import DatasetRef, Gap, Spec
-
-from .._data import CONTRACT
+from dfo._core.refs import DatasetRef
+from dfo._core.types import Gap, Spec
+from dfo._datasets import operation as _operation
+from dfo._datasets import resolve as _resolve
+from dfo._datasets.dataset import Dataset
+from dfo._datasets.fetch import Session as AsyncSession
+from dfo._datasets.operation import AsyncOperation
+from dfo._http.transport import USER_AGENT, AsyncTransport
+from dfo._search.answer import AsyncAnswer
+from dfo._sync._client.client import Client
+from dfo._sync._datasets import operation as _sync_operation
+from dfo._sync._datasets import resolve as _sync_resolve
+from dfo._sync._datasets.fetch import Session
+from dfo._sync._datasets.operation import Operation
+from dfo._sync._http.transport import Transport
+from dfo._sync._search.answer import Answer
+from tests._data import CONTRACT
 
 SCENARIOS_DIR = CONTRACT / "scenarios"
 KEY = "dfo_k_4f8Kq2ZtR7mWx1NcB9vLp3YhD6sGa0Ue2wanxe"
@@ -291,9 +293,9 @@ def _run(
             # No public call reads the newest version; a ref's fetch looks it
             # up through this one, which the step drives directly.
             lookup = (
-                _fetch._newest
+                _resolve._newest
                 if isinstance(client, AsyncClient)
-                else _sync_fetch._newest
+                else _sync_resolve._newest
             )
             started = lookup(
                 client._session.transport, step["spec"]["spec_id"], deadline=None

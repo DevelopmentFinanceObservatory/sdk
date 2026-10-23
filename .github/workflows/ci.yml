@@ -89,6 +89,10 @@ jobs:
         if: matrix.python-version == '3.12'
         run: uv run ty check
 
+      - name: Check the package layers
+        if: matrix.python-version == '3.12'
+        run: uv run lint-imports
+
       - name: Check the generated sync code
         if: matrix.python-version == '3.12'
         run: uv run python ../scripts/gen_sync.py --check

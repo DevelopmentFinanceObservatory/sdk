@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 
-import { envFrom } from "../src/env.ts";
-import type { EntityGroups, Narrowing, SpecInput } from "../src/fetch.ts";
-import type { LongBuild } from "../src/operation.ts";
-import type { Layout, SpecLike } from "../src/ref.ts";
-import { Transport } from "../src/transport.ts";
-import type { TransportOptions } from "../src/transport.ts";
+import { envFrom } from "../src/config/env.ts";
+import type { EntityGroups, Narrowing, SpecInput } from "../src/datasets/fetch.ts";
+import type { LongBuild } from "../src/datasets/operation.ts";
+import type { Layout, SpecLike } from "../src/core/ref.ts";
+import { Transport } from "../src/http/transport.ts";
+import type { TransportOptions } from "../src/http/transport.ts";
 
 /** The base URL a replay serves its scenario at when its options name none. */
 export const REPLAY_BASE_URL = "https://api.replay.test/api";

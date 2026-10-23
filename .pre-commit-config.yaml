@@ -75,7 +75,7 @@ repos:
           )$
 
   # ---------------------------------------------------------------------------
-  # Type checking (uses settings from pyproject.toml)
+  # Type checking and package layers (use settings from pyproject.toml)
   # ---------------------------------------------------------------------------
   - repo: local
     hooks:
@@ -85,6 +85,15 @@ repos:
         entry: uv run --directory python ty check
         types: [python]
         files: ^python/
+        pass_filenames: false
+      # The import-linter cache can keep a result from before an edit, so the hook
+      # runs without it.
+      - id: import-linter
+        name: import-linter layers
+        language: system
+        entry: uv run --directory python lint-imports --no-cache
+        types: [python]
+        files: ^python/src/
         pass_filenames: false
 
   # ---------------------------------------------------------------------------

@@ -42,7 +42,7 @@ from dfo import (
     Operation,
     Spec,
 )
-from dfo._build import resubmit_body
+from dfo._datasets.build import resubmit_body
 
 pytestmark = pytest.mark.live
 

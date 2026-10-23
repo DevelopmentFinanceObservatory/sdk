@@ -17,10 +17,9 @@ from typing import Any
 
 import httpx2
 
-from dfo._cache import sha256_digest
-from dfo._types import Rendering
-
-from ._data import CONTRACT, load
+from dfo._core.types import Rendering
+from dfo._datasets.cache import sha256_digest
+from tests._data import CONTRACT, load
 
 BASE = "https://api.example.org/api/v1"
 ORIGIN = "https://api.example.org"

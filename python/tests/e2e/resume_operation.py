@@ -15,9 +15,9 @@ import time
 
 import httpx2
 
-from dfo._sync._client import Client
-from dfo._sync._fetch import Session
-from dfo._sync._transport import Transport
+from dfo._sync._client.client import Client
+from dfo._sync._datasets.fetch import Session
+from dfo._sync._http.transport import Transport
 
 
 class Recording(httpx2.BaseTransport):

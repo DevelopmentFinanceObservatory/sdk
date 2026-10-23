@@ -6,13 +6,13 @@ import { describe, test } from "node:test";
 import { parquetMetadata } from "hyparquet";
 import { parquetWriteBuffer } from "hyparquet-writer";
 
-import { toArrow } from "../src/arrow.ts";
-import { Dataset, tableParts } from "../src/dataset.ts";
-import type { FetchedMember } from "../src/dataset.ts";
-import { decodeStored, readParquet, widen } from "../src/parquet.ts";
-import { partFacts } from "../src/part-facts.ts";
-import type { ColumnType } from "../src/parquet.ts";
-import { DatasetRef } from "../src/ref.ts";
+import { toArrow } from "../src/datasets/arrow.ts";
+import { Dataset, tableParts } from "../src/datasets/dataset.ts";
+import type { FetchedMember } from "../src/datasets/dataset.ts";
+import { decodeStored, readParquet, widen } from "../src/datasets/parquet.ts";
+import { partFacts } from "../src/core/parse.ts";
+import type { ColumnType } from "../src/datasets/parquet.ts";
+import { DatasetRef } from "../src/core/ref.ts";
 import { scenarioBytes } from "./replay.ts";
 
 const SCENARIOS = new URL("../../contract/scenarios/", import.meta.url);

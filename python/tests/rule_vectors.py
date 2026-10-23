@@ -3,7 +3,7 @@
 import json
 from typing import Any
 
-from ._data import CONTRACT
+from tests._data import CONTRACT
 
 
 def vectors(rule: str) -> list[dict[str, Any]]:

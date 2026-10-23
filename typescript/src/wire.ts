@@ -5,7 +5,7 @@
  * still typechecks. Part `status` stays closed, so it narrows `KnownPart`.
  */
 export type * from "./generated/openapi.ts";
-export type { UnknownPart } from "./unknown-part.ts";
+export type { UnknownPart } from "./core/unknown-part.ts";
 
 import type {
   CandidatesPart,
@@ -13,7 +13,7 @@ import type {
   NoDataPart,
   UnsupportedPart,
 } from "./generated/openapi.ts";
-import type { UnknownPart } from "./unknown-part.ts";
+import type { UnknownPart } from "./core/unknown-part.ts";
 
 /** A part whose status this release knows. Its `status` narrows it. */
 export type KnownPart = DefinitePart | CandidatesPart | NoDataPart | UnsupportedPart;

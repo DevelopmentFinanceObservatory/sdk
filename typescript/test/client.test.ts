@@ -3,9 +3,9 @@ import { describe, test } from "node:test";
 
 import { Client, clientOver } from "../src/client.ts";
 import type { ClientOptions } from "../src/client.ts";
-import { envFrom } from "../src/env.ts";
-import { NotFoundError } from "../src/errors.ts";
-import { Transport } from "../src/transport.ts";
+import { envFrom } from "../src/config/env.ts";
+import { NotFoundError } from "../src/core/errors.ts";
+import { Transport } from "../src/http/transport.ts";
 import { json, mockFetch, problem, recordingSleep } from "./support.ts";
 
 const BASE = "https://api.example.org/api";

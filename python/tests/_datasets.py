@@ -8,11 +8,10 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from dfo._cache import sha256_digest
-from dfo._dataset import FetchedMember
-from dfo._types import Spec
-
-from ._data import CONTRACT
+from dfo._core.types import Spec
+from dfo._datasets.cache import sha256_digest
+from dfo._datasets.dataset import FetchedMember
+from tests._data import CONTRACT
 
 SCENARIO = CONTRACT / "scenarios" / "fetch-spec-known-sentence.json"
 PARQUET = CONTRACT / "scenarios" / "fetch-spec-known-sentence.parquet"

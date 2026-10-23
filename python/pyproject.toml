@@ -10,8 +10,8 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    # `_keep_to_deadlines` in src/dfo/_transport.py reads the pool's private layout
-    # and raises a RuntimeError naming both versions when a release moves it.
+    # `_keep_to_deadlines` in src/dfo/_http/transport.py reads the pool's private
+    # layout and raises a RuntimeError naming both versions when a release moves it.
     # The `<2.16` bounds are the one exception to the no-upper-bound policy in
     # CONTRIBUTING.md. A minor release may move that private layout, so each new
     # minor is tested before the bound moves.
@@ -32,7 +32,7 @@ classifiers = [
 
 
 [project.scripts]
-dfo = "dfo._cli:main"
+dfo = "dfo._client.cli:main"
 
 [project.urls]
 Homepage = "https://developmentfinance.org"
@@ -71,6 +71,7 @@ dev = [
     "duckdb>=1.5.6",
     "openpyxl>=3.1.5",
     "pyright>=1.1.414",
+    "import-linter>=2.15",
 ]
 
 [tool.ruff]
@@ -127,7 +128,7 @@ unfixable = []
 # Tests don't need annotations or pylint-complexity gates.
 "tests/**/*.py" = ["ANN", "PLR2004"]
 # Generated from the async tests, where `async with` cannot join a plain `with`.
-"tests/_sync/*.py" = ["SIM117"]
+"tests/_sync/**/*.py" = ["SIM117"]
 # Notebooks: don't require annotations; allow REPL-style patterns.
 "**/*.ipynb" = ["ANN", "F401", "F811", "E402"]
 
@@ -147,8 +148,25 @@ python-version = "3.12"
 [tool.ty.src]
 include = ["src/dfo"]
 
+# Each layer imports at runtime only from the layers below it; an import under
+# `if TYPE_CHECKING:` may cross upwards. The `_sync` twin of an async module sits in
+# its layer. CONTRIBUTING.md lists what each layer holds.
+[tool.importlinter]
+root_package = "dfo"
+exclude_type_checking_imports = true
 
-
+[[tool.importlinter.contracts]]
+name = "Layers"
+type = "layers"
+layers = [
+    "dfo._client : dfo._sync._client",
+    "dfo._search : dfo._sync._search",
+    "dfo._datasets : dfo._sync._datasets",
+    "dfo._http : dfo._sync._http",
+    "dfo._config",
+    "dfo._core",
+    "dfo._generated",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

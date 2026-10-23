@@ -1,0 +1,305 @@
+"""The client: one connection to the DFO API, its key and its cache.
+
+A client asks Search what a question means (`search`), builds datasets (`fetch`,
+`mint`, `operation`) and looks up names and codes (`graph`, `codes`,
+`catalogue`). `request` reaches any route the client does not wrap. The client
+owns its connection pool: `with_options` returns a copy that shares the pool and
+the cache, and only the client that built the pool closes it.
+"""
+
+from collections.abc import Mapping, Sequence
+from os import PathLike
+from typing import Any, Self
+
+from dfo._config.keys import ApiKeyArgument
+from dfo._core.codes import INVALID_ARGUMENT
+from dfo._core.errors import client_error
+from dfo._core.refs import DatasetRef
+from dfo._core.types import Layout, RawResponse, Spec, Window
+from dfo._datasets.cache import Cache
+from dfo._datasets.dataset import Dataset
+from dfo._datasets.fetch import Session, mint, operation
+from dfo._datasets.operation import AsyncOperation
+from dfo._datasets.resolve import fetch
+from dfo._generated.wire import CatalogueResponse
+from dfo._http.hooks import AsyncHeaderProvider
+from dfo._http.transport import AsyncTransport
+from dfo._search.answer import SEARCH_TIMEOUT, AsyncAnswer
+from dfo._search.lookups import AsyncCodes, AsyncGraph, catalogue
+from dfo._search.search import search
+
+
+class AsyncClient:
+    """A connection to the DFO API, with its key and cache, used as a context manager.
+
+    Attributes:
+        graph: Names to graph nodes, and a node by its dcid.
+        codes: The code registry, which says what each error code means.
+    """
+
+    graph: AsyncGraph
+    codes: AsyncCodes
+
+    def __init__(
+        self,
+        *,
+        api_key: ApiKeyArgument = None,
+        base_url: str | None = None,
+        timeout: float = 30.0,
+        max_retries: int = 2,
+        cache_dir: str | PathLike[str] | None = None,
+        cache: bool = True,
+        default_headers: Mapping[str, str] | None = None,
+        header_provider: AsyncHeaderProvider | None = None,
+    ) -> None:
+        """Build the client and resolve its key.
+
+        Args:
+            api_key: The key: a string, an `ApiKey`, or a callable returning one;
+                False for anonymous use; None to look one up in `DFO_API_KEY`,
+                the credentials file, then a Colab secret.
+            base_url: The API's base URL; None for the public API.
+            timeout: The longest one request attempt waits, in seconds. A
+                search attempt and a download read until their call's
+                deadline instead, and a build request for up to 150 seconds.
+                In the synchronous client, platform name resolution can run
+                past this bound; the asynchronous client can cancel it.
+            max_retries: Further attempts after a failure that can clear.
+            cache_dir: The cache's root directory; None follows `DFO_CACHE_DIR`,
+                then the platform's cache directory.
+            cache: False fetches without reading or writing the cache.
+            default_headers: Headers sent with every API request.
+            header_provider: Called before every API request for more headers,
+                such as an identity token.
+
+        Raises:
+            ValueError: The base URL, timeout or retry count is invalid.
+            AuthenticationError: The key lookup failed.
+        """
+        transport = AsyncTransport(
+            base_url=base_url,
+            api_key=api_key,
+            timeout=timeout,
+            max_retries=max_retries,
+            default_headers=default_headers,
+            header_provider=header_provider,
+        )
+        self._attach(Session(transport, Cache(cache_dir, enabled=cache)))
+
+    @classmethod
+    def _over(cls, session: Session, /) -> Self:
+        """A client over an existing transport and cache, for tests and replays."""
+        client = cls.__new__(cls)
+        client._attach(session)
+        return client
+
+    def _attach(self, session: Session) -> None:
+        self._session = session
+        self.graph = AsyncGraph(session.transport)
+        self.codes = AsyncCodes(session.transport)
+
+    def _current(self) -> Session:
+        return self._session
+
+    @property
+    def base_url(self) -> str:
+        """The API's base URL, without a trailing slash."""
+        return self._session.transport.base_url
+
+    def __repr__(self) -> str:
+        return f"<{type(self).__name__} {self.base_url}>"
+
+    def with_options(
+        self, *, timeout: float | None = None, max_retries: int | None = None
+    ) -> Self:
+        """A copy with other limits, sharing this client's connections and cache.
+
+        Closing the copy leaves the connections open. Close this client to close them.
+
+        Raises:
+            ValueError: The timeout or retry count is invalid.
+        """
+        transport = self._session.transport.with_options(
+            timeout=timeout, max_retries=max_retries
+        )
+        return type(self)._over(Session(transport, self._session.cache))
+
+    async def search(
+        self, question: str, /, *, timeout: float | None = SEARCH_TIMEOUT
+    ) -> AsyncAnswer:
+        """Ask Search what a question means, part by part.
+
+        Args:
+            question: The question, in your words.
+            timeout: The longest the call waits, retries included, in seconds.
+                Each attempt reads until then, and None waits as long as Search
+                takes. In the synchronous client, platform name resolution can
+                run past this bound; the asynchronous client can cancel it.
+
+        Raises:
+            ContractError: The answer lacks a member the client acts on.
+        """
+        return await search(self._current, question, timeout=timeout)
+
+    async def fetch(
+        self,
+        target: Spec | DatasetRef,
+        /,
+        *,
+        window: Window | None = None,
+        entities: Mapping[str, Sequence[str] | None] | None = None,
+        facets: Mapping[str, str | None] | None = None,
+        layout: Layout | None = None,
+        strict: bool = False,
+        timeout: float | None = 1800.0,
+        progress: bool | None = None,
+    ) -> Dataset:
+        """Fetch a spec's latest version, or the exact versions a ref names.
+
+        Args:
+            target: A `Spec` to build, or a `DatasetRef` to read back.
+            window: Narrow a spec to `"all"`, `"latest"` or
+                `(start_year, end_year)`.
+            entities: Rebind the named roles of a spec to dcids, such as
+                `{"recipient": ["country/NGA"]}`. None drops a role. The
+                spec's other roles keep their binding, and an empty map
+                narrows nothing.
+            facets: Bind a spec's provenance, measurement method or unit. An
+                empty map narrows nothing.
+            layout: `long` or `frame`; None builds a spec in `long` and reads a
+                ref in the layout it holds.
+            strict: Raise the first dataset warning instead of issuing it.
+            timeout: The longest the fetch takes, in seconds, downloads
+                included; None for no limit. In the synchronous client,
+                platform name resolution can run past this bound; the
+                asynchronous client can cancel it.
+            progress: Show long-build progress; None shows it unless
+                `DFO_PROGRESS=0`.
+
+        Raises:
+            InvalidRequestError: A ref is narrowed or given another layout.
+            VersionUnavailableError: A ref's version can no longer be fetched.
+            DfoTimeoutError: The deadline passed. A long build's message names
+                the call that resumes it.
+            DfoError: The server refused a request.
+        """
+        return await fetch(
+            self._session.transport,
+            target,
+            window=window,
+            entities=entities,
+            facets=facets,
+            layout=layout,
+            strict=strict,
+            timeout=timeout,
+            progress=progress,
+            cache=self._session.cache,
+        )
+
+    async def mint(
+        self, spec: Spec, /, *, layout: Layout = "long", progress: bool | None = None
+    ) -> AsyncOperation:
+        """Start a spec's build and return it as an operation, done or running.
+
+        The build request reads for up to 150 seconds. `result` bounds the wait
+        for the build.
+
+        Raises:
+            DfoError: The server refused the build.
+        """
+        return await mint(
+            self._session.transport,
+            spec,
+            layout=layout,
+            progress=progress,
+            cache=self._session.cache,
+        )
+
+    async def operation(
+        self,
+        operation_id: str,
+        /,
+        *,
+        layout: Layout = "long",
+        progress: bool | None = None,
+    ) -> AsyncOperation:
+        """Resume a build started elsewhere, by its id (`op_...`).
+
+        Args:
+            operation_id: The id a deadline error or `Operation.operation_id`
+                names.
+            layout: The layout the build was started with.
+            progress: Show the build's progress; None shows it unless
+                `DFO_PROGRESS=0`.
+
+        An operation that already failed raises its error from `result`.
+
+        Raises:
+            NotFoundError: The server holds no operation with that id.
+        """
+        return await operation(
+            self._session.transport,
+            operation_id,
+            layout=layout,
+            progress=progress,
+            cache=self._session.cache,
+        )
+
+    async def catalogue(self, *, place: str | None = None) -> CatalogueResponse:
+        """What Search holds data on: counts and example questions.
+
+        Args:
+            place: A country dcid, such as `country/NGA`, to scope the counts and
+                examples to that country.
+        """
+        return await catalogue(self._session.transport, place=place)
+
+    async def request(
+        self,
+        method: str,
+        path: str,
+        /,
+        *,
+        params: Mapping[str, Any] | None = None,
+        json: Any = None,
+    ) -> RawResponse:
+        """Send a request to a route the client does not wrap.
+
+        The request carries the client's key and headers and retries as every
+        call does. A redirect comes back as the response.
+
+        Args:
+            method: The HTTP method.
+            path: A path under the base URL, such as `/datasets/capabilities`.
+            params: Query parameters.
+            json: The JSON body.
+
+        Raises:
+            DfoError: The class the refusal maps to.
+            InvalidRequestError: `path` does not start with `/`, or starts
+                with `//` (`invalid_argument`).
+        """
+        if not path.startswith("/") or path.startswith("//"):
+            raise client_error(
+                INVALID_ARGUMENT,
+                f"request takes a path under the base URL, such as "
+                f"'/datasets/capabilities', not {path!r}",
+            )
+        response = await self._session.transport.request(
+            method, path, params=params, json=json
+        )
+        return RawResponse(
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            content=response.content,
+        )
+
+    async def aclose(self) -> None:
+        """Close the client's connections, when this client opened them."""
+        await self._session.transport.aclose()
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.aclose()

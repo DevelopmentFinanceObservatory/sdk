@@ -3,21 +3,21 @@ import { describe, test } from "node:test";
 
 import { parquetMetadata } from "hyparquet";
 
-import { Answer, answerFromBody, Candidate, SearchWarning } from "../src/answer.ts";
-import type { AnswerContext, Gap, QueryOption } from "../src/answer.ts";
+import { Answer, answerFromBody, Candidate, SearchWarning } from "../src/search/answer.ts";
+import type { AnswerContext, Gap, QueryOption } from "../src/search/answer.ts";
 import {
   ContractError,
   DeclinedError,
   IncompleteAnswerError,
   InvalidRequestError,
-} from "../src/errors.ts";
-import { toArrow } from "../src/arrow.ts";
+} from "../src/core/errors.ts";
+import { toArrow } from "../src/datasets/arrow.ts";
 import { clientOver } from "../src/client.ts";
-import { Dataset } from "../src/dataset.ts";
-import type { MemberRequest } from "../src/fetch.ts";
-import { search } from "../src/search.ts";
-import { Transport } from "../src/transport.ts";
-import type { DfoWarning } from "../src/warnings.ts";
+import { Dataset } from "../src/datasets/dataset.ts";
+import type { MemberRequest } from "../src/datasets/fetch.ts";
+import { search } from "../src/search/search.ts";
+import { Transport } from "../src/http/transport.ts";
+import type { DfoWarning } from "../src/core/warnings.ts";
 import type { CandidatesPart, DefinitePart } from "../src/wire.ts";
 import { NO_EXCHANGES, replay, scenarioBytes, scenarios, stepOf } from "./replay.ts";
 import type { Scenario } from "./replay.ts";

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { ContractError } from "../src/errors.ts";
-import { checkStrict } from "../src/strict.ts";
+import { ContractError } from "../src/core/errors.ts";
+import { checkStrict } from "../src/core/strict.ts";
 import { contractJson } from "./support.ts";
 
 type Scenario = { exchanges: { response: { json?: Record<string, unknown> } }[] };
