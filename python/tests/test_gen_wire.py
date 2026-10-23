@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from ._data import CONTRACT
+from tests._data import CONTRACT
 
 
 def load_generator() -> ModuleType:

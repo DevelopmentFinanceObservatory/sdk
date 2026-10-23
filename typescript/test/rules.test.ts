@@ -3,12 +3,12 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { credentialsPath, parseCredentialsFile } from "../src/credentials.ts";
-import type { Platform } from "../src/credentials.ts";
-import { envFrom } from "../src/env.ts";
-import { isDfoError } from "../src/errors.ts";
-import { checkKeyFormat, resolveApiKey } from "../src/keys.ts";
-import { Transport } from "../src/transport.ts";
+import { credentialsPath, parseCredentialsFile } from "../src/config/credentials.ts";
+import type { Platform } from "../src/config/credentials.ts";
+import { envFrom } from "../src/config/env.ts";
+import { isDfoError } from "../src/core/errors.ts";
+import { checkKeyFormat, resolveApiKey } from "../src/config/keys.ts";
+import { Transport } from "../src/http/transport.ts";
 import { contractJson } from "./support.ts";
 
 type Suite<T> = { rule: string; vectors: (T & { name: string })[] };

@@ -2,6 +2,35 @@ import js from "@eslint/js";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 
+// The src/ layers, lowest first, above src/generated/. A module imports at runtime only from its
+// own layer and the layers below it; `import type` may name any layer. The entry points and
+// client.ts at the src/ root sit above every layer, and version.ts, a constant, below them all.
+const LAYERS = ["core", "config", "http", "datasets", "search"];
+
+const layerRules = LAYERS.map((dir, rank) => ({
+  files: [`src/${dir}/**/*.ts`],
+  rules: {
+    "@typescript-eslint/no-restricted-imports": [
+      "error",
+      {
+        patterns: [
+          {
+            group: [
+              ...LAYERS.slice(rank + 1).map((above) => `../${above}/*`),
+              "../client.ts",
+              "../index*.ts",
+              "../arrow.ts",
+              "../wire.ts",
+            ],
+            allowTypeImports: true,
+            message: `src/${dir} imports at runtime only from lower layers; use \`import type\` for a type.`,
+          },
+        ],
+      },
+    ],
+  },
+}));
+
 export default tseslint.config(
   { ignores: ["dist/", "node_modules/", "src/generated/"] },
   js.configs.recommended,
@@ -23,6 +52,7 @@ export default tseslint.config(
       ],
     },
   },
+  ...layerRules,
   {
     // node:test's test() and describe() return promises the runner awaits.
     files: ["test/**"],

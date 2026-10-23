@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { envFrom } from "../src/env.ts";
-import { ContractError } from "../src/errors.ts";
-import type { VersionUnavailableError } from "../src/errors.ts";
-import { fetchDataset, mint, resume } from "../src/fetch.ts";
-import type { ProgressEvent } from "../src/operation.ts";
-import { DatasetRef } from "../src/ref.ts";
-import { Transport } from "../src/transport.ts";
+import { envFrom } from "../src/config/env.ts";
+import { ContractError } from "../src/core/errors.ts";
+import type { VersionUnavailableError } from "../src/core/errors.ts";
+import { mint, resume } from "../src/datasets/fetch.ts";
+import { fetchDataset } from "../src/datasets/resolve.ts";
+import type { ProgressEvent } from "../src/datasets/operation.ts";
+import { DatasetRef } from "../src/core/ref.ts";
+import { Transport } from "../src/http/transport.ts";
 import { scenario, scenarioBytes, stepOf } from "./replay.ts";
 import { json, mockFetch, problem } from "./support.ts";
 

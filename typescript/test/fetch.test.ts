@@ -2,16 +2,17 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import { clientOver } from "../src/client.ts";
-import { envFrom } from "../src/env.ts";
-import { fetchDataset, fetchMembers, mint } from "../src/fetch.ts";
-import type { FetchOptions } from "../src/fetch.ts";
-import { DatasetRef } from "../src/ref.ts";
-import type { SpecLike } from "../src/ref.ts";
-import { Transport } from "../src/transport.ts";
-import { DataWarning } from "../src/warnings.ts";
+import { envFrom } from "../src/config/env.ts";
+import { fetchMembers, mint } from "../src/datasets/fetch.ts";
+import { fetchDataset } from "../src/datasets/resolve.ts";
+import type { FetchOptions } from "../src/datasets/fetch.ts";
+import { DatasetRef } from "../src/core/ref.ts";
+import type { SpecLike } from "../src/core/ref.ts";
+import { Transport } from "../src/http/transport.ts";
+import { DataWarning } from "../src/core/warnings.ts";
 import type { Spec } from "../src/wire.ts";
-import type { DfoWarning } from "../src/warnings.ts";
-import { ServerError } from "../src/errors.ts";
+import type { DfoWarning } from "../src/core/warnings.ts";
+import { ServerError } from "../src/core/errors.ts";
 import {
   NO_EXCHANGES,
   REPLAY_BASE_URL,

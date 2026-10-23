@@ -4,18 +4,24 @@
     scripts/gen_sync.py           write python/src/dfo/_sync/ and python/tests/_sync/
     scripts/gen_sync.py --check   exit 1 when a generated file differs or is stale
 
-Each async module in `ASYNC_MODULES` becomes `dfo/_sync/<module>.py`, and each
-`tests/_async/test_*.py` becomes `tests/_sync/test_*.py`, by replacing the tokens
-in `SUBS` line by line and then sorting imports and formatting with ruff. The
-generator refuses, naming the file and line:
+Each async module in `ASYNC_MODULES`, such as `dfo/_http/transport.py`, becomes
+`dfo/_sync/_http/transport.py`, and each `tests/_async/<layer>/test_*.py` becomes
+`tests/_sync/<layer>/test_*.py`, by replacing the tokens in `SUBS` line by line and
+then sorting imports and formatting with ruff. The generator refuses, naming the
+file and line:
 
 - an async source that imports asyncio, anyio or trio, since concurrency and
   timeouts have no sync form (members build one after another, and deadlines
   come from the transport's clock);
+- an import of an async module from its package, such as
+  `from dfo._datasets import fetch`, since no module name in that line points
+  at the sync twin;
 - a token in `SUBS` that no source uses, so a renamed async name in httpx2 or in
   this package fails here;
 - an async name left in the output (`async`, `await`, `Async*`, `__aenter__`,
-  `aclose`, ...), which means `SUBS` lacks a token.
+  `aclose`, ...), which means `SUBS` lacks a token;
+- a sync directory without its hand-written `__init__.py`, without which the
+  sync tests collide with the async ones of the same name.
 """
 
 import argparse
@@ -34,16 +40,19 @@ SYNC_PACKAGE = PACKAGE / "_sync"
 ASYNC_TESTS = ROOT / "python" / "tests" / "_async"
 SYNC_TESTS = ROOT / "python" / "tests" / "_sync"
 
-# Async modules of the package, each generating `dfo/_sync/<name>.py`.
+# Async modules of the package by dotted name below `dfo`, each generating
+# `dfo/_sync/<layer>/<module>.py`.
 ASYNC_MODULES = (
-    "_transport",
-    "_answer",
-    "_search",
-    "_operation",
-    "_fetch",
-    "_lookups",
-    "_client",
+    "_http.transport",
+    "_search.answer",
+    "_search.search",
+    "_datasets.operation",
+    "_datasets.fetch",
+    "_datasets.resolve",
+    "_search.lookups",
+    "_client.client",
 )
+ASYNC_NAMES = frozenset(f"dfo.{name}" for name in ASYNC_MODULES)
 
 # Hand-written files the sync directories hold beside the generated ones.
 KEPT_NAMES = frozenset({"__init__.py", "conftest.py"})
@@ -128,6 +137,7 @@ class Generator:
                 modules = [alias.name for alias in node.names]
             elif isinstance(node, ast.ImportFrom) and node.module:
                 modules = [node.module]
+                self._check_from_package(node, name)
             else:
                 continue
             for module in modules:
@@ -137,6 +147,16 @@ class Generator:
                         "runs one call after another and takes its sleep from the "
                         "transport"
                     )
+
+    def _check_from_package(self, node: ast.ImportFrom, name: str) -> None:
+        for alias in node.names:
+            module = f"{node.module}.{alias.name}"
+            if module in ASYNC_NAMES:
+                self.problems.append(
+                    f"{name}:{node.lineno}: imports {module} from its package; "
+                    f"write `from {module} import ...` so the sync file names "
+                    "its twin"
+                )
 
     def _check_residue(self, output: str, name: str) -> None:
         for token in tokenize.generate_tokens(io.StringIO(output).readline):
@@ -156,12 +176,13 @@ class Generator:
 
 def pairs() -> list[tuple[Path, Path]]:
     """Return each async source and the sync file it generates."""
-    found = [
-        (PACKAGE / f"{name}.py", SYNC_PACKAGE / f"{name}.py") for name in ASYNC_MODULES
-    ]
+    found = []
+    for name in ASYNC_MODULES:
+        path = Path(*name.split(".")).with_suffix(".py")
+        found.append((PACKAGE / path, SYNC_PACKAGE / path))
     found += [
-        (source, SYNC_TESTS / source.name)
-        for source in sorted(ASYNC_TESTS.glob("test_*.py"))
+        (source, SYNC_TESTS / source.relative_to(ASYNC_TESTS))
+        for source in sorted(ASYNC_TESTS.rglob("test_*.py"))
     ]
     return found
 
@@ -171,8 +192,23 @@ def stale(generated: set[Path]) -> list[Path]:
     return [
         path
         for directory in (SYNC_PACKAGE, SYNC_TESTS)
-        for path in sorted(directory.glob("*.py"))
+        for path in sorted(directory.rglob("*.py"))
         if path.name not in KEPT_NAMES and path not in generated
+    ]
+
+
+def missing_inits(targets: set[Path]) -> list[Path]:
+    """Return the `__init__.py` each sync directory holding a target lacks."""
+    directories = set()
+    for target in targets:
+        root = SYNC_PACKAGE if target.is_relative_to(SYNC_PACKAGE) else SYNC_TESTS
+        directories.update(
+            parent for parent in target.parents if parent.is_relative_to(root)
+        )
+    return [
+        directory / "__init__.py"
+        for directory in sorted(directories)
+        if not (directory / "__init__.py").is_file()
     ]
 
 
@@ -191,6 +227,10 @@ def main(argv: list[str] | None = None) -> int:
         header = f"# Generated by scripts/gen_sync.py from {relative(source)}. Do not edit.\n"
         outputs[target] = header + converted
     problems = generator.problems + generator.unused()
+    problems += [
+        f"{relative(path)} is missing; the sync directories keep a hand-written one"
+        for path in missing_inits(set(outputs))
+    ]
     if problems:
         print("\n".join(problems), file=sys.stderr)
         return 1

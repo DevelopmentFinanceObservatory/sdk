@@ -1,5 +1,11 @@
-export { Answer, Candidate, SearchWarning } from "./answer.ts";
-export type { AnswerFetchOptions, Gap, GapKind, QueryOption, SearchOptions } from "./answer.ts";
+export { Answer, Candidate, SearchWarning } from "./search/answer.ts";
+export type {
+  AnswerFetchOptions,
+  Gap,
+  GapKind,
+  QueryOption,
+  SearchOptions,
+} from "./search/answer.ts";
 export { Client } from "./client.ts";
 export type { ClientOptions, RawRequestOptions } from "./client.ts";
 export {
@@ -18,16 +24,16 @@ export {
   RateLimitError,
   ServerError,
   VersionUnavailableError,
-} from "./errors.ts";
+} from "./core/errors.ts";
 export type {
   Action,
   ClientErrorCode,
   DfoErrorCode,
   DfoErrorOptions,
   ServerErrorCode,
-} from "./errors.ts";
-export { Dataset } from "./dataset.ts";
-export type { Citation, Member } from "./dataset.ts";
+} from "./core/errors.ts";
+export { Dataset } from "./datasets/dataset.ts";
+export type { Citation, Member } from "./datasets/dataset.ts";
 export type {
   EntityGroups,
   FetchOptions,
@@ -37,16 +43,16 @@ export type {
   ResumeOptions,
   SpecInput,
   Window,
-} from "./fetch.ts";
-export { ApiKey, checkKeyFormat, resolveApiKey } from "./keys.ts";
+} from "./datasets/fetch.ts";
+export { ApiKey, checkKeyFormat, resolveApiKey } from "./config/keys.ts";
 export type {
   ApiKeyOption,
   KeyFormatReason,
   KeyFormatVerdict,
   KeySource,
   ResolvedKey,
-} from "./keys.ts";
-export { Codes, Graph } from "./lookups.ts";
+} from "./config/keys.ts";
+export { Codes, Graph } from "./search/lookups.ts";
 export type {
   CatalogueOptions,
   GraphNode,
@@ -54,12 +60,17 @@ export type {
   NodeOptions,
   ResolveKind,
   ResolveOptions,
-} from "./lookups.ts";
-export { Operation } from "./operation.ts";
-export type { Progress, ProgressEvent, ProgressHandler, ResultOptions } from "./operation.ts";
-export type { Row, Value } from "./parquet.ts";
-export { isKnownPart, PART_STATUSES } from "./parts.ts";
-export { DatasetRef, FormatError } from "./ref.ts";
+} from "./search/lookups.ts";
+export { Operation } from "./datasets/operation.ts";
+export type {
+  Progress,
+  ProgressEvent,
+  ProgressHandler,
+  ResultOptions,
+} from "./datasets/operation.ts";
+export type { Row, Value } from "./datasets/parquet.ts";
+export { isKnownPart, PART_STATUSES } from "./core/parts.ts";
+export { DatasetRef, FormatError } from "./core/ref.ts";
 export type {
   DatasetRefJson,
   FormatErrorReason,
@@ -67,9 +78,9 @@ export type {
   RefMember,
   Rendering,
   SpecLike,
-} from "./ref.ts";
-export { RawResponse } from "./transport.ts";
-export type { HeaderProvider } from "./transport.ts";
+} from "./core/ref.ts";
+export { RawResponse } from "./http/transport.ts";
+export type { HeaderProvider } from "./http/transport.ts";
 export { VERSION } from "./version.ts";
-export { DataWarning, DfoDeprecationWarning, DfoWarning } from "./warnings.ts";
-export type { WarningHandler } from "./warnings.ts";
+export { DataWarning, DfoDeprecationWarning, DfoWarning } from "./core/warnings.ts";
+export type { WarningHandler } from "./core/warnings.ts";

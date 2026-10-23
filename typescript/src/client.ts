@@ -1,19 +1,20 @@
 /** The client: one connection to the DFO API, with its key, and every call made through it. */
 
-import type { Answer, AnswerContext, SearchOptions } from "./answer.ts";
-import type { Dataset } from "./dataset.ts";
-import { clientError } from "./errors.ts";
-import { fetchDataset, mint, resume } from "./fetch.ts";
-import type { FetchOptions, MintOptions, ResumeOptions, SpecInput } from "./fetch.ts";
-import type { ApiKeyOption } from "./keys.ts";
-import { catalogue, Codes, Graph } from "./lookups.ts";
-import type { CatalogueOptions, LookupOptions } from "./lookups.ts";
-import type { Operation } from "./operation.ts";
-import type { DatasetRef } from "./ref.ts";
-import { search } from "./search.ts";
-import { Transport } from "./transport.ts";
-import type { HeaderProvider, RawResponse } from "./transport.ts";
-import type { WarningHandler } from "./warnings.ts";
+import type { Answer, AnswerContext, SearchOptions } from "./search/answer.ts";
+import type { Dataset } from "./datasets/dataset.ts";
+import { clientError } from "./core/errors.ts";
+import { mint, resume } from "./datasets/fetch.ts";
+import { fetchDataset } from "./datasets/resolve.ts";
+import type { FetchOptions, MintOptions, ResumeOptions, SpecInput } from "./datasets/fetch.ts";
+import type { ApiKeyOption } from "./config/keys.ts";
+import { catalogue, Codes, Graph } from "./search/lookups.ts";
+import type { CatalogueOptions, LookupOptions } from "./search/lookups.ts";
+import type { Operation } from "./datasets/operation.ts";
+import type { DatasetRef } from "./core/ref.ts";
+import { search } from "./search/search.ts";
+import { Transport } from "./http/transport.ts";
+import type { HeaderProvider, RawResponse } from "./http/transport.ts";
+import type { WarningHandler } from "./core/warnings.ts";
 import type { CatalogueResponse } from "./wire.ts";
 
 export type ClientOptions = {

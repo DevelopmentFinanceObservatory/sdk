@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { envFrom } from "../src/env.ts";
+import { envFrom } from "../src/config/env.ts";
 import {
   AuthenticationError,
   ContractError,
@@ -13,13 +13,13 @@ import {
   NotFoundError,
   RateLimitError,
   ServerError,
-} from "../src/errors.ts";
+} from "../src/core/errors.ts";
 import { PROXY_CODE_STATUSES } from "../src/generated/proxy-codes.ts";
-import { ApiKey } from "../src/keys.ts";
-import { Transport } from "../src/transport.ts";
-import type { TransportOptions } from "../src/transport.ts";
+import { ApiKey } from "../src/config/keys.ts";
+import { Transport } from "../src/http/transport.ts";
+import type { TransportOptions } from "../src/http/transport.ts";
 import { VERSION } from "../src/version.ts";
-import type { DfoWarning } from "../src/warnings.ts";
+import type { DfoWarning } from "../src/core/warnings.ts";
 import { contractJson, json, mockFetch, problem, recordingSleep } from "./support.ts";
 
 const KEY = "dfo_k_4f8Kq2ZtR7mWx1NcB9vLp3YhD6sGa0Ue2wanxe";

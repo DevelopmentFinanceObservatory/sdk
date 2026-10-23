@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { envFrom } from "../src/env.ts";
+import { envFrom } from "../src/config/env.ts";
 import { resolveApiKey } from "../src/index.node.ts";
 import { VERSION } from "../src/version.ts";
 

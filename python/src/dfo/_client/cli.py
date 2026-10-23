@@ -1,0 +1,133 @@
+"""The `dfo` command: `dfo auth login`, `dfo auth status` and `dfo cache clear`.
+
+`login()` is the notebook form of `dfo auth login`.
+"""
+
+import argparse
+import getpass
+import os
+import shutil
+import sys
+from collections.abc import Sequence
+from typing import TextIO
+
+from dfo._config.credentials import CredentialsFileError, store_key
+from dfo._config.keys import check_key_format, mask, resolve_key
+from dfo._config.paths import cache_directory, credentials_path
+from dfo._core.errors import DfoError
+
+_PROMPT = "Paste your DFO API key: "
+
+
+def _profile() -> str:
+    return os.environ.get("DFO_PROFILE") or "default"
+
+
+def _save(key: str, out: TextIO) -> None:
+    """Store `key` under the chosen profile and say where it went.
+
+    Raises:
+        ValueError: The key is empty or cannot be stored, or the existing
+            credentials file is invalid.
+    """
+    key = key.strip()
+    if not key:
+        raise ValueError("No key given")
+    path = credentials_path()
+    profile = _profile()
+    try:
+        store_key(path, profile, key)
+    except CredentialsFileError as error:
+        raise ValueError(
+            f"The credentials file {path} is invalid at line {error.line} "
+            f"({error.reason}); fix or remove it, then log in again"
+        ) from error
+    print(f"Saved the key {mask(key)} to {path}, profile {profile!r}.", file=out)
+    if problem := check_key_format(key):
+        print(
+            f"The key does not look like a DFO key ({problem}); it is saved and "
+            "sent anyway.",
+            file=out,
+        )
+
+
+def login() -> None:
+    """Ask for an API key and store it in the credentials file.
+
+    The key goes to the profile `DFO_PROFILE` names, else `default`. The file is
+    readable by its owner only.
+
+    Raises:
+        ValueError: The key is empty or cannot be stored, or the existing
+            credentials file is invalid.
+    """
+    _save(getpass.getpass(_PROMPT), sys.stdout)
+
+
+def _auth_login(args: argparse.Namespace) -> int:
+    key = sys.stdin.read() if args.with_token else getpass.getpass(_PROMPT)
+    _save(key, sys.stdout)
+    return 0
+
+
+def _auth_status(_: argparse.Namespace) -> int:
+    resolved = resolve_key()
+    if resolved.key is None:
+        print("No key: requests are anonymous.")
+        print(f"Run `dfo auth login` to store one in {credentials_path()}.")
+        return 0
+    where = {
+        "argument": "the api_key argument",
+        "environment": "the DFO_API_KEY environment variable",
+        "credentials_file": f"{resolved.path}, profile {resolved.profile!r}",
+        "colab": "the Colab secret DFO_API_KEY",
+    }[resolved.source]
+    print(f"Key {mask(resolved.key.reveal())} from {where}.")
+    return 0
+
+
+def _cache_clear(_: argparse.Namespace) -> int:
+    directory = cache_directory()
+    if not os.path.isdir(directory):
+        print(f"The cache at {directory} is already empty.")
+        return 0
+    shutil.rmtree(directory)
+    print(f"Cleared the cache at {directory}.")
+    return 0
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="dfo", description="Development Finance Observatory client."
+    )
+    commands = parser.add_subparsers(required=True, metavar="command")
+
+    auth = commands.add_parser("auth", help="store and check your API key")
+    auth_commands = auth.add_subparsers(required=True, metavar="command")
+    login_command = auth_commands.add_parser(
+        "login", help="store an API key in the credentials file"
+    )
+    login_command.add_argument(
+        "--with-token",
+        action="store_true",
+        help="read the key from standard input, for CI",
+    )
+    login_command.set_defaults(run=_auth_login)
+    status = auth_commands.add_parser("status", help="show which key the client sends")
+    status.set_defaults(run=_auth_status)
+
+    cache = commands.add_parser("cache", help="manage the download cache")
+    cache_commands = cache.add_subparsers(required=True, metavar="command")
+    clear = cache_commands.add_parser("clear", help="empty the cache")
+    clear.set_defaults(run=_cache_clear)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the `dfo` command; return its exit status."""
+    args = _parser().parse_args(argv)
+    try:
+        return args.run(args)
+    except (DfoError, ValueError, OSError) as error:
+        print(f"dfo: {error}", file=sys.stderr)
+        return 1

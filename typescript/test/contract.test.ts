@@ -7,20 +7,20 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { Answer, SearchWarning } from "../src/answer.ts";
-import type { Gap } from "../src/answer.ts";
+import { Answer, SearchWarning } from "../src/search/answer.ts";
+import type { Gap } from "../src/search/answer.ts";
 import { clientOver } from "../src/client.ts";
 import type { Client } from "../src/client.ts";
-import { Dataset } from "../src/dataset.ts";
-import { newestVersion } from "../src/fetch.ts";
-import type { FetchOptions, Narrowing } from "../src/fetch.ts";
-import { Operation } from "../src/operation.ts";
-import type { LongBuild } from "../src/operation.ts";
-import { DatasetRef } from "../src/ref.ts";
-import type { Transport } from "../src/transport.ts";
-import { DfoError, isDfoError, VersionUnavailableError } from "../src/errors.ts";
+import { Dataset } from "../src/datasets/dataset.ts";
+import { newestVersion } from "../src/datasets/resolve.ts";
+import type { FetchOptions, Narrowing } from "../src/datasets/fetch.ts";
+import { Operation } from "../src/datasets/operation.ts";
+import type { LongBuild } from "../src/datasets/operation.ts";
+import { DatasetRef } from "../src/core/ref.ts";
+import type { Transport } from "../src/http/transport.ts";
+import { DfoError, isDfoError, VersionUnavailableError } from "../src/core/errors.ts";
 import { CLIENT_CODE_CLASSES } from "../src/generated/client-codes.ts";
-import { DataWarning, DfoWarning, forgetEmittedWarnings } from "../src/warnings.ts";
+import { DataWarning, DfoWarning, forgetEmittedWarnings } from "../src/core/warnings.ts";
 import { recordedBaseUrl, replay, REPLAY_BASE_URLS, scenarios } from "./replay.ts";
 import type { LongBuildSummary, Outcome, Scenario, Step } from "./replay.ts";
 

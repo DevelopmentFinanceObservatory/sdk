@@ -1,0 +1,186 @@
+"""Tests for the client: search to dataset through its cache, options, raw requests
+and lookups.
+
+`scripts/gen_sync.py` derives `tests/_sync/client/test_client.py` from this file,
+so the sync client passes the same tests.
+"""
+
+import json
+import warnings
+from datetime import date
+from pathlib import Path
+
+import httpx2
+import pytest
+
+from dfo._client.client import AsyncClient
+from dfo._core.errors import (
+    DataWarning,
+    InvalidRequestError,
+    NetworkError,
+    NotFoundError,
+)
+from dfo._core.refs import DatasetRef
+from dfo._core.types import Spec
+from dfo._datasets.cache import Cache
+from dfo._datasets.fetch import Session
+from dfo._http.transport import AsyncTransport
+from tests._fetch_support import BASE, ORIGIN, Replay, Server, json_response, problem
+
+pytestmark = pytest.mark.anyio
+
+QUESTION = "ODA disbursements from Germany to Nigeria for basic health care"
+
+
+def client_over(handler, cache: Cache | None = None) -> AsyncClient:
+    transport = AsyncTransport(
+        base_url=BASE, api_key=False, http_transport=httpx2.MockTransport(handler)
+    )
+    return AsyncClient._over(Session(transport, cache))
+
+
+@pytest.fixture(autouse=True)
+def online(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DFO_OFFLINE", raising=False)
+    monkeypatch.setenv("DFO_PROGRESS", "0")
+
+
+async def test_offline_search_raises_before_any_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DFO_OFFLINE", "1")
+    server = Server()
+    async with client_over(server) as client:
+        with pytest.raises(NetworkError) as caught:
+            await client.search(QUESTION)
+    assert caught.value.code == "offline"
+    assert server.requests == []
+
+
+async def test_an_answer_fetches_through_the_clients_cache(tmp_path: Path) -> None:
+    replay = Replay("answer-definite-fetch")
+    expected = replay.record["expect"][1]["dataset"]
+    async with client_over(replay, Cache(tmp_path)) as client:
+        answer = await client.search(QUESTION)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            data = await answer.fetch()
+        assert (data.rows, list(data.to_arrow().column_names)) == (
+            expected["rows"],
+            expected["columns"],
+        )
+        assert data.members[0].parts == (answer.parts[0].variable_text,)
+        assert replay.exchanges == []
+
+        # The cache now holds the version, so the ref reads back with no request.
+        ref = DatasetRef.from_json(data.ref.to_json())
+        again = await client.fetch(ref)
+    assert again.rows == data.rows
+    assert len(replay.requests) == 4
+
+
+async def test_with_options_shares_the_connections_and_only_the_owner_closes() -> None:
+    server = Server(json_response(200, {"ok": True}), json_response(200, {"ok": 1}))
+    client = client_over(server)
+    quick = client.with_options(timeout=5.0, max_retries=0)
+    assert (quick.base_url, quick._current().cache) == (BASE, None)
+    assert quick._current().transport.timeout == 5.0
+    await quick.aclose()
+    assert (await client.request("GET", "/datasets/capabilities")).json() == {
+        "ok": True
+    }
+    await client.aclose()
+    with pytest.raises(RuntimeError):
+        await quick.request("GET", "/datasets/capabilities")
+
+
+async def test_request_returns_the_raw_response_and_raises_a_refusal() -> None:
+    server = Server(
+        json_response(200, {"versions": []}, {"x-dfo-trace-id": "t1"}),
+        problem(404, "spec_not_found"),
+    )
+    async with client_over(server) as client:
+        raw = await client.request(
+            "GET", "/datasets/spec_x/versions", params={"limit": 1}
+        )
+        with pytest.raises(NotFoundError) as caught:
+            await client.request("POST", "/datasets", json={"input": {}})
+    assert (raw.status_code, raw.headers["x-dfo-trace-id"], raw.json()) == (
+        200,
+        "t1",
+        {"versions": []},
+    )
+    assert caught.value.code == "spec_not_found"
+    assert server.calls() == [
+        f"GET {BASE}/datasets/spec_x/versions",
+        f"POST {BASE}/datasets",
+    ]
+    assert server.requests[0].url.params["limit"] == "1"
+    assert server.body(1) == {"input": {}}
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["//files.example.net/x", f"{ORIGIN}/api/datasets", "datasets/schema"],
+    ids=["scheme-relative", "absolute-on-origin", "no-slash"],
+)
+async def test_request_refuses_what_is_not_a_path_under_the_base_url(
+    path: str,
+) -> None:
+    server = Server()
+    async with client_over(server) as client:
+        with pytest.raises(InvalidRequestError) as caught:
+            await client.request("GET", path)
+    assert caught.value.code == "invalid_argument"
+    assert server.calls() == []
+
+
+async def test_lookups_reach_the_graph_the_registry_and_the_catalogue() -> None:
+    server = Server(
+        json_response(200, {"results": []}),
+        json_response(200, {"ref": "country/NGA", "kind": "country"}),
+        json_response(200, {"code": "spec_not_found"}),
+        json_response(200, {"counts": {}}),
+    )
+    async with client_over(server) as client:
+        resolved = await client.graph.resolve(
+            "Nigeria", "Sahel", kinds=["country", "group"], expand_members=True
+        )
+        node = await client.graph.node("country/NGA", as_of=date(2026, 1, 31))
+        entry = await client.codes.get("spec_not_found")
+        catalogue = await client.catalogue(place="country/NGA")
+    assert (resolved, node["ref"], entry["code"], catalogue) == (
+        {"results": []},
+        "country/NGA",
+        "spec_not_found",
+        {"counts": {}},
+    )
+    assert [str(request.url) for request in server.requests] == [
+        f"{BASE}/graph/resolve",
+        f"{BASE}/graph/node/country/NGA?as_of=2026-01-31",
+        f"{ORIGIN}/codes/spec_not_found",
+        f"{BASE}/search/catalogue?place=country%2FNGA",
+    ]
+    assert json.loads(server.requests[0].content) == {
+        "texts": ["Nigeria", "Sahel"],
+        "kinds": ["country", "group"],
+        "expand": ["members"],
+    }
+
+
+async def test_mint_and_operation_build_through_the_client() -> None:
+    replay = Replay("fetch-spec-known-sentence")
+    call = replay.record["call"][0]["spec"]
+    spec = Spec(call["spec_id"], call["definition"], call.get("sentence"))
+    async with client_over(replay) as client:
+        started = await client.mint(spec)
+        assert (started.operation_id, await started.done()) == (None, True)
+        with pytest.warns(DataWarning, match="falls short"):
+            data = await started.result()
+    assert data.rows == replay.record["expect"][0]["dataset"]["rows"]
+
+    server = Server(problem(404, "operation_not_found"))
+    async with client_over(server) as client:
+        with pytest.raises(NotFoundError):
+            await client.operation("op_" + "a" * 64)
+    assert server.calls() == [f"GET {BASE}/datasets/operations/op_{'a' * 64}"]

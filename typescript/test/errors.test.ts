@@ -18,8 +18,8 @@ import {
   ServerError,
   serverCode,
   VersionUnavailableError,
-} from "../src/errors.ts";
-import type { ClientErrorCode } from "../src/errors.ts";
+} from "../src/core/errors.ts";
+import type { ClientErrorCode } from "../src/core/errors.ts";
 import { contractJson } from "./support.ts";
 
 test("every code in contract/actions.json maps to a class below DfoError", async () => {

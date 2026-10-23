@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """Generate the Python client's error map from the contract, or check it.
 
-    scripts/gen_errors.py           write python/src/dfo/_error_map.py
+    scripts/gen_errors.py           write python/src/dfo/_generated/error_map.py
     scripts/gen_errors.py --check   exit 1 when the file differs
 
 The map holds the caller's next step for each refusal code in
 `contract/actions.json` and the gap kind of each no_data reason. The `Action` and
 `GapKind` literals come from `contract/actions.schema.json`, so an action the
-contract adds fails the type check of `dfo._refusals` until it maps to a class.
+contract adds fails the type check of `dfo._core.refusals` until it maps to a class.
 
 It also holds one `ClientCode` constant per row of `contract/client-codes.json`,
 naming the code, its error class and whether it is retryable, which
-`dfo._errors.client_error` raises. The one `by_status` row becomes a plain string
+`dfo._core.errors.client_error` raises. The one `by_status` row becomes a plain string
 constant, since its class and retryable flag follow the refusal's HTTP status.
 Each row of `contract/warning-codes.json` becomes a `WarningCode` constant,
-naming the code and its warning class, which `dfo._errors.client_warning` issues.
+naming the code and its warning class, which `dfo._core.errors.client_warning` issues.
 """
 
 import argparse
@@ -28,7 +28,7 @@ ACTIONS = ROOT / "contract" / "actions.json"
 SCHEMA = ROOT / "contract" / "actions.schema.json"
 CLIENT_CODES = ROOT / "contract" / "client-codes.json"
 WARNING_CODES = ROOT / "contract" / "warning-codes.json"
-TARGET = ROOT / "python" / "src" / "dfo" / "_error_map.py"
+TARGET = ROOT / "python" / "src" / "dfo" / "_generated" / "error_map.py"
 
 
 BY_STATUS = "by_status"
@@ -87,7 +87,7 @@ def _warning_codes(warning_codes: dict) -> tuple[list[str], list[str]]:
 
 
 def render(actions: dict, schema: dict, client_codes: dict, warning_codes: dict) -> str:
-    """Return the source of `_error_map.py` for the parsed contract files."""
+    """Return the source of `_generated/error_map.py` for the parsed contract files."""
     if actions.get("format_version") != 1:
         raise SystemExit(f"{relative(ACTIONS)}: format_version is not 1")
     rows = actions["codes"]
@@ -120,7 +120,7 @@ def render(actions: dict, schema: dict, client_codes: dict, warning_codes: dict)
         "\n"
         "from typing import Final, Literal\n"
         "\n"
-        f"from dfo._errors import {imported}\n"
+        f"from dfo._core.errors import {imported}\n"
         "\n"
         f"type Action = {_literal(action_values)}\n"
         f"type GapKind = {_literal(gap_values)}\n"
@@ -138,7 +138,7 @@ def render(actions: dict, schema: dict, client_codes: dict, warning_codes: dict)
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Write or check `_error_map.py` and return the exit status."""
+    """Write or check `_generated/error_map.py` and return the exit status."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true", help="exit 1 on a difference")
     args = parser.parse_args(argv)

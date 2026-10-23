@@ -15,7 +15,7 @@ import gen_errors
 import gen_sync
 import sync_contract
 
-from dfo._errors import ClientCode, DfoWarning, ServerError, WarningCode
+from dfo._core.errors import ClientCode, DfoWarning, ServerError, WarningCode
 
 _WARNING_CODES = {
     "format_version": 1,
@@ -39,13 +39,13 @@ _REPORT_SCHEMA = {
 def test_the_token_map_rewrites_async_source() -> None:
     generator = gen_sync.Generator()
     source = (
-        "from dfo._transport import AsyncTransport\n"
+        "from dfo._http.transport import AsyncTransport\n"
         "async def run(transport: AsyncTransport) -> None:\n"
         "    async with transport:\n"
         "        await transport.sleep(1)\n"
     )
     assert generator.convert(source, "x.py") == (
-        "from dfo._sync._transport import Transport\n"
+        "from dfo._sync._http.transport import Transport\n"
         "def run(transport: Transport) -> None:\n"
         "    with transport:\n"
         "        transport.sleep(1)\n"
@@ -74,6 +74,23 @@ def test_async_source_may_not_import_an_event_loop_library(line: str) -> None:
     generator.convert(f'"""Doc."""\n{line}\n', "src.py")
     assert generator.problems
     assert generator.problems[0].startswith("src.py:2: imports")
+
+
+@pytest.mark.parametrize(
+    ("line", "module"),
+    [
+        ("from dfo._datasets import fetch", "dfo._datasets.fetch"),
+        ("from dfo._http import hooks, transport", "dfo._http.transport"),
+    ],
+)
+def test_async_source_may_not_import_an_async_module_from_its_package(
+    line: str, module: str
+) -> None:
+    generator = gen_sync.Generator()
+    generator.convert(f'"""Doc."""\n{line}\n', "src.py")
+    assert [problem.split(";")[0] for problem in generator.problems] == [
+        f"src.py:2: imports {module} from its package"
+    ]
 
 
 @pytest.mark.parametrize(
