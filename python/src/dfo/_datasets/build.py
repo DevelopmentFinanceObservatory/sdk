@@ -11,15 +11,26 @@ requests themselves.
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any, Protocol
 
 import httpx2
 
 from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT, UNEXPECTED_RESPONSE
-from dfo._core.errors import client_error
+from dfo._core.errors import ContractError, client_error
 from dfo._core.parse import check_manifest, check_operation
 from dfo._core.refusals import trace_id_of
-from dfo._core.types import Layout, Part, Rendering, Spec, Window, Wire
+from dfo._core.types import (
+    CONTENT_VERSION,
+    OPERATION_ID,
+    Layout,
+    Part,
+    Rendering,
+    Spec,
+    Window,
+    Wire,
+    matches,
+)
 from dfo._http.hooks import Hold
 
 # The longest the client reads a synchronous build. The server cuts off at 120 s.
@@ -423,15 +434,22 @@ def read_operation(resource: Wire) -> OperationState:
     """Read an operation resource.
 
     Raises:
-        ContractError: The operation id or status is missing, or a done
-            operation holds no manifest.
+        ContractError: The operation's status is missing, its id is not `op_`
+            and 64 lowercase hex digits, or a done operation holds no manifest
+            that `check_served_manifest` passes (`contract_violation`). The id
+            is checked before any poll names it in a path.
     """
     check_operation(resource)
     operation = resource["operation"]
+    if not matches(OPERATION_ID, operation["operation_id"]):
+        raise _contract_violation(
+            "The operation's id is not op_ and 64 lowercase hex digits",
+            "/operation/operation_id",
+        )
     status = operation["status"]
     manifest = resource.get("manifest")
     if status == "done":
-        check_manifest(manifest, "/manifest")
+        check_served_manifest(manifest, "/manifest")
     wait = operation.get("retry_after_ms")
     progress = operation.get("progress")
     error = resource.get("error")
@@ -466,6 +484,44 @@ def counted_rows(manifest: Wire) -> int:
     coverage = manifest.get("coverage")
     rows = coverage.get("rows") if isinstance(coverage, Mapping) else None
     return rows if type(rows) is int and rows > 0 else 0
+
+
+def check_served_manifest(manifest: object, pointer: str = "", /) -> None:
+    """Check a manifest as `check_manifest` does, and that its `content_version`
+    is a version id a ref and a cache path can hold.
+
+    Args:
+        manifest: The decoded manifest.
+        pointer: The manifest's JSON Pointer in the response body.
+
+    Raises:
+        ContractError: `check_manifest` refuses it, or its `content_version` is
+            not `cv_` and 32 lowercase hex digits (`contract_violation`).
+    """
+    check_manifest(manifest, pointer)
+    assert isinstance(manifest, Mapping)
+    if not matches(CONTENT_VERSION, manifest["content_version"]):
+        raise _contract_violation(
+            "The manifest's content_version is not cv_ and 32 lowercase hex digits",
+            f"{pointer}/content_version",
+        )
+
+
+def read_held_until(value: object) -> date | None:
+    """A retention's `held_until` as a date, or None when it is not an ISO 8601
+    date or date-time string."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value).date()
+    except ValueError:
+        return None
+
+
+def _contract_violation(message: str, pointer: str) -> ContractError:
+    error = client_error(CONTRACT_VIOLATION, message)
+    error.pointer = pointer
+    return error
 
 
 def check_built(

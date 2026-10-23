@@ -4,11 +4,13 @@
  *
  * Each lookup returns the decoded response body, typed by the served OpenAPI document's schema.
  * The body must be an object holding the members that schema requires and that tell it from a
- * problem document, else `ContractError` (`contract_violation`) raises. The client reads no more
+ * problem document. A body that does not, and is a problem document (a `code` and no `kind`),
+ * raises the class the contract's actions give its code, or `ContractError`
+ * (`contract_violation`) for a code they lack; any other body raises `contract_violation`. The client reads no more
  * of it, so an unknown member or enum value passes through untouched.
  */
 
-import { clientError } from "../core/errors.ts";
+import { clientError, problemAt200 } from "../core/errors.ts";
 import { checkRequired } from "../core/strict.ts";
 import type { JsonType } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
@@ -59,13 +61,20 @@ export type CatalogueOptions = LookupOptions & {
   readonly place?: string;
 };
 
-/** The body of a lookup's response, once it holds what `schema` requires. */
+/** The body of a lookup's response, once it holds what `schema` requires. A body that does not,
+ *  and is a problem document, raises the error the document stands for. */
 const lookupBody = (
   response: JsonResponse,
   schema: string,
   required: Readonly<Record<string, JsonType>>,
 ): Readonly<Record<string, unknown>> =>
-  describing(response.traceId, () => checkRequired(schema, required, response.body));
+  describing(response.traceId, () => {
+    try {
+      return checkRequired(schema, required, response.body);
+    } catch (error) {
+      throw problemAt200(response.body, response.traceId) ?? error;
+    }
+  });
 
 const callOptions = ({ signal, timeout }: LookupOptions) => ({
   ...(signal === undefined ? {} : { signal }),

@@ -8,8 +8,9 @@ Entries are keyed by content, so two processes writing one artifact write the sa
 bytes and need no lock. Concurrent manifest updates can lose a cache candidate,
 but never make an artifact name different bytes. A read re-hashes an artifact, and
 a mismatch is a miss. A manifest is read back only when it passes the checks a
-served manifest passes and names the spec and version its path does; anything
-else is a miss, which a fetch fills from the server again. A key that is not a
+served manifest passes, any `held_until` it holds reads as a date, and it names
+the spec and version its path does; anything else is a miss, which a fetch fills
+from the server again. The citation text is read back as stored. A key that is not a
 server id, such as a malformed digest in a served manifest, is a miss on read and
 skipped on write.
 
@@ -34,8 +35,8 @@ from typing import Any
 from dfo._config.paths import cache_directory
 from dfo._core.codes import INVALID_ARGUMENT
 from dfo._core.errors import ContractError, client_error
-from dfo._core.parse import check_manifest
 from dfo._core.types import CONTENT_VERSION, DIGEST, SPEC_ID, Rendering
+from dfo._datasets.build import check_served_manifest, read_held_until
 from dfo._http.hooks import Hold, KeyedLock
 
 logger = logging.getLogger("dfo")
@@ -212,8 +213,9 @@ class Cache:
     ) -> dict[str, Any] | None:
         """The stored manifest of a built version's rendering, or None.
 
-        None also when the file does not pass `check_manifest` or names another
-        spec or version than its path.
+        None also when the file does not pass `check_served_manifest`, holds a
+        `held_until` that does not read as a date, or names another spec or
+        version than its path.
         """
         path = self._manifest(spec_id, content_version, rendering)
         if not self.enabled or path is None:
@@ -347,15 +349,21 @@ def _holds(path: Path, digest: str) -> bool:
 def _held_manifest(
     path: Path, spec_id: str, content_version: str
 ) -> dict[str, Any] | None:
-    """The manifest at `path` when it passes `check_manifest` and names
-    `spec_id` at `content_version`, else None."""
+    """The manifest at `path` when it passes `check_served_manifest`, any
+    `held_until` it carries reads as a date, and it names `spec_id` at
+    `content_version`, else None."""
     manifest = _read_json(path)
     if manifest is None:
         return None
     try:
-        check_manifest(manifest)
+        check_served_manifest(manifest)
     except ContractError:
         logger.debug("dfo cache: %s is not a manifest; skipped", path)
+        return None
+    retention = manifest.get("retention")
+    held = retention.get("held_until") if isinstance(retention, Mapping) else None
+    if held is not None and read_held_until(held) is None:
+        logger.debug("dfo cache: %s holds an unreadable held_until; skipped", path)
         return None
     if (
         manifest["definition"]["spec_id"] != spec_id

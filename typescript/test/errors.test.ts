@@ -21,7 +21,7 @@ import {
 } from "../src/core/errors.ts";
 import type { ClientErrorCode } from "../src/core/errors.ts";
 import { CLIENT_WARNING_CODES } from "../src/generated/warning-codes.ts";
-import { clientWarning } from "../src/core/warnings.ts";
+import { clientWarning, warnOnce } from "../src/core/warnings.ts";
 import type { ClientWarningCode } from "../src/core/warnings.ts";
 import { contractJson } from "./support.ts";
 
@@ -130,4 +130,20 @@ test("an error the client raises takes a code from ClientErrorCode", () => {
   // @ts-expect-error -- a server's code reaches an error only through serverCode.
   const error = new ServerError({ code: "not_a_client_code" });
   assert.equal(error.code, "not_a_client_code");
+});
+
+test("warnOnce forgets what it has seen once it holds 1,024 keys", () => {
+  const shown: string[] = [];
+  const once = (key: string): void => {
+    warnOnce(key, clientWarning("ref_digest_changed", key), (warning) => {
+      shown.push(warning.message);
+    });
+  };
+  once("cap:first");
+  once("cap:first");
+  assert.deepEqual(shown, ["cap:first"]);
+  for (let index = 0; index < 1024; index += 1) once(`cap:${index}`);
+  once("cap:first");
+  assert.equal(shown.length, 1026);
+  assert.equal(shown.at(-1), "cap:first");
 });

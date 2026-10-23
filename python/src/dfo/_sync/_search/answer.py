@@ -51,7 +51,7 @@ from dfo._core.parse import (
     read_items,
     read_requested_operation,
 )
-from dfo._core.refusals import describing, problem_error, trace_id_of
+from dfo._core.refusals import describing, trace_id_of
 from dfo._core.types import (
     Candidate,
     CandidatesPart,
@@ -327,10 +327,11 @@ def resolve(
 
     Raises:
         DfoError: The response is a problem document with a `code` but no
-            `kind`, raised as the class its code maps to.
+            `kind`, raised as the class the contract's registry maps its code to.
         ContractError: The body is not JSON (`unexpected_response`), the
-            answer's kind is absent or unknown, or a member the client acts on
-            is missing.
+            answer's kind is absent or unknown, a member the client acts on is
+            missing, or a problem document's code is one the registry does not
+            hold (`contract_violation`).
     """
     session = source()
     transport = session.transport
@@ -345,14 +346,7 @@ def resolve(
     trace_id = trace_id_of(response, body)
     if isinstance(body, Mapping) and "kind" not in body and "code" in body:
         # A problem document Search sent with a success status.
-        raise problem_error(
-            response.status_code,
-            body,
-            reason=response.reason_phrase,
-            origin=transport.origin,
-            trace_id=trace_id,
-            key=None if (key := transport.key.key) is None else key.reveal(),
-        )
+        raise transport.success_problem(response, body)
     with describing(trace_id):
         return answer_from_body(
             body, question=question, source=source, trace_id=trace_id

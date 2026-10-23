@@ -2,6 +2,8 @@ import type { Answer, Gap } from "../search/answer.ts";
 import { CODE_ACTIONS } from "../generated/actions.ts";
 import type { ACTIONS } from "../generated/actions.ts";
 import { CLIENT_CODE_CLASSES, CLIENT_CODE_RETRYABLE } from "../generated/client-codes.ts";
+import type { Alternative, ProblemIssue } from "../wire.ts";
+import { isRecord, objects } from "./json.ts";
 import { printable } from "./text.ts";
 
 /** What the caller does next about a refusal, as `contract/actions.json` assigns it. */
@@ -86,7 +88,25 @@ export function isDfoError(value: unknown): value is DfoError {
 }
 
 /** The request is malformed. The caller fixes it. */
-export class InvalidRequestError extends DfoError {}
+export class InvalidRequestError extends DfoError {
+  /** The problem document's `issues`, each naming a member of the request and what is wrong
+   *  with it, such as the role a `role_incompatible` refusal could not bind. Empty when the
+   *  server sent none. */
+  readonly issues: readonly ProblemIssue[];
+  /** The problem document's `alternatives`, the values the server offers in place of what the
+   *  request named; an item without a string `ref` and `label` is left out. Empty when the
+   *  server sent none. */
+  readonly alternatives: readonly Alternative[];
+
+  constructor(options: DfoErrorOptions) {
+    super(options);
+    this.issues = objects(options.problem?.["issues"]);
+    this.alternatives = objects(options.problem?.["alternatives"]).filter(
+      (item): item is Alternative =>
+        typeof item["ref"] === "string" && typeof item["label"] === "string",
+    );
+  }
+}
 /** A spec, version or operation is unknown. The caller checks the id. */
 export class NotFoundError extends DfoError {}
 /** A part of the question has no reading. The caller chooses one or takes the answered parts. */
@@ -206,13 +226,56 @@ export function actionFor(code: string): Action | undefined {
 
 /** A server refusal's message: its detail, naming the field its problem document's `pointer`
  *  names unless the pointer is empty or the detail names it already, then its code, as in
- *  `Field required at /input/definition (request_invalid)`. */
-export function refusalMessage(detail: string, pointer: unknown, code: string): string {
+ *  `Field required at /input/definition (request_invalid)`. With `unmatched`, the request of a
+ *  404 that matched no route, the message names that request before the code, as in
+ *  `Not found. GET https://… matched no route; check baseUrl (not_found)`. A null code adds
+ *  none. */
+export function refusalMessage(
+  detail: string,
+  pointer: unknown,
+  code: string | null,
+  unmatched?: string,
+): string {
   const at =
     typeof pointer === "string" && pointer !== "" && !detail.includes(pointer)
       ? `${detail.replace(/\.$/, "")} at ${pointer}`
       : detail;
-  return `${at} (${code})`;
+  const said =
+    unmatched === undefined
+      ? at
+      : `${at.replace(/\.$/, "")}. ${unmatched} matched no route; check baseUrl`;
+  return code === null ? said : `${said} (${code})`;
+}
+
+/**
+ * The error a 200 response's problem document stands for, or undefined when the body is none. A
+ * problem document holds a string `code` and no `kind`. Its class is the one the contract's
+ * actions give the code; a code they lack raises `contract_violation`, since a 200 has no status
+ * to read a class from.
+ */
+export function problemAt200(body: unknown, traceId: string | null): DfoError | undefined {
+  if (!isRecord(body) || typeof body["code"] !== "string" || "kind" in body) return undefined;
+  const code = body["code"];
+  if (actionFor(code) === undefined) {
+    return clientError("contract_violation", {
+      detail:
+        `The response is a problem document with the code ${JSON.stringify(code)}, which this ` +
+        "client does not know, under HTTP 200. Upgrade the client, or report the trace id.",
+      pointer: "/code",
+      traceId,
+    });
+  }
+  const detail = typeof body["detail"] === "string" ? body["detail"] : code;
+  const ErrorClass = errorClassFor(code, 200);
+  return new ErrorClass({
+    code: serverCode(code),
+    status: 200,
+    detail,
+    message: refusalMessage(detail, body["pointer"], code),
+    traceId,
+    retryable: body["retryable"] === true,
+    problem: body,
+  });
 }
 
 /** The class for a refusal: by its code through the contract's actions, else by HTTP status. */

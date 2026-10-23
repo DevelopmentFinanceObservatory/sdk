@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { describe, test } from "node:test";
 
 import { envFrom } from "../src/config/env.ts";
@@ -514,6 +515,52 @@ describe("a stored version's lookup order", () => {
       assert.equal(dataset.rows, 30);
     });
   }
+
+  test("builds again when the file selector renders a larger file than the stored one", async () => {
+    const { ref, member, manifest, parquet } = await stored();
+    // The selector renders the version again, here one byte past the stored file's size.
+    const rerendered = Uint8Array.from([...parquet, 0]);
+    // The rebuild's file: the same rows under another writer stamp, so another digest.
+    const rebuilt = Uint8Array.from(parquet);
+    const stamp = new TextEncoder().encode("version 24.0.0");
+    const at = Buffer.from(rebuilt).indexOf(stamp);
+    assert.ok(at > 0);
+    rebuilt[at + stamp.length - 1] = "1".charCodeAt(0);
+    const digest = `sha256:${createHash("sha256").update(rebuilt).digest("hex")}`;
+    const [artifact, ...rest] = manifest["artifacts"] as Record<string, unknown>[];
+    const rebuiltManifest = {
+      ...manifest,
+      artifacts: [
+        {
+          ...artifact,
+          artifact_digest: digest,
+          url: String(artifact!["url"]).replace(member.digest, digest),
+        },
+        ...rest,
+      ],
+    };
+    const signed = (body: Uint8Array) => [
+      () => new Response(null, { status: 302, headers: { location: SIGNED } }),
+      () => new Response(body.slice(), { status: 200 }),
+    ];
+    const { fetch, seen } = mockFetch(
+      json(manifest),
+      expired,
+      ...signed(rerendered),
+      ...signed(rerendered),
+      json(rebuiltManifest),
+      ...download(rebuilt),
+    );
+    const { transport, warnings } = client(fetch);
+    const dataset = await fetchDataset(transport, ref);
+    assert.equal(seen[6]!.method, "POST");
+    assert.equal(dataset.ref.members[0]!.digest, digest);
+    assert.equal(dataset.rows, 30);
+    assert.deepEqual(
+      warnings.map((warning) => warning.code),
+      ["ref_digest_changed"],
+    );
+  });
 
   for (const strict of [false, true]) {
     test(`warns that a rebuilt file has another digest, naming both, and returns it${strict ? " under strict" : ""}`, async () => {

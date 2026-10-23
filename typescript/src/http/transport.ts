@@ -89,7 +89,8 @@ export type TransportOptions = {
   maxRetries?: number;
   /** Headers sent with every request to the API. A signed storage URL gets none. */
   defaultHeaders?: Record<string, string>;
-  /** Headers computed for each request to the API. A signed storage URL gets none. */
+  /** Headers computed for each request to the API. A signed storage URL gets none. An error it
+   *  raises reaches the caller as `header_invalid`, with that error as the `cause`. */
   headerProvider?: HeaderProvider;
   onWarning?: WarningHandler;
   /** The clock and sleep the retry waits use. */
@@ -176,21 +177,33 @@ const defaultSleep: Sleep = (ms, signal) =>
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 
-/** The loopback hosts a key may reach over plain http: `localhost` and its subdomains, the
- *  IPv4 loopback block 127.0.0.0/8 and the IPv6 loopback address. */
-const isLoopback = (hostname: string): boolean =>
-  hostname === "localhost" ||
-  hostname.endsWith(".localhost") ||
-  /^127(?:\.\d{1,3}){3}$/.test(hostname) ||
-  hostname === "[::1]";
+/** An IPv4 address written as four decimal octets with no leading zeros. */
+const DOTTED_QUAD =
+  /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+
+/** A host lower-cased, with one trailing dot stripped. */
+const bareHost = (host: string): string => host.toLowerCase().replace(/\.$/, "");
+
+/** The loopback hosts a key may reach over plain http: `localhost` and its subdomains, a
+ *  dotted-quad address in 127.0.0.0/8 and the IPv6 loopback address. */
+function isLoopback(hostname: string): boolean {
+  const host = bareHost(hostname);
+  return (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    (DOTTED_QUAD.test(host) && host.startsWith("127.")) ||
+    host === "[::1]"
+  );
+}
 
 /**
  * The base URL as an absolute http or https URL. A relative one resolves against the page. The
  * errors never quote the URL, which may carry a password.
  *
  * @throws {InvalidRequestError} The base URL is empty, holds a character outside visible ASCII,
- *   does not resolve to an absolute http or https URL, or carries userinfo, a query, a fragment
- *   or a dot segment (`base_url_invalid`).
+ *   does not resolve to an absolute http or https URL, carries userinfo, a query, a fragment
+ *   or a dot segment, or writes an IPv4 host other than as four decimal octets
+ *   (`base_url_invalid`).
  */
 function resolveBaseUrl(baseUrl: string): URL {
   const refuse = (problem: string, cause?: unknown) =>
@@ -219,6 +232,16 @@ function resolveBaseUrl(baseUrl: string): URL {
   }
   if (url.username !== "" || url.password !== "") {
     throw refuse("carries userinfo; pass the key as apiKey");
+  }
+  // URL rewrites any IPv4 form, such as 127.1, 0x7f.1 or 2130706433, as a dotted quad, so the
+  // host as written is read from the string.
+  const written = /^[a-z][a-z0-9+.-]*:[/\\]*([^/\\]*)/i.exec(baseUrl)?.[1];
+  if (
+    written !== undefined &&
+    DOTTED_QUAD.test(url.hostname) &&
+    bareHost(written.replace(/:[^:]*$/, "")) !== url.hostname
+  ) {
+    throw refuse("writes an IPv4 host in a form other than four decimal octets");
   }
   if (hasDotSegment(baseUrl.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, ""))) {
     throw refuse("holds a . or .. path segment");
@@ -405,9 +428,20 @@ function jsonText(json: unknown, method: string): string {
   }
 }
 
-/** Whether a custom `fetch` returned something `Transport` can read as a `Response`. */
-const isResponse = (value: unknown): value is Response =>
-  isRecord(value) && typeof value["status"] === "number" && value["headers"] instanceof Headers;
+/** Whether a custom `fetch` returned something `Transport` can read as a `Response`: a numeric
+ *  status, headers with `get`, and a body stream or `arrayBuffer`. The shape is checked, not the
+ *  class, since a `fetch` from another package or realm, such as npm undici's, brings its own
+ *  `Response` and `Headers` classes. */
+function isResponse(value: unknown): value is Response {
+  if (!isRecord(value) || typeof value["status"] !== "number") return false;
+  const { headers, body } = value;
+  return (
+    isRecord(headers) &&
+    typeof headers["get"] === "function" &&
+    ((isRecord(body) && typeof body["getReader"] === "function") ||
+      typeof value["arrayBuffer"] === "function")
+  );
+}
 
 /**
  * A response's body, its decoded bytes counted as they stream, read no further once they pass
@@ -417,7 +451,11 @@ const isResponse = (value: unknown): value is Response =>
  */
 async function readWithin(response: Response, limit: number): Promise<Uint8Array | null> {
   const stream = response.body;
-  if (stream === null) return new Uint8Array();
+  if (!isRecord(stream)) {
+    // A Response with no body, or a stand-in that reads its body whole.
+    const whole = new Uint8Array(await response.arrayBuffer());
+    return whole.byteLength > limit ? null : whole;
+  }
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -798,7 +836,7 @@ export class Transport {
     );
     if (outcome instanceof DfoError) throw outcome;
     const { response, body } = outcome;
-    const ended = response.url === "" ? url : new URL(response.url);
+    const ended = response.url ? new URL(response.url) : url;
     if (follow && ended.origin !== this.baseUrl.origin && ended.origin !== STORAGE_ORIGIN) {
       throw clientError("contract_violation", {
         status: response.status,
@@ -861,7 +899,9 @@ export class Transport {
       } else {
         const { response, body } = outcome;
         this.#warnFromHeaders(response.headers, url, key);
-        if (response.ok || this.#isRedirect(response)) return outcome;
+        if ((response.status >= 200 && response.status < 300) || this.#isRedirect(response)) {
+          return outcome;
+        }
         if (response.status === 401 && !reauthenticated) {
           // The key is resolved again after a 401, and a different key gets one more try.
           reauthenticated = true;
@@ -945,8 +985,21 @@ export class Transport {
     // The caller's headers replace the client's User-Agent, as in the Python client.
     if (!inBrowser()) headers.set("user-agent", `dfo-ts/${VERSION}`);
     setHeaders(headers, Object.entries(this.#options.defaultHeaders ?? {}), "the headers option");
+    const { headerProvider } = this.#options;
     const provided = await this.#waitForProvider(
-      () => this.#options.headerProvider?.({ method, url }),
+      () =>
+        headerProvider === undefined
+          ? undefined
+          : Promise.resolve()
+              .then(() => headerProvider({ method, url }))
+              .catch((error: unknown) => {
+                throw clientError("header_invalid", {
+                  detail:
+                    "The headerProvider raised an error " +
+                    `(${error instanceof Error ? error.message : String(error)}).`,
+                  cause: error,
+                });
+              }),
       url,
       options,
       "The headerProvider",
@@ -1119,8 +1172,10 @@ export class Transport {
 
   /**
    * The error a refusal stands for: a problem document, the proxy's own body, or neither. The
-   * key sent reads as `[redacted]` in the body. A 404 that matched no route, `not_found` or no code,
-   * names the request, since the base URL is the likely fault.
+   * key sent reads as `[redacted]` in the body. A code that is not snake case is no code; its
+   * text stays in the detail. A 404 that matched no route, `not_found` or no code, names the
+   * request in the message, since the base URL is the likely fault; the detail stays the
+   * server's.
    */
   #refusal(
     response: Response,
@@ -1133,29 +1188,22 @@ export class Transport {
     const traceId = traceIdOf(response.headers, body);
     const retryable = isRetryable(status, body);
     const retryAfter = retryAfterMs(response.headers) ?? null;
-    const detailOf = (text: unknown, code: string): string => {
-      const detail = typeof text === "string" ? text : code;
-      if (status !== 404 || (code !== "not_found" && code !== "refusal_without_code")) {
-        return detail;
-      }
-      return (
-        `${detail.replace(/\.$/, "")}. ${sent.method} ${sent.url.href} matched no route; ` +
-        "check baseUrl."
-      );
-    };
+    const unmatched = (code: string): string | undefined =>
+      status === 404 && (code === "not_found" || code === "refusal_without_code")
+        ? `${sent.method} ${sent.url.href}`
+        : undefined;
     // What a message opens with: the detail, or the status when the server gave none.
-    const opening = (problem: Record<string, unknown>, detail: string, code: string): string =>
-      typeof problem["detail"] === "string" ? detail : detailOf(`HTTP ${status}`, code);
+    const opening = (detail: unknown): string =>
+      typeof detail === "string" ? detail : `HTTP ${status}`;
 
-    if (isRecord(body) && typeof body["code"] === "string") {
+    if (isRecord(body) && typeof body["code"] === "string" && CODE.test(body["code"])) {
       const code = body["code"];
       const ErrorClass = errorClassFor(code, status);
-      const detail = detailOf(body["detail"], code);
       return new ErrorClass({
         code: serverCode(code),
         status,
-        detail,
-        message: refusalMessage(opening(body, detail, code), body["pointer"], code),
+        detail: typeof body["detail"] === "string" ? body["detail"] : code,
+        message: refusalMessage(opening(body["detail"]), body["pointer"], code, unmatched(code)),
         traceId,
         retryable,
         retryAfterMs: retryAfter,
@@ -1164,16 +1212,20 @@ export class Transport {
         cause,
       });
     }
-    if (isRecord(body) && typeof body["error"] === "string" && CODE.test(body["error"])) {
+    if (
+      isRecord(body) &&
+      !("code" in body) &&
+      typeof body["error"] === "string" &&
+      CODE.test(body["error"])
+    ) {
       // The website proxy's own refusal: {error, retry, detail}.
       const code = body["error"];
       const ErrorClass = errorClassFor(code, status);
-      const detail = detailOf(body["detail"], code);
       return new ErrorClass({
         code: serverCode(code),
         status,
-        detail,
-        message: refusalMessage(opening(body, detail, code), undefined, code),
+        detail: typeof body["detail"] === "string" ? body["detail"] : code,
+        message: refusalMessage(opening(body["detail"]), undefined, code, unmatched(code)),
         traceId,
         retryable,
         retryAfterMs: retryAfter,
@@ -1182,12 +1234,16 @@ export class Transport {
       });
     }
     // A body with no code keeps what a problem document says: whether to retry, its trace id. A
-    // proxy body whose `error` is free text keeps that text.
+    // code that is not snake case, or a proxy body whose `error` is free text, keeps that text.
     const problem = isRecord(body) && ("code" in body || !("error" in body)) ? body : null;
-    const said = isRecord(body) && typeof body["error"] === "string" ? `: ${body["error"]}` : "";
+    const text = isRecord(body)
+      ? [body["code"], body["error"]].find((value) => typeof value === "string")
+      : undefined;
+    const detail = `HTTP ${status} with no refusal code${text === undefined ? "" : `: ${text}`}.`;
     return clientError("refusal_without_code", {
       status,
-      detail: detailOf(`HTTP ${status} with no refusal code${said}.`, "refusal_without_code"),
+      detail,
+      message: refusalMessage(detail, undefined, null, unmatched("refusal_without_code")),
       traceId,
       retryable,
       retryAfterMs: retryAfter,

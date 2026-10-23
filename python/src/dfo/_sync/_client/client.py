@@ -197,10 +197,12 @@ class Client:
                 `DFO_PROGRESS=0`.
 
         Raises:
-            InvalidRequestError: A ref is narrowed or given another layout or
-                `without_party_totals`; `window`, `entities`, `facets` or
-                `layout` is malformed; or `timeout` is not None or a finite
-                number above 0 (`invalid_argument`).
+            InvalidRequestError: The target is neither a `Spec` nor a
+                `DatasetRef`, such as a spec id, and no request is sent; a ref
+                is narrowed or given another layout or `without_party_totals`;
+                `window`, `entities`, `facets` or `layout` is malformed; or
+                `timeout` is not None or a finite number above 0
+                (`invalid_argument`).
             VersionUnavailableError: A ref's version can no longer be fetched.
             ContractError: An artifact is not Parquet (`unexpected_response`),
                 or lacks a `time_period` or numeric `value` column
@@ -239,6 +241,8 @@ class Client:
         code index declares totals, as in `fetch`.
 
         Raises:
+            InvalidRequestError: `spec` is not a `Spec`, such as a spec id
+                (`invalid_argument`); no request is sent.
             DfoError: The server refused the build.
         """
         return mint(

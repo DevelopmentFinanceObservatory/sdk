@@ -34,7 +34,7 @@ from dfo._core.types import Rendering, Spec
 from dfo._datasets.build import Reading
 from dfo._datasets.cache import Cache, file_entry, manifest_entry, sha256_digest
 from dfo._datasets.dataset import build_dataset
-from dfo._datasets.fetch import fetch_members
+from dfo._datasets.fetch import fetch_members, mint
 from dfo._datasets.resolve import fetch
 from dfo._http.transport import AsyncTransport
 from tests._data import load
@@ -127,6 +127,21 @@ def ref_member(
         digest=sha256_digest(data),
         rendering=rendering,
     )
+
+
+@pytest.mark.parametrize(
+    "target",
+    [POSTED_ID, {"spec_id": POSTED_ID, "definition": {}}, None],
+    ids=["spec-id", "spec-dict", "none"],
+)
+@pytest.mark.parametrize("call", [fetch, mint])
+async def test_a_target_that_is_not_a_spec_sends_nothing(call, target: object) -> None:
+    server = Server()
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await call(transport, target)
+    assert caught.value.code == "invalid_argument"
+    assert server.requests == []
 
 
 async def test_a_spec_with_its_sentence_replays_the_recorded_build() -> None:
@@ -619,20 +634,6 @@ async def test_a_cache_entry_that_misses_its_digest_is_downloaded_again(
     assert cache.get_bytes(digest) == DATA
 
 
-async def test_a_served_version_the_cache_cannot_key_is_fetched_and_not_stored(
-    tmp_path: Path,
-) -> None:
-    body = manifest(POSTED_ID)
-    body["content_version"] = "cv_not-a-version"
-    cache = Cache(tmp_path, env={})
-    server = Server(json_response(200, body), redirect(), parquet())
-    async with make(server) as transport:
-        built = await fetch(transport, spec(SENTENCE), cache=cache)
-    assert built.members[0].data == DATA
-    assert cache.get_bytes(sha256_digest(DATA)) == DATA
-    assert not (cache.directory / "manifests").exists()
-
-
 async def test_a_served_digest_that_is_not_sha256_fails_its_download(
     tmp_path: Path,
 ) -> None:
@@ -1067,11 +1068,29 @@ async def test_a_spec_that_cannot_rebuild_names_the_newest_stored_version(
 
 
 @pytest.mark.parametrize(
+    ("listed", "ending"),
+    [
+        (NARROWED_CV, "; the server lists it as the newest version."),
+        (NEWER, f"; the newest version is {NEWER}, which fetching the spec returns."),
+    ],
+    ids=["the-ref-version", "another-version"],
+)
+async def test_the_unavailable_error_says_what_the_newest_version_is(
+    listed: str, ending: str
+) -> None:
+    _, error = await versions_lookup(versions_page([plain(listed)]))
+    assert isinstance(error, VersionUnavailableError)
+    assert error.newest_version == listed
+    assert str(error).endswith(ending)
+
+
+@pytest.mark.parametrize(
     ("pages", "pointer"),
     [
         ([json_response(200, {"spec_id": NARROWED_ID, "items": []})], "/versions"),
         ([versions_page([{}])], "/versions/0/content_version"),
         ([versions_page(["cv"])], "/versions/0/content_version"),
+        ([versions_page([plain("cv_" + "A" * 32)])], "/versions/0/content_version"),
         ([versions_page([{"content_version": OLDER}])], "/versions/0/rendering"),
         (
             [versions_page([plain(NEWER), {**plain(OLDER), "rendering": None}])],

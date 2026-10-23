@@ -257,6 +257,7 @@ def test_disable_and_enable_cache_keep_the_configured_client(
 FORK = textwrap.dedent(
     """
     import os
+    import httpx2._utils
     import dfo
     from dfo._client import default as _default
 
@@ -268,12 +269,17 @@ FORK = textwrap.dedent(
     _default._lock.acquire()
     pid = os.fork()
     if pid == 0:
+        # The platform's proxy lookup, which crashes here on macOS.
+        looked_up = []
+        httpx2._utils.getproxies = lambda: looked_up.append(True) or {}
         kept = _default.default_client() is parent and not _default._lock.locked()
         configured = parent.base_url == "https://configured.example.org/api"
         fresh = transport._pool.client
+        proxied = fresh._mounts.keys() == inherited._mounts.keys() != set()
         transport.close()
         untouched = fresh is not inherited and fresh.is_closed
-        os._exit(0 if kept and configured and untouched and not inherited.is_closed else 1)
+        ok = kept and configured and proxied and untouched and not looked_up
+        os._exit(0 if ok and not inherited.is_closed else 1)
     _default._lock.release()
     _, status = os.waitpid(pid, 0)
     assert os.waitstatus_to_exitcode(status) == 0, "the child lost or reused the pool"
@@ -286,14 +292,19 @@ FORK = textwrap.dedent(
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork")
 def test_a_forked_child_keeps_the_configured_client_on_a_fresh_pool() -> None:
     # A fresh interpreter, since this one runs pyarrow's threads and fork warns.
-    # NO_PROXY keeps httpx2 off macOS's system proxy lookup, which starts threads
-    # and crashes a forked child.
+    # A proxy in the environment keeps the parent off macOS's system proxy
+    # lookup, which starts threads; the child must build its pool over the same
+    # proxies without looking them up.
     result = subprocess.run(
         [sys.executable, "-W", "error", "-c", FORK],
         capture_output=True,
         text=True,
         check=False,
-        env={**os.environ, "NO_PROXY": "*"},
+        env={
+            **os.environ,
+            "HTTPS_PROXY": "http://proxy.example.invalid:3128",
+            "NO_PROXY": "",
+        },
     )
     assert result.returncode == 0, result.stderr
 
@@ -351,6 +362,9 @@ def test_importing_dfo_reads_no_file_environment_or_network() -> None:
     control = run("os.environ.get('HOME')")
     assert "importing dfo used os.environ" in control.stderr
     result = run("import dfo")
+    assert result.returncode == 0, result.stderr
+    # As on Windows, which has no fork.
+    result = run("del os.register_at_fork; import dfo")
     assert result.returncode == 0, result.stderr
 
 

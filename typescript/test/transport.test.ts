@@ -243,6 +243,44 @@ describe("refusals", () => {
     });
   }
 
+  for (const [body, text] of [
+    [{ code: "x\nInjected", detail: "d" }, "x"],
+    [{ code: "Rate_Limited" }, "Rate_Limited"],
+    [{ error: "Bad gateway" }, "Bad gateway"],
+  ] as const) {
+    test(`read the code ${JSON.stringify(text)}, which is not snake case, as no code`, async () => {
+      const { fetch } = mockFetch(json(body, 400));
+      const error = await transport({ fetch })
+        .request({ path: "/x" })
+        .catch((e: unknown) => e);
+      assert.ok(error instanceof InvalidRequestError);
+      assert.equal(error.code, "refusal_without_code");
+      assert.ok(error.detail.startsWith(`HTTP 400 with no refusal code: ${text}`));
+    });
+  }
+
+  test("expose a role_incompatible refusal's issues and alternatives", async () => {
+    const issues = [{ pointer: "/input/parts/0", axis: "recipient", code: "role_incompatible" }];
+    const alternatives = [{ ref: "country/KEN", label: "Kenya" }];
+    const { fetch } = mockFetch(
+      problem({
+        code: "role_incompatible",
+        status: 422,
+        issues: [...issues, 3],
+        alternatives: [...alternatives, { ref: "country/UGA" }],
+      }),
+      problem({ code: "role_incompatible", status: 422 }),
+    );
+    const t = transport({ fetch });
+    const error = await t.request({ path: "/x" }).catch((e: unknown) => e);
+    assert.ok(error instanceof InvalidRequestError);
+    assert.deepEqual(error.issues, issues);
+    assert.deepEqual(error.alternatives, alternatives);
+    const bare = await t.request({ path: "/x" }).catch((e: unknown) => e);
+    assert.ok(bare instanceof InvalidRequestError);
+    assert.deepEqual([bare.issues, bare.alternatives], [[], []]);
+  });
+
   test("map the proxy's 429 body and retry it after Retry-After", async () => {
     const { sleep, waits } = recordingSleep();
     const limited = json(
@@ -517,16 +555,28 @@ describe("failures and cancellation", () => {
     assert.deepEqual(seen, []);
   });
 
-  test("keeps a provider rejection intact", async () => {
-    const reason = new Error("identity provider failed");
-    await assert.rejects(
-      transport({
-        fetch: mockFetch(json({ ok: true })).fetch,
-        headerProvider: async () => Promise.reject(reason),
-      }).request({ path: "/x" }),
-      (error: unknown) => error === reason,
-    );
-  });
+  for (const [name, headerProvider] of [
+    ["rejects", () => Promise.reject(new Error("identity provider failed"))],
+    [
+      "throws",
+      () => {
+        throw new Error("identity provider failed");
+      },
+    ],
+  ] as const) {
+    test(`raises header_invalid, naming the provider, when the provider ${name}`, async () => {
+      const { fetch, seen } = mockFetch(json({ ok: true }));
+      const error = await transport({ fetch, headerProvider })
+        .request({ path: "/x" })
+        .catch((value: unknown) => value);
+      assert.ok(error instanceof InvalidRequestError);
+      assert.equal(error.code, "header_invalid");
+      assert.match(error.message, /headerProvider/);
+      assert.ok(error.cause instanceof Error);
+      assert.equal(error.cause.message, "identity provider failed");
+      assert.equal(seen.length, 0);
+    });
+  }
 });
 
 /** A response that arrives after `ms`, or rejects with the abort reason when the request's
@@ -1072,6 +1122,11 @@ describe("base URLs", () => {
     "https:// spaces/api",
     "https://api.example/api ",
     "https://api.example/v1/../api",
+    "http://127.1/api",
+    "http://0x7f.1:8080/api",
+    "http://2130706433/api",
+    "https://127.000.0.1/api",
+    "http:\\\\0177.0.0.1\\api",
   ]) {
     test(`refuse ${JSON.stringify(baseUrl)} without quoting it`, () => {
       assert.throws(
@@ -1110,6 +1165,9 @@ describe("base URLs", () => {
     ["http://dev.localhost/api", true],
     ["http://127.0.0.2:9/api", true],
     ["http://[::1]:9/api", true],
+    ["http://localhost./api", true],
+    ["http://127.0.0.1.:9/api", true],
+    ["http://127.0.0.1.example/api", false],
   ] as const) {
     test(`${allowed ? "send" : "refuse"} a key over plain http to ${baseUrl}`, async () => {
       const build = () => transport({ baseUrl, apiKey: KEY });
@@ -1320,23 +1378,38 @@ describe("server text", () => {
     );
   });
 
-  for (const [code, message] of [
+  const noRoute = "No route exists for the requested path.";
+  for (const [code, answer, message, detail] of [
     [
       "not_found",
-      "No route exists for the requested path. POST https://api.example/search/resolve " +
-        "matched no route; check baseUrl. (not_found)",
+      problem({ code: "not_found", status: 404, detail: noRoute }),
+      `${noRoute} POST https://api.example/search/resolve matched no route; check baseUrl ` +
+        "(not_found)",
+      noRoute,
     ],
-    ["spec_not_found", "No route exists for the requested path. (spec_not_found)"],
+    [
+      "spec_not_found",
+      problem({ code: "spec_not_found", status: 404, detail: noRoute }),
+      `${noRoute} (spec_not_found)`,
+      noRoute,
+    ],
+    [
+      "refusal_without_code",
+      () => new Response("Not Found", { status: 404 }),
+      "HTTP 404 with no refusal code. POST https://api.example/search/resolve matched no " +
+        "route; check baseUrl",
+      "HTTP 404 with no refusal code.",
+    ],
   ] as const) {
-    test(`name the request in a 404 ${code} only when no route matched`, async () => {
-      const { fetch } = mockFetch(
-        problem({ code, status: 404, detail: "No route exists for the requested path." }),
-      );
+    test(`name the request in the message of a 404 ${code} only when no route matched`, async () => {
+      const { fetch } = mockFetch(answer);
       const error = await transport({ baseUrl: "https://api.example", fetch })
         .request({ path: "/search/resolve", json: {} })
         .catch((value: unknown) => value);
       assert.ok(error instanceof NotFoundError);
+      assert.equal(error.code, code);
       assert.equal(error.message, message);
+      assert.equal(error.detail, detail);
     });
   }
 });

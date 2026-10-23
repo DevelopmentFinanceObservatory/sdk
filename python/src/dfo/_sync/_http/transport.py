@@ -10,16 +10,20 @@ storage host. Under `DFO_OFFLINE=1` every request raises `offline` before it is
 sent.
 
 The base URL is an absolute http or https URL with no userinfo, query, fragment
-or dot segment (`base_url_invalid`). Two URLs share an origin when their scheme,
-host and port match after lower-casing, dropping the scheme's default port and a
-host's trailing dot. A key never travels over plain http to a host that is not
-loopback (`insecure_transport`), a key or header value with a character the
+or dot segment, whose host, when it reads as an IPv4 address, is four decimal
+numbers such as 127.0.0.1, not `127.1` or `2130706433` (`base_url_invalid`). Two
+URLs share an origin when their scheme, host and port match after lower-casing,
+dropping the scheme's default port and a host's trailing dot. A key never
+travels over plain http to a host that is not loopback (`insecure_transport`):
+`localhost`, a name under `.localhost`, an address in 127.0.0.0/8 or `[::1]`,
+compared lower case without one trailing dot. A key or header value with a character the
 header cannot hold is refused before any request (`key_invalid`,
 `header_invalid`), and a path with a dot segment is refused (`invalid_argument`).
 
 A forked child keeps its parent's transports and settings. The first request in a
-new process builds a fresh connection pool and keeps the inherited one open and
-untouched, since its connections belong to the parent.
+new process builds a fresh connection pool over the proxies the parent read, and
+keeps the inherited pool open and untouched, since its connections belong to the
+parent.
 
 The client's `timeout` bounds one whole attempt, body included, and a call's
 deadline bounds the whole call. The asynchronous transport can cancel platform
@@ -47,6 +51,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpcore2
 import httpx2
+from httpx2._utils import get_environment_proxies
 
 from dfo._config.keys import ApiKeyArgument, KeyState, ResolvedKey
 from dfo._core.codes import (
@@ -65,7 +70,7 @@ from dfo._core.codes import (
     UNEXPECTED_RESPONSE,
 )
 from dfo._core.errors import DfoError, client_error, client_warning, warn_once
-from dfo._core.refusals import TRACE_HEADER, json_body, problem_error
+from dfo._core.refusals import TRACE_HEADER, json_body, problem_error, trace_id_of
 from dfo._core.text import (
     control_fault,
     has_dot_segment,
@@ -74,6 +79,7 @@ from dfo._core.text import (
     origin_of,
     redacted,
 )
+from dfo._generated.error_map import ACTIONS
 from dfo._http.hooks import (
     Clock,
     HeaderProvider,
@@ -113,6 +119,10 @@ JSON_BODY_MAX_BYTES = 16 * 2**20
 
 # The most retries a client takes.
 _RETRIES_MAX = 10
+
+# A host other than an IPv6 address whose last label is a number, which a URL
+# parser reads as an IPv4 address, such as `127.1`, `0x7f.1` or `2130706433`.
+_NUMERIC_HOST = re.compile(r"(?:[^:]*\.)?(?:0x[0-9a-f]*|[0-9]+)")
 
 # The methods a request may use.
 _METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
@@ -178,20 +188,44 @@ def _split_base_url(base_url: str) -> tuple[str, str]:
     origin = origin_of(base_url)
     if origin is None:
         refuse("names no host, or a port that is not a number from 0 to 65535")
+    host = _host(base_url)
+    if _NUMERIC_HOST.fullmatch(host) and _dotted_quad(host) is None:
+        refuse(
+            "names an IPv4 address in a form other than four decimal numbers, "
+            "such as 127.0.0.1"
+        )
     return origin + parts.path.rstrip("/"), origin
 
 
-def _sends_in_clear(origin: str) -> bool:
-    """Whether a request to `origin` crosses the network unencrypted: plain http
-    to a host that is not `localhost` or a loopback address."""
-    parts = urlsplit(origin)
-    host = parts.hostname or ""
-    if parts.scheme != "http" or host == "localhost" or host.endswith(".localhost"):
-        return False
+def _host(url: str) -> str:
+    """The host `url` names, lower case, without one trailing dot or the brackets
+    of an IPv6 address."""
+    return (urlsplit(url).hostname or "").removesuffix(".")
+
+
+def _dotted_quad(host: str) -> ipaddress.IPv4Address | None:
+    """The IPv4 address `host` writes as four decimal numbers from 0 to 255 with
+    no leading zero, or None for any other host."""
     try:
-        return not ipaddress.ip_address(host).is_loopback
+        return ipaddress.IPv4Address(host)
     except ValueError:
-        return True
+        return None
+
+
+def _sends_in_clear(url: str) -> bool:
+    """Whether a request to `url` crosses the network unencrypted: plain http
+    to a host that is not loopback.
+
+    Loopback is `localhost`, a name under `.localhost`, an address in 127.0.0.0/8
+    written as four decimal numbers, or `[::1]`.
+    """
+    host = _host(url)
+    if urlsplit(url).scheme != "http":
+        return False
+    if host in ("localhost", "::1") or host.endswith(".localhost"):
+        return False
+    address = _dotted_quad(host)
+    return address is None or not address.is_loopback
 
 
 def _checked_headers(headers: Mapping[str, str], source: str) -> Mapping[str, str]:
@@ -476,6 +510,28 @@ def _pool_layout_error() -> RuntimeError:
     )
 
 
+def _check_location(response: httpx2.Response) -> None:
+    """Refuse a redirect whose `Location` httpx2 cannot read as a URL, such as one
+    with a malformed IPv6 host or port, before httpx2 reads it as a protocol fault.
+
+    Raises:
+        ContractError: The `Location` is not a URL (`unexpected_response`).
+    """
+    if not response.has_redirect_location:
+        return
+    try:
+        httpx2.URL(response.headers["location"])
+    except httpx2.InvalidURL:
+        request = response.request
+        raise client_error(
+            UNEXPECTED_RESPONSE,
+            f"{request.method} {request.url} answered a redirect whose Location "
+            "is not a URL",
+            status=response.status_code,
+            trace_id=response.headers.get(TRACE_HEADER),
+        ) from None
+
+
 class _Pool:
     """The httpx2 client a transport and its copies send through.
 
@@ -487,17 +543,33 @@ class _Pool:
     client too; the old loop has usually closed, and its connections with it. A
     client over a transport the caller passed in is kept as it is, since that
     transport holds its own connections. Once closed, the pool refuses every use.
+
+    The proxies come from the environment, or on macOS and Windows the system
+    settings, read once when the pool is built. Every client the pool builds
+    later routes through those, since the macOS lookup crashes a child forked
+    from a process with running threads.
     """
 
     def __init__(self, http_transport: httpx2.BaseTransport | None) -> None:
         self._http_transport = http_transport
+        self._proxies = {} if http_transport is not None else get_environment_proxies()
         self._pid = os.getpid()
         self._loop: object | None = None
         self._closed = False
         self._client = self._build()
 
     def _build(self) -> httpx2.Client:
-        client = httpx2.Client(transport=self._http_transport, follow_redirects=False)
+        # An explicit transport keeps httpx2 from looking the proxies up again.
+        transport = self._http_transport
+        client = httpx2.Client(
+            transport=httpx2.HTTPTransport() if transport is None else transport,
+            mounts={
+                pattern: None if url is None else httpx2.HTTPTransport(proxy=url)
+                for pattern, url in self._proxies.items()
+            },
+            follow_redirects=False,
+            event_hooks={"response": [_check_location]},
+        )
         _keep_to_deadlines(client)
         return client
 
@@ -581,10 +653,9 @@ class Transport:
         """
         timeout = _checked_timeout(timeout, "timeout")
         max_retries = _checked_retries(max_retries)
-        self._base_url, self._origin = _split_base_url(
-            DEFAULT_BASE_URL if base_url is None else base_url
-        )
-        self._in_clear = _sends_in_clear(self._origin)
+        base_url = DEFAULT_BASE_URL if base_url is None else base_url
+        self._base_url, self._origin = _split_base_url(base_url)
+        self._in_clear = _sends_in_clear(base_url)
         self._keys = KeyState(api_key)
         self._authorization()
         self._timeout = timeout
@@ -788,6 +859,35 @@ class Transport:
             ) from exc
         return response
 
+    def success_problem(
+        self, response: httpx2.Response, body: Mapping[str, Any]
+    ) -> DfoError:
+        """The error for a problem document the server sent with a 2xx status.
+
+        A code the contract's registry holds gives the class it maps to, with the
+        body's trace id; any other code gives `contract_violation`, since a
+        success status leaves no status to map it on.
+        """
+        code = body.get("code")
+        if isinstance(code, str) and code in ACTIONS:
+            return problem_error(
+                response.status_code,
+                body,
+                reason=response.reason_phrase,
+                origin=self._origin,
+                trace_id=response.headers.get(TRACE_HEADER),
+                key=self._secret(),
+            )
+        request = response.request
+        return client_error(
+            CONTRACT_VIOLATION,
+            f"{request.method} {request.url.path} answered HTTP "
+            f"{response.status_code} with a problem document whose code the "
+            "client does not know",
+            status=response.status_code,
+            trace_id=trace_id_of(response, body),
+        )
+
     def _authorization(self) -> str | None:
         """The `Authorization` value for the key, or None for anonymous use.
 
@@ -895,7 +995,7 @@ class Transport:
         falls back to the `x-dfo-trace-id` header.
 
         Args:
-            method: The HTTP method.
+            method: The HTTP method, in any case.
             target: A path under the base URL, or an absolute URL on its origin.
             params: Query parameters.
             json: The JSON body.
@@ -930,6 +1030,8 @@ class Transport:
                 (`unexpected_response`).
             ValueError: `target` is neither a path nor a URL on the API's origin.
         """
+        if isinstance(method, str):
+            method = method.upper()
         if method not in _METHODS:
             raise client_error(
                 INVALID_ARGUMENT,

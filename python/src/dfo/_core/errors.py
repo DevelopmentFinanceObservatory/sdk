@@ -22,6 +22,7 @@ from dfo._core.text import printable
 if TYPE_CHECKING:
     # `dfo._core.types` raises through this module, so the import is for types only.
     from dfo._core.types import Candidate, Gap
+    from dfo._generated.wire import Alternative, ProblemIssue
 
 # Every warning skips the frames under the `dfo` package directory, so it names the
 # caller's line.
@@ -70,7 +71,20 @@ class DfoError(Exception):
 
 
 class InvalidRequestError(DfoError):
-    """The request is malformed. The caller fixes it."""
+    """The request is malformed. The caller fixes it.
+
+    Attributes:
+        issues: The problem document's `issues`, each naming a member of the
+            request and what is wrong with it, such as the role a
+            `role_incompatible` refusal could not bind. Empty when the server
+            sent none.
+        alternatives: The problem document's `alternatives`, the graph nodes the
+            server offers in place of what the request named. Empty when the
+            server sent none.
+    """
+
+    issues: "tuple[ProblemIssue, ...]" = ()
+    alternatives: "tuple[Alternative, ...]" = ()
 
 
 class NotFoundError(DfoError):

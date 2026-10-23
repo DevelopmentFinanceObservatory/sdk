@@ -17,9 +17,11 @@ import pytest
 from dfo._core.errors import (
     ContractError,
     DataWarning,
+    DfoError,
     InvalidRequestError,
     NetworkError,
     NotFoundError,
+    ServerError,
 )
 from dfo._core.refs import DatasetRef, RefMember
 from dfo._core.types import Rendering, Spec
@@ -262,11 +264,37 @@ def test_an_argument_the_client_checks_is_refused_unsent(call) -> None:
     assert server.calls() == []
 
 
+LOOKUPS = {
+    "resolve": lambda client: client.graph.resolve("Nigeria"),
+    "node": lambda client: client.graph.node("country/NGA"),
+    "codes": lambda client: client.codes.get("spec_not_found"),
+    "catalogue": lambda client: client.catalogue(),
+}
+
+
+@pytest.mark.parametrize("lookup", LOOKUPS.values(), ids=LOOKUPS.keys())
+@pytest.mark.parametrize(
+    ("code", "error", "raised"),
+    [
+        ("service_unavailable", ServerError, "service_unavailable"),
+        ("a_code_from_the_future", ContractError, "contract_violation"),
+    ],
+)
+def test_a_lookup_answering_a_problem_document_raises_its_error(
+    lookup, code: str, error: type[DfoError], raised: str
+) -> None:
+    server = Server(json_response(200, {"code": code, "trace_id": "t-1"}))
+    with client_over(server) as client:
+        with pytest.raises(error) as caught:
+            lookup(client)
+    assert (caught.value.code, caught.value.trace_id) == (raised, "t-1")
+
+
 def test_lookups_reach_the_graph_the_registry_and_the_catalogue() -> None:
     server = Server(
         json_response(200, {"results": []}),
         json_response(200, {"ref": "country/NGA", "kind": "country"}),
-        json_response(200, {"code": "spec_not_found"}),
+        json_response(200, {"code": "spec_not_found", "mappings": []}),
         json_response(200, {"counts": {}}),
     )
     with client_over(server) as client:

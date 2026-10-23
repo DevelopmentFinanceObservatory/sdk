@@ -7,7 +7,7 @@
  */
 import { answerText, declinedText, incompleteMessage, readingHints } from "./answer-text.ts";
 import { choiceInput, gapNamed, onlyChoice, pick, pickedEntry } from "./choices.ts";
-import { clientError } from "../core/errors.ts";
+import { clientError, problemAt200 } from "../core/errors.ts";
 import type { IncompleteAnswerError } from "../core/errors.ts";
 import type { Dataset } from "../datasets/dataset.ts";
 import { fetchMembers as defaultFetchMembers } from "../datasets/fetch.ts";
@@ -380,6 +380,9 @@ export async function resolveAnswer(
  * Reads a decoded Search response into an answer. `traceId` is the trace id of the response
  * the body came from.
  *
+ * @throws {DfoError} The body is a problem document (a `code` and no `kind`): the class the
+ *   contract's actions give its code, or `ContractError` (`contract_violation`) for a code they
+ *   lack.
  * @throws {ContractError} The body is not an object, its kind is unknown, a member the client
  *   acts on is missing, `parts` is not an array of objects, a part has no string `status`, a
  *   candidates part's `specs` is not an array, or a spec's `definition.spec_id` is not its
@@ -396,6 +399,8 @@ export function answerFromBody(
       detail: "The Search response is not an object.",
     });
   }
+  const refused = problemAt200(body, traceId);
+  if (refused !== undefined) throw refused;
   // A JSON object from the server, which the type describes and the client does not check.
   const diagnostics: AnswerDiagnostics = isRecord(body["diagnostics"]) ? body["diagnostics"] : {};
   const warnings = warningsOf(diagnostics["warnings"]);

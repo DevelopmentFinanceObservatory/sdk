@@ -295,8 +295,16 @@ async def mint(
     The operation's `result` bounds the wait for the build.
 
     Raises:
+        InvalidRequestError: `spec` is not a `Spec`, such as a spec id
+            (`invalid_argument`); no request is sent.
         DfoError: The server refused the build.
     """
+    if not isinstance(spec, Spec):
+        raise client_error(
+            INVALID_ARGUMENT,
+            "mint takes a Spec, such as answer.specs[0], not "
+            f"{type(spec).__name__}; a spec id alone does not build",
+        )
     rendering = rendering_for(layout, without_party_totals=without_party_totals)
     body = build_body(spec, rendering)
     reply = await post_build(transport, body, deadline=None)

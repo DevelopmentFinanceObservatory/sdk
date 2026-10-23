@@ -64,11 +64,16 @@ export const emitWarning: WarningHandler = (warning) => {
   }
 };
 
+/** The keys `warnOnce` has seen. At `WARNED_MAX` the set starts again, so a server that sends a
+ *  new warning with every response cannot grow it without bound; a warning seen before the
+ *  restart can show once more. */
+const WARNED_MAX = 1024;
 const shown = new Set<string>();
 
 /** Emits a warning the first time its key is seen in this process. */
 export function warnOnce(key: string, warning: DfoWarning, handler: WarningHandler): void {
   if (shown.has(key)) return;
+  if (shown.size >= WARNED_MAX) shown.clear();
   shown.add(key);
   handler(warning);
 }

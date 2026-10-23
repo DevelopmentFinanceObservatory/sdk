@@ -2,14 +2,18 @@
 
 Each lookup returns the decoded response body, typed by the served OpenAPI
 document's schema. The client reads none of it, so an unknown member or enum value
-passes through untouched.
+passes through untouched. A body with a `code` that lacks the member its schema
+is told apart by is a problem document sent with a success status, and raises as
+the class the contract's registry maps that code to, else `contract_violation`.
 """
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date
 from typing import Any
 from urllib.parse import quote
+
+import httpx2
 
 from dfo._core.codes import INVALID_ARGUMENT
 from dfo._core.errors import client_error
@@ -25,6 +29,24 @@ from dfo._http.transport import AsyncTransport
 
 # A registry code: lower-case snake case.
 _CODE = re.compile(r"[a-z][a-z0-9_]*")
+
+
+def _lookup_body(
+    transport: AsyncTransport, response: httpx2.Response, member: str
+) -> Any:
+    """The decoded body of a lookup's response, whose schema requires `member`.
+
+    Raises:
+        DfoError: The body is a problem document: it holds a `code` and no
+            `member`. It raises as the class the registry maps its code to.
+        ContractError: The body is not JSON (`unexpected_response`), or the
+            problem document's code is one the registry does not hold
+            (`contract_violation`).
+    """
+    body = response_json(response)
+    if isinstance(body, Mapping) and "code" in body and member not in body:
+        raise transport.success_problem(response, body)
+    return body
 
 
 def _check_dcid(dcid: object) -> None:
@@ -84,7 +106,7 @@ class AsyncGraph:
         if expand_members:
             body["expand"] = ["members"]
         response = await self._transport.request("POST", "/graph/resolve", json=body)
-        return response_json(response)
+        return _lookup_body(self._transport, response, "results")
 
     async def node(self, dcid: str, /, *, as_of: date | None = None) -> Node:
         """One graph node by its dcid, such as `country/NGA`.
@@ -104,7 +126,7 @@ class AsyncGraph:
         response = await self._transport.request(
             "GET", f"/graph/node/{quote(dcid, safe='/')}", params=params
         )
-        return response_json(response)
+        return _lookup_body(self._transport, response, "kind")
 
 
 class AsyncCodes:
@@ -132,7 +154,8 @@ class AsyncCodes:
                 "by lower-case letters, digits or _",
             )
         url = self._transport.origin_url(f"/codes/{code}")
-        return response_json(await self._transport.request("GET", url))
+        response = await self._transport.request("GET", url)
+        return _lookup_body(self._transport, response, "mappings")
 
 
 async def catalogue(
@@ -147,4 +170,4 @@ async def catalogue(
     """
     params = None if place is None else {"place": place}
     response = await transport.request("GET", "/search/catalogue", params=params)
-    return response_json(response)
+    return _lookup_body(transport, response, "catalogue_version")

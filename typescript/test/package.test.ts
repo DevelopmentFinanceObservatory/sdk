@@ -50,8 +50,10 @@ test("an unreadable credentials file raises credentials_file_unreadable", async 
   try {
     const loop = join(directory, "loop.toml");
     await symlink(loop, loop);
-    // A directory, and a symlink to itself.
-    for (const path of [directory, loop]) {
+    const file = join(directory, "file");
+    await writeFile(file, "");
+    // A directory, a symlink to itself, and a path through a regular file.
+    for (const path of [directory, loop, join(file, "credentials.toml")]) {
       await assert.rejects(resolveApiKey({ env: envFrom({ DFO_CREDENTIALS_FILE: path }) }), {
         name: "AuthenticationError",
         code: "credentials_file_unreadable",

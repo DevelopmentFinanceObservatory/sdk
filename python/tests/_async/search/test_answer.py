@@ -20,9 +20,11 @@ import dfo._search.answer as answer_module
 from dfo._core.errors import (
     ContractError,
     DeclinedError,
+    DfoError,
     IncompleteAnswerError,
     InvalidRequestError,
     SearchWarning,
+    ServerError,
 )
 from dfo._core.parse import parse_assumptions
 from dfo._core.types import Candidate, CandidatesPart, DefinitePart, Gap
@@ -298,11 +300,22 @@ async def test_an_unknown_answer_kind_raises_contract_error(
     assert caught.value.trace_id == trace_id
 
 
-async def test_a_problem_document_with_a_success_status_raises_its_error() -> None:
-    problem = {"title": "Too long", "code": "query_too_long", "trace_id": "t-1"}
-    with pytest.raises(InvalidRequestError) as caught:
+@pytest.mark.parametrize(
+    ("code", "error", "raised"),
+    [
+        ("query_too_long", InvalidRequestError, "query_too_long"),
+        ("service_unavailable", ServerError, "service_unavailable"),
+        ("a_code_from_the_future", ContractError, "contract_violation"),
+        ("query\ntoo_long", ContractError, "contract_violation"),
+    ],
+)
+async def test_a_problem_document_with_a_success_status_raises_its_error(
+    code: str, error: type[DfoError], raised: str
+) -> None:
+    problem = {"title": "Too long", "code": code, "trace_id": "t-1"}
+    with pytest.raises(error) as caught:
         await ask("ODA", problem)
-    assert (caught.value.code, caught.value.trace_id) == ("query_too_long", "t-1")
+    assert (caught.value.code, caught.value.trace_id) == (raised, "t-1")
 
 
 async def test_a_part_without_its_payload_names_the_member_missing() -> None:

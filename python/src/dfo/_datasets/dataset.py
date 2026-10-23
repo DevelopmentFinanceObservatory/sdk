@@ -18,7 +18,7 @@ import html
 import json
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
+from datetime import date
 from os import PathLike
 from typing import TYPE_CHECKING, Any
 
@@ -50,7 +50,7 @@ from dfo._core.types import (
     object_at,
     unbound_gap,
 )
-from dfo._datasets.build import Cache, counted_rows, layout_of
+from dfo._datasets.build import Cache, counted_rows, layout_of, read_held_until
 
 if TYPE_CHECKING:
     import pandas
@@ -758,18 +758,9 @@ def _retention(
         held
         for retention in known
         if retention.get("pinned") is not True
-        and (held := _held_until(retention.get("held_until"))) is not None
+        and (held := read_held_until(retention.get("held_until"))) is not None
     ]
     return (min(dates) if dates else None), False
-
-
-def _held_until(value: object) -> date | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        return datetime.fromisoformat(value).date()
-    except ValueError:
-        return None
 
 
 def _merge_citations(citations: Iterable[Citation]) -> Citation:

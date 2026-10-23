@@ -39,7 +39,9 @@ export type ClientOptions = {
    *  `Authorization` given here is sent. */
   headers?: Record<string, string>;
   /** Called before every request to the API for more headers, such as an identity token. Its
-   *  headers replace those of `headers`, and the key's `Authorization` replaces its own. */
+   *  headers replace those of `headers`, and the key's `Authorization` replaces its own. An
+   *  error it raises reaches the caller as `InvalidRequestError` (`header_invalid`), with that
+   *  error as the `cause`. */
   headerProvider?: HeaderProvider;
   /** Receives each warning; `process.emitWarning`, else `console.warn`, by default. */
   onWarning?: WarningHandler;

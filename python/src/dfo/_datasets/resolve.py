@@ -36,7 +36,6 @@ from dfo._core.errors import (
     client_warning,
     warn,
 )
-from dfo._core.parse import check_manifest
 from dfo._core.refs import DatasetRef, RefMember
 from dfo._core.refusals import describing, trace_id_of
 from dfo._core.types import (
@@ -54,6 +53,7 @@ from dfo._datasets.build import (
     Reading,
     build_body,
     check_built,
+    check_served_manifest,
     file_params,
     layout_of,
     mint_options,
@@ -128,10 +128,11 @@ async def fetch(
         cache: The local cache, or None to fetch without one.
 
     Raises:
-        InvalidRequestError: A ref is narrowed or given another layout or
+        InvalidRequestError: The target is neither a `Spec` nor a `DatasetRef`,
+            such as a spec id; a ref is narrowed or given another layout or
             `without_party_totals`; `window`, `entities`, `facets` or `layout`
             is malformed; or `entities` rebinds a spec whose definition holds
-            no identity.
+            no identity. No request is sent.
         VersionUnavailableError: A ref's version can no longer be fetched.
         ContractError: An artifact is not Parquet (`unexpected_response`), or
             lacks a `time_period` or numeric `value` column
@@ -154,6 +155,12 @@ async def fetch(
             timeout=timeout,
             progress=progress,
             cache=cache,
+        )
+    if not isinstance(target, Spec):
+        raise client_error(
+            INVALID_ARGUMENT,
+            "fetch takes a Spec, such as answer.specs[0], or a DatasetRef, not "
+            f"{type(target).__name__}; a spec id alone does not build",
         )
     return await fetch_members(
         transport,
@@ -381,7 +388,7 @@ async def _snapshot(
     manifest = response_json(response)
     trace_id = trace_id_of(response, manifest)
     with describing(trace_id):
-        check_manifest(manifest)
+        check_served_manifest(manifest)
         check_built(manifest, spec_id, member.content_version)
     return manifest, trace_id
 
@@ -490,9 +497,10 @@ def _newest_on_page(
     and the page's `next_cursor`.
 
     Raises:
-        ContractError: The page has no `versions` list, a listed version has no
-            `content_version` or `rendering` string, or `next_cursor` is neither
-            a string nor null (`contract_violation`).
+        ContractError: The page has no `versions` list, a listed version's
+            `content_version` is not `cv_` and 32 lowercase hex digits or it has
+            no `rendering` string, or `next_cursor` is neither a string nor null
+            (`contract_violation`).
     """
     versions = body.get("versions") if isinstance(body, Mapping) else None
     if not isinstance(body, Mapping) or not isinstance(versions, list):
@@ -501,7 +509,7 @@ def _newest_on_page(
     for index, version in enumerate(versions):
         entry = version if isinstance(version, Mapping) else {}
         content_version = entry.get("content_version")
-        if not isinstance(content_version, str):
+        if not matches(CONTENT_VERSION, content_version):
             raise _violation(route, f"/versions/{index}/content_version", trace_id)
         if not isinstance(listed := entry.get("rendering"), str):
             raise _violation(route, f"/versions/{index}/rendering", trace_id)
@@ -541,8 +549,10 @@ def _unavailable(
 ) -> VersionUnavailableError:
     spec_id = member.spec.spec_id
     message = f"{spec_id} at {member.content_version} can no longer be fetched"
-    if newest is not None:
-        message += f"; the newest version is {newest}. Fetch the spec for it"
+    if newest == member.content_version:
+        message += "; the server lists it as the newest version"
+    elif newest is not None:
+        message += f"; the newest version is {newest}, which fetching the spec returns"
     message += "."
     if refusal is None:
         error = client_error(VERSION_UNAVAILABLE, message)

@@ -190,6 +190,8 @@ def _set(*path: str | int, value: object) -> Callable[[dict[str, Any]], None]:
         _set("artifacts", value="x"),
         _set("artifacts", value=[1]),
         _set("artifacts", 1, "artifact_digest", value=5),
+        _set("retention", value={"pinned": False, "held_until": "soon"}),
+        _set("retention", value={"pinned": False, "held_until": 5}),
     ],
     ids=[
         "truncated",
@@ -199,6 +201,8 @@ def _set(*path: str | int, value: object) -> Callable[[dict[str, Any]], None]:
         "artifacts-not-a-list",
         "artifact-not-an-object",
         "digest-not-a-string",
+        "held-until-not-a-date",
+        "held-until-not-a-string",
     ],
 )
 def test_a_broken_or_tampered_manifest_is_a_miss(

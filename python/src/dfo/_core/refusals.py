@@ -2,8 +2,11 @@
 
 A code maps through `dfo._generated.error_map.ACTIONS`, generated from the contract's
 `actions.json`; a code the map lacks maps on its HTTP status. A refusal whose body
-carries no code takes `refusal_without_code`, with the class of its status, and a
-trace id the body lacks comes from the response's `x-dfo-trace-id` header.
+carries no code, or a code that is not lower-case snake case, takes
+`refusal_without_code`, with the class of its status, and a trace id the body
+lacks comes from the response's `x-dfo-trace-id` header. The stored problem
+document, like the message and detail, has the client's key replaced by
+`[redacted]`.
 
 An error the client raises itself on reading a response, `unexpected_response`,
 `contract_violation`, or a `DataWarning` or `SearchWarning`, carries that
@@ -13,9 +16,11 @@ response that gave the answer. Any other client error describes the caller's
 input or a storage-host fetch and carries none.
 """
 
-from collections.abc import Generator
+import re
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
-from typing import assert_never
+from copy import copy
+from typing import Any, assert_never
 from urllib.parse import urljoin
 
 import httpx2
@@ -47,6 +52,9 @@ _JSON_TYPES = frozenset({"application/problem+json", "application/json"})
 
 # The client codes of errors that describe a response the client read.
 _RESPONSE_CODES = frozenset({UNEXPECTED_RESPONSE.code, CONTRACT_VIOLATION.code})
+
+# A refusal code: lower-case snake case. Other text in a code's place is no code.
+_CODE = re.compile(r"[a-z][a-z0-9_]*")
 
 # Statuses worth another attempt when the body does not say `retryable`.
 _RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
@@ -99,6 +107,41 @@ def _class_for_action(action: Action) -> type[DfoError]:  # noqa: PLR0911
 
 def _text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _code_and_detail(
+    value: object, detail: str | None
+) -> tuple[str | None, str | None]:
+    """A body's code, when `value` is lower-case snake case, and its detail.
+
+    Other text in the code's place is no code; it opens the detail instead, so
+    the caller still reads it.
+    """
+    text = _text(value)
+    if text is None or _CODE.fullmatch(text):
+        return text, detail
+    return None, text if detail is None else f"{text}: {detail}"
+
+
+def _redacted_body(body: Mapping[str, Any], key: str) -> dict[str, Any]:
+    """A copy of `body` with `key` replaced by `[redacted]` in every string
+    value, at any depth."""
+    top = dict(body)
+    pending: list[dict[Any, Any] | list[Any]] = [top]
+    while pending:
+        container = pending.pop()
+        slots: list[tuple[Any, Any]] = (
+            list(container.items())
+            if isinstance(container, dict)
+            else list(enumerate(container))
+        )
+        for slot, value in slots:
+            if isinstance(value, str):
+                container[slot] = redacted(value, key)
+            elif isinstance(value, dict | list):
+                container[slot] = inner = copy(value)
+                pending.append(inner)
+    return top
 
 
 def _docs_url(origin: str, type_: str) -> str | None:
@@ -197,19 +240,29 @@ def problem_error(
         The error, of the class the code or else the status maps to. A problem
         document's `retryable` outranks the status, and its `pointer` is named
         in the message. The website proxy's `{error, retry, detail}` body maps
-        `error` as the code. A body with neither code takes `fallback_code`,
-        else `refusal_without_code`.
+        `error` as the code, and its `retry`, when present, outranks the
+        status. A body with neither code, or with text that is not lower-case
+        snake case in the code's place, takes `fallback_code`, else
+        `refusal_without_code`; such text opens the detail. An
+        `InvalidRequestError` carries the problem document's `issues` and
+        `alternatives`.
     """
     problem = body if isinstance(body, dict) else None
+    if problem is not None and key:
+        problem = _redacted_body(problem, key)
     code = detail = page = pointer = None
     retryable = status in _RETRYABLE_STATUSES
     if problem is not None and "code" not in problem and "error" in problem:
-        code = _text(problem.get("error"))
-        detail = _text(problem.get("detail"))
-        retryable = problem.get("retry") == _PROXY_RETRY
+        code, detail = _code_and_detail(
+            problem.get("error"), _text(problem.get("detail"))
+        )
+        if "retry" in problem:
+            retryable = problem.get("retry") == _PROXY_RETRY
     elif problem is not None:
-        code = _text(problem.get("code"))
-        detail = _text(problem.get("detail")) or _text(problem.get("title"))
+        code, detail = _code_and_detail(
+            problem.get("code"),
+            _text(problem.get("detail")) or _text(problem.get("title")),
+        )
         pointer = _text(problem.get("pointer"))
         trace_id = _text(problem.get("trace_id")) or trace_id
         if isinstance(flag := problem.get("retryable"), bool):
@@ -229,7 +282,7 @@ def problem_error(
     if code is not None:
         message = f"{message} ({code})"
     message = redacted(message, key)
-    return error_class(code, status)(
+    error = error_class(code, status)(
         message,
         code=code or REFUSAL_WITHOUT_CODE,
         status=status,
@@ -239,6 +292,23 @@ def problem_error(
         problem=problem,
         docs_url=page,
         retry_after=retry_after,
+    )
+    if isinstance(error, InvalidRequestError) and problem is not None:
+        error.issues = tuple(_objects(problem.get("issues")))
+        error.alternatives = tuple(
+            entry
+            for entry in _objects(problem.get("alternatives"))
+            if isinstance(entry.get("ref"), str) and isinstance(entry.get("label"), str)
+        )
+    return error
+
+
+def _objects(value: object) -> list[Any]:
+    """The entries of `value` that are JSON objects, when it is a list."""
+    return (
+        [entry for entry in value if isinstance(entry, dict)]
+        if isinstance(value, list)
+        else []
     )
 
 

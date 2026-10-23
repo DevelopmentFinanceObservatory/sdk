@@ -31,13 +31,13 @@ import httpx2
 
 from dfo._core.codes import DEADLINE_EXCEEDED, INVALID_ARGUMENT, UNEXPECTED_RESPONSE
 from dfo._core.errors import DfoError, DfoTimeoutError, client_error
-from dfo._core.parse import check_manifest
 from dfo._core.refusals import describing, problem_error, trace_id_of
 from dfo._core.types import OPERATION_ID, Wire, matches
 from dfo._datasets.build import (
     BUILD_READ_TIMEOUT,
     OperationState,
     Progress,
+    check_served_manifest,
     poll_backoff,
     read_operation,
     response_json,
@@ -108,7 +108,7 @@ def _reply(response: httpx2.Response) -> Reply:
         manifest = response_json(response)
         trace_id = trace_id_of(response, manifest)
         with describing(trace_id):
-            check_manifest(manifest)
+            check_served_manifest(manifest)
         return Reply(manifest, None, trace_id=trace_id)
     if response.status_code == 202:
         return _operation_reply(response)

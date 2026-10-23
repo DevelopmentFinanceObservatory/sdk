@@ -62,15 +62,20 @@ class KeyedLock:
     `with lock.hold(key)` blocks a thread, and `async with lock.hold(key)` waits
     as a task, so an async source and its sync twin share one call. Each key's
     lock lives while it has holders or waiters. A forked child starts with no
-    locks, since a parent thread may hold one at the fork.
+    locks and a fresh guard over them, since a parent thread may hold either at
+    the fork.
     """
 
     __slots__ = ("_guard", "_locks")
 
     def __init__(self) -> None:
+        self._reset()
+        if hasattr(os, "register_at_fork"):
+            os.register_at_fork(after_in_child=self._reset)
+
+    def _reset(self) -> None:
         self._guard = threading.Lock()
         self._locks: dict[Hashable, _Entry[Any]] = {}
-        os.register_at_fork(after_in_child=self._locks.clear)
 
     def hold(self, key: Hashable, /, *, timeout: float | None = None) -> "Hold":
         """A context manager, sync or async, that holds `key`'s lock.

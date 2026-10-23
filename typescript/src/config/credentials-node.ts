@@ -8,16 +8,17 @@ import { clientError } from "../core/errors.ts";
 const platform = (): Platform =>
   process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
 
-/** Errors that mean no readable file is there: none exists, a parent is not a directory, or the
- *  runtime refuses the read, as Deno does without `--allow-read`. */
-const ABSENT = new Set(["ENOENT", "ENOTDIR"]);
+/** Errors that mean no file is there: none exists, or the runtime refuses the read, as Deno does
+ *  without `--allow-read`. A path through a regular file (`ENOTDIR`) is unreadable. */
+const ABSENT = new Set(["ENOENT"]);
 const REFUSED = new Set(["PermissionDenied", "NotCapable"]);
 
 /**
  * Reads the credentials file from the file system at the credentials path.
  *
  * @throws {AuthenticationError} A file is there but cannot be read, such as one without read
- *   permission, a directory or a symlink loop (`credentials_file_unreadable`).
+ *   permission, a directory, a symlink loop or a path through a regular file
+ *   (`credentials_file_unreadable`).
  */
 export const readCredentialsFile: CredentialsFileReader = (env) => {
   const path = credentialsPath({ platform: platform(), home: homedir(), env });

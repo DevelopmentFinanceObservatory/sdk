@@ -116,11 +116,30 @@ describe("lookups", () => {
   });
 
   const problem200 = { type: "about:blank", code: "internal_error", status: 500, detail: "down" };
+  const unknown200 = { ...problem200, code: "code_from_a_newer_server" };
+  for (const [name, call, body] of [
+    ["catalogue", (dfo: Client) => dfo.catalogue(), problem200],
+    ["codes.get", (dfo: Client) => dfo.codes.get("spec_not_found"), problem200],
+    ["graph.node", (dfo: Client) => dfo.graph.node("country/NGA"), problem200],
+  ] as const) {
+    test(`${name} raises a 200 problem document as the class its code maps to`, async () => {
+      const { fetch } = mockFetch(json(body, 200, { "x-dfo-trace-id": "trace-200" }));
+      await assert.rejects(call(client(fetch)), {
+        name: "ServerError",
+        code: "internal_error",
+        status: 200,
+        detail: "down",
+        traceId: "trace-200",
+      });
+    });
+  }
+
   for (const [name, call, body, pointer] of [
-    ["catalogue", (dfo: Client) => dfo.catalogue(), problem200, "/catalogue_version"],
+    ["catalogue", (dfo: Client) => dfo.catalogue(), unknown200, "/code"],
     ["codes.get", (dfo: Client) => dfo.codes.get("spec_not_found"), null, ""],
-    ["codes.get", (dfo: Client) => dfo.codes.get("spec_not_found"), problem200, "/mappings"],
-    ["graph.node", (dfo: Client) => dfo.graph.node("country/NGA"), problem200, "/kind"],
+    ["codes.get", (dfo: Client) => dfo.codes.get("spec_not_found"), unknown200, "/code"],
+    ["graph.node", (dfo: Client) => dfo.graph.node("country/NGA"), { code: "x" }, "/code"],
+    ["graph.node", (dfo: Client) => dfo.graph.node("country/NGA"), { kind: 1 }, "/kind"],
     ["graph.resolve", (dfo: Client) => dfo.graph.resolve("Kenya"), [], ""],
   ] as const) {
     test(`${name} refuses a 200 body ${JSON.stringify(body).slice(0, 20)} its schema does not fit`, async () => {
@@ -207,6 +226,32 @@ describe("request", () => {
         retryable: false,
       });
       assert.equal(seen.length, 0);
+    });
+  }
+
+  /** Headers from another fetch implementation, such as npm undici's, which are not instances
+   *  of the global Headers. */
+  class ForeignHeaders {
+    readonly #values = new Map([["content-type", "application/json"]]);
+    get(name: string): string | null {
+      return this.#values.get(name.toLowerCase()) ?? null;
+    }
+  }
+  const body = new TextEncoder().encode('{"ok":true}');
+  for (const [name, read] of [
+    ["a body stream", { body: new Blob([body]).stream() }],
+    ["arrayBuffer alone", { arrayBuffer: () => Promise.resolve(body.buffer) }],
+  ] as const) {
+    test(`reads a Response from another fetch implementation, with ${name}`, async () => {
+      const fetch = (() =>
+        Promise.resolve({
+          status: 200,
+          headers: new ForeignHeaders(),
+          ...read,
+        })) as unknown as typeof globalThis.fetch;
+      const response = await client(fetch).request("GET", "/x");
+      assert.equal(response.status, 200);
+      assert.deepEqual(response.json(), { ok: true });
     });
   }
 

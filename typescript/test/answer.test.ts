@@ -912,6 +912,19 @@ describe("reading a Search response", () => {
     assert.equal(late.seen.length, 1);
   });
 
+  for (const [code, name, errorCode] of [
+    ["internal_error", "ServerError", "internal_error"],
+    ["rate_limited", "ContractError", "contract_violation"],
+    ["code_from_a_newer_server", "ContractError", "contract_violation"],
+  ] as const) {
+    test(`search raises a 200 problem document with the code ${code} as ${name}`, async () => {
+      const problem = { code, detail: "Down.", trace_id: "body-trace" };
+      const { fetch } = mockFetch(json(problem, 200, { "x-dfo-trace-id": "header-trace" }));
+      const context = { ...offline(), transport: replay(NO_EXCHANGES, { fetch }).transport };
+      await assert.rejects(search(context, "q"), { name, code: errorCode, traceId: "body-trace" });
+    });
+  }
+
   test("search posts the raw question and keeps it on the answer", async () => {
     const scenario = record("answer-definite-fetch");
     const { transport } = replay({ ...scenario, exchanges: scenario.exchanges.slice(0, 1) });

@@ -250,6 +250,60 @@ async def test_the_servers_poll_interval_is_clamped_to_one_to_sixty_seconds(
     assert timeline.sleeps == [wait]
 
 
+# Ids a hostile or broken server could name, each of which would reach the poll
+# path: an injected query, a path out of the operations route, and an encoded one.
+HOSTILE_IDS = ["op_x?foo=1", "../../search/resolve", "op_%2e%2e", "op_" + "A" * 64]
+
+
+def named(operation_id: str, status: str = "pending") -> dict:
+    body = resource(status)
+    body["operation"]["operation_id"] = operation_id
+    return body
+
+
+@pytest.mark.parametrize("operation_id", HOSTILE_IDS)
+@pytest.mark.parametrize("reply", ["accepted", "poll"])
+async def test_an_operation_id_that_is_not_an_id_is_never_polled(
+    operation_id: str, reply: str
+) -> None:
+    hostile = named(operation_id, "pending" if reply == "accepted" else "running")
+    responses = [json_response(202, hostile)]
+    if reply == "poll":
+        responses = [accepted(), json_response(200, hostile)]
+    server = Server(*responses)
+    async with make(server) as transport:
+        with pytest.raises(ContractError) as caught:
+            await fetch(transport, spec())
+    assert (caught.value.code, caught.value.pointer) == (
+        "contract_violation",
+        "/operation/operation_id",
+    )
+    assert len(server.requests) == len(responses)
+    assert all(operation_id not in str(request.url) for request in server.requests)
+
+
+@pytest.mark.parametrize(
+    "content_version", ["x", "../../etc", "cv_" + "A" * 32, "cv_" + "a" * 32 + "\n"]
+)
+@pytest.mark.parametrize("reply", ["inline", "operation"])
+async def test_a_manifest_whose_version_is_not_a_version_id_is_refused(
+    content_version: str, reply: str
+) -> None:
+    body = manifest(POSTED_ID, content_version)
+    response = (
+        json_response(200, body)
+        if reply == "inline"
+        else json_response(202, resource("done", body=body))
+    )
+    server = Server(response)
+    async with make(server) as transport:
+        with pytest.raises(ContractError) as caught:
+            await fetch(transport, spec())
+    pointer = "/content_version" if reply == "inline" else "/manifest/content_version"
+    assert (caught.value.code, caught.value.pointer) == ("contract_violation", pointer)
+    assert len(server.requests) == 1
+
+
 async def test_a_long_build_polls_at_the_servers_pacing_then_finishes() -> None:
     timeline = Timeline()
     server = Server(

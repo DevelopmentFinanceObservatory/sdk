@@ -530,12 +530,75 @@ async def test_a_refusal_body_is_a_problem_document_only_under_its_media_types(
     assert caught.value.code == code
 
 
+async def test_a_refusal_carries_its_issues_and_alternatives() -> None:
+    issue = {"pointer": "/input/parts/0", "code": "role_incompatible", "detail": "No."}
+    nigeria = {"ref": "country/NGA", "label": "Nigeria"}
+    refusal = problem(
+        422,
+        code="role_incompatible",
+        issues=[issue, "not an object"],
+        alternatives=[nigeria, {"ref": "country/GHA"}, 7],
+    )
+    async with make(
+        Recorder(refusal, problem(422, code="request_invalid"))
+    ) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await transport.request("POST", "/datasets", json={})
+        with pytest.raises(InvalidRequestError) as bare:
+            await transport.request("POST", "/datasets", json={})
+    assert (caught.value.issues, caught.value.alternatives) == ((issue,), (nigeria,))
+    assert (bare.value.issues, bare.value.alternatives) == ((), ())
+
+
 async def test_an_unknown_code_maps_on_its_status() -> None:
     recorder = Recorder(problem(422, code="a_code_from_the_future", detail="No."))
     async with make(recorder) as transport:
         with pytest.raises(InvalidRequestError) as caught:
             await transport.request("POST", "/datasets", json={})
     assert caught.value.code == "a_code_from_the_future"
+
+
+@pytest.mark.parametrize(
+    ("response", "detail"),
+    [
+        (problem(422, code="query\ntoo_long", detail="No."), "query\ntoo_long: No."),
+        (problem(422, code="Query Too Long"), "Query Too Long"),
+        (httpx2.Response(422, json={"error": "Bad request"}), "Bad request"),
+        (
+            httpx2.Response(422, json={"error": "Bad request", "detail": "No."}),
+            "Bad request: No.",
+        ),
+    ],
+    ids=["control", "spaced", "proxy", "proxy-detail"],
+)
+async def test_text_in_a_codes_place_that_is_not_snake_case_is_no_code(
+    response: httpx2.Response, detail: str
+) -> None:
+    async with make(Recorder(response)) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await transport.request("POST", "/datasets", json={})
+    assert (caught.value.code, caught.value.detail) == ("refusal_without_code", detail)
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [
+        ("transient_unavailable", "transient_unavailable"),
+        ("Bad gateway", "refusal_without_code"),
+    ],
+)
+async def test_a_proxy_body_without_retry_retries_by_its_status(
+    error: str, code: str
+) -> None:
+    timeline = Timeline()
+    recorder = Recorder(
+        *(httpx2.Response(502, json={"error": error}) for _ in range(3))
+    )
+    async with make(recorder, timeline) as transport:
+        with pytest.raises(ServerError) as caught:
+            await transport.request("GET", "/datasets/schema")
+    assert (caught.value.code, caught.value.retryable) == (code, True)
+    assert timeline.sleeps == [0.5, 1.0]
 
 
 async def test_a_proxy_429_waits_for_retry_after_then_raises() -> None:
@@ -818,6 +881,7 @@ async def test_a_404_that_matched_no_route_names_the_request(
     named = f"GET {BASE}/datasets/spec_1 matched no route; check base_url"
     assert caught.value.code == code
     assert (named in str(caught.value)) == (code != "spec_not_found")
+    assert named not in (caught.value.detail or "")
 
 
 @pytest.mark.parametrize(
@@ -876,6 +940,12 @@ async def test_a_call_timeout_that_is_not_a_finite_positive_number_is_refused(
         "https://api.example.org/api#top",
         "https://api.example.org/api/../other",
         "https://api.example.org/api/%2e%2e/other",
+        "http://127.1/api",
+        "http://0x7f.1/api",
+        "http://2130706433/api",
+        "http://0177.0.0.1/api",
+        "http://127.0.0.01/api",
+        "https://api.example.0x10/api",
     ],
 )
 async def test_an_invalid_base_url_is_refused(base_url: str) -> None:
@@ -892,8 +962,15 @@ async def test_an_invalid_base_url_is_refused(base_url: str) -> None:
         ("http://10.0.0.5/api", KEY, True),
         ("http://dfo.example.invalid/api", False, False),
         ("http://127.0.0.1:8080/api", KEY, False),
+        ("http://127.9.8.7/api", KEY, False),
         ("http://[::1]:8080/api", KEY, False),
         ("http://localhost/api", KEY, False),
+        ("http://LocalHost./api", KEY, False),
+        ("http://dfo.localhost/api", KEY, False),
+        ("http://localhost../api", KEY, True),
+        ("http://localhost.example.invalid/api", KEY, True),
+        ("http://[0:0:0:0:0:0:0:1]/api", KEY, True),
+        ("http://[::ffff:127.0.0.1]/api", KEY, True),
         ("https://dfo.example.invalid/api", KEY, False),
     ],
 )
@@ -1058,8 +1135,11 @@ async def test_a_download_stops_at_its_limit() -> None:
             200, headers={"content-encoding": "gzip"}, stream=Body([b"not gzip"])
         ),
         httpx2.Response(302, headers={"location": "javascript:alert(1)"}),
+        httpx2.Response(302, headers={"location": "https://[::1/x"}),
+        httpx2.Response(302, headers={"location": "https://[zz::1]/x"}),
+        httpx2.Response(302, headers={"location": "https://api.example.org:abc/x"}),
     ],
-    ids=["bad-gzip", "location"],
+    ids=["bad-gzip", "location", "unclosed-ipv6", "bad-ipv6", "bad-port"],
 )
 async def test_a_response_the_client_cannot_read_is_unexpected(
     response: httpx2.Response,
@@ -1109,6 +1189,13 @@ async def test_a_malformed_request_is_refused_unsent(
             await transport.request(method, target, **options)  # ty: ignore[invalid-argument-type]
     assert (caught.value.code, caught.value.retryable) == ("invalid_argument", False)
     assert (recorder.requests, timeline.sleeps) == ([], [])
+
+
+async def test_a_method_in_any_case_is_sent_upper_case() -> None:
+    recorder = Recorder(httpx2.Response(200))
+    async with make(recorder) as transport:
+        await transport.request("get", "/datasets/schema")
+    assert recorder.requests[0].method == "GET"
 
 
 async def test_a_cyclic_json_body_is_refused_unsent() -> None:
@@ -1164,7 +1251,9 @@ async def test_a_refusal_names_the_field_its_pointer_names(
 
 async def test_server_text_never_quotes_the_clients_key() -> None:
     echoed = f"Bad header Authorization: Bearer {KEY}"
-    refusal = problem(401, code="key_invalid", detail=echoed)
+    refusal = problem(
+        401, code="key_invalid", detail=echoed, issues=[{"detail": [echoed]}]
+    )
     refusal.headers["x-dfo-warning"] = f"Key {KEY} is old."
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -1177,3 +1266,6 @@ async def test_server_text_never_quotes_the_clients_key() -> None:
         "Bad header Authorization: Bearer [redacted]",
         "Key [redacted] is old.",
     ]
+    assert refused.value.problem is not None
+    assert refused.value.problem["detail"] == texts[1]
+    assert refused.value.problem["issues"] == [{"detail": [texts[1]]}]

@@ -291,10 +291,9 @@ async function storedFile(
     Object.entries(fileParams(member.rendering)).map(([name, value]) => [name, String(value)]),
   );
   const selector = `/datasets/${member.spec.spec_id}/${member.contentVersion}/file?${query}`;
+  // The selector's rendering can outgrow the stored artifact, so its cap is the default one.
   try {
-    return {
-      data: await download(transport, { path: selector }, member.digest, wait, artifact?.["bytes"]),
-    };
+    return { data: await download(transport, { path: selector }, member.digest, wait) };
   } catch (error) {
     if (!(error instanceof DfoError)) throw error;
     // The selector renders the version again, so bytes with another digest are not the stored
