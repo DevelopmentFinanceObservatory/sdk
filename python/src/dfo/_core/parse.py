@@ -222,7 +222,7 @@ def parse_notices(warnings: object, /) -> tuple[Notice, ...]:
             message=_text(warning.get("message")),
             spec_id=_optional_text(warning.get("spec_id")),
         )
-        for warning in wire_objects(warnings)
+        for warning in _objects(warnings)
     )
 
 
@@ -236,7 +236,7 @@ def parse_departures(departures: object, /) -> tuple[Departure, ...]:
             shown=_optional_text(departure.get("shown")),
             binding_ref=_optional_text(departure.get("binding_ref")),
         )
-        for departure in wire_objects(departures)
+        for departure in _objects(departures)
     )
 
 
@@ -244,14 +244,12 @@ def parse_assumptions(assumptions: object, /) -> tuple[Assumption, ...]:
     """What Search assumed for a reading, from a list of the wire's assumptions."""
     return tuple(
         Assumption(
-            kind=_text(assumption.get("kind")),
-            binding_ref=_text(assumption.get("binding_ref")),
-            text=_text(assumption.get("text")),
-            refs=tuple(
-                ref for ref in _list(assumption.get("refs")) if isinstance(ref, str)
-            ),
+            kind=read["kind"],
+            binding_ref=read["binding_ref"],
+            text=read["text"],
+            refs=tuple(read.get("refs", ())),
         )
-        for assumption in wire_objects(assumptions)
+        for read in read_items(assumptions, read_assumption)
     )
 
 
@@ -259,15 +257,63 @@ def parse_operations(operations: object, /) -> tuple[RequestedOperation, ...]:
     """The computations a part asked for."""
     return tuple(
         RequestedOperation(
-            verb=_text(operation.get("verb")),
-            phrase=_text(operation.get("phrase")),
-            over=_optional_text(operation.get("over")),
-            target_year=target_year
-            if isinstance(target_year := operation.get("target_year"), int)
-            else None,
+            verb=read["verb"],
+            phrase=read["phrase"],
+            over=read.get("over"),
+            target_year=read.get("target_year"),
         )
-        for operation in wire_objects(operations)
+        for read in read_items(operations, read_requested_operation)
     )
+
+
+def read_assumption(item: object, /) -> dict[str, Any] | None:
+    """An `Assumption` item as the client reads it, or None when it does not read.
+
+    The item reads when it is an object whose `kind`, `binding_ref` and `text` are
+    strings. The read form holds those members, and `refs` as its string items when
+    the item holds `refs` as a list. A resubmit posts this form back.
+    """
+    if (
+        not isinstance(item, Mapping)
+        or (read := _required_strings(item, "kind", "binding_ref", "text")) is None
+    ):
+        return None
+    if isinstance(refs := item.get("refs"), list):
+        read["refs"] = [ref for ref in refs if isinstance(ref, str)]
+    return read
+
+
+def read_requested_operation(item: object, /) -> dict[str, Any] | None:
+    """An `Operation` item as the client reads it, or None when it does not read.
+
+    The item reads when it is an object whose `verb` and `phrase` are strings. The
+    read form holds those members, `over` when the item holds it as a string or
+    null, and `target_year` when the item holds it as null or as a number other
+    than a boolean with no fractional part, read as that integer, so `2020.0`
+    reads as `2020`. A resubmit posts this form back.
+    """
+    if (
+        not isinstance(item, Mapping)
+        or (read := _required_strings(item, "verb", "phrase")) is None
+    ):
+        return None
+    if "over" in item and ((over := item["over"]) is None or isinstance(over, str)):
+        read["over"] = over
+    if "target_year" in item:
+        year = item["target_year"]
+        if isinstance(year, float) and year.is_integer():
+            year = int(year)
+        if year is None or (isinstance(year, int) and not isinstance(year, bool)):
+            read["target_year"] = year
+    return read
+
+
+def read_items(
+    value: object, read: Callable[[object], dict[str, Any] | None], /
+) -> list[dict[str, Any]]:
+    """The read forms of a wire list's items that `read` reads, in order; none when
+    the value is not a list."""
+    return [found for item in _list(value) if (found := read(item)) is not None]
 
 
 def parse_citation(citation: object, /) -> Citation:
@@ -283,7 +329,7 @@ def parse_citation(citation: object, /) -> Citation:
                 licence_url=_optional_text(source.get("license_url")),
                 url=_optional_text(source.get("url")),
             )
-            for source in wire_objects(obj.get("sources"))
+            for source in _objects(obj.get("sources"))
         ),
     )
 
@@ -358,9 +404,7 @@ def _no_data(part: Wire, pointer: str) -> NoDataPart:
     return NoDataPart(
         reason=_text(no_data["reason"]),
         message=_optional_text(no_data.get("message")),
-        options=tuple(
-            _option(option) for option in wire_objects(no_data.get("options"))
-        ),
+        options=tuple(_option(option) for option in _objects(no_data.get("options"))),
         **_part_fields(part, _strict.NO_DATA_PART_STATUS),
     )
 
@@ -435,7 +479,12 @@ def _list(value: object) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-def wire_objects(value: object) -> list[Wire]:
-    """The object items of a wire list, each item of another type read as absent,
-    and none when the value is not a list."""
+def _objects(value: object) -> list[Wire]:
     return [item for item in _list(value) if isinstance(item, Mapping)]
+
+
+def _required_strings(item: Wire, *names: str) -> dict[str, Any] | None:
+    """`item`'s members `names`, or None when one is not a string."""
+    if not all(isinstance(item.get(name), str) for name in names):
+        return None
+    return {name: item[name] for name in names}
