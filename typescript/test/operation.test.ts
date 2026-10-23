@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import { envFrom } from "../src/config/env.ts";
-import { ContractError } from "../src/core/errors.ts";
-import type { VersionUnavailableError } from "../src/core/errors.ts";
+import { ContractError, VersionUnavailableError } from "../src/core/errors.ts";
 import { mint, resume } from "../src/datasets/fetch.ts";
 import { fetchDataset } from "../src/datasets/resolve.ts";
 import type { ProgressEvent } from "../src/datasets/operation.ts";
@@ -375,37 +374,87 @@ describe("a stored version's lookup order", () => {
     assert.equal(seen[2]!.url, `${version}/file?format=parquet&bundle=false`);
   });
 
-  const page = (versions: unknown) => ({
+  const plain = (content_version: string) => ({
+    content_version,
+    base_content_version: null,
+    rendering: "plain",
+  });
+  const derived = (content_version: string, base: string) => ({
+    content_version,
+    base_content_version: base,
+    rendering: "groupby",
+  });
+  const page = (versions: unknown, next_cursor: unknown = null) => ({
     schema_version: 1,
     spec_id: "spec_x",
     versions,
-    next_cursor: null,
-    complete: true,
+    next_cursor,
+    complete: next_cursor === null,
   });
-  for (const [name, body, outcome] of [
-    ["lists none", page([]), null],
-    ["holds no versions list", { spec_id: "spec_x" }, "/versions"],
+  const [older, newer] = [`cv_${"1".repeat(32)}`, `cv_${"2".repeat(32)}`];
+  // Each row gives the pages the versions route answers in turn, the cursor each page after the
+  // first is asked with, and the newest version or the pointer of the field the client refuses.
+  for (const [name, pages, cursors, outcome] of [
+    ["lists none", [page([])], [], { newest: null }],
+    [
+      "lists a derived version first",
+      [page([derived(newer, older), plain(older)])],
+      [],
+      { newest: older },
+    ],
+    [
+      "lists the plain version on its second page",
+      [page([derived(newer, older)], "c/2"), page([plain(older)])],
+      ["c%2F2"],
+      { newest: older },
+    ],
+    ["ends without a plain version", [page([derived(newer, older)])], [], { newest: null }],
+    ["holds no versions list", [{ spec_id: "spec_x" }], [], { pointer: "/versions" }],
     [
       "lists a version with no content_version",
-      page([{ rendering: "plain" }]),
-      "/versions/0/content_version",
+      [page([{ rendering: "plain" }])],
+      [],
+      { pointer: "/versions/0/content_version" },
+    ],
+    [
+      "lists a version with no base_content_version",
+      [page([{ content_version: older, rendering: "plain" }])],
+      [],
+      { pointer: "/versions/0/base_content_version" },
+    ],
+    [
+      "lists a version whose base_content_version is not a string",
+      [page([plain(newer), { ...plain(older), base_content_version: 1 }])],
+      [],
+      { pointer: "/versions/1/base_content_version" },
+    ],
+    [
+      "has a next_cursor that is not a string",
+      [page([derived(newer, older)], 2)],
+      [],
+      { pointer: "/next_cursor" },
     ],
   ] as const) {
     test(`reads a versions page that ${name}`, async () => {
-      const { ref } = await stored();
-      const { fetch } = mockFetch(
+      const { ref, member } = await stored();
+      const { fetch, seen } = mockFetch(
         expired,
         problem({ code: "spec_not_found", status: 404 }),
-        json(body),
+        ...pages.map((body) => json(body)),
       );
       const error = await fetchDataset(client(fetch).transport, ref).catch((e: unknown) => e);
-      if (outcome === null) {
-        assert.ok(error instanceof Error && error.name === "VersionUnavailableError");
-        assert.equal((error as VersionUnavailableError).newestVersion, null);
+      const versions = `${BASE}/datasets/${member.spec.spec_id}/versions?limit=100`;
+      assert.deepEqual(
+        seen.slice(2).map((request) => request.url),
+        [versions, ...cursors.map((cursor) => `${versions}&cursor=${cursor}`)],
+      );
+      if ("newest" in outcome) {
+        assert.ok(error instanceof VersionUnavailableError);
+        assert.equal(error.newestVersion, outcome.newest);
       } else {
         assert.ok(error instanceof ContractError);
         assert.equal(error.code, "contract_violation");
-        assert.equal(error.pointer, outcome);
+        assert.equal(error.pointer, outcome.pointer);
       }
     });
   }
@@ -432,6 +481,6 @@ describe("a stored version's lookup order", () => {
       assert.match(error.message, new RegExp(`newest version is ${newest}`));
       return true;
     });
-    assert.equal(seen[2]!.url, `${BASE}/datasets/${member.spec.spec_id}/versions?limit=1`);
+    assert.equal(seen[2]!.url, `${BASE}/datasets/${member.spec.spec_id}/versions?limit=100`);
   });
 });

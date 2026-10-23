@@ -67,7 +67,7 @@ with dfo.Client() as client:
 Three classes carry more:
 
 - `IncompleteAnswerError.answer` is the answer whose fetch raised it, and `gaps` lists each part without a reading. A refusal from the server carries no answer.
-- `VersionUnavailableError.newest_version` is the newest version the server holds, or None.
+- `VersionUnavailableError.newest_version` is the version a fresh build returned, or else the newest plain version the server holds, or None.
 - `ContractError.pointer` is the JSON Pointer of the missing or mistyped member, or None.
 
 ### Server refusal codes

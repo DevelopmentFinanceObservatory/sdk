@@ -45,6 +45,7 @@ class ArtifactEntryModel(TypedDict):
     created_at: str
     tier: str
     url: str
+    enrichment_stamp: NotRequired[str | None]
 
 
 type Ref = str
@@ -264,6 +265,8 @@ class Departure(TypedDict):
         "year_unavailable",
         "modelled_values",
         "group_read_as_members",
+        "whole_total_read",
+        "whole_total_unpublished",
         "direction_discarded",
         "direction_inferred",
         "scope_limited",
@@ -349,6 +352,7 @@ class EnrichmentCoverageCountsModel(TypedDict):
 
 class EntityCounts(TypedDict):
     parties: int
+    private: int
     totals: int
     residual: int
     unclassified: int
@@ -360,6 +364,8 @@ class EntityGroup(TypedDict):
     entity_type: NotRequired[str | None]
     total: NotRequired[str | None]
     group_id: NotRequired[str | None]
+    whole_of: NotRequired[list[Literal["official", "private", "residual"]] | None]
+    side_classes: NotRequired[list[Literal["official", "private", "residual"]] | None]
 
 
 class EntityRef(TypedDict):
@@ -1610,11 +1616,13 @@ class DatasetVersion(TypedDict):
     rendering: Literal["plain", "groupby", "without_party_totals", "not_recorded"]
     groupby: GroupbyOptions | None
     without_party_totals: NotRequired[bool]
+    enrichment_stamp: NotRequired[str | None]
 
 
 class DatasetVersionsPage(TypedDict):
     schema_version: NotRequired[Literal[1]]
     spec_id: str
+    enrichment_stamp: str
     versions: list[DatasetVersion]
     next_cursor: str | None
     complete: bool
@@ -3055,7 +3063,9 @@ class ResolvedSpec(TypedDict):
     sentence_plan: NotRequired[list[SentenceToken] | None]
     trace: ResolutionTrace
     confidence: NotRequired[Literal["high", "medium", "low"] | None]
-    basis: NotRequired[Literal["structural", "nominated", "twin", "direction"] | None]
+    basis: NotRequired[
+        Literal["structural", "nominated", "twin", "direction", "breakdown"] | None
+    ]
     available_at_place: NotRequired[bool | None]
     equivalent_readings: NotRequired[list[Spec] | None]
     skills: NotRequired[list[str] | None]

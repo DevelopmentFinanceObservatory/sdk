@@ -156,7 +156,7 @@ A `Spec` has the same pair, for keeping a reading without a version: `spec.to_js
 4. a fresh build, accepted only when it returns the same version;
 5. otherwise `VersionUnavailableError`.
 
-The error names the newest version in its message and in `newest_version`: the version the fresh build returned, or else the newest the server stores, or None when it stores none. Any refusal of that lookup other than `NotFoundError` raises in its place. Fetch the spec for it, and save the new ref:
+The error names the newest version in its message and in `newest_version`: the version the fresh build returned, or else the newest plain version the server stores, or None when it stores none. The lookup skips a version derived from another, such as a groupby collapse or a party-totals cut. Any refusal of that lookup other than `NotFoundError` raises in its place. Fetch the spec for it, and save the new ref:
 
 ```python
 from pathlib import Path

@@ -18,6 +18,7 @@ from dfo._core import errors as _errors
 from dfo._core.errors import (
     ContractError,
     DataWarning,
+    DfoError,
     DfoTimeoutError,
     InvalidRequestError,
     NetworkError,
@@ -772,77 +773,119 @@ def test_a_rebuild_with_another_version_names_the_newest() -> None:
     assert len(server.requests) == 4
 
 
-@pytest.mark.parametrize(
-    ("versions", "named"),
-    [
-        (
-            json_response(
-                200,
-                {
-                    "spec_id": NARROWED_ID,
-                    "versions": [{"content_version": "cv_" + "2" * 32}],
-                    "next_cursor": "c1",
-                    "complete": False,
-                },
-            ),
-            "cv_" + "2" * 32,
-        ),
-        (problem(404, "not_found"), None),
-        (
-            json_response(
-                200,
-                {
-                    "spec_id": NARROWED_ID,
-                    "versions": [],
-                    "next_cursor": None,
-                    "complete": True,
-                },
-            ),
-            None,
-        ),
-    ],
-)
-def test_a_spec_that_cannot_rebuild_names_the_newest_stored_version(
-    versions: httpx2.Response, named: str | None
-) -> None:
+OLDER, NEWER = "cv_" + "1" * 32, "cv_" + "2" * 32
+
+
+def plain(content_version: str) -> dict:
+    return {
+        "content_version": content_version,
+        "base_content_version": None,
+        "rendering": "plain",
+    }
+
+
+def derived(content_version: str, base: str) -> dict:
+    return {
+        "content_version": content_version,
+        "base_content_version": base,
+        "rendering": "groupby",
+    }
+
+
+def versions_page(versions: list, next_cursor: object = None) -> httpx2.Response:
+    return json_response(
+        200,
+        {
+            "spec_id": NARROWED_ID,
+            "versions": versions,
+            "next_cursor": next_cursor,
+            "complete": next_cursor is None,
+        },
+    )
+
+
+def versions_lookup(*pages: httpx2.Response) -> tuple[Server, Exception]:
+    """A ref whose build is refused, so the lookup reads the versions `pages`."""
     server = Server(
         json_response(200, manifest()),
         problem(410, "artifact_expired"),
         problem(404, "not_found"),
         problem(422, "definition_not_reproducible"),
-        versions,
+        *pages,
     )
     with make(server) as transport:
-        with pytest.raises(VersionUnavailableError) as caught:
+        with pytest.raises(DfoError) as caught:
             fetch(transport, DatasetRef((ref_member(),)))
-    assert server.calls()[-1] == f"GET {BASE}/datasets/{NARROWED_ID}/versions"
-    assert dict(server.requests[-1].url.params) == {"limit": "1"}
-    assert caught.value.code == "artifact_expired"
-    assert caught.value.newest_version == named
+    return server, caught.value
+
+
+# Each row gives the responses the versions route answers in turn, the cursor each
+# page after the first is asked with, and the newest version the error names.
+@pytest.mark.parametrize(
+    ("pages", "cursors", "named"),
+    [
+        ([versions_page([plain(NEWER)], "c1")], [], NEWER),
+        ([versions_page([derived(NEWER, OLDER), plain(OLDER)])], [], OLDER),
+        (
+            [
+                versions_page([derived(NEWER, OLDER)], "c/2"),
+                versions_page([plain(OLDER)]),
+            ],
+            ["c/2"],
+            OLDER,
+        ),
+        ([versions_page([derived(NEWER, OLDER)])], [], None),
+        ([versions_page([])], [], None),
+        ([problem(404, "not_found")], [], None),
+    ],
+    ids=["plain", "derived-first", "second-page", "no-plain", "none", "not-found"],
+)
+def test_a_spec_that_cannot_rebuild_names_the_newest_stored_version(
+    pages: list[httpx2.Response], cursors: list[str], named: str | None
+) -> None:
+    server, error = versions_lookup(*pages)
+    versions = f"GET {BASE}/datasets/{NARROWED_ID}/versions"
+    assert server.calls()[4:] == [versions] * (1 + len(cursors))
+    assert [dict(request.url.params) for request in server.requests[4:]] == [
+        {"limit": "100"},
+        *({"limit": "100", "cursor": cursor} for cursor in cursors),
+    ]
+    assert isinstance(error, VersionUnavailableError)
+    assert error.code == "artifact_expired"
+    assert error.newest_version == named
 
 
 @pytest.mark.parametrize(
-    ("page", "pointer"),
+    ("pages", "pointer"),
     [
-        ({"spec_id": NARROWED_ID, "items": []}, "/versions"),
-        ({"spec_id": NARROWED_ID, "versions": [{}]}, "/versions/0/content_version"),
-        ({"spec_id": NARROWED_ID, "versions": ["cv"]}, "/versions/0/content_version"),
+        ([json_response(200, {"spec_id": NARROWED_ID, "items": []})], "/versions"),
+        ([versions_page([{}])], "/versions/0/content_version"),
+        ([versions_page(["cv"])], "/versions/0/content_version"),
+        (
+            [versions_page([{"content_version": OLDER}])],
+            "/versions/0/base_content_version",
+        ),
+        (
+            [
+                versions_page(
+                    [plain(NEWER), {**plain(OLDER), "base_content_version": 1}]
+                )
+            ],
+            "/versions/1/base_content_version",
+        ),
+        ([versions_page([derived(NEWER, OLDER)], 2)], "/next_cursor"),
+        (
+            [versions_page([derived(NEWER, OLDER)], "c1"), versions_page([{}])],
+            "/versions/0/content_version",
+        ),
     ],
 )
 def test_a_versions_page_the_client_cannot_read_raises(
-    page: dict, pointer: str
+    pages: list[httpx2.Response], pointer: str
 ) -> None:
-    server = Server(
-        json_response(200, manifest()),
-        problem(410, "artifact_expired"),
-        problem(404, "not_found"),
-        problem(422, "definition_not_reproducible"),
-        json_response(200, page),
-    )
-    with make(server) as transport:
-        with pytest.raises(ContractError) as caught:
-            fetch(transport, DatasetRef((ref_member(),)))
-    assert (caught.value.code, caught.value.pointer) == ("contract_violation", pointer)
+    _, error = versions_lookup(*pages)
+    assert isinstance(error, ContractError)
+    assert (error.code, error.pointer) == ("contract_violation", pointer)
 
 
 def test_a_refused_versions_lookup_raises() -> None:

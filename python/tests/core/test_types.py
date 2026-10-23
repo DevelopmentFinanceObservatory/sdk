@@ -108,7 +108,10 @@ def test_a_ref_keeps_the_definition_as_stored(schema_version: float) -> None:
 
 
 def test_a_ref_of_dataset_members_writes_the_stored_format() -> None:
-    manifest = load("probe-mint-narrowed.json")
+    # The manifest of the build the contract's ref names, which serves its member.
+    record = example(CONTRACT / "refs" / "ref-answer-member.json")
+    scenario = example(CONTRACT / "scenarios" / f"{record['scenario']}.json")
+    manifest = scenario["exchanges"][0]["response"]["json"]
     (part,) = parse_parts(load("probe-resubmit-identity.json"))
     assert isinstance(part, DefinitePart)
     assert part.spec.sentence is not None

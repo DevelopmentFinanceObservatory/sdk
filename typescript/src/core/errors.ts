@@ -98,7 +98,8 @@ export class IncompleteAnswerError extends DfoError {
 export class DeclinedError extends DfoError {}
 /** A stored version cannot be rebuilt. The caller takes the newest version. */
 export class VersionUnavailableError extends DfoError {
-  /** The newest version the lookup found, which fetching the spec returns, or null. */
+  /** The version a fresh build returned, or else the newest plain version the server holds,
+   *  which fetching the spec returns, or null. */
   readonly newestVersion: string | null;
 
   constructor(options: DfoErrorOptions & { newestVersion?: string | null }) {

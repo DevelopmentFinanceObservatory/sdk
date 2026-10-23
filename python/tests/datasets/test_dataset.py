@@ -3,7 +3,7 @@
 import copy
 import pickle
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pyarrow as pa
@@ -86,7 +86,7 @@ def test_provenance_comes_from_the_manifest() -> None:
     assert data.sources == ("OECD Creditor Reporting System (CRS)",)
     assert data.licence == "OECD Terms and Conditions"
     assert [notice.code for notice in data.warnings] == ["coverage_below_scope"]
-    assert data.layout_version == "3"
+    assert data.layout_version == str(manifest()["artifacts"][0]["rendering"]["layout"])
     assert data.assumptions == ()
     assert data.departures == data.requested_operations == ()
 
@@ -114,7 +114,8 @@ def test_the_frame_layout_names_its_rendering() -> None:
 
 def test_the_recorded_retention_reads_its_date() -> None:
     data = one()
-    assert data.held_until == date(2026, 11, 20)
+    held_until = manifest()["retention"]["held_until"]
+    assert data.held_until == datetime.fromisoformat(held_until).date()
     assert data.pinned is False
 
 

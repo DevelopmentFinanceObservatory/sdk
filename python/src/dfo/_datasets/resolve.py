@@ -69,6 +69,8 @@ from dfo._http.transport import AsyncTransport, offline
 # (`snapshot_not_found`) ends the lookup, since a build cannot bring it back.
 _FILE_EXPIRED = "artifact_expired"
 _FILE_GONE = frozenset({_FILE_EXPIRED, "artifact_not_found", "not_found"})
+# The versions one page of the versions route lists, the route's default page size.
+_VERSIONS_PAGE = 100
 
 
 async def fetch(
@@ -329,45 +331,72 @@ async def _stored_file(
 async def _newest(
     transport: AsyncTransport, spec_id: str, *, deadline: float | None
 ) -> str | None:
-    """The newest stored version of a spec, or None when the spec has none.
+    """The newest stored version of a spec, its newest plain build, or None.
 
-    The versions route lists versions newest first, so a page of one holds the
-    newest. Only an empty page or `NotFoundError` reads as no version. Any other
-    refusal raises.
+    The versions route lists versions newest first, `_VERSIONS_PAGE` to a page,
+    and each page's `next_cursor` names the next. The newest version is the
+    first listed with a null `base_content_version`, so a derived version, a
+    groupby collapse or party-totals cut of a plain build, is skipped. A list
+    that ends without a plain version, or `NotFoundError`, reads as no version.
+    Any other refusal raises.
 
     Raises:
-        ContractError: The page has no `versions` list, or its first entry has
-            no `content_version` (`contract_violation`).
+        ContractError: A page is not a versions page this client can read
+            (`contract_violation`); see `_plain_on_page`.
     """
-    try:
-        response = await transport.request(
-            "GET",
-            f"/datasets/{spec_id}/versions",
-            params={"limit": 1},
-            deadline=deadline,
-        )
-    except NotFoundError:
-        return None
-    body = response_json(response)
-    route = f"GET /datasets/{spec_id}/versions"
-    trace_id = trace_id_of(response, body)
+    target = f"/datasets/{spec_id}/versions"
+    params: dict[str, str | int] = {"limit": _VERSIONS_PAGE}
+    while True:
+        try:
+            response = await transport.request(
+                "GET", target, params=params, deadline=deadline
+            )
+        except NotFoundError:
+            return None
+        body = response_json(response)
+        trace_id = trace_id_of(response, body)
+        newest, cursor = _plain_on_page(body, f"GET {target}", trace_id)
+        if newest is not None or cursor is None:
+            return newest
+        params = {"limit": _VERSIONS_PAGE, "cursor": cursor}
+
+
+def _plain_on_page(
+    body: object, route: str, trace_id: str | None
+) -> tuple[str | None, str | None]:
+    """The first plain version a versions page lists, or None, and its `next_cursor`.
+
+    Raises:
+        ContractError: The page has no `versions` list, a listed version has no
+            `content_version` string or no `base_content_version` that is a
+            string or null, or `next_cursor` is neither a string nor null
+            (`contract_violation`).
+    """
     versions = body.get("versions") if isinstance(body, Mapping) else None
-    if not isinstance(versions, list):
+    if not isinstance(body, Mapping) or not isinstance(versions, list):
         raise _violation(route, "/versions", trace_id)
-    if not versions:
-        return None
-    newest = (
-        versions[0].get("content_version") if isinstance(versions[0], Mapping) else None
-    )
-    if not isinstance(newest, str):
-        raise _violation(route, "/versions/0/content_version", trace_id)
-    return newest
+    plain = None
+    for index, version in enumerate(versions):
+        entry = version if isinstance(version, Mapping) else {}
+        content_version = entry.get("content_version")
+        if not isinstance(content_version, str):
+            raise _violation(route, f"/versions/{index}/content_version", trace_id)
+        if "base_content_version" not in entry or not isinstance(
+            base := entry["base_content_version"], str | None
+        ):
+            raise _violation(route, f"/versions/{index}/base_content_version", trace_id)
+        if base is None and plain is None:
+            plain = content_version
+    cursor = body.get("next_cursor")
+    if not isinstance(cursor, str | None):
+        raise _violation(route, "/next_cursor", trace_id)
+    return plain, cursor
 
 
 def _violation(route: str, pointer: str, trace_id: str | None) -> ContractError:
     error = client_error(
         CONTRACT_VIOLATION,
-        f"{route} answered a page with no {pointer}, which this client acts on",
+        f"{route} answered a page whose {pointer} this client cannot read",
         trace_id=trace_id,
     )
     error.pointer = pointer
