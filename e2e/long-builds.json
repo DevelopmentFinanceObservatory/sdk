@@ -1,0 +1,536 @@
+[
+  {
+    "day_parity": 0,
+    "language": "python",
+    "target": "api",
+    "question": "ODA disbursements from all donors to all recipients for water and sanitation",
+    "spec": {
+      "spec_id": "spec_ec1469111c949ecc8530c72deb6a7bc0",
+      "definition": {
+        "schema_version": 1,
+        "spec_id": "spec_ec1469111c949ecc8530c72deb6a7bc0",
+        "identity": {
+          "identity_version": "spec1",
+          "shape": {
+            "kind": "statvar_schema",
+            "population_type": "FinancialFlow",
+            "measured_property": "amount",
+            "stat_type": "measuredValue",
+            "measurement_qualifier": "Nominal"
+          },
+          "slots": [
+            {
+              "property": "crsCooperationModality",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "crsPurpose",
+              "binding": {
+                "state": "value",
+                "ref": "CRSPurposeCode140"
+              }
+            },
+            {
+              "property": "crsTypeOfFinance",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "crsTypeOfFlow",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "financialFlowType",
+              "binding": {
+                "state": "value",
+                "ref": "Disbursement"
+              }
+            },
+            {
+              "property": "nettingBasis",
+              "binding": {
+                "state": "value",
+                "ref": "Gross"
+              }
+            }
+          ],
+          "entities": {},
+          "requested_window": {
+            "kind": "all"
+          }
+        }
+      }
+    }
+  },
+  {
+    "day_parity": 0,
+    "language": "python",
+    "target": "website",
+    "question": "ODA disbursements from all donors to all recipients for basic health",
+    "spec": {
+      "spec_id": "spec_40e9adb0ee9975041fe77a4f6871dc34",
+      "definition": {
+        "schema_version": 1,
+        "spec_id": "spec_40e9adb0ee9975041fe77a4f6871dc34",
+        "identity": {
+          "identity_version": "spec1",
+          "shape": {
+            "kind": "statvar_schema",
+            "population_type": "FinancialFlow",
+            "measured_property": "amount",
+            "stat_type": "measuredValue",
+            "measurement_qualifier": "Nominal"
+          },
+          "slots": [
+            {
+              "property": "crsCooperationModality",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "crsPurpose",
+              "binding": {
+                "state": "value",
+                "ref": "CRSPurposeCode122"
+              }
+            },
+            {
+              "property": "crsTypeOfFinance",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "crsTypeOfFlow",
+              "binding": {
+                "state": "value",
+                "ref": "CRSTypeOfFlow10"
+              }
+            },
+            {
+              "property": "financialFlowType",
+              "binding": {
+                "state": "value",
+                "ref": "Disbursement"
+              }
+            },
+            {
+              "property": "nettingBasis",
+              "binding": {
+                "state": "value",
+                "ref": "Gross"
+              }
+            }
+          ],
+          "entities": {},
+          "requested_window": {
+            "kind": "all"
+          }
+        }
+      }
+    }
+  },
+  {
+    "day_parity": 0,
+    "language": "typescript",
+    "target": "api",
+    "question": "ODA commitments from all donors to all recipients for agriculture",
+    "spec": {
+      "spec_id": "spec_e57d08dda3c62513410a02dbc6b66fa6",
+      "definition": {
+        "schema_version": 1,
+        "spec_id": "spec_e57d08dda3c62513410a02dbc6b66fa6",
+        "identity": {
+          "identity_version": "spec1",
+          "shape": {
+            "kind": "statvar_schema",
+            "population_type": "FinancialObligation",
+            "measured_property": "amount",
+            "stat_type": "measuredValue",
+            "measurement_qualifier": "Nominal"
+          },
+          "slots": [
+            {
+              "property": "crsCooperationModality",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "crsPurpose",
+              "binding": {
+                "state": "value",
+                "ref": "CRSPurposeCode311"
+              }
+            },
+            {
+              "property": "crsTypeOfFinance",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "crsTypeOfFlow",
+              "binding": {
+                "state": "value",
+                "ref": "CRSTypeOfFlow10"
+              }
+            },
+            {
+              "property": "financialObligationType",
+              "binding": {
+                "state": "value",
+                "ref": "Commitment"
+              }
+            }
+          ],
+          "entities": {},
+          "requested_window": {
+            "kind": "all"
+          }
+        }
+      }
+    }
+  },
+  {
+    "day_parity": 0,
+    "language": "typescript",
+    "target": "website",
+    "question": "ODA disbursements from all donors to all recipients for agriculture",
+    "spec": {
+      "spec_id": "spec_926fd7435023ada016bbb21973477920",
+      "definition": {
+        "schema_version": 1,
+        "spec_id": "spec_926fd7435023ada016bbb21973477920",
+        "identity": {
+          "identity_version": "spec1",
+          "shape": {
+            "kind": "statvar_schema",
+            "population_type": "FinancialFlow",
+            "measured_property": "amount",
+            "stat_type": "measuredValue",
+            "measurement_qualifier": "Nominal"
+          },
+          "slots": [
+            {
+              "property": "crsCooperationModality",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "crsPurpose",
+              "binding": {
+                "state": "value",
+                "ref": "CRSPurposeCode311"
+              }
+            },
+            {
+              "property": "crsTypeOfFinance",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "crsTypeOfFlow",
+              "binding": {
+                "state": "value",
+                "ref": "CRSTypeOfFlow10"
+              }
+            },
+            {
+              "property": "financialFlowType",
+              "binding": {
+                "state": "value",
+                "ref": "Disbursement"
+              }
+            },
+            {
+              "property": "nettingBasis",
+              "binding": {
+                "state": "value",
+                "ref": "Gross"
+              }
+            }
+          ],
+          "entities": {},
+          "requested_window": {
+            "kind": "all"
+          }
+        }
+      }
+    }
+  },
+  {
+    "day_parity": 1,
+    "language": "python",
+    "target": "api",
+    "question": "ODA grant disbursements from all donors to all recipients for health",
+    "spec": {
+      "spec_id": "spec_792c0b1ec6d58dd4ad10edb045b71bd9",
+      "definition": {
+        "schema_version": 1,
+        "spec_id": "spec_792c0b1ec6d58dd4ad10edb045b71bd9",
+        "identity": {
+          "identity_version": "spec1",
+          "shape": {
+            "kind": "statvar_schema",
+            "population_type": "FinancialFlow",
+            "measured_property": "amount",
+            "stat_type": "measuredValue",
+            "measurement_qualifier": "Nominal"
+          },
+          "slots": [
+            {
+              "property": "crsCooperationModality",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "crsPurpose",
+              "binding": {
+                "state": "value",
+                "ref": "CRSPurposeCode120"
+              }
+            },
+            {
+              "property": "crsTypeOfFinance",
+              "binding": {
+                "state": "value",
+                "ref": "CRSTypeOfFinance100"
+              }
+            },
+            {
+              "property": "crsTypeOfFlow",
+              "binding": {
+                "state": "value",
+                "ref": "CRSTypeOfFlow10"
+              }
+            },
+            {
+              "property": "financialFlowType",
+              "binding": {
+                "state": "value",
+                "ref": "Disbursement"
+              }
+            },
+            {
+              "property": "nettingBasis",
+              "binding": {
+                "state": "value",
+                "ref": "Gross"
+              }
+            }
+          ],
+          "entities": {},
+          "requested_window": {
+            "kind": "all"
+          }
+        }
+      }
+    }
+  },
+  {
+    "day_parity": 1,
+    "language": "python",
+    "target": "website",
+    "question": "ODA commitments from all donors to all recipients for health",
+    "spec": {
+      "spec_id": "spec_2b2875ae9d4941ccd8ace978bd590c8a",
+      "definition": {
+        "schema_version": 1,
+        "spec_id": "spec_2b2875ae9d4941ccd8ace978bd590c8a",
+        "identity": {
+          "identity_version": "spec1",
+          "shape": {
+            "kind": "statvar_schema",
+            "population_type": "FinancialObligation",
+            "measured_property": "amount",
+            "stat_type": "measuredValue",
+            "measurement_qualifier": "Nominal"
+          },
+          "slots": [
+            {
+              "property": "crsCooperationModality",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "crsPurpose",
+              "binding": {
+                "state": "value",
+                "ref": "CRSPurposeCode120"
+              }
+            },
+            {
+              "property": "crsTypeOfFinance",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "crsTypeOfFlow",
+              "binding": {
+                "state": "value",
+                "ref": "CRSTypeOfFlow10"
+              }
+            },
+            {
+              "property": "financialObligationType",
+              "binding": {
+                "state": "value",
+                "ref": "Commitment"
+              }
+            }
+          ],
+          "entities": {},
+          "requested_window": {
+            "kind": "all"
+          }
+        }
+      }
+    }
+  },
+  {
+    "day_parity": 1,
+    "language": "typescript",
+    "target": "api",
+    "question": "ODA disbursements from all donors to all recipients for agriculture, forestry and fishing",
+    "spec": {
+      "spec_id": "spec_7f45c91f54c9ca968f87258580124e26",
+      "definition": {
+        "schema_version": 1,
+        "spec_id": "spec_7f45c91f54c9ca968f87258580124e26",
+        "identity": {
+          "identity_version": "spec1",
+          "shape": {
+            "kind": "statvar_schema",
+            "population_type": "FinancialFlow",
+            "measured_property": "amount",
+            "stat_type": "measuredValue",
+            "measurement_qualifier": "Nominal"
+          },
+          "slots": [
+            {
+              "property": "crsCooperationModality",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "crsPurpose",
+              "binding": {
+                "state": "value",
+                "ref": "CRSPurposeCode310"
+              }
+            },
+            {
+              "property": "crsTypeOfFinance",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "crsTypeOfFlow",
+              "binding": {
+                "state": "value",
+                "ref": "CRSTypeOfFlow10"
+              }
+            },
+            {
+              "property": "financialFlowType",
+              "binding": {
+                "state": "value",
+                "ref": "Disbursement"
+              }
+            },
+            {
+              "property": "nettingBasis",
+              "binding": {
+                "state": "value",
+                "ref": "Gross"
+              }
+            }
+          ],
+          "entities": {},
+          "requested_window": {
+            "kind": "all"
+          }
+        }
+      }
+    }
+  },
+  {
+    "day_parity": 1,
+    "language": "typescript",
+    "target": "website",
+    "question": "ODA commitments from all donors to all recipients for energy, transport and communications",
+    "spec": {
+      "spec_id": "spec_6c11d4fc91fab3b9cfe443d4d62f8716",
+      "definition": {
+        "schema_version": 1,
+        "spec_id": "spec_6c11d4fc91fab3b9cfe443d4d62f8716",
+        "identity": {
+          "identity_version": "spec1",
+          "shape": {
+            "kind": "statvar_schema",
+            "population_type": "FinancialObligation",
+            "measured_property": "amount",
+            "stat_type": "measuredValue",
+            "measurement_qualifier": "Nominal"
+          },
+          "slots": [
+            {
+              "property": "crsCooperationModality",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "crsPurpose",
+              "binding": {
+                "state": "set",
+                "refs": [
+                  "CRSPurposeCode200",
+                  "CRSPurposeCode230"
+                ]
+              }
+            },
+            {
+              "property": "crsTypeOfFinance",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "crsTypeOfFlow",
+              "binding": {
+                "state": "value",
+                "ref": "CRSTypeOfFlow10"
+              }
+            },
+            {
+              "property": "financialObligationType",
+              "binding": {
+                "state": "value",
+                "ref": "Commitment"
+              }
+            }
+          ],
+          "entities": {},
+          "requested_window": {
+            "kind": "all"
+          }
+        }
+      }
+    }
+  }
+]

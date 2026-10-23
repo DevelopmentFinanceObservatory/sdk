@@ -1,0 +1,180 @@
+[project]
+name = "development-finance"
+version = "0.1.0"
+description = "Python client for the Development Finance Observatory APIs"
+
+authors = [
+  { name = "ONE Campaign", email = "data@one.org" }
+]
+
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # `_keep_to_deadlines` in src/dfo/_transport.py reads the pool's private layout
+    # and raises a RuntimeError naming both versions when a release moves it.
+    # The `<2.16` bounds are the one exception to the no-upper-bound policy in
+    # CONTRIBUTING.md. A minor release may move that private layout, so each new
+    # minor is tested before the bound moves.
+    "httpcore2>=2.15,<2.16; sys_platform != 'emscripten'",
+    "httpx2>=2.15,<2.16",
+    "pyarrow>=15",
+    "typing-extensions>=4.12",
+]
+
+keywords = ["development finance", "ODA", "aid", "SDMX", "Data Commons"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+
+
+[project.scripts]
+dfo = "dfo._cli:main"
+
+[project.urls]
+Homepage = "https://developmentfinance.org"
+Repository = "https://github.com/DevelopmentFinanceObservatory/sdk"
+Issues = "https://github.com/DevelopmentFinanceObservatory/sdk/issues"
+Changelog = "https://github.com/DevelopmentFinanceObservatory/sdk/blob/main/python/CHANGELOG.md"
+
+[project.optional-dependencies]
+pandas = [
+    "pandas>=2.2",
+]
+polars = [
+    "polars>=1.0",
+]
+xlsx = [
+    "openpyxl>=3.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "dfo"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.0",
+    "pytest-cov>=7.1.0",
+    "ty>=0.0.59",
+    "ruff>=0.15.0",
+    "pre-commit>=4.6.0",
+    "datamodel-code-generator>=0.86.0",
+    "pandas>=3.0.6",
+    "polars>=2.0.0",
+    "duckdb>=1.5.6",
+    "openpyxl>=3.1.5",
+    "pyright>=1.1.414",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+extend-include = ["*.ipynb"]
+
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "*.egg-info",
+    ".pytest_cache",
+    "htmlcov",
+]
+
+[tool.ruff.lint]
+
+select = [
+    "E", "W", "F",      # pycodestyle, pyflakes
+    "I",                 # isort
+    "N",                 # pep8-naming
+    "UP",                # pyupgrade
+    "B",                 # bugbear
+    "C4",                # comprehensions
+    "SIM",               # simplify
+    "PL",                # pylint
+    "RUF",               # ruff-specific
+    "ERA",               # eradicate (commented-out code)
+    "PERF",              # perflint
+    "ANN",               # flake8-annotations (require type hints on public APIs)
+]
+
+ignore = [
+    "E501",     # Line length (formatter handles)
+    "PLR0913",  # Too many arguments
+    "PLR0912",  # Too many branches
+    "PLR0914",  # Too many locals
+    "PLR0915",  # Too many statements
+    "PLR2004",  # Magic values
+    "ANN401",   # Allow `Any` in typed signatures
+]
+
+
+# Allow autofix for all enabled rules
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.lint.per-file-ignores]
+
+# Tests don't need annotations or pylint-complexity gates.
+"tests/**/*.py" = ["ANN", "PLR2004"]
+# Generated from the async tests, where `async with` cannot join a plain `with`.
+"tests/_sync/*.py" = ["SIM117"]
+# Notebooks: don't require annotations; allow REPL-style patterns.
+"**/*.ipynb" = ["ANN", "F401", "F811", "E402"]
+
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ty.environment]
+python-version = "3.12"
+
+[tool.ty.src]
+include = ["src/dfo"]
+
+
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --cov=src/dfo --cov-report=term --cov-report=xml -m 'not live'"
+markers = [
+    "live: reaches the deployed API at DFO_BASE_URL; deselected unless run with -m live",
+]
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "def __str__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+show_missing = true
+precision = 2

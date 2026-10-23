@@ -1,0 +1,70 @@
+name: E2E
+
+# The live journey (python/tests/e2e) against the dev API, once directly on its
+# Cloud Run URL and once through the dev website's /api/v1 proxy. Each target
+# keeps the refs its journey wrote under e2e/<target>/ and uploads them, so a
+# TypeScript job for the same target can read ref-python.json and write
+# ref-typescript.json for step 10. Step 6 builds the spec e2e/long-builds.json
+# assigns to the UTC day's parity, the language and the target.
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e
+  cancel-in-progress: false
+
+jobs:
+  python:
+    name: python (${{ matrix.target.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - name: api
+            base_url: https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app/api
+          - name: website
+            base_url: https://dfo-dev-website-staging-zms5lj4zhq-nn.a.run.app/api/v1
+    defaults:
+      run:
+        working-directory: python
+    env:
+      DFO_BASE_URL: ${{ matrix.target.base_url }}
+      DFO_E2E_DIR: ${{ github.workspace }}/e2e/${{ matrix.target.name }}
+      DFO_E2E_TARGET: ${{ matrix.target.name }}
+      # Step 6 fails a build served inline on a scheduled run and skips it otherwise.
+      DFO_E2E_SCHEDULED: ${{ github.event_name == 'schedule' }}
+      DFO_PROGRESS: "0"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.0
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.12
+
+      # -rs lists each skipped step with what the server served instead.
+      - name: Run the live journey
+        run: uv run pytest -m live --no-cov -rs tests/e2e
+
+      - name: Upload the refs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-refs-${{ matrix.target.name }}-python
+          path: e2e/${{ matrix.target.name }}/
+          if-no-files-found: warn
+
+  # typescript: the same matrix, running the TypeScript journey with the same
+  # DFO_BASE_URL and DFO_E2E_DIR.

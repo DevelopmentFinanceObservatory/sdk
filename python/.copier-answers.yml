@@ -1,0 +1,13 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_commit: v1.1.1
+_src_path: gh:ONEcampaign/bblocks-projects
+author_email: data@one.org
+author_name: ONE Campaign
+github_username: DevelopmentFinanceObservatory
+license: mit
+preset: family
+project_description: Python client for the Development Finance Observatory APIs
+project_name: development-finance
+project_slug: dfo
+project_type: package
+python_version: '3.12'

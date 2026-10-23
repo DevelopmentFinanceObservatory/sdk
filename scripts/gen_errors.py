@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Generate the Python client's error map from the contract, or check it.
+
+    scripts/gen_errors.py           write python/src/dfo/_error_map.py
+    scripts/gen_errors.py --check   exit 1 when the file differs
+
+The map holds the caller's next step for each refusal code in
+`contract/actions.json` and the gap kind of each no_data reason. The `Action` and
+`GapKind` literals come from `contract/actions.schema.json`, so an action the
+contract adds fails the type check of `dfo._refusals` until it maps to a class.
+
+It also holds one `ClientCode` constant per row of `contract/client-codes.json`,
+naming the code, its error class and whether it is retryable, which
+`dfo._errors.client_error` raises. The one `by_status` row becomes a plain string
+constant, since its class and retryable flag follow the refusal's HTTP status.
+Each row of `contract/warning-codes.json` becomes a `WarningCode` constant,
+naming the code and its warning class, which `dfo._errors.client_warning` issues.
+"""
+
+import argparse
+import json
+import sys
+
+import sync_contract
+from _codegen import ROOT, format_python, relative, write_or_check
+
+ACTIONS = ROOT / "contract" / "actions.json"
+SCHEMA = ROOT / "contract" / "actions.schema.json"
+CLIENT_CODES = ROOT / "contract" / "client-codes.json"
+WARNING_CODES = ROOT / "contract" / "warning-codes.json"
+TARGET = ROOT / "python" / "src" / "dfo" / "_error_map.py"
+
+
+BY_STATUS = "by_status"
+
+
+def _literal(values: list[str]) -> str:
+    return "Literal[" + ", ".join(json.dumps(value) for value in values) + "]"
+
+
+def _retryable_fits(row: dict) -> bool:
+    """A by-status row is retryable by status. Any other row is true or false."""
+    if row["class"] == BY_STATUS:
+        return row["retryable"] == BY_STATUS
+    return isinstance(row["retryable"], bool)
+
+
+def _client_codes(client_codes: dict) -> tuple[list[str], str, list[str]]:
+    """The error classes, the by-status constant and the code constants' lines."""
+    if client_codes.get("format_version") != 1:
+        raise SystemExit(f"{relative(CLIENT_CODES)}: format_version is not 1")
+    rows = client_codes["codes"]
+    by_status = [row["code"] for row in rows if row["class"] == BY_STATUS]
+    if len(by_status) != 1:
+        raise SystemExit(f"{relative(CLIENT_CODES)}: not exactly one {BY_STATUS} row")
+    for row in rows:
+        if not _retryable_fits(row):
+            raise SystemExit(
+                f"{relative(CLIENT_CODES)}: {row['code']} has retryable "
+                f"{row['retryable']!r}"
+            )
+    classes = sorted({row["class"] for row in rows if row["class"] != BY_STATUS})
+    constants = [
+        f"{row['code'].upper()}: Final = ClientCode({json.dumps(row['code'])}, "
+        f"{row['class']}, retryable={row['retryable']})\n"
+        for row in rows
+        if row["class"] != BY_STATUS
+    ]
+    status_line = f"{by_status[0].upper()}: Final = {json.dumps(by_status[0])}\n"
+    return classes, status_line, constants
+
+
+def _warning_codes(warning_codes: dict) -> tuple[list[str], list[str]]:
+    """The warning classes and the warning code constants' lines."""
+    if warning_codes.get("format_version") != 1:
+        raise SystemExit(f"{relative(WARNING_CODES)}: format_version is not 1")
+    rows = warning_codes["codes"]
+    if not rows:
+        raise SystemExit(f"{relative(WARNING_CODES)}: no codes")
+    classes = sorted({row["class"] for row in rows})
+    constants = [
+        f"{row['code'].upper()}: Final = WarningCode({json.dumps(row['code'])}, "
+        f"{row['class']})\n"
+        for row in rows
+    ]
+    return classes, constants
+
+
+def render(actions: dict, schema: dict, client_codes: dict, warning_codes: dict) -> str:
+    """Return the source of `_error_map.py` for the parsed contract files."""
+    if actions.get("format_version") != 1:
+        raise SystemExit(f"{relative(ACTIONS)}: format_version is not 1")
+    rows = actions["codes"]
+    if not rows:
+        raise SystemExit(f"{relative(ACTIONS)}: no codes")
+    item = schema["properties"]["codes"]["items"]["properties"]
+    action_values = item["action"]["enum"]
+    gap_values = item["gap_kind"]["enum"]
+    code_actions = "".join(
+        f"    {json.dumps(row['code'])}: {json.dumps(row['action'])},\n" for row in rows
+    )
+    gap_kinds = "".join(
+        f"    {json.dumps(row['code'])}: {json.dumps(row['gap_kind'])},\n"
+        for row in rows
+        if "gap_kind" in row
+    )
+    classes, status_line, constants = _client_codes(client_codes)
+    warning_classes, warning_constants = _warning_codes(warning_codes)
+    imported = ", ".join(
+        sorted({"ClientCode", "WarningCode", *classes, *warning_classes})
+    )
+    return (
+        '"""The caller\'s next step for each refusal code, each no_data reason\'s gap\n'
+        "kind, the codes the client raises itself and the codes of the warnings it\n"
+        "issues itself.\n"
+        "\n"
+        "Generated by scripts/gen_errors.py from contract/actions.json,\n"
+        "contract/client-codes.json and contract/warning-codes.json. Do not edit.\n"
+        '"""\n'
+        "\n"
+        "from typing import Final, Literal\n"
+        "\n"
+        f"from dfo._errors import {imported}\n"
+        "\n"
+        f"type Action = {_literal(action_values)}\n"
+        f"type GapKind = {_literal(gap_values)}\n"
+        "\n"
+        f"ACTIONS: Final[dict[str, Action]] = {{\n{code_actions}}}\n"
+        f"GAP_KINDS: Final[dict[str, GapKind]] = {{\n{gap_kinds}}}\n"
+        "\n"
+        "# The code of a refusal whose body carries none; its class follows the status.\n"
+        f"{status_line}"
+        "\n"
+        f"{''.join(constants)}"
+        "\n"
+        f"{''.join(warning_constants)}"
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Write or check `_error_map.py` and return the exit status."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--check", action="store_true", help="exit 1 on a difference")
+    args = parser.parse_args(argv)
+    sync_contract.require_current()
+    source = render(
+        json.loads(ACTIONS.read_text(encoding="utf-8")),
+        json.loads(SCHEMA.read_text(encoding="utf-8")),
+        json.loads(CLIENT_CODES.read_text(encoding="utf-8")),
+        json.loads(WARNING_CODES.read_text(encoding="utf-8")),
+    )
+    differs = write_or_check(TARGET, format_python(source, TARGET), check=args.check)
+    if differs and args.check:
+        print(f"{relative(TARGET)} is out of date; run scripts/gen_errors.py")
+        return 1
+    if differs:
+        print(f"wrote {relative(TARGET)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

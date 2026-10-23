@@ -10,3 +10,15 @@ node_modules/
 coverage/
 *.tsbuildinfo
 .env
+.coverage
+coverage.xml
+htmlcov/
+*.egg-info/
+
+# scripts/sync_contract.py fetches contract/ at the commit contract/SOURCE names.
+/contract/*
+!/contract/SOURCE
+/.contract-*/
+
+# Claude Code session state and agent memory.
+.claude/

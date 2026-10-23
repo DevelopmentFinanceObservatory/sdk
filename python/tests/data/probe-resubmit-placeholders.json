@@ -1,0 +1,105 @@
+{
+ "schema_version": 1,
+ "query_echo": {
+  "entry_path": "dataset_resubmit",
+  "extract_skipped": true
+ },
+ "diagnostics": {
+  "engine_build": "8408f1f95c622223f8fa6e9ba55826ee8e22a852",
+  "trace_id": "fa3a20b2af274afabd147ad5c4fca327",
+  "warnings": [],
+  "timing_ms": {
+   "total": 1,
+   "by_step": {
+    "coverage": 0
+   }
+  },
+  "timed_out": false
+ },
+ "kind": "resolution",
+ "parts": [
+  {
+   "variable_text": "GDP",
+   "warnings": [
+    {
+     "code": "part_restated",
+     "severity": "info",
+     "message": "'GDP' was restated from a posted no_data outcome; not re-resolved."
+    }
+   ],
+   "timing_ms": {
+    "total": 0
+   },
+   "rendered_sentence": "An entity named in this query matches more than one entity in the graph. Be more specific.",
+   "sentence_plan": [
+    {
+     "kind": "text",
+     "text": "An entity named in this query matches more than one entity in the graph. Be more specific.",
+     "segment": "heading",
+     "entity_refs": [],
+     "states": []
+    }
+   ],
+   "operations": [],
+   "departures": [],
+   "status": "no_data",
+   "no_data": {
+    "reason": "entity_ambiguous",
+    "category": "unresolved",
+    "message": "An entity named in this query matches more than one entity in the graph. Be more specific.",
+    "entity_terms": [],
+    "ambiguous_entities": [],
+    "source_terms": [],
+    "ambiguous_sources": [],
+    "unbound_qualifiers": []
+   }
+  },
+  {
+   "variable_text": "ODA disbursements",
+   "warnings": [
+    {
+     "code": "part_restated",
+     "severity": "info",
+     "message": "'ODA disbursements' was restated from a posted no_data outcome; not re-resolved."
+    }
+   ],
+   "timing_ms": {
+    "total": 0
+   },
+   "rendered_sentence": "An entity named in this query matches more than one entity in the graph. Be more specific.",
+   "sentence_plan": [
+    {
+     "kind": "text",
+     "text": "An entity named in this query matches more than one entity in the graph. Be more specific.",
+     "segment": "heading",
+     "entity_refs": [],
+     "states": []
+    }
+   ],
+   "operations": [],
+   "departures": [],
+   "status": "no_data",
+   "no_data": {
+    "reason": "entity_ambiguous",
+    "category": "unresolved",
+    "message": "An entity named in this query matches more than one entity in the graph. Be more specific.",
+    "entity_terms": [],
+    "ambiguous_entities": [],
+    "source_terms": [],
+    "ambiguous_sources": [],
+    "unbound_qualifiers": []
+   }
+  }
+ ],
+ "rendered_sentence": "An entity named in this query matches more than one entity in the graph. Be more specific.",
+ "sentence_plan": [
+  {
+   "kind": "text",
+   "text": "An entity named in this query matches more than one entity in the graph. Be more specific.",
+   "segment": "heading",
+   "entity_refs": [],
+   "states": []
+  }
+ ],
+ "status": "no_data"
+}

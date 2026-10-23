@@ -1,0 +1,2 @@
+# Lints `scripts/` with the package's rules; `python/` has its own `pyproject.toml`.
+extend = "python/pyproject.toml"
