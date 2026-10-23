@@ -9,7 +9,7 @@ what the server served instead.
 writes the ref it fetched there as `ref-python.json` and reads back
 `ref-typescript.json` when it exists.
 
-Step 6 builds the spec `e2e/long-builds.json` assigns to this run by the UTC
+Step 6 builds the spec `tests/live/long-builds.json` assigns to this run by the UTC
 day's parity, the language and `DFO_E2E_TARGET`. Each spec there is posted every
 48 hours, so its stored head is past the server's 24-hour maximum age and the
 build runs again as an operation. `DFO_E2E_SCHEDULED=true` marks a scheduled
@@ -55,7 +55,7 @@ SEVERAL = (
     "and GDP of Kenya"
 )
 PLACE = "ODA disbursements from Germany to Congo"
-LONG_BUILDS = Path(__file__).parents[3] / "e2e" / "long-builds.json"
+LONG_BUILDS = Path(__file__).parents[3] / "tests" / "live" / "long-builds.json"
 LANGUAGE = "python"
 LONG_COLUMNS = {"stat_var", "time_period", "value", "unit"}
 WINDOW = (2020, 2023)
