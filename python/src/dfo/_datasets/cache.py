@@ -7,9 +7,17 @@ partial entry.
 Entries are keyed by content, so two processes writing one artifact write the same
 bytes and need no lock. Concurrent manifest updates can lose a cache candidate,
 but never make an artifact name different bytes. A read re-hashes an artifact, and
-a mismatch is a miss.
+a mismatch is a miss. A manifest is read back only when it passes the checks a
+served manifest passes and names the spec and version its path does; anything
+else is a miss, which a fetch fills from the server again. A key that is not a
+server id, such as a malformed digest in a served manifest, is a miss on read and
+skipped on write.
 
-Both clients call this module. It is sync and works on local files only.
+Concurrent fetches in one process download an artifact once: `downloading`
+holds its digest while the first fetch reads the cache, downloads and stores,
+and the others then read the stored file.
+
+Both clients call this module. It works on local files only.
 """
 
 import hashlib
@@ -18,17 +26,25 @@ import logging
 import os
 import tempfile
 from collections.abc import Mapping
+from contextlib import nullcontext
 from os import PathLike
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from dfo._config.paths import cache_directory
+from dfo._core.codes import INVALID_ARGUMENT
+from dfo._core.errors import ContractError, client_error
+from dfo._core.parse import check_manifest
 from dfo._core.types import CONTENT_VERSION, DIGEST, SPEC_ID, Rendering
+from dfo._http.hooks import Hold, KeyedLock
 
 logger = logging.getLogger("dfo")
 
 # The default bound on the artifacts the cache keeps, in bytes.
 DEFAULT_MAX_BYTES = 2 * 1024**3
+
+# The artifacts being downloaded into any cache of this process, by path.
+_DOWNLOADS = KeyedLock()
 
 
 def rendering_name(rendering: Rendering, /) -> str:
@@ -72,6 +88,36 @@ def manifest_entry(
     )
 
 
+def cache_path(
+    cache_dir: str | PathLike[str] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> Path:
+    """The absolute cache directory, `<root>/v1/dfo/cache1`, by the cache-dir rule.
+
+    A relative root resolves against the working directory now, so a later
+    `chdir` does not move the cache.
+
+    Raises:
+        InvalidRequestError: `cache_dir` is not a string or `str` path, is
+            empty, holds a NUL character, or starts `~name` for a user with no
+            home directory (`invalid_argument`).
+    """
+    if cache_dir is not None:
+        chosen = os.fspath(cache_dir) if isinstance(cache_dir, str | PathLike) else None
+        if not isinstance(chosen, str) or not chosen or "\0" in chosen:
+            raise client_error(
+                INVALID_ARGUMENT,
+                "cache_dir is a non-empty path without NUL characters, or None "
+                f"for the default, not {cache_dir!r}",
+            )
+    try:
+        directory = cache_directory(cache_dir, env=os.environ if env is None else env)
+    except ValueError as error:
+        raise client_error(INVALID_ARGUMENT, str(error)) from error
+    return Path(directory).absolute()
+
+
 def sha256_digest(data: bytes, /) -> str:
     """The digest of `data` as the server writes it, `sha256:<hex>`."""
     return "sha256:" + hashlib.sha256(data).hexdigest()
@@ -102,15 +148,30 @@ class Cache:
         env: Mapping[str, str] | None = None,
     ) -> None:
         env = os.environ if env is None else env
-        self.directory = Path(cache_directory(cache_dir, env=env))
+        self.directory = cache_path(cache_dir, env=env)
         self.enabled = enabled
         self.max_bytes = max_bytes
 
+    def downloading(
+        self, digest: str, /, *, timeout: float | None = None
+    ) -> Hold | nullcontext[None]:
+        """Hold `digest` while one fetch reads, downloads and stores its artifact.
+
+        `with` holds it among threads and `async with` among one loop's tasks,
+        waiting up to `timeout` seconds, or without limit for None. A disabled
+        cache holds nothing, since no fetch could read what another stored.
+
+        Raises:
+            DfoTimeoutError: The wait passed `timeout` (`deadline_exceeded`).
+        """
+        if not self.enabled:
+            return nullcontext()
+        return _DOWNLOADS.hold((str(self.directory), digest), timeout=timeout)
+
     def get_bytes(self, digest: str, /) -> bytes | None:
         """The artifact with `digest`, or None when it is absent or its bytes differ."""
-        if not self.enabled:
+        if not self.enabled or (path := self._file(digest)) is None:
             return None
-        path = self.directory / file_entry(digest)
         try:
             data = path.read_bytes()
         except OSError:  # absent, or a cache directory the disk refuses
@@ -126,23 +187,38 @@ class Cache:
         Raises:
             ValueError: `data` does not hash to `digest`.
         """
-        if not self.enabled:
+        if not self.enabled or (path := self._file(digest)) is None:
             return
         if sha256_digest(data) != digest:
             raise ValueError(f"the bytes do not hash to {digest}")
-        path = self.directory / file_entry(digest)
         if _write(path, data, digest=digest):
             self._evict(keep=path)
+
+    def discard(self, digest: str, /) -> None:
+        """Remove the artifact with `digest`, whose bytes hash right but do not read.
+
+        A manifest that lists it stays, and its next fetch downloads the artifact
+        again.
+        """
+        if not self.enabled or (path := self._file(digest)) is None:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as error:
+            logger.warning("dfo cache: could not remove %s: %s", path, error)
 
     def get_manifest(
         self, spec_id: str, content_version: str, rendering: Rendering, /
     ) -> dict[str, Any] | None:
-        """The stored manifest of a built version's rendering, or None."""
-        if not self.enabled:
+        """The stored manifest of a built version's rendering, or None.
+
+        None also when the file does not pass `check_manifest` or names another
+        spec or version than its path.
+        """
+        path = self._manifest(spec_id, content_version, rendering)
+        if not self.enabled or path is None:
             return None
-        return _read_json(
-            self.directory / manifest_entry(spec_id, content_version, rendering)
-        )
+        return _held_manifest(path, spec_id, content_version)
 
     def put_manifest(
         self,
@@ -153,9 +229,9 @@ class Cache:
         /,
     ) -> None:
         """Store a built version's manifest for one rendering."""
-        if not self.enabled:
+        path = self._manifest(spec_id, content_version, rendering)
+        if not self.enabled or path is None:
             return
-        path = self.directory / manifest_entry(spec_id, content_version, rendering)
         _write(path, json.dumps(manifest, ensure_ascii=False).encode())
 
     def latest_manifest(
@@ -174,23 +250,44 @@ class Cache:
     ) -> list[dict[str, Any]]:
         """Cached manifests of a spec in one rendering, newest first.
 
-        Invalid or partial manifest files are omitted. Callers that need an
-        artifact still verify its bytes before choosing a candidate.
+        Manifest files that `get_manifest` would not return, and those with no
+        `prepared_at`, are omitted. Callers that need an artifact still verify its
+        bytes before choosing a candidate.
         """
-        if not self.enabled:
+        if not self.enabled or SPEC_ID.fullmatch(spec_id) is None:
             return []
-        if SPEC_ID.fullmatch(spec_id) is None:
-            raise ValueError(f"{spec_id!r} is not a spec id")
         found: list[tuple[str, dict[str, Any]]] = []
         name = f"{rendering_name(rendering)}.json"
         for path in sorted((self.directory / "manifests" / spec_id).glob(f"*/{name}")):
-            manifest = _read_json(path)
+            manifest = _held_manifest(path, spec_id, path.parent.name)
             if manifest is not None and isinstance(manifest.get("prepared_at"), str):
                 found.append((manifest["prepared_at"], manifest))
         return [
             manifest
             for _, manifest in sorted(found, key=lambda item: item[0], reverse=True)
         ]
+
+    def _file(self, digest: str) -> Path | None:
+        """The artifact's path, or None when `digest` is not a sha256 digest."""
+        if DIGEST.fullmatch(digest) is None:
+            logger.debug("dfo cache: %r is not a digest; skipped", digest)
+            return None
+        return self.directory / file_entry(digest)
+
+    def _manifest(
+        self, spec_id: str, content_version: str, rendering: Rendering
+    ) -> Path | None:
+        """The manifest's path, or None when the ids are not server ids."""
+        if SPEC_ID.fullmatch(spec_id) is None or (
+            CONTENT_VERSION.fullmatch(content_version) is None
+        ):
+            logger.debug(
+                "dfo cache: %r at %r is not a spec version; skipped",
+                spec_id,
+                content_version,
+            )
+            return None
+        return self.directory / manifest_entry(spec_id, content_version, rendering)
 
     def _evict(self, *, keep: Path) -> None:
         files = self.directory / "files"
@@ -245,6 +342,28 @@ def _holds(path: Path, digest: str) -> bool:
         return sha256_digest(path.read_bytes()) == digest
     except OSError:
         return False
+
+
+def _held_manifest(
+    path: Path, spec_id: str, content_version: str
+) -> dict[str, Any] | None:
+    """The manifest at `path` when it passes `check_manifest` and names
+    `spec_id` at `content_version`, else None."""
+    manifest = _read_json(path)
+    if manifest is None:
+        return None
+    try:
+        check_manifest(manifest)
+    except ContractError:
+        logger.debug("dfo cache: %s is not a manifest; skipped", path)
+        return None
+    if (
+        manifest["definition"]["spec_id"] != spec_id
+        or manifest["content_version"] != content_version
+    ):
+        logger.debug("dfo cache: %s names another version; skipped", path)
+        return None
+    return manifest
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:

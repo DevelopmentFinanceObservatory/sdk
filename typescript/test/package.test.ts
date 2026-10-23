@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -40,6 +40,29 @@ test("the node entry point reads the credentials file from the file system", asy
       env: envFrom({ DFO_CREDENTIALS_FILE: join(directory, "absent.toml") }),
     });
     assert.equal(missing.source, "anonymous");
+  } finally {
+    await rm(directory, { recursive: true });
+  }
+});
+
+test("an unreadable credentials file raises credentials_file_unreadable", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "dfo-credentials-"));
+  try {
+    const loop = join(directory, "loop.toml");
+    await symlink(loop, loop);
+    // A directory, and a symlink to itself.
+    for (const path of [directory, loop]) {
+      await assert.rejects(resolveApiKey({ env: envFrom({ DFO_CREDENTIALS_FILE: path }) }), {
+        name: "AuthenticationError",
+        code: "credentials_file_unreadable",
+      });
+    }
+    // Anonymous use reads no file.
+    const anonymous = await resolveApiKey({
+      apiKey: false,
+      env: envFrom({ DFO_CREDENTIALS_FILE: directory }),
+    });
+    assert.equal(anonymous.source, "anonymous");
   } finally {
     await rm(directory, { recursive: true });
   }

@@ -11,7 +11,7 @@ type Shape =
   | { readonly values: Shape }
   | { readonly discriminator: string; readonly mapping: Readonly<Record<string, string>> };
 
-type JsonType = "string" | "integer" | "array" | "object";
+export type JsonType = "string" | "integer" | "array" | "object";
 
 type Entry = {
   readonly required: Readonly<Record<string, JsonType>>;
@@ -58,11 +58,29 @@ function checkShape(shape: Shape, value: unknown, pointer: string): void {
 
 function checkSchema(schema: string, value: unknown, pointer: string): void {
   const entry = TABLE[schema]!;
+  const body = checkRequired(schema, entry.required, value, pointer);
+  for (const [member, shape] of Object.entries(entry.children)) {
+    const child = body[member];
+    if (child !== undefined && child !== null)
+      checkShape(shape, child, `${pointer}/${escape(member)}`);
+  }
+}
+
+/**
+ * The value as an object once it holds each `required` member as its JSON type, else
+ * `ContractError` (`contract_violation`) at the member's pointer.
+ */
+export function checkRequired(
+  schema: string,
+  required: Readonly<Record<string, JsonType>>,
+  value: unknown,
+  pointer = "",
+): Readonly<Record<string, unknown>> {
   if (!isRecord(value)) {
     throw violation(`The ${schema} at ${pointer || "/"} is not an object.`, pointer);
   }
   const body = value;
-  for (const [member, type] of Object.entries(entry.required)) {
+  for (const [member, type] of Object.entries(required)) {
     const at = `${pointer}/${escape(member)}`;
     if (body[member] === undefined || body[member] === null) {
       throw violation(
@@ -79,11 +97,7 @@ function checkSchema(schema: string, value: unknown, pointer: string): void {
       );
     }
   }
-  for (const [member, shape] of Object.entries(entry.children)) {
-    const child = body[member];
-    if (child !== undefined && child !== null)
-      checkShape(shape, child, `${pointer}/${escape(member)}`);
-  }
+  return body;
 }
 
 /**

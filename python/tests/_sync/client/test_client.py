@@ -15,18 +15,27 @@ import httpx2
 import pytest
 
 from dfo._core.errors import (
+    ContractError,
     DataWarning,
     InvalidRequestError,
     NetworkError,
     NotFoundError,
 )
-from dfo._core.refs import DatasetRef
-from dfo._core.types import Spec
+from dfo._core.refs import DatasetRef, RefMember
+from dfo._core.types import Rendering, Spec
 from dfo._datasets.cache import Cache
 from dfo._sync._client.client import Client
 from dfo._sync._datasets.fetch import Session
 from dfo._sync._http.transport import Transport
-from tests._fetch_support import BASE, ORIGIN, Replay, Server, json_response, problem
+from tests._fetch_support import (
+    BASE,
+    ORIGIN,
+    Replay,
+    Server,
+    json_response,
+    posted_spec,
+    problem,
+)
 
 QUESTION = "ODA disbursements from Germany to Nigeria for basic health care"
 
@@ -87,8 +96,17 @@ def test_with_options_shares_the_connections_and_only_the_owner_closes() -> None
     quick.close()
     assert (client.request("GET", "/datasets/capabilities")).json() == {"ok": True}
     client.close()
-    with pytest.raises(RuntimeError):
-        quick.request("GET", "/datasets/capabilities")
+    client.close()
+    calls = [
+        lambda: quick.request("GET", "/datasets/capabilities"),
+        lambda: client.search(QUESTION),
+        client.catalogue,
+    ]
+    for call in calls:
+        with pytest.raises(InvalidRequestError, match="closed") as caught:
+            call()
+        assert caught.value.code == "invalid_argument"
+    assert len(server.requests) == 1
 
 
 def test_request_returns_the_raw_response_and_raises_a_refusal() -> None:
@@ -114,10 +132,29 @@ def test_request_returns_the_raw_response_and_raises_a_refusal() -> None:
     assert server.body(1) == {"input": {}}
 
 
+def test_a_refused_method_is_the_callers_on_a_raw_request_only() -> None:
+    refused = problem(405, "method_not_allowed")
+    server = Server(refused, refused)
+    with client_over(server) as client:
+        with pytest.raises(InvalidRequestError) as raw:
+            client.request("DELETE", "/search/catalogue")
+        with pytest.raises(ContractError) as wrapped:
+            client.catalogue()
+    assert (raw.value.code, raw.value.status) == ("method_not_allowed", 405)
+    assert raw.value.trace_id == "trace"
+    assert isinstance(raw.value.__cause__, ContractError)
+    assert wrapped.value.code == "method_not_allowed"
+
+
 @pytest.mark.parametrize(
     "path",
-    ["//files.example.net/x", f"{ORIGIN}/api/datasets", "datasets/schema"],
-    ids=["scheme-relative", "absolute-on-origin", "no-slash"],
+    [
+        "//files.example.net/x",
+        f"{ORIGIN}/api/datasets",
+        "datasets/schema",
+        "/../../etc/passwd",
+    ],
+    ids=["scheme-relative", "absolute-on-origin", "no-slash", "dot-segments"],
 )
 def test_request_refuses_what_is_not_a_path_under_the_base_url(
     path: str,
@@ -126,6 +163,101 @@ def test_request_refuses_what_is_not_a_path_under_the_base_url(
     with client_over(server) as client:
         with pytest.raises(InvalidRequestError) as caught:
             client.request("GET", path)
+    assert caught.value.code == "invalid_argument"
+    assert server.calls() == []
+
+
+_FOREIGN_MEMBER = RefMember(
+    parts=(),
+    sentence="A reading.",
+    spec=Spec("../../search/resolve", {}),
+    content_version="cv_" + "0" * 32,
+    digest="sha256:" + "0" * 64,
+    rendering=Rendering("parquet", bundle=False),
+)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda client: client.operation("../search/resolve"),
+        lambda client: client.operation("op_x?foo=1"),
+        lambda client: client.operation("op_" + "A" * 64),
+        lambda client: client.graph.node("../x"),
+        lambda client: client.graph.node("country/%2e%2e/admin"),
+        lambda client: client.graph.node("country/NGA?x=1"),
+        lambda client: client.graph.node("country/NGA#x"),
+        lambda client: client.graph.node("country/\tNGA"),
+        lambda client: client.graph.node(""),
+        lambda client: client.fetch(DatasetRef((_FOREIGN_MEMBER,))),
+        lambda client: client.codes.get("../datasets"),
+        lambda client: client.codes.get("Spec_Not_Found"),
+        lambda client: client.codes.get("spec not found"),
+        lambda client: client.codes.get("_spec"),
+        lambda client: client.codes.get(""),
+    ],
+    ids=[
+        "operation-dots",
+        "operation-query",
+        "operation-upper-hex",
+        "dcid-dots",
+        "dcid-encoded-dots",
+        "dcid-query",
+        "dcid-fragment",
+        "dcid-control",
+        "dcid-empty",
+        "ref-spec-id",
+        "code-dots",
+        "code-upper",
+        "code-space",
+        "code-leading-underscore",
+        "code-empty",
+    ],
+)
+def test_an_id_that_would_leave_its_route_is_refused_unsent(call) -> None:
+    server = Server()
+    with client_over(server) as client:
+        with pytest.raises(InvalidRequestError) as caught:
+            call(client)
+    assert caught.value.code == "invalid_argument"
+    assert server.calls() == []
+
+
+_SPEC = Spec(posted_spec()["spec_id"], posted_spec()["definition"])
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda client: client.search(""),
+        lambda client: client.search(" \t\n"),
+        lambda client: client.search(b"GDP of Kenya"),
+        lambda client: client.search("GDP \ud800 Kenya"),
+        lambda client: client.fetch(_SPEC, layout=""),
+        lambda client: client.fetch(_SPEC, window=(2020, 2010)),
+        lambda client: client.fetch(_SPEC, window=(10**30, 10**31)),
+        lambda client: client.fetch(_SPEC, entities={"origin": 5}),
+        lambda client: client.fetch(_SPEC, entities=["origin"]),
+        lambda client: client.fetch(_SPEC, facets="unit"),
+    ],
+    ids=[
+        "question-empty",
+        "question-whitespace",
+        "question-bytes",
+        "question-lone-surrogate",
+        "layout-empty",
+        "window-reversed",
+        "window-past-json-integers",
+        "role-bound-to-a-number",
+        "entities-a-list",
+        "facets-a-string",
+    ],
+)
+def test_an_argument_the_client_checks_is_refused_unsent(call) -> None:
+    server = Server()
+    with client_over(server) as client:
+        with pytest.raises(InvalidRequestError) as caught:
+            call(client)
     assert caught.value.code == "invalid_argument"
     assert server.calls() == []
 

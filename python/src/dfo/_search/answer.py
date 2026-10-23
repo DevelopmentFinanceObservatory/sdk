@@ -50,7 +50,7 @@ from dfo._core.parse import (
     read_items,
     read_requested_operation,
 )
-from dfo._core.refusals import describing, trace_id_of
+from dfo._core.refusals import describing, problem_error, trace_id_of
 from dfo._core.types import (
     AsyncCandidate,
     CandidatesPart,
@@ -146,9 +146,7 @@ class AsyncAnswer:
     async def choose(self, option: int | str, /) -> AsyncAnswer: ...
     @overload
     async def choose(self, part: int | str, option: int | str, /) -> AsyncAnswer: ...
-    async def choose(
-        self, first: int | str, second: int | str | None = None, /
-    ) -> AsyncAnswer:
+    async def choose(self, *choice: int | str) -> AsyncAnswer:
         """Settle a part that awaits a choice, and return Search's new answer.
 
         The choice makes one Search request. The new answer, its sentence and
@@ -160,27 +158,36 @@ class AsyncAnswer:
         option is named by its index or its label.
 
         Raises:
-            InvalidRequestError: No part, or more than one, awaits a choice; the
-                part or option is unknown; the part offers no options; or a part
-                cannot be posted back.
+            InvalidRequestError: The call names neither one nor two keys; no
+                part, or more than one, awaits a choice; a key is not an index
+                or a label, or names no part or option; the part offers no
+                options; or a part cannot be posted back.
             ContractError: The chosen option's `data_query` is not a parsed
                 input of one part; it carries the answer's trace id.
         """
         with describing(self.trace_id):
-            request = self._choice_input(first, second)
+            request = self._choice_input(choice)
         return await self._resolve(request)
 
-    def _choice_input(
-        self, first: int | str, second: int | str | None
-    ) -> Mapping[str, Any]:
-        """The Search input a choice posts."""
-        if second is None:
-            gap = self._only_choice()
-            option = first
-        else:
-            gap = self._gap_named(first)
-            option = second
-        chosen = _pick(gap, option, mention=first if second is not None else None)
+    def _choice_input(self, choice: Sequence[object]) -> Mapping[str, Any]:
+        """The Search input a choice posts, from `choose`'s one or two keys."""
+        for key in choice:
+            if isinstance(key, bool) or not isinstance(key, int | str):
+                raise client_error(
+                    CHOICE_INVALID, f"{key!r} is not an index or a label."
+                )
+        match choice:
+            case (int() | str() as option,):
+                gap, mention = self._only_choice(), None
+            case (int() | str() as part, int() | str() as option):
+                gap, mention = self._gap_named(part), part
+            case _:
+                raise client_error(
+                    CHOICE_INVALID,
+                    f"choose takes an option, or a part and an option; it got "
+                    f"{len(choice)} keys.",
+                )
+        chosen = _pick(gap, option, mention=mention)
         if len(self.parts) == 1 and isinstance(chosen, Option):
             _option_part(chosen)
             return chosen.data_query
@@ -196,6 +203,7 @@ class AsyncAnswer:
         partial: bool = False,
         strict: bool = False,
         layout: Layout = "long",
+        without_party_totals: bool = False,
         timeout: float | None = 1800.0,
         progress: bool | None = None,
     ) -> Dataset:
@@ -211,6 +219,9 @@ class AsyncAnswer:
             strict: Raise the `SearchWarning`, and the datasets surface's
                 warnings, instead of issuing them.
             layout: `long`, or `frame` for one reading's pipeline frame.
+            without_party_totals: Leave out the rows of parties the code index
+                declares totals, such as the DAC total beside its members, on
+                each party role a reading leaves open.
             timeout: The longest the whole build waits, in seconds. In the
                 synchronous client, platform name resolution can run past this
                 bound; the asynchronous client can cancel it.
@@ -247,6 +258,7 @@ class AsyncAnswer:
             session.transport,
             members,
             layout=layout,
+            without_party_totals=without_party_totals,
             strict=strict,
             timeout=timeout,
             progress=progress,
@@ -313,8 +325,11 @@ async def resolve(
             the asynchronous client can cancel it.
 
     Raises:
+        DfoError: The response is a problem document with a `code` but no
+            `kind`, raised as the class its code maps to.
         ContractError: The body is not JSON (`unexpected_response`), the
-            answer's kind is unknown, or a member the client acts on is missing.
+            answer's kind is absent or unknown, or a member the client acts on
+            is missing.
     """
     session = source()
     transport = session.transport
@@ -327,6 +342,16 @@ async def resolve(
     )
     body = response_json(response)
     trace_id = trace_id_of(response, body)
+    if isinstance(body, Mapping) and "kind" not in body and "code" in body:
+        # A problem document Search sent with a success status.
+        raise problem_error(
+            response.status_code,
+            body,
+            reason=response.reason_phrase,
+            origin=transport.origin,
+            trace_id=trace_id,
+            key=None if (key := transport.key.key) is None else key.reveal(),
+        )
     with describing(trace_id):
         return answer_from_body(
             body, question=question, source=source, trace_id=trace_id
@@ -369,6 +394,8 @@ def answer_from_body(
             raw=body,
             _source=source,
         )
+    if kind is None:
+        raise client_error(CONTRACT_VIOLATION, "The Search response names no kind")
     if kind != _strict.RESOLUTION_KIND:
         raise client_error(
             CONTRACT_VIOLATION,
@@ -425,6 +452,7 @@ def _bind_candidates(
         partial: bool,
         strict: bool,
         layout: Layout,
+        without_party_totals: bool,
         timeout: float | None,
         progress: bool | None,
     ) -> Dataset:
@@ -439,6 +467,7 @@ def _bind_candidates(
             partial=partial,
             strict=strict,
             layout=layout,
+            without_party_totals=without_party_totals,
             timeout=timeout,
             progress=progress,
         )
@@ -527,10 +556,6 @@ def _part_index(
     gaps: Sequence[Gap[AsyncCandidate]],
     key: int | str,
 ) -> int:
-    if isinstance(key, bool):
-        raise client_error(
-            CHOICE_INVALID, f"Part {key!r} is not an index or the part's words."
-        )
     if isinstance(key, int):
         if 0 <= key < len(parts):
             return key
@@ -560,12 +585,7 @@ def _part_index(
 def _pick(
     gap: Gap[AsyncCandidate], key: int | str, *, mention: int | str | None
 ) -> AsyncCandidate | Option:
-    """The candidate or option `key` names in a gap. A boolean is neither an
-    index nor a label."""
-    if isinstance(key, bool):
-        raise client_error(
-            CHOICE_INVALID, f"Option {key!r} is not an index or a label."
-        )
+    """The candidate or option `key` names in a gap."""
     choices = gap.options
     if not choices:
         raise client_error(

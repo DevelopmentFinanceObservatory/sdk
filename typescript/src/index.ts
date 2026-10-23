@@ -1,6 +1,9 @@
 export { Answer, Candidate, SearchWarning } from "./search/answer.ts";
 export type {
+  AnswerDiagnostics,
   AnswerFetchOptions,
+  AnswerKind,
+  AnswerStatus,
   Gap,
   GapKind,
   QueryOption,

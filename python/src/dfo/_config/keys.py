@@ -17,8 +17,10 @@ from dfo._config.credentials import CredentialsFileError, read_profiles
 from dfo._config.paths import credentials_path
 from dfo._core.codes import (
     CREDENTIALS_FILE_INVALID,
+    CREDENTIALS_FILE_UNREADABLE,
     KEY_CHECKSUM_MISMATCH,
     KEY_EMPTY,
+    KEY_INVALID,
     KEY_NOT_BASE62,
     KEY_UNKNOWN_PREFIX,
     PROFILE_NOT_FOUND,
@@ -31,6 +33,7 @@ from dfo._core.errors import (
     client_warning,
     warn_once,
 )
+from dfo._core.text import key_fault
 
 type KeyFormatProblem = Literal["unknown_prefix", "not_base62", "checksum_mismatch"]
 type KeySource = Literal[
@@ -170,6 +173,13 @@ def _from_file(path: str, env: Mapping[str, str]) -> ResolvedKey | None:
             f"The credentials file {path} is invalid at line {error.line} "
             f"({error.reason}). Fix it, or remove it and run `dfo auth login`.",
         ) from error
+    except OSError as error:
+        raise client_error(
+            CREDENTIALS_FILE_UNREADABLE,
+            f"The credentials file {path} exists but cannot be read "
+            f"({error.strerror or type(error).__name__}). Make it a file its "
+            "owner can read, or set DFO_CREDENTIALS_FILE to one.",
+        ) from error
     if profiles is None:
         return None
     named = env.get("DFO_PROFILE") or None
@@ -193,12 +203,17 @@ def _from_file(path: str, env: Mapping[str, str]) -> ResolvedKey | None:
 
 
 def _colab_secret() -> str | None:
+    """The Colab secret's value, or None when it is missing or cannot be read.
+
+    Colab raises its own classes for a missing secret and a notebook without
+    access, and others when the lookup itself fails; each leaves no secret.
+    """
     if "google.colab" not in sys.modules:
         return None
-    userdata = importlib.import_module("google.colab.userdata")
     try:
+        userdata = importlib.import_module("google.colab.userdata")
         value = userdata.get(_COLAB_SECRET)
-    except (userdata.SecretNotFoundError, userdata.NotebookAccessError):
+    except Exception:  # any failed lookup leaves no secret
         return None
     return value if isinstance(value, str) and value else None
 
@@ -212,7 +227,14 @@ def _from_argument(api_key: ApiKeyArgument) -> ResolvedKey | None:
         return None
     if api_key is False:
         return _ANONYMOUS
-    value = api_key if isinstance(api_key, str | ApiKey) else api_key()
+    value = api_key() if callable(api_key) else api_key
+    if not isinstance(value, str | ApiKey):
+        given = "The api_key callable returned" if callable(api_key) else "api_key is"
+        raise client_error(
+            KEY_INVALID,
+            f"{given} a {type(value).__name__}; a key is a string or an ApiKey. "
+            "Pass None to look one up, or False for anonymous use.",
+        )
     if value == "":
         raise client_error(
             KEY_EMPTY,
@@ -220,6 +242,20 @@ def _from_argument(api_key: ApiKeyArgument) -> ResolvedKey | None:
             "False for anonymous use.",
         )
     return _found("argument", value)
+
+
+def _source_name(resolved: ResolvedKey) -> str:
+    match resolved.source:
+        case "argument":
+            return "the api_key argument"
+        case "environment":
+            return "DFO_API_KEY"
+        case "credentials_file":
+            return f"profile {resolved.profile!r} of {resolved.path}"
+        case "colab":
+            return f"the Colab secret {_COLAB_SECRET}"
+        case "anonymous":
+            return "no source"
 
 
 def _lookup(
@@ -249,7 +285,9 @@ def resolve_key(
     returning one, or False for anonymous use); `DFO_API_KEY`; the credentials
     file, profile `DFO_PROFILE` else `default`; a Colab secret named
     `DFO_API_KEY`; otherwise anonymous. An empty `DFO_API_KEY` counts as unset.
-    A key that fails the format check warns once per process and is used anyway.
+    A key outside visible ASCII, 0x21 to 0x7E, raises `key_invalid`, naming its
+    source and the position of the first such character. A key that fails the
+    format check warns once per process and is used anyway.
 
     Args:
         api_key: The client's `api_key` argument.
@@ -258,12 +296,22 @@ def resolve_key(
 
     Raises:
         AuthenticationError: The `api_key` argument is empty (`key_empty`), the
-            credentials file is invalid
-            (`credentials_file_invalid`), `DFO_PROFILE` names a profile it lacks
-            (`profile_not_found`), or the chosen profile has no key or an empty
-            one (`profile_without_key`).
+            argument, or what its callable returns, is not a string or an
+            `ApiKey`, or the key holds a character outside visible ASCII
+            (`key_invalid`), the
+            credentials file is invalid (`credentials_file_invalid`) or cannot
+            be read (`credentials_file_unreadable`), `DFO_PROFILE` names a
+            profile it lacks (`profile_not_found`), or the chosen profile has no
+            key or an empty one (`profile_without_key`).
     """
     resolved = _lookup(api_key, os.environ if env is None else env, path)
+    if resolved.key is not None and (fault := key_fault(resolved.key.reveal())):
+        raise client_error(
+            KEY_INVALID,
+            f"The API key from {_source_name(resolved)} holds {fault}; a key "
+            "holds visible ASCII only. Copy it again without spaces or line "
+            "breaks.",
+        )
     if resolved.key is not None and (
         problem := check_key_format(resolved.key.reveal())
     ):

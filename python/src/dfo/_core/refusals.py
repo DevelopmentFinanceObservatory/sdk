@@ -35,6 +35,7 @@ from dfo._core.errors import (
     VersionUnavailableError,
     status_class,
 )
+from dfo._core.text import origin_of, printable, redacted
 from dfo._generated.error_map import ACTIONS, REFUSAL_WITHOUT_CODE, Action
 
 TRACE_HEADER = "x-dfo-trace-id"
@@ -52,6 +53,14 @@ _RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 
 # The website proxy's `retry` value for a refusal that clears on its own.
 _PROXY_RETRY = "retry_after_delay"
+
+# The codes of a 404 that matched no route, the API's own and a body without one.
+_NO_ROUTE = frozenset({"not_found", REFUSAL_WITHOUT_CODE})
+
+# The code of a refusal of the request's method. The contract maps it to
+# "upgrade", which holds for a route the client wraps; on a raw request the
+# caller chose the method.
+_METHOD_NOT_ALLOWED = "method_not_allowed"
 
 
 def error_class(code: str | None, status: int | None) -> type[DfoError]:
@@ -92,6 +101,27 @@ def _text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _docs_url(origin: str, type_: str) -> str | None:
+    """The page a problem document's `type` names, resolved against the API's
+    origin, or None unless it is an https URL on that origin with no control
+    character."""
+    try:
+        url = urljoin(origin + "/", type_)
+    except ValueError:
+        return None
+    if not origin.startswith("https://") or origin_of(url) != origin:
+        return None
+    return url if printable(url) == url else None
+
+
+def _at_pointer(message: str, pointer: str | None) -> str:
+    """`message` naming the field a problem document's `pointer` names, unless
+    the pointer is empty or the message names it already."""
+    if pointer is None or pointer in message:
+        return message
+    return f"{message.rstrip('.')} at {pointer}"
+
+
 def json_body(response: httpx2.Response) -> object:
     """A response's body as JSON when its media type is a JSON one, else None."""
     media_type = response.headers.get("content-type", "").split(";")[0].strip()
@@ -99,7 +129,7 @@ def json_body(response: httpx2.Response) -> object:
         return None
     try:
         return response.json()
-    except ValueError:
+    except (ValueError, RecursionError):  # not JSON, or nested past the stack
         return None
 
 
@@ -143,6 +173,8 @@ def problem_error(
     retry_after: float | None = None,
     trace_id: str | None = None,
     fallback_code: str | None = None,
+    route: str | None = None,
+    key: str | None = None,
 ) -> DfoError:
     """Build the error for a refused response.
 
@@ -156,15 +188,20 @@ def problem_error(
             carries no trace id.
         fallback_code: The code of a body that carries none, such as a failed
             operation's; None takes `refusal_without_code`.
+        route: The method and URL refused. A 404 that matched no route names
+            it and points at `base_url`, the likely fault.
+        key: The client's key, replaced by `[redacted]` wherever the server's
+            text quotes it.
 
     Returns:
         The error, of the class the code or else the status maps to. A problem
-        document's `retryable` outranks the status. The website proxy's
-        `{error, retry, detail}` body maps `error` as the code. A body with
-        neither code takes `fallback_code`, else `refusal_without_code`.
+        document's `retryable` outranks the status, and its `pointer` is named
+        in the message. The website proxy's `{error, retry, detail}` body maps
+        `error` as the code. A body with neither code takes `fallback_code`,
+        else `refusal_without_code`.
     """
     problem = body if isinstance(body, dict) else None
-    code = detail = docs_url = None
+    code = detail = page = pointer = None
     retryable = status in _RETRYABLE_STATUSES
     if problem is not None and "code" not in problem and "error" in problem:
         code = _text(problem.get("error"))
@@ -173,15 +210,25 @@ def problem_error(
     elif problem is not None:
         code = _text(problem.get("code"))
         detail = _text(problem.get("detail")) or _text(problem.get("title"))
+        pointer = _text(problem.get("pointer"))
         trace_id = _text(problem.get("trace_id")) or trace_id
         if isinstance(flag := problem.get("retryable"), bool):
             retryable = flag
         if type_ := _text(problem.get("type")):
-            docs_url = urljoin(origin + "/", type_)
-    message = detail or reason or f"HTTP {status}"
+            page = _docs_url(origin, type_)
+    if detail is not None:
+        detail = redacted(detail, key)
+    message = _at_pointer(detail or reason or f"HTTP {status}", pointer)
     code = code or fallback_code
+    if (
+        route is not None
+        and status == 404
+        and (code or REFUSAL_WITHOUT_CODE) in _NO_ROUTE
+    ):
+        message = f"{message.rstrip('.')}. {route} matched no route; check base_url"
     if code is not None:
         message = f"{message} ({code})"
+    message = redacted(message, key)
     return error_class(code, status)(
         message,
         code=code or REFUSAL_WITHOUT_CODE,
@@ -190,6 +237,24 @@ def problem_error(
         trace_id=trace_id,
         retryable=retryable,
         problem=problem,
-        docs_url=docs_url,
+        docs_url=page,
         retry_after=retry_after,
+    )
+
+
+def caller_refusal(error: DfoError) -> DfoError:
+    """The error a raw request raises for `error`: a refused method is the
+    caller's to fix, an `InvalidRequestError`, and any other error stays as it is."""
+    if error.code != _METHOD_NOT_ALLOWED or isinstance(error, InvalidRequestError):
+        return error
+    return InvalidRequestError(
+        str(error),
+        code=error.code,
+        status=error.status,
+        detail=error.detail,
+        trace_id=error.trace_id,
+        retryable=error.retryable,
+        problem=error.problem,
+        docs_url=error.docs_url,
+        retry_after=error.retry_after,
     )

@@ -9,6 +9,18 @@ the client's headers and key on the API's origin and with a bare request on the
 storage host. Under `DFO_OFFLINE=1` every request raises `offline` before it is
 sent.
 
+The base URL is an absolute http or https URL with no userinfo, query, fragment
+or dot segment (`base_url_invalid`). Two URLs share an origin when their scheme,
+host and port match after lower-casing, dropping the scheme's default port and a
+host's trailing dot. A key never travels over plain http to a host that is not
+loopback (`insecure_transport`), a key or header value with a character the
+header cannot hold is refused before any request (`key_invalid`,
+`header_invalid`), and a path with a dot segment is refused (`invalid_argument`).
+
+A forked child keeps its parent's transports and settings. The first request in a
+new process builds a fresh connection pool and keeps the inherited one open and
+untouched, since its connections belong to the parent.
+
 The client's `timeout` bounds one whole attempt, body included, and a call's
 deadline bounds the whole call. The asynchronous transport can cancel platform
 name resolution at those limits. Its generated synchronous form cannot: blocking
@@ -19,15 +31,18 @@ and again after a 401.
 """
 
 import copy
+import ipaddress
+import json as jsonlib
 import math
 import os
+import re
 import ssl
 from collections.abc import Generator, Iterable, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import Any, Self
+from typing import Any, NoReturn, Self
 from urllib.parse import urljoin, urlsplit
 
 import httpcore2
@@ -35,20 +50,35 @@ import httpx2
 
 from dfo._config.keys import ApiKeyArgument, KeyState, ResolvedKey
 from dfo._core.codes import (
+    BASE_URL_INVALID,
     CONTRACT_VIOLATION,
     DEADLINE_EXCEEDED,
     DOWNLOAD_FAILED,
+    HEADER_INVALID,
+    INSECURE_TRANSPORT,
+    INVALID_ARGUMENT,
     NETWORK_ERROR,
     OFFLINE,
+    RESPONSE_TOO_LARGE,
     ROUTE_DEPRECATED,
     SERVER_WARNING,
+    UNEXPECTED_RESPONSE,
 )
 from dfo._core.errors import DfoError, client_error, client_warning, warn_once
 from dfo._core.refusals import TRACE_HEADER, json_body, problem_error
+from dfo._core.text import (
+    control_fault,
+    has_dot_segment,
+    header_fault,
+    key_fault,
+    origin_of,
+    redacted,
+)
 from dfo._http.hooks import (
     Clock,
     HeaderProvider,
     Sleep,
+    event_loop,
     monotonic,
     sync_sleep,
 )
@@ -62,6 +92,42 @@ STORAGE_ORIGIN = "https://storage.googleapis.com"
 
 _BACKOFF_FIRST = 0.5
 _BACKOFF_CAP = 8.0
+
+# The longest `Retry-After` a refusal is waited for. A longer one, or one past
+# the call's deadline, raises the refusal at once with its `retry_after` set.
+RETRY_AFTER_MAX_S = 60.0
+
+# The bounds the poll interval a long build's server asks for is clamped to.
+POLL_INTERVAL_MIN_S = 1.0
+POLL_INTERVAL_MAX_S = 60.0
+
+# The decoded bytes a downloaded file may hold when its manifest names no size.
+DEFAULT_MAX_BYTES = 2 * 2**30
+
+# The decoded bytes an API response's body may hold: the larger of 16 MiB and ten
+# times the largest JSON body recorded, rounded. The largest recorded is the
+# `/search/schema` body in tests/data/search-schema.json, 267,493 bytes, above
+# every response in contract/scenarios (137,783 bytes at most) and every manifest
+# the e2e runs cached (140,748 bytes at most), so the floor holds.
+JSON_BODY_MAX_BYTES = 16 * 2**20
+
+# The most retries a client takes.
+_RETRIES_MAX = 10
+
+# The methods a request may use.
+_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
+
+# A `Retry-After` value: ASCII digits, or an IMF-fixdate.
+_SECONDS = re.compile(r"[0-9]+")
+_IMF_FIXDATE = re.compile(
+    r"(Mon|Tue|Wed|Thu|Fri|Sat|Sun), [0-9]{2} "
+    r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [0-9]{4} "
+    r"[0-9]{2}:[0-9]{2}:[0-9]{2} GMT"
+)
+
+# The pools a forked child inherited, held so that no collection closes the
+# parent's connections from the child.
+_inherited: list[object] = []
 
 
 def offline() -> bool:
@@ -77,32 +143,162 @@ def _refuse_offline(request: str) -> None:
         )
 
 
-def _origin_of(url: str) -> str:
-    parts = urlsplit(url)
-    return f"{parts.scheme}://{parts.netloc}".lower()
-
-
 def _split_base_url(base_url: str) -> tuple[str, str]:
-    parts = urlsplit(base_url)
-    if parts.scheme not in {"http", "https"} or not parts.netloc:
-        raise ValueError(f"The base URL must be an http or https URL: {base_url!r}")
-    origin = _origin_of(base_url)
+    """The base URL on its origin's form without a trailing slash, and the origin.
+
+    Raises:
+        InvalidRequestError: `base_url` is empty, holds a character outside
+            visible ASCII, is not an absolute http or https URL, or carries
+            userinfo, a query, a fragment or a dot segment (`base_url_invalid`).
+    """
+
+    def refuse(problem: str) -> NoReturn:
+        raise client_error(
+            BASE_URL_INVALID,
+            f"base_url {problem}. Pass an absolute https URL, such as "
+            f"{DEFAULT_BASE_URL}, or None for the public API.",
+        )
+
+    if not base_url:
+        refuse("is empty")
+    if fault := key_fault(base_url):
+        refuse(f"holds {fault}")
+    try:
+        parts = urlsplit(base_url)
+    except ValueError:
+        refuse("is not a URL")
+    if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+        refuse("is not an absolute http or https URL")
+    if "@" in parts.netloc:
+        refuse("carries userinfo; pass the key as api_key")
+    if "?" in base_url or "#" in base_url:
+        refuse("carries a query or a fragment")
+    if has_dot_segment(parts.path):
+        refuse("holds a . or .. path segment")
+    origin = origin_of(base_url)
+    if origin is None:
+        refuse("names no host, or a port that is not a number from 0 to 65535")
     return origin + parts.path.rstrip("/"), origin
 
 
-def retry_after(response: httpx2.Response) -> float | None:
-    """Return the wait a `Retry-After` header asks for, or None."""
-    value = response.headers.get("retry-after")
-    if not value:
+def _sends_in_clear(origin: str) -> bool:
+    """Whether a request to `origin` crosses the network unencrypted: plain http
+    to a host that is not `localhost` or a loopback address."""
+    parts = urlsplit(origin)
+    host = parts.hostname or ""
+    if parts.scheme != "http" or host == "localhost" or host.endswith(".localhost"):
+        return False
+    try:
+        return not ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return True
+
+
+def _checked_headers(headers: Mapping[str, str], source: str) -> Mapping[str, str]:
+    """Return `headers` once every value is a string of visible ASCII, space
+    and tab.
+
+    Raises:
+        InvalidRequestError: A value is not a string, or holds a control or
+            non-ASCII character (`header_invalid`). The message names the
+            header and the character's position, never the value.
+    """
+    for name, value in headers.items():
+        if not isinstance(value, str):
+            raise client_error(
+                HEADER_INVALID,
+                f"The {name} header from {source} is a {type(value).__name__}; "
+                "a header value is a string.",
+            )
+        if fault := header_fault(value):
+            raise client_error(
+                HEADER_INVALID,
+                f"The {name} header from {source} holds {fault}; a header value "
+                "holds visible ASCII, spaces and tabs only. Strip the line break "
+                "a command's output ends with.",
+            )
+    return headers
+
+
+def _checked_timeout(timeout: float, name: str) -> float:
+    """Return `timeout` once it is a finite number of seconds above 0.
+
+    Raises:
+        InvalidRequestError: It is not (`invalid_argument`).
+    """
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, int | float)
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"{name} is a finite number of seconds above 0, not {timeout!r}",
+        )
+    return float(timeout)
+
+
+def _checked_retries(max_retries: int) -> int:
+    """Return `max_retries` once it is an integer from 0 to 10.
+
+    Raises:
+        InvalidRequestError: It is not (`invalid_argument`).
+    """
+    if (
+        isinstance(max_retries, bool)
+        or not isinstance(max_retries, int)
+        or not 0 <= max_retries <= _RETRIES_MAX
+    ):
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"max_retries is an integer from 0 to {_RETRIES_MAX}, not {max_retries!r}",
+        )
+    return max_retries
+
+
+def _json_content(json: Any, method: str) -> bytes | None:
+    """`json` encoded as the body of a `method` request, or None for no body.
+
+    The encoding is httpx2's: UTF-8, no spaces, and no NaN or infinity.
+
+    Raises:
+        InvalidRequestError: `json` goes with a GET or HEAD, or cannot be
+            encoded as JSON (`invalid_argument`).
+    """
+    if json is None:
         return None
-    if value.strip().isdigit():
+    if method in ("GET", "HEAD"):
+        raise client_error(
+            INVALID_ARGUMENT, f"A {method} request carries no body; drop json"
+        )
+    try:
+        text = jsonlib.dumps(
+            json, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+        )
+        return text.encode()
+    except (TypeError, ValueError, RecursionError) as error:
+        raise client_error(
+            INVALID_ARGUMENT, f"The request's json is not JSON: {error}"
+        ) from error
+
+
+def retry_after(response: httpx2.Response) -> float | None:
+    """Return the wait a `Retry-After` header asks for, in seconds, or None.
+
+    The value is ASCII digits, a count of seconds, or an IMF-fixdate such as
+    `Sun, 06 Nov 1994 08:49:37 GMT`, of which a past date asks for 0. Any other
+    value asks for nothing, and the caller backs off on its own.
+    """
+    value = response.headers.get("retry-after", "").strip()
+    if _SECONDS.fullmatch(value):
         return float(value)
+    if not _IMF_FIXDATE.fullmatch(value):
+        return None
     try:
         moment = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
+    except ValueError:
         return None
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=UTC)
     return max(0.0, (moment - datetime.now(UTC)).total_seconds())
 
 
@@ -137,6 +333,31 @@ def _time_left(timeout: float | None, expired: type[Exception]) -> float | None:
     if left <= 0:
         raise expired("The attempt's deadline passed")
     return left if timeout is None else min(timeout, left)
+
+
+def _read_within(response: httpx2.Response, limit: int, what: str) -> None:
+    """Read `response`'s body as it decodes, stopping once it passes `limit`
+    bytes.
+
+    httpx2 decodes a compressed body in pieces of at most 1 MiB, so at most one
+    piece past `limit` is held before reading stops.
+
+    Raises:
+        ServerError: The decoded body passed `limit` bytes (`response_too_large`).
+    """
+    pieces = []
+    size = 0
+    for piece in response.iter_bytes():
+        size += len(piece)
+        if size > limit:
+            raise client_error(
+                RESPONSE_TOO_LARGE,
+                f"{what} answered a body past its limit of {limit:,} bytes",
+                status=response.status_code,
+            )
+        pieces.append(piece)
+    # As `Response.read` keeps the body it reads.
+    response._content = b"".join(pieces)
 
 
 class _DeadlineStream(httpcore2.NetworkStream):
@@ -255,6 +476,63 @@ def _pool_layout_error() -> RuntimeError:
     )
 
 
+class _Pool:
+    """The httpx2 client a transport and its copies send through.
+
+    The first use in a process other than the one that built it, a forked child,
+    builds a fresh client and keeps the inherited one, unclosed, in
+    `_inherited`: sending on the parent's connections, or closing them, would
+    garble the parent's traffic. An async client's connections belong to the
+    event loop that opened them, so the first use on another loop builds a fresh
+    client too; the old loop has usually closed, and its connections with it. A
+    client over a transport the caller passed in is kept as it is, since that
+    transport holds its own connections. Once closed, the pool refuses every use.
+    """
+
+    def __init__(self, http_transport: httpx2.BaseTransport | None) -> None:
+        self._http_transport = http_transport
+        self._pid = os.getpid()
+        self._loop: object | None = None
+        self._closed = False
+        self._client = self._build()
+
+    def _build(self) -> httpx2.Client:
+        client = httpx2.Client(transport=self._http_transport, follow_redirects=False)
+        _keep_to_deadlines(client)
+        return client
+
+    @property
+    def client(self) -> httpx2.Client:
+        """The client for this process and event loop, built afresh after a fork
+        or on another loop.
+
+        Raises:
+            InvalidRequestError: The pool is closed (`invalid_argument`).
+        """
+        if self._closed:
+            raise client_error(
+                INVALID_ARGUMENT,
+                "The client is closed; build a new client to send requests",
+            )
+        loop = event_loop(self._client)
+        if self._http_transport is None:
+            if self._pid != os.getpid():
+                _inherited.append(self._client)
+                self._client = self._build()
+            elif self._loop is not None and loop is not self._loop:
+                self._client = self._build()
+        self._pid = os.getpid()
+        self._loop = loop
+        return self._client
+
+    def close(self) -> None:
+        """Close the client, unless it belongs to the process this one forked from
+        or to another event loop, whose connections this loop cannot close."""
+        self._closed = True
+        if self._pid == os.getpid() and self._loop in (None, event_loop(self._client)):
+            self._client.close()
+
+
 class Transport:
     """One HTTP client with the DFO API's base URL, key, retries and deadlines.
 
@@ -293,23 +571,31 @@ class Transport:
             clock: A monotonic clock, in seconds, for deadlines.
 
         Raises:
-            ValueError: The base URL, timeout or retry count is invalid.
+            InvalidRequestError: The base URL is invalid (`base_url_invalid`), a
+                default header is not visible ASCII, spaces and tabs
+                (`header_invalid`), the key would travel over plain http to a
+                host that is not loopback (`insecure_transport`), the timeout
+                is not a finite number above 0, or the retry count not an
+                integer from 0 to 10 (`invalid_argument`).
             AuthenticationError: The key lookup failed.
         """
-        if timeout <= 0:
-            raise ValueError(f"timeout must be positive, not {timeout}")
-        if max_retries < 0:
-            raise ValueError(f"max_retries cannot be negative, not {max_retries}")
-        self._base_url, self._origin = _split_base_url(base_url or DEFAULT_BASE_URL)
+        timeout = _checked_timeout(timeout, "timeout")
+        max_retries = _checked_retries(max_retries)
+        self._base_url, self._origin = _split_base_url(
+            DEFAULT_BASE_URL if base_url is None else base_url
+        )
+        self._in_clear = _sends_in_clear(self._origin)
         self._keys = KeyState(api_key)
+        self._authorization()
         self._timeout = timeout
         self._max_retries = max_retries
-        self._default_headers = dict(default_headers or {})
+        self._default_headers = dict(
+            _checked_headers(default_headers or {}, "default_headers")
+        )
         self._header_provider = header_provider
         self._sleep = sleep
         self._clock = clock
-        self._http = httpx2.Client(transport=http_transport, follow_redirects=False)
-        _keep_to_deadlines(self._http)
+        self._pool = _Pool(http_transport)
         self._owner = True
 
     @property
@@ -340,17 +626,18 @@ class Transport:
     def with_options(
         self, *, timeout: float | None = None, max_retries: int | None = None
     ) -> Self:
-        """Return a copy with other limits that shares the pool and the key."""
+        """Return a copy with other limits that shares the pool and the key.
+
+        Raises:
+            InvalidRequestError: The timeout is not a finite number above 0, or
+                the retry count not an integer from 0 to 10 (`invalid_argument`).
+        """
         clone = copy.copy(self)
         clone._owner = False
         if timeout is not None:
-            if timeout <= 0:
-                raise ValueError(f"timeout must be positive, not {timeout}")
-            clone._timeout = timeout
+            clone._timeout = _checked_timeout(timeout, "timeout")
         if max_retries is not None:
-            if max_retries < 0:
-                raise ValueError(f"max_retries cannot be negative, not {max_retries}")
-            clone._max_retries = max_retries
+            clone._max_retries = _checked_retries(max_retries)
         return clone
 
     def now(self) -> float:
@@ -358,8 +645,15 @@ class Transport:
         return self._clock()
 
     def deadline(self, seconds: float | None) -> float | None:
-        """Return the clock reading `seconds` from now, or None for no deadline."""
-        return None if seconds is None else self._clock() + seconds
+        """Return the clock reading `seconds` from now, or None for no deadline.
+
+        Raises:
+            InvalidRequestError: `seconds` is not None or a finite number above
+                0 (`invalid_argument`).
+        """
+        if seconds is None:
+            return None
+        return self._clock() + _checked_timeout(seconds, "timeout")
 
     def sleep(self, seconds: float) -> None:
         """Wait `seconds` through the transport's sleep."""
@@ -370,6 +664,25 @@ class Transport:
         `Retry-After`, starting at 0.5 seconds and doubling to 8."""
         return min(_BACKOFF_FIRST * 2**attempt, _BACKOFF_CAP)
 
+    def refusal_wait(
+        self, error: DfoError, attempt: int, deadline: float | None
+    ) -> float | None:
+        """The wait before retry `attempt` (from 0) after `error`, or None when
+        the error raises now.
+
+        The wait is the refusal's `Retry-After`, else `backoff(attempt)`. A
+        `Retry-After` past `RETRY_AFTER_MAX_S`, or a wait that ends at or past
+        `deadline`, gives None.
+        """
+        wait = error.retry_after
+        if wait is None:
+            wait = self.backoff(attempt)
+        elif wait > RETRY_AFTER_MAX_S:
+            return None
+        if deadline is not None and self._clock() + wait >= deadline:
+            return None
+        return wait
+
     def origin_url(self, reference: str) -> str:
         """Resolve a URL the server returned against the base URL's origin.
 
@@ -377,7 +690,7 @@ class Transport:
             ContractError: The URL names another origin (`contract_violation`).
         """
         url = urljoin(self._origin + "/", reference)
-        if _origin_of(url) != self._origin:
+        if origin_of(url) != self._origin:
             raise client_error(
                 CONTRACT_VIOLATION,
                 f"The server named {reference}, which is outside the API at "
@@ -386,9 +699,14 @@ class Transport:
         return url
 
     def _url(self, target: str) -> str:
+        if fault := control_fault(target):
+            raise client_error(
+                INVALID_ARGUMENT,
+                f"The request path holds {fault}; a path holds no control character",
+            )
         parts = urlsplit(target)
         if parts.scheme or parts.netloc:
-            if f"{parts.scheme}://{parts.netloc}".lower() != self._origin:
+            if origin_of(target) != self._origin:
                 raise ValueError(
                     f"{target} is outside the API at {self._origin}; "
                     "fetch a signed URL with download()"
@@ -396,6 +714,12 @@ class Transport:
             return target
         if not target.startswith("/"):
             raise ValueError(f"A request path starts with '/': {target!r}")
+        if has_dot_segment(parts.path):
+            raise client_error(
+                INVALID_ARGUMENT,
+                f"The request path {target!r} holds a . or .. segment, which "
+                "would leave the API's base path",
+            )
         return self._base_url + target
 
     def _attempt_bounds(
@@ -423,40 +747,83 @@ class Transport:
         return limit, now + limit
 
     def _send(
-        self, request: httpx2.Request, deadline: float | None, what: str
+        self, request: httpx2.Request, deadline: float | None, what: str, limit: int
     ) -> httpx2.Response:
         """Send `request` and read its body by `deadline`, after name resolution.
+
+        The body is read as it decodes, and reading stops at the first piece
+        that takes it past `limit` bytes.
 
         Raises:
             DfoTimeoutError: The attempt timed out, or `deadline` passed while
                 the body was read (`deadline_exceeded`, retryable).
             NetworkError: The connection failed (`network_error`, retryable).
+            ServerError: The decoded body passed `limit` bytes
+                (`response_too_large`).
+            ContractError: The body does not decode as its `Content-Encoding`
+                says, or a redirect's `Location` is not a URL
+                (`unexpected_response`).
         """
         try:
             with attempt_deadline(self._clock, deadline):
-                response = self._http.send(request, stream=True)
+                response = self._pool.client.send(request, stream=True)
                 try:
-                    response.read()
+                    _read_within(response, limit, what)
                 finally:
                     response.close()
         except httpx2.TimeoutException as exc:
             raise client_error(DEADLINE_EXCEEDED, f"{what} timed out") from exc
         except httpx2.TransportError as exc:
             raise client_error(NETWORK_ERROR, f"{what} failed: {exc}") from exc
+        except httpx2.DecodingError as exc:
+            raise client_error(
+                UNEXPECTED_RESPONSE,
+                f"{what} answered a body that does not decode as its "
+                "Content-Encoding says",
+            ) from exc
+        except httpx2.InvalidURL as exc:
+            raise client_error(
+                UNEXPECTED_RESPONSE,
+                f"{what} answered a redirect whose Location is not a URL",
+            ) from exc
         return response
+
+    def _authorization(self) -> str | None:
+        """The `Authorization` value for the key, or None for anonymous use.
+
+        Raises:
+            InvalidRequestError: The key would travel over plain http to a host
+                that is not loopback (`insecure_transport`).
+        """
+        key = self._keys.resolved.key
+        if key is None:
+            return None
+        if self._in_clear:
+            raise client_error(
+                INSECURE_TRANSPORT,
+                f"The client would send its API key over plain http to "
+                f"{self._origin}, which is not a loopback host. Use an https "
+                "base_url, or api_key=False to call it anonymously.",
+            )
+        return f"Bearer {key.reveal()}"
 
     def _headers(self, extra: Mapping[str, str] | None) -> httpx2.Headers:
         headers = httpx2.Headers(
             {"User-Agent": USER_AGENT, "Accept": "application/json"}
         )
         headers.update(self._default_headers)
-        if self._header_provider is not None:
-            headers.update(self._header_provider())
+        if self._header_provider is not None and (provided := self._header_provider()):
+            headers.update(_checked_headers(provided, "header_provider"))
         if extra:
-            headers.update(extra)
-        if (key := self._keys.resolved.key) is not None:
-            headers["Authorization"] = f"Bearer {key.reveal()}"
+            headers.update(_checked_headers(extra, "the request"))
+        if (authorization := self._authorization()) is not None:
+            headers["Authorization"] = authorization
         return headers
+
+    def _secret(self) -> str | None:
+        """The key's value, which server text the client shows never quotes."""
+        key = self._keys.resolved.key
+        return None if key is None else key.reveal()
 
     def _note_headers(self, method: str, response: httpx2.Response) -> None:
         deprecation = response.headers.get("deprecation")
@@ -472,24 +839,31 @@ class Transport:
                 ("deprecation", deprecation, sunset),
                 client_warning(
                     ROUTE_DEPRECATED,
-                    f"The DFO API marked {route} for removal ({marks}). "
-                    "Upgrade development-finance.",
+                    redacted(
+                        f"The DFO API marked {route} for removal ({marks}). "
+                        "Upgrade development-finance.",
+                        self._secret(),
+                    ),
                 ),
             )
         if notice := response.headers.get("x-dfo-warning"):
-            warn_once(("x-dfo-warning", notice), client_warning(SERVER_WARNING, notice))
+            warn_once(
+                ("x-dfo-warning", notice),
+                client_warning(SERVER_WARNING, redacted(notice, self._secret())),
+            )
 
-    def _retry_wait(
-        self, error: DfoError, attempt: int, retries: int, deadline: float | None
-    ) -> float | None:
-        if not error.retryable or attempt >= retries:
-            return None
-        wait = error.retry_after
-        if wait is None:
-            wait = self.backoff(attempt)
-        if deadline is not None and self._clock() + wait >= deadline:
-            return None
-        return wait
+    def _rekeyed(self, refusal: DfoError) -> bool:
+        """Resolve the key again after `refusal`, a 401, and return whether it
+        changed.
+
+        A lookup that fails leaves the key as it was and becomes the refusal's
+        cause, so the server's `AuthenticationError` is the one that raises.
+        """
+        try:
+            return self._keys.refresh()
+        except Exception as failure:  # the 401 outranks a failed lookup
+            refusal.__cause__ = failure
+            return False
 
     def request(
         self,
@@ -502,14 +876,20 @@ class Transport:
         timeout: float | None = None,
         deadline: float | None = None,
         max_retries: int | None = None,
+        max_bytes: int = JSON_BODY_MAX_BYTES,
     ) -> httpx2.Response:
         """Send one API request, retrying what can succeed later.
 
         A 2xx or 3xx response, a redirect included, returns as it is.
         A refusal retries when its problem document says `retryable` (or, with
         no such member, when its status is one that clears), waiting for
-        `Retry-After` or backing off from 0.5 to 8 seconds. A 401 resolves the
-        key again and, when the key changed, sends once more. A refusal's body
+        `Retry-After` or backing off from 0.5 to 8 seconds. A `Retry-After`
+        past 60 seconds, or past the deadline, raises the refusal at once with
+        its `retry_after` set. A 401 resolves the
+        key again and, when the key changed, sends once more; when that lookup
+        fails, the 401 raises with the failure as its cause. A 404 that matched
+        no route names the request, since the base URL is the likely fault. A
+        refusal's body
         is read as a problem document when its media type is
         `application/problem+json` or `application/json`, and its trace id
         falls back to the `x-dfo-trace-id` header.
@@ -529,6 +909,7 @@ class Transport:
                 bounds every phase after name resolution; each attempt's timeout
                 is clamped to it.
             max_retries: Further attempts; defaults to the transport's.
+            max_bytes: The most decoded bytes a response's body may hold.
 
         Raises:
             DfoError: The class the refusal maps to, once retries are spent.
@@ -536,34 +917,54 @@ class Transport:
                 `DFO_OFFLINE=1` is set (`offline`).
             DfoTimeoutError: An attempt timed out with no retry left, or the
                 deadline passed, while waiting or while a body was read.
+            InvalidRequestError: A header value is not visible ASCII, spaces
+                and tabs (`header_invalid`), the key would travel over plain
+                http (`insecure_transport`), or `target` holds a dot segment or
+                a control character, `method` is not one the API serves,
+                `json` is not JSON or goes with a GET or HEAD, or the transport
+                is closed (`invalid_argument`).
+            ServerError: A response's decoded body passed `max_bytes`
+                (`response_too_large`).
+            ContractError: A body does not decode as its `Content-Encoding`
+                says, or a redirect's `Location` is not a URL
+                (`unexpected_response`).
             ValueError: `target` is neither a path nor a URL on the API's origin.
         """
+        if method not in _METHODS:
+            raise client_error(
+                INVALID_ARGUMENT,
+                f"{method!r} is not a method the API serves; use one of "
+                f"{', '.join(sorted(_METHODS))}",
+            )
         url = self._url(target)
+        content = _json_content(json, method)
         _refuse_offline(f"{method} {url}")
         retries = self._max_retries if max_retries is None else max_retries
         attempt = 0
         rekeyed = False
         while True:
             limit, attempt_end = self._attempt_bounds(timeout, deadline)
-            request = self._http.build_request(
+            request_headers = self._headers(headers)
+            if content is not None:
+                request_headers["Content-Type"] = "application/json"
+            request = self._pool.client.build_request(
                 method,
                 url,
                 params=params,
-                json=json,
-                headers=self._headers(headers),
+                content=content,
+                headers=request_headers,
                 timeout=limit,
             )
             try:
-                response = self._send(request, attempt_end, f"{method} {url}")
+                response = self._send(
+                    request, attempt_end, f"{method} {url}", max_bytes
+                )
             except DfoError as failure:
                 error = failure
             else:
                 self._note_headers(method, response)
                 if response.status_code < 400:
                     return response
-                if response.status_code == 401 and not rekeyed and self._keys.refresh():
-                    rekeyed = True
-                    continue
                 error = problem_error(
                     response.status_code,
                     json_body(response),
@@ -571,14 +972,28 @@ class Transport:
                     origin=self._origin,
                     retry_after=retry_after(response),
                     trace_id=response.headers.get(TRACE_HEADER),
+                    route=f"{method} {url}",
+                    key=self._secret(),
                 )
-            wait = self._retry_wait(error, attempt, retries, deadline)
+                if response.status_code == 401 and not rekeyed:
+                    rekeyed = True
+                    if self._rekeyed(error):
+                        continue
+            wait = None
+            if error.retryable and attempt < retries:
+                wait = self.refusal_wait(error, attempt, deadline)
             if wait is None:
                 raise error
             self._sleep(wait)
             attempt += 1
 
-    def download(self, url: str, *, deadline: float | None = None) -> bytes:
+    def download(
+        self,
+        url: str,
+        *,
+        deadline: float | None = None,
+        max_bytes: int = DEFAULT_MAX_BYTES,
+    ) -> bytes:
         """Fetch the file a files route redirected to, once.
 
         The URL is on the API's origin or the storage host. On the API's origin
@@ -589,30 +1004,34 @@ class Transport:
         when there is none. The generated synchronous transport cannot interrupt
         blocking platform name resolution. A failed fetch is not retried. A
         signed URL can expire, so the caller asks the files route for a fresh one.
+        Reading stops once the decoded file passes `max_bytes`.
 
         Raises:
-            ContractError: The URL is on neither origin (`contract_violation`).
-            ServerError: The host answered anything but 200 (`download_failed`).
+            ContractError: The URL is on neither origin (`contract_violation`),
+                or the body does not decode (`unexpected_response`).
+            ServerError: The host answered anything but 200 (`download_failed`),
+                or a file past `max_bytes` (`response_too_large`).
             NetworkError: The connection failed, or `DFO_OFFLINE=1` is set
                 (`offline`).
             DfoTimeoutError: The fetch timed out or the deadline passed.
+            InvalidRequestError: The transport is closed (`invalid_argument`).
         """
-        if _origin_of(url) not in (self._origin, STORAGE_ORIGIN):
+        if origin_of(url) not in (self._origin, STORAGE_ORIGIN):
             raise client_error(
                 CONTRACT_VIOLATION,
                 f"A files route redirected to {url}, which is on neither the API "
                 f"at {self._origin} nor the storage host {STORAGE_ORIGIN}",
             )
         _refuse_offline("the signed download")
-        on_api = _origin_of(url) == self._origin
+        on_api = origin_of(url) == self._origin
         limit, _ = self._attempt_bounds(math.inf, deadline)
-        request = self._http.build_request(
+        request = self._pool.client.build_request(
             "GET",
             url,
             headers=self._headers(None) if on_api else None,
             timeout=limit,
         )
-        response = self._send(request, deadline, "the signed download")
+        response = self._send(request, deadline, "the signed download", max_bytes)
         if on_api:
             self._note_headers("GET", response)
         if response.status_code != 200:
@@ -624,9 +1043,10 @@ class Transport:
         return response.content
 
     def close(self) -> None:
-        """Close the connection pool, when this transport built it."""
+        """Close the connection pool, when this transport built it. Later
+        requests through it or its copies raise `InvalidRequestError`."""
         if self._owner:
-            self._http.close()
+            self._pool.close()
 
     def __enter__(self) -> Self:
         return self

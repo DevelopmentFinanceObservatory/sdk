@@ -16,7 +16,7 @@ const TSC = join(PACKAGE, "node_modules", "typescript", "bin", "tsc");
 
 const CONSUMER = `
 import { Client, Dataset, isDfoError } from "@developmentfinance/client";
-import type { Answer, GraphNode } from "@developmentfinance/client";
+import type { Answer, AnswerKind, AnswerStatus, GapKind, GraphNode } from "@developmentfinance/client";
 import type { Part } from "@developmentfinance/client/wire";
 
 export async function rows(question: string): Promise<number> {
@@ -27,6 +27,22 @@ export async function rows(question: string): Promise<number> {
   const bytes: Uint8Array = await dataset.bytes();
   const node: GraphNode = await client.graph.node("country/NGA");
   return parts.length + dataset.rows + bytes.length + node.ref.length;
+}
+
+// An answer's dataset and a spec's dataset are both a Dataset.
+export async function either(answer: Answer, client: Client, whole: boolean): Promise<Dataset> {
+  const dataset: Dataset = await answer.fetch({ partial: true });
+  return whole ? dataset : client.fetch(answer.specs[0]!);
+}
+
+// An answer's kind is closed, and its diagnostics are typed.
+export function described(answer: Answer): string {
+  const kind: AnswerKind = answer.kind;
+  const status: AnswerStatus = answer.status;
+  const kinds: readonly GapKind[] = answer.gaps.map((gap) => gap.kind);
+  const total: number | undefined = answer.diagnostics.timing_ms?.total;
+  const tokens: number | undefined = answer.diagnostics.llm_usage?.["input_tokens"];
+  return [kind, status, kinds.join(), total ?? 0, tokens ?? 0].join(" ");
 }
 
 export const known = (error: unknown): boolean => isDfoError(error);

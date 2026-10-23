@@ -9,8 +9,8 @@ import json
 import socket
 import threading
 import time
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -31,6 +31,8 @@ NARROWED_ID = "spec_cb5baa4161de718f18583060674dbca6"
 NARROWED_CV = "cv_bf242138f8d0a892c97da9373d1626f4"
 OP_ID = "op_" + "a" * 64
 LONG = Rendering("parquet", False)
+CUT = Rendering("parquet", False, without_party_totals=True)
+CUT_DATA = b"PAR1 long layout without party totals PAR1"
 
 
 def json_response(
@@ -66,6 +68,23 @@ def problem(
     )
 
 
+class Body(httpx2.SyncByteStream, httpx2.AsyncByteStream):
+    """A response body served piece by piece, counting the pieces read."""
+
+    def __init__(self, pieces: Sequence[bytes] | Iterator[bytes]) -> None:
+        self._pieces = iter(pieces)
+        self.read = 0
+
+    def __iter__(self) -> Iterator[bytes]:
+        for piece in self._pieces:
+            self.read += 1
+            yield piece
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for piece in self:
+            yield piece
+
+
 def redirect(location: str = SIGNED) -> httpx2.Response:
     return httpx2.Response(302, headers={"location": location})
 
@@ -84,8 +103,10 @@ def manifest(
     layout: Any = 3,
     warnings: Sequence[Mapping[str, str]] = (),
     retention: Mapping[str, Any] | None = None,
+    size: int | None = None,
 ) -> dict[str, Any]:
-    """The recorded narrowed manifest, renamed and pointed at `data`."""
+    """The recorded narrowed manifest, renamed and pointed at `data`, whose
+    artifact names `size` as its `bytes` when given."""
     body = load("probe-mint-narrowed.json")
     body["definition"]["spec_id"] = spec_id
     body["content_version"] = content_version
@@ -103,8 +124,28 @@ def manifest(
             "url": f"/api/datasets/{spec_id}/{content_version}/files/{digest}",
         },
     ]
+    if size is not None:
+        body["artifacts"][1]["bytes"] = size
     if retention is not None:
         body["retention"] = dict(retention)
+    return body
+
+
+def with_cut(body: dict[str, Any], data: bytes = CUT_DATA) -> dict[str, Any]:
+    """`body` with a party-totals cut of its Parquet artifact listed after it, as
+    the server lists a cut that leaves nothing out under the plain version."""
+    digest = sha256_digest(data)
+    spec_id, content_version = body["definition"]["spec_id"], body["content_version"]
+    body["artifacts"].append(
+        {
+            "artifact_digest": digest,
+            "rendering": {
+                **body["artifacts"][1]["rendering"],
+                "without_party_totals": True,
+            },
+            "url": f"/api/datasets/{spec_id}/{content_version}/files/{digest}",
+        }
+    )
     return body
 
 
@@ -226,6 +267,14 @@ class FakeCache:
         assert sha256_digest(data) == digest
         self.files[digest] = data
 
+    def discard(self, digest: str, /) -> None:
+        self.files.pop(digest, None)
+
+    def downloading(
+        self, digest: str, /, *, timeout: float | None = None
+    ) -> nullcontext[None]:
+        return nullcontext()
+
     def get_manifest(
         self, spec_id: str, content_version: str, rendering: Rendering, /
     ) -> dict[str, Any] | None:
@@ -272,7 +321,13 @@ class Built:
 
 
 def fake_build_dataset(
-    members: Sequence[Any], *, layout: str, complete: bool, missing: Any, stale: bool
+    members: Sequence[Any],
+    *,
+    layout: str,
+    complete: bool,
+    missing: Any,
+    stale: bool,
+    cache: Any = None,
 ) -> Built:
     return Built(list(members), layout, complete, tuple(missing), stale)
 

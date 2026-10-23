@@ -114,14 +114,15 @@ function retentionOf(manifests: readonly Readonly<Record<string, unknown>>[]): {
 }
 
 /** Reads a dataset's private table parts; Dataset's static block assigns it. */
-let readParts: (dataset: Dataset<Gap>) => TablePart[];
+let readParts: (dataset: Dataset) => TablePart[];
 
 /**
  * A table of data with its provenance: one exact version per member. It holds no client, so its
  * conversions never touch the network. `TMissing` is the type of the parts a partial fetch left
- * out. A dataset fetched from a spec or a ref leaves none out.
+ * out. A dataset fetched from a spec or a ref is a `Dataset<never>`, which leaves none out, and
+ * every dataset is a `Dataset`.
  */
-export class Dataset<TMissing extends Gap = never> {
+export class Dataset<TMissing extends Gap = Gap> {
   /** What the data shows, in Search's words: the members' sentences in order. */
   readonly sentence: string;
   readonly members: readonly Member[];
@@ -302,7 +303,7 @@ export class Dataset<TMissing extends Gap = never> {
 }
 
 /** A dataset's stacked table parts, for the `arrow` entry point. */
-export function tableParts(dataset: Dataset<Gap>): TablePart[] {
+export function tableParts(dataset: Dataset): TablePart[] {
   return readParts(dataset);
 }
 

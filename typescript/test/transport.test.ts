@@ -16,7 +16,7 @@ import {
 } from "../src/core/errors.ts";
 import { PROXY_CODE_STATUSES } from "../src/generated/proxy-codes.ts";
 import { ApiKey } from "../src/config/keys.ts";
-import { Transport } from "../src/http/transport.ts";
+import { JSON_BODY_MAX_BYTES, Transport } from "../src/http/transport.ts";
 import type { TransportOptions } from "../src/http/transport.ts";
 import { VERSION } from "../src/version.ts";
 import type { DfoWarning } from "../src/core/warnings.ts";
@@ -43,6 +43,28 @@ describe("requests to the API", () => {
     assert.equal(request.headers.get("user-agent"), `dfo-ts/${VERSION}`);
     assert.equal(request.headers.get("content-type"), "application/json");
   });
+
+  // The Python client's order: the caller's User-Agent replaces the client's, and the key's
+  // Authorization replaces the caller's, which goes out only when there is no key.
+  for (const [name, apiKey, authorization] of [
+    ["with a key", KEY, `Bearer ${KEY}`],
+    ["with no key", false, "Bearer token"],
+  ] as const) {
+    test(`take the caller's User-Agent and, ${name}, the right Authorization`, async () => {
+      const { fetch, seen } = mockFetch(json({}));
+      const client = transport({
+        baseUrl: "https://api.example/api/v1",
+        apiKey,
+        fetch,
+        defaultHeaders: { "User-Agent": "mine/1", Authorization: "Bearer token" },
+      });
+      await client.request({ path: "/ping" });
+      const [request] = seen;
+      assert.ok(request);
+      assert.equal(request.headers.get("user-agent"), "mine/1");
+      assert.equal(request.headers.get("authorization"), authorization);
+    });
+  }
 
   test("resolve a root-relative URL against the base URL's origin, not its path", async () => {
     const { fetch, seen } = mockFetch(json({}));
@@ -113,6 +135,49 @@ describe("refusals", () => {
     assert.equal(seen.length, 2);
     assert.deepEqual(waits, [2000]);
   });
+
+  for (const [header, waits] of [
+    ["0", [0]],
+    ["60", [60_000]],
+    ["Sun, 06 Nov 1994 08:49:37 GMT", [0]],
+    ["-5", [500]],
+    ["1.5", [500]],
+    ["inf", [500]],
+    ["\u00b2", [500]],
+    ["5 s", [500]],
+    ["Sunday, 06-Nov-94 08:49:37 GMT", [500]],
+  ] as const) {
+    test(`wait ${waits[0]} ms for a Retry-After of ${JSON.stringify(header)}`, async () => {
+      const { sleep, waits: waited } = recordingSleep();
+      const { fetch } = mockFetch(
+        problem(
+          { code: "service_unavailable", status: 503, retryable: true },
+          { "retry-after": header },
+        ),
+        json({ ok: true }),
+      );
+      await transport({ fetch, sleep }).request({ path: "/x" });
+      assert.deepEqual(waited, waits);
+    });
+  }
+
+  for (const header of ["61", "86400", "99999999999999999999", "Fri, 31 Dec 9999 23:59:59 GMT"]) {
+    test(`raise a refusal whose Retry-After of ${header} is past 60 s at once`, async () => {
+      const { sleep, waits } = recordingSleep();
+      const refusal = problem(
+        { code: "rate_limited", status: 429, retryable: true },
+        { "retry-after": header },
+      );
+      const { fetch, seen } = mockFetch(refusal);
+      const error = await transport({ fetch, sleep })
+        .request({ path: "/x" })
+        .catch((e: unknown) => e);
+      assert.ok(error instanceof RateLimitError);
+      assert.ok((error.retryAfterMs ?? 0) > 60_000);
+      assert.deepEqual(waits, []);
+      assert.equal(seen.length, 1);
+    });
+  }
 
   test("back off without Retry-After and give up after maxRetries", async () => {
     const { sleep, waits } = recordingSleep();
@@ -208,6 +273,52 @@ describe("refusals", () => {
       assert.equal(error.code, code);
       assert.equal(error.retryable, true);
       assert.equal(seen.length, 3);
+    });
+  }
+
+  for (const [body, code, retried] of [
+    [{ error: "bad gateway" }, "refusal_without_code", true],
+    [{ error: "upstream_down" }, "upstream_down", true],
+    [{ error: "upstream_down", retry: "never" }, "upstream_down", false],
+  ] as const) {
+    for (const status of [502, 503, 504]) {
+      test(`retry a proxy body ${JSON.stringify(body)} at HTTP ${status}: ${retried}`, async () => {
+        const { sleep } = recordingSleep();
+        const refused = json(body, status);
+        const { fetch, seen } = mockFetch(refused, refused, refused);
+        const error = await transport({ fetch, sleep })
+          .request({ path: "/x" })
+          .catch((e: unknown) => e);
+        assert.ok(error instanceof ServerError);
+        assert.equal(error.code, code);
+        assert.equal(error.retryable, retried);
+        assert.equal(seen.length, retried ? 3 : 1);
+      });
+    }
+  }
+
+  for (const [detail, pointer, message] of [
+    [
+      "Field required",
+      "/input/definition/schema_version",
+      "Field required at /input/definition/schema_version (request_invalid)",
+    ],
+    ["Field required.", "/input", "Field required at /input (request_invalid)"],
+    ["/input is required", "/input", "/input is required (request_invalid)"],
+    ["Field required", "", "Field required (request_invalid)"],
+    ["Field required", 7, "Field required (request_invalid)"],
+    [undefined, "/input", "HTTP 422 at /input (request_invalid)"],
+  ] as const) {
+    test(`name the pointer ${JSON.stringify(pointer)} in the message of ${JSON.stringify(detail)}`, async () => {
+      const { fetch } = mockFetch(
+        problem({ code: "request_invalid", status: 422, detail, pointer }),
+      );
+      const error = await transport({ fetch })
+        .request({ path: "/x" })
+        .catch((e: unknown) => e);
+      assert.ok(error instanceof InvalidRequestError);
+      assert.equal(error.message, message);
+      assert.equal(error.detail, detail ?? "request_invalid");
     });
   }
 
@@ -334,8 +445,10 @@ describe("keys", () => {
       const global = globalThis as Record<string, unknown>;
       Object.assign(global, globals);
       try {
-        if (browser) assert.throws(() => transport({ apiKey: KEY }), TypeError);
-        else assert.doesNotThrow(() => transport({ apiKey: KEY }));
+        if (browser) {
+          assert.throws(() => transport({ apiKey: KEY }), TypeError);
+          assert.throws(() => transport({ apiKey: KEY.toUpperCase() }), TypeError);
+        } else assert.doesNotThrow(() => transport({ apiKey: KEY }));
         assert.doesNotThrow(() => transport({ apiKey: KEY, dangerouslyAllowBrowser: true }));
         const { fetch, seen } = mockFetch(json({}));
         await transport({ apiKey: "dfo_p_publishable", fetch }).request({ path: "/x" });
@@ -357,7 +470,9 @@ describe("keys", () => {
 describe("failures and cancellation", () => {
   test("raise NetworkError with the platform's error as the cause, after retries", async () => {
     const { sleep } = recordingSleep();
-    const cause = new TypeError("fetch failed");
+    const cause = new TypeError("fetch failed", {
+      cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+    });
     const fail = (): Response => {
       throw cause;
     };
@@ -367,6 +482,7 @@ describe("failures and cancellation", () => {
       .catch((e: unknown) => e);
     assert.ok(error instanceof NetworkError);
     assert.equal(error.cause, cause);
+    assert.match(error.message, /\(ECONNREFUSED\)/);
     assert.equal(seen.length, 3);
   });
 
@@ -450,7 +566,7 @@ describe("timeouts", () => {
     const { fetch, seen } = mockFetch(json({ ok: true }));
     const client = transport({
       fetch,
-      timeout: Infinity,
+      timeout: 60_000,
       headerProvider: () => new Promise<HeadersInit>(() => undefined),
     });
     const error = await client
@@ -465,7 +581,7 @@ describe("timeouts", () => {
     const { fetch, seen } = mockFetch(json({ ok: true }));
     const client = transport({
       fetch,
-      timeout: Infinity,
+      timeout: 60_000,
       apiKey: () => new Promise<string>(() => undefined),
     });
     const error = await client
@@ -491,7 +607,7 @@ describe("timeouts", () => {
     const client = transport({
       baseUrl: "https://api.example/api/v1",
       fetch,
-      timeout: Infinity,
+      timeout: 60_000,
       apiKey: () => key,
     });
     const url = new URL("https://api.example/api/v1/datasets/files/artifact");
@@ -525,7 +641,7 @@ describe("timeouts", () => {
     );
     const client = transport({
       fetch,
-      timeout: Infinity,
+      timeout: 60_000,
       apiKey: () => (calls++ === 0 ? "dfo_k_old" : refresh),
     });
     const error = await client
@@ -550,7 +666,7 @@ describe("timeouts", () => {
 
   test("raise deadline_exceeded with no retry when the deadline passes", async () => {
     const { fetch, seen } = mockFetch(answerAfter(1_000));
-    const client = transport({ fetch, timeout: Infinity });
+    const client = transport({ fetch, timeout: 60_000 });
     const error = await client
       .request({ path: "/x", deadline: client.deadlineAfter(20) })
       .catch((e: unknown) => e);
@@ -561,7 +677,7 @@ describe("timeouts", () => {
 
   test("raise deadline_exceeded when the deadline passes during the body", async () => {
     const { fetch } = mockFetch(stalledBody);
-    const client = transport({ fetch, timeout: Infinity });
+    const client = transport({ fetch, timeout: 60_000 });
     const error = await client
       .request({ path: "/x", deadline: client.deadlineAfter(20) })
       .catch((e: unknown) => e);
@@ -569,8 +685,8 @@ describe("timeouts", () => {
     assert.equal(error.code, "deadline_exceeded");
   });
 
-  for (const timeout of [Infinity, 2 ** 31, 30 * 24 * 3_600_000]) {
-    test(`take a client timeout of ${timeout} ms as no limit or its clamp`, async () => {
+  for (const timeout of [2 ** 31, 30 * 24 * 3_600_000]) {
+    test(`take a client timeout of ${timeout} ms as its clamp`, async () => {
       const { fetch } = mockFetch(answerAfter(20));
       const client = transport({ fetch, timeout });
       const response = await client.request({
@@ -586,7 +702,7 @@ describe("timeouts", () => {
       assert.equal(init.signal, undefined);
       return json({ ok: true })();
     });
-    await transport({ fetch, timeout: Infinity }).request({ path: "/x" });
+    await transport({ fetch }).request({ path: "/x", timeout: Infinity });
   });
 });
 
@@ -829,6 +945,79 @@ describe("downloads", () => {
   }
 });
 
+describe("body limits", () => {
+  const SIGNED = "https://storage.googleapis.com/bucket/object";
+
+  /** A body of `chunk`-byte pieces with no end, counting how many pieces were pulled from it
+   *  and whether its reader was cancelled. */
+  function endless(chunk: number, status = 200) {
+    const counts = { pulls: 0, cancelled: false };
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          counts.pulls += 1;
+          controller.enqueue(new Uint8Array(chunk));
+        },
+        cancel() {
+          counts.cancelled = true;
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const response = () =>
+      new Response(body, { status, headers: { "content-type": "application/json" } });
+    return { counts, response };
+  }
+
+  for (const [name, call, chunk, limit] of [
+    [
+      "a JSON body, by JSON_BODY_MAX_BYTES",
+      (client: Transport) => client.request({ path: "/x" }),
+      2 ** 20,
+      JSON_BODY_MAX_BYTES,
+    ],
+    [
+      "a refusal's body, by JSON_BODY_MAX_BYTES",
+      (client: Transport) => client.request({ path: "/x" }),
+      2 ** 20,
+      JSON_BODY_MAX_BYTES,
+    ],
+    [
+      "a files route's body, by the call's maxBytes",
+      (client: Transport) => client.locate({ url: "/api/datasets/files/d", maxBytes: 1_000 }),
+      100,
+      1_000,
+    ],
+    [
+      "a signed download, by the call's maxBytes",
+      (client: Transport) => client.fetchSigned(new URL(SIGNED), { maxBytes: 1_000 }),
+      100,
+      1_000,
+    ],
+  ] as const) {
+    // A read with no cap never ends on this body, so the timeout turns that into a failure.
+    test(`stop reading ${name}, pulling nothing past it`, { timeout: 5_000 }, async () => {
+      const { counts, response } = endless(chunk, name.startsWith("a refusal") ? 503 : 200);
+      const { fetch, seen } = mockFetch(response);
+      const error = await call(transport({ fetch }))
+        .then(() => undefined)
+        .catch((e: unknown) => e);
+      assert.ok(error instanceof ServerError);
+      assert.equal(error.code, "response_too_large");
+      assert.equal(error.retryable, false);
+      assert.equal(counts.pulls, limit / chunk + 1);
+      assert.equal(counts.cancelled, true);
+      assert.equal(seen.length, 1);
+    });
+  }
+
+  test("read a body of exactly its limit", async () => {
+    const { fetch } = mockFetch(() => new Response(new Uint8Array(1_000)));
+    const body = await transport({ fetch }).fetchSigned(new URL(SIGNED), { maxBytes: 1_000 });
+    assert.equal(body.byteLength, 1_000);
+  });
+});
+
 describe("server warnings", () => {
   // `warnOnce` holds its keys for the process, so each test uses header values of its own.
   test("warn once per header value for Deprecation and once per message for x-dfo-warning", async () => {
@@ -865,6 +1054,289 @@ describe("server warnings", () => {
         warnings.map((warning) => warning.code),
         ["route_deprecated"],
       );
+    });
+  }
+});
+
+describe("base URLs", () => {
+  for (const baseUrl of [
+    "",
+    " ",
+    "javascript:alert(1)",
+    "data:text/plain,x",
+    "file:///etc/passwd",
+    "ftp://api.example/api",
+    "https://alice:s3cret@api.example/api",
+    "https://api.example/api?x=1",
+    "https://api.example/api#top",
+    "https:// spaces/api",
+    "https://api.example/api ",
+    "https://api.example/v1/../api",
+  ]) {
+    test(`refuse ${JSON.stringify(baseUrl)} without quoting it`, () => {
+      assert.throws(
+        () => transport({ baseUrl, apiKey: false }),
+        (error: unknown) =>
+          error instanceof InvalidRequestError &&
+          error.code === "base_url_invalid" &&
+          !error.message.includes("s3cret"),
+      );
+    });
+  }
+
+  test("drop every trailing slash of the base path", async () => {
+    const { fetch, seen } = mockFetch(json({}));
+    await transport({ baseUrl: "https://api.example/api//", fetch }).request({ path: "/x" });
+    assert.equal(seen[0]?.url, "https://api.example/api/x");
+  });
+
+  for (const path of ["/../../etc/passwd", "/%2e%2e/x", "/a/../b", "/a\r\nX-Injected: 1"]) {
+    test(`refuse the path ${JSON.stringify(path)}, which leaves the base path or holds a control`, async () => {
+      const { fetch, seen } = mockFetch();
+      await assert.rejects(
+        transport({ baseUrl: "https://api.example/api", fetch }).request({ path }),
+        {
+          name: "InvalidRequestError",
+          code: "invalid_argument",
+        },
+      );
+      assert.equal(seen.length, 0);
+    });
+  }
+
+  for (const [baseUrl, allowed] of [
+    ["http://api.example/api", false],
+    ["http://localhost:8080/api", true],
+    ["http://dev.localhost/api", true],
+    ["http://127.0.0.2:9/api", true],
+    ["http://[::1]:9/api", true],
+  ] as const) {
+    test(`${allowed ? "send" : "refuse"} a key over plain http to ${baseUrl}`, async () => {
+      const build = () => transport({ baseUrl, apiKey: KEY });
+      if (allowed) assert.doesNotThrow(build);
+      else assert.throws(build, { name: "InvalidRequestError", code: "insecure_transport" });
+      // A key a function resolves later is refused before the first request; anonymous use is
+      // fine anywhere.
+      const { fetch, seen } = mockFetch(json({}), json({}));
+      const later = transport({ baseUrl, apiKey: () => Promise.resolve(KEY), fetch });
+      const sent = later.request({ path: "/x" });
+      if (allowed) await sent;
+      else await assert.rejects(sent, { code: "insecure_transport" });
+      await transport({ baseUrl, apiKey: false, fetch }).request({ path: "/x" });
+      assert.equal(seen.length, allowed ? 2 : 1);
+    });
+  }
+});
+
+describe("key and header characters", () => {
+  for (const [key, position] of [
+    [` ${KEY}`, 1],
+    [`${KEY}\n`, KEY.length + 1],
+    [`${KEY}\r\nX-Evil: 1`, KEY.length + 1],
+    ["dfo_k_é", 7],
+    ["\u200bdfo_k_abc", 1],
+  ] as const) {
+    for (const [source, options] of [
+      ["the apiKey argument", { apiKey: key }],
+      ["DFO_API_KEY", { env: envFrom({ DFO_API_KEY: key }) }],
+      [
+        "the credentials file's profile [default]",
+        { readCredentialsFile: () => `[default]\nkey = "${key.replace(/[\n\r]/g, "")}"\n` },
+      ],
+    ] as const) {
+      if (source.startsWith("the credentials") && /[\n\r]/.test(key)) continue;
+      test(`refuse ${JSON.stringify(key.slice(0, 12))}… from ${source}, naming character ${position}`, () => {
+        assert.throws(
+          () => transport(options),
+          (error: unknown) =>
+            error instanceof AuthenticationError &&
+            error.code === "key_invalid" &&
+            error.message.includes(source) &&
+            error.message.includes(`character ${position}`) &&
+            !error.message.includes(key.trim()),
+        );
+      });
+    }
+  }
+
+  test("refuse a key function's value that is not a string", async () => {
+    // Plain JavaScript can return undefined from a key function.
+    const apiKey = (() => Promise.resolve(undefined)) as unknown as () => Promise<string>;
+    const { fetch, seen } = mockFetch();
+    await assert.rejects(transport({ apiKey, fetch }).request({ path: "/x" }), {
+      name: "AuthenticationError",
+      code: "key_invalid",
+    });
+    assert.equal(seen.length, 0);
+  });
+
+  test("refuse a default header with a control character when the client is built", () => {
+    assert.throws(
+      () => transport({ defaultHeaders: { "x-token": "secret\nvalue" } }),
+      (error: unknown) =>
+        error instanceof InvalidRequestError &&
+        error.code === "header_invalid" &&
+        error.message.includes("a line break at character 7") &&
+        !error.message.includes("secret"),
+    );
+  });
+
+  for (const [value, code] of [
+    ["secret\r\nX-Evil: 1", "header_invalid"],
+    ["secret\u007f", "header_invalid"],
+    ["日本", "header_invalid"],
+    ["café", "header_invalid"],
+    [42, "header_invalid"],
+    ["tab\tand space", null],
+  ] as const) {
+    test(`${code === null ? "send" : "refuse"} a provided header ${JSON.stringify(value)}`, async () => {
+      const { fetch, seen } = mockFetch(json({}));
+      // A number stands for a value plain JavaScript can pass.
+      const provided = { "x-token": value } as Record<string, string>;
+      const sent = transport({ fetch, headerProvider: () => provided }).request({
+        path: "/x",
+      });
+      if (code === null) {
+        await sent;
+        assert.equal(seen[0]?.headers.get("x-token"), value);
+        return;
+      }
+      await assert.rejects(
+        sent,
+        (error: unknown) =>
+          error instanceof InvalidRequestError &&
+          error.code === code &&
+          !error.message.includes("secret") &&
+          !error.message.includes("日本") &&
+          !error.message.includes("caf"),
+      );
+      assert.equal(seen.length, 0);
+    });
+  }
+});
+
+describe("key providers", () => {
+  for (const [name, options] of [
+    ["header provider", { headerProvider: () => new Promise<HeadersInit>(() => undefined) }],
+    ["key function", { apiKey: () => new Promise<string>(() => undefined) }],
+  ] as const) {
+    test(`bound a stalled ${name} by the attempt's timeout`, async () => {
+      const { fetch, seen } = mockFetch(json({ ok: true }));
+      const error = await transport({ fetch, timeout: 20, ...options })
+        .request({ path: "/x" })
+        .catch((value: unknown) => value);
+      assert.ok(error instanceof DfoTimeoutError);
+      assert.equal(error.code, "deadline_exceeded");
+      assert.deepEqual(seen, []);
+    });
+  }
+
+  for (const [name, refresh] of [
+    [
+      "throws",
+      (): string => {
+        throw new Error("keychain locked");
+      },
+    ],
+    ["rejects", (): Promise<string> => Promise.reject(new Error("token service down"))],
+  ] as const) {
+    test(`raise the server's 401 when the key function ${name} after it`, async () => {
+      let calls = 0;
+      const { fetch, seen } = mockFetch(
+        problem({ code: "key_revoked", status: 401 }),
+        problem({ code: "key_revoked", status: 401 }),
+      );
+      const client = transport({
+        fetch,
+        apiKey: () => (calls++ === 0 ? KEY : refresh()),
+      });
+      const error = await client.request({ path: "/x" }).catch((value: unknown) => value);
+      assert.ok(error instanceof AuthenticationError);
+      assert.equal(error.code, "key_revoked");
+      assert.ok(error.cause instanceof Error);
+      assert.match(error.cause.message, /keychain locked|token service down/);
+      // The earlier key stays in use.
+      await assert.rejects(client.request({ path: "/x" }), { code: "key_revoked" });
+      assert.equal(seen[1]?.headers.get("authorization"), `Bearer ${KEY}`);
+    });
+  }
+});
+
+describe("server text", () => {
+  for (const [type, docsUrl] of [
+    ["/codes/x", "https://api.example/codes/x"],
+    ["javascript:alert(1)", null],
+    ["http://evil.example/doc", null],
+    ["https://evil.example/doc", null],
+    ["data:text/html,x", null],
+  ] as const) {
+    test(`give docsUrl ${String(docsUrl)} for a type ${type}`, async () => {
+      const { fetch } = mockFetch(problem({ code: "x", status: 400, type }));
+      const error = await transport({ baseUrl: "https://api.example/api", fetch })
+        .request({ path: "/x" })
+        .catch((value: unknown) => value);
+      assert.ok(error instanceof DfoError);
+      assert.equal(error.docsUrl, docsUrl);
+    });
+  }
+
+  test("strip controls from a refusal's detail and mask the key it echoes", async () => {
+    const { fetch } = mockFetch(
+      problem({
+        code: "bad",
+        status: 400,
+        detail: `\u001b[31mred\u001b[0m\n\u202eevil, sent ${KEY}`,
+      }),
+    );
+    const error = await transport({ apiKey: KEY, fetch })
+      .request({ path: "/x" })
+      .catch((value: unknown) => value);
+    assert.ok(error instanceof DfoError);
+    assert.equal(error.message, "[31mred[0m\nevil, sent [redacted] (bad)");
+    assert.ok(!JSON.stringify(error.problem).includes(KEY));
+  });
+
+  test("redact the key a server warning echoes", async () => {
+    const warnings: DfoWarning[] = [];
+    const { fetch } = mockFetch(json({}, 200, { "x-dfo-warning": `key ${KEY} is anonymous-tier` }));
+    await transport({ apiKey: KEY, fetch, onWarning: (warning) => warnings.push(warning) }).request(
+      { path: "/x" },
+    );
+    assert.deepEqual(
+      warnings.map((warning) => warning.message),
+      ["key [redacted] is anonymous-tier"],
+    );
+  });
+
+  test("strip controls from a server warning", async () => {
+    const warnings: DfoWarning[] = [];
+    const { fetch } = mockFetch(json({}, 200, { "x-dfo-warning": "stripped \u009b31mwarning" }));
+    await transport({ fetch, onWarning: (warning) => warnings.push(warning) }).request({
+      path: "/x",
+    });
+    assert.deepEqual(
+      warnings.map((warning) => warning.message),
+      ["stripped 31mwarning"],
+    );
+  });
+
+  for (const [code, message] of [
+    [
+      "not_found",
+      "No route exists for the requested path. POST https://api.example/search/resolve " +
+        "matched no route; check baseUrl. (not_found)",
+    ],
+    ["spec_not_found", "No route exists for the requested path. (spec_not_found)"],
+  ] as const) {
+    test(`name the request in a 404 ${code} only when no route matched`, async () => {
+      const { fetch } = mockFetch(
+        problem({ code, status: 404, detail: "No route exists for the requested path." }),
+      );
+      const error = await transport({ baseUrl: "https://api.example", fetch })
+        .request({ path: "/search/resolve", json: {} })
+        .catch((value: unknown) => value);
+      assert.ok(error instanceof NotFoundError);
+      assert.equal(error.message, message);
     });
   }
 });

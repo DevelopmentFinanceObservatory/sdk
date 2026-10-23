@@ -14,8 +14,9 @@ from typing import Any, Self
 
 from dfo._config.keys import ApiKeyArgument
 from dfo._core.codes import INVALID_ARGUMENT
-from dfo._core.errors import client_error
+from dfo._core.errors import DfoError, client_error
 from dfo._core.refs import DatasetRef
+from dfo._core.refusals import caller_refusal
 from dfo._core.types import Layout, RawResponse, Spec, Window
 from dfo._datasets.cache import Cache
 from dfo._datasets.dataset import Dataset
@@ -67,16 +68,25 @@ class Client:
                 past this bound; the asynchronous client can cancel it.
             max_retries: Further attempts after a failure that can clear.
             cache_dir: The cache's root directory; None follows `DFO_CACHE_DIR`,
-                then the platform's cache directory.
+                then the platform's cache directory. A relative path resolves
+                against the working directory when the client is built.
             cache: False fetches without reading or writing the cache.
             default_headers: Headers sent with every API request.
             header_provider: Called before every API request for more headers,
                 such as an identity token.
 
         Raises:
-            ValueError: The base URL, timeout or retry count is invalid.
+            InvalidRequestError: The base URL is invalid (`base_url_invalid`), a
+                default header is not a string of visible ASCII, spaces and tabs
+                (`header_invalid`), the key would travel over plain http to a
+                host that is not loopback (`insecure_transport`), the timeout is
+                not a finite number above 0, the retry count not an integer
+                from 0 to 10, or `cache_dir` an empty path, one holding a NUL
+                character, or one starting `~name` for a user with no home
+                directory (`invalid_argument`).
             AuthenticationError: The key lookup failed.
         """
+        local = Cache(cache_dir, enabled=cache)
         transport = Transport(
             base_url=base_url,
             api_key=api_key,
@@ -85,7 +95,7 @@ class Client:
             default_headers=default_headers,
             header_provider=header_provider,
         )
-        self._attach(Session(transport, Cache(cache_dir, enabled=cache)))
+        self._attach(Session(transport, local))
 
     @classmethod
     def _over(cls, session: Session, /) -> Self:
@@ -118,7 +128,8 @@ class Client:
         Closing the copy leaves the connections open. Close this client to close them.
 
         Raises:
-            ValueError: The timeout or retry count is invalid.
+            InvalidRequestError: The timeout is not a finite number above 0, or
+                the retry count not an integer from 0 to 10 (`invalid_argument`).
         """
         transport = self._session.transport.with_options(
             timeout=timeout, max_retries=max_retries
@@ -138,6 +149,9 @@ class Client:
                 run past this bound; the asynchronous client can cancel it.
 
         Raises:
+            InvalidRequestError: `question` is not text, is empty or only
+                whitespace, or holds a lone surrogate; or `timeout` is not None
+                or a finite number above 0 (`invalid_argument`).
             ContractError: The answer lacks a member the client acts on.
         """
         return search(self._current, question, timeout=timeout)
@@ -151,6 +165,7 @@ class Client:
         entities: Mapping[str, Sequence[str] | None] | None = None,
         facets: Mapping[str, str | None] | None = None,
         layout: Layout | None = None,
+        without_party_totals: bool | None = None,
         strict: bool = False,
         timeout: float | None = 1800.0,
         progress: bool | None = None,
@@ -169,6 +184,10 @@ class Client:
                 empty map narrows nothing.
             layout: `long` or `frame`; None builds a spec in `long` and reads a
                 ref in the layout it holds.
+            without_party_totals: Leave out the rows of parties the code index
+                declares totals, such as the DAC total beside its members, on
+                each party role the spec leaves open. None builds a spec with
+                every row and reads a ref as it was fetched.
             strict: Raise the first dataset warning instead of issuing it.
             timeout: The longest the fetch takes, in seconds, downloads
                 included; None for no limit. In the synchronous client,
@@ -178,8 +197,14 @@ class Client:
                 `DFO_PROGRESS=0`.
 
         Raises:
-            InvalidRequestError: A ref is narrowed or given another layout.
+            InvalidRequestError: A ref is narrowed or given another layout or
+                `without_party_totals`; `window`, `entities`, `facets` or
+                `layout` is malformed; or `timeout` is not None or a finite
+                number above 0 (`invalid_argument`).
             VersionUnavailableError: A ref's version can no longer be fetched.
+            ContractError: An artifact is not Parquet (`unexpected_response`),
+                or lacks a `time_period` or numeric `value` column
+                (`contract_violation`); the cache drops it.
             DfoTimeoutError: The deadline passed. A long build's message names
                 the call that resumes it.
             DfoError: The server refused a request.
@@ -191,6 +216,7 @@ class Client:
             entities=entities,
             facets=facets,
             layout=layout,
+            without_party_totals=without_party_totals,
             strict=strict,
             timeout=timeout,
             progress=progress,
@@ -198,12 +224,19 @@ class Client:
         )
 
     def mint(
-        self, spec: Spec, /, *, layout: Layout = "long", progress: bool | None = None
+        self,
+        spec: Spec,
+        /,
+        *,
+        layout: Layout = "long",
+        without_party_totals: bool = False,
+        progress: bool | None = None,
     ) -> Operation:
         """Start a spec's build and return it as an operation, done or running.
 
         The build request reads for up to 150 seconds. `result` bounds the wait
-        for the build.
+        for the build. `without_party_totals` leaves out the rows of parties the
+        code index declares totals, as in `fetch`.
 
         Raises:
             DfoError: The server refused the build.
@@ -212,6 +245,7 @@ class Client:
             self._session.transport,
             spec,
             layout=layout,
+            without_party_totals=without_party_totals,
             progress=progress,
             cache=self._session.cache,
         )
@@ -222,6 +256,7 @@ class Client:
         /,
         *,
         layout: Layout = "long",
+        without_party_totals: bool = False,
         progress: bool | None = None,
     ) -> Operation:
         """Resume a build started elsewhere, by its id (`op_...`).
@@ -230,18 +265,23 @@ class Client:
             operation_id: The id a deadline error or `Operation.operation_id`
                 names.
             layout: The layout the build was started with.
+            without_party_totals: Whether the build was started without party
+                totals.
             progress: Show the build's progress; None shows it unless
                 `DFO_PROGRESS=0`.
 
         An operation that already failed raises its error from `result`.
 
         Raises:
+            InvalidRequestError: `operation_id` is not `op_` and 64 hex digits
+                (`invalid_argument`).
             NotFoundError: The server holds no operation with that id.
         """
         return operation(
             self._session.transport,
             operation_id,
             layout=layout,
+            without_party_totals=without_party_totals,
             progress=progress,
             cache=self._session.cache,
         )
@@ -277,8 +317,12 @@ class Client:
 
         Raises:
             DfoError: The class the refusal maps to.
-            InvalidRequestError: `path` does not start with `/`, or starts
-                with `//` (`invalid_argument`).
+            InvalidRequestError: `path` does not start with `/`, starts with
+                `//`, or holds a `.` or `..` segment or a control character;
+                `method` is not one the API serves, or `json` is not JSON or
+                goes with a GET or HEAD (`invalid_argument`); or the server
+                refused the method (`method_not_allowed`), which on a route the
+                client wraps is a `ContractError`.
         """
         if not path.startswith("/") or path.startswith("//"):
             raise client_error(
@@ -286,9 +330,14 @@ class Client:
                 f"request takes a path under the base URL, such as "
                 f"'/datasets/capabilities', not {path!r}",
             )
-        response = self._session.transport.request(
-            method, path, params=params, json=json
-        )
+        try:
+            response = self._session.transport.request(
+                method, path, params=params, json=json
+            )
+        except DfoError as error:
+            if (refusal := caller_refusal(error)) is error:
+                raise
+            raise refusal from error
         return RawResponse(
             status_code=response.status_code,
             headers=dict(response.headers),
@@ -296,7 +345,11 @@ class Client:
         )
 
     def close(self) -> None:
-        """Close the client's connections, when this client opened them."""
+        """Close the client's connections, when this client opened them.
+
+        A call through a closed client, or through a copy of it, raises
+        `InvalidRequestError` (`invalid_argument`).
+        """
         self._session.transport.close()
 
     def __enter__(self) -> Self:

@@ -13,8 +13,9 @@ from typing import TextIO
 
 from dfo._config.credentials import CredentialsFileError, store_key
 from dfo._config.keys import check_key_format, mask, resolve_key
-from dfo._config.paths import cache_directory, credentials_path
+from dfo._config.paths import credentials_path
 from dfo._core.errors import DfoError
+from dfo._datasets.cache import cache_path
 
 _PROMPT = "Paste your DFO API key: "
 
@@ -87,11 +88,25 @@ def _auth_status(_: argparse.Namespace) -> int:
 
 
 def _cache_clear(_: argparse.Namespace) -> int:
-    directory = cache_directory()
-    if not os.path.isdir(directory):
+    """Empty the cache directory, or the directory it links to, and keep it.
+
+    Raises:
+        ValueError: The cache path names a file.
+    """
+    directory = cache_path()
+    if not directory.exists():
         print(f"The cache at {directory} is already empty.")
         return 0
-    shutil.rmtree(directory)
+    if not directory.is_dir():
+        raise ValueError(
+            f"The cache path {directory} is a file, not a directory; remove it, "
+            "or set DFO_CACHE_DIR to another directory"
+        )
+    for entry in directory.iterdir():
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
     print(f"Cleared the cache at {directory}.")
     return 0
 

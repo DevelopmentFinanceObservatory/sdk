@@ -1,6 +1,8 @@
 import { CLIENT_WARNING_CODES } from "../generated/warning-codes.ts";
+import { printable } from "./text.ts";
 
-/** The base of every warning the client emits. */
+/** The base of every warning the client emits. Its message drops the characters that steer a
+ *  terminal or reorder text, since it can quote the server. */
 export class DfoWarning extends Error {
   /** The server's warning or departure code, or null for a `SearchWarning` whose readings
    *  differ from the question in several ways. */
@@ -10,7 +12,7 @@ export class DfoWarning extends Error {
   readonly traceId: string | null;
 
   constructor(code: string | null, message: string, traceId: string | null = null) {
-    super(message);
+    super(printable(message));
     this.code = code;
     this.traceId = traceId;
   }

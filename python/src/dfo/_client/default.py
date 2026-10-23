@@ -8,8 +8,10 @@ usable after `configure`. `disable_cache` and `enable_cache` switch the cache of
 client in place, so its other settings stay. A replaced client closes once nothing
 uses it, since another thread may still be in a call on it, and the default client
 closes at exit.
-A forked child drops the client it inherited without closing it, since the parent
-still owns those connections, and builds its own on first use.
+A forked child keeps the default client, and with it the options `configure`
+set. Its transport builds a fresh connection pool on the child's first request
+and leaves the parent's connections untouched; the child takes a fresh lock,
+since another thread may have held the parent's as the process forked.
 """
 
 import os
@@ -78,7 +80,12 @@ def configure(
     the new client for their next request.
 
     Raises:
-        ValueError: The base URL, timeout or retry count is invalid.
+        InvalidRequestError: The base URL is invalid (`base_url_invalid`), a
+            default header is not a string of visible ASCII, spaces and tabs
+            (`header_invalid`), the key would travel over plain http to a
+            host that is not loopback (`insecure_transport`), the timeout is
+            not a finite number above 0, or the retry count not an integer
+            from 0 to 10 (`invalid_argument`).
         AuthenticationError: The key lookup failed.
     """
     client = Client(
@@ -122,6 +129,8 @@ def search(question: str, /, *, timeout: float | None = SEARCH_TIMEOUT) -> Answe
             this bound; the asynchronous client can cancel it.
 
     Raises:
+        InvalidRequestError: `question` is empty or only whitespace, or
+            `timeout` is not None or a finite number above 0 (`invalid_argument`).
         ContractError: The answer lacks a member the client acts on.
     """
     return _search(_session, question, timeout=timeout)
@@ -135,6 +144,7 @@ def fetch(
     entities: Mapping[str, Sequence[str] | None] | None = None,
     facets: Mapping[str, str | None] | None = None,
     layout: Layout | None = None,
+    without_party_totals: bool | None = None,
     strict: bool = False,
     timeout: float | None = 1800.0,
     progress: bool | None = None,
@@ -147,7 +157,8 @@ def fetch(
     client can cancel it.
 
     Raises:
-        InvalidRequestError: A ref is narrowed or given another layout.
+        InvalidRequestError: A ref is narrowed or given another layout or
+            `without_party_totals`.
         VersionUnavailableError: A ref's version can no longer be fetched.
         DfoTimeoutError: The deadline passed. A long build's message names the
             call that resumes it.
@@ -159,6 +170,7 @@ def fetch(
         entities=entities,
         facets=facets,
         layout=layout,
+        without_party_totals=without_party_totals,
         strict=strict,
         timeout=timeout,
         progress=progress,
@@ -166,12 +178,8 @@ def fetch(
 
 
 def _reset_after_fork() -> None:
-    global _lock, _client  # noqa: PLW0603  # a child starts with neither
+    global _lock  # noqa: PLW0603  # a child cannot release a lock another thread held
     _lock = threading.Lock()
-    _client = None
-    for closer in _closers:
-        closer.detach()
-    _closers.clear()
 
 
 if hasattr(os, "register_at_fork"):

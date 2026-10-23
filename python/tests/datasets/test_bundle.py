@@ -1,12 +1,15 @@
 """Opening website bundles: a ZIP, a folder or a file in one, typed and hash-checked."""
 
+import hashlib
 import io
 import json
 import shutil
 import xml.etree.ElementTree as ET
 import zipfile
+from collections.abc import Callable
 from dataclasses import FrozenInstanceError
 from pathlib import Path
+from typing import Any
 
 import pyarrow.parquet as pq
 import pytest
@@ -27,12 +30,81 @@ DATA_FILE = "data/oecd-creditor-reporting-system.csv"
 XLSX_DATA_FILE = "data/oecd-creditor-reporting-system.xlsx"
 SPEC_ID = "spec_cb5baa4161de718f18583060674dbca6"
 CONTENT_VERSION = "cv_bf242138f8d0a892c97da9373d1626f4"
+with zipfile.ZipFile(CSV_BUNDLE) as _bundle:
+    DATA_BYTES = _bundle.read(DATA_FILE)
+DATA_HEX = hashlib.sha256(DATA_BYTES).hexdigest()
 
 
 def extracted(bundle: Path, folder: Path) -> Path:
     with zipfile.ZipFile(bundle) as archive:
         archive.extractall(folder)
     return folder
+
+
+def zipped_from(folder: Path, zipped: Path) -> Path:
+    with zipfile.ZipFile(zipped, "w") as archive:
+        for file in sorted(folder.rglob("*")):
+            if file.is_file():
+                archive.write(file, file.relative_to(folder).as_posix())
+    return zipped
+
+
+def edited(tmp_path: Path, edit: Callable[[bytes], bytes]) -> tuple[Path, Path]:
+    """The CSV bundle with its descriptor's bytes edited, as a folder and a ZIP."""
+    folder = extracted(CSV_BUNDLE, tmp_path / "bundle")
+    descriptor = folder / "datapackage.json"
+    descriptor.write_bytes(edit(descriptor.read_bytes()))
+    return folder, zipped_from(folder, tmp_path / "edited.zip")
+
+
+def package_edit(change: Callable[[dict[str, Any]], None]) -> Callable[[bytes], bytes]:
+    """A descriptor edit that changes the decoded package in place."""
+
+    def edit(raw: bytes) -> bytes:
+        package = json.loads(raw)
+        change(package)
+        return json.dumps(package).encode()
+
+    return edit
+
+
+def small_bundle(tmp_path: Path, data: bytes, fmt: str, fields: list[Any]) -> Path:
+    """A ZIP bundle of one data file, its descriptor typing `fields`."""
+    path = f"data.{fmt}"
+    package = {
+        "name": "small",
+        "resources": [
+            {
+                "name": "small",
+                "path": path,
+                "format": fmt,
+                "hash": sha256_digest(data),
+                "schema": {"fields": fields},
+            }
+        ],
+    }
+    zipped = tmp_path / "small.zip"
+    with zipfile.ZipFile(zipped, "w") as archive:
+        archive.writestr("datapackage.json", json.dumps(package))
+        archive.writestr(path, data)
+    return zipped
+
+
+def xlsx(rows: list[list[Any]]) -> bytes:
+    openpyxl = pytest.importorskip("openpyxl")
+    workbook = openpyxl.Workbook()
+    for row in rows:
+        workbook.active.append(row)
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+FIELDS = [
+    {"name": "country", "type": "string"},
+    {"name": "year", "type": "integer"},
+    {"name": "value", "type": "number"},
+]
 
 
 @pytest.mark.parametrize("bundle", [CSV_BUNDLE, XLSX_BUNDLE], ids=["csv", "xlsx"])
@@ -119,8 +191,25 @@ def test_a_descriptor_without_the_data_table_is_refused(tmp_path: Path) -> None:
         "..\\secret.csv",
         "\\secret.csv",
         f"data/../{DATA_FILE}",
+        f"./{DATA_FILE}",
+        f"{DATA_FILE}/",
+        DATA_FILE.replace("/", "//"),
+        f"{DATA_FILE}\x00.png",
+        "",
     ],
-    ids=["parent", "climb", "absolute", "backslash-parent", "backslash-root", "dotdot"],
+    ids=[
+        "parent",
+        "climb",
+        "absolute",
+        "backslash-parent",
+        "backslash-root",
+        "dotdot",
+        "dot",
+        "trailing-slash",
+        "empty-name",
+        "nul",
+        "empty",
+    ],
 )
 def test_a_descriptor_path_outside_the_bundle_is_refused_before_any_read(
     tmp_path: Path, escape: str
@@ -135,11 +224,7 @@ def test_a_descriptor_path_outside_the_bundle_is_refused_before_any_read(
     )
     package["resources"][index]["path"] = str(secret) if escape == "abs" else escape
     descriptor.write_text(json.dumps(package))
-    zipped = tmp_path / "escaping.zip"
-    with zipfile.ZipFile(zipped, "w") as archive:
-        for file in folder.rglob("*"):
-            if file.is_file():
-                archive.write(file, file.relative_to(folder).as_posix())
+    zipped = zipped_from(folder, tmp_path / "escaping.zip")
     for target in (folder, zipped):
         with pytest.raises(FormatError) as caught:
             open_bundle(target)
@@ -149,15 +234,171 @@ def test_a_descriptor_path_outside_the_bundle_is_refused_before_any_read(
         )
 
 
-def test_a_symlink_out_of_an_extracted_folder_is_refused(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("linked", "pointer"), [(DATA_FILE, "/resources/0/path"), ("datapackage.json", "")]
+)
+def test_a_symlink_out_of_an_extracted_folder_is_refused(
+    tmp_path: Path, linked: str, pointer: str
+) -> None:
     folder = extracted(CSV_BUNDLE, tmp_path / "bundle")
-    secret = tmp_path / "secret.csv"
-    secret.write_bytes((folder / DATA_FILE).read_bytes())
-    (folder / DATA_FILE).unlink()
-    (folder / DATA_FILE).symlink_to(secret)
+    secret = tmp_path / "secret"
+    secret.write_bytes((folder / linked).read_bytes())
+    (folder / linked).unlink()
+    (folder / linked).symlink_to(secret)
     with pytest.raises(FormatError) as caught:
         open_bundle(folder)
-    assert caught.value.reason == "format_invalid"
+    assert (caught.value.reason, caught.value.pointer) == ("format_invalid", pointer)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        5,
+        False,
+        "md5:" + hashlib.md5(DATA_BYTES).hexdigest(),
+        DATA_HEX,
+        "foo:abc",
+        "shake_128:abc",
+        "SHA256:" + DATA_HEX,
+        "sha256:" + DATA_HEX.upper(),
+    ],
+    ids=[
+        "absent",
+        "number",
+        "false",
+        "md5",
+        "bare-hex",
+        "unknown-algorithm",
+        "shake",
+        "upper-algorithm",
+        "upper-hex",
+    ],
+)
+def test_a_file_without_a_sha256_hash_is_refused(tmp_path: Path, value: object) -> None:
+    def change(package: dict[str, Any]) -> None:
+        resource = package["resources"][0]
+        if value is None:
+            del resource["hash"]
+        else:
+            resource["hash"] = value
+
+    for target in edited(tmp_path, package_edit(change)):
+        with pytest.raises(FormatError) as caught:
+            open_bundle(target)
+        assert (caught.value.reason, caught.value.pointer) == (
+            "format_invalid",
+            "/resources/0/hash",
+        )
+
+
+def _drop_spec_id(package: dict[str, Any]) -> None:
+    del package["dfo"]["spec"]["spec_id"]
+
+
+@pytest.mark.parametrize(
+    ("edit", "pointer"),
+    [
+        (lambda raw: raw[: len(raw) // 2], ""),
+        (lambda raw: b"\xff\xfe\x00", ""),
+        (lambda raw: b"[]", ""),
+        (lambda raw: raw.replace(b'"bytes": 2824', b'"bytes": NaN'), ""),
+        (package_edit(_drop_spec_id), "/dfo/spec/spec_id"),
+        (package_edit(lambda p: p["dfo"].update(spec=[])), "/dfo/spec"),
+        (
+            package_edit(lambda p: p["dfo"].update(content_version="cv_x")),
+            "/dfo/content_version",
+        ),
+        (package_edit(lambda p: p.update(dfo="x")), "/dfo"),
+        (
+            package_edit(
+                lambda p: p["resources"][0]["schema"]["fields"][0].update(
+                    type=["string"]
+                )
+            ),
+            "/resources/0/schema/fields/0/type",
+        ),
+        (
+            package_edit(
+                lambda p: p["resources"][0]["schema"].update(missingValues=[None])
+            ),
+            "/resources/0/schema/missingValues",
+        ),
+    ],
+    ids=[
+        "not-json",
+        "not-utf8",
+        "not-object",
+        "nan",
+        "spec-without-id",
+        "spec-not-object",
+        "content-version",
+        "dfo-not-object",
+        "field-type-list",
+        "missing-values",
+    ],
+)
+def test_a_damaged_descriptor_raises_format_error(
+    tmp_path: Path, edit: Callable[[bytes], bytes], pointer: str
+) -> None:
+    for target in edited(tmp_path, edit):
+        with pytest.raises(FormatError) as caught:
+            open_bundle(target)
+        assert (caught.value.reason, caught.value.pointer) == (
+            "format_invalid",
+            pointer,
+        )
+
+
+@pytest.mark.parametrize(
+    ("fmt", "rows"),
+    [
+        ("csv", [["country", "value", "value"], ["KEN", 1, 2]]),
+        ("csv", [["country", "year", "value"], ["KEN", "twenty", 1]]),
+        ("csv", [["country", "year", "value"], ["KEN", 2015]]),
+        ("csv", []),
+        ("xlsx", [["country", "value", "value"], ["KEN", 1, 2]]),
+        ("xlsx", [["country", None, "value"], ["KEN", 2015, 1.5]]),
+        ("xlsx", [["country", "year", "value"], ["KEN", 2015.9, 1.5]]),
+        ("xlsx", [["country", "year", "value"], ["KEN", True, 1.5]]),
+        ("xlsx", [["country", "year", "value"], ["KEN", 2015, "=1+1"]]),
+        ("xlsx", [["country", "year", "value"], ["KEN", 2**70, 1.5]]),
+    ],
+    ids=[
+        "csv-repeated-name",
+        "csv-text-in-integer",
+        "csv-ragged",
+        "csv-empty",
+        "xlsx-repeated-name",
+        "xlsx-unnamed-column",
+        "xlsx-fraction-in-integer",
+        "xlsx-boolean-in-integer",
+        "xlsx-formula",
+        "xlsx-integer-overflow",
+    ],
+)
+def test_data_that_does_not_fit_its_columns_raises_format_error(
+    tmp_path: Path, fmt: str, rows: list[list[Any]]
+) -> None:
+    data = (
+        xlsx(rows)
+        if fmt == "xlsx"
+        else "".join(",".join(map(str, row)) + "\n" for row in rows).encode()
+    )
+    with pytest.raises(FormatError) as caught:
+        open_bundle(small_bundle(tmp_path, data, fmt, FIELDS))
+    assert (caught.value.reason, caught.value.pointer) == (
+        "format_invalid",
+        "/resources/0",
+    )
+
+
+@pytest.mark.parametrize("fmt", ["csv", "xlsx"])
+def test_a_small_bundle_reads_its_typed_values(tmp_path: Path, fmt: str) -> None:
+    rows: list[list[Any]] = [["country", "year", "value"], ["KEN", 2015.0, 1.5]]
+    data = xlsx(rows) if fmt == "xlsx" else b"country,year,value\nKEN,2015,1.5\n"
+    table = open_bundle(small_bundle(tmp_path, data, fmt, FIELDS)).to_arrow()
+    assert table.to_pydict() == {"country": ["KEN"], "year": [2015], "value": [1.5]}
 
 
 def test_a_folder_without_a_descriptor_is_refused(tmp_path: Path) -> None:

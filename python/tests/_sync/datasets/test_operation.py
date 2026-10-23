@@ -23,11 +23,14 @@ from dfo._core.errors import (
 )
 from dfo._core.parse import parse_spec
 from dfo._core.types import Spec
+from dfo._datasets.cache import sha256_digest
 from dfo._sync._datasets.fetch import mint, operation
 from dfo._sync._datasets.resolve import fetch
 from dfo._sync._http.transport import Transport
 from tests._fetch_support import (
     BASE,
+    CUT,
+    CUT_DATA,
     NARROWED_ID,
     OP_ID,
     POSTED_ID,
@@ -40,6 +43,7 @@ from tests._fetch_support import (
     problem,
     redirect,
     resubmitted,
+    with_cut,
 )
 from tests._fetch_support import (
     operation as resource,
@@ -125,8 +129,9 @@ def test_a_cut_off_build_is_rebuilt_once_after_its_wait(
     [
         httpx2.Response(201, json={}),
         httpx2.Response(200, content=b"<html>", headers={"content-type": "text/html"}),
+        httpx2.Response(200, content=b"[" * 100_000 + b"]" * 100_000),
     ],
-    ids=["status", "not-json"],
+    ids=["status", "not-json", "nested-past-the-stack"],
 )
 def test_a_build_answer_the_client_cannot_read_is_unexpected(
     response: httpx2.Response,
@@ -206,6 +211,42 @@ def test_a_refused_poll_waits_for_its_retry_after(status: int, code: str) -> Non
     with make(server, timeline) as transport:
         fetch(transport, spec())
     assert timeline.sleeps == [1.0, 6.0]
+
+
+@pytest.mark.parametrize(
+    ("before", "sleeps"), [((), []), ((accepted(),), [1.0])], ids=["build", "poll"]
+)
+def test_a_retry_after_past_the_ceiling_raises_at_once(
+    before: tuple[httpx2.Response, ...], sleeps: list[float]
+) -> None:
+    timeline = Timeline()
+    server = Server(*before, refused(503, "service_unavailable", "61"), done())
+    with make(server, timeline) as transport:
+        with pytest.raises(ServerError) as caught:
+            fetch(transport, spec())
+    assert (caught.value.code, caught.value.retry_after) == ("service_unavailable", 61)
+    assert timeline.sleeps == sleeps
+    assert len(server.requests) == len(before) + 1
+
+
+@pytest.mark.parametrize(
+    ("members", "wait"),
+    [
+        ({"retry_after_ms": 0}, 1.0),
+        ({"retry_after_ms": 86_400_000}, 60.0),
+        ({"headers": {"retry-after": "0"}}, 1.0),
+        ({"headers": {"retry-after": "86400"}}, 60.0),
+    ],
+    ids=["zero-ms", "a-day-ms", "zero-header", "a-day-header"],
+)
+def test_the_servers_poll_interval_is_clamped_to_one_to_sixty_seconds(
+    members: dict, wait: float
+) -> None:
+    timeline = Timeline()
+    server = Server(accepted(**members), done(), redirect(), parquet())
+    with make(server, timeline) as transport:
+        fetch(transport, spec())
+    assert timeline.sleeps == [wait]
 
 
 def test_a_long_build_polls_at_the_servers_pacing_then_finishes() -> None:
@@ -328,7 +369,17 @@ def test_a_failed_operation_body_raises_its_problem() -> None:
     assert caught.value.status == 500
 
 
-def test_the_deadline_names_the_call_that_resumes_the_build() -> None:
+@pytest.mark.parametrize(
+    ("options", "arguments"),
+    [
+        ({}, f'"{OP_ID}"'),
+        ({"layout": "frame"}, f'"{OP_ID}", layout="frame"'),
+        ({"without_party_totals": True}, f'"{OP_ID}", without_party_totals=True'),
+    ],
+)
+def test_the_deadline_names_the_call_that_resumes_the_build(
+    options: dict, arguments: str
+) -> None:
     timeline = Timeline()
     server = Server(
         accepted(retry_after_ms=8000),
@@ -336,8 +387,8 @@ def test_the_deadline_names_the_call_that_resumes_the_build() -> None:
     )
     with make(server, timeline) as transport:
         with pytest.raises(DfoTimeoutError) as caught:
-            fetch(transport, spec(), timeout=10.0)
-    assert f'client.operation("{OP_ID}").result()' in str(caught.value)
+            fetch(transport, spec(), timeout=10.0, **options)
+    assert f"client.operation({arguments}).result()" in str(caught.value)
     assert caught.value.code == "deadline_exceeded"
     assert timeline.sleeps == [8.0]
 
@@ -394,6 +445,33 @@ def test_a_resumed_operation_asks_search_for_its_sentence() -> None:
     assert server.calls()[2] == f"POST {BASE}/search/resolve"
     assert built.members[0].spec.spec_id == NARROWED_ID
     assert "2020 to 2023" in built.members[0].sentence
+
+
+def test_mint_and_resume_select_the_party_totals_cut() -> None:
+    minted = with_cut(manifest(POSTED_ID))
+    resumed = with_cut(manifest(NARROWED_ID))
+    server = Server(
+        json_response(200, minted),
+        redirect(),
+        parquet(CUT_DATA),
+        done(resumed),
+        json_response(200, resubmitted()),
+        redirect(),
+        parquet(CUT_DATA),
+    )
+    with make(server) as transport:
+        started = mint(transport, spec(), without_party_totals=True)
+        built = started.result()
+        assert server.body(0)["options"] == {
+            "format": "parquet",
+            "bundle": False,
+            "without_party_totals": True,
+        }
+        later = operation(transport, OP_ID, without_party_totals=True)
+        again = later.result()
+    for dataset in (built, again):
+        (member,) = dataset.members
+        assert (member.digest, member.rendering) == (sha256_digest(CUT_DATA), CUT)
 
 
 def test_resuming_an_unknown_operation_raises() -> None:

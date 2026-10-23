@@ -5,7 +5,9 @@
  * A ref returns the versions it names, found in this order: the snapshot route, then the files
  * route at the stored digest; the file selector, which renders the version again from its
  * stored frame; a fresh build, which must return the same version; otherwise
- * `VersionUnavailableError`, naming the newest version. The steps after the snapshot run only
+ * `VersionUnavailableError`, naming the newest version in the member's rendering. A rebuilt
+ * file whose digest differs from the ref's issues a `DataWarning` naming both, since the ref
+ * pins the version and the digest names one rendering of it. The steps after the snapshot run only
  * for a version whose file has expired. A version the server never built
  * (`snapshot_not_found`) raises at once. A snapshot or build that answers another spec raises
  * `ContractError`, so a recovered member keeps the ref's identity.
@@ -25,6 +27,8 @@ import {
 } from "../core/errors.ts";
 import {
   buildBody,
+  checkArtifact,
+  checkedSpec,
   contentVersionOf,
   deadlineOf,
   DIGEST_MISMATCH,
@@ -40,11 +44,12 @@ import {
 import type { CallOptions, FetchOptions, Narrowing, SpecInput, Wait } from "./fetch.ts";
 import { build, readManifest } from "./operation.ts";
 import type { Built, Manifest } from "./operation.ts";
-import { DatasetRef, layoutOf, renderingOptions } from "../core/ref.ts";
-import type { Layout, RefMember } from "../core/ref.ts";
+import { CONTENT_VERSION, DatasetRef, fileParams, layoutOf, mintOptions } from "../core/ref.ts";
+import type { Layout, Rendering, RefMember } from "../core/ref.ts";
 import { describing } from "../core/trace.ts";
 import type { Transport } from "../http/transport.ts";
 import { isRecord } from "../core/json.ts";
+import { clientWarning } from "../core/warnings.ts";
 
 /** Refusals after which a stored version's lookup goes on. The version exists, but its file
  *  has expired. An unknown version (`snapshot_not_found`) ends the lookup. */
@@ -53,7 +58,8 @@ const FILE_GONE = new Set([FILE_EXPIRED, "artifact_not_found", "not_found"]);
 /**
  * Fetches a spec's latest version, or the exact versions a ref names.
  *
- * @throws {InvalidRequestError} A ref is narrowed or given another layout.
+ * @throws {InvalidRequestError} The target is neither a ref nor a spec `checkedSpec` accepts, or a
+ *   ref is narrowed or given another layout or `withoutPartyTotals`.
  * @throws {VersionUnavailableError} A ref's version can no longer be fetched.
  * @throws {DfoError} The server refused a request.
  */
@@ -61,7 +67,7 @@ export async function fetchDataset(
   transport: Transport,
   target: SpecInput | DatasetRef,
   options: FetchOptions = {},
-): Promise<Dataset> {
+): Promise<Dataset<never>> {
   const { window, entities, facets, ...rest } = options;
   const narrowing: Narrowing = {
     ...(window === undefined ? {} : { window }),
@@ -76,11 +82,12 @@ export async function fetchDataset(
     }
     return fetchRef(transport, target, rest);
   }
+  const spec = checkedSpec(target);
   const member = {
     parts: [],
-    spec: target,
-    sentence: target.resolved?.rendered_sentence,
-    entityGroups: target.resolved?.entity_groups,
+    spec,
+    sentence: spec.resolved?.rendered_sentence,
+    entityGroups: spec.resolved?.entity_groups,
   };
   return fetchMembers(transport, [member], { ...rest, narrowing });
 }
@@ -91,7 +98,7 @@ function refLayout(ref: DatasetRef): Layout {
     if (member.rendering.format !== "parquet" || member.rendering.bundle) {
       throw invalid(
         `The DatasetRef stores ${member.spec.spec_id} as ` +
-          `${JSON.stringify(renderingOptions(member.rendering))}; this client reads bare Parquet.`,
+          `${JSON.stringify(mintOptions(member.rendering))}; this client reads bare Parquet.`,
       );
     }
     layouts.add(layoutOf(member.rendering));
@@ -106,7 +113,7 @@ async function fetchRef(
   transport: Transport,
   ref: DatasetRef,
   options: CallOptions,
-): Promise<Dataset> {
+): Promise<Dataset<never>> {
   const layout = refLayout(ref);
   if (options.layout !== undefined && options.layout !== layout) {
     throw invalid(
@@ -114,12 +121,22 @@ async function fetchRef(
         "another layout.",
     );
   }
+  const { withoutPartyTotals } = options;
+  for (const member of ref.members) {
+    const held = member.rendering.without_party_totals === true;
+    if (withoutPartyTotals !== undefined && withoutPartyTotals !== held) {
+      throw invalid(
+        `The DatasetRef holds ${member.spec.spec_id} with withoutPartyTotals ${held}, not ` +
+          `${JSON.stringify(withoutPartyTotals)}; fetch its specs for the other rendering.`,
+      );
+    }
+  }
   const wait = { deadline: deadlineOf(transport, options.timeout), signal: options.signal };
   const fetched: FetchedMember[] = [];
   for (const member of ref.members) {
     fetched.push(await fetchVersion(transport, member, options, wait));
   }
-  return new Dataset(fetched, { layout });
+  return new Dataset<never>(fetched, { layout });
 }
 
 const stored = (member: RefMember, manifest: Manifest, data: Uint8Array): FetchedMember => ({
@@ -153,7 +170,10 @@ async function fetchVersion(
   if (found !== undefined) {
     noteWarnings(transport, found, strict);
     const file = await storedFile(transport, member, found, wait);
-    if (file.data !== undefined) return stored(member, found.manifest, file.data);
+    if (file.data !== undefined) {
+      checkArtifact(file.data, found.manifest, member.digest);
+      return stored(member, found.manifest, file.data);
+    }
     refusal = file.refusal;
   }
 
@@ -180,7 +200,9 @@ async function fetchVersion(
         rendering: member.rendering,
         strict,
       };
-      return await finish(transport, built, finishing, wait);
+      const fetched = await finish(transport, built, finishing, wait);
+      if (fetched.digest !== member.digest) noteNewDigest(transport, member, fetched.digest);
+      return fetched;
     }
     newest = contentVersionOf(built.manifest);
   } catch (error) {
@@ -192,9 +214,22 @@ async function fetchVersion(
       throw error;
     }
     refusal ??= error;
-    newest = await newestVersion(transport, member.spec.spec_id, wait);
+    newest = await newestVersion(transport, member.spec.spec_id, member.rendering, wait);
   }
   throw unavailable(member, newest, refusal);
+}
+
+/** Issues the client's warning that a rebuilt file differs from the ref's. The rebuild returned
+ *  the ref's version, so the rows are the version the ref names, rendered to bytes with another
+ *  digest; the data is returned, so strict does not raise it. */
+function noteNewDigest(transport: Transport, member: RefMember, digest: string): void {
+  transport.warn(
+    clientWarning(
+      "ref_digest_changed",
+      `${member.spec.spec_id} at ${member.contentVersion} was rebuilt as ${digest}, not the ` +
+        `ref's ${member.digest}; the version is the same, and dataset.ref names the rebuilt file.`,
+    ),
+  );
 }
 
 /** A stored version's manifest, and the trace id of the response that carried it. */
@@ -238,21 +273,28 @@ async function storedFile(
   if (artifact !== undefined) {
     const route = describing(traceId, () => transport.originUrl(String(artifact["url"])));
     try {
-      return { data: await download(transport, { url: route.href }, member.digest, wait) };
+      return {
+        data: await download(
+          transport,
+          { url: route.href },
+          member.digest,
+          wait,
+          artifact["bytes"],
+        ),
+      };
     } catch (error) {
       if (!(error instanceof DfoError) || !FILE_GONE.has(error.code)) throw error;
       refusal = error;
     }
   }
   const query = new URLSearchParams(
-    Object.entries(renderingOptions(member.rendering)).map(([name, value]) => [
-      name,
-      String(value),
-    ]),
+    Object.entries(fileParams(member.rendering)).map(([name, value]) => [name, String(value)]),
   );
   const selector = `/datasets/${member.spec.spec_id}/${member.contentVersion}/file?${query}`;
   try {
-    return { data: await download(transport, { path: selector }, member.digest, wait) };
+    return {
+      data: await download(transport, { path: selector }, member.digest, wait, artifact?.["bytes"]),
+    };
   } catch (error) {
     if (!(error instanceof DfoError)) throw error;
     // The selector renders the version again, so bytes with another digest are not the stored
@@ -265,26 +307,34 @@ async function storedFile(
 
 /** The versions one page of the versions route lists, the route's default page size. */
 const VERSIONS_PAGE = 100;
+/** The most versions pages a newest-version lookup reads. Past them the lookup reports no
+ *  newest version. */
+export const VERSIONS_PAGE_BUDGET = 20;
 
 /**
- * @internal The newest stored version of a spec, its newest plain build, or null. The versions
- * route lists versions newest first, `VERSIONS_PAGE` to a page, and each page's `next_cursor`
- * names the next. The newest version is the first listed with a null `base_content_version`, so
- * a derived version, a groupby collapse or party-totals cut of a plain build, is skipped. A list
- * that ends without a plain version, or a `NotFoundError`, reads as none. A ref's lookup reads
- * it, and the contract replay runs its `newest_version` step through it.
+ * @internal The newest stored version of a spec in a rendering, or null. The versions route
+ * lists versions newest first, `VERSIONS_PAGE` to a page, and each page's `next_cursor` names
+ * the next. Each version names the rendering it is: `plain`, `without_party_totals` for a
+ * party-totals cut, `groupby` or `not_recorded`. The newest version is the first listed in the
+ * rendering a ref member holds, `plain` or `without_party_totals`. A list that ends without
+ * one, a `NotFoundError`, or `VERSIONS_PAGE_BUDGET` pages read without one, reads as none. A
+ * ref's lookup reads it, and the contract replay runs its `newest_version` step through it.
  *
  * @throws {ContractError} A page is not a `DatasetVersionsPage` this client can read: no
- *   `versions` list, a listed version with no `content_version` string or no
- *   `base_content_version` that is a string or null, or a `next_cursor` that is neither.
+ *   `versions` list, a listed version whose `content_version` is not a version id or that has no
+ *   `rendering` string, or a
+ *   `next_cursor` that is neither a string nor null, or names a page already read.
  */
 export async function newestVersion(
   transport: Transport,
   specId: string,
+  rendering: Rendering,
   { deadline, signal, timeout }: Wait & { readonly timeout?: number | undefined },
 ): Promise<string | null> {
+  const wanted = rendering.without_party_totals === true ? "without_party_totals" : "plain";
+  const seen = new Set<string>();
   let cursor: string | null = null;
-  do {
+  for (let read = 0; read < VERSIONS_PAGE_BUDGET; read += 1) {
     const query = new URLSearchParams({ limit: String(VERSIONS_PAGE) });
     if (cursor !== null) query.set("cursor", cursor);
     let body: unknown;
@@ -300,43 +350,49 @@ export async function newestVersion(
       if (error instanceof NotFoundError) return null;
       throw error;
     }
-    const page = readVersionsPage(body, specId, traceId);
-    if (page.plain !== null) return page.plain;
+    const page = readVersionsPage(body, specId, wanted, traceId);
+    if (page.newest !== null || page.nextCursor === null) return page.newest;
+    if (seen.has(page.nextCursor)) throw unreadable(specId, "/next_cursor", traceId);
+    seen.add(page.nextCursor);
     cursor = page.nextCursor;
-  } while (cursor !== null);
+  }
   return null;
 }
 
-/** The first plain version a versions page lists, or null, and the page's `next_cursor`. */
+/** The first version a versions page lists in the wanted rendering, or null, and the page's
+ *  `next_cursor`. */
 function readVersionsPage(
   body: unknown,
   specId: string,
+  wanted: string,
   traceId: string | null,
-): { plain: string | null; nextCursor: string | null } {
-  const unreadable = (pointer: string): DfoError =>
-    clientError("contract_violation", {
-      detail: `The versions of ${specId} are not a DatasetVersionsPage: ${pointer} cannot be read.`,
-      pointer,
-      traceId,
-    });
+): { newest: string | null; nextCursor: string | null } {
   const versions = isRecord(body) ? body["versions"] : undefined;
-  if (!isRecord(body) || !Array.isArray(versions)) throw unreadable("/versions");
-  let plain: string | null = null;
+  if (!isRecord(body) || !Array.isArray(versions)) throw unreadable(specId, "/versions", traceId);
+  let newest: string | null = null;
   for (const [index, version] of (versions as unknown[]).entries()) {
     const entry = isRecord(version) ? version : {};
     const contentVersion = entry["content_version"];
-    if (typeof contentVersion !== "string") {
-      throw unreadable(`/versions/${index}/content_version`);
+    if (typeof contentVersion !== "string" || !CONTENT_VERSION.test(contentVersion)) {
+      throw unreadable(specId, `/versions/${index}/content_version`, traceId);
     }
-    const base = entry["base_content_version"];
-    if (base !== null && typeof base !== "string") {
-      throw unreadable(`/versions/${index}/base_content_version`);
-    }
-    if (base === null) plain ??= contentVersion;
+    const listed = entry["rendering"];
+    if (typeof listed !== "string")
+      throw unreadable(specId, `/versions/${index}/rendering`, traceId);
+    if (listed === wanted) newest ??= contentVersion;
   }
   const nextCursor = body["next_cursor"] ?? null;
-  if (nextCursor !== null && typeof nextCursor !== "string") throw unreadable("/next_cursor");
-  return { plain, nextCursor };
+  if (nextCursor !== null && typeof nextCursor !== "string")
+    throw unreadable(specId, "/next_cursor", traceId);
+  return { newest, nextCursor };
+}
+
+function unreadable(specId: string, pointer: string, traceId: string | null): DfoError {
+  return clientError("contract_violation", {
+    detail: `The versions of ${specId} are not a DatasetVersionsPage: ${pointer} cannot be read.`,
+    pointer,
+    traceId,
+  });
 }
 
 function unavailable(
@@ -345,7 +401,11 @@ function unavailable(
   refusal: DfoError | undefined,
 ): VersionUnavailableError {
   const hint =
-    newest === null ? "" : `; the newest version is ${newest}, which fetching the spec returns`;
+    newest === null
+      ? ""
+      : newest === member.contentVersion
+        ? "; the server lists it as the newest version"
+        : `; the newest version is ${newest}, which fetching the spec returns`;
   const detail = `${member.spec.spec_id} at ${member.contentVersion} can no longer be fetched${hint}.`;
   if (refusal === undefined) {
     return clientError("version_unavailable", { detail, newestVersion: newest });

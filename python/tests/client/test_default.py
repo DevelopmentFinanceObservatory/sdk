@@ -1,7 +1,8 @@
 """Tests for the module functions and the default client behind them.
 
-The default client is built on first use, replaced by `configure`, reset in a
-forked child and closed at exit; importing `dfo` reads nothing.
+The default client is built on first use, replaced by `configure`, kept with a
+fresh connection pool in a forked child and closed at exit; importing `dfo` reads
+nothing.
 """
 
 import gc
@@ -115,10 +116,10 @@ def test_an_answer_stays_usable_after_configure(
     assert [len(asked.requests), len(built.requests)] == [1, 3]
     # The replaced client stays open while referenced, and closes once collected.
     replaced = clients[0]._current().transport
-    assert not replaced._http.is_closed
+    assert not replaced._pool._client.is_closed
     clients.clear()
     gc.collect()
-    assert replaced._http.is_closed
+    assert replaced._pool._client.is_closed
 
 
 def test_an_in_flight_search_keeps_the_replaced_default_client_open(
@@ -156,7 +157,7 @@ def test_an_in_flight_search_keeps_the_replaced_default_client_open(
         clients.clear()
         gc.collect()
         assert replaced() is not None
-        assert not transport._http.is_closed
+        assert not transport._pool._client.is_closed
     finally:
         resume.set()
         worker.join(timeout=5)
@@ -165,7 +166,7 @@ def test_an_in_flight_search_keeps_the_replaced_default_client_open(
     assert len(result) == 1
     gc.collect()
     assert replaced() is None
-    assert transport._http.is_closed
+    assert transport._pool._client.is_closed
 
 
 def test_the_default_client_is_built_once_on_first_use(
@@ -256,27 +257,34 @@ def test_disable_and_enable_cache_keep_the_configured_client(
 FORK = textwrap.dedent(
     """
     import os
+    import dfo
     from dfo._client import default as _default
 
+    dfo.configure(base_url="https://configured.example.org/api", api_key=False)
     parent = _default.default_client()
+    transport = parent._current().transport
+    inherited = transport._pool.client
     # Another thread holds the lock as the process forks.
     _default._lock.acquire()
     pid = os.fork()
     if pid == 0:
-        inherited = _default._client is None and not _default._lock.locked()
-        rebuilt = _default.default_client()
-        unclosed = not parent._current().transport._http.is_closed
-        os._exit(0 if inherited and rebuilt is not parent and unclosed else 1)
+        kept = _default.default_client() is parent and not _default._lock.locked()
+        configured = parent.base_url == "https://configured.example.org/api"
+        fresh = transport._pool.client
+        transport.close()
+        untouched = fresh is not inherited and fresh.is_closed
+        os._exit(0 if kept and configured and untouched and not inherited.is_closed else 1)
     _default._lock.release()
     _, status = os.waitpid(pid, 0)
-    assert os.waitstatus_to_exitcode(status) == 0, "the child kept the parent's client"
+    assert os.waitstatus_to_exitcode(status) == 0, "the child lost or reused the pool"
     assert _default._client is parent
+    assert transport._pool.client is inherited and not inherited.is_closed
     """
 )
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork")
-def test_a_forked_child_drops_the_inherited_client_unclosed() -> None:
+def test_a_forked_child_keeps_the_configured_client_on_a_fresh_pool() -> None:
     # A fresh interpreter, since this one runs pyarrow's threads and fork warns.
     # NO_PROXY keeps httpx2 off macOS's system proxy lookup, which starts threads
     # and crashes a forked child.

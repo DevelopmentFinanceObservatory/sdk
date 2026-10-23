@@ -9,10 +9,21 @@ import json
 import re
 from collections.abc import Awaitable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
-from typing import TYPE_CHECKING, Any, Literal, Never, Protocol, Self, override
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Literal,
+    Never,
+    Protocol,
+    Self,
+    TypeGuard,
+    get_args,
+    override,
+)
 
 from dfo._core.codes import INVALID_ARGUMENT
 from dfo._core.errors import client_error
+from dfo._generated.error_map import GapKind as SearchGapKind
 from dfo._generated.wire import (
     AggregateNode,
     CodeNode,
@@ -38,6 +49,7 @@ if TYPE_CHECKING:
 
 SPEC_ID = re.compile(r"spec_[0-9a-f]{32}")
 CONTENT_VERSION = re.compile(r"cv_[0-9a-f]{32}")
+OPERATION_ID = re.compile(r"op_[0-9a-f]{64}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 # A decoded JSON object as the server sent it.
@@ -48,6 +60,17 @@ type Layout = Literal["long", "frame"]
 
 # The periods a fetch asks for: every period, the latest, or (start_year, end_year).
 type Window = Literal["all", "latest"] | tuple[int, int]
+
+# The gap kinds the client adds to Search's: a part that timed out, and a status
+# this client does not know.
+type _ClientGapKind = Literal["timed_out", "unknown"]
+
+# Why a part leaves a gap in an answer.
+type GapKind = SearchGapKind | _ClientGapKind
+
+_GAP_KINDS: frozenset[str] = frozenset(
+    get_args(SearchGapKind.__value__) + get_args(_ClientGapKind.__value__)
+)
 
 type FormatErrorReason = Literal[
     "format_invalid", "definition_spec_id_mismatch", "repeated_spec_id"
@@ -264,6 +287,7 @@ class Candidate(_Reading):
         partial: bool = False,
         strict: bool = False,
         layout: Layout = "long",
+        without_party_totals: bool = False,
         timeout: float | None = 1800.0,
         progress: bool | None = None,
     ) -> "Dataset":
@@ -283,6 +307,7 @@ class Candidate(_Reading):
             partial=partial,
             strict=strict,
             layout=layout,
+            without_party_totals=without_party_totals,
             timeout=timeout,
             progress=progress,
         )
@@ -302,6 +327,7 @@ class AsyncCandidate(_Reading):
         partial: bool = False,
         strict: bool = False,
         layout: Layout = "long",
+        without_party_totals: bool = False,
         timeout: float | None = 1800.0,
         progress: bool | None = None,
     ) -> "Dataset":
@@ -321,6 +347,7 @@ class AsyncCandidate(_Reading):
             partial=partial,
             strict=strict,
             layout=layout,
+            without_party_totals=without_party_totals,
             timeout=timeout,
             progress=progress,
         )
@@ -343,6 +370,7 @@ class _CandidateFetch(Protocol):
         partial: bool,
         strict: bool,
         layout: Layout,
+        without_party_totals: bool,
         timeout: float | None,
         progress: bool | None,
     ) -> "Dataset": ...
@@ -357,6 +385,7 @@ class _AsyncCandidateFetch(Protocol):
         partial: bool,
         strict: bool,
         layout: Layout,
+        without_party_totals: bool,
         timeout: float | None,
         progress: bool | None,
     ) -> Awaitable["Dataset"]: ...
@@ -469,7 +498,7 @@ class Gap[C]:
 
     part_index: int
     part: Part[C]
-    kind: str
+    kind: GapKind
     message: str
     options: tuple[C | Option, ...] = ()
 
@@ -544,6 +573,11 @@ class Citation:
     sources: tuple[CitationSource, ...] = ()
 
 
+# The members of a manifest artifact's `rendering` object that `Rendering.matches`
+# compares.
+RENDERING_SELECTORS = frozenset({"format", "bundle", "layout", "without_party_totals"})
+
+
 @dataclass(frozen=True, slots=True)
 class Rendering:
     """Which rendering of a version an artifact is, as a ref stores it.
@@ -552,22 +586,28 @@ class Rendering:
         format: `csv`, `xlsx` or `parquet`.
         bundle: Whether the artifact is a bundle with its descriptor.
         layout: `frame` for the pipeline frame, None for the long layout.
+        without_party_totals: Whether the rows leave out the parties the code
+            index declares totals.
     """
 
     format: str
     bundle: bool
     layout: Literal["frame"] | None = None
+    without_party_totals: bool = False
 
     def matches(self, rendering: Mapping[str, Any], /) -> bool:
         """Whether a manifest artifact's `rendering` object is this rendering.
 
         The server's object carries more members than the selector, so it matches
-        on format, bundle and whether its layout is the frame.
+        on format, bundle, whether its layout is the frame, and whether it leaves
+        party totals out, which the server records only when it does.
         """
         return (
             rendering.get("format") == self.format
             and rendering.get("bundle") is self.bundle
             and (rendering.get("layout") == "frame") == (self.layout == "frame")
+            and (rendering.get("without_party_totals") is True)
+            is self.without_party_totals
         )
 
 
@@ -578,14 +618,32 @@ def spec_object(spec: Spec, *, with_sentence: bool) -> dict[str, Any]:
     return obj
 
 
-def decode(text: str | bytes) -> Mapping[str, Any]:
+def is_gap_kind(value: object) -> TypeGuard[GapKind]:
+    return isinstance(value, str) and value in _GAP_KINDS
+
+
+def _no_constant(name: str) -> Never:
+    raise ValueError(f"{name} is not a JSON number")
+
+
+def decode(text: str | bytes, pointer: str = "") -> Mapping[str, Any]:
+    """A stored JSON object. `NaN` and `Infinity` are refused, as JSON has neither.
+
+    Args:
+        text: The stored JSON.
+        pointer: Where the JSON sits in a larger document, prefixed to the
+            pointer of an error.
+
+    Raises:
+        FormatError: The text is not JSON, or not an object.
+    """
     try:
-        obj = json.loads(text)
+        obj = json.loads(text, parse_constant=_no_constant)
     except ValueError as error:  # JSONDecodeError, or bytes that are not UTF-8
-        raise FormatError("format_invalid", "", f"not JSON: {error}") from error
-    if not isinstance(obj, dict):
-        raise FormatError("format_invalid", "", "not an object")
-    return obj
+        raise FormatError("format_invalid", pointer, f"not JSON: {error}") from error
+    except RecursionError as error:
+        raise FormatError("format_invalid", pointer, "nested too deeply") from error
+    return object_at(obj, pointer)
 
 
 def is_text(value: object) -> bool:
@@ -629,31 +687,28 @@ def load_spec(obj: Mapping[str, Any], pointer: str) -> Spec:
     spec_id = obj["spec_id"]
     if not matches(SPEC_ID, spec_id):
         raise FormatError("format_invalid", f"{pointer}/spec_id", "not a spec id")
-    definition = object_at(obj["definition"], f"{pointer}/definition")
-    check_keys(
-        definition,
-        f"{pointer}/definition",
-        required=("schema_version", "spec_id", "identity"),
-    )
-    schema_version = definition["schema_version"]
-    if not is_integer(schema_version):
-        raise FormatError(
-            "format_invalid",
-            f"{pointer}/definition/schema_version",
-            "not an integer",
-        )
-    object_at(definition["identity"], f"{pointer}/definition/identity")
-    if not matches(SPEC_ID, definition["spec_id"]):
-        raise FormatError(
-            "format_invalid", f"{pointer}/definition/spec_id", "not a spec id"
-        )
-    if definition["spec_id"] != spec_id:
+    spec = load_definition(obj["definition"], f"{pointer}/definition")
+    if spec.spec_id != spec_id:
         raise FormatError(
             "definition_spec_id_mismatch",
             f"{pointer}/definition/spec_id",
-            f"names {definition['spec_id']}, not {spec_id}",
+            f"names {spec.spec_id}, not {spec_id}",
         )
-    return Spec(spec_id, definition)
+    return spec
+
+
+def load_definition(value: object, pointer: str) -> Spec:
+    """The spec a stored definition, `{schema_version, spec_id, identity}`, names."""
+    definition = object_at(value, pointer)
+    check_keys(definition, pointer, required=("schema_version", "spec_id", "identity"))
+    if not is_integer(definition["schema_version"]):
+        raise FormatError(
+            "format_invalid", f"{pointer}/schema_version", "not an integer"
+        )
+    object_at(definition["identity"], f"{pointer}/identity")
+    if not matches(SPEC_ID, definition["spec_id"]):
+        raise FormatError("format_invalid", f"{pointer}/spec_id", "not a spec id")
+    return Spec(definition["spec_id"], definition)
 
 
 @dataclass(frozen=True, slots=True, eq=False)

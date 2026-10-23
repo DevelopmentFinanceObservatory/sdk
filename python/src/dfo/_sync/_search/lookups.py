@@ -6,12 +6,16 @@ document's schema. The client reads none of it, so an unknown member or enum val
 passes through untouched.
 """
 
+import re
 from collections.abc import Sequence
 from datetime import date
 from typing import Any
 from urllib.parse import quote
 
-from dfo._core.types import Node, ResolveKind
+from dfo._core.codes import INVALID_ARGUMENT
+from dfo._core.errors import client_error
+from dfo._core.text import control_fault, has_dot_segment
+from dfo._core.types import Node, ResolveKind, matches
 from dfo._datasets.build import response_json
 from dfo._generated.wire import (
     CatalogueResponse,
@@ -19,6 +23,30 @@ from dfo._generated.wire import (
     ResolveResponse,
 )
 from dfo._sync._http.transport import Transport
+
+# A registry code: lower-case snake case.
+_CODE = re.compile(r"[a-z][a-z0-9_]*")
+
+
+def _check_dcid(dcid: object) -> None:
+    """Refuse a dcid that would leave the node route or carry a query.
+
+    Raises:
+        InvalidRequestError: `invalid_argument`.
+    """
+    if not isinstance(dcid, str) or not dcid:
+        problem = "is not a non-empty string"
+    elif fault := control_fault(dcid):
+        problem = f"holds {fault}"
+    elif "?" in dcid or "#" in dcid:
+        problem = "holds a ? or a #"
+    elif has_dot_segment(dcid):
+        problem = "holds a . or .. segment"
+    else:
+        return
+    raise client_error(
+        INVALID_ARGUMENT, f"The dcid {problem}; pass one such as country/NGA"
+    )
 
 
 class Graph:
@@ -67,8 +95,12 @@ class Graph:
             as_of: Read the node as the graph held it on this date.
 
         Raises:
+            InvalidRequestError: `dcid` is empty or holds a `.` or `..`
+                segment, a `?`, a `#` or a control character
+                (`invalid_argument`); no request is sent.
             NotFoundError: The graph holds no node with that dcid.
         """
+        _check_dcid(dcid)
         params = None if as_of is None else {"as_of": as_of.isoformat()}
         response = self._transport.request(
             "GET", f"/graph/node/{quote(dcid, safe='/')}", params=params
@@ -90,9 +122,17 @@ class Codes:
         names.
 
         Raises:
+            InvalidRequestError: `code` is not lower-case snake case
+                (`invalid_argument`); no request is sent.
             NotFoundError: The registry holds no such code.
         """
-        url = self._transport.origin_url(f"/codes/{quote(code, safe='')}")
+        if not matches(_CODE, code):
+            raise client_error(
+                INVALID_ARGUMENT,
+                f"{code!r} is not a code, which is a lower-case letter followed "
+                "by lower-case letters, digits or _",
+            )
+        url = self._transport.origin_url(f"/codes/{code}")
         return response_json(self._transport.request("GET", url))
 
 

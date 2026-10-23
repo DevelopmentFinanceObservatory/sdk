@@ -1,15 +1,22 @@
-"""The download cache: the contract's layout, re-hashing, atomic writes and eviction."""
+"""The download cache: the contract's layout, re-hashing, atomic writes, eviction,
+the checks on what it reads back, and where it lives."""
 
+import getpass
+import json
 import logging
 import os
+import pwd
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from dfo._core.errors import InvalidRequestError
 from dfo._core.types import Rendering
 from dfo._datasets import cache as _cache
 from dfo._datasets.cache import Cache, file_entry, manifest_entry, sha256_digest
+from tests._fetch_support import manifest
 from tests.rule_vectors import ids, vectors
 
 SPEC_ID = "spec_cb5baa4161de718f18583060674dbca6"
@@ -21,6 +28,15 @@ PARQUET = Rendering("parquet", False)
 @pytest.fixture
 def cache(tmp_path: Path) -> Cache:
     return Cache(tmp_path, env={})
+
+
+def stored(
+    content_version: str, prepared_at: str = "2026-10-01T00:00:00Z"
+) -> dict[str, Any]:
+    """A served manifest of `SPEC_ID` at `content_version`."""
+    body = manifest(SPEC_ID, content_version)
+    body["prepared_at"] = prepared_at
+    return body
 
 
 @pytest.mark.parametrize("vector", vectors("cache-layout"), ids=ids("cache-layout"))
@@ -43,6 +59,39 @@ def test_directory_is_the_contract_cache_directory(tmp_path: Path) -> None:
     assert Cache(tmp_path, env={}).directory == tmp_path / "v1" / "dfo" / "cache1"
     from_env = Cache(env={"DFO_CACHE_DIR": str(tmp_path)})
     assert from_env.directory == tmp_path / "v1" / "dfo" / "cache1"
+
+
+@pytest.mark.parametrize("source", ["argument", "environment"])
+def test_a_relative_directory_resolves_when_the_cache_is_built(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    if source == "argument":
+        cache = Cache("relative", env={})
+    else:
+        cache = Cache(env={"DFO_CACHE_DIR": "relative"})
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    assert cache.directory == tmp_path / "relative" / "v1" / "dfo" / "cache1"
+
+
+def test_a_leading_tilde_name_is_that_users_home() -> None:
+    user = getpass.getuser()
+    home = Path(pwd.getpwnam(user).pw_dir)
+    assert Cache(f"~{user}/dfo", env={}).directory == home / "dfo" / "v1" / "dfo" / (
+        "cache1"
+    )
+
+
+@pytest.mark.parametrize(
+    "cache_dir",
+    ["", "a\0b", b"/tmp/cache", 5, "~no-such-user-dfo/cache"],
+    ids=["empty", "nul", "bytes", "int", "unknown-user"],
+)
+def test_a_cache_dir_that_names_no_directory_is_refused(cache_dir: Any) -> None:
+    with pytest.raises(InvalidRequestError) as raised:
+        Cache(cache_dir, env={})
+    assert raised.value.code == "invalid_argument"
 
 
 def test_bytes_round_trip_under_the_digest_path(cache: Cache) -> None:
@@ -69,21 +118,37 @@ def test_put_refuses_bytes_that_do_not_hash_to_the_digest(cache: Cache) -> None:
 
 
 @pytest.mark.parametrize("digest", ["sha256:../../etc", "md5:" + "0" * 32, "x"])
-def test_a_malformed_digest_never_names_a_path(cache: Cache, digest: str) -> None:
+def test_a_malformed_digest_is_a_miss_and_never_names_a_path(
+    cache: Cache, digest: str
+) -> None:
     with pytest.raises(ValueError, match="not a sha256 digest"):
-        cache.get_bytes(digest)
+        file_entry(digest)
+    assert cache.get_bytes(digest) is None
+    cache.put_bytes(digest, b"bytes")
+    cache.discard(digest)
+    assert not cache.directory.exists()
 
 
-def test_a_malformed_spec_id_never_names_a_path(cache: Cache) -> None:
-    with pytest.raises(ValueError, match="not a spec id"):
-        cache.get_manifest("spec_../../x", CV_OLD, PARQUET)
+@pytest.mark.parametrize(
+    ("spec_id", "content_version"),
+    [("spec_../../x", CV_OLD), (SPEC_ID, "cv_../x"), (SPEC_ID, "not a version")],
+)
+def test_a_malformed_id_is_a_miss_and_never_names_a_path(
+    cache: Cache, spec_id: str, content_version: str
+) -> None:
+    with pytest.raises(ValueError, match="is not a"):
+        manifest_entry(spec_id, content_version, PARQUET)
+    cache.put_manifest(spec_id, content_version, PARQUET, stored(CV_OLD))
+    assert cache.get_manifest(spec_id, content_version, PARQUET) is None
+    assert cache.manifest_candidates(spec_id, PARQUET) == []
+    assert not cache.directory.exists()
 
 
 def test_a_disabled_cache_reads_and_writes_nothing(tmp_path: Path) -> None:
     cache = Cache(tmp_path, enabled=False, env={})
     data = b"parquet bytes"
     cache.put_bytes(sha256_digest(data), data)
-    cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, {"content_version": CV_OLD})
+    cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, stored(CV_OLD))
     assert cache.get_bytes(sha256_digest(data)) is None
     assert cache.get_manifest(SPEC_ID, CV_OLD, PARQUET) is None
     assert cache.latest_manifest(SPEC_ID, PARQUET) is None
@@ -91,9 +156,9 @@ def test_a_disabled_cache_reads_and_writes_nothing(tmp_path: Path) -> None:
 
 
 def test_manifests_key_on_version_and_rendering(cache: Cache) -> None:
-    manifest = {"content_version": CV_OLD, "prepared_at": "2026-10-01T00:00:00Z"}
-    cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, manifest)
-    assert cache.get_manifest(SPEC_ID, CV_OLD, PARQUET) == manifest
+    body = stored(CV_OLD)
+    cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, body)
+    assert cache.get_manifest(SPEC_ID, CV_OLD, PARQUET) == body
     assert (
         cache.get_manifest(SPEC_ID, CV_OLD, Rendering("parquet", False, "frame"))
         is None
@@ -101,15 +166,59 @@ def test_manifests_key_on_version_and_rendering(cache: Cache) -> None:
     assert cache.get_manifest(SPEC_ID, CV_NEW, PARQUET) is None
 
 
-def test_a_broken_manifest_is_a_miss(cache: Cache) -> None:
-    cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, {"content_version": CV_OLD})
-    (cache.directory / manifest_entry(SPEC_ID, CV_OLD, PARQUET)).write_text("{trunc")
+def _without_definition(body: dict[str, Any]) -> None:
+    del body["definition"]
+
+
+def _set(*path: str | int, value: object) -> Callable[[dict[str, Any]], None]:
+    def edit(body: dict[str, Any]) -> None:
+        target: Any = body
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+
+    return edit
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        None,
+        _without_definition,
+        _set("definition", "spec_id", value="spec_" + "0" * 32),
+        _set("content_version", value=CV_NEW),
+        _set("artifacts", value="x"),
+        _set("artifacts", value=[1]),
+        _set("artifacts", 1, "artifact_digest", value=5),
+    ],
+    ids=[
+        "truncated",
+        "no-definition",
+        "other-spec",
+        "other-version",
+        "artifacts-not-a-list",
+        "artifact-not-an-object",
+        "digest-not-a-string",
+    ],
+)
+def test_a_broken_or_tampered_manifest_is_a_miss(
+    cache: Cache, tamper: Callable[[dict[str, Any]], None] | None
+) -> None:
+    body = stored(CV_OLD)
+    cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, body)
+    path = cache.directory / manifest_entry(SPEC_ID, CV_OLD, PARQUET)
+    if tamper is None:
+        path.write_text("{trunc")
+    else:
+        tamper(body)
+        path.write_text(json.dumps(body))
     assert cache.get_manifest(SPEC_ID, CV_OLD, PARQUET) is None
+    assert cache.manifest_candidates(SPEC_ID, PARQUET) == []
 
 
 def test_latest_manifest_is_the_newest_prepared_version(cache: Cache) -> None:
-    old = {"content_version": CV_OLD, "prepared_at": "2026-10-01T00:00:00Z"}
-    new = {"content_version": CV_NEW, "prepared_at": "2026-10-20T00:00:00Z"}
+    old = stored(CV_OLD, "2026-10-01T00:00:00Z")
+    new = stored(CV_NEW, "2026-10-20T00:00:00Z")
     cache.put_manifest(SPEC_ID, CV_NEW, PARQUET, new)
     cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, old)
     assert cache.latest_manifest(SPEC_ID, PARQUET) == new
@@ -122,8 +231,8 @@ def test_manifest_candidates_accept_versions_with_the_same_prepared_time(
     cache: Cache,
 ) -> None:
     timestamp = "2026-10-01T00:00:00Z"
-    old = {"content_version": CV_OLD, "prepared_at": timestamp}
-    new = {"content_version": CV_NEW, "prepared_at": timestamp}
+    old = stored(CV_OLD, timestamp)
+    new = stored(CV_NEW, timestamp)
     cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, old)
     cache.put_manifest(SPEC_ID, CV_NEW, PARQUET, new)
     assert {
@@ -198,6 +307,6 @@ def test_an_unwritable_cache_never_fails_the_caller(
     data = b"parquet bytes"
     with caplog.at_level(logging.WARNING, logger="dfo"):
         cache.put_bytes(sha256_digest(data), data)
-        cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, {})
+        cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, stored(CV_OLD))
     assert cache.get_bytes(sha256_digest(data)) is None
     assert caplog.text.count("could not write") == 2

@@ -62,6 +62,7 @@ KEPT_NAMES = frozenset({"__init__.py", "conftest.py"})
 SUBS: tuple[tuple[str, str], ...] = (
     ("async def", "def"),
     ("async with", "with"),
+    ("async for", "for"),
     ("await ", ""),
     ("AsyncTransport", "Transport"),
     ("AsyncAnswer", "Answer"),
@@ -78,8 +79,10 @@ SUBS: tuple[tuple[str, str], ...] = (
     ("AsyncHeaderProvider", "HeaderProvider"),
     ("AsyncSleep", "Sleep"),
     ("async_sleep", "sync_sleep"),
+    ("async_offload", "sync_offload"),
     ("aclose", "close"),
     ("aread", "read"),
+    ("aiter_bytes", "iter_bytes"),
     ("__aenter__", "__enter__"),
     ("__aexit__", "__exit__"),
     ("pytestmark = pytest.mark.anyio", ""),

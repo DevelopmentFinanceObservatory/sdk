@@ -6,7 +6,9 @@ constants `dfo._core.codes` builds from the contract's `client-codes.json`, so t
 code, its class and its retryable flag come from one row. A warning the client
 issues itself goes through `client_warning`, which takes one of the `WarningCode`
 constants built from `warning-codes.json`. `dfo._core.refusals` reads a server
-refusal into its class.
+refusal into its class. Every message, and an error's `detail`, drops the
+characters that steer a terminal or reorder text, since either can quote the
+server.
 """
 
 import os
@@ -14,6 +16,8 @@ import warnings
 from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+from dfo._core.text import printable
 
 if TYPE_CHECKING:
     # `dfo._core.types` raises through this module, so the import is for types only.
@@ -54,10 +58,10 @@ class DfoError(Exception):
         docs_url: str | None = None,
         retry_after: float | None = None,
     ) -> None:
-        super().__init__(message)
+        super().__init__(printable(message))
         self.code = code
         self.status = status
-        self.detail = detail
+        self.detail: str | None = None if detail is None else printable(detail)
         self.trace_id = trace_id
         self.retryable = retryable
         self.problem = problem
@@ -154,7 +158,7 @@ class DfoWarning(UserWarning):
     def __init__(
         self, message: str, /, *, code: str | None = None, trace_id: str | None = None
     ) -> None:
-        super().__init__(message)
+        super().__init__(printable(message))
         self.code = code
         self.trace_id = trace_id
 
@@ -283,7 +287,11 @@ def client_warning[W: DfoWarning](code: WarningCode[W], message: str, /) -> W:
     return code.warning_class(message, code=code.code)
 
 
-_warned: set[Hashable] = set()
+# The hashes of the keys `warn_once` has seen. At `_WARNED_MAX` the set starts
+# again, so a server that sends a new warning with every response cannot grow it
+# without bound; a warning seen before the restart can show once more.
+_WARNED_MAX = 1024
+_warned: set[int] = set()
 
 
 def warn(warning: Warning, /) -> None:
@@ -293,7 +301,10 @@ def warn(warning: Warning, /) -> None:
 
 def warn_once(key: Hashable, warning: Warning, /) -> None:
     """Issue `warning` the first time this process sees `key`."""
-    if key in _warned:
+    marker = hash(key)
+    if marker in _warned:
         return
-    _warned.add(key)
+    if len(_warned) >= _WARNED_MAX:
+        _warned.clear()
+    _warned.add(marker)
     warn(warning)

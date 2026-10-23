@@ -2,6 +2,7 @@ import type { Answer, Gap } from "../search/answer.ts";
 import { CODE_ACTIONS } from "../generated/actions.ts";
 import type { ACTIONS } from "../generated/actions.ts";
 import { CLIENT_CODE_CLASSES, CLIENT_CODE_RETRYABLE } from "../generated/client-codes.ts";
+import { printable } from "./text.ts";
 
 /** What the caller does next about a refusal, as `contract/actions.json` assigns it. */
 export type Action = (typeof ACTIONS)[number];
@@ -32,6 +33,8 @@ export type DfoErrorOptions = {
   /** The HTTP status, or null when no response arrived. */
   status?: number | null;
   detail?: string;
+  /** The message, when it says more than `detail`; `detail` by default. */
+  message?: string;
   traceId?: string | null;
   retryable?: boolean;
   /** The wait the response's `Retry-After` header asked for, in milliseconds. */
@@ -42,7 +45,9 @@ export type DfoErrorOptions = {
   cause?: unknown;
 };
 
-/** The base of every error the client raises. `code` tells the errors apart. */
+/** The base of every error the client raises. `code` tells the errors apart. Its message and
+ *  `detail` drop the characters that steer a terminal or reorder text, since either can quote
+ *  the server. */
 export class DfoError extends Error {
   readonly code: DfoErrorCode;
   readonly status: number | null;
@@ -55,8 +60,11 @@ export class DfoError extends Error {
   readonly docsUrl: string | null;
 
   constructor(options: DfoErrorOptions) {
-    const detail = options.detail ?? options.code;
-    super(detail, options.cause === undefined ? undefined : { cause: options.cause });
+    const detail = printable(options.detail ?? options.code);
+    super(
+      options.message === undefined ? detail : printable(options.message),
+      options.cause === undefined ? undefined : { cause: options.cause },
+    );
     this.code = options.code;
     this.status = options.status ?? null;
     this.detail = detail;
@@ -84,22 +92,25 @@ export class NotFoundError extends DfoError {}
 /** A part of the question has no reading. The caller chooses one or takes the answered parts. */
 export class IncompleteAnswerError extends DfoError {
   /** The answer whose fetch raised it, or null for a server refusal. */
-  readonly answer: Answer | null;
+  declare readonly answer: Answer | null;
   /** The parts with no reading, each with its kind, message and options. */
-  readonly gaps: readonly Gap[];
+  declare readonly gaps: readonly Gap[];
 
   constructor(options: DfoErrorOptions & { answer?: Answer; gaps?: readonly Gap[] }) {
     super(options);
-    this.answer = options.answer ?? null;
-    this.gaps = options.gaps ?? [];
+    // Not enumerable, so Node prints an uncaught error's message and code, not the whole answer.
+    Object.defineProperties(this, {
+      answer: { value: options.answer ?? null },
+      gaps: { value: options.gaps ?? [] },
+    });
   }
 }
 /** Search declined the question or answered with the catalogue. The caller asks a data question. */
 export class DeclinedError extends DfoError {}
 /** A stored version cannot be rebuilt. The caller takes the newest version. */
 export class VersionUnavailableError extends DfoError {
-  /** The version a fresh build returned, or else the newest plain version the server holds,
-   *  which fetching the spec returns, or null. */
+  /** The version a fresh build returned, or else the newest version in the ref's rendering the
+   *  server lists, which can be the ref's own, or null. */
   readonly newestVersion: string | null;
 
   constructor(options: DfoErrorOptions & { newestVersion?: string | null }) {
@@ -191,6 +202,17 @@ export function actionFor(code: string): Action | undefined {
   return Object.hasOwn(CODE_ACTIONS, code)
     ? CODE_ACTIONS[code as keyof typeof CODE_ACTIONS]
     : undefined;
+}
+
+/** A server refusal's message: its detail, naming the field its problem document's `pointer`
+ *  names unless the pointer is empty or the detail names it already, then its code, as in
+ *  `Field required at /input/definition (request_invalid)`. */
+export function refusalMessage(detail: string, pointer: unknown, code: string): string {
+  const at =
+    typeof pointer === "string" && pointer !== "" && !detail.includes(pointer)
+      ? `${detail.replace(/\.$/, "")} at ${pointer}`
+      : detail;
+  return `${at} (${code})`;
 }
 
 /** The class for a refusal: by its code through the contract's actions, else by HTTP status. */

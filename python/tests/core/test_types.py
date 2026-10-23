@@ -32,7 +32,7 @@ def test_the_contract_has_accepted_and_rejected_refs() -> None:
 def test_accepted_refs_round_trip(path: Path) -> None:
     ref_json = example(path)["ref"]
     ref = DatasetRef.from_json(json.dumps(ref_json))
-    assert json.loads(ref.to_json()) == ref_json
+    assert ref.to_json() == json.dumps(ref_json, ensure_ascii=False)
     assert DatasetRef.from_json(ref.to_json()) == ref
     for member, member_json in zip(ref.members, ref_json["members"], strict=True):
         assert member.spec.sentence == member_json["sentence"]
@@ -74,6 +74,8 @@ def accepted_ref() -> dict[str, Any]:
         ("/members/0/artifact/rendering/format", "json"),
         ("/members/0/artifact/rendering/bundle", 0),
         ("/members/0/artifact/rendering/layout", "long"),
+        ("/members/0/artifact/rendering/without_party_totals", False),
+        ("/members/0/artifact/rendering/without_party_totals", "true"),
         ("/members/0/artifact/url", "/api/datasets/x"),
     ],
 )
@@ -89,7 +91,9 @@ def test_refs_breaking_the_format_name_the_pointer(pointer: str, value: object) 
     assert (raised.value.reason, raised.value.pointer) == ("format_invalid", pointer)
 
 
-@pytest.mark.parametrize("text", ["", "[]", "{", b"\xff"])
+@pytest.mark.parametrize(
+    "text", ["", "[]", "{", b"\xff", "[" * 100_000 + "]" * 100_000]
+)
 def test_text_that_is_not_a_json_object_raises(text: str | bytes) -> None:
     with pytest.raises(FormatError) as raised:
         DatasetRef.from_json(text)
@@ -163,6 +167,18 @@ def test_spec_json_breaking_the_format_raises(
     assert raised.value.reason == reason
 
 
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_spec_json_with_a_non_finite_number_raises(constant: str) -> None:
+    (part,) = parse_parts(load("search-1.json"))
+    assert isinstance(part, DefinitePart)
+    obj = json.loads(part.spec.to_json())
+    obj["definition"]["identity"]["novel"] = "constant"
+    text = json.dumps(obj).replace('"constant"', constant)
+    with pytest.raises(FormatError) as raised:
+        Spec.from_json(text)
+    assert (raised.value.reason, raised.value.pointer) == ("format_invalid", "")
+
+
 def test_specs_are_equal_and_hashed_on_spec_id() -> None:
     (part,) = parse_parts(load("search-1.json"))
     assert isinstance(part, DefinitePart)
@@ -208,9 +224,24 @@ def test_a_ref_pickles() -> None:
             False,
         ),
         (Rendering("csv", bundle=True), {"format": "csv", "bundle": True}, True),
+        (
+            Rendering("parquet", bundle=False),
+            {"format": "parquet", "bundle": False, "without_party_totals": True},
+            False,
+        ),
+        (
+            Rendering("parquet", bundle=False, without_party_totals=True),
+            {"format": "parquet", "bundle": False, "without_party_totals": True},
+            True,
+        ),
+        (
+            Rendering("parquet", bundle=False, without_party_totals=True),
+            {"format": "parquet", "bundle": False, "layout": 3},
+            False,
+        ),
     ],
 )
-def test_a_rendering_matches_on_format_bundle_and_frame(
+def test_a_rendering_matches_on_format_bundle_frame_and_party_totals(
     selector: Rendering, server: dict[str, Any], matches: bool
 ) -> None:
     assert selector.matches(server) is matches

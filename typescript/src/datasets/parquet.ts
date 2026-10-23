@@ -9,7 +9,7 @@
  * float.
  */
 
-import { parquetMetadata, parquetReadObjects } from "hyparquet";
+import { parquetMetadata, parquetRead } from "hyparquet";
 import type { FileMetaData, KeyValue, ParquetParsers, SchemaElement } from "hyparquet";
 import { parquetWriteBuffer } from "hyparquet-writer";
 
@@ -86,8 +86,9 @@ const RAW_PARSERS: Partial<ParquetParsers> = {
 /**
  * Reads a Parquet file's footer and column types.
  *
- * @throws {ContractError} A column is nested or of a type the client cannot read
- *   (`contract_violation`).
+ * @throws {ContractError} The bytes are not a Parquet file the client can read
+ *   (`unexpected_response`); or two columns share a name, or a column is nested or of a type the
+ *   client cannot read (`contract_violation`).
  */
 export function readParquet(bytes: Uint8Array): ParquetFile {
   // Dataset has already copied each public input into an owned, full-span ArrayBuffer. Keep that
@@ -98,12 +99,35 @@ export function readParquet(bytes: Uint8Array): ParquetFile {
     bytes.byteLength === bytes.buffer.byteLength
       ? bytes.buffer
       : new Uint8Array(bytes).buffer;
-  const metadata = parquetMetadata(buffer);
+  let metadata: FileMetaData;
+  try {
+    metadata = parquetMetadata(buffer);
+  } catch (error) {
+    throw unreadable(error);
+  }
   const columns = metadata.schema.slice(1).map((element) => ({
     name: element.name,
     type: columnType(element),
   }));
+  const names = new Set<string>();
+  for (const { name } of columns) {
+    if (names.has(name)) {
+      throw clientError("contract_violation", {
+        detail: `The Parquet file holds two columns named ${JSON.stringify(name)}.`,
+      });
+    }
+    names.add(name);
+  }
   return { buffer, metadata, columns, rows: Number(metadata.num_rows) };
+}
+
+/** The error for bytes hyparquet cannot read as Parquet, keeping what it raised as the cause. */
+function unreadable(error: unknown): ContractError {
+  const reason = error instanceof Error ? `: ${error.message}` : "";
+  return clientError("unexpected_response", {
+    detail: `Not a Parquet file the client can read${reason}.`,
+    cause: error,
+  });
 }
 
 function unsupported(element: SchemaElement, what: string): ContractError {
@@ -246,17 +270,21 @@ function widenDecimal(left: ColumnType, right: ColumnType): ColumnType | undefin
 }
 
 /** The stacked table's columns: `part` first when there are several files, then every
- *  file's columns in file order, each of the type `widen` gives its files' types.
+ *  file's columns in file order, each of the type `widen` gives its files' types. A file with no
+ *  rows adds no columns unless every file is empty, when the first file gives them: the server
+ *  writes every column of an empty file as a string, which would not widen to a number.
  *
  * @throws {ContractError} A member's file has its own `part` column, or a column's types in two
  *   files do not widen to one (`contract_violation`).
  */
 export function stackedColumns(parts: readonly TablePart[]): Column[] {
   const types = new Map<string, ColumnType>();
-  if (parts.length > 1) types.set(PART_COLUMN, STRING);
-  for (const { file } of parts) {
+  const several = parts.length > 1;
+  if (several) types.set(PART_COLUMN, STRING);
+  const filled = parts.filter(({ file }) => file.rows > 0);
+  for (const { file } of filled.length > 0 ? filled : parts.slice(0, 1)) {
     for (const { name, type } of file.columns) {
-      if (parts.length > 1 && name === PART_COLUMN) {
+      if (several && name === PART_COLUMN) {
         throw clientError("contract_violation", {
           detail: `A member's file has its own ${PART_COLUMN} column, so the members do not stack.`,
         });
@@ -318,30 +346,46 @@ function physicalDecimals(metadata: FileMetaData): FileMetaData {
  *  column. */
 export type StoredColumn = Column & { readonly values: unknown[] };
 
-/** Every column of the stacked table with its stored values, in row order. */
+/** Every column of the stacked table with its stored values, in row order.
+ *
+ * @throws {ContractError} A file's pages cannot be decoded (`unexpected_response`).
+ */
 export async function decodeStored(parts: readonly TablePart[]): Promise<StoredColumn[]> {
-  const decoded = await Promise.all(
-    parts.map(({ file }) =>
-      parquetReadObjects({
-        file: file.buffer,
-        metadata: physicalDecimals(file.metadata),
-        parsers: RAW_PARSERS,
-        utf8: false,
-      }),
-    ),
-  );
+  const decoded = await Promise.all(parts.map(({ file }) => storedRows(file)));
   return stackedColumns(parts).map(({ name, type }) => {
     const values: unknown[] = [];
     for (const [index, { file, label }] of parts.entries()) {
       const isPart = parts.length > 1 && name === PART_COLUMN;
-      const own = file.columns.find((column) => column.name === name)?.type ?? NULL;
+      const at = file.columns.findIndex((column) => column.name === name);
+      const own = file.columns[at]?.type ?? NULL;
       for (const row of decoded[index]!) {
-        const value: unknown = isPart ? label : (row[name] ?? null);
+        const value: unknown = isPart ? label : at < 0 ? null : (row[at] ?? null);
         values.push(storedValue(value, own, type));
       }
     }
     return { name, type, values };
   });
+}
+
+/** A file's rows as stored, each an array in the file's column order, so a column named like an
+ *  `Object.prototype` member reads as any other. */
+async function storedRows(file: ParquetFile): Promise<unknown[][]> {
+  let rows: unknown[][] = [];
+  try {
+    await parquetRead({
+      file: file.buffer,
+      metadata: physicalDecimals(file.metadata),
+      columns: file.columns.map((column) => column.name),
+      parsers: RAW_PARSERS,
+      utf8: false,
+      onComplete: (read) => {
+        rows = read;
+      },
+    });
+  } catch (error) {
+    throw unreadable(error);
+  }
+  return rows;
 }
 
 /** A stored value of a file's column type as the stacked column's type stores it. */
@@ -397,9 +441,12 @@ export async function decodeRows(parts: readonly TablePart[]): Promise<Row[]> {
   const count = parts.reduce((total, { file }) => total + file.rows, 0);
   const rows: Row[] = [];
   for (let index = 0; index < count; index += 1) {
-    const row: Row = {};
-    for (const column of columns) row[column.name] = rowValue(column.values[index], column);
-    rows.push(row);
+    // fromEntries defines each column as an own property, `__proto__` included.
+    rows.push(
+      Object.fromEntries(
+        columns.map((column) => [column.name, rowValue(column.values[index], column)]),
+      ),
+    );
   }
   return rows;
 }

@@ -50,6 +50,7 @@ from dfo._core.refs import DatasetRef
 from dfo._core.types import Gap, Spec
 from dfo._datasets import operation as _operation
 from dfo._datasets import resolve as _resolve
+from dfo._datasets.build import rendering_for
 from dfo._datasets.dataset import Dataset
 from dfo._datasets.fetch import Session as AsyncSession
 from dfo._datasets.operation import AsyncOperation
@@ -298,7 +299,10 @@ def _run(
                 else _sync_resolve._newest
             )
             started = lookup(
-                client._session.transport, step["spec"]["spec_id"], deadline=None
+                client._session.transport,
+                step["spec"]["spec_id"],
+                rendering_for("long"),
+                deadline=None,
             )
         case "mint":
             started = client.mint(_spec(step["spec"]), **_options(step, "layout"))

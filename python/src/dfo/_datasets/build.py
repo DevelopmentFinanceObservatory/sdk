@@ -8,7 +8,8 @@ client's rendering, and paces polls.
 requests themselves.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -19,6 +20,7 @@ from dfo._core.errors import client_error
 from dfo._core.parse import check_manifest, check_operation
 from dfo._core.refusals import trace_id_of
 from dfo._core.types import Layout, Part, Rendering, Spec, Window, Wire
+from dfo._http.hooks import Hold
 
 # The longest the client reads a synchronous build. The server cuts off at 120 s.
 BUILD_READ_TIMEOUT = 150.0
@@ -28,6 +30,11 @@ POLL_BACKOFF_FIRST = 1.0
 POLL_BACKOFF_CAP = 8.0
 
 _LAYOUTS = ("long", "frame")
+
+# The years a window range may name: the integers JSON carries exactly, as the
+# build request's schema bounds them.
+WINDOW_FIRST_YEAR = -(2**53 - 1)
+WINDOW_LAST_YEAR = 2**53 - 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +83,17 @@ class Cache(Protocol):
         """Store bytes already checked against `digest`."""
         ...
 
+    def discard(self, digest: str, /) -> None:
+        """Remove the bytes stored under `digest`, which do not read as an artifact."""
+        ...
+
+    def downloading(
+        self, digest: str, /, *, timeout: float | None = None
+    ) -> Hold | nullcontext[None]:
+        """Hold `digest`, sync or async, while one fetch reads, downloads and
+        stores it, waiting up to `timeout` seconds."""
+        ...
+
     def get_manifest(
         self, spec_id: str, content_version: str, rendering: Rendering, /
     ) -> dict[str, Any] | None:
@@ -106,17 +124,28 @@ class Cache(Protocol):
         ...
 
 
-def rendering_for(layout: str) -> Rendering:
+def rendering_for(layout: str, *, without_party_totals: bool = False) -> Rendering:
     """The bare Parquet rendering both clients build for `layout`.
 
     Raises:
-        InvalidRequestError: `layout` is neither `long` nor `frame`.
+        InvalidRequestError: `layout` is neither `long` nor `frame`, or
+            `without_party_totals` is not a bool.
     """
     if layout not in _LAYOUTS:
         raise client_error(
             INVALID_ARGUMENT, f'layout is "long" or "frame", not {layout!r}'
         )
-    return Rendering("parquet", False, "frame" if layout == "frame" else None)
+    if not isinstance(without_party_totals, bool):
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"without_party_totals is True or False, not {without_party_totals!r}",
+        )
+    return Rendering(
+        "parquet",
+        False,
+        "frame" if layout == "frame" else None,
+        without_party_totals=without_party_totals,
+    )
 
 
 def layout_of(rendering: Rendering) -> Layout:
@@ -124,11 +153,26 @@ def layout_of(rendering: Rendering) -> Layout:
     return "frame" if rendering.layout == "frame" else "long"
 
 
-def rendering_options(rendering: Rendering) -> dict[str, Any]:
-    """The build request's `options` for `rendering`."""
-    options: dict[str, Any] = {"format": rendering.format, "bundle": rendering.bundle}
+def file_params(rendering: Rendering) -> dict[str, Any]:
+    """The file selector's query for `rendering`: format, bundle and layout.
+
+    The selector takes no other option. It renders a version with the options
+    the version was minted with, so a party-totals cut renders as itself.
+    """
+    params: dict[str, Any] = {"format": rendering.format, "bundle": rendering.bundle}
     if rendering.layout is not None:
-        options["layout"] = rendering.layout
+        params["layout"] = rendering.layout
+    return params
+
+
+def mint_options(rendering: Rendering) -> dict[str, Any]:
+    """The build request's `options` for `rendering`.
+
+    `without_party_totals` is sent only when true, as the server records it.
+    """
+    options = file_params(rendering)
+    if rendering.without_party_totals:
+        options["without_party_totals"] = True
     return options
 
 
@@ -152,16 +196,20 @@ def scope(
 
     Raises:
         InvalidRequestError: The window is neither a known kind nor a pair of
-            years, or an entity role is bound to a string instead of a sequence
-            of dcids.
+            years from `WINDOW_FIRST_YEAR` to `WINDOW_LAST_YEAR`, start first;
+            `entities` is not a map of role names to non-empty sequences of
+            dcids; or `facets` is not a map of axis names to refs or None
+            (`invalid_argument`).
     """
     result: dict[str, Any] = {}
     if window is not None:
         result["window"] = _window(window)
     if entities is not None:
         result["entities"] = _entities(entities)
-    if facets:
-        result["facets"] = {axis: {"ref": ref} for axis, ref in facets.items()}
+    if facets is not None and _names("facets", facets):
+        result["facets"] = {
+            axis: {"ref": _ref(axis, ref)} for axis, ref in facets.items()
+        }
     return result or None
 
 
@@ -175,9 +223,10 @@ def rebind(
     the roles `entities` names. A role bound to None is dropped.
 
     Raises:
-        InvalidRequestError: The spec's definition holds no `identity` object
-            (`invalid_argument`).
+        InvalidRequestError: `entities` is not a map of role names, or the
+            spec's definition holds no `identity` object (`invalid_argument`).
     """
+    _names("entities", entities)
     identity = spec.definition.get("identity")
     if not isinstance(identity, Mapping):
         raise client_error(
@@ -201,6 +250,12 @@ def _window(window: Window) -> dict[str, Any]:
         case (int() as start, int() as end) if not isinstance(
             start, bool
         ) and not isinstance(end, bool):
+            if not WINDOW_FIRST_YEAR <= start <= end <= WINDOW_LAST_YEAR:
+                raise client_error(
+                    INVALID_ARGUMENT,
+                    "window is (start_year, end_year), start_year first, each "
+                    f"within ±{WINDOW_LAST_YEAR}, not {window!r}",
+                )
             return {"kind": "range", "start_year": start, "end_year": end}
         case _:
             raise client_error(
@@ -209,17 +264,53 @@ def _window(window: Window) -> dict[str, Any]:
             )
 
 
+def _names(argument: str, value: object) -> Mapping[str, object]:
+    """`value` when it is a map keyed by non-empty names, such as role names.
+
+    Raises:
+        InvalidRequestError: It is not (`invalid_argument`).
+    """
+    if not isinstance(value, Mapping):
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"{argument} is a map of names, such as {{'recipient': ...}}, not "
+            f"{value!r}",
+        )
+    for name in value:
+        if not isinstance(name, str) or not name:
+            raise client_error(
+                INVALID_ARGUMENT, f"{argument} names a key {name!r}; a key is a name"
+            )
+    return value
+
+
 def _entities(entities: Mapping[str, Sequence[str]]) -> dict[str, list[str]]:
     bound = {}
-    for role, dcids in entities.items():
+    for role, dcids in _names("entities", entities).items():
         if isinstance(dcids, str):
             raise client_error(
                 INVALID_ARGUMENT,
                 f"entities[{role!r}] is a string; bind the role to a list of dcids, "
                 f"such as [{dcids!r}]",
             )
-        bound[role] = list(dcids)
+        listed = list(dcids) if isinstance(dcids, Iterable) else None
+        if not listed or not all(isinstance(dcid, str) and dcid for dcid in listed):
+            raise client_error(
+                INVALID_ARGUMENT,
+                f"entities[{role!r}] is a list of dcids, such as ['country/NGA'], "
+                f"not {dcids!r}; bind the role to None to drop it",
+            )
+        bound[role] = listed
     return bound
+
+
+def _ref(axis: str, ref: object) -> str | None:
+    if ref is None or (isinstance(ref, str) and ref):
+        return ref
+    raise client_error(
+        INVALID_ARGUMENT,
+        f"facets[{axis!r}] is a ref or None, not {ref!r}",
+    )
 
 
 def build_body(
@@ -240,7 +331,7 @@ def build_body(
     return {
         "schema_version": 1,
         "input": built,
-        "options": rendering_options(rendering),
+        "options": mint_options(rendering),
     }
 
 
@@ -290,9 +381,9 @@ def pick_artifact(
 ) -> Wire | None:
     """The artifact a manifest lists for `rendering`, or for `digest` when given.
 
-    Artifacts match on their rendering's format, bundle and frame layout. The
-    rendering object's other members change with layout versions, so they are
-    ignored.
+    Artifacts match on `Rendering.matches`. A party-totals cut that leaves
+    nothing out lists its file under the plain version, beside the plain file,
+    so the flag tells the two apart.
     """
     for artifact in manifest["artifacts"]:
         if digest is not None:
@@ -369,6 +460,14 @@ def poll_backoff(step: int) -> float:
     return min(POLL_BACKOFF_FIRST * 2**step, POLL_BACKOFF_CAP)
 
 
+def counted_rows(manifest: Wire) -> int:
+    """The rows a manifest's coverage counts, or 0 when it counts none or says no
+    count."""
+    coverage = manifest.get("coverage")
+    rows = coverage.get("rows") if isinstance(coverage, Mapping) else None
+    return rows if type(rows) is int and rows > 0 else 0
+
+
 def check_built(
     manifest: Wire, spec_id: str, content_version: str | None = None
 ) -> None:
@@ -400,7 +499,7 @@ def response_json(response: httpx2.Response) -> Any:
     """
     try:
         return response.json()
-    except ValueError as error:
+    except (ValueError, RecursionError) as error:  # not JSON, or nested past the stack
         raise client_error(
             UNEXPECTED_RESPONSE,
             f"{response.request.method} {response.request.url.path} answered "

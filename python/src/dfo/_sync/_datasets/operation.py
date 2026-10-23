@@ -11,13 +11,14 @@ Every retryable refusal of the build shares the transport's retry count, and
 once a synchronous cut-off (a 504, or the read timing out) refuses it, the build
 is posted once more only, whatever that post answers. Each retry waits for the
 refusal's `Retry-After`, else the transport's backoff for that attempt, from 0.5
-to 8 seconds. A retryable failed operation is resubmitted once, and a failed
+to 8 seconds; a `Retry-After` past 60 seconds raises the refusal at once. A
+retryable failed operation is resubmitted once, and a failed
 operation whose document carries no `error` fails with `operation_failed`.
 
 Polls wait for `retry_after_ms` when the resource carries it, else for the
-`Retry-After` header, else back off from 1 to 8 seconds. A refused poll that
-keeps polling waits for its `Retry-After` when it carries one, whatever its
-status. A refused poll that is not retryable raises its error at once, a 429
+`Retry-After` header, either clamped to 1 to 60 seconds, else back off from 1 to
+8 seconds. A refused poll that keeps polling waits for its `Retry-After` when it
+carries one, whatever its status, and one past 60 seconds raises at once. A refused poll that is not retryable raises its error at once, a 429
 included. A retryable 429 spends no retry; any other retryable refused poll,
 one that times out included, spends one of the transport's retries, which a poll
 that answers restores.
@@ -29,11 +30,11 @@ from typing import Protocol
 
 import httpx2
 
-from dfo._core.codes import DEADLINE_EXCEEDED, UNEXPECTED_RESPONSE
+from dfo._core.codes import DEADLINE_EXCEEDED, INVALID_ARGUMENT, UNEXPECTED_RESPONSE
 from dfo._core.errors import DfoError, DfoTimeoutError, client_error
 from dfo._core.parse import check_manifest
 from dfo._core.refusals import describing, problem_error, trace_id_of
-from dfo._core.types import Wire
+from dfo._core.types import OPERATION_ID, Wire, matches
 from dfo._datasets.build import (
     BUILD_READ_TIMEOUT,
     OperationState,
@@ -44,7 +45,13 @@ from dfo._datasets.build import (
 )
 from dfo._datasets.dataset import Dataset
 from dfo._datasets.progress import ProgressRenderer
-from dfo._sync._http.transport import Transport, retry_after
+from dfo._sync._http.transport import (
+    POLL_INTERVAL_MAX_S,
+    POLL_INTERVAL_MIN_S,
+    RETRY_AFTER_MAX_S,
+    Transport,
+    retry_after,
+)
 
 type ProgressHook = Callable[[str, Progress, str | None], None]
 
@@ -145,6 +152,12 @@ def _fits(transport: Transport, wait: float, deadline: float | None) -> bool:
     return deadline is None or transport.now() + wait < deadline
 
 
+def _poll_interval(seconds: float) -> float:
+    """The server's poll interval, clamped to `POLL_INTERVAL_MIN_S` ..
+    `POLL_INTERVAL_MAX_S`."""
+    return min(max(seconds, POLL_INTERVAL_MIN_S), POLL_INTERVAL_MAX_S)
+
+
 def post_build(transport: Transport, body: Wire, *, deadline: float | None) -> Reply:
     """Post a build request, owning its retries.
 
@@ -173,12 +186,8 @@ def post_build(transport: Transport, body: Wire, *, deadline: float | None) -> R
             allowed = (
                 error.retryable and retries < transport.max_retries and not cut_off
             )
-            wait = (
-                transport.backoff(retries)
-                if error.retry_after is None
-                else error.retry_after
-            )
-            if not allowed or not _fits(transport, wait, deadline):
+            wait = transport.refusal_wait(error, retries, deadline)
+            if not allowed or wait is None:
                 raise
             transport.sleep(wait)
             retries += 1
@@ -298,18 +307,24 @@ class Poller:
             self._refused_wait = None
             return refused
         if self._state is not None and self._state.retry_after is not None:
-            return self._state.retry_after
+            return _poll_interval(self._state.retry_after)
         if self._header_wait is not None:
-            return self._header_wait
+            return _poll_interval(self._header_wait)
         wait = poll_backoff(self._backoff_step)
         self._backoff_step += 1
         return wait
 
     def _still_running(self) -> DfoTimeoutError:
+        options = {} if self._body is None else self._body.get("options", {})
+        arguments = f'"{self.operation_id}"'
+        if options.get("layout") == "frame":
+            arguments += ', layout="frame"'
+        if options.get("without_party_totals") is True:
+            arguments += ", without_party_totals=True"
         return client_error(
             DEADLINE_EXCEEDED,
             f"The build is still running at the deadline. Resume it with "
-            f'client.operation("{self.operation_id}").result()',
+            f"client.operation({arguments}).result()",
         )
 
     def _take(self, reply: Reply) -> None:
@@ -323,6 +338,7 @@ class Poller:
         if state.status == _DONE:
             self._manifest = state.manifest
         elif state.status == _FAILED:
+            key = self._transport.key.key
             self._error = problem_error(
                 _problem_status(state.error),
                 state.error,
@@ -330,6 +346,7 @@ class Poller:
                 origin=self._transport.origin,
                 trace_id=self._trace_id,
                 fallback_code=_OPERATION_FAILED,
+                key=None if key is None else key.reveal(),
             )
         elif state.progress is not None and self._on_progress is not None:
             self._on_progress(state.operation_id, state.progress, self._trace_id)
@@ -365,7 +382,9 @@ class Poller:
         if error.code == _OPERATION_FAILED:
             self._failed(error, deadline)
             return
-        if not error.retryable:
+        if not error.retryable or (
+            error.retry_after is not None and error.retry_after > RETRY_AFTER_MAX_S
+        ):
             raise error
         self._refused_wait = error.retry_after
         if error.status == 429:
@@ -440,6 +459,8 @@ class Operation:
                 asynchronous client can cancel it.
 
         Raises:
+            InvalidRequestError: `timeout` is not None or a finite number above
+                0 (`invalid_argument`).
             DfoTimeoutError: The build was still running at the deadline. The
                 message names the call that resumes it.
             DfoError: The build failed.
@@ -468,7 +489,15 @@ def resume(
     operation's `result` raises.
 
     Raises:
+        InvalidRequestError: `operation_id` is not `op_` and 64 hex digits
+            (`invalid_argument`); no request is sent.
         NotFoundError: The server holds no operation with that id.
     """
+    if not matches(OPERATION_ID, operation_id):
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"{operation_id!r} is not an operation id, which is op_ and 64 "
+            "lowercase hex digits, as Operation.operation_id gives",
+        )
     response = transport.request("GET", f"/datasets/operations/{operation_id}")
     return Poller(transport, _operation_reply(response), on_progress=on_progress)

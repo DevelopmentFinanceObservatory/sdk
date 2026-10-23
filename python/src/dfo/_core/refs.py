@@ -156,6 +156,10 @@ def _member_object(member: RefMember) -> dict[str, Any]:
     }
     if member.rendering.layout is not None:
         rendering["layout"] = member.rendering.layout
+    # Written only when true, so a plain member's JSON is what it was before the
+    # option existed.
+    if member.rendering.without_party_totals:
+        rendering["without_party_totals"] = True
     return {
         "parts": list(member.parts),
         "sentence": member.sentence,
@@ -167,14 +171,28 @@ def _member_object(member: RefMember) -> dict[str, Any]:
 
 def _load_rendering(value: object, pointer: str) -> Rendering:
     obj = object_at(value, pointer)
-    check_keys(obj, pointer, required=("format", "bundle"), allowed=("layout",))
+    check_keys(
+        obj,
+        pointer,
+        required=("format", "bundle"),
+        allowed=("layout", "without_party_totals"),
+    )
     if obj["format"] not in FORMATS:
         raise FormatError("format_invalid", f"{pointer}/format", "not a known format")
     if not isinstance(obj["bundle"], bool):
         raise FormatError("format_invalid", f"{pointer}/bundle", "not a boolean")
     if "layout" in obj and obj["layout"] != "frame":
         raise FormatError("format_invalid", f"{pointer}/layout", 'not "frame"')
-    return Rendering(obj["format"], obj["bundle"], "frame" if "layout" in obj else None)
+    if "without_party_totals" in obj and obj["without_party_totals"] is not True:
+        raise FormatError(
+            "format_invalid", f"{pointer}/without_party_totals", "not true"
+        )
+    return Rendering(
+        obj["format"],
+        obj["bundle"],
+        "frame" if "layout" in obj else None,
+        without_party_totals="without_party_totals" in obj,
+    )
 
 
 def _load_member(value: object, pointer: str) -> RefMember:

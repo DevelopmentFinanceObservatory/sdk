@@ -20,6 +20,9 @@ import {
   VersionUnavailableError,
 } from "../src/core/errors.ts";
 import type { ClientErrorCode } from "../src/core/errors.ts";
+import { CLIENT_WARNING_CODES } from "../src/generated/warning-codes.ts";
+import { clientWarning } from "../src/core/warnings.ts";
+import type { ClientWarningCode } from "../src/core/warnings.ts";
 import { contractJson } from "./support.ts";
 
 test("every code in contract/actions.json maps to a class below DfoError", async () => {
@@ -71,6 +74,21 @@ test("every code in contract/client-codes.json builds an error of its class and 
     assert.equal(error.name, name, code);
     assert.equal(error.code, code, code);
     assert.equal(error.retryable, retryable, code);
+  }
+});
+
+test("the client's warning codes are exactly contract/warning-codes.json's, each of its class", async () => {
+  const { codes } = await contractJson<{ codes: { code: string; class: string }[] }>(
+    "warning-codes.json",
+  );
+  assert.deepEqual(
+    { ...CLIENT_WARNING_CODES },
+    Object.fromEntries(codes.map(({ code, class: name }) => [code, name])),
+  );
+  for (const { code, class: name } of codes) {
+    const warning = clientWarning(code as ClientWarningCode, "message");
+    assert.equal(warning.name, name, code);
+    assert.equal(warning.code, code, code);
   }
 });
 

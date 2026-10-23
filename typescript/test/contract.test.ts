@@ -8,7 +8,6 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import { Answer, SearchWarning } from "../src/search/answer.ts";
-import type { Gap } from "../src/search/answer.ts";
 import { clientOver } from "../src/client.ts";
 import type { Client } from "../src/client.ts";
 import { Dataset } from "../src/datasets/dataset.ts";
@@ -16,7 +15,7 @@ import { newestVersion } from "../src/datasets/resolve.ts";
 import type { FetchOptions, Narrowing } from "../src/datasets/fetch.ts";
 import { Operation } from "../src/datasets/operation.ts";
 import type { LongBuild } from "../src/datasets/operation.ts";
-import { DatasetRef } from "../src/core/ref.ts";
+import { DatasetRef, renderingFor } from "../src/core/ref.ts";
 import type { Transport } from "../src/http/transport.ts";
 import { DfoError, isDfoError, VersionUnavailableError } from "../src/core/errors.ts";
 import { CLIENT_CODE_CLASSES } from "../src/generated/client-codes.ts";
@@ -29,7 +28,7 @@ const all = await scenarios();
 /** A `newest_version` step's version. */
 type NewestVersion = { readonly newestVersion: string | null };
 
-type Reached = Answer | Dataset<Gap> | Operation | NewestVersion;
+type Reached = Answer | Dataset | Operation | NewestVersion;
 
 const WARNING_CLASSES = new Set(["SearchWarning", "DataWarning"]);
 
@@ -78,8 +77,11 @@ async function run(
       return previous.fetch(options);
     }
     case "newest_version":
+      // The step names a spec alone, so it asks for the newest plain version.
       return {
-        newestVersion: await newestVersion(transport, step.spec.spec_id, { deadline: Infinity }),
+        newestVersion: await newestVersion(transport, step.spec.spec_id, renderingFor("long"), {
+          deadline: Infinity,
+        }),
       };
     case "mint": {
       const { spec, ...rest } = step;
@@ -170,7 +172,7 @@ function checkAnswer(
 
 /** Checks a dataset, its decoded rows included. */
 async function checkDataset(
-  dataset: Dataset<Gap>,
+  dataset: Dataset,
   expected: Record<string, unknown>,
   name: string,
   observed: Observed,

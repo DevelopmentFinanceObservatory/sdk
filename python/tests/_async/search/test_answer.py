@@ -298,6 +298,13 @@ async def test_an_unknown_answer_kind_raises_contract_error(
     assert caught.value.trace_id == trace_id
 
 
+async def test_a_problem_document_with_a_success_status_raises_its_error() -> None:
+    problem = {"title": "Too long", "code": "query_too_long", "trace_id": "t-1"}
+    with pytest.raises(InvalidRequestError) as caught:
+        await ask("ODA", problem)
+    assert (caught.value.code, caught.value.trace_id) == ("query_too_long", "t-1")
+
+
 async def test_a_part_without_its_payload_names_the_member_missing() -> None:
     wire = load("search-two-parts-candidates.json")
     del wire["parts"][1]["candidates"]["specs"][2]["definition"]
@@ -436,16 +443,17 @@ async def test_a_candidate_fetches_as_the_answer_that_chooses_it(
     )
     (candidates,) = answer.parts
     assert isinstance(candidates, CandidatesPart)
-    assert await candidates.candidates[1].fetch(layout="long", timeout=10.0) == (
-        "dataset"
-    )
-    assert await (await answer.choose(1)).fetch(layout="long", timeout=10.0) == (
-        "dataset"
-    )
+    chosen = await answer.choose(1)
+    for reading in (candidates.candidates[1], chosen):
+        assert (
+            await reading.fetch(layout="long", without_party_totals=True, timeout=10.0)
+            == "dataset"
+        )
     assert server.posted[1] == server.posted[2]
     (_, by_candidate, options), (_, by_choice, chosen_options) = fetched
     assert by_candidate == by_choice
     assert options == chosen_options
+    assert options["without_party_totals"] is True
     assert [(m.spec, m.sentence) for m in by_candidate] == [
         (candidates.candidates[1].spec, picked(part, 1)["rendered_sentence"])
     ]
@@ -596,6 +604,9 @@ def options_sharing_a_label() -> dict[str, Any]:
         (unknown_without_restatement, (0, 0)),
         (options_sharing_a_label, (0, "Congo [DRC]")),
         (options_sharing_a_label, (0, False)),
+        (lambda: load("search-2.json"), (0, None)),
+        (lambda: load("search-2.json"), ()),
+        (lambda: load("search-2.json"), (0, 0, 0)),
     ],
     ids=[
         "no-gap",
@@ -612,6 +623,9 @@ def options_sharing_a_label() -> dict[str, Any]:
         "unknown-status-without-restatement",
         "options-share-a-label",
         "option-key-a-boolean",
+        "option-key-none",
+        "no-keys",
+        "three-keys",
     ],
 )
 async def test_a_choice_that_cannot_be_made_raises_invalid_request(
@@ -713,7 +727,10 @@ async def test_fetch_builds_one_member_per_distinct_spec(
     unnamed["variable_text"] = ""
     wire["parts"].append(unnamed)
     answer, _ = await ask(TWO_PARTS, wire)
-    assert await answer.fetch(layout="long", timeout=10.0) == "dataset"
+    assert (
+        await answer.fetch(layout="long", without_party_totals=True, timeout=10.0)
+        == "dataset"
+    )
     ((transport_used, members, options),) = fetched
     oda, gni = wire["parts"][0]["spec"], wire["parts"][1]["spec"]
     assert [(m.parts, m.spec.spec_id, m.sentence) for m in members] == [
@@ -731,6 +748,7 @@ async def test_fetch_builds_one_member_per_distinct_spec(
     ]
     assert options == {
         "layout": "long",
+        "without_party_totals": True,
         "strict": False,
         "timeout": 10.0,
         "progress": None,

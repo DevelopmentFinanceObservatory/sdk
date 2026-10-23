@@ -4,6 +4,7 @@ export const CLIENT_WARNING_CODES = {
   key_checksum_mismatch: "DfoWarning",
   key_not_base62: "DfoWarning",
   key_unknown_prefix: "DfoWarning",
+  ref_digest_changed: "DfoWarning",
   route_deprecated: "DfoDeprecationWarning",
   server_warning: "DfoWarning",
 } as const;

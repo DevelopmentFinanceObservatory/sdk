@@ -37,16 +37,43 @@ def test_narrowing_maps_to_the_build_scope(narrowing, expected) -> None:
     assert scope(**narrowing) == expected
 
 
-@pytest.mark.parametrize("window", ["2020", (2020,), (2020, "2023"), (True, 2023)])
+@pytest.mark.parametrize(
+    "window",
+    [
+        "2020",
+        (2020,),
+        (2020, "2023"),
+        (True, 2023),
+        (2023, 2020),
+        (2020, 2**53),
+        (-(2**53), 2020),
+    ],
+)
 def test_a_malformed_window_is_refused(window) -> None:
     with pytest.raises(InvalidRequestError, match="window") as caught:
         scope(window=window)
     assert caught.value.code == "invalid_argument"
 
 
-def test_a_role_bound_to_a_string_is_refused() -> None:
-    with pytest.raises(InvalidRequestError, match=r"\['country/NGA'\]") as caught:
-        scope(entities={"recipient": "country/NGA"})
+@pytest.mark.parametrize(
+    "narrowing",
+    [
+        {"entities": {"recipient": "country/NGA"}},
+        {"entities": {"recipient": 5}},
+        {"entities": {"recipient": [None]}},
+        {"entities": {"recipient": [""]}},
+        {"entities": {"recipient": []}},
+        {"entities": {5: ["country/NGA"]}},
+        {"entities": ["recipient"]},
+        {"facets": "unit"},
+        {"facets": {"unit": 5}},
+        {"facets": {"unit": ""}},
+        {"facets": {"": "unit/USD"}},
+    ],
+)
+def test_a_malformed_entity_or_facet_binding_is_refused(narrowing) -> None:
+    with pytest.raises(InvalidRequestError) as caught:
+        scope(**narrowing)
     assert caught.value.code == "invalid_argument"
 
 

@@ -12,9 +12,13 @@ from pathlib import Path
 
 CANDIDATES = textwrap.dedent(
     """
-    from typing import assert_type
+    from typing import Literal, assert_type
 
     import dfo
+
+    GapKind = Literal[
+        "choice", "no_data", "not_understood", "unsupported", "timed_out", "unknown"
+    ]
 
     QUESTION = "GNI of Germany from 2015 to 2022"
 
@@ -40,6 +44,8 @@ CANDIDATES = textwrap.dedent(
         assert isinstance(part, dfo.CandidatesPart)
         assert_type(part.candidates[0], dfo.Candidate)
         assert_type(part.candidates[0].fetch(), dfo.Dataset)
+        kind: GapKind = answer.gaps[0].kind
+        missing: GapKind = part.candidates[0].fetch().missing[0].kind
         match answer.gaps[0].part:
             case dfo.CandidatesPart(candidates):
                 assert_type(candidates, tuple[dfo.Candidate, ...])

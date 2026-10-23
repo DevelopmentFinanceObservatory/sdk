@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { inspect } from "node:util";
 
 import { parquetMetadata } from "hyparquet";
 
@@ -89,6 +90,8 @@ describe("IncompleteAnswerError", () => {
       error.gaps.map((gap) => [gap.partIndex, gap.kind]),
       [[1, "not_understood"]],
     );
+    // Node prints an uncaught error with its own properties; the answer's body stays out.
+    assert.ok(!inspect(error, { depth: Infinity }).includes("query_echo"));
     assert.deepEqual(error.message.split("\n"), [
       "Search answered 1 of 2 parts of your question.",
       `  answered "debt service": Kenya's external debt service owed to all creditors, 1970 to 2024. Current US dollars · World Bank International Debt Statistics (IDS).`,
@@ -195,6 +198,15 @@ describe("gaps", () => {
       answer.gaps.map((gap) => [gap.partIndex, gap.kind, gap.options.length]),
       [[1, "timed_out", 0]],
     );
+  });
+
+  test("diagnostics holds the response's diagnostics, or nothing when it sent none", () => {
+    for (const name of ["answer-mixed-fetch-raises", "answer-declined"]) {
+      assert.deepEqual(answerOf(name).diagnostics, body(name)["diagnostics"], name);
+    }
+    const bare = body("answer-declined");
+    delete bare["diagnostics"];
+    assert.deepEqual(answerFromBody(bare, offline(), null).diagnostics, {});
   });
 
   test("a no_data reason with no contract row is a no_data gap", () => {
