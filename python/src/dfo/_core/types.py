@@ -11,8 +11,8 @@ from collections.abc import Awaitable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any, Literal, Never, Protocol, Self, override
 
+from dfo._core.codes import INVALID_ARGUMENT
 from dfo._core.errors import client_error
-from dfo._generated.error_map import INVALID_ARGUMENT
 from dfo._generated.wire import (
     AggregateNode,
     CodeNode,

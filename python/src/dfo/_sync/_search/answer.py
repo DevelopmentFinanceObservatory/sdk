@@ -33,6 +33,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, NoReturn, overload, override
 
+from dfo._core.codes import (
+    ANSWER_DECLINED,
+    ANSWER_INCOMPLETE,
+    CHOICE_INVALID,
+    CONTRACT_VIOLATION,
+)
 from dfo._core.errors import IncompleteAnswerError, SearchWarning, client_error, warn
 from dfo._core.parse import ParsedPart, parse_notices, parse_parts
 from dfo._core.refusals import describing, trace_id_of
@@ -54,13 +60,7 @@ from dfo._core.types import (
 from dfo._datasets.build import Reading, response_json
 from dfo._datasets.dataset import Dataset
 from dfo._generated import strict as _strict
-from dfo._generated.error_map import (
-    ANSWER_DECLINED,
-    ANSWER_INCOMPLETE,
-    CHOICE_INVALID,
-    CONTRACT_VIOLATION,
-    GAP_KINDS,
-)
+from dfo._generated.error_map import GAP_KINDS
 from dfo._search import display as _display
 from dfo._sync._datasets.fetch import SessionSource, fetch_members
 

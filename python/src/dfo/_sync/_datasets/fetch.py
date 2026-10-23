@@ -21,6 +21,13 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urljoin
 
+from dfo._core.codes import (
+    CONTRACT_VIOLATION,
+    DIGEST_MISMATCH,
+    INVALID_ARGUMENT,
+    OFFLINE,
+    UNEXPECTED_RESPONSE,
+)
 from dfo._core.errors import (
     DataWarning,
     DfoError,
@@ -51,13 +58,6 @@ from dfo._datasets.build import (
 from dfo._datasets.cache import sha256_digest
 from dfo._datasets.dataset import Dataset, FetchedMember, build_dataset
 from dfo._datasets.progress import ProgressRenderer
-from dfo._generated.error_map import (
-    CONTRACT_VIOLATION,
-    DIGEST_MISMATCH,
-    INVALID_ARGUMENT,
-    OFFLINE,
-    UNEXPECTED_RESPONSE,
-)
 from dfo._generated.strict import RESOLUTION_KIND
 from dfo._sync._datasets.operation import (
     Finish,

@@ -28,6 +28,7 @@ from typing import Protocol
 
 import httpx2
 
+from dfo._core.codes import DEADLINE_EXCEEDED, UNEXPECTED_RESPONSE
 from dfo._core.errors import DfoError, DfoTimeoutError, client_error
 from dfo._core.parse import check_manifest
 from dfo._core.refusals import describing, problem_error, trace_id_of
@@ -42,7 +43,6 @@ from dfo._datasets.build import (
 )
 from dfo._datasets.dataset import Dataset
 from dfo._datasets.progress import ProgressRenderer
-from dfo._generated.error_map import DEADLINE_EXCEEDED, UNEXPECTED_RESPONSE
 from dfo._http.transport import AsyncTransport, retry_after
 
 type ProgressHook = Callable[[str, Progress, str | None], None]

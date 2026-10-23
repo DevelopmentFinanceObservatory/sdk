@@ -14,15 +14,11 @@ from typing import Any, Protocol
 
 import httpx2
 
+from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT, UNEXPECTED_RESPONSE
 from dfo._core.errors import client_error
 from dfo._core.parse import check_manifest, check_operation
 from dfo._core.refusals import trace_id_of
 from dfo._core.types import Layout, Part, Rendering, Spec, Window, Wire
-from dfo._generated.error_map import (
-    CONTRACT_VIOLATION,
-    INVALID_ARGUMENT,
-    UNEXPECTED_RESPONSE,
-)
 
 # The longest the client reads a synchronous build. The server cuts off at 120 s.
 BUILD_READ_TIMEOUT = 150.0

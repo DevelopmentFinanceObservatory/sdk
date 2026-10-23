@@ -12,6 +12,7 @@ from os import PathLike
 from typing import Any, Self
 
 from dfo._config.keys import ApiKeyArgument
+from dfo._core.codes import INVALID_ARGUMENT
 from dfo._core.errors import client_error
 from dfo._core.refs import DatasetRef
 from dfo._core.types import Layout, RawResponse, Spec, Window
@@ -20,7 +21,6 @@ from dfo._datasets.dataset import Dataset
 from dfo._datasets.fetch import Session, mint, operation
 from dfo._datasets.operation import AsyncOperation
 from dfo._datasets.resolve import fetch
-from dfo._generated.error_map import INVALID_ARGUMENT
 from dfo._generated.wire import CatalogueResponse
 from dfo._http.hooks import AsyncHeaderProvider
 from dfo._http.transport import AsyncTransport

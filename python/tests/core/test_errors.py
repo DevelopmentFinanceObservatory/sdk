@@ -1,4 +1,4 @@
-"""Tests for the error tree, the generated error map and the warning helpers."""
+"""Tests for the error tree, the error map and codes, and the warning helpers."""
 
 import ast
 import json
@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import dfo
+from dfo._core import codes as _codes
 from dfo._core import errors as _errors
 from dfo._core.errors import (
     AuthenticationError,
@@ -33,8 +34,13 @@ from dfo._core.errors import (
     warn_once,
 )
 from dfo._core.refusals import error_class, problem_error
-from dfo._generated import error_map as _error_map
-from dfo._generated.error_map import ACTIONS, GAP_KINDS, REFUSAL_WITHOUT_CODE
+from dfo._generated.error_map import (
+    ACTIONS,
+    CLIENT_CODES,
+    GAP_KINDS,
+    REFUSAL_WITHOUT_CODE,
+    WARNING_CODES,
+)
 from tests.rule_vectors import CONTRACT
 
 ORIGIN = "https://api.example.org"
@@ -175,9 +181,7 @@ _CLIENT_ROWS = json.loads((CONTRACT / "client-codes.json").read_text(encoding="u
     "codes"
 ]
 _CLIENT_CODES = {
-    name: value
-    for name, value in vars(_error_map).items()
-    if isinstance(value, ClientCode)
+    name: value for name, value in vars(_codes).items() if isinstance(value, ClientCode)
 }
 _SOURCE = Path(dfo.__file__).parent
 _ERROR_CLASSES = {
@@ -187,9 +191,14 @@ _ERROR_CLASSES = {
 }
 
 
-def test_the_map_holds_exactly_the_contract_client_codes() -> None:
+def test_the_map_and_codes_hold_exactly_the_contract_client_codes() -> None:
     by_status = [row["code"] for row in _CLIENT_ROWS if row["class"] == "by_status"]
     assert by_status == [REFUSAL_WITHOUT_CODE]
+    assert {
+        row["code"]: (row["class"], row["retryable"])
+        for row in _CLIENT_ROWS
+        if row["class"] != "by_status"
+    } == CLIENT_CODES
     assert {
         name: (code.code, code.error_class.__name__, code.retryable)
         for name, code in _CLIENT_CODES.items()
@@ -214,7 +223,7 @@ def _raises() -> list[tuple[str, str, ast.Call]]:
 
 
 def _constant(call: ast.Call) -> str | None:
-    """The generated constant a `client_error` call names, or None."""
+    """The `dfo._core.codes` constant a `client_error` call names, or None."""
     first = call.args[0] if call.args else None
     if isinstance(first, ast.Name) and first.id in _CLIENT_CODES:
         return first.id
@@ -228,7 +237,7 @@ def test_the_package_builds_errors() -> None:
 def test_every_client_raise_names_a_contract_code() -> None:
     """A raise takes its code and class from one row of `client-codes.json`.
 
-    `client_error` takes a generated constant, never a string. A class built by
+    `client_error` takes a `dfo._core.codes` constant, never a string. A class built by
     name outside `dfo._core.errors` must carry a refusal's code (`code=<error>.code`),
     so no raise can set a code the contract lacks, or none at all.
     """
@@ -255,7 +264,7 @@ def test_every_contract_client_code_is_raised() -> None:
 
 @pytest.mark.parametrize(
     ("code", "retryable"),
-    [(_error_map.DIGEST_MISMATCH, False), (_error_map.DOWNLOAD_FAILED, True)],
+    [(_codes.DIGEST_MISMATCH, False), (_codes.DOWNLOAD_FAILED, True)],
 )
 def test_a_client_error_takes_its_rows_class_and_flag(
     code: ClientCode[ServerError], retryable: bool
@@ -274,18 +283,19 @@ _WARNING_ROWS = json.loads(
 )["codes"]
 _WARNING_CODES = {
     name: value
-    for name, value in vars(_error_map).items()
+    for name, value in vars(_codes).items()
     if isinstance(value, WarningCode)
 }
 # The classes of the warnings the client issues itself, and the row type: only
-# `client_warning` builds the first, and only the generated map the second.
+# `client_warning` builds the first, and only `dfo._core.codes` the second.
 _OWN_WARNING_BUILDERS = frozenset(
     {"DfoWarning", "DfoDeprecationWarning", "WarningCode"}
 )
-_GENERATED = frozenset({"_core/errors.py", "_generated/error_map.py"})
+_BUILDERS = frozenset({"_core/errors.py", "_core/codes.py"})
 
 
-def test_the_map_holds_exactly_the_contract_warning_codes() -> None:
+def test_the_map_and_codes_hold_exactly_the_contract_warning_codes() -> None:
+    assert {row["code"]: row["class"] for row in _WARNING_ROWS} == WARNING_CODES
     assert {
         name: (code.code, code.warning_class.__name__)
         for name, code in _WARNING_CODES.items()
@@ -295,14 +305,14 @@ def test_the_map_holds_exactly_the_contract_warning_codes() -> None:
 def test_every_client_warning_names_a_contract_code() -> None:
     """A warning of the client's own takes its code and class from one row.
 
-    Only `client_warning` builds one, from a `WarningCode` the map generates, so
+    Only `client_warning` builds one, from a `WarningCode` in `dfo._core.codes`, so
     no warning can carry a code `warning-codes.json` lacks, and every row is used.
     """
     problems = []
     used = set()
     for path in sorted(_SOURCE.rglob("*.py")):
         name = path.relative_to(_SOURCE).as_posix()
-        if name in _GENERATED:
+        if name in _BUILDERS:
             continue
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Name) and node.id in _WARNING_CODES:
@@ -318,7 +328,7 @@ def test_every_client_warning_names_a_contract_code() -> None:
 
 
 def test_a_client_warning_takes_its_rows_class() -> None:
-    warning = _errors.client_warning(_error_map.ROUTE_DEPRECATED, "going")
+    warning = _errors.client_warning(_codes.ROUTE_DEPRECATED, "going")
     assert (type(warning), warning.code, str(warning)) == (
         DfoDeprecationWarning,
         "route_deprecated",

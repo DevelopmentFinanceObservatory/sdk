@@ -11,6 +11,13 @@ raises at once.
 
 from collections.abc import Mapping, Sequence
 
+from dfo._core.codes import (
+    CONTRACT_VIOLATION,
+    DIGEST_MISMATCH,
+    INVALID_ARGUMENT,
+    OFFLINE,
+    VERSION_UNAVAILABLE,
+)
 from dfo._core.errors import (
     ContractError,
     DfoError,
@@ -54,13 +61,6 @@ from dfo._datasets.operation import (
     progress_hook,
 )
 from dfo._datasets.progress import ProgressRenderer
-from dfo._generated.error_map import (
-    CONTRACT_VIOLATION,
-    DIGEST_MISMATCH,
-    INVALID_ARGUMENT,
-    OFFLINE,
-    VERSION_UNAVAILABLE,
-)
 from dfo._http.transport import AsyncTransport, offline
 
 # Refusals after which the next step of a stored version's lookup order runs: the

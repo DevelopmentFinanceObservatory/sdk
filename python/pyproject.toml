@@ -71,6 +71,7 @@ dev = [
     "duckdb>=1.5.6",
     "openpyxl>=3.1.5",
     "pyright>=1.1.414",
+    "import-linter>=2.15",
 ]
 
 [tool.ruff]
@@ -147,8 +148,25 @@ python-version = "3.12"
 [tool.ty.src]
 include = ["src/dfo"]
 
+# Each layer imports at runtime only from the layers below it; an import under
+# `if TYPE_CHECKING:` may cross upwards. The `_sync` twin of an async module sits in
+# its layer. CONTRIBUTING.md lists what each layer holds.
+[tool.importlinter]
+root_package = "dfo"
+exclude_type_checking_imports = true
 
-
+[[tool.importlinter.contracts]]
+name = "Layers"
+type = "layers"
+layers = [
+    "dfo._client : dfo._sync._client",
+    "dfo._search : dfo._sync._search",
+    "dfo._datasets : dfo._sync._datasets",
+    "dfo._http : dfo._sync._http",
+    "dfo._config",
+    "dfo._core",
+    "dfo._generated",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -20,6 +20,7 @@ from urllib.parse import urljoin
 
 import httpx2
 
+from dfo._core.codes import CONTRACT_VIOLATION, UNEXPECTED_RESPONSE
 from dfo._core.errors import (
     AuthenticationError,
     ContractError,
@@ -34,13 +35,7 @@ from dfo._core.errors import (
     VersionUnavailableError,
     status_class,
 )
-from dfo._generated.error_map import (
-    ACTIONS,
-    CONTRACT_VIOLATION,
-    REFUSAL_WITHOUT_CODE,
-    UNEXPECTED_RESPONSE,
-    Action,
-)
+from dfo._generated.error_map import ACTIONS, REFUSAL_WITHOUT_CODE, Action
 
 TRACE_HEADER = "x-dfo-trace-id"
 

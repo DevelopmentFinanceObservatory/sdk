@@ -34,9 +34,7 @@ import httpcore2
 import httpx2
 
 from dfo._config.keys import ApiKeyArgument, KeyState, ResolvedKey
-from dfo._core.errors import DfoError, client_error, client_warning, warn_once
-from dfo._core.refusals import TRACE_HEADER, json_body, problem_error
-from dfo._generated.error_map import (
+from dfo._core.codes import (
     CONTRACT_VIOLATION,
     DEADLINE_EXCEEDED,
     DOWNLOAD_FAILED,
@@ -45,6 +43,8 @@ from dfo._generated.error_map import (
     ROUTE_DEPRECATED,
     SERVER_WARNING,
 )
+from dfo._core.errors import DfoError, client_error, client_warning, warn_once
+from dfo._core.refusals import TRACE_HEADER, json_body, problem_error
 from dfo._http.hooks import (
     Clock,
     HeaderProvider,

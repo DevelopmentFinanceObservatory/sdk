@@ -9,6 +9,31 @@
 
 The root holds `.pre-commit-config.yaml` and `.github/workflows/`, which cover both packages.
 
+## Package layout
+
+Both packages group their modules into the same seven layers. A module imports at runtime only from its own layer and the layers below it. A type-only import, under `if TYPE_CHECKING:` in Python or `import type` in TypeScript, may name any layer.
+
+| Layer, top first | Python            | TypeScript       | Holds                                                                                                   |
+| ---------------- | ----------------- | ---------------- | ------------------------------------------------------------------------------------------------------- |
+| client           | `dfo/_client/`    | `src/client.ts`  | the client, the module functions and the CLI                                                            |
+| search           | `dfo/_search/`    | `src/search/`    | Search, answers, choices, answer text, and graph and code lookups                                       |
+| datasets         | `dfo/_datasets/`  | `src/datasets/`  | fetch, ref resolution, operations, builds, datasets, Parquet and Arrow, bundles, the cache and progress |
+| http             | `dfo/_http/`      | `src/http/`      | the transport and its hooks                                                                             |
+| config           | `dfo/_config/`    | `src/config/`    | the API key, the credentials file, paths and the environment                                            |
+| core             | `dfo/_core/`      | `src/core/`      | errors and warnings, refusal mapping, the public data classes, wire parsing and the DatasetRef format   |
+| generated        | `dfo/_generated/` | `src/generated/` | literals and types the generators write from the contract                                               |
+
+The public names sit above every layer. In Python they are `dfo/__init__.py`, the one public namespace; each layer's `__init__.py` holds only a docstring. In TypeScript they are the entry points at the `src/` root (`index.ts`, `index.node.ts`, `wire.ts` and `arrow.ts`), which re-export from the layers. `_version.py` and `src/version.ts` hold the version constant and sit below every layer. The sync twin of each Python async module, under `dfo/_sync/`, sits in the layer of its source.
+
+Two checks enforce the rule, and each fails on a runtime import from a higher layer:
+
+- Python: import-linter, through the `Layers` contract in `[tool.importlinter]` in `python/pyproject.toml`. Run `uv run --directory python lint-imports`. A layer module must not `import dfo`, because the package root imports every layer.
+- TypeScript: `@typescript-eslint/no-restricted-imports` in `typescript/eslint.config.js`, one rule per layer directory, run by `pnpm --dir typescript lint`.
+
+CI and the pre-commit hooks run both.
+
+The Python tests follow the package: `python/tests/<layer>/` tests the modules of a layer, `python/tests/_async/<layer>/` its async modules, and `python/tests/_sync/<layer>/` is generated from those.
+
 ## Setup
 
 ```bash
@@ -23,6 +48,7 @@ uv run --directory python pytest
 uv run --directory python ruff check
 uv run --directory python ruff format --check
 uv run --directory python ty check
+uv run --directory python lint-imports
 pre-commit run --all-files
 ```
 
@@ -81,10 +107,14 @@ These Python files are generated, and CI fails when one differs from what its ge
 ```bash
 uv run python ../scripts/gen_sync.py
 uv run python ../scripts/gen_errors.py
+uv run python ../scripts/gen_wire.py
 ```
 
-- `scripts/gen_sync.py` writes each sync module in `python/src/dfo/_sync/` from its async source in `python/src/dfo/`, and each test in `python/tests/_sync/` from `python/tests/_async/`, so the sync client passes the same tests as the async one. `ASYNC_MODULES` in the script lists the async modules.
-- `scripts/gen_errors.py` writes `python/src/dfo/_error_map.py` from `contract/actions.json`: each refusal code's caller action and each no_data reason's gap kind.
+- `scripts/gen_sync.py` writes the sync twin of each async module at the same path under `python/src/dfo/_sync/`, so `_http/transport.py` becomes `_sync/_http/transport.py`, and each test under `python/tests/_sync/` from its twin under `python/tests/_async/`, so the sync client passes the same tests as the async one. `ASYNC_MODULES` in the script lists the async modules.
+- `scripts/gen_errors.py` writes `python/src/dfo/_generated/error_map.py` from `contract/actions.json`, `contract/client-codes.json` and `contract/warning-codes.json`: each refusal code's caller action, each no_data reason's gap kind, and the class and retryable flag of each code the client raises or warns with itself.
+- `scripts/gen_wire.py` writes `python/src/dfo/_generated/wire.py`, a `TypedDict` per schema of `contract/served/openapi.json`, and `python/src/dfo/_generated/strict.py`, the members and enum values `contract/strict-fields.json` lists.
+
+The files in `_generated/` hold literals and types only and import nothing from `dfo`. `dfo._core.codes` builds the `ClientCode` and `WarningCode` constants from the error map, and `dfo._core.parse.require` checks a response against the strict members. A code the contract adds fails `python/tests/core/test_errors.py` until `dfo._core.codes` has a constant for it.
 
 Each generator takes `--check`, which writes nothing and exits 1 on a difference.
 
@@ -93,8 +123,8 @@ Each generator takes `--check`, which writes nothing and exits 1 on a difference
 The async modules are the source of both clients, and `scripts/gen_sync.py` derives the sync ones by replacing tokens. A module stays convertible when it follows these rules, and the generator refuses one that breaks them:
 
 - No import of `asyncio`, `anyio` or `trio`, and so no `asyncio.gather`, `TaskGroup`, `asyncio.timeout` or `wait_for`. The members of a dataset build one after another, and deadlines come from the transport's clock.
-- Sleep and the clock come from the transport (`dfo._hooks`), so a test or a scenario replay can inject them.
-- Import other async modules by absolute name, such as `from dfo._transport import AsyncTransport`. The generator points the sync module at `dfo._sync._transport`.
+- Sleep and the clock come from the transport (`dfo._http.hooks`), so a test or a scenario replay can inject them.
+- Import other async modules by absolute name, such as `from dfo._http.transport import AsyncTransport`. The generator points the sync module at `dfo._sync._http.transport`, and refuses `from dfo._http import transport`, which it cannot repoint.
 - An async name the token map lacks (`async`, `await`, an `Async*` class, `__aenter__`, `aclose`, `aread`, `aiter_*`) fails the run. Add the pair to `SUBS` in the script. A pair no source uses also fails the run, so a renamed name in httpx2 shows up there.
 - Code that does no I/O, such as the cache, Parquet and Arrow code, is plain sync code in a module both clients call.
 - An async test uses `pytestmark = pytest.mark.anyio` and a sync `def` handler for `httpx2.MockTransport`, which serves both clients.
@@ -112,4 +142,4 @@ Publishing uses OIDC trusted publishing from `.github/workflows/release.yml`, so
 
 A runtime dependency in `python/pyproject.toml` takes a lower bound and no upper bound, so the package installs beside the newest releases of what it uses. `uv.lock` pins the versions the tests run against.
 
-`httpx2` and `httpcore2` are the one exception, bounded to `>=2.15,<2.16`. `_keep_to_deadlines` in `python/src/dfo/_transport.py` reads the connection pool's private layout, which a minor release may move. To take a new minor, run the Python suite against it and move both bounds and the lock in one change.
+`httpx2` and `httpcore2` are the one exception, bounded to `>=2.15,<2.16`. `_keep_to_deadlines` in `python/src/dfo/_http/transport.py` reads the connection pool's private layout, which a minor release may move. To take a new minor, run the Python suite against it and move both bounds and the lock in one change.

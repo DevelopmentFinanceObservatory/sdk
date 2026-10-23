@@ -12,6 +12,13 @@ raises at once.
 
 from collections.abc import Mapping, Sequence
 
+from dfo._core.codes import (
+    CONTRACT_VIOLATION,
+    DIGEST_MISMATCH,
+    INVALID_ARGUMENT,
+    OFFLINE,
+    VERSION_UNAVAILABLE,
+)
 from dfo._core.errors import (
     ContractError,
     DfoError,
@@ -43,13 +50,6 @@ from dfo._datasets.build import (
 )
 from dfo._datasets.dataset import Dataset, FetchedMember, build_dataset
 from dfo._datasets.progress import ProgressRenderer
-from dfo._generated.error_map import (
-    CONTRACT_VIOLATION,
-    DIGEST_MISMATCH,
-    INVALID_ARGUMENT,
-    OFFLINE,
-    VERSION_UNAVAILABLE,
-)
 from dfo._sync._datasets.fetch import (
     build_version,
     download,

@@ -1,17 +1,18 @@
 """Read decoded response bodies into the public data classes.
 
 The parser reads the plain dicts `json.loads` returns. It checks the members the
-client acts on through `dfo._generated.strict.require`, which raises `ContractError`
-with the JSON Pointer of a member that is missing, null or of another JSON type, and
-reads everything else tolerantly: an unknown member is ignored, a member of another
+client acts on, as `dfo._generated.strict` lists them, through `require`, which
+raises `ContractError` with the JSON Pointer of a member that is missing, null or of
+another JSON type, and reads everything else tolerantly: an unknown member is ignored, a member of another
 JSON type reads as absent, an unknown enum value passes through as a string, and a
 part with an unknown status becomes `UnknownPart`.
 Server JSON the client posts back, such as a spec's `definition`, is kept as decoded.
 """
 
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, Final
 
+from dfo._core.codes import CONTRACT_VIOLATION
 from dfo._core.errors import ContractError, client_error
 from dfo._core.types import (
     Assumption,
@@ -31,8 +32,7 @@ from dfo._core.types import (
     Wire,
 )
 from dfo._generated import strict as _strict
-from dfo._generated.error_map import CONTRACT_VIOLATION
-from dfo._generated.strict import require
+from dfo._generated.strict import REQUIRED, JsonType, StrictSchema
 
 # A part as read, before an answer binds its candidates. The parts other than
 # `CandidatesPart` are `Part[Never]`, so each fits an answer of either form.
@@ -43,6 +43,54 @@ type ParsedPart = (
     | UnsupportedPart
     | UnknownPart
 )
+
+
+# The Python type a decoded JSON value of each type has.
+_PYTHON_TYPES: Final[Mapping[JsonType, type]] = {
+    "string": str,
+    "array": list,
+    "object": Mapping,
+}
+
+
+def require(
+    obj: object, schema: StrictSchema, pointer: str = "", /
+) -> Mapping[str, Any]:
+    """Return `obj` when it is an object carrying `schema`'s required members.
+
+    Args:
+        obj: A value decoded from a response body.
+        schema: The component schema `obj` is read as.
+        pointer: The JSON Pointer of `obj` in the response body.
+
+    Returns:
+        `obj`, typed as an object.
+
+    Raises:
+        ContractError: `obj` is not an object, or a required member is missing,
+            null or of another JSON type; the error's `pointer` names `obj` or
+            that member.
+    """
+    if not isinstance(obj, Mapping):
+        raise _violation(
+            f"{schema} at {pointer or '/'} is not an object in the response",
+            pointer=pointer,
+        )
+    for member, json_type in REQUIRED[schema]:
+        value = obj.get(member)
+        if value is None:
+            raise _violation(
+                f"{schema}.{member} is missing or null at {pointer}/{member} in "
+                "the response; upgrade development-finance",
+                pointer=f"{pointer}/{member}",
+            )
+        if not isinstance(value, _PYTHON_TYPES[json_type]):
+            raise _violation(
+                f"{schema}.{member} is not an {json_type} at {pointer}/{member} "
+                "in the response; upgrade development-finance",
+                pointer=f"{pointer}/{member}",
+            )
+    return obj
 
 
 def parse_parts(resolution: Wire, /) -> tuple[ParsedPart, ...]:

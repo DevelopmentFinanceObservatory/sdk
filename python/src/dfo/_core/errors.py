@@ -2,11 +2,11 @@
 
 Each error class groups codes by what the caller does next. An error the client
 raises itself goes through `client_error`, which takes one of the `ClientCode`
-constants `dfo._generated.error_map` generates from the contract's
-`client-codes.json`, so the code, its class and its retryable flag come from one
-row. A warning the client issues itself goes through `client_warning`, which takes
-one of the `WarningCode` constants generated from `warning-codes.json`.
-`dfo._core.refusals` reads a server refusal into its class.
+constants `dfo._core.codes` builds from the contract's `client-codes.json`, so the
+code, its class and its retryable flag come from one row. A warning the client
+issues itself goes through `client_warning`, which takes one of the `WarningCode`
+constants built from `warning-codes.json`. `dfo._core.refusals` reads a server
+refusal into its class.
 """
 
 import os

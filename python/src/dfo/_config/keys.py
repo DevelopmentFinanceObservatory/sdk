@@ -15,14 +15,7 @@ from typing import Literal, NoReturn, Self
 
 from dfo._config.credentials import CredentialsFileError, read_profiles
 from dfo._config.paths import credentials_path
-from dfo._core.errors import (
-    DfoWarning,
-    WarningCode,
-    client_error,
-    client_warning,
-    warn_once,
-)
-from dfo._generated.error_map import (
+from dfo._core.codes import (
     CREDENTIALS_FILE_INVALID,
     KEY_CHECKSUM_MISMATCH,
     KEY_EMPTY,
@@ -30,6 +23,13 @@ from dfo._generated.error_map import (
     KEY_UNKNOWN_PREFIX,
     PROFILE_NOT_FOUND,
     PROFILE_WITHOUT_KEY,
+)
+from dfo._core.errors import (
+    DfoWarning,
+    WarningCode,
+    client_error,
+    client_warning,
+    warn_once,
 )
 
 type KeyFormatProblem = Literal["unknown_prefix", "not_base62", "checksum_mismatch"]

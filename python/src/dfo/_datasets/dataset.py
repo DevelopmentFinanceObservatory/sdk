@@ -22,6 +22,7 @@ from datetime import date, datetime
 from os import PathLike
 from typing import TYPE_CHECKING, Any
 
+from dfo._core.codes import CONTRACT_VIOLATION
 from dfo._core.errors import client_error
 from dfo._core.parse import parse_citation, parse_notices, parse_part
 from dfo._core.refs import DatasetRef, Member
@@ -44,7 +45,6 @@ from dfo._core.types import (
     unbound_gap,
 )
 from dfo._datasets.build import layout_of
-from dfo._generated.error_map import CONTRACT_VIOLATION
 
 if TYPE_CHECKING:
     import pandas

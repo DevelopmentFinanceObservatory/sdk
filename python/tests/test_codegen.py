@@ -15,8 +15,6 @@ import gen_errors
 import gen_sync
 import sync_contract
 
-from dfo._core.errors import ClientCode, DfoWarning, ServerError, WarningCode
-
 _WARNING_CODES = {
     "format_version": 1,
     "codes": [{"code": "a_notice", "class": "DfoWarning", "condition": "C."}],
@@ -166,9 +164,9 @@ def test_the_error_map_takes_its_literals_from_the_schema() -> None:
     assert namespace["ACTIONS"] == {"a_code": "fix_request", "b_code": "choose"}
     assert namespace["GAP_KINDS"] == {"b_code": "choice"}
     assert '"new_action"' in source
-    assert namespace["A_FAILURE"] == ClientCode("a_failure", ServerError, True)
+    assert namespace["CLIENT_CODES"] == {"a_failure": ("ServerError", True)}
     assert namespace["NO_CODE"] == "no_code"
-    assert namespace["A_NOTICE"] == WarningCode("a_notice", DfoWarning)
+    assert namespace["WARNING_CODES"] == {"a_notice": "DfoWarning"}
 
 
 _FAILURE = {"code": "a_failure", "class": "ServerError", "condition": "A."}
