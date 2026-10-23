@@ -222,7 +222,7 @@ def parse_notices(warnings: object, /) -> tuple[Notice, ...]:
             message=_text(warning.get("message")),
             spec_id=_optional_text(warning.get("spec_id")),
         )
-        for warning in _objects(warnings)
+        for warning in wire_objects(warnings)
     )
 
 
@@ -236,7 +236,7 @@ def parse_departures(departures: object, /) -> tuple[Departure, ...]:
             shown=_optional_text(departure.get("shown")),
             binding_ref=_optional_text(departure.get("binding_ref")),
         )
-        for departure in _objects(departures)
+        for departure in wire_objects(departures)
     )
 
 
@@ -251,7 +251,7 @@ def parse_assumptions(assumptions: object, /) -> tuple[Assumption, ...]:
                 ref for ref in _list(assumption.get("refs")) if isinstance(ref, str)
             ),
         )
-        for assumption in _objects(assumptions)
+        for assumption in wire_objects(assumptions)
     )
 
 
@@ -266,7 +266,7 @@ def parse_operations(operations: object, /) -> tuple[RequestedOperation, ...]:
             if isinstance(target_year := operation.get("target_year"), int)
             else None,
         )
-        for operation in _objects(operations)
+        for operation in wire_objects(operations)
     )
 
 
@@ -283,7 +283,7 @@ def parse_citation(citation: object, /) -> Citation:
                 licence_url=_optional_text(source.get("license_url")),
                 url=_optional_text(source.get("url")),
             )
-            for source in _objects(obj.get("sources"))
+            for source in wire_objects(obj.get("sources"))
         ),
     )
 
@@ -358,7 +358,9 @@ def _no_data(part: Wire, pointer: str) -> NoDataPart:
     return NoDataPart(
         reason=_text(no_data["reason"]),
         message=_optional_text(no_data.get("message")),
-        options=tuple(_option(option) for option in _objects(no_data.get("options"))),
+        options=tuple(
+            _option(option) for option in wire_objects(no_data.get("options"))
+        ),
         **_part_fields(part, _strict.NO_DATA_PART_STATUS),
     )
 
@@ -433,5 +435,7 @@ def _list(value: object) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-def _objects(value: object) -> list[Wire]:
+def wire_objects(value: object) -> list[Wire]:
+    """The object items of a wire list, each item of another type read as absent,
+    and none when the value is not a list."""
     return [item for item in _list(value) if isinstance(item, Mapping)]

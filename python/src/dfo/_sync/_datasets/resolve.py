@@ -5,9 +5,10 @@ A `DatasetRef` returns the versions it names, found in this order: the local cac
 by digest; the snapshot route and the files route at the stored digest; the file
 selector, which renders the version again from its stored frame; a fresh build,
 which must return the same version; and otherwise `VersionUnavailableError`,
-naming the newest version. The steps after the snapshot run only for a version
-whose file has expired. A version the server never built (`snapshot_not_found`)
-raises at once.
+naming the newest version. A snapshot or build that answers another spec raises
+`ContractError`, so a recovered member keeps the ref's identity. The steps after the
+snapshot run only for a version whose file has expired. A version the server never
+built (`snapshot_not_found`) raises at once.
 """
 
 from collections.abc import Mapping, Sequence
@@ -247,6 +248,8 @@ def _fetch_version(
         refusal = refusal or error
         newest = _newest(transport, spec_id, deadline=deadline)
     else:
+        with describing(trace_id):
+            check_built(manifest, spec_id)
         if manifest["content_version"] == version:
             return finish_member(
                 transport,

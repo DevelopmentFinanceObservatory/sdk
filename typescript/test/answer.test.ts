@@ -347,7 +347,7 @@ describe("candidate.fetch", () => {
     assert.deepEqual(remaining(), []);
   });
 
-  test("a malformed assumption reads parsed on the candidate and its dataset, and its echo posts the list as sent", async () => {
+  test("a malformed assumption reads parsed on the candidate and its dataset, and its echo posts the object items", async () => {
     const scenario = structuredClone(record("answer-candidates-choose-fetch"));
     const [search, resubmit] = scenario.exchanges;
     const assumed = {
@@ -363,7 +363,7 @@ describe("candidate.fetch", () => {
     (resubmit!.response.json as { parts: Record<string, unknown>[] }).parts[0]!["assumptions"] =
       listed;
     const posted = resubmit!.request.json as { input: { entries: { assumptions: unknown }[] } };
-    posted.input.entries[0]!.assumptions = listed;
+    posted.input.entries[0]!.assumptions = listed.slice(1);
     const { transport, remaining } = replay(scenario);
 
     const answer = await clientOver(transport).search("GNI of Germany from 2015 to 2022");

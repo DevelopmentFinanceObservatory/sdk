@@ -7,7 +7,8 @@
  * stored frame; a fresh build, which must return the same version; otherwise
  * `VersionUnavailableError`, naming the newest version. The steps after the snapshot run only
  * for a version whose file has expired. A version the server never built
- * (`snapshot_not_found`) raises at once.
+ * (`snapshot_not_found`) raises at once. A snapshot or build that answers another spec raises
+ * `ContractError`, so a recovered member keeps the ref's identity.
  *
  * The lookup reuses the build path's download, warnings and finishing steps, so this module
  * imports `fetch.ts` and `fetch.ts` imports nothing from here.
@@ -161,6 +162,15 @@ async function fetchVersion(
     const built = await build(transport, buildBody(member.spec, member.rendering), {
       ...wait,
       onProgress: options.onProgress,
+    });
+    describing(built.traceId, () => {
+      const rebuilt = specIdOf(built.manifest);
+      if (rebuilt !== member.spec.spec_id) {
+        throw clientError("contract_violation", {
+          detail: `The server rebuilt ${rebuilt} for ${member.spec.spec_id}.`,
+          pointer: "/definition/spec_id",
+        });
+      }
     });
     if (contentVersionOf(built.manifest) === member.contentVersion) {
       const finishing = {

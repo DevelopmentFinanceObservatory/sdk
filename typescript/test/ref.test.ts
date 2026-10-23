@@ -51,11 +51,23 @@ describe("DatasetRef.fromJSON", () => {
     const { ref } = await contractJson<{ ref: { members: Record<string, unknown>[] } }>(
       "refs/ref-one-member.json",
     );
-    const broken = structuredClone(ref);
-    broken.members[0]!["content_version"] = "cv_short";
-    assert.throws(() => DatasetRef.fromJSON(broken), {
-      reason: "format_invalid",
-      pointer: "/members/0/content_version",
-    });
+    const cases: [path: string[], value: unknown][] = [
+      [["content_version"], "cv_short"],
+      [["spec", "definition", "schema_version"], true],
+      [["spec", "definition", "identity"], "spec1"],
+    ];
+    for (const [path, value] of cases) {
+      const broken = structuredClone(ref);
+      const key = path.at(-1)!;
+      let holder: Record<string, unknown> = broken.members[0]!;
+      for (const step of path.slice(0, -1)) {
+        holder = holder[step] as Record<string, unknown>;
+      }
+      holder[key] = value;
+      assert.throws(() => DatasetRef.fromJSON(broken), {
+        reason: "format_invalid",
+        pointer: `/members/0/${path.join("/")}`,
+      });
+    }
   });
 });

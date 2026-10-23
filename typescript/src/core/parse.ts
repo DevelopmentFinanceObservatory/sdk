@@ -3,8 +3,8 @@
  * how the reading departs from the question, the computations it left undone, and the part's
  * warnings. Answer, Candidate, hints, fetch and Dataset all read them here, so one rule
  * applies to each field. A holder of the wrong type reads as absent, and an item that lacks a
- * required member or holds one of the wrong type is dropped. The resubmit echo posts the part's
- * own lists as the server sent them. The strict check (`strict.ts`) owns the strict members and
+ * required member or holds one of the wrong type is dropped. The resubmit echo posts the object
+ * items of the part's own lists as the server sent them. The strict check (`strict.ts`) owns the strict members and
  * raises `ContractError` at their pointer.
  */
 import { isRecord, list, objects, text } from "./json.ts";

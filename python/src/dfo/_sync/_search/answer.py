@@ -22,8 +22,9 @@ and a candidate's entry in its part's `reading_assumptions`. Search then states
 the assumptions that still hold, and the new sentence carries them. An identity
 whose part carries no list posts none, and Search computes them afresh. A member
 an entry echoes with another JSON type than the wire's reads as absent. These are
-a restatement that is not an object, and `operations` or `assumptions` that are
-not lists.
+a restatement that is not an object, `operations` or `assumptions` that are not
+lists, and an item of those lists that is not an object, so the echo posts the
+object items alone.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ from dfo._core.codes import (
     CONTRACT_VIOLATION,
 )
 from dfo._core.errors import IncompleteAnswerError, SearchWarning, client_error, warn
-from dfo._core.parse import ParsedPart, parse_notices, parse_parts
+from dfo._core.parse import ParsedPart, parse_notices, parse_parts, wire_objects
 from dfo._core.refusals import describing, trace_id_of
 from dfo._core.types import (
     Candidate,
@@ -640,8 +641,7 @@ def _echo(part: Part[Candidate], **members: Any) -> dict[str, Any]:
     entry: dict[str, Any] = {**members, "variable_text": part.variable_text}
     if part.separate:
         entry["separate"] = True
-    operations = part.raw.get("operations")
-    if isinstance(operations, list) and operations:
+    if operations := wire_objects(part.raw.get("operations")):
         entry["operations"] = operations
     return entry
 
@@ -664,13 +664,14 @@ def _reading_assumptions(
 ) -> list[Any] | None:
     """The wire's assumptions for one reading of `part`, or None when the part
     holds no list for it. The list is a candidates part's `reading_assumptions`
-    entry under the spec's id, or any other part's `assumptions`."""
+    entry under the spec's id, or any other part's `assumptions`, with its object
+    items alone."""
     if isinstance(part, CandidatesPart):
         by_spec = part.raw.get("reading_assumptions")
         listed = by_spec.get(spec["spec_id"]) if isinstance(by_spec, Mapping) else None
     else:
         listed = part.raw.get("assumptions")
-    return listed if isinstance(listed, list) else None
+    return wire_objects(listed) if isinstance(listed, list) else None
 
 
 def _identity_entry(part: Part[Candidate], spec: Mapping[str, Any]) -> dict[str, Any]:
