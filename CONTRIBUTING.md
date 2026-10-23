@@ -23,7 +23,7 @@ Both packages group their modules into the same seven layers. A module imports a
 | core             | `dfo/_core/`      | `src/core/`      | errors and warnings, refusal mapping, the public data classes, wire parsing and the DatasetRef format   |
 | generated        | `dfo/_generated/` | `src/generated/` | literals and types the generators write from the contract                                               |
 
-The public names sit above every layer. In Python they are `dfo/__init__.py`, the one public namespace; each layer's `__init__.py` holds only a docstring. In TypeScript they are the entry points at the `src/` root (`index.ts`, `index.node.ts`, `wire.ts` and `arrow.ts`), which re-export from the layers. `_version.py` and `src/version.ts` hold the version constant and sit below every layer. The sync twin of each Python async module, under `dfo/_sync/`, sits in the layer of its source.
+The public names sit above every layer. In Python they are `dfo/__init__.py`, the one public namespace. Each layer's `__init__.py` holds only a docstring. In TypeScript they are the entry points at the `src/` root (`index.ts`, `index.node.ts`, `wire.ts` and `arrow.ts`), which re-export from the layers. `_version.py` and `src/version.ts` hold the version constant and sit below every layer. The sync twin of each Python async module, under `dfo/_sync/`, sits in the layer of its source.
 
 Two checks enforce the rule, and each fails on a runtime import from a higher layer:
 

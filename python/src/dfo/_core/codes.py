@@ -2,7 +2,7 @@
 
 Each constant pairs a row of `dfo._generated.error_map` with the class the row
 names. The class is written here so the type checker knows what `client_error`
-and `client_warning` return; the retryable flag comes from the row.
+and `client_warning` return. The retryable flag comes from the row.
 `tests/core/test_errors.py` fails when a constant's class differs from its row's,
 or when a row has no constant.
 """

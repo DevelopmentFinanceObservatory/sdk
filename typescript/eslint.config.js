@@ -3,33 +3,36 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 // The src/ layers, lowest first, above src/generated/. A module imports at runtime only from its
-// own layer and the layers below it; `import type` may name any layer. The entry points and
-// client.ts at the src/ root sit above every layer, and version.ts, a constant, below them all.
+// own layer and the layers below it. `import type` may name any layer. The root files
+// (client.ts, index.ts, index.node.ts, wire.ts and arrow.ts) sit above every layer, and
+// version.ts, a constant, below them all. Each pattern is a regex on the specifier, a run of
+// `../` segments followed by a higher layer directory or a root file, so a nested module is
+// checked as well. `./arrow.ts` inside src/datasets/ is a sibling of the root arrow.ts and
+// stays allowed.
 const LAYERS = ["core", "config", "http", "datasets", "search"];
+const ROOT_FILES = ["client", "index", "index\\.node", "wire", "arrow"];
 
-const layerRules = LAYERS.map((dir, rank) => ({
-  files: [`src/${dir}/**/*.ts`],
-  rules: {
-    "@typescript-eslint/no-restricted-imports": [
-      "error",
-      {
-        patterns: [
-          {
-            group: [
-              ...LAYERS.slice(rank + 1).map((above) => `../${above}/*`),
-              "../client.ts",
-              "../index*.ts",
-              "../arrow.ts",
-              "../wire.ts",
-            ],
-            allowTypeImports: true,
-            message: `src/${dir} imports at runtime only from lower layers; use \`import type\` for a type.`,
-          },
-        ],
-      },
-    ],
-  },
-}));
+const layerRules = LAYERS.map((dir, rank) => {
+  const above = LAYERS.slice(rank + 1).map((layer) => `${layer}/`);
+  const targets = [...above, ...ROOT_FILES.map((file) => `${file}\\.ts$`)].join("|");
+  return {
+    files: [`src/${dir}/**/*.ts`],
+    rules: {
+      "@typescript-eslint/no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              regex: `^(\\.\\./)+(${targets})`,
+              allowTypeImports: true,
+              message: `src/${dir} imports at runtime only from lower layers; use \`import type\` for a type.`,
+            },
+          ],
+        },
+      ],
+    },
+  };
+});
 
 export default tseslint.config(
   { ignores: ["dist/", "node_modules/", "src/generated/"] },
@@ -53,6 +56,21 @@ export default tseslint.config(
     },
   },
   ...layerRules,
+  {
+    // The layer rule reads static imports, so a dynamic import() would pass it unseen. No source
+    // module needs one. apache-arrow loads through a static import in src/datasets/arrow.ts,
+    // reached only from the separate arrow entry point.
+    files: ["src/**/*.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "ImportExpression",
+          message: "Layers are checked on static imports only; use a static import.",
+        },
+      ],
+    },
+  },
   {
     // node:test's test() and describe() return promises the runner awaits.
     files: ["test/**"],

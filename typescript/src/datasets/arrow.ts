@@ -1,7 +1,8 @@
 /**
  * `toArrow(dataset)` returns a dataset as an apache-arrow table, decoded with hyparquet and built
  * column by column. It is the one module that needs the optional apache-arrow package, and only
- * the `@developmentfinance/client/arrow` entry point, `src/arrow.ts`, imports it.
+ * the `@developmentfinance/client/arrow` entry point, `src/arrow.ts`, imports it, so the main entry
+ * point's types and code do not name that package.
  */
 
 import * as arrow from "apache-arrow";
