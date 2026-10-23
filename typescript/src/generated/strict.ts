@@ -14,7 +14,10 @@ export const STRICT_SCHEMAS = {
     required: { status: "string", spec: "object" },
     children: { spec: { ref: "Spec" } },
   },
-  DefinitionModel: { required: { spec_id: "string", identity: "object" }, children: {} },
+  DefinitionModel: {
+    required: { schema_version: "integer", spec_id: "string", identity: "object" },
+    children: {},
+  },
   Manifest: {
     required: { definition: "object", content_version: "string", artifacts: "array" },
     children: {

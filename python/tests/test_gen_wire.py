@@ -30,8 +30,9 @@ SCHEMAS: dict[str, Any] = {
             "status": {"type": "string", "enum": ["pending", "done"]},
             "body": {"$ref": "#/components/schemas/Body"},
             "count": {"type": "integer"},
+            "ratio": {"type": "number"},
         },
-        "required": ["id", "poll", "status", "body", "count"],
+        "required": ["id", "poll", "status", "body", "count", "ratio"],
     },
     "Body": {"type": "object", "properties": {}},
 }
@@ -52,12 +53,22 @@ def test_a_consistent_contract_groups_by_schema() -> None:
     required, enums = gen_wire.strict_fields(
         SCHEMAS,
         fields(
-            ["Op/properties/id", "Op/properties/status", "Op/properties/body"],
+            [
+                "Op/properties/id",
+                "Op/properties/status",
+                "Op/properties/body",
+                "Op/properties/count",
+            ],
             {"Op/properties/status": ["done"]},
         ),
     )
     assert required == {
-        "Op": [("id", "string"), ("status", "string"), ("body", "object")]
+        "Op": [
+            ("id", "string"),
+            ("status", "string"),
+            ("body", "object"),
+            ("count", "integer"),
+        ]
     }
     assert enums == {("Op", "status"): ["done"]}
 
@@ -69,7 +80,7 @@ def test_a_consistent_contract_groups_by_schema() -> None:
         (["Other/properties/id"], {"Op/properties/status": ["done"]}),
         (["Op/properties/note"], {"Op/properties/status": ["done"]}),
         (["Op/properties/poll"], {"Op/properties/status": ["done"]}),
-        (["Op/properties/count"], {"Op/properties/status": ["done"]}),
+        (["Op/properties/ratio"], {"Op/properties/status": ["done"]}),
         (["Op/id"], {"Op/properties/status": ["done"]}),
         (["Op/properties/id"], {"Op/properties/status": ["failed"]}),
         (["Op/properties/id"], {}),

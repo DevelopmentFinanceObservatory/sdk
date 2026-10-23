@@ -240,6 +240,10 @@ describe("choose", () => {
     ["an answer with nothing to choose", () => answerOf("answer-definite-fetch").choose(0)],
     ["an option label no option has", () => answerOf("choose-place-one-part").choose("Nowhere")],
     ["an option index out of range", () => answerOf("choose-place-one-part").choose(2)],
+    [
+      "a boolean option key",
+      () => answerOf("choose-place-one-part").choose(false as unknown as number),
+    ],
     ["no part when several await a choice", () => answerOf("choose-place-two-parts").choose(0)],
     [
       "a word two parts share",

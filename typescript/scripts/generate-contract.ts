@@ -112,8 +112,8 @@ function shapeOf(schema: unknown, relevant: Set<string>): Shape | undefined {
   return undefined;
 }
 
-type JsonType = "string" | "array" | "object";
-const JSON_TYPES = new Set<unknown>(["string", "array", "object"]);
+type JsonType = "string" | "integer" | "array" | "object";
+const JSON_TYPES = new Set<unknown>(["string", "integer", "array", "object"]);
 
 type StrictEntry = { required: Record<string, JsonType>; children: Record<string, Shape> };
 
@@ -134,7 +134,7 @@ export function renderStrict(openapiText: string, strictText: string): Record<st
   };
 
   /** The JSON type a property must have, through its `$ref`, or undefined when it has no
-   *  string, array or object type. */
+   *  string, integer, array or object type. */
   const jsonType = (node: Schema): JsonType | undefined => {
     const typed = "$ref" in node ? schemas[refName(node["$ref"])] : node;
     const type = typed?.["type"];
@@ -153,7 +153,7 @@ export function renderStrict(openapiText: string, strictText: string): Record<st
     }
     const type = jsonType(target.node);
     if (type === undefined) {
-      throw new Error(`${pointer} is strict but has no string, array or object type`);
+      throw new Error(`${pointer} is strict but has no string, integer, array or object type`);
     }
     required.set(target.schema, { ...required.get(target.schema), [target.property]: type });
   }

@@ -235,8 +235,18 @@ function loadMember(value: unknown, pointer: string): RefMember {
   checkKeys(spec, `${pointer}/spec`, ["spec_id", "definition"], []);
   const specId = matching(SPEC_ID, spec["spec_id"], `${pointer}/spec/spec_id`, "a spec id");
   const definition = objectAt(spec["definition"], `${pointer}/spec/definition`);
-  if (definition["schema_version"] !== 1) {
-    throw new FormatError("format_invalid", `${pointer}/spec/definition/schema_version`, "not 1");
+  checkKeys(
+    definition,
+    `${pointer}/spec/definition`,
+    ["schema_version", "spec_id", "identity"],
+    [],
+  );
+  if (!Number.isInteger(definition["schema_version"])) {
+    throw new FormatError(
+      "format_invalid",
+      `${pointer}/spec/definition/schema_version`,
+      "not an integer",
+    );
   }
   objectAt(definition["identity"], `${pointer}/spec/definition/identity`);
   const named = matching(

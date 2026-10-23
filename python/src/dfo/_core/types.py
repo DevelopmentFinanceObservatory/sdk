@@ -622,15 +622,17 @@ def load_spec(obj: Mapping[str, Any], pointer: str) -> Spec:
     if not matches(SPEC_ID, spec_id):
         raise FormatError("format_invalid", f"{pointer}/spec_id", "not a spec id")
     definition = object_at(obj["definition"], f"{pointer}/definition")
-    for key in ("schema_version", "spec_id", "identity"):
-        if key not in definition:
-            raise FormatError(
-                "format_invalid", f"{pointer}/definition/{key}", "missing"
-            )
+    check_keys(
+        definition,
+        f"{pointer}/definition",
+        required=("schema_version", "spec_id", "identity"),
+    )
     schema_version = definition["schema_version"]
-    if schema_version != 1 or isinstance(schema_version, bool):
+    if not isinstance(schema_version, int) or isinstance(schema_version, bool):
         raise FormatError(
-            "format_invalid", f"{pointer}/definition/schema_version", "not 1"
+            "format_invalid",
+            f"{pointer}/definition/schema_version",
+            "not an integer",
         )
     object_at(definition["identity"], f"{pointer}/definition/identity")
     if not matches(SPEC_ID, definition["spec_id"]):

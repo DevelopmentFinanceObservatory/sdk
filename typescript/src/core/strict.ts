@@ -11,7 +11,7 @@ type Shape =
   | { readonly values: Shape }
   | { readonly discriminator: string; readonly mapping: Readonly<Record<string, string>> };
 
-type JsonType = "string" | "array" | "object";
+type JsonType = "string" | "integer" | "array" | "object";
 
 type Entry = {
   readonly required: Readonly<Record<string, JsonType>>;
@@ -22,6 +22,7 @@ const TABLE: Readonly<Record<string, Entry>> = STRICT_SCHEMAS;
 
 const IS_TYPE: Readonly<Record<JsonType, (value: unknown) => boolean>> = {
   string: (value) => typeof value === "string",
+  integer: Number.isInteger,
   array: Array.isArray,
   object: isRecord,
 };

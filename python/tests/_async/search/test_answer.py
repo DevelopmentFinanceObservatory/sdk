@@ -580,6 +580,7 @@ def options_sharing_a_label() -> dict[str, Any]:
         (lambda: load("search-two-places.json"), (0,)),
         (lambda: load("search-3.json"), (0,)),
         (lambda: load("search-2.json"), (3,)),
+        (lambda: load("search-2.json"), (True,)),
         (lambda: load("search-2.json"), ("GNI", "nope")),
         (lambda: load("search-4.json"), (0, 0)),
         (lambda: load("search-4.json"), ("tea", 0)),
@@ -587,12 +588,14 @@ def options_sharing_a_label() -> dict[str, Any]:
         (without_variable_text, (0, 0)),
         (unknown_without_restatement, (0, 0)),
         (options_sharing_a_label, (0, "Congo [DRC]")),
+        (options_sharing_a_label, (0, False)),
     ],
     ids=[
         "no-gap",
         "several-gaps-unnamed",
         "no-choice-offered",
         "option-out-of-range",
+        "candidate-key-a-boolean",
         "no-such-label",
         "part-has-a-reading",
         "no-such-part-name",
@@ -600,6 +603,7 @@ def options_sharing_a_label() -> dict[str, Any]:
         "part-without-variable-text",
         "unknown-status-without-restatement",
         "options-share-a-label",
+        "option-key-a-boolean",
     ],
 )
 async def test_a_choice_that_cannot_be_made_raises_invalid_request(

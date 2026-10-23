@@ -556,7 +556,12 @@ def _part_index(
 def _pick(
     gap: Gap[AsyncCandidate], key: int | str, *, mention: int | str | None
 ) -> AsyncCandidate | Option:
-    """The candidate or option `key` names in a gap."""
+    """The candidate or option `key` names in a gap. A boolean is neither an
+    index nor a label."""
+    if isinstance(key, bool):
+        raise client_error(
+            CHOICE_INVALID, f"Option {key!r} is not an index or a label."
+        )
     choices = gap.options
     if not choices:
         raise client_error(

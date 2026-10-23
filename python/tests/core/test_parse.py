@@ -294,7 +294,7 @@ def test_every_strict_schema_has_a_site() -> None:
 
 
 # A value of another JSON type than each strict member's.
-WRONG_TYPE = {"string": [], "array": {}, "object": "x"}
+WRONG_TYPE = {"string": [], "integer": True, "array": {}, "object": "x"}
 
 
 @pytest.mark.parametrize("edit", ["renamed", "null", "wrong_type"])

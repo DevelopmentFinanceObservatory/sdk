@@ -45,11 +45,13 @@ type ParsedPart = (
 )
 
 
-# The Python type a decoded JSON value of each type has.
-_PYTHON_TYPES: Final[Mapping[JsonType, type]] = {
-    "string": str,
-    "array": list,
-    "object": Mapping,
+# Whether a decoded JSON value has each type. A boolean is no integer, and
+# neither is a float such as `1.0`.
+_IS_TYPE: Final[Mapping[JsonType, Callable[[object], bool]]] = {
+    "string": lambda value: isinstance(value, str),
+    "integer": lambda value: isinstance(value, int) and not isinstance(value, bool),
+    "array": lambda value: isinstance(value, list),
+    "object": lambda value: isinstance(value, Mapping),
 }
 
 
@@ -84,7 +86,7 @@ def require(
                 "the response; upgrade development-finance",
                 pointer=f"{pointer}/{member}",
             )
-        if not isinstance(value, _PYTHON_TYPES[json_type]):
+        if not _IS_TYPE[json_type](value):
             raise _violation(
                 f"{schema}.{member} is not an {json_type} at {pointer}/{member} "
                 "in the response; upgrade development-finance",
