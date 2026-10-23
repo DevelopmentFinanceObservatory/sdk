@@ -1,1 +1,0 @@
-- [SDK python tooling gotchas](sdk-python-tooling-gotchas.md) — ruff isort path order reorders tests; import-linter cache goes stale
