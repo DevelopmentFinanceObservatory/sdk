@@ -234,7 +234,13 @@ async def test_a_search_attempt_reads_until_the_search_deadline(
     server = Server(load("search-1.json"))
     client = transport(server)
     await search(lambda: Session(client), "ODA", timeout=timeout)
-    assert server.read_timeouts == [pytest.approx(read) if read else None]
+    (seen,) = server.read_timeouts
+    if read is None:
+        assert seen is None
+    else:
+        # The time left on the deadline, so short of `read` by the attempt's start-up.
+        assert seen is not None
+        assert read - 1.0 < seen <= read
 
 
 async def test_a_candidates_gap_offers_its_candidates_as_options() -> None:
