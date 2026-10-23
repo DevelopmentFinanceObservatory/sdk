@@ -19,3 +19,6 @@ htmlcov/
 /contract/*
 !/contract/SOURCE
 /.contract-*/
+
+# Claude Code session state and agent memory.
+.claude/
