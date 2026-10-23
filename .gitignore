@@ -23,3 +23,5 @@ htmlcov/
 
 # Claude Code session state and agent memory.
 .claude/
+# Refs the live journeys exchange (DFO_E2E_DIR in .github/workflows/e2e.yml).
+.live-refs/

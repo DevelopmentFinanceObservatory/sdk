@@ -7,7 +7,7 @@
 // `DFO_E2E_DIR` names a directory both clients share: this suite writes `ref-typescript.json`
 // there, and fetches `ref-python.json` when the Python suite has written it.
 //
-// Step 6 builds the spec `e2e/long-builds.json` assigns to this run by the UTC day's parity, the
+// Step 6 builds the spec `tests/live/long-builds.json` assigns to this run by the UTC day's parity, the
 // language and `DFO_E2E_TARGET`. Each spec there is posted every 48 hours, so its stored head is
 // past the server's 24-hour maximum age and the build runs again as an operation.
 // `DFO_E2E_SCHEDULED=true` marks a scheduled run, where a build served inline fails the step; any
@@ -35,7 +35,7 @@ if (baseUrl === undefined || baseUrl === "") {
 }
 const e2eDir = process.env["DFO_E2E_DIR"];
 const LANGUAGE = "typescript";
-const LONG_BUILDS = new URL("../../../e2e/long-builds.json", import.meta.url);
+const LONG_BUILDS = new URL("../../../tests/live/long-builds.json", import.meta.url);
 
 /** One request the client made and what the server answered. */
 type Exchange = {
