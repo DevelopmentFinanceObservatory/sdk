@@ -96,10 +96,11 @@ def test_text_that_is_not_a_json_object_raises(text: str | bytes) -> None:
     assert raised.value.reason == "format_invalid"
 
 
-def test_a_ref_keeps_the_definition_as_stored() -> None:
+@pytest.mark.parametrize("schema_version", [2, 1.0])
+def test_a_ref_keeps_the_definition_as_stored(schema_version: float) -> None:
     ref_json = accepted_ref()
     definition = ref_json["members"][0]["spec"]["definition"]
-    definition["schema_version"] = 2
+    definition["schema_version"] = schema_version
     definition["identity"]["novel"] = {"kept": [1, 2]}
     ref = DatasetRef.from_json(json.dumps(ref_json))
     assert ref.members[0].spec.definition == definition

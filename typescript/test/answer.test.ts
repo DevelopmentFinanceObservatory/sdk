@@ -250,6 +250,10 @@ describe("choose", () => {
       () => answerOf("choose-place-two-parts").choose("Congo", "Congo [DRC]"),
     ],
     ["a part index out of range", () => answerOf("choose-place-one-part").choose(3, 0)],
+    [
+      "a boolean part key",
+      () => answerOf("choose-place-two-parts").choose(true as unknown as number, 0),
+    ],
     ["a part that already has a reading", () => answerOf("answer-mixed-fetch-raises").choose(0, 0)],
   ];
   for (const [name, choose] of invalidChoices) {

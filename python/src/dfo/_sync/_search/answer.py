@@ -524,6 +524,10 @@ def _part_index(
     gaps: Sequence[Gap[Candidate]],
     key: int | str,
 ) -> int:
+    if isinstance(key, bool):
+        raise client_error(
+            CHOICE_INVALID, f"Part {key!r} is not an index or the part's words."
+        )
     if isinstance(key, int):
         if 0 <= key < len(parts):
             return key

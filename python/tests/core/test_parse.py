@@ -328,6 +328,20 @@ def test_a_missing_null_or_mistyped_strict_member_raises(
     )
 
 
+@pytest.mark.parametrize(("value", "reads"), [(1.0, True), (1.5, False), (True, False)])
+def test_a_strict_integer_is_a_whole_number_other_than_a_boolean(
+    value: object, reads: bool
+) -> None:
+    manifest = load("probe-mint-narrowed.json")
+    manifest["definition"]["schema_version"] = value
+    if reads:
+        check_manifest(manifest)
+        return
+    with pytest.raises(ContractError) as caught:
+        check_manifest(manifest)
+    assert caught.value.pointer == "/definition/schema_version"
+
+
 def search_2_with(edit: Callable[[dict[str, Any]], object]) -> dict[str, Any]:
     """search-2.json with `edit` applied to its candidates part."""
     answer = load("search-2.json")

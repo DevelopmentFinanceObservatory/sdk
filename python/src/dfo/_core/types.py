@@ -592,6 +592,14 @@ def is_text(value: object) -> bool:
     return isinstance(value, str) and bool(value)
 
 
+def is_integer(value: object) -> bool:
+    """Whether a decoded JSON value is an integer: a number with no fractional
+    part, `1.0` included, that is not a boolean."""
+    if isinstance(value, float):
+        return value.is_integer()
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def matches(pattern: re.Pattern[str], value: object) -> bool:
     return isinstance(value, str) and pattern.fullmatch(value) is not None
 
@@ -628,7 +636,7 @@ def load_spec(obj: Mapping[str, Any], pointer: str) -> Spec:
         required=("schema_version", "spec_id", "identity"),
     )
     schema_version = definition["schema_version"]
-    if not isinstance(schema_version, int) or isinstance(schema_version, bool):
+    if not is_integer(schema_version):
         raise FormatError(
             "format_invalid",
             f"{pointer}/definition/schema_version",

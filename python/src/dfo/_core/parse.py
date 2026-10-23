@@ -30,6 +30,7 @@ from dfo._core.types import (
     UnknownPart,
     UnsupportedPart,
     Wire,
+    is_integer,
 )
 from dfo._generated import strict as _strict
 from dfo._generated.strict import REQUIRED, JsonType, StrictSchema
@@ -45,11 +46,10 @@ type ParsedPart = (
 )
 
 
-# Whether a decoded JSON value has each type. A boolean is no integer, and
-# neither is a float such as `1.0`.
+# Whether a decoded JSON value has each type.
 _IS_TYPE: Final[Mapping[JsonType, Callable[[object], bool]]] = {
     "string": lambda value: isinstance(value, str),
-    "integer": lambda value: isinstance(value, int) and not isinstance(value, bool),
+    "integer": is_integer,
     "array": lambda value: isinstance(value, list),
     "object": lambda value: isinstance(value, Mapping),
 }
@@ -303,10 +303,8 @@ def read_requested_operation(item: object, /) -> dict[str, Any] | None:
         read["over"] = over
     if "target_year" in item:
         year = item["target_year"]
-        if isinstance(year, float) and year.is_integer():
-            year = int(year)
-        if year is None or (isinstance(year, int) and not isinstance(year, bool)):
-            read["target_year"] = year
+        if year is None or is_integer(year):
+            read["target_year"] = None if year is None else int(year)
     return read
 
 
