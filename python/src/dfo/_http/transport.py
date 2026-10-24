@@ -108,12 +108,8 @@ _BACKOFF_CAP = 8.0
 # the call's deadline, raises the refusal at once with its `retry_after` set.
 RETRY_AFTER_MAX_S = 60.0
 
-# The bounds the poll interval a long build's server asks for is clamped to.
-POLL_INTERVAL_MIN_S = 1.0
-POLL_INTERVAL_MAX_S = 60.0
-
 # The decoded bytes a downloaded file may hold when its manifest names no size.
-DEFAULT_MAX_BYTES = 2 * 2**30
+DOWNLOAD_MAX_BYTES = 2 * 2**30
 
 # The decoded bytes an API response's body may hold, the larger of 16 MiB and ten
 # times the largest JSON body recorded, rounded. That body is `/search/schema` in
@@ -882,17 +878,23 @@ class AsyncTransport:
         return response
 
     def success_problem(
-        self, response: httpx2.Response, body: Mapping[str, Any]
-    ) -> DfoError:
-        """The error for a problem document the server sent with a 2xx status.
+        self, response: httpx2.Response, body: object
+    ) -> DfoError | None:
+        """The error for a problem document the server sent with a 2xx status, or
+        None when `body` is no problem document.
 
-        A code the contract maps to a class, through its action or the status the
+        A problem document is a JSON object with a string `code` and no `kind`. A
+        code the contract maps to a class, through its action or the status the
         website proxy answers it with, gives that class, with the body's trace
         id; any other code gives `contract_violation`, since a success status
         leaves no status to map it on.
         """
+        if not isinstance(body, Mapping) or "kind" in body:
+            return None
         code = body.get("code")
-        if isinstance(code, str) and maps_to_class(code):
+        if not isinstance(code, str):
+            return None
+        if maps_to_class(code):
             return problem_error(
                 response.status_code,
                 body,
@@ -1121,7 +1123,7 @@ class AsyncTransport:
         url: str,
         *,
         deadline: float | None = None,
-        max_bytes: int = DEFAULT_MAX_BYTES,
+        max_bytes: int = DOWNLOAD_MAX_BYTES,
     ) -> bytes:
         """Fetch the file a files route redirected to, once.
 

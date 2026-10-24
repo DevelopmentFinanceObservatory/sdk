@@ -277,17 +277,6 @@ class Cache:
             return
         _write(path, json.dumps(manifest, ensure_ascii=False).encode())
 
-    def latest_manifest(
-        self, spec_id: str, rendering: Rendering, /
-    ) -> dict[str, Any] | None:
-        """The cached manifest of a spec's newest version in one rendering, or None.
-
-        Newest is the latest `prepared_at`. An offline fetch of a spec with no
-        version returns it, marked stale.
-        """
-        candidates = self.manifest_candidates(spec_id, rendering)
-        return candidates[0] if candidates else None
-
     def manifest_candidates(
         self, spec_id: str, rendering: Rendering, /
     ) -> list[dict[str, Any]]:

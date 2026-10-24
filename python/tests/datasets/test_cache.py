@@ -165,7 +165,7 @@ def test_a_disabled_cache_reads_and_writes_nothing(tmp_path: Path) -> None:
     cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, stored(CV_OLD))
     assert cache.get_bytes(sha256_digest(data)) is None
     assert cache.get_manifest(SPEC_ID, CV_OLD, PARQUET) is None
-    assert cache.latest_manifest(SPEC_ID, PARQUET) is None
+    assert cache.manifest_candidates(SPEC_ID, PARQUET) == []
     assert list(tmp_path.iterdir()) == []
 
 
@@ -281,14 +281,14 @@ def test_a_broken_or_tampered_manifest_is_a_miss(
     assert cache.manifest_candidates(SPEC_ID, PARQUET) == []
 
 
-def test_latest_manifest_is_the_newest_prepared_version(cache: Cache) -> None:
+def test_manifest_candidates_put_the_newest_prepared_version_first(
+    cache: Cache,
+) -> None:
     old = stored(CV_OLD, "2026-10-01T00:00:00Z")
     new = stored(CV_NEW, "2026-10-20T00:00:00Z")
     cache.put_manifest(SPEC_ID, CV_NEW, PARQUET, new)
     cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, old)
-    assert cache.latest_manifest(SPEC_ID, PARQUET) == new
     assert cache.manifest_candidates(SPEC_ID, PARQUET) == [new, old]
-    assert cache.latest_manifest(SPEC_ID, Rendering("csv", True)) is None
     assert cache.manifest_candidates(SPEC_ID, Rendering("csv", True)) == []
 
 

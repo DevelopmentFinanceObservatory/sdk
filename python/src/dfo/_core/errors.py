@@ -292,6 +292,30 @@ def client_error[E: DfoError](
     )
 
 
+def recast[E: DfoError](
+    error: DfoError, cls: type[E], /, *, message: str | None = None, **overrides: Any
+) -> E:
+    """Copy `error` as a `cls`, keeping every `DfoError` field `overrides` leaves out.
+
+    Args:
+        error: The error to copy.
+        cls: The class of the copy.
+        message: The copy's message, or None to keep the error's own.
+        overrides: `DfoError` fields the copy takes in place of the error's.
+    """
+    fields: dict[str, Any] = {
+        "code": error.code,
+        "status": error.status,
+        "detail": error.detail,
+        "trace_id": error.trace_id,
+        "retryable": error.retryable,
+        "problem": error.problem,
+        "docs_url": error.docs_url,
+        "retry_after": error.retry_after,
+    }
+    return cls(str(error) if message is None else message, **fields | overrides)
+
+
 def client_warning[W: DfoWarning](code: WarningCode[W], message: str, /) -> W:
     """Build the warning for a condition the client notices itself.
 

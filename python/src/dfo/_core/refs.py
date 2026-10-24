@@ -150,21 +150,15 @@ class DatasetRef:
 
 
 def _member_object(member: RefMember) -> dict[str, Any]:
-    rendering: dict[str, Any] = {
-        "format": member.rendering.format,
-        "bundle": member.rendering.bundle,
-    }
-    if member.rendering.layout is not None:
-        rendering["layout"] = member.rendering.layout
-    # Written only when true, so a plain member's JSON has no such member.
-    if member.rendering.without_party_totals:
-        rendering["without_party_totals"] = True
     return {
         "parts": list(member.parts),
         "sentence": member.sentence,
         "spec": spec_object(member.spec, with_sentence=False),
         "content_version": member.content_version,
-        "artifact": {"digest": member.digest, "rendering": rendering},
+        "artifact": {
+            "digest": member.digest,
+            "rendering": member.rendering.to_object(),
+        },
     }
 
 

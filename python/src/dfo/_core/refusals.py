@@ -39,6 +39,7 @@ from dfo._core.errors import (
     RateLimitError,
     ServerError,
     VersionUnavailableError,
+    recast,
     status_class,
 )
 from dfo._core.json_text import loads
@@ -334,14 +335,4 @@ def caller_refusal(error: DfoError) -> DfoError:
     to fix and becomes an `InvalidRequestError`. Any other error stays as it is."""
     if error.code != _METHOD_NOT_ALLOWED or isinstance(error, InvalidRequestError):
         return error
-    return InvalidRequestError(
-        str(error),
-        code=error.code,
-        status=error.status,
-        detail=error.detail,
-        trace_id=error.trace_id,
-        retryable=error.retryable,
-        problem=error.problem,
-        docs_url=error.docs_url,
-        retry_after=error.retry_after,
-    )
+    return recast(error, InvalidRequestError)

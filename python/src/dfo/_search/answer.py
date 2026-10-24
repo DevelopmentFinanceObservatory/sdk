@@ -341,13 +341,8 @@ async def resolve(
     )
     body = response_json(response)
     trace_id = trace_id_of(response, body)
-    if (
-        isinstance(body, Mapping)
-        and isinstance(body.get("code"), str)
-        and "kind" not in body
-    ):
-        # A problem document Search sent with a success status.
-        raise transport.success_problem(response, body)
+    if (problem := transport.success_problem(response, body)) is not None:
+        raise problem
     with describing(trace_id):
         return answer_from_body(
             body, question=question, source=source, trace_id=trace_id

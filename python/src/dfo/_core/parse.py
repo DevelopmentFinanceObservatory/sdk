@@ -93,20 +93,20 @@ def require_members(
         ContractError: As `require` does.
     """
     if not isinstance(obj, Mapping):
-        raise _violation(
+        raise violation(
             f"{schema} at {pointer or '/'} is not an object in the response",
             pointer=pointer,
         )
     for member, json_type in members:
         value = obj.get(member)
         if value is None:
-            raise _violation(
+            raise violation(
                 f"{schema}.{member} is missing or null at {pointer}/{member} in "
                 "the response; upgrade development-finance",
                 pointer=f"{pointer}/{member}",
             )
         if not _IS_TYPE[json_type](value):
-            raise _violation(
+            raise violation(
                 f"{schema}.{member} is not an {json_type} at {pointer}/{member} "
                 "in the response; upgrade development-finance",
                 pointer=f"{pointer}/{member}",
@@ -126,7 +126,7 @@ def parse_parts(resolution: Wire, /) -> tuple[ParsedPart, ...]:
     """
     parts = require(resolution, "Resolution")["parts"]
     if not parts:
-        raise _violation("Resolution.parts is empty in the response", pointer="/parts")
+        raise violation("Resolution.parts is empty in the response", pointer="/parts")
     return tuple(
         parse_part(part, f"/parts/{index}") for index, part in enumerate(parts)
     )
@@ -144,12 +144,12 @@ def parse_part(part: object, pointer: str = "", /) -> ParsedPart:
             member its status requires.
     """
     if not isinstance(part, Mapping):
-        raise _violation(
+        raise violation(
             f"the part at {pointer or '/'} is not an object", pointer=pointer
         )
     status = part.get("status")
     if not isinstance(status, str):
-        raise _violation(
+        raise violation(
             f"the part at {pointer or '/'} has no status, or one that is not a string",
             pointer=f"{pointer}/status",
         )
@@ -170,7 +170,7 @@ def parse_spec(spec: object, pointer: str = "", /) -> Spec:
     spec = require(spec, "Spec", pointer)
     definition = require(spec["definition"], "SpecDefinition", f"{pointer}/definition")
     if definition["spec_id"] != spec["spec_id"]:
-        raise _violation(
+        raise violation(
             f"Spec.definition.spec_id is {definition['spec_id']}, "
             f"not the spec's {spec['spec_id']}",
             pointer=f"{pointer}/definition/spec_id",
@@ -381,7 +381,8 @@ def check_operation(resource: object, /) -> None:
     require(resource["operation"], "OperationEnvelope", "/operation")
 
 
-def _violation(message: str, /, *, pointer: str | None = None) -> ContractError:
+def violation(message: str, /, *, pointer: str | None = None) -> ContractError:
+    """A `contract_violation` error, naming the member at fault by `pointer`."""
     error = client_error(CONTRACT_VIOLATION, message)
     error.pointer = pointer
     return error

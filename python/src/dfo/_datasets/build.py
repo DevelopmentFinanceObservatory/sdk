@@ -19,7 +19,7 @@ import httpx2
 from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT, UNEXPECTED_RESPONSE
 from dfo._core.errors import client_error
 from dfo._core.json_text import loads
-from dfo._core.parse import _violation, check_manifest, check_operation
+from dfo._core.parse import check_manifest, check_operation, violation
 from dfo._core.refusals import trace_id_of
 from dfo._core.types import (
     CONTENT_VERSION,
@@ -178,17 +178,6 @@ def file_params(rendering: Rendering) -> dict[str, Any]:
     return params
 
 
-def mint_options(rendering: Rendering) -> dict[str, Any]:
-    """The build request's `options` for `rendering`.
-
-    `without_party_totals` is sent only when true, as the server records it.
-    """
-    options = file_params(rendering)
-    if rendering.without_party_totals:
-        options["without_party_totals"] = True
-    return options
-
-
 def scope(
     *,
     window: Window | None = None,
@@ -344,7 +333,7 @@ def build_body(
     return {
         "schema_version": 1,
         "input": built,
-        "options": mint_options(rendering),
+        "options": rendering.to_object(),
     }
 
 
@@ -444,7 +433,7 @@ def read_operation(resource: Wire) -> OperationState:
     check_operation(resource)
     operation = resource["operation"]
     if not matches(OPERATION_ID, operation["operation_id"]):
-        raise _violation(
+        raise violation(
             "The operation's id is not op_ and 64 lowercase hex digits",
             pointer="/operation/operation_id",
         )
@@ -503,7 +492,7 @@ def check_served_manifest(manifest: object, pointer: str = "", /) -> None:
     check_manifest(manifest, pointer)
     assert isinstance(manifest, Mapping)
     if not matches(CONTENT_VERSION, manifest["content_version"]):
-        raise _violation(
+        raise violation(
             "The manifest's content_version is not cv_ and 32 lowercase hex digits",
             pointer=f"{pointer}/content_version",
         )

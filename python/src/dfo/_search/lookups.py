@@ -10,7 +10,7 @@ client reads no more of it, so an unknown member or enum value passes through
 untouched.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from datetime import date
 from typing import Any
 from urllib.parse import quote
@@ -55,12 +55,8 @@ def _lookup_body(
         with describing(trace_id_of(response, body)):
             return require_members(body, schema, required)
     except ContractError:
-        if (
-            isinstance(body, Mapping)
-            and isinstance(body.get("code"), str)
-            and "kind" not in body
-        ):
-            raise transport.success_problem(response, body) from None
+        if (problem := transport.success_problem(response, body)) is not None:
+            raise problem from None
         raise
 
 

@@ -38,6 +38,7 @@ from dfo._core.errors import (
     VersionUnavailableError,
     client_error,
     client_warning,
+    recast,
     warn,
 )
 from dfo._core.refs import DatasetRef, RefMember
@@ -60,7 +61,6 @@ from dfo._datasets.build import (
     check_served_manifest,
     file_params,
     layout_of,
-    mint_options,
     pick_artifact,
     rebind,
     response_json,
@@ -246,7 +246,7 @@ def _ref_layout(ref: DatasetRef) -> Layout:
             raise client_error(
                 INVALID_ARGUMENT,
                 f"The DatasetRef stores {member.spec.spec_id} as "
-                f"{mint_options(member.rendering)}; this client reads bare "
+                f"{member.rendering.to_object()}; this client reads bare "
                 "Parquet versions",
             )
         layouts.add(layout_of(member.rendering))
@@ -390,7 +390,7 @@ def _listing(
     )
     entry = {
         "artifact_digest": member.digest,
-        "rendering": mint_options(member.rendering),
+        "rendering": member.rendering.to_object(),
         "bytes": len(data),
         "url": str(selector),
     }
@@ -596,14 +596,12 @@ def _unavailable(
     if refusal is None:
         error = client_error(VERSION_UNAVAILABLE, message)
     else:
-        error = VersionUnavailableError(
-            message,
-            code=refusal.code,
-            status=refusal.status,
-            detail=refusal.detail,
-            trace_id=refusal.trace_id,
-            problem=refusal.problem,
-            docs_url=refusal.docs_url,
+        error = recast(
+            refusal,
+            VersionUnavailableError,
+            message=message,
+            retryable=False,
+            retry_after=None,
         )
     error.newest_version = newest
     return error

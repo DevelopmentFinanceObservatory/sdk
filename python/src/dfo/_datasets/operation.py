@@ -47,8 +47,6 @@ from dfo._datasets.build import (
 from dfo._datasets.dataset import Dataset
 from dfo._datasets.progress import ProgressRenderer
 from dfo._http.transport import (
-    POLL_INTERVAL_MAX_S,
-    POLL_INTERVAL_MIN_S,
     RETRY_AFTER_MAX_S,
     AsyncTransport,
     retry_after,
@@ -147,6 +145,11 @@ def _is_cut_off(error: DfoError) -> bool:
     return error.status == 504 or (
         isinstance(error, DfoTimeoutError) and error.status is None
     )
+
+
+# The bounds the poll interval a long build's server asks for is clamped to.
+POLL_INTERVAL_MIN_S = 1.0
+POLL_INTERVAL_MAX_S = 60.0
 
 
 def _poll_interval(seconds: float) -> float:

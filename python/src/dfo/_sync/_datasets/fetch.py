@@ -37,6 +37,7 @@ from dfo._core.errors import (
     DataWarning,
     DfoError,
     client_error,
+    recast,
     warn,
 )
 from dfo._core.parse import parse_notices, parse_parts
@@ -58,7 +59,6 @@ from dfo._datasets.build import (
     build_body,
     counted_rows,
     layout_of,
-    mint_options,
     pick_artifact,
     rendering_for,
     response_json,
@@ -78,7 +78,7 @@ from dfo._sync._datasets.operation import (
     progress_hook,
     resume,
 )
-from dfo._sync._http.transport import DEFAULT_MAX_BYTES, Transport, offline
+from dfo._sync._http.transport import DOWNLOAD_MAX_BYTES, Transport, offline
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,7 +226,9 @@ def _build_latest(
         )
     except DfoError as error:
         if error.code == "member_not_resolvable":
-            raise _with_hint(error, _SEARCH_AGAIN) from error
+            raise recast(
+                error, type(error), message=f"{error}{_SEARCH_AGAIN}"
+            ) from error
         raise
 
 
@@ -414,20 +416,6 @@ def _distinct(readings: Sequence[Reading]) -> list[Reading]:
     return list(merged.values())
 
 
-def _with_hint(error: DfoError, hint: str) -> DfoError:
-    return type(error)(
-        f"{error}{hint}",
-        code=error.code,
-        status=error.status,
-        detail=error.detail,
-        trace_id=error.trace_id,
-        retryable=error.retryable,
-        problem=error.problem,
-        docs_url=error.docs_url,
-        retry_after=error.retry_after,
-    )
-
-
 def build_version(
     transport: Transport,
     body: Wire,
@@ -481,7 +469,7 @@ def finish_member(
             raise client_error(
                 CONTRACT_VIOLATION,
                 f"The manifest of {spec_id} at {content_version} lists no "
-                f"{mint_options(rendering)} artifact",
+                f"{rendering.to_object()} artifact",
             )
         route = transport.origin_url(artifact["url"])
     parts = () if want is None else want.parts
@@ -651,7 +639,7 @@ def download(
     the storage host. A signed fetch that fails retryably, or bytes that do not
     hash to `digest`, ask the route once more for a fresh URL. Reading stops
     once the file passes `size`, the manifest's `bytes` for the artifact, or
-    `DEFAULT_MAX_BYTES` when that is not a byte count.
+    `DOWNLOAD_MAX_BYTES` when that is not a byte count.
     A redirect or a refusal is read under `JSON_BODY_MAX_BYTES` whatever the size.
 
     Raises:
@@ -667,7 +655,7 @@ def download(
     limit = (
         size
         if isinstance(size, int) and not isinstance(size, bool) and size >= 0
-        else DEFAULT_MAX_BYTES
+        else DOWNLOAD_MAX_BYTES
     )
     failure: DfoError | None = None
     for _ in range(2):

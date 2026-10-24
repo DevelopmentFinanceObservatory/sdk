@@ -561,6 +561,27 @@ async def test_an_unknown_code_maps_on_its_status() -> None:
 
 
 @pytest.mark.parametrize(
+    ("body", "raised"),
+    [
+        ({"code": "rate_limited"}, "rate_limited"),
+        ({"code": "a_code_from_the_future"}, "contract_violation"),
+        ({"code": "rate_limited", "kind": "answer"}, None),
+        ({"code": 7}, None),
+        ([{"code": "rate_limited"}], None),
+    ],
+    ids=["known-code", "unknown-code", "has-kind", "code-not-a-string", "not-object"],
+)
+async def test_a_success_body_is_a_problem_document_with_a_string_code_and_no_kind(
+    body: object, raised: str | None
+) -> None:
+    response = httpx2.Response(200, json=body)
+    response.request = httpx2.Request("POST", f"{BASE}/search/resolve")
+    async with make(Recorder()) as transport:
+        error = transport.success_problem(response, body)
+    assert (None if error is None else error.code) == raised
+
+
+@pytest.mark.parametrize(
     ("response", "detail"),
     [
         (problem(422, code="query\ntoo_long", detail="No."), "query\ntoo_long: No."),
@@ -661,14 +682,22 @@ async def test_each_attempt_is_clamped_to_the_deadline() -> None:
     assert timeouts == [10.0, 9.5]
 
 
-async def test_a_passed_deadline_raises_a_timeout_error() -> None:
+# A passed deadline outranks the call's own invalid headers.
+@pytest.mark.parametrize(
+    "headers", [None, {AUTH: "a\r\nX-Evil: 1"}], ids=["valid", "invalid-headers"]
+)
+async def test_a_passed_deadline_raises_a_timeout_error(
+    headers: dict[str, str] | None,
+) -> None:
     timeline = Timeline()
     recorder = Recorder()
     async with make(recorder, timeline) as transport:
         deadline = transport.deadline(5)
         timeline.now += 6
         with pytest.raises(DfoTimeoutError) as caught:
-            await transport.request("GET", "/datasets/schema", deadline=deadline)
+            await transport.request(
+                "GET", "/datasets/schema", headers=headers, deadline=deadline
+            )
     assert isinstance(caught.value, TimeoutError)
     assert caught.value.code == "deadline_exceeded"
     assert recorder.requests == []

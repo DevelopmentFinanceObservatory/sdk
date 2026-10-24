@@ -594,6 +594,19 @@ class Rendering:
     layout: Literal["frame"] | None = None
     without_party_totals: bool = False
 
+    def to_object(self) -> dict[str, Any]:
+        """The rendering as a ref's artifact and a build request's `options` hold it.
+
+        `layout` is written only when set and `without_party_totals` only when
+        true, as the server records it, so a plain rendering's JSON has neither.
+        """
+        obj: dict[str, Any] = {"format": self.format, "bundle": self.bundle}
+        if self.layout is not None:
+            obj["layout"] = self.layout
+        if self.without_party_totals:
+            obj["without_party_totals"] = True
+        return obj
+
     def matches(self, rendering: Mapping[str, Any], /) -> bool:
         """Whether a manifest artifact's `rendering` object is this rendering.
 
