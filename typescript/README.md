@@ -280,7 +280,7 @@ A refusal from `client.request`, which reaches routes the client does not wrap, 
 
 These raise `invalid_argument` before any request:
 
-- `search` takes text that is not empty or only whitespace.
+- `search` takes text that is not empty or only whitespace, without a lone surrogate.
 - `fetch` and `mint` take a spec with its `spec_id` and `definition`; `fetch` also takes a `DatasetRef`. A spec id or any other target raises, as does a ref narrowed with `window`, `entities` or `facets`, or given another `layout` or `withoutPartyTotals`.
 - `window` is `"all"`, `"latest"` or a `[startYear, endYear]` pair of safe integers, start no later than end, each within plus or minus 9,007,199,254,740,991.
 - `timeout` is a number of milliseconds above 0, and `Infinity` only for a call. `maxRetries` is an integer from 0 to 10.

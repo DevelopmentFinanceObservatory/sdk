@@ -335,7 +335,7 @@ describe("limits", () => {
     });
   }
 
-  for (const question of ["", "   ", "\t\n", "\u00a0\u3000", null, 5]) {
+  for (const question of ["", "   ", "\t\n", "\u00a0\u3000", "aid \ud800", "\udc00 aid", null, 5]) {
     test(`refuse a search question of ${JSON.stringify(question)} before any request`, async () => {
       const { fetch, seen } = mockFetch();
       await assert.rejects(client(fetch).search(question as string), {

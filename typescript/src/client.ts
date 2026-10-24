@@ -127,7 +127,8 @@ export class Client {
   /**
    * Asks Search what a question means, part by part.
    *
-   * @throws {InvalidRequestError} The question is empty or only whitespace (`invalid_argument`).
+   * @throws {InvalidRequestError} The question is empty or only whitespace, or holds a lone
+   *   surrogate (`invalid_argument`).
    * @throws {ContractError} The answer lacks a member the client acts on.
    */
   search(question: string, options: SearchOptions = {}): Promise<Answer> {
