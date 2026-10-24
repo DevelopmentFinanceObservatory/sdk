@@ -44,7 +44,7 @@ import {
   retryAfterMs,
 } from "../http/transport.ts";
 import type { JsonResponse, Transport } from "../http/transport.ts";
-import { isRecord } from "../core/json.ts";
+import { isRecord, text } from "../core/json.ts";
 
 /** The longest the client reads a synchronous build. The server cuts one off at 120 s. */
 const BUILD_READ_TIMEOUT_MS = 150_000;
@@ -103,7 +103,8 @@ type Reply = {
   readonly traceId: string | null;
 };
 
-type Wait = { readonly deadline: number; readonly signal?: AbortSignal | undefined };
+/** When a call must finish, and the signal that aborts it. */
+export type Wait = { readonly deadline: number; readonly signal?: AbortSignal | undefined };
 
 const count = (value: unknown): number | null =>
   typeof value === "number" && Number.isInteger(value) ? value : null;
@@ -207,16 +208,16 @@ function problemError(
   problem: Readonly<Record<string, unknown>> | null,
   headerTrace: string | null,
 ): DfoError {
-  const code = typeof problem?.["code"] === "string" ? problem["code"] : OPERATION_FAILED;
+  const code = text(problem?.["code"]) ?? OPERATION_FAILED;
   const status = typeof problem?.["status"] === "number" ? problem["status"] : 500;
   const ErrorClass = errorClassFor(code, status);
-  const detail = typeof problem?.["detail"] === "string" ? problem["detail"] : "The build failed.";
+  const detail = text(problem?.["detail"]) ?? "The build failed.";
   return new ErrorClass({
     code: serverCode(code),
     status,
     detail,
     message: refusalMessage(detail, problem?.["pointer"], code),
-    traceId: typeof problem?.["trace_id"] === "string" ? problem["trace_id"] : headerTrace,
+    traceId: text(problem?.["trace_id"]) ?? headerTrace,
     retryable: isRetryable(status, problem),
     problem,
   });
@@ -478,13 +479,8 @@ class Poller implements LongBuild {
   }
 }
 
-/** Turns a done build's manifest, read from the response whose trace id is `traceId`, into the
- *  dataset an operation returns. */
-export type Finish = (
-  manifest: Manifest,
-  traceId: string | null,
-  wait: Wait,
-) => Promise<Dataset<never>>;
+/** Turns a done build into the dataset an operation returns. */
+export type Finish = (built: Built, wait: Wait) => Promise<Dataset<never>>;
 
 /** Options for waiting on a long build. */
 export type ResultOptions = {
@@ -496,7 +492,11 @@ export type ResultOptions = {
   onProgress?: ProgressHandler;
 };
 
-export const DEFAULT_FETCH_TIMEOUT_MS = 1_800_000;
+const DEFAULT_FETCH_TIMEOUT_MS = 1_800_000;
+
+/** The deadline `timeout` milliseconds from now, or 30 minutes from now when none is given. */
+export const deadlineOf = (transport: Transport, timeout: number | undefined): number =>
+  transport.deadlineAfter(timeout ?? DEFAULT_FETCH_TIMEOUT_MS);
 
 /**
  * A long dataset build, running on the server or already done. `client.mint(spec)` returns
@@ -544,13 +544,10 @@ export class Operation {
    * @throws {DfoError} The build failed.
    */
   async result(options: ResultOptions = {}): Promise<Dataset<never>> {
-    const wait = {
-      deadline: this.#transport.deadlineAfter(options.timeout ?? DEFAULT_FETCH_TIMEOUT_MS),
-      signal: options.signal,
-    };
+    const wait = { deadline: deadlineOf(this.#transport, options.timeout), signal: options.signal };
     if (options.onProgress !== undefined) this.#poller.onProgress = options.onProgress;
     const manifest = await this.#poller.wait(wait);
-    return this.#finish(manifest, this.#poller.traceId, wait);
+    return this.#finish({ manifest, traceId: this.#poller.traceId }, wait);
   }
 }
 

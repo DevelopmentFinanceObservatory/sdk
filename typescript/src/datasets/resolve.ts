@@ -30,7 +30,6 @@ import {
   checkArtifact,
   checkedSpec,
   contentVersionOf,
-  deadlineOf,
   DIGEST_MISMATCH,
   download,
   fetchMembers,
@@ -41,9 +40,9 @@ import {
   pickArtifact,
   specIdOf,
 } from "./fetch.ts";
-import type { CallOptions, FetchOptions, Narrowing, SpecInput, Wait } from "./fetch.ts";
-import { build, readManifest } from "./operation.ts";
-import type { Built, Manifest } from "./operation.ts";
+import type { CallOptions, FetchOptions, Narrowing, SpecInput } from "./fetch.ts";
+import { build, deadlineOf, readManifest } from "./operation.ts";
+import type { Built, Manifest, Wait } from "./operation.ts";
 import { CONTENT_VERSION, DatasetRef, fileParams, layoutOf, mintOptions } from "../core/ref.ts";
 import type { Layout, Rendering, RefMember } from "../core/ref.ts";
 import { describing } from "../core/trace.ts";
@@ -328,7 +327,7 @@ export async function newestVersion(
   transport: Transport,
   specId: string,
   rendering: Rendering,
-  { deadline, signal, timeout }: Wait & { readonly timeout?: number | undefined },
+  { deadline, signal }: Wait,
 ): Promise<string | null> {
   const wanted = rendering.without_party_totals === true ? "without_party_totals" : "plain";
   const seen = new Set<string>();
@@ -343,7 +342,6 @@ export async function newestVersion(
         path: `/datasets/${specId}/versions?${query}`,
         deadline,
         ...(signal === undefined ? {} : { signal }),
-        ...(timeout === undefined ? {} : { timeout }),
       }));
     } catch (error) {
       if (error instanceof NotFoundError) return null;
@@ -376,13 +374,15 @@ function readVersionsPage(
       throw unreadable(specId, `/versions/${index}/content_version`, traceId);
     }
     const listed = entry["rendering"];
-    if (typeof listed !== "string")
+    if (typeof listed !== "string") {
       throw unreadable(specId, `/versions/${index}/rendering`, traceId);
+    }
     if (listed === wanted) newest ??= contentVersion;
   }
   const nextCursor = body["next_cursor"] ?? null;
-  if (nextCursor !== null && typeof nextCursor !== "string")
+  if (nextCursor !== null && typeof nextCursor !== "string") {
     throw unreadable(specId, "/next_cursor", traceId);
+  }
   return { newest, nextCursor };
 }
 

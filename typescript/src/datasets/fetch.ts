@@ -26,8 +26,8 @@ import { Dataset } from "./dataset.ts";
 import type { FetchedMember } from "./dataset.ts";
 import { clientError, DfoError, InvalidRequestError } from "../core/errors.ts";
 import type { ClientErrorCode, DfoErrorOptions } from "../core/errors.ts";
-import { build, DEFAULT_FETCH_TIMEOUT_MS, resumeOperation, startOperation } from "./operation.ts";
-import type { Built, Manifest, Operation, ProgressHandler } from "./operation.ts";
+import { build, deadlineOf, resumeOperation, startOperation } from "./operation.ts";
+import type { Built, Manifest, Operation, ProgressHandler, Wait } from "./operation.ts";
 import { manifestWarningsOf, partFacts } from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
 import { mintOptions, renderingFor, renderingMatches } from "../core/ref.ts";
@@ -113,8 +113,6 @@ export type MintOptions = {
 };
 
 export type ResumeOptions = MintOptions;
-
-export type Wait = { readonly deadline: number; readonly signal?: AbortSignal | undefined };
 
 /** The variable text an identity resubmit sends for a spec no answer part names. Search
  *  echoes it onto the part, and it does not change the sentence. */
@@ -213,9 +211,7 @@ function entityScope(
 }
 
 const isDcids = (value: unknown): value is readonly string[] =>
-  Array.isArray(value) &&
-  value.length > 0 &&
-  value.every((dcid) => typeof dcid === "string" && dcid !== "");
+  Array.isArray(value) && value.length > 0 && value.every(isText);
 
 /** The facets' `scope`, each axis bound to its reference.
  *
@@ -225,7 +221,7 @@ const isDcids = (value: unknown): value is readonly string[] =>
 function facetScope(facets: Readonly<Record<string, unknown>>): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(facets).map(([axis, ref]) => {
-      if (ref !== null && (typeof ref !== "string" || ref === "")) {
+      if (ref !== null && !isText(ref)) {
         throw invalid(`facets.${axis} is not a reference; bind the axis to a reference or null.`);
       }
       return [axis, { ref }];
@@ -276,9 +272,6 @@ export function buildBody(spec: SpecLike, rendering: Rendering, scope?: Record<s
   };
 }
 
-export const deadlineOf = (transport: Transport, timeout: number | undefined): number =>
-  transport.deadlineAfter(timeout ?? DEFAULT_FETCH_TIMEOUT_MS);
-
 /** The SHA-256 digest of bytes, as the server names stored objects. */
 async function digestOf(data: Uint8Array): Promise<string> {
   const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", data.slice()));
@@ -292,7 +285,7 @@ const REQUIRED_COLUMNS = ["time_period", "value"] as const;
 const VALUE_KINDS: ReadonlySet<ColumnType["kind"]> = new Set(["int", "float", "decimal", "null"]);
 
 /** The rows a manifest's coverage counts, or 0 when it counts none or gives no count. */
-export function countedRows(manifest: Manifest): number {
+function countedRows(manifest: Manifest): number {
   const coverage = manifest["coverage"];
   const rows = isRecord(coverage) ? coverage["rows"] : undefined;
   return Number.isSafeInteger(rows) && (rows as number) > 0 ? (rows as number) : 0;
@@ -473,7 +466,7 @@ async function sentenceFor(
   { deadline, signal }: Wait,
 ): Promise<string> {
   const definition = definitionOf(manifest);
-  const specId = String(definition["spec_id"]);
+  const specId = specIdOf(manifest);
   const groups = keptEntityGroups(held, definition);
   const response = await transport.request({
     path: "/search/resolve",
@@ -516,7 +509,7 @@ async function sentenceFor(
         sentence = part["rendered_sentence"];
       }
     }
-    if (typeof sentence !== "string" || sentence === "") {
+    if (!isText(sentence)) {
       throw clientError("contract_violation", {
         detail:
           `Search did not resolve the built identity ${specId} to itself, or to one no_data ` +
@@ -567,7 +560,7 @@ export async function finish(
     }
     return { artifact: found, route: transport.originUrl(String(found["url"])) };
   });
-  const known = posted?.spec.spec_id === specId && typeof sentence === "string" && sentence !== "";
+  const known = posted?.spec.spec_id === specId && isText(sentence);
   const told = known ? sentence : await sentenceFor(transport, manifest, parts, posted, wait);
   const digest = String(artifact["artifact_digest"]);
   const data = await download(transport, { url: route.href }, digest, wait, artifact["bytes"]);
@@ -736,8 +729,6 @@ export function resume(
 }
 
 function datasetFinisher(transport: Transport, finishing: Finishing, layout: Layout) {
-  return async (manifest: Manifest, traceId: string | null, wait: Wait): Promise<Dataset<never>> =>
-    new Dataset<never>([await finish(transport, { manifest, traceId }, finishing, wait)], {
-      layout,
-    });
+  return async (built: Built, wait: Wait): Promise<Dataset<never>> =>
+    new Dataset<never>([await finish(transport, built, finishing, wait)], { layout });
 }

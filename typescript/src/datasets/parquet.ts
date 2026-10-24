@@ -56,7 +56,7 @@ export type ParquetFile = {
 /** A file in a stacked table, with the label its `part` column holds when there are several. */
 export type TablePart = { readonly file: ParquetFile; readonly label: string };
 
-export const PART_COLUMN = "part";
+const PART_COLUMN = "part";
 
 const NULL: ColumnType = { kind: "null" };
 const STRING: ColumnType = { kind: "string" };
@@ -144,7 +144,7 @@ function intType(bits: number, signed: boolean, element: SchemaElement): ColumnT
 }
 
 /** A column's type from its schema element. Nested columns raise, since dataset files are flat. */
-export function columnType(element: SchemaElement): ColumnType {
+function columnType(element: SchemaElement): ColumnType {
   const logical = element.logical_type;
   const converted = element.converted_type;
   if (element.num_children !== undefined || element.repetition_type === "REPEATED") {
@@ -353,9 +353,9 @@ export type StoredColumn = Column & { readonly values: unknown[] };
 export async function decodeStored(parts: readonly TablePart[]): Promise<StoredColumn[]> {
   const decoded = await Promise.all(parts.map(({ file }) => storedRows(file)));
   return stackedColumns(parts).map(({ name, type }) => {
+    const isPart = parts.length > 1 && name === PART_COLUMN;
     const values: unknown[] = [];
     for (const [index, { file, label }] of parts.entries()) {
-      const isPart = parts.length > 1 && name === PART_COLUMN;
       const at = file.columns.findIndex((column) => column.name === name);
       const own = file.columns[at]?.type ?? NULL;
       for (const row of decoded[index]!) {

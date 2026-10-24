@@ -1,6 +1,6 @@
 import type { Gap } from "../search/answer.ts";
 import { decodeRows, encodeStacked, readParquet, stackedColumns } from "./parquet.ts";
-import type { ParquetFile, Row, TablePart } from "./parquet.ts";
+import type { Row, TablePart } from "./parquet.ts";
 import { DatasetRef } from "../core/ref.ts";
 import type { Layout, Rendering, SpecLike } from "../core/ref.ts";
 import { manifestWarningsOf } from "../core/parse.ts";
@@ -12,11 +12,11 @@ import type {
   RequestedOperation,
   WarningModel,
 } from "../wire.ts";
-import { isRecord, objects } from "../core/json.ts";
+import { isRecord, list, objects, text } from "../core/json.ts";
 
 /** The version of the provenance a file from `bytes()` carries under `dfo.*` keys, the one
  *  Python's `Dataset.save` writes. */
-export const SAVED_FORMAT_VERSION = 1;
+const SAVED_FORMAT_VERSION = 1;
 
 /** How to cite the data: the citation text and the cited sources. */
 export type Citation = {
@@ -64,10 +64,9 @@ const isSource = (value: unknown): value is CitationSource =>
 function citationOf(manifest: Readonly<Record<string, unknown>>): Citation {
   const citation = manifest["citation"];
   if (!isRecord(citation)) return { text: "", sources: [] };
-  const sources = Array.isArray(citation["sources"]) ? citation["sources"] : [];
   return {
-    text: typeof citation["text"] === "string" ? citation["text"] : "",
-    sources: sources.filter(isSource),
+    text: text(citation["text"]) ?? "",
+    sources: list(citation["sources"]).filter(isSource),
   };
 }
 
@@ -114,7 +113,7 @@ function retentionOf(manifests: readonly Readonly<Record<string, unknown>>[]): {
 }
 
 /** Reads a dataset's private table parts; Dataset's static block assigns it. */
-let readParts: (dataset: Dataset) => TablePart[];
+let readParts: (dataset: Dataset) => readonly TablePart[];
 
 /**
  * A table of data with its provenance: one exact version per member. It holds no client, so its
@@ -148,11 +147,13 @@ export class Dataset<TMissing extends Gap = Gap> {
   readonly layout: Layout;
   /** The artifact layout each member's manifest names, distinct ones joined by "; ". */
   readonly layoutVersion: string;
-  readonly #files: readonly ParquetFile[];
   readonly #data: readonly Uint8Array[];
+  /** Each member's file, labelled as its `part` column holds it. */
+  readonly #parts: readonly TablePart[];
+  readonly #columns: readonly string[];
 
   static {
-    readParts = (dataset) => dataset.#parts();
+    readParts = (dataset) => dataset.#parts;
   }
 
   /** Builds a dataset from the members a fetch downloaded and checked against their digests. */
@@ -190,13 +191,18 @@ export class Dataset<TMissing extends Gap = Gap> {
     this.pinned = retention.pinned;
     this.layout = options.layout;
     this.#data = members.map((member) => new Uint8Array(member.data));
-    this.#files = this.#data.map(readParquet);
+    this.#parts = Object.freeze(
+      this.#data.map((data, index) => {
+        const member = built[index]!;
+        return { file: readParquet(data), label: member.parts.join("; ") || member.sentence };
+      }),
+    );
     this.layoutVersion = [
       ...new Set(members.map((member) => artifactLayout(member, options.layout))),
     ].join("; ");
     // Reading the columns checks the members stack before the dataset is returned. A pair of
     // column types that does not widen raises ContractError.
-    stackedColumns(this.#parts());
+    this.#columns = Object.freeze(stackedColumns(this.#parts).map((column) => column.name));
   }
 
   /** The exact versions the dataset holds, to fetch them again with `client.fetch(ref)`. */
@@ -215,12 +221,12 @@ export class Dataset<TMissing extends Gap = Gap> {
 
   /** The number of rows in the table. */
   get rows(): number {
-    return this.#files.reduce((total, file) => total + file.rows, 0);
+    return this.#parts.reduce((total, { file }) => total + file.rows, 0);
   }
 
   /** The table's column names, `part` first when several members stack. */
   get columns(): readonly string[] {
-    return stackedColumns(this.#parts()).map((column) => column.name);
+    return this.#columns;
   }
 
   /**
@@ -230,7 +236,7 @@ export class Dataset<TMissing extends Gap = Gap> {
    * server built. It decodes every member and encodes the whole table in memory.
    */
   async bytes(): Promise<Uint8Array> {
-    return encodeStacked(this.#parts(), this.#metadata());
+    return encodeStacked(this.#parts, this.#metadata());
   }
 
   /** One member's Parquet file as the server built it, checked against its digest. */
@@ -245,7 +251,7 @@ export class Dataset<TMissing extends Gap = Gap> {
   /** Every row as an object keyed by column name. `JSON.stringify` works on the result. It
    *  decodes the whole table in memory, one object per row. */
   toRows(): Promise<Row[]> {
-    return decodeRows(this.#parts());
+    return decodeRows(this.#parts);
   }
 
   /** The provenance as the file's key-value metadata, in the shape Python's
@@ -293,17 +299,10 @@ export class Dataset<TMissing extends Gap = Gap> {
       "dfo.ref": JSON.stringify(this.ref),
     };
   }
-
-  #parts(): TablePart[] {
-    return this.#files.map((file, index) => {
-      const member = this.members[index]!;
-      return { file, label: member.parts.join("; ") || member.sentence };
-    });
-  }
 }
 
 /** A dataset's stacked table parts, for the `arrow` entry point. */
-export function tableParts(dataset: Dataset): TablePart[] {
+export function tableParts(dataset: Dataset): readonly TablePart[] {
   return readParts(dataset);
 }
 
