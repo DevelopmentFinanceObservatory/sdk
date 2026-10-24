@@ -22,6 +22,7 @@ PART_MEMBERS: dict[str, str | None] = {
     "rendered_sentence": "sentence",
     "sentence_plan": None,
     "restatement": None,
+    "entity_refs": None,
     "operations": "operations",
     "departures": "departures",
     "assumptions": "assumptions",

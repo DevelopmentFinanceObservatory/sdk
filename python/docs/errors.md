@@ -108,7 +108,7 @@ A server refusal carries a code from the platform's code registry, and the clien
 
 A code this client does not know maps on its HTTP status: 401 to `AuthenticationError`, 403 to `PermissionDeniedError`, 404 and 410 to `NotFoundError`, 408 to `DfoTimeoutError`, 429 to `RateLimitError`, any other 4xx to `InvalidRequestError`, and 5xx to `ServerError`.
 
-A `code` that is not lower-case snake case (`^[a-z][a-z0-9_]*$`) reads as `refusal_without_code`, with the server's text kept in the detail. A proxy body of the form `{"error": ...}` is read the same way, and is retried by its status unless it says `retry`. A 200 response whose body is a problem document, a `code` and no `kind`, raises the class the registry maps the code to, with the body's trace id. A code the registry does not hold raises `ContractError` with `contract_violation`.
+A `code` that is not lower-case snake case (`^[a-z][a-z0-9_]*$`) reads as `refusal_without_code`, with the server's text kept in the detail. The website proxy answers its own refusals with problem documents: `rate_limited` at 429 raises `RateLimitError`, and `transient_unavailable` at 502 raises `ServerError`, both retried. A 200 response whose body is a problem document, a `code` and no `kind`, raises the class the registry maps the code to, with the body's trace id. A code the registry does not hold raises `ContractError` with `contract_violation`.
 
 `member_not_resolvable` means the graph holds no place or code that the reading names. Search the question again for a current reading.
 

@@ -247,7 +247,7 @@ try {
 }
 ```
 
-A server `code` that is not lower-case snake case (`^[a-z][a-z0-9_]*$`) reads as `refusal_without_code`, with the server's text kept in the detail. A proxy body of the form `{"error": ...}` is read the same way, and is retried by its status unless it says `retry`. A 200 response whose body is a problem document, a `code` and no `kind`, on Search and on the lookups, raises the class the contract maps the code to, with the body's trace id. A code the contract lacks raises `ContractError` with `contract_violation`. A 404 that matched no route keeps the server's `detail`, and the message names the request.
+A server `code` that is not lower-case snake case (`^[a-z][a-z0-9_]*$`) reads as `refusal_without_code`, with the server's text kept in the detail. The website proxy answers its own refusals with problem documents: `rate_limited` at 429 raises `RateLimitError`, and `transient_unavailable` at 502 raises `ServerError`, both retried. A 200 response whose body is a problem document, a `code` and no `kind`, on Search and on the lookups, raises the class the contract maps the code to, with the body's trace id. A code the contract lacks raises `ContractError` with `contract_violation`. A 404 that matched no route keeps the server's `detail`, and the message names the request.
 
 ### Client codes
 

@@ -184,7 +184,7 @@ describe("a long build", () => {
     const { spec, manifest, parquet } = await built();
     const limited = (wait?: string) =>
       json(
-        { error: "rate_limited", retry: "retry_after_delay", detail: "" },
+        { code: "rate_limited", retryable: true, detail: "" },
         429,
         wait === undefined ? {} : { "retry-after": wait },
       );

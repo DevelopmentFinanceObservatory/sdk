@@ -470,10 +470,6 @@ def test_a_problem_document_fills_the_error() -> None:
     ("response", "trace_id"),
     [
         (httpx2.Response(502, text="<html>Bad gateway</html>"), "trace-header"),
-        (
-            httpx2.Response(502, json={"error": "transient_unavailable", "retry": "x"}),
-            "trace-header",
-        ),
         (problem(500, code="internal_error", retryable=False), "trace-header"),
         (
             problem(500, code="internal_error", retryable=False, trace_id="in-body"),
@@ -485,7 +481,6 @@ def test_a_problem_document_fills_the_error() -> None:
     ],
     ids=[
         "no-body-code",
-        "proxy-body",
         "problem-without-trace",
         "problem-trace",
         "codeless-problem-trace",
@@ -579,13 +574,8 @@ def test_a_success_body_is_a_problem_document_with_a_string_code_and_no_kind(
     [
         (problem(422, code="query\ntoo_long", detail="No."), "query\ntoo_long: No."),
         (problem(422, code="Query Too Long"), "Query Too Long"),
-        (httpx2.Response(422, json={"error": "Bad request"}), "Bad request"),
-        (
-            httpx2.Response(422, json={"error": "Bad request", "detail": "No."}),
-            "Bad request: No.",
-        ),
     ],
-    ids=["control", "spaced", "proxy", "proxy-detail"],
+    ids=["control", "spaced"],
 )
 def test_text_in_a_codes_place_that_is_not_snake_case_is_no_code(
     response: httpx2.Response, detail: str
@@ -594,54 +584,6 @@ def test_text_in_a_codes_place_that_is_not_snake_case_is_no_code(
         with pytest.raises(InvalidRequestError) as caught:
             transport.request("POST", "/datasets", json={})
     assert (caught.value.code, caught.value.detail) == ("refusal_without_code", detail)
-
-
-@pytest.mark.parametrize(
-    ("error", "code"),
-    [
-        ("transient_unavailable", "transient_unavailable"),
-        ("Bad gateway", "refusal_without_code"),
-    ],
-)
-def test_a_proxy_body_without_retry_retries_by_its_status(
-    error: str, code: str
-) -> None:
-    timeline = Timeline()
-    recorder = Recorder(
-        *(httpx2.Response(502, json={"error": error}) for _ in range(3))
-    )
-    with make(recorder, timeline) as transport:
-        with pytest.raises(ServerError) as caught:
-            transport.request("GET", "/datasets/schema")
-    assert (caught.value.code, caught.value.retryable) == (code, True)
-    assert timeline.sleeps == [0.5, 1.0]
-
-
-def test_a_proxy_429_waits_for_retry_after_then_raises() -> None:
-    timeline = Timeline()
-    body = {"error": "rate_limited", "retry": "retry_after_delay", "detail": "Slow."}
-    limited = httpx2.Response(429, headers={"Retry-After": "7"}, json=body)
-    recorder = Recorder(limited, limited, limited)
-    with make(recorder, timeline) as transport:
-        with pytest.raises(RateLimitError) as caught:
-            transport.request("GET", "/datasets/schema")
-    assert timeline.sleeps == [7.0, 7.0]
-    assert (caught.value.code, caught.value.retryable) == ("rate_limited", True)
-
-
-def test_a_proxy_502_is_a_server_error_after_retries() -> None:
-    timeline = Timeline()
-    body = {
-        "error": "transient_unavailable",
-        "retry": "retry_after_delay",
-        "detail": "Down.",
-    }
-    recorder = Recorder(*(httpx2.Response(502, json=body) for _ in range(3)))
-    with make(recorder, timeline) as transport:
-        with pytest.raises(ServerError) as caught:
-            transport.request("GET", "/datasets/schema")
-    assert caught.value.code == "transient_unavailable"
-    assert timeline.sleeps == [0.5, 1.0]
 
 
 def test_a_request_can_turn_retries_off() -> None:

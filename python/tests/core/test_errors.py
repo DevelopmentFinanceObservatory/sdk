@@ -150,13 +150,13 @@ def test_a_problem_document_without_a_code_takes_the_status_class(
     assert (type(error), error.code) == (cls, "refusal_without_code")
 
 
-def test_a_proxy_body_without_retry_is_not_retryable() -> None:
+def test_a_body_with_error_and_retry_members_carries_no_code() -> None:
     body = {"error": "rate_limited", "retry": "do_not_retry", "detail": "Stop."}
     error = problem_error(429, body, reason="", origin=ORIGIN)
     assert (type(error), error.code, error.retryable) == (
         RateLimitError,
-        "rate_limited",
-        False,
+        "refusal_without_code",
+        True,
     )
 
 
@@ -359,7 +359,7 @@ def test_a_proxy_refusal_keeps_its_code_and_takes_its_status_class(
     status = row["status"]
     assert isinstance(status, int)
     assert row["code"] not in ACTIONS
-    body = {"error": row["code"], "retry": "retry_after_delay", "detail": "Wait."}
+    body = {"code": row["code"], "retryable": True, "detail": "Wait."}
     error = problem_error(status, body, reason="", origin=ORIGIN)
     assert (type(error), error.code, error.retryable) == (
         status_class(status),

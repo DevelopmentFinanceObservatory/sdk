@@ -45,7 +45,7 @@ export type DfoErrorOptions = {
   retryable?: boolean;
   /** The wait the response's `Retry-After` header asked for, in milliseconds. */
   retryAfterMs?: number | null;
-  /** The parsed problem document, or the proxy's own refusal body. */
+  /** The parsed problem document. */
   problem?: Readonly<Record<string, unknown>> | null;
   docsUrl?: string | null;
   cause?: unknown;
@@ -225,18 +225,10 @@ const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 /** Whether a refusal whose body does not say is retryable, by its HTTP status. */
 const isRetryableStatus = (status: number): boolean => RETRYABLE_STATUSES.has(status);
 
-/** The website proxy's `retry` value for a refusal that clears on its own. */
-const PROXY_RETRY = "retry_after_delay";
-
-/** Whether a refusal is retried: as a problem document's `retryable` says, or the website
- *  proxy's `retry` when its body carries one, and otherwise by its status. */
+/** Whether a refusal is retried: as its problem document's `retryable` says, and otherwise by
+ *  its status. */
 export function isRetryable(status: number, body: unknown): boolean {
-  if (isRecord(body)) {
-    if (!("code" in body) && "error" in body && typeof body["retry"] === "string") {
-      return body["retry"] === PROXY_RETRY;
-    }
-    if (typeof body["retryable"] === "boolean") return body["retryable"];
-  }
+  if (isRecord(body) && typeof body["retryable"] === "boolean") return body["retryable"];
   return isRetryableStatus(status);
 }
 

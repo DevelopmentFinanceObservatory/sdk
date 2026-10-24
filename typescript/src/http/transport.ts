@@ -1149,7 +1149,7 @@ export class Transport {
   }
 
   /**
-   * The error a refusal stands for: a problem document, the proxy's own body, or neither. The
+   * The error a refusal stands for, read from its problem document when it carries one. The
    * key sent reads as `[redacted]` in the body. A code that is not snake case is no code, and
    * its text stays in the detail. A 404 that matched no route, `not_found` or no code, names the
    * request in the message, since the base URL is the likely fault. The detail stays the
@@ -1174,35 +1174,26 @@ export class Transport {
     const opening = (detail: unknown): string =>
       typeof detail === "string" ? detail : `HTTP ${status}`;
 
-    // The website proxy's own refusal, {error, retry, detail}, carries its code as `error`.
-    const proxy = isRecord(body) && !("code" in body) && "error" in body;
-    const code = isRecord(body) ? body[proxy ? "error" : "code"] : undefined;
+    const code = isRecord(body) ? body["code"] : undefined;
     if (isRecord(body) && typeof code === "string" && REFUSAL_CODE.test(code)) {
       const ErrorClass = errorClassFor(code, status);
       return new ErrorClass({
         code: serverCode(code),
         status,
         detail: typeof body["detail"] === "string" ? body["detail"] : code,
-        message: refusalMessage(
-          opening(body["detail"]),
-          proxy ? undefined : body["pointer"],
-          code,
-          unmatched(code),
-        ),
+        message: refusalMessage(opening(body["detail"]), body["pointer"], code, unmatched(code)),
         traceId,
         retryable,
         retryAfterMs: retryAfter,
         problem: body,
-        docsUrl: proxy ? null : this.#docsUrl(body["type"]),
+        docsUrl: this.#docsUrl(body["type"]),
         cause,
       });
     }
     // A body with no code keeps what a problem document says: whether to retry, its trace id. A
-    // code that is not snake case, or a proxy body whose `error` is free text, keeps that text.
-    const problem = isRecord(body) && !proxy ? body : null;
-    const text = isRecord(body)
-      ? [body["code"], body["error"]].find((value) => typeof value === "string")
-      : undefined;
+    // code that is not snake case keeps its text.
+    const problem = isRecord(body) ? body : null;
+    const text = typeof code === "string" ? code : undefined;
     const detail = `HTTP ${status} with no refusal code${text === undefined ? "" : `: ${text}`}.`;
     return clientError("refusal_without_code", {
       status,
@@ -1211,7 +1202,7 @@ export class Transport {
       traceId,
       retryable,
       retryAfterMs: retryAfter,
-      problem: isRecord(body) ? body : null,
+      problem,
       docsUrl: this.#docsUrl(problem?.["type"]),
       cause,
     });
