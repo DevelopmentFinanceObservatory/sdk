@@ -11,6 +11,7 @@ JSON.
 import json
 import re
 from collections.abc import Callable
+from itertools import accumulate
 from typing import Any
 
 # The deepest response body recorded under contract/scenarios nests 14 levels, so
@@ -18,10 +19,15 @@ from typing import Any
 # the interpreter's default recursion limit of 1000.
 JSON_MAX_DEPTH = 256
 
-# A whole string, escapes included, or one bracket. A string is consumed in one
-# match, so a bracket inside it is never counted.
-_TOKENS = re.compile(rb'"(?:[^"\\]|\\.)*"|[\[\]{}]', re.DOTALL)
-_OPENERS = frozenset({b"[", b"{"})
+# The scan drops every escape, then every byte but quotes and brackets, which
+# leaves each string as the brackets it holds between two quotes. Two adjacent
+# quotes enclose nothing, so dropping them first leaves the strings to remove
+# few. A string with no closing quote runs to the end of the text. Each step is
+# one pass over its input, so the scan is linear on any text.
+_ESCAPE = re.compile(rb"\\.", re.DOTALL)
+_NOT_QUOTE_OR_BRACKET = bytes(range(256)).translate(None, b'"[]{}')
+_STRING = re.compile(rb'"[^"]*"?')
+_STEP = {ord("["): 1, ord("{"): 1, ord("]"): -1, ord("}"): -1}
 
 
 def too_deep(text: str | bytes, /) -> bool:
@@ -29,16 +35,9 @@ def too_deep(text: str | bytes, /) -> bool:
     if len(text) <= JSON_MAX_DEPTH:
         return False
     data = text.encode(errors="surrogatepass") if isinstance(text, str) else text
-    depth = 0
-    for match in _TOKENS.finditer(data):
-        token = match.group()
-        if token in _OPENERS:
-            depth += 1
-            if depth > JSON_MAX_DEPTH:
-                return True
-        elif len(token) == 1:
-            depth -= 1
-    return False
+    quoted = _ESCAPE.sub(b"", data).translate(None, _NOT_QUOTE_OR_BRACKET)
+    brackets = _STRING.sub(b"", quoted.replace(b'""', b""))
+    return max(accumulate(map(_STEP.__getitem__, brackets)), default=0) > JSON_MAX_DEPTH
 
 
 def loads(

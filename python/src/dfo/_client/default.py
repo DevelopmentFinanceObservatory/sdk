@@ -83,11 +83,14 @@ def configure(
 
     Raises:
         InvalidRequestError: The base URL is invalid (`base_url_invalid`), a
-            default header is not a string of visible ASCII, spaces and tabs
-            (`header_invalid`), the key would travel over plain http to a
-            host that is not loopback (`insecure_transport`), the timeout is
-            not a finite number above 0, or the retry count not an integer
-            from 0 to 10 (`invalid_argument`).
+            default header's name is not an HTTP token or its value not a string
+            of visible ASCII, spaces and tabs (`header_invalid`), the key would
+            travel over plain http to a host that is not loopback
+            (`insecure_transport`), the timeout is not a finite number above 0,
+            the retry count not an integer from 0 to 10, or, with `cache` on,
+            `cache_dir` an empty path, one holding a NUL character, or one
+            starting `~name` for a user with no home directory
+            (`invalid_argument`).
         AuthenticationError: The key lookup failed.
     """
     client = Client(
@@ -116,7 +119,16 @@ def disable_cache() -> None:
 
 
 def enable_cache() -> None:
-    """Make the default client read and write the cache again."""
+    """Make the default client read and write the cache again.
+
+    A default client configured with `cache=False` resolves its cache directory
+    now.
+
+    Raises:
+        InvalidRequestError: That directory is an empty path, holds a NUL
+            character, or starts `~name` for a user with no home directory
+            (`invalid_argument`).
+    """
     _set_cache_enabled(True)
 
 

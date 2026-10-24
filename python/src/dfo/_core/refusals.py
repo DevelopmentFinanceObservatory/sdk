@@ -60,8 +60,9 @@ _JSON_TYPES = frozenset({"application/problem+json", "application/json"})
 # The client codes of errors that describe a response the client read.
 _RESPONSE_CODES = frozenset({UNEXPECTED_RESPONSE.code, CONTRACT_VIOLATION.code})
 
-# A refusal code is lower-case snake case. Other text in a code's place is no code.
-_CODE = re.compile(r"[a-z][a-z0-9_]*")
+# A code, a refusal's or a registry's, is lower-case snake case. Other text in a
+# refusal code's place is no code.
+CODE = re.compile(r"[a-z][a-z0-9_]*")
 
 # Statuses worth another attempt when the body does not say `retryable`.
 _RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
@@ -134,7 +135,7 @@ def _code_and_detail(
     the caller still reads it.
     """
     text = _text(value)
-    if text is None or _CODE.fullmatch(text):
+    if text is None or CODE.fullmatch(text):
         return text, detail
     return None, text if detail is None else f"{text}: {detail}"
 

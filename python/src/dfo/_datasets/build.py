@@ -17,9 +17,9 @@ from typing import Any, Protocol
 import httpx2
 
 from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT, UNEXPECTED_RESPONSE
-from dfo._core.errors import ContractError, client_error
+from dfo._core.errors import client_error
 from dfo._core.json_text import loads
-from dfo._core.parse import check_manifest, check_operation
+from dfo._core.parse import _violation, check_manifest, check_operation
 from dfo._core.refusals import trace_id_of
 from dfo._core.types import (
     CONTENT_VERSION,
@@ -104,6 +104,13 @@ class Cache(Protocol):
     ) -> Hold | nullcontext[None]:
         """Hold `digest`, sync or async, while one fetch reads, downloads and
         stores it, waiting up to `timeout` seconds."""
+        ...
+
+    def merging(
+        self, spec_id: str, content_version: str, rendering: Rendering, /
+    ) -> Hold | nullcontext[None]:
+        """Hold one rendering of one version's manifest, among threads, while
+        one fetch reads, merges and writes it."""
         ...
 
     def get_manifest(
@@ -443,9 +450,9 @@ def read_operation(resource: Wire) -> OperationState:
     check_operation(resource)
     operation = resource["operation"]
     if not matches(OPERATION_ID, operation["operation_id"]):
-        raise _contract_violation(
+        raise _violation(
             "The operation's id is not op_ and 64 lowercase hex digits",
-            "/operation/operation_id",
+            pointer="/operation/operation_id",
         )
     status = operation["status"]
     manifest = resource.get("manifest")
@@ -502,9 +509,9 @@ def check_served_manifest(manifest: object, pointer: str = "", /) -> None:
     check_manifest(manifest, pointer)
     assert isinstance(manifest, Mapping)
     if not matches(CONTENT_VERSION, manifest["content_version"]):
-        raise _contract_violation(
+        raise _violation(
             "The manifest's content_version is not cv_ and 32 lowercase hex digits",
-            f"{pointer}/content_version",
+            pointer=f"{pointer}/content_version",
         )
 
 
@@ -517,12 +524,6 @@ def read_held_until(value: object) -> date | None:
         return datetime.fromisoformat(value).date()
     except ValueError:
         return None
-
-
-def _contract_violation(message: str, pointer: str) -> ContractError:
-    error = client_error(CONTRACT_VIOLATION, message)
-    error.pointer = pointer
-    return error
 
 
 def check_built(

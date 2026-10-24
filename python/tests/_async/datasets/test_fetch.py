@@ -605,6 +605,35 @@ async def test_a_file_is_read_up_to_its_manifest_size(
     assert len(server.requests) == 1 + len(file)
 
 
+FILE = b"PAR1" + b"x" * 242 + b"PAR1"
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        [httpx2.Response(302, headers={"location": SIGNED}, content=b"r" * 251)],
+        [
+            httpx2.Response(
+                502, headers={"content-type": "text/html"}, content=b"p" * 1000
+            ),
+            redirect(),
+        ],
+    ],
+    ids=["redirect-body", "refusal-page"],
+)
+async def test_a_route_body_past_the_file_size_is_read_under_the_json_cap(
+    route: list[httpx2.Response],
+) -> None:
+    # The 250-byte file's size bounds its own body alone, so a longer redirect
+    # body is read and a longer 502 page is retried.
+    body = manifest(POSTED_ID, data=FILE, size=len(FILE))
+    server = Server(json_response(200, body), *route, parquet(FILE))
+    async with make(server) as transport:
+        built = await fetch(transport, spec(SENTENCE))
+    assert built.members[0].data == FILE
+    assert len(server.requests) == 2 + len(route)
+
+
 async def test_bytes_that_miss_their_digest_twice_raise() -> None:
     server = Server(
         json_response(200, manifest(POSTED_ID)),
@@ -1191,6 +1220,26 @@ async def test_a_tampered_cached_manifest_is_fetched_again_and_replaced(
     assert server.calls()[0] == f"GET {BASE}/datasets/{NARROWED_ID}/{NARROWED_CV}"
     assert built.members[0].manifest == body
     assert cache.get_manifest(NARROWED_ID, NARROWED_CV, LONG) is not None
+
+
+@pytest.mark.parametrize(("rendering", "data"), [(LONG, DATA), (CUT, CUT_DATA)])
+async def test_bytes_the_file_selector_served_are_a_cache_hit_online_and_offline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rendering: Rendering, data: bytes
+) -> None:
+    served = manifest(data=b"PAR1 a later rendering PAR1")
+    cache = Cache(tmp_path, env={})
+    server = Server(json_response(200, served), redirect(), parquet(data))
+    member = ref_member(data=data, rendering=rendering)
+    async with make(server) as transport:
+        first = await fetch(transport, DatasetRef((member,)), cache=cache)
+        again = await fetch(transport, DatasetRef((member,)), cache=cache)
+        monkeypatch.setenv("DFO_OFFLINE", "1")
+        offline = await fetch(transport, DatasetRef((member,)), cache=cache)
+    assert len(server.requests) == 3
+    assert server.requests[1].url.path.endswith(f"/{NARROWED_CV}/file")
+    assert first.members[0].manifest == served
+    assert again.members[0].digest == offline.members[0].digest == member.digest
+    assert offline.stale is True
 
 
 async def test_exact_refs_merge_projected_and_plain_artifacts_for_offline_spec(

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import pwd
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,8 @@ from dfo._core.errors import InvalidRequestError
 from dfo._core.types import Rendering
 from dfo._datasets import cache as _cache
 from dfo._datasets.cache import Cache, file_entry, manifest_entry, sha256_digest
-from tests._fetch_support import manifest
+from dfo._datasets.fetch import store
+from tests._fetch_support import CUT, CUT_DATA, DATA, LONG, manifest, with_cut
 from tests.rule_vectors import ids, vectors
 
 SPEC_ID = "spec_cb5baa4161de718f18583060674dbca6"
@@ -88,10 +90,22 @@ def test_a_leading_tilde_name_is_that_users_home() -> None:
     ["", "a\0b", b"/tmp/cache", 5, "~no-such-user-dfo/cache"],
     ids=["empty", "nul", "bytes", "int", "unknown-user"],
 )
-def test_a_cache_dir_that_names_no_directory_is_refused(cache_dir: Any) -> None:
+def test_a_cache_dir_that_names_no_directory_is_refused_once_enabled(
+    cache_dir: Any,
+) -> None:
     with pytest.raises(InvalidRequestError) as raised:
         Cache(cache_dir, env={})
     assert raised.value.code == "invalid_argument"
+    disabled = Cache(cache_dir, enabled=False, env={})
+    assert disabled.directory is None
+    with pytest.raises(InvalidRequestError) as raised:
+        disabled.enabled = True
+    assert raised.value.code == "invalid_argument"
+
+
+def test_a_disabled_cache_leaves_dfo_cache_dir_unread() -> None:
+    cache = Cache(enabled=False, env={"DFO_CACHE_DIR": "~no-such-user-dfo/cache"})
+    assert (cache.enabled, cache.directory) == (False, None)
 
 
 def test_bytes_round_trip_under_the_digest_path(cache: Cache) -> None:
@@ -145,14 +159,33 @@ def test_a_malformed_id_is_a_miss_and_never_names_a_path(
 
 
 def test_a_disabled_cache_reads_and_writes_nothing(tmp_path: Path) -> None:
-    cache = Cache(tmp_path, enabled=False, env={})
+    cache = Cache(enabled=False, env={"DFO_CACHE_DIR": str(tmp_path)})
     data = b"parquet bytes"
     cache.put_bytes(sha256_digest(data), data)
     cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, stored(CV_OLD))
     assert cache.get_bytes(sha256_digest(data)) is None
     assert cache.get_manifest(SPEC_ID, CV_OLD, PARQUET) is None
     assert cache.latest_manifest(SPEC_ID, PARQUET) is None
-    assert not cache.directory.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda cache: cache.put_bytes(sha256_digest(DATA), DATA),
+        lambda cache: cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, stored(CV_OLD)),
+        lambda cache: cache.manifest_candidates(SPEC_ID, PARQUET),
+    ],
+    ids=["put_bytes", "put_manifest", "manifest_candidates"],
+)
+def test_a_cache_disabled_mid_call_still_returns(
+    cache: Cache, monkeypatch: pytest.MonkeyPatch, call: Callable[[Cache], object]
+) -> None:
+    directory = cache.directory
+    reads = iter([directory])
+    # The first read sees the directory; any later one sees the cache disabled.
+    monkeypatch.setattr(Cache, "directory", property(lambda _: next(reads, None)))
+    call(cache)
 
 
 def test_manifests_key_on_version_and_rendering(cache: Cache) -> None:
@@ -164,6 +197,34 @@ def test_manifests_key_on_version_and_rendering(cache: Cache) -> None:
         is None
     )
     assert cache.get_manifest(SPEC_ID, CV_NEW, PARQUET) is None
+
+
+def test_concurrent_stores_into_one_manifest_keep_both_artifacts(
+    cache: Cache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = with_cut(manifest(SPEC_ID, CV_OLD))
+    read = Cache.get_manifest
+    other = threading.Thread(
+        target=store, args=(cache, body, CUT, sha256_digest(CUT_DATA), CUT_DATA)
+    )
+
+    def read_then_let_the_cut_store_run(
+        self: Cache, *ids: Any
+    ) -> dict[str, Any] | None:
+        stored = read(self, *ids)
+        if threading.current_thread() is not other:
+            other.start()
+            # A held manifest keeps the cut store waiting, so this join times out.
+            other.join(timeout=0.1)
+        return stored
+
+    monkeypatch.setattr(Cache, "get_manifest", read_then_let_the_cut_store_run)
+    store(cache, body, LONG, sha256_digest(DATA), DATA)
+    other.join()
+    monkeypatch.undo()
+    merged = cache.get_manifest(SPEC_ID, CV_OLD, LONG)
+    assert merged is not None
+    assert merged["artifacts"] == [body["artifacts"][1], body["artifacts"][2]]
 
 
 def _without_definition(body: dict[str, Any]) -> None:

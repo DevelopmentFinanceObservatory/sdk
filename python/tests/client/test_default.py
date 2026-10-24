@@ -186,8 +186,9 @@ def fetch_answer() -> None:
         dfo.search(QUESTION).fetch()
 
 
-def cached_files(cache: Cache) -> list[Path]:
-    return [path for path in cache.directory.rglob("*") if path.is_file()]
+def cached_files(root: Path) -> list[Path]:
+    """The files under a cache root, read from disk whether the cache is on or off."""
+    return [path for path in root.rglob("*") if path.is_file()]
 
 
 def replay_over_cache(
@@ -210,9 +211,9 @@ def replay_over_cache(
 def test_a_fetch_after_disable_cache_reads_nothing_from_the_cache(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    replay, cache = replay_over_cache(monkeypatch, tmp_path, [4, 4])
+    replay, _ = replay_over_cache(monkeypatch, tmp_path, [4, 4])
     fetch_answer()
-    assert cached_files(cache)
+    assert cached_files(tmp_path)
 
     dfo.disable_cache()
     fetch_answer()
@@ -224,15 +225,15 @@ def test_a_fetch_after_disable_cache_reads_nothing_from_the_cache(
 def test_disable_cache_stops_writes_and_enable_cache_restores_both(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    replay, cache = replay_over_cache(monkeypatch, tmp_path, [4, 4, 2])
+    replay, _ = replay_over_cache(monkeypatch, tmp_path, [4, 4, 2])
 
     dfo.disable_cache()
     fetch_answer()
-    assert cached_files(cache) == []
+    assert cached_files(tmp_path) == []
 
     dfo.enable_cache()
     fetch_answer()
-    assert cached_files(cache)
+    assert cached_files(tmp_path)
     fetch_answer()
     # The third pass reads the download from the cache, so it takes two exchanges.
     assert (replay.exchanges, len(replay.requests)) == ([], 10)

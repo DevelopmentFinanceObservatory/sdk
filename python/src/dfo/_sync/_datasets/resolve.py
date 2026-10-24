@@ -13,10 +13,14 @@ names one rendering of it. A snapshot or build that answers another spec raises
 snapshot run only for a version whose file has expired. A version the server never
 built (`snapshot_not_found`) raises at once. Concurrent fetches of one member wait
 while the first reads the cache or fetches the stored file, so the file downloads
-once. A cached manifest counts only when it lists the member's digest.
+once. A cached manifest counts only when it lists the member's digest. Bytes the
+file selector served for a manifest that does not list them are stored with an
+artifact entry naming the selector, so they count on the next fetch.
 """
 
 from collections.abc import Mapping, Sequence
+
+import httpx2
 
 from dfo._core.codes import (
     CONTRACT_VIOLATION,
@@ -301,7 +305,12 @@ def _fetch_version(
             )
             if data is not None:
                 sync_offload(
-                    store, cache, manifest, member.rendering, member.digest, data
+                    store,
+                    cache,
+                    _listing(transport, manifest, member, data),
+                    member.rendering,
+                    member.digest,
+                    data,
                 )
                 return _stored(member, manifest, data)
 
@@ -309,6 +318,7 @@ def _fetch_version(
         manifest, trace_id = build_version(
             transport,
             build_body(member.spec, member.rendering),
+            rendering=member.rendering,
             deadline=deadline,
             on_progress=on_progress,
         )
@@ -361,6 +371,35 @@ def _cached_version(
     ):
         return None
     return manifest, data
+
+
+def _listing(
+    transport: Transport, manifest: Wire, member: RefMember, data: bytes
+) -> Wire:
+    """`manifest`, listing the member's artifact as an entry naming the file
+    selector when it does not list the member's digest.
+
+    The selector served `data`, which hashes to the digest, for this version, so
+    the entry is what a later cache read checks the bytes belong to it by.
+    """
+    if pick_artifact(manifest, member.rendering, digest=member.digest) is not None:
+        return manifest
+    selector = httpx2.URL(
+        transport.base_url.removeprefix(transport.origin) + _selector_path(member),
+        params=file_params(member.rendering),
+    )
+    entry = {
+        "artifact_digest": member.digest,
+        "rendering": mint_options(member.rendering),
+        "bytes": len(data),
+        "url": str(selector),
+    }
+    return {**manifest, "artifacts": [*manifest["artifacts"], entry]}
+
+
+def _selector_path(member: RefMember) -> str:
+    """The file selector's path for the member's version, under the base URL."""
+    return f"/datasets/{member.spec.spec_id}/{member.content_version}/file"
 
 
 def _digest_changed(member: RefMember, digest: str) -> DfoWarning:
@@ -427,11 +466,10 @@ def _stored_file(
             refusal = error
         else:
             return data, None
-    path = f"/datasets/{member.spec.spec_id}/{member.content_version}/file"
     try:
         data = download(
             transport,
-            path,
+            _selector_path(member),
             member.digest,
             params=file_params(member.rendering),
             deadline=deadline,

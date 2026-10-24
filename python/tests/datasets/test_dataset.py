@@ -279,6 +279,11 @@ _MALFORMED = "contract_violation"
         pytest.param(b"", _GARBLED, id="empty-file"),
         pytest.param(PARQUET.read_bytes()[:-100], _GARBLED, id="truncated"),
         pytest.param(
+            PARQUET.read_bytes()[:4] + b"\xff" * 200 + PARQUET.read_bytes()[204:],
+            _GARBLED,
+            id="damaged-pages",
+        ),
+        pytest.param(
             _parquet(pa.table({"time_period": [2020], "a": [1]})),
             _MALFORMED,
             id="no-value-column",

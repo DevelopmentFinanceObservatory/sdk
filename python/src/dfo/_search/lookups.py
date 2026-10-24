@@ -10,7 +10,6 @@ client reads no more of it, so an unknown member or enum value passes through
 untouched.
 """
 
-import re
 from collections.abc import Mapping, Sequence
 from datetime import date
 from typing import Any
@@ -21,7 +20,7 @@ import httpx2
 from dfo._core.codes import INVALID_ARGUMENT
 from dfo._core.errors import ContractError, client_error
 from dfo._core.parse import require_members
-from dfo._core.refusals import describing, trace_id_of
+from dfo._core.refusals import CODE, describing, trace_id_of
 from dfo._core.text import control_fault, has_dot_segment
 from dfo._core.types import Node, ResolveKind, matches
 from dfo._datasets.build import response_json
@@ -32,9 +31,6 @@ from dfo._generated.wire import (
     ResolveResponse,
 )
 from dfo._http.transport import AsyncTransport
-
-# A registry code: lower-case snake case.
-_CODE = re.compile(r"[a-z][a-z0-9_]*")
 
 
 def _lookup_body(
@@ -173,7 +169,7 @@ class AsyncCodes:
                 (`invalid_argument`); no request is sent.
             NotFoundError: The registry holds no such code.
         """
-        if not matches(_CODE, code):
+        if not matches(CODE, code):
             raise client_error(
                 INVALID_ARGUMENT,
                 f"{code!r} is not a code, which is a lower-case letter followed "

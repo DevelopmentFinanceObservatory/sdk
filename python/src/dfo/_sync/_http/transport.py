@@ -16,9 +16,10 @@ URLs share an origin when their scheme, host and port match after lower-casing,
 dropping the scheme's default port and a host's trailing dot. A key never
 travels over plain http to a host that is not loopback (`insecure_transport`).
 Loopback is `localhost`, a name under `.localhost`, an address in 127.0.0.0/8 or
-`[::1]`, compared lower case without one trailing dot. A key or header value with
-a character the header cannot hold is refused before any request (`key_invalid`,
-`header_invalid`), and a path with a dot segment is refused (`invalid_argument`).
+`[::1]`, compared lower case without one trailing dot. A key, header name or
+header value with a character the header cannot hold is refused before any
+request (`key_invalid`, `header_invalid`), and a path with a dot segment is
+refused (`invalid_argument`).
 
 A forked child keeps its parent's transports and settings. The first request in a
 new process builds a fresh connection pool over the proxies the parent read, and
@@ -117,9 +118,9 @@ DEFAULT_MAX_BYTES = 2 * 2**30
 
 # The decoded bytes an API response's body may hold, the larger of 16 MiB and ten
 # times the largest JSON body recorded, rounded. That body is `/search/schema` in
-# tests/data/search-schema.json, 267,493 bytes, above every response in
-# contract/scenarios (137,783 bytes at most) and every manifest the e2e runs
-# cached (140,748 bytes at most), so the 16 MiB floor applies.
+# tests/data/search-schema.json, 267,493 bytes, above every response body in
+# contract/scenarios (137,679 bytes at most, serialized without spaces), so the
+# 16 MiB floor applies.
 JSON_BODY_MAX_BYTES = 16 * 2**20
 
 # The most retries a client takes.
@@ -128,6 +129,10 @@ _RETRIES_MAX = 10
 # A host other than an IPv6 address whose last label is a number, which a URL
 # parser reads as an IPv4 address, such as `127.1`, `0x7f.1` or `2130706433`.
 _NUMERIC_HOST = re.compile(r"(?:[^:]*\.)?(?:0x[0-9a-f]*|[0-9]+)")
+
+# A header name: an HTTP token, which the TypeScript client's `Headers` also
+# requires.
+_TOKEN = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
 
 # The methods a request may use.
 _METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
@@ -234,13 +239,14 @@ def _sends_in_clear(url: str) -> bool:
 
 
 def _checked_headers(headers: Mapping[str, str], source: str) -> Mapping[str, str]:
-    """Return `headers` once every value is a string of visible ASCII, space
-    and tab.
+    """Return `headers` once every name is an HTTP token and every value is a
+    string of visible ASCII, space and tab.
 
     Raises:
         InvalidRequestError: A value is not a string, or holds a control or
-            non-ASCII character (`header_invalid`). The message names the
-            header and the character's position, and omits the value.
+            non-ASCII character, or a name is not a token (`header_invalid`).
+            The message names the header and the value's faulty character's
+            position, and omits the value.
     """
     for name, value in headers.items():
         if not isinstance(value, str):
@@ -255,6 +261,12 @@ def _checked_headers(headers: Mapping[str, str], source: str) -> Mapping[str, st
                 f"The {name} header from {source} holds {fault}; a header value "
                 "holds visible ASCII, spaces and tabs only. Strip the line break "
                 "a command's output ends with.",
+            )
+        if not isinstance(name, str) or not _TOKEN.fullmatch(name):
+            raise client_error(
+                HEADER_INVALID,
+                f"The header {name!r} from {source} has a name HTTP cannot carry; "
+                "a header name holds ASCII letters, digits and !#$%&'*+-.^_`|~ only.",
             )
     return headers
 
@@ -649,11 +661,12 @@ class Transport:
 
         Raises:
             InvalidRequestError: The base URL is invalid (`base_url_invalid`), a
-                default header is not visible ASCII, spaces and tabs
-                (`header_invalid`), the key would travel over plain http to a
-                host that is not loopback (`insecure_transport`), the timeout
-                is not a finite number above 0, or the retry count not an
-                integer from 0 to 10 (`invalid_argument`).
+                default header's name is not an HTTP token or its value not
+                visible ASCII, spaces and tabs (`header_invalid`), the key would
+                travel over plain http to a host that is not loopback
+                (`insecure_transport`), the timeout is not a finite number above
+                0, or the retry count not an integer from 0 to 10
+                (`invalid_argument`).
             AuthenticationError: The key lookup failed.
         """
         timeout = _checked_timeout(timeout, "timeout")
@@ -828,13 +841,14 @@ class Transport:
         """Send `request` and read its body by `deadline`, after name resolution.
 
         The body is read as it decodes, and reading stops at the first piece
-        that takes it past `limit` bytes.
+        that takes a 2xx body past `limit` bytes, or any other body past
+        `JSON_BODY_MAX_BYTES`, so a redirect or a refusal reads as on any route.
 
         Raises:
             DfoTimeoutError: The attempt timed out, or `deadline` passed while
                 the body was read (`deadline_exceeded`, retryable).
             NetworkError: The connection failed (`network_error`, retryable).
-            ServerError: The decoded body passed `limit` bytes
+            ServerError: The decoded body passed its limit
                 (`response_too_large`).
             ContractError: The body does not decode as its `Content-Encoding`
                 says, or a redirect's `Location` is not a URL
@@ -844,6 +858,8 @@ class Transport:
             with attempt_deadline(self._clock, deadline):
                 response = self._pool.client.send(request, stream=True)
                 try:
+                    if not response.is_success:
+                        limit = JSON_BODY_MAX_BYTES
                     _read_within(response, limit, what)
                 finally:
                     response.close()
@@ -1014,7 +1030,9 @@ class Transport:
                 bounds every phase after name resolution; each attempt's timeout
                 is clamped to it.
             max_retries: Further attempts; defaults to the transport's.
-            max_bytes: The most decoded bytes a response's body may hold.
+            max_bytes: The most decoded bytes a 2xx response's body may hold.
+                A redirect's or a refusal's is read under `JSON_BODY_MAX_BYTES`
+                whatever this says.
 
         Raises:
             DfoError: The class the refusal maps to, once retries are spent.
@@ -1022,14 +1040,14 @@ class Transport:
                 `DFO_OFFLINE=1` is set (`offline`).
             DfoTimeoutError: An attempt timed out with no retry left, or the
                 deadline passed, while waiting or while a body was read.
-            InvalidRequestError: A header value is not visible ASCII, spaces
-                and tabs (`header_invalid`), the key would travel over plain
-                http (`insecure_transport`), or `target` holds a dot segment or
-                a control character, `method` is not one the API serves,
-                `json` is not JSON or goes with a GET or HEAD, or the transport
-                is closed (`invalid_argument`).
-            ServerError: A response's decoded body passed `max_bytes`
-                (`response_too_large`).
+            InvalidRequestError: A header's name is not an HTTP token or its
+                value not visible ASCII, spaces and tabs (`header_invalid`), the
+                key would travel over plain http (`insecure_transport`), or
+                `target` holds a dot segment or a control character, `method` is
+                not one the API serves, `json` is not JSON or goes with a GET or
+                HEAD, or the transport is closed (`invalid_argument`).
+            ServerError: A 2xx response's decoded body passed `max_bytes`, or
+                any other's `JSON_BODY_MAX_BYTES` (`response_too_large`).
             ContractError: A body does not decode as its `Content-Encoding`
                 says, or a redirect's `Location` is not a URL
                 (`unexpected_response`).
@@ -1111,13 +1129,15 @@ class Transport:
         when there is none. The generated synchronous transport cannot interrupt
         blocking platform name resolution. A failed fetch is not retried. A
         signed URL can expire, so the caller asks the files route for a fresh one.
-        Reading stops once the decoded file passes `max_bytes`.
+        Reading stops once the decoded file passes `max_bytes`, or once any
+        other response's body passes `JSON_BODY_MAX_BYTES`.
 
         Raises:
             ContractError: The URL is on neither origin (`contract_violation`),
                 or the body does not decode (`unexpected_response`).
             ServerError: The host answered anything but 200 (`download_failed`),
-                or a file past `max_bytes` (`response_too_large`).
+                or a file past `max_bytes`, or a body past `JSON_BODY_MAX_BYTES`
+                (`response_too_large`).
             NetworkError: The connection failed, or `DFO_OFFLINE=1` is set
                 (`offline`).
             DfoTimeoutError: The fetch timed out or the deadline passed.

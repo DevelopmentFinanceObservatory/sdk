@@ -473,7 +473,8 @@ def _read_artifact(fetched: FetchedMember, cache: Cache | None) -> pa.Table:
     name = f"The artifact {fetched.digest} of {fetched.spec.spec_id}"
     try:
         table = pq.ParquetFile(pa.BufferReader(fetched.data)).read()
-    except pa.ArrowException as error:
+    # pyarrow raises OSError, outside ArrowException, for a damaged footer or page
+    except (pa.ArrowException, OSError) as error:
         if cache is not None:
             cache.discard(fetched.digest)
         raise client_error(

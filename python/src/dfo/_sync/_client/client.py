@@ -77,13 +77,14 @@ class Client:
 
         Raises:
             InvalidRequestError: The base URL is invalid (`base_url_invalid`), a
-                default header is not a string of visible ASCII, spaces and tabs
-                (`header_invalid`), the key would travel over plain http to a
-                host that is not loopback (`insecure_transport`), the timeout is
-                not a finite number above 0, the retry count not an integer
-                from 0 to 10, or `cache_dir` an empty path, one holding a NUL
-                character, or one starting `~name` for a user with no home
-                directory (`invalid_argument`).
+                default header's name is not an HTTP token or its value not a
+                string of visible ASCII, spaces and tabs (`header_invalid`), the
+                key would travel over plain http to a host that is not loopback
+                (`insecure_transport`), the timeout is not a finite number above
+                0, the retry count not an integer from 0 to 10, or, with `cache`
+                on, `cache_dir` an empty path, one holding a NUL character, or
+                one starting `~name` for a user with no home directory
+                (`invalid_argument`).
             AuthenticationError: The key lookup failed.
         """
         local = Cache(cache_dir, enabled=cache)
@@ -327,6 +328,7 @@ class Client:
                 goes with a GET or HEAD (`invalid_argument`); or the server
                 refused the method (`method_not_allowed`), which on a route the
                 client wraps is a `ContractError`.
+            ServerError: The decoded body passed 16 MiB (`response_too_large`).
         """
         if not path.startswith("/") or path.startswith("//"):
             raise client_error(

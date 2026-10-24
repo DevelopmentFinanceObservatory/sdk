@@ -47,6 +47,7 @@ BASE = "https://api.example.org/api/v1"
 KEY = "dfo_k_4f8Kq2ZtR7mWx1NcB9vLp3YhD6sGa0Ue2wanxe"
 OTHER_KEY = "dfo_k_Zz9Yy8Xx7Ww6Vv5Uu4Tt3Ss2Rr1Qq0Pp448bfc"
 SIGNED = "https://storage.googleapis.com/bucket/object?X-Goog-Signature=redacted"
+AUTH = "X-Serverless-Authorization"
 
 type Handler = Callable[[httpx2.Request], httpx2.Response]
 
@@ -1004,34 +1005,48 @@ async def test_a_key_resolved_later_is_not_sent_over_plain_http() -> None:
 
 
 @pytest.mark.parametrize(
-    ("value", "fault"),
+    ("name", "value", "fault"),
     [
-        ("Bearer id-token\n", "a line break at character 16"),
-        ("a\r\nX-Evil: 1", "a line break at character 2"),
-        ("tok\x00en", "a control character at character 4"),
-        ("tok\x7f", "a control character at character 4"),
-        ("caf\u00e9", "a non-ASCII character at character 4"),
+        (AUTH, "Bearer id-token\n", "holds a line break at character 16"),
+        (AUTH, "a\r\nX-Evil: 1", "holds a line break at character 2"),
+        (AUTH, "tok\x00en", "holds a control character at character 4"),
+        (AUTH, "tok\x7f", "holds a control character at character 4"),
+        (AUTH, "caf\u00e9", "holds a non-ASCII character at character 4"),
+        ("X Bad", "id-token", "has a name HTTP cannot carry"),
+        ("X-Bad:", "id-token", "has a name HTTP cannot carry"),
+        ("X-Caf\u00e9", "id-token", "has a name HTTP cannot carry"),
+        ("", "id-token", "has a name HTTP cannot carry"),
     ],
-    ids=["newline", "crlf", "nul", "del", "non-ascii"],
+    ids=[
+        "newline",
+        "crlf",
+        "nul",
+        "del",
+        "non-ascii",
+        "space-in-name",
+        "colon-in-name",
+        "non-ascii-name",
+        "empty-name",
+    ],
 )
 @pytest.mark.parametrize("source", ["default_headers", "header_provider"])
-async def test_a_header_value_with_a_control_character_is_refused_unsent(
-    value: str, fault: str, source: str
+async def test_a_header_with_a_character_http_cannot_carry_is_refused_unsent(
+    name: str, value: str, fault: str, source: str
 ) -> None:
     async def provider() -> dict[str, str]:
-        return {"X-Serverless-Authorization": value}
+        return {name: value}
 
     recorder = Recorder()
     timeline = Timeline()
     with pytest.raises(InvalidRequestError) as caught:
         if source == "default_headers":
-            make(recorder, default_headers={"X-Serverless-Authorization": value})
+            make(recorder, default_headers={name: value})
         else:
             async with make(recorder, timeline, header_provider=provider) as t:
                 await t.request("GET", "/datasets/schema")
     message = str(caught.value)
     assert caught.value.code == "header_invalid"
-    assert f"X-Serverless-Authorization header from {source} holds {fault}" in message
+    assert name in message and f"from {source} {fault}" in message
     assert "id-token" not in message and "Evil" not in message
     assert (recorder.requests, timeline.sleeps) == ([], [])
 

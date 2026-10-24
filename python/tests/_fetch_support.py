@@ -275,6 +275,11 @@ class FakeCache:
     ) -> nullcontext[None]:
         return nullcontext()
 
+    def merging(
+        self, spec_id: str, content_version: str, rendering: Rendering, /
+    ) -> nullcontext[None]:
+        return nullcontext()
+
     def get_manifest(
         self, spec_id: str, content_version: str, rendering: Rendering, /
     ) -> dict[str, Any] | None:

@@ -434,17 +434,22 @@ def test_a_failed_operation_body_raises_its_problem() -> None:
         ({"without_party_totals": True}, f'"{OP_ID}", without_party_totals=True'),
     ],
 )
+@pytest.mark.parametrize("start", ["posted", "resumed"])
 def test_the_deadline_names_the_call_that_resumes_the_build(
-    options: dict, arguments: str
+    options: dict, arguments: str, start: str
 ) -> None:
     timeline = Timeline()
-    server = Server(
-        accepted(retry_after_ms=8000),
-        json_response(200, resource("running", retry_after_ms=8000)),
-    )
+    first = accepted(retry_after_ms=8000)
+    if start == "resumed":
+        first = json_response(200, resource("running", retry_after_ms=8000))
+    server = Server(first, json_response(200, resource("running", retry_after_ms=8000)))
     with make(server, timeline) as transport:
         with pytest.raises(DfoTimeoutError) as caught:
-            fetch(transport, spec(), timeout=10.0, **options)
+            if start == "posted":
+                fetch(transport, spec(), timeout=10.0, **options)
+            else:
+                resumed = operation(transport, OP_ID, **options)
+                resumed.result(timeout=10.0)
     assert f"client.operation({arguments}).result()" in str(caught.value)
     assert caught.value.code == "deadline_exceeded"
     assert timeline.sleeps == [8.0]

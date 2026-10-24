@@ -35,7 +35,7 @@ import httpx2
 from dfo._core.codes import DEADLINE_EXCEEDED, INVALID_ARGUMENT, UNEXPECTED_RESPONSE
 from dfo._core.errors import DfoError, DfoTimeoutError, client_error
 from dfo._core.refusals import describing, problem_error, trace_id_of
-from dfo._core.types import OPERATION_ID, Wire, matches
+from dfo._core.types import OPERATION_ID, Rendering, Wire, matches
 from dfo._datasets.build import (
     BUILD_READ_TIMEOUT,
     OperationState,
@@ -209,6 +209,7 @@ class Poller:
         transport: Transport,
         reply: Reply,
         *,
+        rendering: Rendering,
         body: Wire | None = None,
         on_progress: ProgressHook | None = None,
     ) -> None:
@@ -217,11 +218,14 @@ class Poller:
         Args:
             transport: The transport polls go through.
             reply: The answer to the build request, or the first poll.
+            rendering: The rendering the build makes, which the deadline's
+                resume hint names.
             body: The build request, resubmitted once when the operation fails
                 with a retryable refusal. None for a resumed operation.
             on_progress: Called with each progress the server reports.
         """
         self._transport = transport
+        self._rendering = rendering
         self._body = body
         self._on_progress = on_progress
         self._manifest: Wire | None = None
@@ -317,11 +321,10 @@ class Poller:
         return wait
 
     def _still_running(self) -> DfoTimeoutError:
-        options = {} if self._body is None else self._body.get("options", {})
         arguments = f'"{self.operation_id}"'
-        if options.get("layout") == "frame":
+        if self._rendering.layout == "frame":
             arguments += ', layout="frame"'
-        if options.get("without_party_totals") is True:
+        if self._rendering.without_party_totals:
             arguments += ", without_party_totals=True"
         return client_error(
             DEADLINE_EXCEEDED,
@@ -483,6 +486,7 @@ def resume(
     transport: Transport,
     operation_id: str,
     *,
+    rendering: Rendering,
     on_progress: ProgressHook | None = None,
 ) -> Poller:
     """Read a running build's operation by id, to poll it from this process.
@@ -502,4 +506,9 @@ def resume(
             "lowercase hex digits, as Operation.operation_id gives",
         )
     response = transport.request("GET", f"/datasets/operations/{operation_id}")
-    return Poller(transport, _operation_reply(response), on_progress=on_progress)
+    return Poller(
+        transport,
+        _operation_reply(response),
+        rendering=rendering,
+        on_progress=on_progress,
+    )

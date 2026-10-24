@@ -16,7 +16,9 @@ skipped on write.
 
 Concurrent fetches in one process download an artifact once: `downloading`
 holds its digest while the first fetch reads the cache, downloads and stores,
-and the others then read the stored file.
+and the others then read the stored file. `merging` holds a manifest's path while
+a fetch reads, merges and writes it, so fetches in one process keep each other's
+entries.
 
 Both clients call this module. It works on local files only.
 """
@@ -47,6 +49,9 @@ DEFAULT_MAX_BYTES = 2 * 1024**3
 
 # The artifacts being downloaded into any cache of this process, by path.
 _DOWNLOADS = KeyedLock()
+
+# The manifests being merged in any cache of this process, by path.
+_MERGES = KeyedLock()
 
 
 def rendering_name(rendering: Rendering, /) -> str:
@@ -128,18 +133,17 @@ def sha256_digest(data: bytes, /) -> str:
 class Cache:
     """The cache one client reads and writes.
 
-    A disabled cache misses every read and drops every write. An entry the disk
-    refuses is logged to the `dfo` logger and skipped, so a write cannot fail a
-    fetch.
+    A disabled cache misses every read and drops every write. Its directory is
+    resolved when it is first enabled, so a disabled cache accepts any `cache_dir`
+    and `DFO_CACHE_DIR`. An entry the disk refuses is logged to the `dfo` logger and
+    skipped, so a write cannot fail a fetch.
 
     Attributes:
-        directory: The cache directory, `<root>/v1/dfo/cache1`.
-        enabled: Whether the cache reads and writes entries.
         max_bytes: The bound on the artifacts kept; the least recently used go
             first.
     """
 
-    __slots__ = ("directory", "enabled", "max_bytes")
+    __slots__ = ("_cache_dir", "_directory", "_enabled", "_env", "max_bytes")
 
     def __init__(
         self,
@@ -149,10 +153,32 @@ class Cache:
         max_bytes: int = DEFAULT_MAX_BYTES,
         env: Mapping[str, str] | None = None,
     ) -> None:
-        env = os.environ if env is None else env
-        self.directory = cache_path(cache_dir, env=env)
-        self.enabled = enabled
+        self._cache_dir = cache_dir
+        self._env = env
+        self._directory: Path | None = None
         self.max_bytes = max_bytes
+        self.enabled = enabled
+
+    @property
+    def enabled(self) -> bool:
+        """Whether the cache reads and writes entries.
+
+        Raises:
+            InvalidRequestError: Enabling it resolves a directory `cache_path`
+                refuses (`invalid_argument`).
+        """
+        return self._enabled
+
+    @enabled.setter
+    def enabled(self, enabled: bool) -> None:
+        if enabled and self._directory is None:
+            self._directory = cache_path(self._cache_dir, env=self._env)
+        self._enabled = enabled
+
+    @property
+    def directory(self) -> Path | None:
+        """The cache directory, `<root>/v1/dfo/cache1`, or None while disabled."""
+        return self._directory if self._enabled else None
 
     def downloading(
         self, digest: str, /, *, timeout: float | None = None
@@ -166,13 +192,27 @@ class Cache:
         Raises:
             DfoTimeoutError: The wait passed `timeout` (`deadline_exceeded`).
         """
-        if not self.enabled:
+        if (directory := self.directory) is None:
             return nullcontext()
-        return _DOWNLOADS.hold((str(self.directory), digest), timeout=timeout)
+        return _DOWNLOADS.hold((str(directory), digest), timeout=timeout)
+
+    def merging(
+        self, spec_id: str, content_version: str, rendering: Rendering, /
+    ) -> Hold | nullcontext[None]:
+        """Hold a manifest's path, among threads, while one fetch reads, merges
+        and writes it.
+
+        Writers in separate processes are not held, so one can still drop an
+        entry another wrote, which the contract's cache-layout rule allows. A
+        disabled cache, or ids that name no path, hold nothing.
+        """
+        if (path := self._manifest(spec_id, content_version, rendering)) is None:
+            return nullcontext()
+        return _MERGES.hold(str(path))
 
     def get_bytes(self, digest: str, /) -> bytes | None:
         """The artifact with `digest`, or None when it is absent or its bytes differ."""
-        if not self.enabled or (path := self._file(digest)) is None:
+        if (path := self._file(digest)) is None:
             return None
         try:
             data = path.read_bytes()
@@ -189,7 +229,7 @@ class Cache:
         Raises:
             ValueError: `data` does not hash to `digest`.
         """
-        if not self.enabled or (path := self._file(digest)) is None:
+        if (path := self._file(digest)) is None:
             return
         if sha256_digest(data) != digest:
             raise ValueError(f"the bytes do not hash to {digest}")
@@ -202,7 +242,7 @@ class Cache:
         A manifest that lists it stays, and its next fetch downloads the artifact
         again.
         """
-        if not self.enabled or (path := self._file(digest)) is None:
+        if (path := self._file(digest)) is None:
             return
         try:
             path.unlink(missing_ok=True)
@@ -219,7 +259,7 @@ class Cache:
         version than its path.
         """
         path = self._manifest(spec_id, content_version, rendering)
-        if not self.enabled or path is None:
+        if path is None:
             return None
         return _held_manifest(path, spec_id, content_version)
 
@@ -233,7 +273,7 @@ class Cache:
     ) -> None:
         """Store a built version's manifest for one rendering."""
         path = self._manifest(spec_id, content_version, rendering)
-        if not self.enabled or path is None:
+        if path is None:
             return
         _write(path, json.dumps(manifest, ensure_ascii=False).encode())
 
@@ -257,11 +297,12 @@ class Cache:
         `prepared_at`, are omitted. Callers that need an artifact still verify its
         bytes before choosing a candidate.
         """
-        if not self.enabled or SPEC_ID.fullmatch(spec_id) is None:
+        directory = self.directory
+        if directory is None or SPEC_ID.fullmatch(spec_id) is None:
             return []
         found: list[tuple[str, dict[str, Any]]] = []
         name = f"{rendering_name(rendering)}.json"
-        for path in sorted((self.directory / "manifests" / spec_id).glob(f"*/{name}")):
+        for path in sorted((directory / "manifests" / spec_id).glob(f"*/{name}")):
             manifest = _held_manifest(path, spec_id, path.parent.name)
             if manifest is not None and isinstance(manifest.get("prepared_at"), str):
                 found.append((manifest["prepared_at"], manifest))
@@ -271,16 +312,22 @@ class Cache:
         ]
 
     def _file(self, digest: str) -> Path | None:
-        """The artifact's path, or None when `digest` is not a sha256 digest."""
+        """The artifact's path, or None when the cache is disabled or `digest` is
+        not a sha256 digest."""
+        if (directory := self.directory) is None:
+            return None
         if DIGEST.fullmatch(digest) is None:
             logger.debug("dfo cache: %r is not a digest; skipped", digest)
             return None
-        return self.directory / file_entry(digest)
+        return directory / file_entry(digest)
 
     def _manifest(
         self, spec_id: str, content_version: str, rendering: Rendering
     ) -> Path | None:
-        """The manifest's path, or None when the ids are not server ids."""
+        """The manifest's path, or None when the cache is disabled or the ids are
+        not server ids."""
+        if (directory := self.directory) is None:
+            return None
         if SPEC_ID.fullmatch(spec_id) is None or (
             CONTENT_VERSION.fullmatch(content_version) is None
         ):
@@ -290,10 +337,12 @@ class Cache:
                 content_version,
             )
             return None
-        return self.directory / manifest_entry(spec_id, content_version, rendering)
+        return directory / manifest_entry(spec_id, content_version, rendering)
 
     def _evict(self, *, keep: Path) -> None:
-        files = self.directory / "files"
+        if (directory := self.directory) is None:
+            return
+        files = directory / "files"
         entries: list[tuple[float, int, Path]] = []
         for path in files.glob("sha256/*"):
             if path.name.startswith("."):

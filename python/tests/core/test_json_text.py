@@ -1,5 +1,7 @@
 """The client's own bound on JSON nesting, independent of the C stack."""
 
+import time
+
 import pytest
 
 from dfo._core.json_text import JSON_MAX_DEPTH, loads
@@ -41,3 +43,12 @@ def test_text_within_the_depth_bound_parses(text: str | bytes) -> None:
 def test_text_one_level_past_the_depth_bound_is_refused(text: str | bytes) -> None:
     with pytest.raises(ValueError):
         loads(text)
+
+
+def test_an_unclosed_string_of_escaped_quotes_is_scanned_in_linear_time() -> None:
+    # A scan that tries a string at each quote takes minutes on these 300 KB.
+    text = '"' + '\\"' * 150_000
+    start = time.perf_counter()
+    with pytest.raises(ValueError):
+        loads(text)
+    assert time.perf_counter() - start < 1

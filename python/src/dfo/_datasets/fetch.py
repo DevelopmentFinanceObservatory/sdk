@@ -176,6 +176,7 @@ async def fetch_members(
                 manifest, trace_id = await _build_latest(
                     transport,
                     build_body(want.spec, rendering, narrowing),
+                    rendering=rendering,
                     deadline=deadline,
                     on_progress=progress_hook(renderer),
                 )
@@ -208,13 +209,18 @@ async def _build_latest(
     transport: AsyncTransport,
     body: Wire,
     *,
+    rendering: Rendering,
     deadline: float | None,
     on_progress: ProgressHook | None,
 ) -> tuple[Wire, str | None]:
     """Build a spec's latest version, hinting a search when a member is gone."""
     try:
         return await build_version(
-            transport, body, deadline=deadline, on_progress=on_progress
+            transport,
+            body,
+            rendering=rendering,
+            deadline=deadline,
+            on_progress=on_progress,
         )
     except DfoError as error:
         if error.code == "member_not_resolvable":
@@ -309,7 +315,13 @@ async def mint(
     body = build_body(spec, rendering)
     reply = await post_build(transport, body, deadline=None)
     renderer = ProgressRenderer(enabled=progress)
-    poller = Poller(transport, reply, body=body, on_progress=progress_hook(renderer))
+    poller = Poller(
+        transport,
+        reply,
+        rendering=rendering,
+        body=body,
+        on_progress=progress_hook(renderer),
+    )
     return AsyncOperation(
         poller,
         _finisher(transport, Reading((), spec, spec.sentence), rendering, cache=cache),
@@ -337,7 +349,12 @@ async def operation(
     """
     rendering = rendering_for(layout, without_party_totals=without_party_totals)
     renderer = ProgressRenderer(enabled=progress)
-    poller = await resume(transport, operation_id, on_progress=progress_hook(renderer))
+    poller = await resume(
+        transport,
+        operation_id,
+        rendering=rendering,
+        on_progress=progress_hook(renderer),
+    )
     return AsyncOperation(
         poller,
         _finisher(transport, None, rendering, cache=cache),
@@ -415,17 +432,21 @@ async def build_version(
     transport: AsyncTransport,
     body: Wire,
     *,
+    rendering: Rendering,
     deadline: float | None,
     on_progress: ProgressHook | None,
 ) -> tuple[Wire, str | None]:
-    """Post a build and wait for its manifest, through a long build if needed.
+    """Post a build of `rendering` and wait for its manifest, through a long
+    build if needed.
 
     Returns the manifest and the trace id of the response that carried it.
     """
     reply = await post_build(transport, body, deadline=deadline)
     if reply.manifest is not None:
         return reply.manifest, reply.trace_id
-    poller = Poller(transport, reply, body=body, on_progress=on_progress)
+    poller = Poller(
+        transport, reply, rendering=rendering, body=body, on_progress=on_progress
+    )
     manifest = await poller.wait(deadline)
     return manifest, poller.trace_id
 
@@ -549,27 +570,30 @@ def store(
     digest: str,
     data: bytes | None = None,
 ) -> None:
+    """Store `data` under `digest`, and merge the artifact into the cached manifest.
+
+    `Cache.merging` holds the manifest while it is read, merged and written, so
+    fetches in one process keep each other's artifacts. A writer in another
+    process can still drop an entry, which the contract's cache-layout rule
+    allows, and that artifact's next fetch downloads it again.
+    """
     if cache is None:
         return
     if data is not None:
         cache.put_bytes(digest, data)
     spec_id = manifest["definition"]["spec_id"]
     content_version = manifest["content_version"]
-    stored = cache.get_manifest(spec_id, content_version, rendering)
     cached = dict(manifest)
     downloaded = [
         artifact
         for artifact in manifest["artifacts"]
         if artifact["artifact_digest"] == digest
     ]
-    prior = [] if stored is None else stored.get("artifacts", [])
-    cached["artifacts"] = _merge_artifacts(prior, downloaded)
-    cache.put_manifest(
-        spec_id,
-        content_version,
-        rendering,
-        cached,
-    )
+    with cache.merging(spec_id, content_version, rendering):
+        stored = cache.get_manifest(spec_id, content_version, rendering)
+        prior = [] if stored is None else stored.get("artifacts", [])
+        cached["artifacts"] = _merge_artifacts(prior, downloaded)
+        cache.put_manifest(spec_id, content_version, rendering, cached)
 
 
 def _merge_artifacts(prior: object, downloaded: Sequence[Wire], /) -> list[Wire]:
@@ -626,6 +650,7 @@ async def download(
     hash to `digest`, ask the route once more for a fresh URL. Reading stops
     once the file passes `size`, the manifest's `bytes` for the artifact, or
     `DEFAULT_MAX_BYTES` when that is not a byte count.
+    A redirect or a refusal is read under `JSON_BODY_MAX_BYTES` whatever the size.
 
     Raises:
         ServerError: The bytes did not hash to `digest` on either attempt
