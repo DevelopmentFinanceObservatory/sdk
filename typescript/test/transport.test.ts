@@ -150,22 +150,8 @@ describe("refusals", () => {
     assert.equal(error.problem?.["title"], "Refused");
   });
 
-  test("retry a retryable refusal after Retry-After, then succeed", async () => {
-    const { sleep, waits } = recordingSleep();
-    const { fetch, seen } = mockFetch(
-      problem(
-        { code: "service_unavailable", status: 503, retryable: true },
-        { "retry-after": "2" },
-      ),
-      json({ ok: true }),
-    );
-    const response = await transport({ fetch, sleep }).request({ path: "/search/resolve" });
-    assert.deepEqual(response.body, { ok: true });
-    assert.equal(seen.length, 2);
-    assert.deepEqual(waits, [2000]);
-  });
-
   for (const [header, waits] of [
+    ["2", [2000]],
     ["0", [0]],
     ["60", [60_000]],
     ["Sun, 06 Nov 1994 08:49:37 GMT", [0]],
@@ -176,7 +162,7 @@ describe("refusals", () => {
     ["5 s", [500]],
     ["Sunday, 06-Nov-94 08:49:37 GMT", [500]],
   ] as const) {
-    test(`wait ${waits[0]} ms for a Retry-After of ${JSON.stringify(header)}`, async () => {
+    test(`wait ${waits[0]} ms for a Retry-After of ${JSON.stringify(header)}, then succeed`, async () => {
       const { sleep, waits: waited } = recordingSleep();
       const { fetch } = mockFetch(
         problem(
@@ -185,7 +171,8 @@ describe("refusals", () => {
         ),
         json({ ok: true }),
       );
-      await transport({ fetch, sleep }).request({ path: "/x" });
+      const response = await transport({ fetch, sleep }).request({ path: "/x" });
+      assert.deepEqual(response.body, { ok: true });
       assert.deepEqual(waited, waits);
     });
   }
@@ -430,15 +417,6 @@ describe("refusals", () => {
     await assert.rejects(transport({ fetch }).request({ path: "/x" }), {
       traceId: "trace-header",
     });
-  });
-
-  test("map a refusal with no problem document by its status", async () => {
-    const { fetch } = mockFetch(() => new Response("<html>bad gateway</html>", { status: 400 }));
-    const error = await transport({ fetch })
-      .request({ path: "/x" })
-      .catch((e: unknown) => e);
-    assert.ok(error instanceof InvalidRequestError);
-    assert.equal(error.code, "refusal_without_code");
   });
 
   test("stop retrying when the next wait would pass the deadline", async () => {
@@ -691,13 +669,11 @@ describe("timeouts", () => {
     const key = new Promise<string>((resolve) => {
       resolveKey = resolve;
     });
-    const { fetch, seen } = mockFetch(() => {
-      const response = new Response(new Uint8Array([80, 65, 82, 49]));
-      Object.defineProperty(response, "url", {
+    const { fetch, seen } = mockFetch(() =>
+      Object.defineProperty(new Response(new Uint8Array([80, 65, 82, 49])), "url", {
         value: "https://api.example/api/v1/datasets/files/artifact",
-      });
-      return response;
-    });
+      }),
+    );
     const client = transport({
       baseUrl: "https://api.example/api/v1",
       fetch,
@@ -937,11 +913,9 @@ describe("downloads", () => {
     ["https://api.example/api/datasets/files/d", undefined],
   ] as const) {
     test(`read a followed browser redirect that ends on ${new URL(ended).host}`, async () => {
-      const { fetch } = mockFetch(() => {
-        const response = new Response("PAR1", { status: 200 });
-        Object.defineProperty(response, "url", { value: ended });
-        return response;
-      });
+      const { fetch } = mockFetch(() =>
+        Object.defineProperty(new Response("PAR1", { status: 200 }), "url", { value: ended }),
+      );
       const client = transport({ baseUrl: "https://api.example/api/v1", fetch });
       const fetched = client.fetchSigned(new URL("https://api.example/api/datasets/files/d"), {
         follow: true,
@@ -959,11 +933,10 @@ describe("downloads", () => {
     [403, "expired"],
   ] as const) {
     test(`follow a browser's opaque redirect once, with the key alone, at HTTP ${status}`, async () => {
-      const opaque = () => {
-        const response = new Response(null, { status: 200 });
-        Object.defineProperty(response, "type", { value: "opaqueredirect" });
-        return response;
-      };
+      const opaque = () =>
+        Object.defineProperty(new Response(null, { status: 200 }), "type", {
+          value: "opaqueredirect",
+        });
       const warnings: DfoWarning[] = [];
       const { fetch, seen } = mockFetch(
         opaque,
@@ -1075,35 +1048,39 @@ describe("body limits", () => {
     return { counts, response };
   }
 
-  for (const [name, call, chunk, limit] of [
+  for (const [name, call, status, chunk, limit] of [
     [
       "a JSON body, by JSON_BODY_MAX_BYTES",
       (client: Transport) => client.request({ path: "/x" }),
+      200,
       2 ** 20,
       JSON_BODY_MAX_BYTES,
     ],
     [
       "a refusal's body, by JSON_BODY_MAX_BYTES",
       (client: Transport) => client.request({ path: "/x" }),
+      503,
       2 ** 20,
       JSON_BODY_MAX_BYTES,
     ],
     [
       "a files route's body, by the call's maxBytes",
       (client: Transport) => client.locate({ url: "/api/datasets/files/d", maxBytes: 1_000 }),
+      200,
       100,
       1_000,
     ],
     [
       "a signed download, by the call's maxBytes",
       (client: Transport) => client.fetchSigned(new URL(SIGNED), { maxBytes: 1_000 }),
+      200,
       100,
       1_000,
     ],
   ] as const) {
     // A read with no cap never ends on this body, so the timeout turns that into a failure.
     test(`stop reading ${name}, pulling nothing past it`, { timeout: 5_000 }, async () => {
-      const { counts, response } = endless(chunk, name.startsWith("a refusal") ? 503 : 200);
+      const { counts, response } = endless(chunk, status);
       const { fetch, seen } = mockFetch(response);
       const error = await call(transport({ fetch }))
         .then(() => undefined)

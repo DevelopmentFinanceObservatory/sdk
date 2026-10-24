@@ -27,12 +27,12 @@ import { isRecord, parseJson } from "../core/json.ts";
 import { controlFault, hasDotSegment, headerFault, keyFault } from "../core/text.ts";
 
 /** The public API's base URL. */
-export const DEFAULT_BASE_URL = "https://developmentfinance.org/api/v1";
+const DEFAULT_BASE_URL = "https://developmentfinance.org/api/v1";
 /** The longest one request attempt waits, in milliseconds, unless a call sets its own. */
-export const DEFAULT_TIMEOUT_MS = 30_000;
-export const DEFAULT_MAX_RETRIES = 2;
+const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_RETRIES = 2;
 /** The storage host the API's files route redirects a download to. */
-export const STORAGE_ORIGIN = "https://storage.googleapis.com";
+const STORAGE_ORIGIN = "https://storage.googleapis.com";
 
 const BACKOFF_START_MS = 500;
 const BACKOFF_CAP_MS = 8_000;
@@ -60,6 +60,8 @@ const IMF_FIXDATE =
   /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), [0-9]{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT$/;
 /** The longest delay a platform timer holds, about 24.8 days; a longer limit is clamped to it. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
+/** A timer's delay for `ms`: whole milliseconds, at least 1 and at most `MAX_TIMER_MS`. */
+const timerMs = (ms: number): number => Math.min(Math.max(1, Math.ceil(ms)), MAX_TIMER_MS);
 /** The website proxy's `retry` value for a refusal that clears on its own. */
 const PROXY_RETRY = "retry_after_delay";
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
@@ -250,17 +252,12 @@ function resolveBaseUrl(baseUrl: string): URL {
 }
 
 /** The value of each header `init` gives, as name and value pairs, in order. Any iterable of
- *  pairs reads as one, since a `Headers` from another realm or package, such as npm undici's,
- *  is no instance of this realm's class. */
-function headerPairs(init: HeadersInit): [string, string][] {
-  if (isPairs(init)) return Array.from(init, ([name, value]) => [name, value]);
-  return Object.entries(init);
-}
-
-/** Whether `init` is the iterable kind of `HeadersInit`, a `Headers` or an array of pairs, by
- *  its shape, so a `Headers` of another realm's class counts. */
-const isPairs = (init: HeadersInit): init is Headers | [string, string][] =>
-  typeof (init as Partial<Iterable<unknown>>)[Symbol.iterator] === "function";
+ *  pairs reads as one, by its shape, since a `Headers` from another realm or package, such as
+ *  npm undici's, is no instance of this realm's class. */
+const headerPairs = (init: HeadersInit): Iterable<[string, unknown]> =>
+  typeof (init as Partial<Iterable<unknown>>)[Symbol.iterator] === "function"
+    ? (init as Iterable<[string, string]>)
+    : Object.entries(init);
 
 /**
  * Sets each header after checking its value is a string of visible ASCII, spaces and tabs. The
@@ -293,6 +290,9 @@ function setHeaders(headers: Headers, pairs: Iterable<[string, unknown]>, source
   }
 }
 
+/** Decodes a body as UTF-8. */
+const UTF8 = new TextDecoder();
+
 /** What the client's key reads as in server text it surfaces. */
 const REDACTED = "[redacted]";
 
@@ -315,8 +315,7 @@ function redacted(value: unknown, key: string | undefined): unknown {
  *  else its message. */
 function failureReason(error: unknown): string {
   const cause = error instanceof Error ? error.cause : undefined;
-  const code =
-    isRecord(cause) || cause instanceof Error ? (cause as { code?: unknown }).code : undefined;
+  const code = isRecord(cause) ? cause["code"] : undefined;
   if (typeof code === "string") return code;
   if (cause instanceof Error) return cause.message;
   return error instanceof Error ? error.message : String(error);
@@ -337,7 +336,7 @@ export class RawResponse {
 
   /** The body decoded as UTF-8. */
   text(): string {
-    return new TextDecoder().decode(this.body);
+    return UTF8.decode(this.body);
   }
 
   /**
@@ -378,7 +377,7 @@ const described = (value: unknown): string =>
  *
  * @throws {InvalidRequestError} It is not (`invalid_argument`).
  */
-export function checkedTimeout(value: unknown, name: string, infinite: boolean): number {
+function checkedTimeout(value: unknown, name: string, infinite: boolean): number {
   if (
     typeof value !== "number" ||
     Number.isNaN(value) ||
@@ -399,7 +398,7 @@ export function checkedTimeout(value: unknown, name: string, infinite: boolean):
  *
  * @throws {InvalidRequestError} It is not (`invalid_argument`).
  */
-export function checkedRetries(value: unknown): number {
+function checkedRetries(value: unknown): number {
   if (!Number.isInteger(value) || (value as number) < 0 || (value as number) > RETRIES_MAX) {
     throw clientError("invalid_argument", {
       detail: `maxRetries is an integer from 0 to ${RETRIES_MAX}, not ${described(value)}.`,
@@ -449,6 +448,10 @@ function isResponse(value: unknown): value is Response {
       typeof value["arrayBuffer"] === "function")
   );
 }
+
+/** Whether a response is a redirect, a browser's opaque one included. */
+const isRedirect = (response: Response): boolean =>
+  response.type === "opaqueredirect" || REDIRECT_STATUSES.has(response.status);
 
 /**
  * A response's body, its decoded bytes counted as they stream. Once they pass `limit` the reader
@@ -512,7 +515,7 @@ function problemBody(headers: Headers, body: Uint8Array): unknown {
   const type = headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
   if (type === undefined || !PROBLEM_TYPES.has(type)) return undefined;
   try {
-    return parseJson(new TextDecoder().decode(body));
+    return parseJson(UTF8.decode(body));
   } catch {
     return undefined;
   }
@@ -646,30 +649,25 @@ export class Transport {
    *  is not loopback, and warns once for a key that fails the format check. */
   #checkedKey(resolved: ResolvedKey): ResolvedKey {
     refuseSecretKeyInBrowser(resolved.key, this.#options.dangerouslyAllowBrowser ?? false);
-    if (
-      resolved.key !== null &&
-      this.baseUrl.protocol === "http:" &&
-      !isLoopback(this.baseUrl.hostname)
-    ) {
+    if (resolved.key === null) return resolved;
+    if (this.baseUrl.protocol === "http:" && !isLoopback(this.baseUrl.hostname)) {
       throw clientError("insecure_transport", {
         detail:
           `The API key would travel over plain http to ${this.baseUrl.host}, which is not a ` +
           "loopback host. Use an https base URL, or apiKey: false for anonymous use.",
       });
     }
-    if (resolved.key !== null) {
-      const verdict = checkKeyFormat(resolved.key.reveal());
-      if (verdict.verdict === "warn") {
-        warnOnce(
-          `key:${verdict.reason}:${resolved.key.masked}`,
-          clientWarning(
-            `key_${verdict.reason}`,
-            `The API key ${resolved.key.masked} from ${resolved.source} fails the key format ` +
-              `check (${verdict.reason}); it is sent anyway.`,
-          ),
-          this.#onWarning,
-        );
-      }
+    const verdict = checkKeyFormat(resolved.key.reveal());
+    if (verdict.verdict === "warn") {
+      warnOnce(
+        `key:${verdict.reason}:${resolved.key.masked}`,
+        clientWarning(
+          `key_${verdict.reason}`,
+          `The API key ${resolved.key.masked} from ${resolved.source} fails the key format ` +
+            `check (${verdict.reason}); it is sent anyway.`,
+        ),
+        this.#onWarning,
+      );
     }
     return resolved;
   }
@@ -705,14 +703,14 @@ export class Transport {
     } else {
       const base = this.baseUrl.pathname.replace(/\/+$/, "");
       const fault = controlFault(target.path);
-      const problem =
-        fault !== null
-          ? `holds ${fault}`
-          : hasDotSegment(target.path.split(/[?#]/)[0] ?? "")
-            ? "holds a . or .. segment, which would leave the API's base path"
-            : null;
-      if (problem !== null)
-        throw clientError("invalid_argument", { detail: `The path ${problem}.` });
+      if (fault !== null) {
+        throw clientError("invalid_argument", { detail: `The path holds ${fault}.` });
+      }
+      if (hasDotSegment(target.path.split(/[?#]/)[0] ?? "")) {
+        throw clientError("invalid_argument", {
+          detail: "The path holds a . or .. segment, which would leave the API's base path.",
+        });
+      }
       url = new URL(`${base}/${target.path.replace(/^\//, "")}`, this.baseUrl.origin);
       // A backstop for what the checks above miss, which keeps the URL under the base path.
       if (url.origin !== this.baseUrl.origin || !url.pathname.startsWith(`${base}/`)) {
@@ -732,19 +730,18 @@ export class Transport {
    *  followed, so no client header reaches another host. The key sent reads as `[redacted]` in
    *  the parsed body, as in a refusal's, so no error built from the body quotes it. */
   async request(options: RequestOptions): Promise<JsonResponse> {
-    const { response, body, key } = await this.#send(options);
-    if (this.#isRedirect(response)) {
+    const { response, body, key, url: sent } = await this.#send(options);
+    if (isRedirect(response)) {
       throw clientError("unexpected_response", {
         status: response.status,
-        detail: `${this.url(options).pathname} answered with a redirect, which this call does not follow.`,
+        detail: `${sent.pathname} answered with a redirect, which this call does not follow.`,
         traceId: traceIdOf(response.headers),
       });
     }
-    const text = new TextDecoder().decode(body);
-    const url = new URL(response.url || this.url(options, options.query));
+    const url = response.url ? new URL(response.url) : sent;
     let parsed: unknown;
     try {
-      parsed = redacted(parseJson(text), key);
+      parsed = redacted(parseJson(UTF8.decode(body)), key);
     } catch (error) {
       throw clientError("unexpected_response", {
         status: response.status,
@@ -780,8 +777,7 @@ export class Transport {
    */
   async locate(options: Target & CallOptions): Promise<Located> {
     const target = options.url === undefined ? this.url(options) : this.originUrl(options.url);
-    const ask = { ...options, method: "GET" };
-    const { response, body } = await this.#send(ask);
+    const { response, body } = await this.#send({ ...options, method: "GET" });
     if (response.type === "opaqueredirect") return { signed: target, follow: true };
     if (response.status === 200) return { data: body };
     const traceId = traceIdOf(response.headers, problemBody(response.headers, body));
@@ -848,7 +844,7 @@ export class Transport {
     // `#headers` gives no header for a URL off the API's origin.
     const { headers, key } = follow
       ? await this.#keyHeader(url, options)
-      : await this.#headers("GET", url, { url: url.href, ...options });
+      : await this.#headers("GET", url, options);
     const outcome = await this.#attempt(
       url,
       { ...options, maxBytes: options.maxBytes ?? DEFAULT_MAX_BYTES },
@@ -869,26 +865,25 @@ export class Transport {
       this.#warnFromHeaders(response.headers, url, key);
     }
     if (response.status !== 200) {
-      const host = ended.host;
       throw clientError("download_failed", {
         status: response.status,
-        detail: `The download from ${host} answered HTTP ${response.status}.`,
+        detail: `The download from ${ended.host} answered HTTP ${response.status}.`,
       });
     }
     return body;
   }
 
   /**
-   * Sends one request with retries, returning a 2xx response or a redirect with its body and the
-   * key it carried. A redirect is never followed. A 2xx body is read no further than `maxBytes`,
-   * any other no further than `JSON_BODY_MAX_BYTES`.
+   * Sends one request with retries, returning a 2xx response or a redirect with its body, the
+   * key it carried and the URL it went to. A redirect is never followed. A 2xx body is read no
+   * further than `maxBytes`, any other no further than `JSON_BODY_MAX_BYTES`.
    *
    * @throws {InvalidRequestError} The method is not one the API serves, `json` is not JSON or
    *   goes with a GET or HEAD, or the timeout or retry count is out of range
    *   (`invalid_argument`).
    * @throws {ServerError} A decoded body passed its limit (`response_too_large`).
    */
-  async #send(options: RequestOptions): Promise<Received & { key: string | undefined }> {
+  async #send(options: RequestOptions): Promise<Received & { key: string | undefined; url: URL }> {
     options.signal?.throwIfAborted();
     const method = options.method ?? (options.json === undefined ? "GET" : "POST");
     if (!METHODS.has(method)) {
@@ -920,8 +915,8 @@ export class Transport {
       } else {
         const { response, body } = outcome;
         this.#warnFromHeaders(response.headers, url, key);
-        if ((response.status >= 200 && response.status < 300) || this.#isRedirect(response)) {
-          return { ...outcome, key };
+        if ((response.status >= 200 && response.status < 300) || isRedirect(response)) {
+          return { ...outcome, key, url };
         }
         if (response.status === 401 && !reauthenticated) {
           // The key is resolved again after a 401, and a different key gets one more try.
@@ -974,32 +969,23 @@ export class Transport {
     }
   }
 
-  #isRedirect(response: Response): boolean {
-    return response.type === "opaqueredirect" || REDIRECT_STATUSES.has(response.status);
-  }
-
-  /** The wait before retrying failed attempt `attempt` (from 0) when its refusal carries no
-   *  `Retry-After`: 0.5 s, doubling to at most 8 s. */
-  backoff(attempt: number): number {
-    return Math.min(BACKOFF_START_MS * 2 ** attempt, BACKOFF_CAP_MS);
-  }
-
   /** The wait before retrying failed attempt `attempt` (from 0) after `error`, or undefined when
    *  the error raises now: it is not retryable, the deadline passed, its `Retry-After` is past
    *  `RETRY_AFTER_MAX_S`, or the wait would end at or past `deadline`. The wait is the
-   *  refusal's `Retry-After`, else `backoff(attempt)`. */
+   *  refusal's `Retry-After`, else a backoff of 0.5 s that doubles with each attempt to at most
+   *  8 s. */
   refusalWait(error: DfoError, attempt: number, deadline: number): number | undefined {
     if (!error.retryable || passedDeadline(error)) return undefined;
     const asked = error.retryAfterMs;
     if (asked !== null && asked > RETRY_AFTER_MAX_S * 1000) return undefined;
-    const wait = asked ?? this.backoff(attempt);
+    const wait = asked ?? Math.min(BACKOFF_START_MS * 2 ** attempt, BACKOFF_CAP_MS);
     return this.#now() + wait < deadline ? wait : undefined;
   }
 
   async #headers(
     method: string,
     url: URL,
-    options: RequestOptions,
+    options: CallOptions & Pick<RequestOptions, "json" | "headers">,
   ): Promise<{ headers: Headers; key: string | undefined }> {
     const headers = new Headers();
     if (url.origin !== this.baseUrl.origin) return { headers, key: undefined };
@@ -1007,39 +993,39 @@ export class Transport {
     if (!inBrowser()) headers.set("user-agent", `dfo-ts/${VERSION}`);
     setHeaders(headers, Object.entries(this.#options.defaultHeaders ?? {}), "the headers option");
     const { headerProvider } = this.#options;
-    const provided = await this.#waitForProvider(
-      () =>
-        headerProvider === undefined
-          ? undefined
-          : Promise.resolve()
-              .then(() => headerProvider({ method, url }))
-              .catch((error: unknown) => {
-                throw clientError("header_invalid", {
-                  detail:
-                    "The headerProvider raised an error " +
-                    `(${error instanceof Error ? error.message : String(error)}).`,
-                  cause: error,
-                });
-              }),
-      url,
-      options,
-      "The headerProvider",
-    );
-    if (provided !== undefined) setHeaders(headers, headerPairs(provided), "the headerProvider");
+    if (headerProvider !== undefined) {
+      // Plain JavaScript can return nothing, which adds no header.
+      const provided = await this.#waitForProvider<HeadersInit | undefined>(
+        () =>
+          Promise.resolve()
+            .then(() => headerProvider({ method, url }))
+            .catch((error: unknown) => {
+              throw clientError("header_invalid", {
+                detail:
+                  "The headerProvider raised an error " +
+                  `(${error instanceof Error ? error.message : String(error)}).`,
+                cause: error,
+              });
+            }),
+        url,
+        options,
+        "The headerProvider",
+      );
+      if (provided !== undefined) setHeaders(headers, headerPairs(provided), "the headerProvider");
+    }
     headers.set("accept", "application/json");
     if (options.json !== undefined) headers.set("content-type", "application/json");
     setHeaders(headers, Object.entries(options.headers ?? {}), "the call's headers");
-    const { headers: keyed, key } = await this.#keyHeader(url, options);
-    for (const [name, value] of keyed) headers.set(name, value);
-    return { headers, key };
+    return this.#keyHeader(url, options, headers);
   }
 
-  /** The key as the one header, for a request whose redirect the browser follows. */
+  /** Sets the key, if any, as the `authorization` header of `headers`: by default a fresh set
+   *  holding it alone, for a request whose redirect the browser follows. */
   async #keyHeader(
     url: URL,
     options: CallOptions,
+    headers = new Headers(),
   ): Promise<{ headers: Headers; key: string | undefined }> {
-    const headers = new Headers();
     const key = (
       await this.#waitForProvider(() => this.#key.promise, url, options, "The apiKey function")
     ).key?.reveal();
@@ -1074,53 +1060,36 @@ export class Transport {
             detail: `${name} gave nothing within ${limit.ms} ms, the attempt's timeout.`,
           });
 
-    const pending = Promise.resolve().then(provider);
-    return new Promise<T>((resolve, reject) => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let settled = false;
-      let onAbort: () => void = () => undefined;
-      const settle = (done: () => void): void => {
-        if (settled) return;
-        settled = true;
-        if (timer !== undefined) clearTimeout(timer);
-        signal?.removeEventListener("abort", onAbort);
-        done();
-      };
-      const fail = (error: unknown): void => {
-        settle(() => {
-          reject(error);
-        });
-      };
-      onAbort = (): void => {
-        fail(signal?.reason);
-      };
-      const arm = (): void => {
-        if (end === Infinity || settled) return;
-        const remaining = end - this.#now();
-        if (remaining <= 0) {
-          fail(expired());
-          return;
-        }
-        const wait = Math.min(Math.max(1, Math.ceil(remaining)), MAX_TIMER_MS);
-        timer = setTimeout(() => {
-          if (wait === Math.ceil(remaining)) fail(expired());
-          else arm();
-        }, wait);
-      };
-
-      signal?.addEventListener("abort", onAbort, { once: true });
-      arm();
-      pending.then(
-        (value) => {
-          settle(() => {
-            resolve(value);
-          });
-        },
-        (error: unknown) => {
-          fail(error);
-        },
-      );
+    let stop: (error: unknown) => void = () => undefined;
+    const stopped = new Promise<never>((_resolve, reject) => {
+      stop = reject;
     });
+    const onAbort = (): void => {
+      stop(signal?.reason);
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = (): void => {
+      const remaining = end - this.#now();
+      if (remaining <= 0) {
+        stop(expired());
+        return;
+      }
+      // A timer holds at most MAX_TIMER_MS, so a longer wait arms another when it fires.
+      const wait = timerMs(remaining);
+      timer = setTimeout(() => {
+        if (wait === Math.ceil(remaining)) stop(expired());
+        else arm();
+      }, wait);
+    };
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (end !== Infinity) arm();
+    try {
+      return await Promise.race([Promise.resolve().then(provider), stopped]);
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    }
   }
 
   /** How long the next attempt may run: its own timeout, or the time left before the deadline
@@ -1145,9 +1114,7 @@ export class Transport {
    */
   async #attempt(url: URL, options: CallOptions, init: RequestInit): Promise<Received | DfoError> {
     const limit = this.#limit(url, options);
-    const timer = Number.isFinite(limit.ms)
-      ? AbortSignal.timeout(Math.min(Math.max(1, Math.ceil(limit.ms)), MAX_TIMER_MS))
-      : undefined;
+    const timer = Number.isFinite(limit.ms) ? AbortSignal.timeout(timerMs(limit.ms)) : undefined;
     const signals = [options.signal, timer].filter((signal) => signal !== undefined);
     const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
     try {
@@ -1219,46 +1186,32 @@ export class Transport {
     const opening = (detail: unknown): string =>
       typeof detail === "string" ? detail : `HTTP ${status}`;
 
-    if (isRecord(body) && typeof body["code"] === "string" && REFUSAL_CODE.test(body["code"])) {
-      const code = body["code"];
+    // The website proxy's own refusal, {error, retry, detail}, carries its code as `error`.
+    const proxy = isRecord(body) && !("code" in body) && "error" in body;
+    const code = isRecord(body) ? body[proxy ? "error" : "code"] : undefined;
+    if (isRecord(body) && typeof code === "string" && REFUSAL_CODE.test(code)) {
       const ErrorClass = errorClassFor(code, status);
       return new ErrorClass({
         code: serverCode(code),
         status,
         detail: typeof body["detail"] === "string" ? body["detail"] : code,
-        message: refusalMessage(opening(body["detail"]), body["pointer"], code, unmatched(code)),
+        message: refusalMessage(
+          opening(body["detail"]),
+          proxy ? undefined : body["pointer"],
+          code,
+          unmatched(code),
+        ),
         traceId,
         retryable,
         retryAfterMs: retryAfter,
         problem: body,
-        docsUrl: this.#docsUrl(body["type"]),
-        cause,
-      });
-    }
-    if (
-      isRecord(body) &&
-      !("code" in body) &&
-      typeof body["error"] === "string" &&
-      REFUSAL_CODE.test(body["error"])
-    ) {
-      // The website proxy's own refusal: {error, retry, detail}.
-      const code = body["error"];
-      const ErrorClass = errorClassFor(code, status);
-      return new ErrorClass({
-        code: serverCode(code),
-        status,
-        detail: typeof body["detail"] === "string" ? body["detail"] : code,
-        message: refusalMessage(opening(body["detail"]), undefined, code, unmatched(code)),
-        traceId,
-        retryable,
-        retryAfterMs: retryAfter,
-        problem: body,
+        docsUrl: proxy ? null : this.#docsUrl(body["type"]),
         cause,
       });
     }
     // A body with no code keeps what a problem document says: whether to retry, its trace id. A
     // code that is not snake case, or a proxy body whose `error` is free text, keeps that text.
-    const problem = isRecord(body) && ("code" in body || !("error" in body)) ? body : null;
+    const problem = isRecord(body) && !proxy ? body : null;
     const text = isRecord(body)
       ? [body["code"], body["error"]].find((value) => typeof value === "string")
       : undefined;
