@@ -198,7 +198,7 @@ function isLoopback(hostname: string): boolean {
 
 /**
  * The base URL as an absolute http or https URL. A relative one resolves against the page. The
- * errors never quote the URL, which may carry a password.
+ * errors leave the URL out, since it may carry a password.
  *
  * @throws {InvalidRequestError} The base URL is empty, holds a character outside visible ASCII,
  *   does not resolve to an absolute http or https URL, carries userinfo, a query, a fragment
@@ -258,8 +258,8 @@ function headerPairs(init: HeadersInit): [string, string][] {
 
 /**
  * Sets each header after checking its value is a string of visible ASCII, spaces and tabs. The
- * error names the header, its source and the character's position, never the value, which may
- * be a token.
+ * error names the header, its source and the character's position, and leaves the value out,
+ * since it may be a token.
  *
  * @throws {InvalidRequestError} A value is not a string or holds another character, or a name is
  *   one HTTP cannot carry (`header_invalid`).
@@ -355,7 +355,8 @@ export function retryAfterMs(headers: Headers, now: number = Date.now()): number
   return Number.isNaN(date) ? undefined : Math.max(0, date - now);
 }
 
-/** A non-number, or a number for `describe` to quote, without quoting a string's text. */
+/** A number as text, else a name for the value's type, which keeps a string's text out of an
+ *  error message. */
 const described = (value: unknown): string =>
   typeof value === "number"
     ? String(value)
@@ -429,9 +430,9 @@ function jsonText(json: unknown, method: string): string {
 }
 
 /** Whether a custom `fetch` returned something `Transport` can read as a `Response`: a numeric
- *  status, headers with `get`, and a body stream or `arrayBuffer`. The shape is checked, not the
- *  class, since a `fetch` from another package or realm, such as npm undici's, brings its own
- *  `Response` and `Headers` classes. */
+ *  status, headers with `get`, and a body stream or `arrayBuffer`. It checks the shape, since a
+ *  `fetch` from another package or realm, such as npm undici's, brings its own `Response` and
+ *  `Headers` classes. */
 function isResponse(value: unknown): value is Response {
   if (!isRecord(value) || typeof value["status"] !== "number") return false;
   const { headers, body } = value;
@@ -444,8 +445,8 @@ function isResponse(value: unknown): value is Response {
 }
 
 /**
- * A response's body, its decoded bytes counted as they stream, read no further once they pass
- * `limit`: the reader is cancelled there and nothing more is pulled.
+ * A response's body, its decoded bytes counted as they stream. Once they pass `limit` the reader
+ * is cancelled and nothing more is pulled.
  *
  * @returns The body, or null once it passed `limit`.
  */
@@ -707,7 +708,7 @@ export class Transport {
       if (problem !== null)
         throw clientError("invalid_argument", { detail: `The path ${problem}.` });
       url = new URL(`${base}/${target.path.replace(/^\//, "")}`, this.baseUrl.origin);
-      // A backstop for what the checks above miss: the URL stays under the base path.
+      // A backstop for what the checks above miss, which keeps the URL under the base path.
       if (url.origin !== this.baseUrl.origin || !url.pathname.startsWith(`${base}/`)) {
         throw clientError("invalid_argument", {
           detail: `The path ${JSON.stringify(target.path)} leaves the API's base path ${base || "/"}.`,
@@ -1183,9 +1184,9 @@ export class Transport {
 
   /**
    * The error a refusal stands for: a problem document, the proxy's own body, or neither. The
-   * key sent reads as `[redacted]` in the body. A code that is not snake case is no code; its
-   * text stays in the detail. A 404 that matched no route, `not_found` or no code, names the
-   * request in the message, since the base URL is the likely fault; the detail stays the
+   * key sent reads as `[redacted]` in the body. A code that is not snake case is no code, and
+   * its text stays in the detail. A 404 that matched no route, `not_found` or no code, names the
+   * request in the message, since the base URL is the likely fault. The detail stays the
    * server's.
    */
   #refusal(

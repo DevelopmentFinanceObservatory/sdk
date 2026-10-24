@@ -87,7 +87,7 @@ const RAW_PARSERS: Partial<ParquetParsers> = {
  * Reads a Parquet file's footer and column types.
  *
  * @throws {ContractError} The bytes are not a Parquet file the client can read
- *   (`unexpected_response`); or two columns share a name, or a column is nested or of a type the
+ *   (`unexpected_response`), or two columns share a name, or a column is nested or of a type the
  *   client cannot read (`contract_violation`).
  */
 export function readParquet(bytes: Uint8Array): ParquetFile {
@@ -271,7 +271,7 @@ function widenDecimal(left: ColumnType, right: ColumnType): ColumnType | undefin
 
 /** The stacked table's columns: `part` first when there are several files, then every
  *  file's columns in file order, each of the type `widen` gives its files' types. A file with no
- *  rows adds no columns unless every file is empty, when the first file gives them: the server
+ *  rows adds no columns unless every file is empty, when the first file gives them. The server
  *  writes every column of an empty file as a string, which would not widen to a number.
  *
  * @throws {ContractError} A member's file has its own `part` column, or a column's types in two

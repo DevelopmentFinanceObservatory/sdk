@@ -342,7 +342,7 @@ def _cached_version(
     """The cached manifest and bytes of a ref member, or None.
 
     The manifest must list the member's artifact, and the bytes hash to its
-    digest; the cache checks the manifest's shape and version.
+    digest. The cache checks the manifest's shape and version.
     """
     if cache is None:
         return None

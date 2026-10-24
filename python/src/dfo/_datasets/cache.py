@@ -97,7 +97,7 @@ def cache_path(
 ) -> Path:
     """The absolute cache directory, `<root>/v1/dfo/cache1`, by the cache-dir rule.
 
-    A relative root resolves against the working directory now, so a later
+    A relative root resolves against the working directory at call time, so a later
     `chdir` does not move the cache.
 
     Raises:

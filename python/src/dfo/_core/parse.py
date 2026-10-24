@@ -85,8 +85,8 @@ def require_members(
 ) -> Mapping[str, Any]:
     """Return `obj` when it is an object carrying each of `members` as its JSON type.
 
-    `require` checks a schema `dfo._generated.strict` lists; a lookup names the
-    members of the schema its response has.
+    `require` checks a schema that `dfo._generated.strict` lists. A lookup names
+    the members of the schema its response has.
 
     Raises:
         ContractError: As `require` does.

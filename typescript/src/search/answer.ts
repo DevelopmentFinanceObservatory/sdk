@@ -134,9 +134,9 @@ export type QueryOption = {
   readonly label: string;
   /** The question's words the choice settles. */
   readonly mentions: readonly string[];
-  /** The parsed question with the choice pinned, which `answer.choose` posts back to Search: as
-   *  it stands in a one-part answer, its one part beside the other parts' entries otherwise.
-   *  Null when the server sent none or sent one that is not a parsed input, and a choice of the
+  /** The parsed question with the choice pinned, which `answer.choose` posts back to Search. It
+   *  goes as it stands in a one-part answer, and as its one part beside the other parts' entries
+   *  otherwise. Null when the server sent none or sent one that is not a parsed input, and a choice of the
    *  option then refuses as a `ContractError`. */
   readonly dataQuery: ParsedInput | null;
 };

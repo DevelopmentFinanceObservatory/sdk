@@ -8,13 +8,13 @@
  * error can say where a key or header breaks without quoting it.
  */
 
-/** Any character outside visible ASCII: what a key may not hold. */
+/** Any character outside visible ASCII, which a key may not hold. */
 const OUTSIDE_VISIBLE_ASCII = /[^\x21-\x7e]/;
 
-/** Any character but visible ASCII, a space or a tab: what a header value may not hold. */
+/** Any character but visible ASCII, a space or a tab, which a header value may not hold. */
 const OUTSIDE_HEADER = /[^\x20-\x7e\t]/;
 
-/** A C0 or C1 control or DEL, a tab included: what a path or an id may not hold. */
+/** A C0 or C1 control or DEL, a tab included, which a path or an id may not hold. */
 const CONTROL = /[\x00-\x1f\x7f-\x9f]/;
 
 /** The characters that steer a terminal or reorder text: the C0 controls but tab and line

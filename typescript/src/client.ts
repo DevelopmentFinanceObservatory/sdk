@@ -34,12 +34,12 @@ export type ClientOptions = {
    *  default. */
   maxRetries?: number;
   /** Headers sent with every request to the API, never to a signed storage URL. A `User-Agent` here
-   *  replaces the client's own. While the client has a key, `Authorization`
-   *  carries it and replaces one from here or from `headerProvider`; with `apiKey: false` the
-   *  `Authorization` given here is sent. */
+   *  replaces the client's own. While the client has a key, `Authorization` carries it and
+   *  replaces one from here or from `headerProvider`. With `apiKey: false` the `Authorization`
+   *  given here is sent. */
   headers?: Record<string, string>;
   /** Called before every request to the API for more headers, such as an identity token. Its
-   *  headers replace those of `headers`, and the key's `Authorization` replaces its own. An
+   *  headers replace those of `headers`, and the key's `Authorization` replaces any it returns. An
    *  error it raises reaches the caller as `InvalidRequestError` (`header_invalid`), with that
    *  error as the `cause`. */
   headerProvider?: HeaderProvider;

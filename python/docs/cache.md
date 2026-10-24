@@ -32,7 +32,7 @@ Each entry is written to a temporary name and renamed into place, so a reader ne
 
 The cache keeps up to 2 GiB of files and evicts the least recently read first. A write the disk refuses logs a warning on the `dfo` logger and the fetch carries on. Fetches in one process that need the same file download it once, and the others read the stored copy.
 
-A relative `cache_dir`, or a relative `DFO_CACHE_DIR`, resolves against the working directory when the client is built, so a later `chdir` does not move the cache. An empty path, or one with a NUL character, raises `InvalidRequestError` with `invalid_argument`.
+A relative `cache_dir`, or a relative `DFO_CACHE_DIR`, resolves against the working directory when the client is built, so a later `chdir` leaves the cache where it was. An empty path, or one with a NUL character, raises `InvalidRequestError` with `invalid_argument`.
 
 `dfo cache clear` empties it:
 

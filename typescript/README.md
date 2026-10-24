@@ -16,7 +16,9 @@ Every call goes through a `Client`. Ask a question, then fetch the data it reads
 import { Client, DatasetRef, IncompleteAnswerError } from "@developmentfinance/client";
 
 const client = new Client();
-const answer = await client.search("ODA disbursements from Germany to Nigeria for basic health care");
+const answer = await client.search(
+  "ODA disbursements from Germany to Nigeria for basic health care",
+);
 console.log(answer.sentence);
 
 const dataset = await answer.fetch();
@@ -56,8 +58,9 @@ import { Client } from "@developmentfinance/client";
 const client = new Client({
   onWarning: (warning) => console.log(warning.name, (warning as any).code),
 });
-const spec = (await client.search("ODA disbursements from Germany to Nigeria for basic health care"))
-  .specs[0]!;
+const spec = (
+  await client.search("ODA disbursements from Germany to Nigeria for basic health care")
+).specs[0]!;
 
 const empty = await client.fetch(spec, { window: [1900, 1901] });
 console.log(empty.sentence);
@@ -83,7 +86,7 @@ The constructor takes `baseUrl`, `apiKey`, `fetch`, `timeout`, `maxRetries`, `he
 
 A provider or recipient column can hold a total beside its members. "DAC countries" sits in the same column as Germany, so summing `value` counts a donor more than once. For Ethiopia in 2022 the table has 110 rows that sum to 23.8 billion dollars, and 95 rows that sum to 5.55 billion without the totals.
 
-`withoutPartyTotals: true` builds the dataset without the rows of parties the code index declares totals, on each party role the spec leaves open. `answer.fetch`, `client.fetch`, `client.mint` and `client.operation` take it beside `layout`:
+`withoutPartyTotals: true` drops the rows of parties the code index declares to be totals, on each party role the spec leaves open. `answer.fetch`, `client.fetch`, `client.mint` and `client.operation` take it beside `layout`:
 
 ```text
 110 95
@@ -119,7 +122,7 @@ A ref records the cut. `dataset.ref` of a cut dataset carries `without_party_tot
 
 ## Refs and digests
 
-`client.fetch(ref)` reads each version from its stored file by the digest the ref holds. When the server no longer has a file with that digest, it builds the version again and accepts the build when it returns the ref's version. A digest names one rendering of a version: the server can render the same rows to a file with another digest. The fetch then returns the data with a `DfoWarning` coded `ref_digest_changed`, which names both digests, and `dataset.ref` carries the rebuilt file's digest. Save that ref to stop the warning. `strict` leaves it a warning, because the data is the version the ref names.
+`client.fetch(ref)` reads each version from its stored file by the digest the ref holds. When the server no longer has a file with that digest, it builds the version again and accepts the build when it returns the ref's version. A digest names one rendering of a version, and the server can render the same rows to a file with another digest. The fetch then returns the data with a `DfoWarning` coded `ref_digest_changed`, which names both digests, and `dataset.ref` carries the rebuilt file's digest. Save that ref to stop the warning. `strict` leaves it a warning, because the data is the version the ref names.
 
 The next example changes the digest in a saved ref to show the warning:
 
@@ -151,7 +154,7 @@ A version the server cannot rebuild raises `VersionUnavailableError`. Its `newes
 
 ## Timeouts
 
-Times are in milliseconds. The client's `timeout`, 30 seconds by default, bounds one request attempt, and a failed attempt is retried up to `maxRetries` times. Both are checked when the client is built: `timeout` is a finite number above 0 and `maxRetries` an integer from 0 to 10. `Infinity`, `NaN`, 0 or a value that is not a number raises `InvalidRequestError` with `invalid_argument`. A call's own `timeout` can be `Infinity`, which waits without limit. `client.search(question, { timeout })`, 60 seconds by default, bounds the whole search, and each attempt reads until then. `client.fetch(target, { timeout })` and `operation.result({ timeout })`, 30 minutes by default, bound the whole call: builds, polls and downloads, where each download reads for the time left. A build's POST, a mint's included, reads for up to 150 seconds within that. A call that runs out of time raises `DfoTimeoutError` with the code `deadline_exceeded`, even part way through a body; a long build's error names the `client.operation(id)` call that resumes it. A poll wait that would pass the deadline raises that error at once, instead of polling one last time.
+Times are in milliseconds. The client's `timeout`, 30 seconds by default, bounds one request attempt, and a failed attempt is retried up to `maxRetries` times. Both are checked when the client is built: `timeout` is a finite number above 0 and `maxRetries` an integer from 0 to 10. `Infinity`, `NaN`, 0 or a value that is not a number raises `InvalidRequestError` with `invalid_argument`. A call's own `timeout` can be `Infinity`, which waits without limit. `client.search(question, { timeout })`, 60 seconds by default, bounds the whole search, and each attempt reads until then. `client.fetch(target, { timeout })` and `operation.result({ timeout })`, 30 minutes by default, bound the whole call: builds, polls and downloads, where each download reads for the time left. A build's POST, a mint's included, reads for up to 150 seconds within that. A call that runs out of time raises `DfoTimeoutError` with the code `deadline_exceeded`, even part way through a body; a long build's error names the `client.operation(id)` call that resumes it. A poll wait that would pass the deadline raises that error at once, without a last poll.
 
 ## Limits the client enforces
 
@@ -324,7 +327,7 @@ A key holds visible ASCII only, the characters 0x21 to 0x7E. A key from any sour
 
 The credentials file is a strict subset of TOML: UTF-8 text with blank lines, `#` comments on their own line, `[name]` headers and `name = "value"` lines, where a name holds `A-Z`, `a-z`, `0-9`, `_` and `-`, and a value holds no `"`, `\` or control character. Anything else is a fault, though a full TOML reader would accept it: a byte order mark, a comment after a value, single quotes, an unquoted value, or a dotted table such as `[a.b]`. The message names the line and one of the reasons `outside_table`, `duplicate_table`, `duplicate_key` and `invalid_line`.
 
-`headers` adds headers to every API request, and `headerProvider` returns more headers before each request. Later sources replace earlier ones of the same name: a `User-Agent` in `headers` replaces the client's own, and a header of the provider replaces one in `headers`. While the client has a key, its `Authorization` header replaces one from either source. With `apiKey: false`, an `Authorization` header you set is sent. Every value is a string of visible ASCII, spaces and tabs, and a value with a control or non-ASCII character raises `InvalidRequestError` with `header_invalid`, naming the header and the position and leaving the value out. An error the provider throws reaches the caller as `header_invalid`, with the original as `cause`.
+`headers` adds headers to every API request, and `headerProvider` returns more headers before each request. Later sources replace earlier ones of the same name. A `User-Agent` in `headers` replaces the client's own, and a header of the provider replaces one in `headers`. While the client has a key, its `Authorization` header replaces one from either source. With `apiKey: false`, an `Authorization` header you set is sent. Every value is a string of visible ASCII, spaces and tabs, and a value with a control or non-ASCII character raises `InvalidRequestError` with `header_invalid`, naming the header and the position and leaving the value out. An error the provider throws reaches the caller as `header_invalid`, with the original as `cause`.
 
 ## In a browser
 
@@ -340,5 +343,4 @@ The two clients follow one contract. These differences are deliberate:
 
 - A call's `timeout: Infinity` waits without limit. The Python client uses `None`, and each client refuses the other's value with `invalid_argument`. The client-level `timeout` accepts neither.
 - TypeScript reads a downloaded Parquet file's footer and column types at fetch and decodes the row values on first use. Python decodes the whole file at fetch. Both raise `unexpected_response` for bytes that do not read as Parquet and `contract_violation` for a file with the wrong schema.
-- A long build whose next poll would pass the call's deadline raises the `DfoTimeoutError` that names the resuming call at once, in both clients.
 - `JSON.stringify(ref)` writes no spaces after `,` and `:`, and Python's `ref.to_json()` writes `", "` and `": "`. The content and the key order match, and each client reads the other's refs.

@@ -363,9 +363,10 @@ def build_dataset(
     counts some, and, when it holds rows, a numeric `value`. One that does not
     leaves `cache`, so the next fetch downloads it again. An empty member adds
     no rows to a stacked table.
+
     Each member's layout comes from the manifest's artifact for its digest, else
-    from the member's rendering. Several members stack into one
-    long table, a `part` column first, holding each member's parts joined by "; "
+    from the member's rendering. Several members stack into one long table, a
+    `part` column first, holding each member's parts joined by "; "
     (its sentence when it answers no part). Columns one member lacks are null in
     its rows, and a column whose types differ in width widens, as an int32 with an
     int64 to int64 and an integer with a double to double.
@@ -595,7 +596,7 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
     )
 
 
-# The members of a saved file's `dfo.dataset` object.
+# The keys a saved file's `dfo.dataset` object holds.
 _SAVED_DATASET_KEYS = (
     "member_citations",
     "warnings",

@@ -636,8 +636,8 @@ def decode(text: str | bytes, pointer: str = "") -> Mapping[str, Any]:
             pointer of an error.
 
     Raises:
-        FormatError: The text is not JSON, nests deeper than 256 levels, or is
-            not an object.
+        FormatError: The text is not JSON, nests deeper than `JSON_MAX_DEPTH`
+            levels, or is not an object.
     """
     try:
         obj = loads(text, parse_constant=_no_constant)
@@ -735,7 +735,7 @@ class RawResponse:
 
         Raises:
             ValueError: The body is not JSON, or nests arrays and objects deeper
-                than 256 levels.
+                than `JSON_MAX_DEPTH` levels.
         """
         return loads(self.content)
 

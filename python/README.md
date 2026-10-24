@@ -114,18 +114,17 @@ Both DFO clients apply these limits. The constant names are the ones in the sour
 | Keys                | Visible ASCII only, 0x21 to 0x7E. The key-format check (prefix, base62, checksum) only warns                                                                                                                                                   |
 | Header values       | Visible ASCII, space and tab. A control character, DEL or a non-ASCII character raises `header_invalid`                                                                                                                                        |
 | `timeout`           | A finite number above 0                                                                                                                                                                                                                        |
-| `max_retries`       | An integer from 0 to 10; a bool is refused                                                                                                                                                                                                     |
+| `max_retries`       | An integer from 0 to 10. A bool is refused                                                                                                                                                                                                     |
 | Error messages      | Name the source and the position of the offending character, and leave the key or header value out                                                                                                                                             |
 
 A key travels only to an https base URL, or to a loopback one over http: `localhost`, a name under `.localhost`, an address in 127.0.0.0/8 written as four decimal numbers, or `[::1]`. Any other plain-http base URL with a key raises `insecure_transport`. [Errors](docs/errors.md#client-codes) lists the code each rule raises.
 
 ## Differences from the TypeScript client
 
-The two clients follow one contract. These differences are deliberate:
+The two clients follow one contract and differ in these ways:
 
 - A call's `timeout=None` waits without limit. The TypeScript client uses `Infinity`, and each client refuses the other's value with `invalid_argument`.
 - Python decodes a downloaded Parquet file when `fetch` returns. TypeScript reads its footer and column types then and decodes the row values on first use. Both raise `unexpected_response` for bytes that do not read as Parquet and `contract_violation` for a file with the wrong schema.
-- A long build whose next poll would pass the call's deadline raises the `DfoTimeoutError` that names the resuming call at once, in both clients.
 - `ref.to_json()` writes `", "` and `": "` as separators, and TypeScript's `JSON.stringify` writes none. The content and the key order match, and each client reads the other's refs.
 
 ## Documentation

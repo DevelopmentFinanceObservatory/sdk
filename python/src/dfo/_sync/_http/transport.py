@@ -14,10 +14,10 @@ or dot segment, whose host, when it reads as an IPv4 address, is four decimal
 numbers such as 127.0.0.1, not `127.1` or `2130706433` (`base_url_invalid`). Two
 URLs share an origin when their scheme, host and port match after lower-casing,
 dropping the scheme's default port and a host's trailing dot. A key never
-travels over plain http to a host that is not loopback (`insecure_transport`):
-`localhost`, a name under `.localhost`, an address in 127.0.0.0/8 or `[::1]`,
-compared lower case without one trailing dot. A key or header value with a character the
-header cannot hold is refused before any request (`key_invalid`,
+travels over plain http to a host that is not loopback (`insecure_transport`).
+Loopback is `localhost`, a name under `.localhost`, an address in 127.0.0.0/8 or
+`[::1]`, compared lower case without one trailing dot. A key or header value with
+a character the header cannot hold is refused before any request (`key_invalid`,
 `header_invalid`), and a path with a dot segment is refused (`invalid_argument`).
 
 A forked child keeps its parent's transports and settings. The first request in a
@@ -115,11 +115,11 @@ POLL_INTERVAL_MAX_S = 60.0
 # The decoded bytes a downloaded file may hold when its manifest names no size.
 DEFAULT_MAX_BYTES = 2 * 2**30
 
-# The decoded bytes an API response's body may hold: the larger of 16 MiB and ten
-# times the largest JSON body recorded, rounded. The largest recorded is the
-# `/search/schema` body in tests/data/search-schema.json, 267,493 bytes, above
-# every response in contract/scenarios (137,783 bytes at most) and every manifest
-# the e2e runs cached (140,748 bytes at most), so the floor holds.
+# The decoded bytes an API response's body may hold, the larger of 16 MiB and ten
+# times the largest JSON body recorded, rounded. That body is `/search/schema` in
+# tests/data/search-schema.json, 267,493 bytes, above every response in
+# contract/scenarios (137,783 bytes at most) and every manifest the e2e runs
+# cached (140,748 bytes at most), so the 16 MiB floor applies.
 JSON_BODY_MAX_BYTES = 16 * 2**20
 
 # The most retries a client takes.
@@ -159,7 +159,7 @@ def _refuse_offline(request: str) -> None:
 
 
 def _split_base_url(base_url: str) -> tuple[str, str]:
-    """The base URL on its origin's form without a trailing slash, and the origin.
+    """The base URL as its origin and path with no trailing slash, and the origin.
 
     Raises:
         InvalidRequestError: `base_url` is empty, holds a character outside
@@ -240,7 +240,7 @@ def _checked_headers(headers: Mapping[str, str], source: str) -> Mapping[str, st
     Raises:
         InvalidRequestError: A value is not a string, or holds a control or
             non-ASCII character (`header_invalid`). The message names the
-            header and the character's position, never the value.
+            header and the character's position, and omits the value.
     """
     for name, value in headers.items():
         if not isinstance(value, str):
@@ -542,10 +542,10 @@ class _Pool:
 
     The first use in a process other than the one that built it, a forked child,
     builds a fresh client and keeps the inherited one, unclosed, in
-    `_inherited`: sending on the parent's connections, or closing them, would
+    `_inherited`. Sending on the parent's connections, or closing them, would
     garble the parent's traffic. An async client's connections belong to the
     event loop that opened them, so the first use on another loop builds a fresh
-    client too; the old loop has usually closed, and its connections with it. A
+    client too. The old loop has usually closed, and its connections with it. A
     client over a transport the caller passed in is kept as it is, since that
     transport holds its own connections. Once closed, the pool refuses every use.
 
@@ -927,7 +927,7 @@ class Transport:
         return headers
 
     def _secret(self) -> str | None:
-        """The key's value, which server text the client shows never quotes."""
+        """The key's value, to strip from server text the client shows."""
         key = self._keys.resolved.key
         return None if key is None else key.reveal()
 
@@ -989,16 +989,15 @@ class Transport:
         A 2xx or 3xx response, a redirect included, returns as it is.
         A refusal retries when its problem document says `retryable` (or, with
         no such member, when its status is one that clears), waiting for
-        `Retry-After` or backing off from 0.5 to 8 seconds. A `Retry-After`
-        past 60 seconds, or past the deadline, raises the refusal at once with
-        its `retry_after` set. A 401 resolves the
-        key again and, when the key changed, sends once more; when that lookup
-        fails, the 401 raises with the failure as its cause. A 404 that matched
-        no route names the request, since the base URL is the likely fault. A
-        refusal's body
-        is read as a problem document when its media type is
-        `application/problem+json` or `application/json`, and its trace id
-        falls back to the `x-dfo-trace-id` header.
+        `Retry-After` or backing off from 0.5 to 8 seconds. A `Retry-After` past
+        `RETRY_AFTER_MAX_S`, or past the deadline, raises the refusal at once with
+        its `retry_after` set. A 401 resolves the key again and, when the key
+        changed, sends once more. When that lookup fails, the 401 raises with the
+        failure as its cause. A 404 that matched no route names the request,
+        since the base URL is the likely fault. A refusal's body is read as a
+        problem document when its media type is `application/problem+json` or
+        `application/json`, and its trace id falls back to the `x-dfo-trace-id`
+        header.
 
         Args:
             method: The HTTP method, in any case.
@@ -1151,8 +1150,10 @@ class Transport:
         return response.content
 
     def close(self) -> None:
-        """Close the connection pool, when this transport built it. Later
-        requests through it or its copies raise `InvalidRequestError`."""
+        """Close the connection pool, when this transport built it.
+
+        Later requests through it or its copies raise `InvalidRequestError`.
+        """
         if self._owner:
             self._pool.close()
 

@@ -13,11 +13,12 @@
  * built identity binds to the same entities, so a window or facets narrowing keeps every group
  * and a role that `entities` rebound or dropped loses its group. A narrowing that holds no
  * observations builds an empty file, which Search answers with one `no_data` part, and the
- * fetch returns the empty dataset under that part's sentence, beside the manifest's warnings. Every download asks a files
- * route on the API's origin, fetches the URL it redirects to, bare on the storage host and as an
- * API request on the API's origin, and is checked against its digest before the fetch returns.
- * Members build one after another, under one deadline: each request attempt, the files route
- * ask included, waits the client's timeout within it, and a download reads until the deadline.
+ * fetch returns the empty dataset under that part's sentence, beside the manifest's warnings.
+ * Every download asks a files route on the API's origin, fetches the URL it redirects to, bare
+ * on the storage host and as an API request on the API's origin, and is checked against its
+ * digest before the fetch returns. Members build one after another, under one deadline: each
+ * request attempt, the files route ask included, waits the client's timeout within it, and a
+ * download reads until the deadline.
  */
 
 import type { Gap } from "../search/answer.ts";
@@ -88,7 +89,7 @@ export type CallOptions = {
   strict?: boolean;
   layout?: Layout;
   /** Leave out the rows of parties the code index declares totals, such as the DAC total beside
-   *  its members, on each party role a reading leaves open. False for a spec; a ref holds its
+   *  its members, on each party role a reading leaves open. False for a spec. A ref holds its
    *  own choice, and naming another raises. */
   withoutPartyTotals?: boolean;
 };
@@ -509,7 +510,7 @@ async function sentenceFor(
         part["status"] === "no_data" &&
         countedRows(manifest) === 0
       ) {
-        // A build that holds no observations: Search names what it checked and found empty.
+        // A build that holds no observations. Search names what it checked and found empty.
         sentence = part["rendered_sentence"];
       }
     }

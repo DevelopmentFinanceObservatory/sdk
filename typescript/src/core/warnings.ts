@@ -65,7 +65,7 @@ export const emitWarning: WarningHandler = (warning) => {
 };
 
 /** The keys `warnOnce` has seen. At `WARNED_MAX` the set starts again, so a server that sends a
- *  new warning with every response cannot grow it without bound; a warning seen before the
+ *  new warning with every response cannot grow it without bound. A warning seen before the
  *  restart can show once more. */
 const WARNED_MAX = 1024;
 const shown = new Set<string>();

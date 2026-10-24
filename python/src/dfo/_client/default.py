@@ -10,7 +10,7 @@ uses it, since another thread may still be in a call on it, and the default clie
 closes at exit.
 A forked child keeps the default client, and with it the options `configure`
 set. Its transport builds a fresh connection pool on the child's first request
-and leaves the parent's connections untouched; the child takes a fresh lock,
+and leaves the parent's connections untouched. The child takes a fresh lock,
 since another thread may have held the parent's as the process forked. That
 pool routes through the proxy settings the parent resolved. A client the child
 builds for itself looks the platform's proxy settings up in the child.

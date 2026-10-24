@@ -530,8 +530,8 @@ def holding(
     *,
     deadline: float | None,
 ) -> Hold | nullcontext[None]:
-    """`Cache.downloading` for `digest`, waiting until `deadline`; nothing without
-    a cache.
+    """`Cache.downloading` for `digest`, waiting until `deadline`. Without a cache
+    it holds nothing.
 
     Concurrent fetches of one artifact wait while the first reads, downloads
     and stores it, then read the stored file, so it downloads once.
@@ -624,8 +624,8 @@ async def download(
     resolves against the route's URL and is fetched once, with a bare request on
     the storage host. A signed fetch that fails retryably, or bytes that do not
     hash to `digest`, ask the route once more for a fresh URL. Reading stops
-    once the file passes `size`, the manifest's `bytes` for the artifact, or 2
-    GiB when that is not a byte count.
+    once the file passes `size`, the manifest's `bytes` for the artifact, or
+    `DEFAULT_MAX_BYTES` when that is not a byte count.
 
     Raises:
         ServerError: The bytes did not hash to `digest` on either attempt

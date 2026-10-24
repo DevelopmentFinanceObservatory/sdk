@@ -10,14 +10,16 @@ Every retryable refusal of the build shares the transport's retry count, and
 once a synchronous cut-off (a 504, or the read timing out) refuses it, the build
 is posted once more only, whatever that post answers. Each retry waits for the
 refusal's `Retry-After`, else the transport's backoff for that attempt, from 0.5
-to 8 seconds; a `Retry-After` past 60 seconds raises the refusal at once. A
-retryable failed operation is resubmitted once, and a failed
+to 8 seconds. A `Retry-After` past `RETRY_AFTER_MAX_S` raises the refusal at
+once. A retryable failed operation is resubmitted once, and a failed
 operation whose document carries no `error` fails with `operation_failed`.
 
 Polls wait for `retry_after_ms` when the resource carries it, else for the
-`Retry-After` header, either clamped to 1 to 60 seconds, else back off from 1 to
-8 seconds. A refused poll that keeps polling waits for its `Retry-After` when it
-carries one, whatever its status, and one past 60 seconds raises at once. A refused poll that is not retryable raises its error at once, a 429
+`Retry-After` header, either clamped to `POLL_INTERVAL_MIN_S` through
+`POLL_INTERVAL_MAX_S`, else back off from 1 to 8 seconds. A refused poll that
+keeps polling waits for its `Retry-After` when it carries one, whatever its
+status, and one past `RETRY_AFTER_MAX_S` raises at once. A refused poll that is
+not retryable raises its error at once, a 429
 included. A retryable 429 spends no retry; any other retryable refused poll,
 one that times out included, spends one of the transport's retries, which a poll
 that answers restores.
@@ -152,7 +154,7 @@ def _fits(transport: AsyncTransport, wait: float, deadline: float | None) -> boo
 
 
 def _poll_interval(seconds: float) -> float:
-    """The server's poll interval, clamped to `POLL_INTERVAL_MIN_S` ..
+    """The server's poll interval, held between `POLL_INTERVAL_MIN_S` and
     `POLL_INTERVAL_MAX_S`."""
     return min(max(seconds, POLL_INTERVAL_MIN_S), POLL_INTERVAL_MAX_S)
 

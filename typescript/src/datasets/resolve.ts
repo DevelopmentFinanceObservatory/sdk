@@ -6,11 +6,11 @@
  * route at the stored digest; the file selector, which renders the version again from its
  * stored frame; a fresh build, which must return the same version; otherwise
  * `VersionUnavailableError`, naming the newest version in the member's rendering. A rebuilt
- * file whose digest differs from the ref's issues a `DataWarning` naming both, since the ref
- * pins the version and the digest names one rendering of it. The steps after the snapshot run only
- * for a version whose file has expired. A version the server never built
- * (`snapshot_not_found`) raises at once. A snapshot or build that answers another spec raises
- * `ContractError`, so a recovered member keeps the ref's identity.
+ * file whose digest differs from the ref's issues a `DfoWarning` (`ref_digest_changed`) naming
+ * both, since the ref pins the version and the digest names one rendering of it. The steps
+ * after the snapshot run only for a version whose file has expired. A version the server never
+ * built (`snapshot_not_found`) raises at once. A snapshot or build that answers another spec
+ * raises `ContractError`, so a recovered member keeps the ref's identity.
  *
  * The lookup reuses the build path's download, warnings and finishing steps, so this module
  * imports `fetch.ts` and `fetch.ts` imports nothing from here.
@@ -221,7 +221,7 @@ async function fetchVersion(
 
 /** Issues the client's warning that a rebuilt file differs from the ref's. The rebuild returned
  *  the ref's version, so the rows are the version the ref names, rendered to bytes with another
- *  digest; the data is returned, so strict does not raise it. */
+ *  digest. The data is returned, so strict does not raise it. */
 function noteNewDigest(transport: Transport, member: RefMember, digest: string): void {
   transport.warn(
     clientWarning(
@@ -321,8 +321,8 @@ export const VERSIONS_PAGE_BUDGET = 20;
  *
  * @throws {ContractError} A page is not a `DatasetVersionsPage` this client can read: no
  *   `versions` list, a listed version whose `content_version` is not a version id or that has no
- *   `rendering` string, or a
- *   `next_cursor` that is neither a string nor null, or names a page already read.
+ *   `rendering` string, or a `next_cursor` that is neither a string nor null, or names a page
+ *   already read.
  */
 export async function newestVersion(
   transport: Transport,

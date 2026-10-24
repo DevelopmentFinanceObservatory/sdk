@@ -1,8 +1,8 @@
 """Decode JSON text with a nesting bound of the client's own.
 
 `json.loads` recurses once per level of nesting, and where it gives up depends on
-the platform's C stack: on some builds a body nested 100,000 levels deep raises
-`RecursionError`, on others it parses. `loads` refuses text nested deeper than
+the platform's C stack. On some builds a body nested 100,000 levels deep raises
+`RecursionError`, and on others it parses. `loads` refuses text nested deeper than
 `JSON_MAX_DEPTH` before the parser sees it, so every platform refuses the same
 text with a `ValueError`, which each caller already reads as text that is not
 JSON.

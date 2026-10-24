@@ -1,9 +1,9 @@
 """How a server refusal maps to its error class, and the trace id an error carries.
 
 A code maps through `dfo._generated.error_map.ACTIONS`, generated from the contract's
-`actions.json`; a code the website proxy answers itself maps on the status
-`proxy-codes.json` gives it; any other code maps on its HTTP status. A refusal whose body
-carries no code, or a code that is not lower-case snake case, takes
+`actions.json`. A code the website proxy answers itself maps on the status
+`proxy-codes.json` gives it, and any other code maps on its HTTP status. A refusal
+whose body carries no code, or a code that is not lower-case snake case, takes
 `refusal_without_code`, with the class of its status, and a trace id the body
 lacks comes from the response's `x-dfo-trace-id` header. The stored problem
 document, like the message and detail, has the client's key replaced by
@@ -60,7 +60,7 @@ _JSON_TYPES = frozenset({"application/problem+json", "application/json"})
 # The client codes of errors that describe a response the client read.
 _RESPONSE_CODES = frozenset({UNEXPECTED_RESPONSE.code, CONTRACT_VIOLATION.code})
 
-# A refusal code: lower-case snake case. Other text in a code's place is no code.
+# A refusal code is lower-case snake case. Other text in a code's place is no code.
 _CODE = re.compile(r"[a-z][a-z0-9_]*")
 
 # Statuses worth another attempt when the body does not say `retryable`.
@@ -73,14 +73,14 @@ _PROXY_RETRY = "retry_after_delay"
 _NO_ROUTE = frozenset({"not_found", REFUSAL_WITHOUT_CODE})
 
 # The code of a refusal of the request's method. The contract maps it to
-# "upgrade", which holds for a route the client wraps; on a raw request the
+# "upgrade", which holds for a route the client wraps. On a raw request the
 # caller chose the method.
 _METHOD_NOT_ALLOWED = "method_not_allowed"
 
 
 def error_class(code: str | None, status: int | None) -> type[DfoError]:
-    """Return the class for a refusal: its code's action, the class of the status
-    the website proxy answers its code with, else the class of `status`."""
+    """Return the class for a refusal, from its code's action, else from the status
+    the website proxy answers its code with, else from `status`."""
     if code is not None and (action := ACTIONS.get(code)) is not None:
         return _class_for_action(action)
     if code is not None and (proxy_status := PROXY_STATUSES.get(code)) is not None:
@@ -89,8 +89,8 @@ def error_class(code: str | None, status: int | None) -> type[DfoError]:
 
 
 def maps_to_class(code: str) -> bool:
-    """Whether the contract maps `code` to a class whatever the status: it has an
-    action, or the website proxy answers it with a fixed status."""
+    """Whether the contract maps `code` to a class whatever the status, because it
+    has an action or the website proxy answers it with a fixed status."""
     return code in ACTIONS or code in PROXY_STATUSES
 
 
@@ -130,7 +130,7 @@ def _code_and_detail(
 ) -> tuple[str | None, str | None]:
     """A body's code, when `value` is lower-case snake case, and its detail.
 
-    Other text in the code's place is no code; it opens the detail instead, so
+    Other text in the code's place is no code. It opens the detail instead, so
     the caller still reads it.
     """
     text = _text(value)
@@ -329,8 +329,8 @@ def _objects(value: object) -> list[Any]:
 
 
 def caller_refusal(error: DfoError) -> DfoError:
-    """The error a raw request raises for `error`: a refused method is the
-    caller's to fix, an `InvalidRequestError`, and any other error stays as it is."""
+    """The error a raw request raises for `error`. A refused method is the caller's
+    to fix and becomes an `InvalidRequestError`. Any other error stays as it is."""
     if error.code != _METHOD_NOT_ALLOWED or isinstance(error, InvalidRequestError):
         return error
     return InvalidRequestError(

@@ -156,8 +156,7 @@ def _member_object(member: RefMember) -> dict[str, Any]:
     }
     if member.rendering.layout is not None:
         rendering["layout"] = member.rendering.layout
-    # Written only when true, so a plain member's JSON is what it was before the
-    # option existed.
+    # Written only when true, so a plain member's JSON has no such member.
     if member.rendering.without_party_totals:
         rendering["without_party_totals"] = True
     return {

@@ -117,7 +117,7 @@ type KeyLookup = {
 
 /**
  * A key whose characters are all visible ASCII, which is all an Authorization header carries
- * intact. The error names the source and the position, never the key.
+ * intact. The error names the source and the position and leaves the key out.
  *
  * @throws {AuthenticationError} The key holds another character (`key_invalid`).
  */

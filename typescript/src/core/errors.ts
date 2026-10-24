@@ -119,7 +119,7 @@ export class IncompleteAnswerError extends DfoError {
 
   constructor(options: DfoErrorOptions & { answer?: Answer; gaps?: readonly Gap[] }) {
     super(options);
-    // Not enumerable, so Node prints an uncaught error's message and code, not the whole answer.
+    // Not enumerable, so Node prints an uncaught error's message and code and omits the whole answer.
     Object.defineProperties(this, {
       answer: { value: options.answer ?? null },
       gaps: { value: options.gaps ?? [] },
@@ -251,7 +251,7 @@ export function refusalMessage(
 /**
  * The error a 200 response's problem document stands for, or undefined when the body is none. A
  * problem document holds a string `code` and no `kind`. Its class is the one `errorClassFor`
- * gives a code the contract maps to a class; any other code raises `contract_violation`, since a
+ * gives a code the contract maps to a class. Any other code raises `contract_violation`, since a
  * 200 has no status to read a class from.
  */
 export function problemAt200(body: unknown, traceId: string | null): DfoError | undefined {

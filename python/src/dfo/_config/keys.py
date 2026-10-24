@@ -206,7 +206,7 @@ def _colab_secret() -> str | None:
     """The Colab secret's value, or None when it is missing or cannot be read.
 
     Colab raises its own classes for a missing secret and a notebook without
-    access, and others when the lookup itself fails; each leaves no secret.
+    access, and others when the lookup itself fails. Each leaves no secret.
     """
     if "google.colab" not in sys.modules:
         return None
@@ -298,11 +298,11 @@ def resolve_key(
         AuthenticationError: The `api_key` argument is empty (`key_empty`), the
             argument, or what its callable returns, is not a string or an
             `ApiKey`, or the key holds a character outside visible ASCII
-            (`key_invalid`), the
-            credentials file is invalid (`credentials_file_invalid`) or cannot
-            be read (`credentials_file_unreadable`), `DFO_PROFILE` names a
-            profile it lacks (`profile_not_found`), or the chosen profile has no
-            key or an empty one (`profile_without_key`).
+            (`key_invalid`), the credentials file is invalid
+            (`credentials_file_invalid`) or cannot be read
+            (`credentials_file_unreadable`), `DFO_PROFILE` names a profile it
+            lacks (`profile_not_found`), or the chosen profile has no key or an
+            empty one (`profile_without_key`).
     """
     resolved = _lookup(api_key, os.environ if env is None else env, path)
     if resolved.key is not None and (fault := key_fault(resolved.key.reveal())):

@@ -86,9 +86,9 @@ def _warning_codes(warning_codes: dict) -> tuple[list[str], str]:
 
 
 def _proxy_codes(proxy_codes: dict, codes: set[str]) -> str:
-    """The rows of each proxy code and its status. A proxy code that also has a
-    row in `actions.json`, the `codes`, would take that row's class in place of
-    its status's, so it is refused."""
+    """The rows pairing each proxy code with its status. A proxy code that also
+    has a row in `actions.json` (the `codes` set) is refused, since it would take
+    that row's class in place of its status's."""
     if proxy_codes.get("format_version") != 1:
         raise SystemExit(f"{relative(PROXY_CODES)}: format_version is not 1")
     rows = proxy_codes["codes"]
