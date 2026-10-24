@@ -54,8 +54,9 @@ from dfo._generated.error_map import (
 TRACE_HEADER = "x-dfo-trace-id"
 
 # The media types a response's body is read as JSON under when it is not one the
-# client asked for. They cover a refusal's problem document and the website
-# proxy's body.
+# client asked for. The contract reads a refusal body of either type: a problem
+# document under `application/problem+json`, or the same members sent under the
+# plain `application/json`.
 _JSON_TYPES = frozenset({"application/problem+json", "application/json"})
 
 # The client codes of errors that describe a response the client read.
@@ -67,9 +68,6 @@ CODE = re.compile(r"[a-z][a-z0-9_]*")
 
 # Statuses worth another attempt when the body does not say `retryable`.
 _RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
-
-# The website proxy's `retry` value for a refusal that clears on its own.
-_PROXY_RETRY = "retry_after_delay"
 
 # The codes of a 404 that matched no route, the API's own and a body without one.
 _NO_ROUTE = frozenset({"not_found", REFUSAL_WITHOUT_CODE})
@@ -257,10 +255,9 @@ def problem_error(
     Returns:
         The error, of the class the code or else the status maps to. A problem
         document's `retryable` outranks the status, and its `pointer` is named
-        in the message. The website proxy's `{error, retry, detail}` body maps
-        `error` as the code, and its `retry`, when present, outranks the
-        status. A body with neither code, or with text that is not lower-case
-        snake case in the code's place, takes `fallback_code`, else
+        in the message. The website proxy answers its own refusals with
+        problem documents too. A body without a code, or with text that is not
+        lower-case snake case in the code's place, takes `fallback_code`, else
         `refusal_without_code`; such text opens the detail. An
         `InvalidRequestError` carries the problem document's `issues` and
         `alternatives`.
@@ -270,13 +267,7 @@ def problem_error(
         problem = _redacted_body(problem, key)
     code = detail = page = pointer = None
     retryable = status in _RETRYABLE_STATUSES
-    if problem is not None and "code" not in problem and "error" in problem:
-        code, detail = _code_and_detail(
-            problem.get("error"), _text(problem.get("detail"))
-        )
-        if "retry" in problem:
-            retryable = problem.get("retry") == _PROXY_RETRY
-    elif problem is not None:
+    if problem is not None:
         code, detail = _code_and_detail(
             problem.get("code"),
             _text(problem.get("detail")) or _text(problem.get("title")),

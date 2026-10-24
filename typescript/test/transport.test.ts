@@ -262,7 +262,6 @@ describe("refusals", () => {
   for (const [body, text] of [
     [{ code: "x\nInjected", detail: "d" }, "x"],
     [{ code: "Rate_Limited" }, "Rate_Limited"],
-    [{ error: "Bad gateway" }, "Bad gateway"],
   ] as const) {
     test(`read the code ${JSON.stringify(text)}, which is not snake case, as no code`, async () => {
       const { fetch } = mockFetch(json(body, 400));
@@ -297,28 +296,10 @@ describe("refusals", () => {
     assert.deepEqual([bare.issues, bare.alternatives], [[], []]);
   });
 
-  test("map the proxy's 429 body and retry it after Retry-After", async () => {
-    const { sleep, waits } = recordingSleep();
-    const limited = json(
-      { error: "rate_limited", retry: "retry_after_delay", detail: "Too many requests." },
-      429,
-      { "retry-after": "1" },
-    );
-    const { fetch } = mockFetch(limited, limited, limited);
-    const error = await transport({ fetch, sleep })
-      .request({ path: "/x" })
-      .catch((e: unknown) => e);
-    assert.ok(error instanceof RateLimitError);
-    assert.equal(error.code, "rate_limited");
-    assert.equal(error.retryable, true);
-    assert.equal(error.detail, "Too many requests.");
-    assert.deepEqual(waits, [1000, 1000]);
-  });
-
   for (const [code, status] of Object.entries(PROXY_CODE_STATUSES)) {
-    test(`map the proxy's ${code} body by its status ${status}, keeping its code`, async () => {
+    test(`map the proxy's ${code} problem document by its status ${status}`, async () => {
       const { sleep } = recordingSleep();
-      const refused = json({ error: code, retry: "retry_after_delay", detail: "Down." }, status);
+      const refused = json({ code, retryable: true, detail: "Down." }, status);
       const { fetch, seen } = mockFetch(refused, refused, refused);
       const error = await transport({ fetch, sleep })
         .request({ path: "/x" })
@@ -330,26 +311,18 @@ describe("refusals", () => {
     });
   }
 
-  for (const [body, code, retried] of [
-    [{ error: "bad gateway" }, "refusal_without_code", true],
-    [{ error: "upstream_down" }, "upstream_down", true],
-    [{ error: "upstream_down", retry: "never" }, "upstream_down", false],
-  ] as const) {
-    for (const status of [502, 503, 504]) {
-      test(`retry a proxy body ${JSON.stringify(body)} at HTTP ${status}: ${retried}`, async () => {
-        const { sleep } = recordingSleep();
-        const refused = json(body, status);
-        const { fetch, seen } = mockFetch(refused, refused, refused);
-        const error = await transport({ fetch, sleep })
-          .request({ path: "/x" })
-          .catch((e: unknown) => e);
-        assert.ok(error instanceof ServerError);
-        assert.equal(error.code, code);
-        assert.equal(error.retryable, retried);
-        assert.equal(seen.length, retried ? 3 : 1);
-      });
-    }
-  }
+  test("read a body with error and retry members as carrying no code", async () => {
+    const { sleep } = recordingSleep();
+    const refused = json({ error: "upstream_down", retry: "never" }, 502);
+    const { fetch, seen } = mockFetch(refused, refused, refused);
+    const error = await transport({ fetch, sleep })
+      .request({ path: "/x" })
+      .catch((e: unknown) => e);
+    assert.ok(error instanceof ServerError);
+    assert.equal(error.code, "refusal_without_code");
+    assert.equal(error.retryable, true);
+    assert.equal(seen.length, 3);
+  });
 
   for (const [detail, pointer, message] of [
     [

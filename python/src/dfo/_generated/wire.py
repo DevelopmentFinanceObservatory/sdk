@@ -394,6 +394,11 @@ class EntityRef(TypedDict):
     )
 
 
+class EntityRefs(TypedDict):
+    text: str
+    refs: list[str]
+
+
 class Exclusion(TypedDict):
     ref: str
     reason: Literal["superseded_by_dfo", "superseded_by_un_system"]
@@ -968,6 +973,7 @@ class ResubmitPlaceholderEntry(TypedDict):
             "role_incompatible",
             "role_signature_incompatible",
             "qualifier_not_bound",
+            "timed_out",
         ]
         | None
     ]
@@ -2140,6 +2146,7 @@ class UnsupportedPart(TypedDict):
     rendered_sentence: NotRequired[str | None]
     sentence_plan: NotRequired[list[SentenceToken] | None]
     restatement: NotRequired[ParsedPart | None]
+    entity_refs: NotRequired[list[EntityRefs]]
     operations: NotRequired[list[Operation]]
     departures: NotRequired[list[Departure]]
     assumptions: NotRequired[list[Assumption]]
@@ -2932,6 +2939,7 @@ class CandidatesPart(TypedDict):
     rendered_sentence: NotRequired[str | None]
     sentence_plan: NotRequired[list[SentenceToken] | None]
     restatement: NotRequired[ParsedPart | None]
+    entity_refs: NotRequired[list[EntityRefs]]
     operations: NotRequired[list[Operation]]
     departures: NotRequired[list[Departure]]
     assumptions: NotRequired[list[Assumption]]
@@ -2948,6 +2956,7 @@ class DefinitePart(TypedDict):
     rendered_sentence: NotRequired[str | None]
     sentence_plan: NotRequired[list[SentenceToken] | None]
     restatement: NotRequired[ParsedPart | None]
+    entity_refs: NotRequired[list[EntityRefs]]
     operations: NotRequired[list[Operation]]
     departures: NotRequired[list[Departure]]
     assumptions: NotRequired[list[Assumption]]
@@ -2985,6 +2994,7 @@ class NoData(TypedDict):
         "role_incompatible",
         "role_signature_incompatible",
         "qualifier_not_bound",
+        "timed_out",
     ]
     cause: NotRequired[Cause | None]
     category: NotRequired[Literal["unresolved", "absent"]]
@@ -3019,6 +3029,7 @@ class NoDataPart(TypedDict):
     rendered_sentence: NotRequired[str | None]
     sentence_plan: NotRequired[list[SentenceToken] | None]
     restatement: NotRequired[ParsedPart | None]
+    entity_refs: NotRequired[list[EntityRefs]]
     operations: NotRequired[list[Operation]]
     departures: NotRequired[list[Departure]]
     assumptions: NotRequired[list[Assumption]]
