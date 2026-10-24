@@ -975,8 +975,8 @@ export class Transport {
   ): Promise<{ headers: Headers; key: string | undefined }> {
     const headers = new Headers();
     if (url.origin !== this.baseUrl.origin) return { headers, key: undefined };
-    // A passed deadline raises before any header is checked, as in the Python client.
-    if ((options.deadline ?? Infinity) <= this.#now()) throw this.#deadlinePassed(url);
+    // An invalid timeout, then a passed deadline, raise before any header is checked.
+    this.#limit(url, options);
     // The caller's headers replace the client's User-Agent, as in the Python client.
     if (!inBrowser()) headers.set("user-agent", `dfo-ts/${VERSION}`);
     setHeaders(headers, Object.entries(this.#options.defaultHeaders ?? {}), "the headers option");

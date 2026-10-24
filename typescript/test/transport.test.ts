@@ -770,6 +770,31 @@ describe("timeouts", () => {
     });
   }
 
+  for (const [name, options] of [
+    ["without a header provider", {}],
+    ["with a header provider", { headerProvider: () => ({ "x-team": "dfo" }) }],
+  ] as const) {
+    test(`raise invalid_argument for a bad timeout before a passed deadline, ${name}`, async () => {
+      const { fetch, seen } = mockFetch(json({ ok: true }));
+      const error = await transport({ fetch, now: () => 1_000, ...options })
+        .request({ path: "/x", deadline: 1_000, timeout: -5 })
+        .catch((value: unknown) => value);
+      assert.ok(error instanceof InvalidRequestError);
+      assert.equal(error.code, "invalid_argument");
+      assert.equal(seen.length, 0);
+    });
+
+    test(`raise invalid_argument for a bad timeout before invalid call headers, ${name}`, async () => {
+      const { fetch, seen } = mockFetch(json({ ok: true }));
+      const error = await transport({ fetch, ...options })
+        .request({ path: "/x", timeout: -5, headers: { "x-token": "bad\nvalue" } })
+        .catch((value: unknown) => value);
+      assert.ok(error instanceof InvalidRequestError);
+      assert.equal(error.code, "invalid_argument");
+      assert.equal(seen.length, 0);
+    });
+  }
+
   for (const timeout of [2 ** 31, 30 * 24 * 3_600_000]) {
     test(`take a client timeout of ${timeout} ms as its clamp`, async () => {
       const { fetch } = mockFetch(answerAfter(20));
