@@ -20,6 +20,9 @@ import {
   VersionUnavailableError,
 } from "../src/core/errors.ts";
 import type { ClientErrorCode } from "../src/core/errors.ts";
+import { CLIENT_WARNING_CODES } from "../src/generated/warning-codes.ts";
+import { clientWarning, warnOnce } from "../src/core/warnings.ts";
+import type { ClientWarningCode } from "../src/core/warnings.ts";
 import { contractJson } from "./support.ts";
 
 test("every code in contract/actions.json maps to a class below DfoError", async () => {
@@ -74,6 +77,21 @@ test("every code in contract/client-codes.json builds an error of its class and 
   }
 });
 
+test("the client's warning codes are exactly contract/warning-codes.json's, each of its class", async () => {
+  const { codes } = await contractJson<{ codes: { code: string; class: string }[] }>(
+    "warning-codes.json",
+  );
+  assert.deepEqual(
+    { ...CLIENT_WARNING_CODES },
+    Object.fromEntries(codes.map(({ code, class: name }) => [code, name])),
+  );
+  for (const { code, class: name } of codes) {
+    const warning = clientWarning(code as ClientWarningCode, "message");
+    assert.equal(warning.name, name, code);
+    assert.equal(warning.code, code, code);
+  }
+});
+
 test("a refusal with no code takes the class and retryable flag its status maps to", () => {
   for (const [status, expected, retryable] of [
     [400, InvalidRequestError, false],
@@ -112,4 +130,20 @@ test("an error the client raises takes a code from ClientErrorCode", () => {
   // @ts-expect-error -- a server's code reaches an error only through serverCode.
   const error = new ServerError({ code: "not_a_client_code" });
   assert.equal(error.code, "not_a_client_code");
+});
+
+test("warnOnce forgets what it has seen once it holds 1,024 keys", () => {
+  const shown: string[] = [];
+  const once = (key: string): void => {
+    warnOnce(key, clientWarning("ref_digest_changed", key), (warning) => {
+      shown.push(warning.message);
+    });
+  };
+  once("cap:first");
+  once("cap:first");
+  assert.deepEqual(shown, ["cap:first"]);
+  for (let index = 0; index < 1024; index += 1) once(`cap:${index}`);
+  once("cap:first");
+  assert.equal(shown.length, 1026);
+  assert.equal(shown.at(-1), "cap:first");
 });

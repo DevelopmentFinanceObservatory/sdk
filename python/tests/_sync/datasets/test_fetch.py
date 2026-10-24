@@ -5,6 +5,7 @@
 so the sync client passes the same tests.
 """
 
+import copy
 import json
 import warnings
 from pathlib import Path
@@ -20,6 +21,7 @@ from dfo._core.errors import (
     DataWarning,
     DfoError,
     DfoTimeoutError,
+    DfoWarning,
     InvalidRequestError,
     NetworkError,
     NotFoundError,
@@ -31,12 +33,16 @@ from dfo._core.parse import parse_spec
 from dfo._core.refs import DatasetRef, RefMember
 from dfo._core.types import Rendering, Spec
 from dfo._datasets.build import Reading
-from dfo._datasets.cache import Cache, file_entry, sha256_digest
-from dfo._sync._datasets.fetch import fetch_members
+from dfo._datasets.cache import Cache, file_entry, manifest_entry, sha256_digest
+from dfo._datasets.dataset import build_dataset
+from dfo._sync._datasets.fetch import fetch_members, mint
 from dfo._sync._datasets.resolve import fetch
 from dfo._sync._http.transport import Transport
+from tests._data import load
 from tests._fetch_support import (
     BASE,
+    CUT,
+    CUT_DATA,
     DATA,
     FRAME,
     LONG,
@@ -58,6 +64,7 @@ from tests._fetch_support import (
     problem,
     redirect,
     resubmitted,
+    with_cut,
 )
 
 KEY = "dfo_k_4f8Kq2ZtR7mWx1NcB9vLp3YhD6sGa0Ue2wanxe"
@@ -105,7 +112,11 @@ def spec(sentence: str | None = None) -> Spec:
     )
 
 
-def ref_member(content_version: str = NARROWED_CV, data: bytes = DATA) -> RefMember:
+def ref_member(
+    content_version: str = NARROWED_CV,
+    data: bytes = DATA,
+    rendering: Rendering = LONG,
+) -> RefMember:
     body = manifest()
     return RefMember(
         parts=("ODA disbursements for basic health care",),
@@ -113,8 +124,23 @@ def ref_member(content_version: str = NARROWED_CV, data: bytes = DATA) -> RefMem
         spec=Spec(NARROWED_ID, body["definition"], SENTENCE),
         content_version=content_version,
         digest=sha256_digest(data),
-        rendering=LONG,
+        rendering=rendering,
     )
+
+
+@pytest.mark.parametrize(
+    "target",
+    [POSTED_ID, {"spec_id": POSTED_ID, "definition": {}}, None],
+    ids=["spec-id", "spec-dict", "none"],
+)
+@pytest.mark.parametrize("call", [fetch, mint])
+def test_a_target_that_is_not_a_spec_sends_nothing(call, target: object) -> None:
+    server = Server()
+    with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            call(transport, target)
+    assert caught.value.code == "invalid_argument"
+    assert server.requests == []
 
 
 def test_a_spec_with_its_sentence_replays_the_recorded_build() -> None:
@@ -298,6 +324,46 @@ def test_a_resubmit_that_answers_another_spec_raises() -> None:
         "search",
     )
     assert len(server.requests) == 2
+
+
+NO_DATA = "No data for Germany's gross ODA disbursements to Nigeria, 1900 to 1901."
+
+
+def no_data_resubmitted() -> dict[str, object]:
+    """The identity resubmit answer with one `no_data` part, as Search answers a
+    built identity that holds no data."""
+    answer = resubmitted()
+    (part,) = [part for part in load("search-3.json")["parts"] if part.get("no_data")]
+    part = copy.deepcopy(part) | {"rendered_sentence": NO_DATA}
+    part["no_data"]["reason"] = "no_observations"
+    answer["parts"] = [part]
+    return answer
+
+
+@pytest.mark.parametrize("rows", [0, 4])
+def test_an_empty_narrowing_takes_the_sentence_of_its_no_data_part(
+    rows: int,
+) -> None:
+    warning = {"code": "coverage_below_scope", "severity": "warn", "message": "none"}
+    body = manifest(warnings=[warning])
+    body["coverage"]["rows"] = rows
+    server = Server(
+        json_response(200, body),
+        json_response(200, no_data_resubmitted()),
+        redirect(),
+        parquet(),
+    )
+    with make(server) as transport:
+        with pytest.warns(DataWarning) as caught_warnings:
+            if rows:
+                with pytest.raises(ContractError) as caught:
+                    fetch(transport, spec(SENTENCE), window=(1900, 1901))
+                assert caught.value.code == "contract_violation"
+                return
+            built = fetch(transport, spec(SENTENCE), window=(1900, 1901))
+    assert built.members[0].sentence == NO_DATA
+    assert built.members[0].spec.spec_id == NARROWED_ID
+    assert [item.message.code for item in caught_warnings] == ["coverage_below_scope"]
 
 
 def test_strict_raises_a_dataset_warning_before_downloading() -> None:
@@ -518,6 +584,53 @@ def test_a_signed_fetch_that_fails_twice_raises_its_own_failure(
     assert len(server.requests) == 5
 
 
+@pytest.mark.parametrize("signed", [False, True], ids=["files-route", "signed-url"])
+@pytest.mark.parametrize(("size", "fits"), [(len(DATA), True), (len(DATA) - 1, False)])
+def test_a_file_is_read_up_to_its_manifest_size(
+    signed: bool, size: int, fits: bool
+) -> None:
+    file = [redirect(), parquet()] if signed else [parquet()]
+    server = Server(json_response(200, manifest(POSTED_ID, size=size)), *file)
+    with make(server) as transport:
+        if fits:
+            built = fetch(transport, spec(SENTENCE))
+            assert built.members[0].data == DATA
+            return
+        with pytest.raises(ServerError) as caught:
+            fetch(transport, spec(SENTENCE))
+    assert caught.value.code == "response_too_large"
+    assert len(server.requests) == 1 + len(file)
+
+
+FILE = b"PAR1" + b"x" * 242 + b"PAR1"
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        [httpx2.Response(302, headers={"location": SIGNED}, content=b"r" * 251)],
+        [
+            httpx2.Response(
+                502, headers={"content-type": "text/html"}, content=b"p" * 1000
+            ),
+            redirect(),
+        ],
+    ],
+    ids=["redirect-body", "refusal-page"],
+)
+def test_a_route_body_past_the_file_size_is_read_under_the_json_cap(
+    route: list[httpx2.Response],
+) -> None:
+    # The 250-byte file's size bounds its own body alone, so a longer redirect
+    # body is read and a longer 502 page is retried.
+    body = manifest(POSTED_ID, data=FILE, size=len(FILE))
+    server = Server(json_response(200, body), *route, parquet(FILE))
+    with make(server) as transport:
+        built = fetch(transport, spec(SENTENCE))
+    assert built.members[0].data == FILE
+    assert len(server.requests) == 2 + len(route)
+
+
 def test_bytes_that_miss_their_digest_twice_raise() -> None:
     server = Server(
         json_response(200, manifest(POSTED_ID)),
@@ -545,6 +658,43 @@ def test_a_cache_entry_that_misses_its_digest_is_downloaded_again(
     assert len(server.requests) == 3
     assert built.members[0].data == DATA
     assert cache.get_bytes(digest) == DATA
+
+
+def test_a_served_digest_that_is_not_sha256_fails_its_download(
+    tmp_path: Path,
+) -> None:
+    body = manifest(POSTED_ID)
+    body["artifacts"][1]["artifact_digest"] = "md5:" + "0" * 32
+    cache = Cache(tmp_path, env={})
+    server = Server(
+        json_response(200, body), redirect(), parquet(), redirect(), parquet()
+    )
+    with make(server) as transport:
+        with pytest.raises(ServerError) as caught:
+            fetch(transport, spec(SENTENCE), cache=cache)
+    assert caught.value.code == "digest_mismatch"
+    assert not (cache.directory / "files").exists()
+
+
+@pytest.mark.parametrize("target", ["spec", "ref"])
+def test_an_artifact_that_does_not_read_raises_and_leaves_the_cache(
+    monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    # The fake's DATA hashes right but is no Parquet file.
+    monkeypatch.setattr(fetch_module, "build_dataset", build_dataset)
+    monkeypatch.setattr(resolve_module, "build_dataset", build_dataset)
+    cache = FakeCache()
+    fetched: Spec | DatasetRef = spec(SENTENCE)
+    server = Server(json_response(200, manifest(POSTED_ID)), redirect(), parquet())
+    if target == "ref":
+        cache.put_bytes(sha256_digest(DATA), DATA)
+        cache.put_manifest(NARROWED_ID, NARROWED_CV, LONG, manifest())
+        fetched, server = DatasetRef((ref_member(),)), Server()
+    with make(server) as transport:
+        with pytest.raises(ContractError) as caught:
+            fetch(transport, fetched, cache=cache)
+    assert caught.value.code == "unexpected_response"
+    assert cache.files == {}
 
 
 def test_cached_bytes_skip_the_download_and_new_ones_are_stored() -> None:
@@ -719,42 +869,94 @@ def test_a_ref_with_an_unknown_version_raises_at_the_snapshot() -> None:
     assert len(server.requests) == 1
 
 
-def test_an_expired_file_is_rendered_again_by_the_file_selector() -> None:
-    body = manifest()
+# The selector renders a version with the options it was minted with, so a cut
+# ref asks it for format and bundle alone.
+@pytest.mark.parametrize(("rendering", "data"), [(LONG, DATA), (CUT, CUT_DATA)])
+def test_an_expired_file_is_rendered_again_by_the_file_selector(
+    rendering: Rendering, data: bytes
+) -> None:
+    body = with_cut(manifest())
     server = Server(
         json_response(200, body),
         problem(410, "artifact_expired"),
         redirect(),
-        parquet(),
+        parquet(data),
     )
+    member = ref_member(data=data, rendering=rendering)
     with make(server) as transport:
-        built = fetch(transport, DatasetRef((ref_member(),)))
+        built = fetch(transport, DatasetRef((member,)))
     selector = server.requests[2]
     assert str(selector.url.copy_with(query=None)) == (
         f"{BASE}/datasets/{NARROWED_ID}/{NARROWED_CV}/file"
     )
     assert dict(selector.url.params) == {"format": "parquet", "bundle": "false"}
-    assert built.members[0].digest == sha256_digest(DATA)
+    assert built.members[0].digest == sha256_digest(data)
 
 
-def test_an_expired_file_without_the_selector_rebuilds_the_same_version() -> None:
-    body = manifest()
+@pytest.mark.parametrize(
+    ("rendering", "data", "options"),
+    [
+        (LONG, DATA, {"format": "parquet", "bundle": False}),
+        (
+            CUT,
+            CUT_DATA,
+            {"format": "parquet", "bundle": False, "without_party_totals": True},
+        ),
+    ],
+)
+def test_an_expired_file_without_the_selector_rebuilds_the_same_version(
+    rendering: Rendering, data: bytes, options: dict
+) -> None:
+    body = with_cut(manifest())
     server = Server(
         json_response(200, body),
         problem(410, "artifact_expired"),
         problem(404, "not_found"),
         json_response(200, body),
         redirect(),
-        parquet(),
+        parquet(data),
     )
+    member = ref_member(data=data, rendering=rendering)
     with make(server) as transport:
-        built = fetch(transport, DatasetRef((ref_member(),)))
+        built = fetch(transport, DatasetRef((member,)))
     rebuild = server.body(3)
     assert rebuild["input"]["spec_id"] == NARROWED_ID
     assert "scope" not in rebuild["input"]
-    assert built.members[0].content_version == NARROWED_CV
-    assert built.members[0].sentence == SENTENCE
+    assert rebuild["options"] == options
+    (fetched,) = built.members
+    assert (fetched.content_version, fetched.digest) == (NARROWED_CV, member.digest)
+    assert fetched.rendering == rendering
+    assert fetched.sentence == SENTENCE
     assert len(server.requests) == 6
+
+
+# The client's own warning, so `strict`, which raises the server's warnings,
+# leaves it a warning.
+@pytest.mark.parametrize("strict", [False, True])
+def test_a_rebuild_whose_file_has_another_digest_warns_naming_both(
+    strict: bool,
+) -> None:
+    member = ref_member(data=b"PAR1 bytes another writer wrote PAR1")
+    body = manifest()
+    server = Server(
+        json_response(200, body),
+        problem(404, "not_found"),
+        json_response(200, body),
+        redirect(),
+        parquet(),
+    )
+    served = sha256_digest(DATA)
+    with make(server) as transport:
+        with pytest.warns(DfoWarning) as caught:
+            built = fetch(transport, DatasetRef((member,)), strict=strict)
+    (record,) = caught
+    warning = record.message
+    assert type(warning) is DfoWarning
+    assert built.members[0].digest == served
+    assert warning.code == "ref_digest_changed"
+    assert member.digest in str(warning)
+    assert served in str(warning)
+    assert server.calls()[1] == f"GET {BASE}/datasets/{NARROWED_ID}/{NARROWED_CV}/file"
 
 
 def test_a_rebuild_with_another_version_names_the_newest() -> None:
@@ -792,6 +994,15 @@ def derived(content_version: str, base: str) -> dict:
     }
 
 
+def cut(content_version: str, base: str) -> dict:
+    return {
+        "content_version": content_version,
+        "base_content_version": base,
+        "rendering": "without_party_totals",
+        "without_party_totals": True,
+    }
+
+
 def versions_page(versions: list, next_cursor: object = None) -> httpx2.Response:
     return json_response(
         200,
@@ -804,8 +1015,11 @@ def versions_page(versions: list, next_cursor: object = None) -> httpx2.Response
     )
 
 
-def versions_lookup(*pages: httpx2.Response) -> tuple[Server, Exception]:
+def versions_lookup(
+    *pages: httpx2.Response, rendering: Rendering = LONG
+) -> tuple[Server, Exception]:
     """A ref whose build is refused, so the lookup reads the versions `pages`."""
+    member = ref_member(rendering=rendering)
     server = Server(
         json_response(200, manifest()),
         problem(410, "artifact_expired"),
@@ -815,18 +1029,27 @@ def versions_lookup(*pages: httpx2.Response) -> tuple[Server, Exception]:
     )
     with make(server) as transport:
         with pytest.raises(DfoError) as caught:
-            fetch(transport, DatasetRef((ref_member(),)))
+            fetch(transport, DatasetRef((member,)))
     return server, caught.value
 
 
-# Each row gives the responses the versions route answers in turn, the cursor each
-# page after the first is asked with, and the newest version the error names.
+# A page that lists only groupby versions, each naming the next page.
+ENDLESS = [versions_page([derived(NEWER, OLDER)], f"c{page}") for page in range(20)]
+
+
+# Each row gives the ref member's rendering, the responses the versions route
+# answers in turn, the cursor each page after the first is asked with, and the
+# newest version the error names. The last row reads `VERSIONS_PAGE_BUDGET` pages.
 @pytest.mark.parametrize(
-    ("pages", "cursors", "named"),
+    ("rendering", "pages", "cursors", "named"),
     [
-        ([versions_page([plain(NEWER)], "c1")], [], NEWER),
-        ([versions_page([derived(NEWER, OLDER), plain(OLDER)])], [], OLDER),
+        (LONG, [versions_page([plain(NEWER)], "c1")], [], NEWER),
+        (LONG, [versions_page([derived(NEWER, OLDER), plain(OLDER)])], [], OLDER),
+        (LONG, [versions_page([cut(NEWER, OLDER), plain(OLDER)])], [], OLDER),
+        (CUT, [versions_page([plain(NEWER), cut(OLDER, NEWER)])], [], OLDER),
+        (CUT, [versions_page([plain(NEWER), derived(OLDER, NEWER)])], [], None),
         (
+            LONG,
             [
                 versions_page([derived(NEWER, OLDER)], "c/2"),
                 versions_page([plain(OLDER)]),
@@ -834,16 +1057,31 @@ def versions_lookup(*pages: httpx2.Response) -> tuple[Server, Exception]:
             ["c/2"],
             OLDER,
         ),
-        ([versions_page([derived(NEWER, OLDER)])], [], None),
-        ([versions_page([])], [], None),
-        ([problem(404, "not_found")], [], None),
+        (LONG, [versions_page([derived(NEWER, OLDER)])], [], None),
+        (LONG, [versions_page([])], [], None),
+        (LONG, [problem(404, "not_found")], [], None),
+        (LONG, ENDLESS, [f"c{page}" for page in range(19)], None),
     ],
-    ids=["plain", "derived-first", "second-page", "no-plain", "none", "not-found"],
+    ids=[
+        "plain",
+        "derived-first",
+        "cut-first",
+        "cut-ref",
+        "cut-ref-none",
+        "second-page",
+        "no-plain",
+        "none",
+        "not-found",
+        "page-budget",
+    ],
 )
 def test_a_spec_that_cannot_rebuild_names_the_newest_stored_version(
-    pages: list[httpx2.Response], cursors: list[str], named: str | None
+    rendering: Rendering,
+    pages: list[httpx2.Response],
+    cursors: list[str],
+    named: str | None,
 ) -> None:
-    server, error = versions_lookup(*pages)
+    server, error = versions_lookup(*pages, rendering=rendering)
     versions = f"GET {BASE}/datasets/{NARROWED_ID}/versions"
     assert server.calls()[4:] == [versions] * (1 + len(cursors))
     assert [dict(request.url.params) for request in server.requests[4:]] == [
@@ -856,24 +1094,43 @@ def test_a_spec_that_cannot_rebuild_names_the_newest_stored_version(
 
 
 @pytest.mark.parametrize(
+    ("listed", "ending"),
+    [
+        (NARROWED_CV, "; the server lists it as the newest version."),
+        (NEWER, f"; the newest version is {NEWER}, which fetching the spec returns."),
+    ],
+    ids=["the-ref-version", "another-version"],
+)
+def test_the_unavailable_error_says_what_the_newest_version_is(
+    listed: str, ending: str
+) -> None:
+    _, error = versions_lookup(versions_page([plain(listed)]))
+    assert isinstance(error, VersionUnavailableError)
+    assert error.newest_version == listed
+    assert str(error).endswith(ending)
+
+
+@pytest.mark.parametrize(
     ("pages", "pointer"),
     [
         ([json_response(200, {"spec_id": NARROWED_ID, "items": []})], "/versions"),
         ([versions_page([{}])], "/versions/0/content_version"),
         ([versions_page(["cv"])], "/versions/0/content_version"),
+        ([versions_page([plain("cv_" + "A" * 32)])], "/versions/0/content_version"),
+        ([versions_page([{"content_version": OLDER}])], "/versions/0/rendering"),
         (
-            [versions_page([{"content_version": OLDER}])],
-            "/versions/0/base_content_version",
-        ),
-        (
-            [
-                versions_page(
-                    [plain(NEWER), {**plain(OLDER), "base_content_version": 1}]
-                )
-            ],
-            "/versions/1/base_content_version",
+            [versions_page([plain(NEWER), {**plain(OLDER), "rendering": None}])],
+            "/versions/1/rendering",
         ),
         ([versions_page([derived(NEWER, OLDER)], 2)], "/next_cursor"),
+        (
+            [
+                versions_page([derived(NEWER, OLDER)], "c1"),
+                versions_page([derived(NEWER, OLDER)], "c2"),
+                versions_page([derived(NEWER, OLDER)], "c1"),
+            ],
+            "/next_cursor",
+        ),
         (
             [versions_page([derived(NEWER, OLDER)], "c1"), versions_page([{}])],
             "/versions/0/content_version",
@@ -920,6 +1177,64 @@ def test_a_cached_ref_needs_no_request_and_offline_marks_it_stale(
             fetch(transport, DatasetRef((ref_member(),)), cache=FakeCache())
     assert server.requests == []
     assert offline.members[0].manifest == body
+
+
+def _drop_member_artifact(body: dict) -> None:
+    del body["artifacts"][1]
+
+
+def _drop_definition(body: dict) -> None:
+    del body["definition"]
+
+
+def _other_version(body: dict) -> None:
+    body["content_version"] = "cv_" + "0" * 32
+
+
+@pytest.mark.parametrize(
+    "tamper", [_drop_member_artifact, _drop_definition, _other_version]
+)
+def test_a_tampered_cached_manifest_is_fetched_again_and_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper
+) -> None:
+    body = manifest()
+    cache = Cache(tmp_path, env={})
+    cache.put_bytes(sha256_digest(DATA), DATA)
+    cache.put_manifest(NARROWED_ID, NARROWED_CV, LONG, body)
+    path = cache.directory / manifest_entry(NARROWED_ID, NARROWED_CV, LONG)
+    tampered = copy.deepcopy(body)
+    tamper(tampered)
+    path.write_text(json.dumps(tampered))
+    server = Server(json_response(200, body), redirect(), parquet())
+    with make(server) as transport:
+        monkeypatch.setenv("DFO_OFFLINE", "1")
+        with pytest.raises(NetworkError, match="cache lacks"):
+            fetch(transport, DatasetRef((ref_member(),)), cache=cache)
+        monkeypatch.delenv("DFO_OFFLINE")
+        built = fetch(transport, DatasetRef((ref_member(),)), cache=cache)
+    assert server.calls()[0] == f"GET {BASE}/datasets/{NARROWED_ID}/{NARROWED_CV}"
+    assert built.members[0].manifest == body
+    assert cache.get_manifest(NARROWED_ID, NARROWED_CV, LONG) is not None
+
+
+@pytest.mark.parametrize(("rendering", "data"), [(LONG, DATA), (CUT, CUT_DATA)])
+def test_bytes_the_file_selector_served_are_a_cache_hit_online_and_offline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rendering: Rendering, data: bytes
+) -> None:
+    served = manifest(data=b"PAR1 a later rendering PAR1")
+    cache = Cache(tmp_path, env={})
+    server = Server(json_response(200, served), redirect(), parquet(data))
+    member = ref_member(data=data, rendering=rendering)
+    with make(server) as transport:
+        first = fetch(transport, DatasetRef((member,)), cache=cache)
+        again = fetch(transport, DatasetRef((member,)), cache=cache)
+        monkeypatch.setenv("DFO_OFFLINE", "1")
+        offline = fetch(transport, DatasetRef((member,)), cache=cache)
+    assert len(server.requests) == 3
+    assert server.requests[1].url.path.endswith(f"/{NARROWED_CV}/file")
+    assert first.members[0].manifest == served
+    assert again.members[0].digest == offline.members[0].digest == member.digest
+    assert offline.stale is True
 
 
 def test_exact_refs_merge_projected_and_plain_artifacts_for_offline_spec(
@@ -1085,6 +1400,36 @@ def test_same_bytes_under_two_renderings_keep_the_plain_offline_artifact(
     assert restored.members[0].data == DATA
 
 
+def test_plain_and_cut_files_of_one_version_share_a_manifest_and_stay_apart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = with_cut(manifest(POSTED_ID))
+    cache = Cache(tmp_path, env={})
+    server = Server(
+        json_response(200, body),
+        redirect(),
+        parquet(),
+        json_response(200, body),
+        redirect(),
+        parquet(CUT_DATA),
+    )
+    with make(server) as transport:
+        plain = fetch(transport, spec(SENTENCE), cache=cache)
+        cut = fetch(transport, spec(SENTENCE), without_party_totals=True, cache=cache)
+        assert "without_party_totals" not in server.body(0)["options"]
+        assert server.body(3)["options"]["without_party_totals"] is True
+        assert (plain.members[0].data, cut.members[0].data) == (DATA, CUT_DATA)
+        assert cut.members[0].rendering == CUT
+        manifests = list((cache.directory / "manifests" / POSTED_ID).rglob("*.json"))
+        assert [path.name for path in manifests] == ["parquet.json"]
+
+        monkeypatch.setenv("DFO_OFFLINE", "1")
+        plain = fetch(transport, spec(SENTENCE), cache=cache)
+        cut = fetch(transport, spec(SENTENCE), without_party_totals=True, cache=cache)
+    assert (plain.members[0].data, cut.members[0].data) == (DATA, CUT_DATA)
+    assert len(server.requests) == 6
+
+
 def test_incomplete_metadata_artifact_stays_eligible_offline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1107,6 +1452,11 @@ def test_a_ref_takes_no_narrowing_and_keeps_its_layout() -> None:
             fetch(transport, ref, window="latest")
         with pytest.raises(InvalidRequestError, match="long layout"):
             fetch(transport, ref, layout="frame")
+        with pytest.raises(InvalidRequestError, match="without_party_totals=False"):
+            fetch(transport, ref, without_party_totals=True)
+        cut_ref = DatasetRef((ref_member(rendering=CUT),))
+        with pytest.raises(InvalidRequestError, match="without_party_totals=True"):
+            fetch(transport, cut_ref, without_party_totals=False)
         bundled = RefMember(
             parts=(),
             sentence=SENTENCE,

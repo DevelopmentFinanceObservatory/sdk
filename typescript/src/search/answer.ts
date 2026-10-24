@@ -6,16 +6,21 @@
  * that awaits a choice and returns a new answer.
  */
 import { answerText, declinedText, incompleteMessage, readingHints } from "./answer-text.ts";
-import { choiceInput, gapNamed, onlyChoice, pick, pickedEntry } from "./choices.ts";
-import { clientError } from "../core/errors.ts";
+import { choiceInput, gapNamed, identityEntry, onlyChoice, pick } from "./choices.ts";
+import type { ChoiceKey } from "./choices.ts";
+import { clientError, problemAt200 } from "../core/errors.ts";
 import type { IncompleteAnswerError } from "../core/errors.ts";
 import type { Dataset } from "../datasets/dataset.ts";
-import { fetchMembers as defaultFetchMembers } from "../datasets/fetch.ts";
+import {
+  fetchMembers as defaultFetchMembers,
+  RESOLVE_PATH,
+  RESOLVE_SCHEMA_VERSION,
+} from "../datasets/fetch.ts";
 import type { FetchMembersOptions, MemberRequest } from "../datasets/fetch.ts";
 import { CODE_GAP_KINDS } from "../generated/actions.ts";
 import type { GAP_KINDS } from "../generated/actions.ts";
 import { parsedInputOf, partFacts, warningsOf } from "../core/parse.ts";
-import { isKnownPart, partText } from "../core/parts.ts";
+import { definiteParts, isKnownPart, partSentence, partText } from "../core/parts.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
 import type { Transport } from "../http/transport.ts";
@@ -25,7 +30,8 @@ import type {
   Assumption,
   CandidatesPart,
   DatasetResubmitInput,
-  DefinitePart,
+  Diagnostics,
+  KnownPart,
   NoData,
   ParsedInput,
   Part,
@@ -33,12 +39,10 @@ import type {
   Spec,
   Warning,
 } from "../wire.ts";
-import { isRecord, list, objects, text } from "../core/json.ts";
+import { isRecord, list, objects, strings, text } from "../core/json.ts";
 
-export const RESOLVE_PATH = "/search/resolve";
-const SCHEMA_VERSION = 1;
 /** Longer than Search's 45-second soft deadline, so a slow answer arrives whole. */
-export const SEARCH_TIMEOUT_MS = 60_000;
+const SEARCH_TIMEOUT_MS = 60_000;
 
 const NO_ASSUMPTIONS: readonly Assumption[] = Object.freeze([]);
 
@@ -48,8 +52,20 @@ const TIMED_OUT =
 /** What a gap needs to settle it: the contract's gap kinds, or one the client derives. */
 export type GapKind = (typeof GAP_KINDS)[number] | "timed_out" | "unknown";
 
+/** What Search answered with: readings, the catalogue, or a refusal of the question. */
+export type AnswerKind = "resolution" | "catalogue" | "declined";
+
+/** An answer's status: the parts' shared status, `mixed` when they differ, or the kind of a
+ *  declined or catalogue answer. A status a newer server sends still typechecks. */
+export type AnswerStatus = KnownPart["status"] | "mixed" | "catalogue" | "declined" | (string & {});
+
+/** Search's account of how it answered, from the response's `diagnostics`: its build, timing,
+ *  model token counts and whether it stopped at its time limit. The members are as the server
+ *  sent them and are not checked. */
+export type AnswerDiagnostics = Readonly<Partial<Diagnostics>>;
+
 /** Builds a candidate's dataset through the answer it came from. */
-type CandidateFetch = (candidate: Candidate, options: AnswerFetchOptions) => Promise<Dataset<Gap>>;
+type CandidateFetch = (candidate: Candidate, options: AnswerFetchOptions) => Promise<Dataset>;
 
 /**
  * One reading of a part that has several. The label, unit and source split its sentence, and
@@ -96,7 +112,7 @@ export class Candidate {
    *
    * @throws {InvalidRequestError} The candidate came from no answer.
    */
-  async fetch(options: AnswerFetchOptions = {}): Promise<Dataset<Gap>> {
+  async fetch(options: AnswerFetchOptions = {}): Promise<Dataset> {
     if (this.#fetch === null) {
       throw clientError("invalid_argument", {
         detail:
@@ -120,9 +136,10 @@ export type QueryOption = {
   readonly label: string;
   /** The question's words the choice settles. */
   readonly mentions: readonly string[];
-  /** The parsed question with the choice pinned, posted back to Search unchanged. Null when the
-   *  server sent none or sent one that is not a parsed input, and a choice of the option then
-   *  refuses as a `ContractError`. */
+  /** The parsed question with the choice pinned, which `answer.choose` posts back to Search. It
+   *  goes as it stands in a one-part answer, and as its one part beside the other parts' entries
+   *  otherwise. Null when the server sent none or sent one that is not a parsed input, and a choice of the
+   *  option then refuses as a `ContractError`. */
   readonly dataQuery: ParsedInput | null;
 };
 
@@ -147,7 +164,7 @@ export type AnswerContext = {
     transport: Transport,
     members: readonly MemberRequest[],
     options: FetchMembersOptions<Gap>,
-  ) => Promise<Dataset<Gap>>;
+  ) => Promise<Dataset>;
 };
 
 export type SearchOptions = {
@@ -164,8 +181,6 @@ export type AnswerFetchOptions = Omit<FetchMembersOptions<Gap>, "missing" | "nar
   readonly partial?: boolean;
 };
 
-type ChoiceKey = number | string;
-
 /** How the readings an answer builds differ from the question: departures, computations Search
  *  did not run, and its `warn` and `degraded` warnings. */
 export class SearchWarning extends DfoWarning {}
@@ -175,14 +190,15 @@ Object.defineProperty(SearchWarning.prototype, "name", {
 });
 
 type AnswerInit = {
-  kind: string;
-  status: string;
+  kind: AnswerKind;
+  status: AnswerStatus;
   sentence: string | null;
   parts?: readonly Part[];
   question: string | null;
   reason?: string | null;
   warnings?: readonly Warning[];
   timedOut?: boolean;
+  diagnostics?: AnswerDiagnostics;
   traceId?: string | null;
   raw: unknown;
   context: AnswerContext;
@@ -190,11 +206,8 @@ type AnswerInit = {
 
 /** What Search understood a question to ask, as one reading per part. */
 export class Answer {
-  /** `resolution`, `catalogue` or `declined`. */
-  readonly kind: string;
-  /** The parts' shared status, `mixed` when they differ, or the kind for a declined or
-   *  catalogue answer. */
-  readonly status: string;
+  readonly kind: AnswerKind;
+  readonly status: AnswerStatus;
   /** Search's sentence for the whole answer; null for a declined or catalogue answer. */
   readonly sentence: string | null;
   /** One part per variable asked, in query order. */
@@ -213,11 +226,15 @@ export class Answer {
   readonly warnings: readonly Warning[];
   /** Whether Search stopped at its time limit. */
   readonly timedOut: boolean;
+  /** Search's timing, token counts and build for the response; empty when it sent none. */
+  readonly diagnostics: AnswerDiagnostics;
   /** The Search response's trace id, to quote when reporting it. */
   readonly traceId: string | null;
   /** The decoded response body, untouched. */
   readonly raw: unknown;
   readonly #context: AnswerContext;
+  /** The members `fetch` builds, one per distinct spec. */
+  readonly #members: readonly MemberRequest[];
 
   /** Answers come from `client.search`. This constructor is the client's. */
   constructor(init: AnswerInit) {
@@ -229,6 +246,7 @@ export class Answer {
     this.reason = init.reason ?? null;
     this.warnings = init.warnings ?? [];
     this.timedOut = init.timedOut ?? false;
+    this.diagnostics = init.diagnostics ?? {};
     this.traceId = init.traceId ?? null;
     this.raw = init.raw;
     this.#context = init.context;
@@ -237,7 +255,7 @@ export class Answer {
       async (candidate, options) => {
         const input: DatasetResubmitInput = {
           kind: "dataset_resubmit",
-          entries: [pickedEntry(part, candidate)],
+          entries: [identityEntry(part, candidate.spec)],
         };
         const signal = options.signal === undefined ? {} : { signal: options.signal };
         const picked = await resolveAnswer(this.#context, input, {
@@ -251,7 +269,9 @@ export class Answer {
       return gap === null ? [] : [gap];
     });
     this.complete = this.kind === "resolution" && this.gaps.length === 0;
-    this.specs = membersOf(this.parts).map((member) => member.spec);
+    const members = membersOf(this.parts);
+    this.#members = members;
+    this.specs = members.map((member) => member.spec);
   }
 
   /**
@@ -297,7 +317,7 @@ export class Answer {
    * @throws {SearchWarning} `strict` is true and the reading differs from the question.
    * @throws {DataWarning} `strict` is true and a manifest carries a warning above `info`.
    */
-  async fetch(options: AnswerFetchOptions = {}): Promise<Dataset<Gap>> {
+  async fetch(options: AnswerFetchOptions = {}): Promise<Dataset> {
     if (this.kind !== "resolution") {
       throw clientError("answer_declined", {
         detail: declinedText(this.kind, this.reason),
@@ -305,7 +325,7 @@ export class Answer {
       });
     }
     const { partial, ...fetchOptions } = options;
-    const members = membersOf(this.parts);
+    const members = this.#members;
     if (this.gaps.length > 0 && (partial !== true || members.length === 0)) {
       throw this.incompleteError();
     }
@@ -351,10 +371,10 @@ export async function resolveAnswer(
   const { transport } = context;
   const response = await transport.request({
     path: RESOLVE_PATH,
-    json: { schema_version: SCHEMA_VERSION, input },
+    json: { schema_version: RESOLVE_SCHEMA_VERSION, input },
     timeout: Infinity,
     deadline: transport.deadlineAfter(options.timeout ?? SEARCH_TIMEOUT_MS),
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    signal: options.signal,
   });
   const { body, traceId } = response;
   return describing(traceId, () => answerFromBody(body, context, options.question, traceId));
@@ -364,6 +384,9 @@ export async function resolveAnswer(
  * Reads a decoded Search response into an answer. `traceId` is the trace id of the response
  * the body came from.
  *
+ * @throws {DfoError} The body is a problem document (a `code` and no `kind`): the class the
+ *   contract's actions give its code, or `ContractError` (`contract_violation`) for a code they
+ *   lack.
  * @throws {ContractError} The body is not an object, its kind is unknown, a member the client
  *   acts on is missing, `parts` is not an array of objects, a part has no string `status`, a
  *   candidates part's `specs` is not an array, or a spec's `definition.spec_id` is not its
@@ -380,7 +403,10 @@ export function answerFromBody(
       detail: "The Search response is not an object.",
     });
   }
-  const diagnostics = isRecord(body["diagnostics"]) ? body["diagnostics"] : {};
+  const refused = problemAt200(body, traceId);
+  if (refused !== undefined) throw refused;
+  // A JSON object from the server, which the type describes and the client does not check.
+  const diagnostics: AnswerDiagnostics = isRecord(body["diagnostics"]) ? body["diagnostics"] : {};
   const warnings = warningsOf(diagnostics["warnings"]);
   const kind = body["kind"];
   if (kind === "declined" || kind === "catalogue") {
@@ -391,6 +417,7 @@ export function answerFromBody(
       question,
       reason: kind === "declined" ? text(body["reason"]) : null,
       warnings,
+      diagnostics,
       traceId,
       raw: body,
       context,
@@ -417,16 +444,12 @@ export function answerFromBody(
   return new Answer({
     kind,
     status: status ?? sharedStatus(typed),
-    sentence:
-      sentence ||
-      typed
-        .map((part) => partSentence(part))
-        .filter(Boolean)
-        .join(" "),
+    sentence: sentence || typed.map(partSentence).filter(Boolean).join(" "),
     parts: typed,
     question,
     warnings,
     timedOut: diagnostics["timed_out"] === true,
+    diagnostics,
     traceId,
     raw: body,
     context,
@@ -479,20 +502,6 @@ function checkSpec(spec: unknown, pointer: string): void {
 function sharedStatus(parts: readonly Part[]): string {
   const statuses = new Set(parts.map((part) => part.status));
   return statuses.size === 1 ? [...statuses][0]! : "mixed";
-}
-
-/** The sentence a part reads as: its spec's for a definite part, else its own. */
-export function partSentence(part: Part): string | null {
-  if (isKnownPart(part) && part.status === "definite") {
-    return text(part.spec.resolved.rendered_sentence);
-  }
-  return text(part.rendered_sentence);
-}
-
-export function definiteParts(parts: readonly Part[]): DefinitePart[] {
-  return parts.filter(
-    (part): part is DefinitePart => isKnownPart(part) && part.status === "definite",
-  );
 }
 
 /** One member per distinct `spec_id`, in query order, with the first part's spec; folded parts
@@ -581,7 +590,7 @@ function queryOptions(noData: NoData): QueryOption[] {
   return objects(noData.options).map((option) => ({
     kind: "query",
     label: text(option["label"]) ?? "",
-    mentions: list(option["mentions"]).filter((m): m is string => typeof m === "string"),
+    mentions: strings(option["mentions"]),
     dataQuery: parsedInputOf(option["data_query"]),
   }));
 }

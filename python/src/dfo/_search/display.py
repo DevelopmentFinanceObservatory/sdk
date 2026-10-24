@@ -7,7 +7,6 @@ them. Every server string in the HTML is escaped.
 import html
 import importlib
 import json
-import os
 import sys
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
@@ -22,6 +21,7 @@ from dfo._core.types import (
     Option,
     Part,
 )
+from dfo._datasets.progress import progress_mode
 
 _SHOWN_SEVERITIES = frozenset({"warn", "degraded"})
 
@@ -92,7 +92,7 @@ def answer_text(answer: AnswerView, /) -> str:
     if answer.complete:
         lines = [line for _, line in hints(answer, departures=False)]
         return "\n".join([answer.sentence or "", *(f"  {line}" for line in lines)])
-    return "\n".join([_answered(answer, lead="Answered"), *_gap_lines(answer)])
+    return _incomplete(answer, lead="Answered")
 
 
 def answer_html(answer: AnswerView, /) -> str:
@@ -116,7 +116,7 @@ def declined_text(kind: str, reason: str | None, /) -> str:
 
 def incomplete_message(answer: AnswerView, /) -> str:
     """The `IncompleteAnswerError` message: every gap and the line that settles it."""
-    return "\n".join([_answered(answer, lead="Search answered"), *_gap_lines(answer)])
+    return _incomplete(answer, lead="Search answered")
 
 
 @contextmanager
@@ -139,11 +139,8 @@ def search_status(question: str, /) -> Generator[None]:
 
 
 def _notebook_display() -> Any:
-    if os.environ.get("DFO_PROGRESS") == "0" or "ipykernel" not in sys.modules:
-        return None
-    ipython = sys.modules.get("IPython")
-    shell = ipython.get_ipython() if ipython is not None else None
-    if shell is None or not hasattr(shell, "kernel"):
+    """IPython's `display`, when progress would show in a notebook."""
+    if progress_mode(None, stream=sys.stderr) != "notebook":
         return None
     return importlib.import_module("IPython.display").display
 
@@ -162,16 +159,13 @@ def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
-def _answered(answer: AnswerView, *, lead: str) -> str:
+def _incomplete(answer: AnswerView, *, lead: str) -> str:
+    """What is answered and what is missing, with the calls that settle each gap."""
     answered = sum(isinstance(part, DefinitePart) for part in answer.parts)
-    return (
-        f"{lead} {answered} of {_plural(len(answer.parts), 'part')} of your question."
-    )
-
-
-def _gap_lines(answer: AnswerView) -> list[str]:
     gaps = {gap.part_index: gap for gap in answer.gaps}
-    lines: list[str] = []
+    lines = [
+        f"{lead} {answered} of {_plural(len(answer.parts), 'part')} of your question."
+    ]
     for index, part in enumerate(answer.parts):
         name = _quote(part.variable_text)
         gap = gaps.get(index)
@@ -188,11 +182,10 @@ def _gap_lines(answer: AnswerView) -> list[str]:
         for gap in answer.gaps
         if (call := _choose_call(answer, gap)) is not None
     )
-    answered = sum(isinstance(part, DefinitePart) for part in answer.parts)
     if answered:
         noun = "part" if answered == 1 else "parts"
         lines.append(f"  Or take the answered {noun}: answer.fetch(partial=True)")
-    return lines
+    return "\n".join(lines)
 
 
 def _choice_line(choice: Candidate | AsyncCandidate | Option) -> str:

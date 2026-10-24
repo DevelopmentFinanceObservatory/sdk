@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { inspect } from "node:util";
 
 import { parquetMetadata } from "hyparquet";
 
@@ -89,6 +90,8 @@ describe("IncompleteAnswerError", () => {
       error.gaps.map((gap) => [gap.partIndex, gap.kind]),
       [[1, "not_understood"]],
     );
+    // Node prints an uncaught error with its own properties; the answer's body stays out.
+    assert.ok(!inspect(error, { depth: Infinity }).includes("query_echo"));
     assert.deepEqual(error.message.split("\n"), [
       "Search answered 1 of 2 parts of your question.",
       `  answered "debt service": Kenya's external debt service owed to all creditors, 1970 to 2024. Current US dollars · World Bank International Debt Statistics (IDS).`,
@@ -195,6 +198,15 @@ describe("gaps", () => {
       answer.gaps.map((gap) => [gap.partIndex, gap.kind, gap.options.length]),
       [[1, "timed_out", 0]],
     );
+  });
+
+  test("diagnostics holds the response's diagnostics, or nothing when it sent none", () => {
+    for (const name of ["answer-mixed-fetch-raises", "answer-declined"]) {
+      assert.deepEqual(answerOf(name).diagnostics, body(name)["diagnostics"], name);
+    }
+    const bare = body("answer-declined");
+    delete bare["diagnostics"];
+    assert.deepEqual(answerFromBody(bare, offline(), null).diagnostics, {});
   });
 
   test("a no_data reason with no contract row is a no_data gap", () => {
@@ -535,15 +547,13 @@ describe("fetch", () => {
   });
 
   test("a declined or catalogue answer raises DeclinedError", async () => {
-    await assert.rejects(answerOf("answer-declined").fetch(), (error: unknown) => {
-      assert.ok(error instanceof DeclinedError);
-      assert.equal(error.code, "answer_declined");
-      return true;
-    });
-    await assert.rejects(answerOf("answer-catalogue").fetch(), {
-      name: "DeclinedError",
-      code: "answer_declined",
-    });
+    for (const name of ["answer-declined", "answer-catalogue"]) {
+      await assert.rejects(answerOf(name).fetch(), (error: unknown) => {
+        assert.ok(error instanceof DeclinedError, name);
+        assert.equal(error.code, "answer_declined");
+        return true;
+      });
+    }
   });
 
   test("partial with no answered part still raises IncompleteAnswerError", async () => {
@@ -899,6 +909,20 @@ describe("reading a Search response", () => {
     });
     assert.equal(late.seen.length, 1);
   });
+
+  for (const [code, name, errorCode] of [
+    ["internal_error", "ServerError", "internal_error"],
+    ["query_too_long", "InvalidRequestError", "query_too_long"],
+    ["rate_limited", "RateLimitError", "rate_limited"],
+    ["code_from_a_newer_server", "ContractError", "contract_violation"],
+  ] as const) {
+    test(`search raises a 200 problem document with the code ${code} as ${name}`, async () => {
+      const problem = { code, detail: "Down.", trace_id: "body-trace" };
+      const { fetch } = mockFetch(json(problem, 200, { "x-dfo-trace-id": "header-trace" }));
+      const context = { ...offline(), transport: replay(NO_EXCHANGES, { fetch }).transport };
+      await assert.rejects(search(context, "q"), { name, code: errorCode, traceId: "body-trace" });
+    });
+  }
 
   test("search posts the raw question and keeps it on the answer", async () => {
     const scenario = record("answer-definite-fetch");

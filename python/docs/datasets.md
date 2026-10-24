@@ -11,16 +11,14 @@ Each example on this page runs on its own.
 ```python
 import dfo
 
-answer = dfo.search(
-    "Gross ODA disbursements to Ethiopia from every provider, 2015 to 2022"
-)
+answer = dfo.search("ODA to Ethiopia from each donor, 2015 to 2022")
 spec = answer.specs[0]
 
 data = dfo.fetch(spec)
 print(data.rows)
 ```
 
-`fetch` downloads the file through a signed URL and checks it against the digest its manifest names before it returns. A `Dataset` holds no client, and its conversions run offline. It pickles for transfer between processes that run the same version of `development-finance`, as `multiprocessing` does. Keep data with `save`, since another version may fail to load a pickle or load it wrong.
+`fetch` downloads the file through a signed URL and checks it against the digest its manifest names before it returns. It then decodes the Parquet file. Bytes that do not decode as Parquet raise `ContractError` with `unexpected_response`. A file that decodes but lacks a `time_period` or numeric `value` column, repeats a column name, or holds no rows where the manifest counts some raises `contract_violation`. In both cases the cache drops the file. A spec id alone does not build: `fetch` takes a `Spec` or a `DatasetRef`, and anything else raises `InvalidRequestError` with `invalid_argument` before any request. A `Dataset` holds no client, and its conversions run offline. It pickles for transfer between processes that run the same version of `development-finance`, as `multiprocessing` does. Keep data with `save`, since another version may fail to load a pickle or load it wrong.
 
 ### Narrow before the build
 
@@ -33,9 +31,7 @@ Three arguments narrow a spec on the server, so a fetch of four years waits for 
 ```python
 import dfo
 
-answer = dfo.search(
-    "Gross ODA disbursements to Ethiopia from every provider, 2015 to 2022"
-)
+answer = dfo.search("ODA to Ethiopia from each donor, 2015 to 2022")
 spec = answer.specs[0]
 
 data = dfo.fetch(
@@ -50,6 +46,30 @@ print(data.sentence)
 Rebinding `origin` keeps Ethiopia as the recipient, since the client posts the spec's own roles with `origin` replaced. The roles a spec binds are under `spec.definition["identity"]["entities"]`.
 
 A narrowed spec is a new reading with its own `spec_id`, which `data.members[0].spec` holds.
+
+A narrowing can leave no data. The fetch then returns a `Dataset` with no rows and the usual columns, and its sentence is Search's no-data sentence for the narrowed reading. The server's `empty_result` warning arrives as a `DataWarning`:
+
+```text
+<Dataset No data for official development assistance gross disbursements for basic health care (standard grant, core support to non-governmental organisations, other private bodies, public-private partnerships, and research institutes). Try a different place, time period, or indicator. The data covers only 1995 to 2024.
+  Source: OECD Creditor Reporting System (CRS)
+  Version: cv_b1a6fed0a63c26c17d344a2cca33e448
+  Rows: 0
+  Held until 11 November 2026, not pinned>
+```
+
+```python
+import dfo
+
+spec = dfo.search(
+    "ODA disbursements from Germany to Nigeria for basic health care"
+).specs[0]
+
+empty = dfo.fetch(spec, window=(1900, 1901))
+print(empty)
+print(empty.rows, empty.to_arrow().schema.names[:4])
+```
+
+An empty member stacks beside the members that have rows and adds none.
 
 ### The two layouts
 
@@ -68,6 +88,42 @@ print(frame.to_arrow().schema.names[:5])
 ```
 
 The frame holds one reading. `layout="frame"` on an answer with several readings raises `InvalidRequestError`, so fetch each spec on its own.
+
+### Leave out party totals
+
+A provider or recipient column can hold a total beside its members. "DAC countries" sits in the same column as Germany, so summing `value` counts a donor more than once. For Ethiopia in 2022 the table has 110 rows that sum to 23.8 billion dollars, and 95 rows that sum to 5.55 billion without the totals.
+
+`without_party_totals=True` builds the dataset without the rows of parties the code index declares totals, on each party role the spec leaves open. It takes the same place as `layout` on `answer.fetch`, `dfo.fetch`, `client.mint` and `client.operation`:
+
+```text
+110 95
+23838279487.0 5553373816.0
+['official', 'private']
+```
+
+```python
+import warnings
+
+import dfo
+
+warnings.simplefilter("ignore", dfo.SearchWarning)
+answer = dfo.search("top 5 donors to Ethiopia in 2022")
+
+whole = answer.fetch()
+cut = answer.fetch(without_party_totals=True)
+
+print(whole.rows, cut.rows)
+print(whole.to_pandas()["value"].sum(), cut.to_pandas()["value"].sum())
+print(sorted(cut.to_pandas()["financingProvider_kind"].unique()))
+```
+
+The cut has three limits:
+
+- A party the spec's identity binds stays on its role. Asking for the DAC total by name returns it.
+- A role where every row is a total keeps all its rows, so an answer that is a single total reads the same with or without the flag.
+- A row the code index does not mark as a total stays. Some rows repeat another party's figures without carrying that mark, such as the IMF's trust funds in the tables that list them as parties. The remaining rows are not promised to sum to the published total.
+
+A ref records the cut. `data.ref` of a cut dataset carries `without_party_totals` in each member's rendering, a plain ref is unchanged, and `dfo.fetch(ref)` returns the cut. Naming the other value raises `InvalidRequestError`, as a different `layout` does.
 
 ## Use the data
 
@@ -113,7 +169,37 @@ A missing extra raises `ImportError` with the install line, such as `pip install
 
 A dataset of several readings stacks them into one long table with a leading `part` column, holding the question's words for each row's reading. Columns one reading lacks are null in its rows.
 
-Warnings the server attaches to the data arrive as `DataWarning`, with a `code` and `severity`. `strict=True` raises the first one instead.
+Warnings the server attaches to the data arrive as `DataWarning`, with a `code` and `severity`. `strict=True` raises the first one instead. A warning belongs to the version, so it is issued on every fetch of that version, a read from the cache included. The message says that coverage fell short and may not name the place that has no data. Compare the places in the table with the ones you asked for, and silence a warning you have read with `warnings.filterwarnings("ignore", category=dfo.DataWarning)`.
+
+### Line up flows with indicators
+
+A flow set names its places by role: `financingProvider` and `financingRecipient`, each beside `_label` and `_kind` columns. A World Development Indicators set names its place `observationAbout`. To put a flow beside an indicator, match the role column against `observationAbout` and `time_period`:
+
+```text
+   time_period  value_oda     value_gdp
+0         2015   111870.0  4.930267e+11
+1         2016    70773.0  4.046491e+11
+2         2020    41880.0  5.985868e+11
+```
+
+```python
+import dfo
+
+oda = dfo.search(
+    "ODA disbursements from Germany to Nigeria for basic health care"
+).fetch()
+gdp = dfo.search("GDP of Nigeria").fetch()
+
+merged = oda.to_pandas().merge(
+    gdp.to_pandas(),
+    left_on=["financingRecipient", "time_period"],
+    right_on=["observationAbout", "time_period"],
+    suffixes=("_oda", "_gdp"),
+)
+print(merged[["time_period", "value_oda", "value_gdp"]].head())
+```
+
+A column that is null in every row, such as `base_year` on a series in current prices, marks a dimension that does not apply to the data. Read the `unit_label` of each side before you divide one by the other.
 
 ## Keep a result
 
@@ -142,7 +228,7 @@ data = dfo.fetch(ref)
 print(data.members[0].content_version)
 ```
 
-A ref fetch takes no narrowing and returns the layout the ref holds. `window`, `entities`, `facets` or another `layout` raise `InvalidRequestError`. The format is the same in every DFO client, so a ref saved from Python loads in TypeScript. `DatasetRef.from_json` raises `FormatError`, a `ValueError`, when the JSON breaks the format, with a `reason` and a JSON Pointer to the bad value.
+A ref fetch takes no narrowing and returns the layout and rendering the ref holds. `window`, `entities`, `facets`, another `layout` or another `without_party_totals` raise `InvalidRequestError`. The format is the same in every DFO client, so a ref saved from Python loads in TypeScript. `DatasetRef.from_json` raises `FormatError`, a `ValueError`, when the JSON breaks the format, with a `reason` and a JSON Pointer to the bad value.
 
 A `Spec` has the same pair, for keeping a reading without a version: `spec.to_json()` and `dfo.Spec.from_json(text)`. Fetching a stored spec builds its latest version.
 
@@ -151,12 +237,43 @@ A `Spec` has the same pair, for keeping a reading without a version: `spec.to_js
 `fetch(ref)` looks for each version in this order:
 
 1. the local cache, by digest;
-2. the version's stored file on the server;
-3. the server's re-render of the version from its stored frame;
-4. a fresh build, accepted only when it returns the same version;
-5. otherwise `VersionUnavailableError`.
+1. the version's stored file on the server;
+1. the server's re-render of the version from its stored frame;
+1. a fresh build, accepted when it returns the same version;
+1. otherwise `VersionUnavailableError`.
 
-The error names the newest version in its message and in `newest_version`: the version the fresh build returned, or else the newest plain version the server stores, or None when it stores none. The lookup skips a version derived from another, such as a groupby collapse or a party-totals cut. Any refusal of that lookup other than `NotFoundError` raises in its place. Fetch the spec for it, and save the new ref:
+A digest names one rendering of a version. The server can render a version's rows again to a file with another digest, and steps 1 to 3 then find no file with the ref's digest. When step 4 returns the ref's version, `fetch` returns the data with a `DfoWarning` coded `ref_digest_changed`, which names both digests, and `data.ref` carries the rebuilt file's digest. Save that ref to stop the warning. `strict=True` leaves it a warning, because the data is the version the ref names.
+
+The next example changes the digest in a saved ref to show the warning:
+
+```text
+DfoWarning ref_digest_changed
+spec_774d6c001a6250aa67ca676ab067895e at cv_b92d94774702c7f05f2075d0b03dd756 was rebuilt as sha256:421efacc2dc010af38112a087b0b49ff5539f61d2afd12a88272b27e99b5f5db, not the ref's sha256:0000000000000000000000000000000000000000000000000000000000000000; the version is the same, and dataset.ref names the rebuilt file
+```
+
+```python
+import json
+import warnings
+
+import dfo
+
+data = dfo.search(
+    "ODA disbursements from Germany to Nigeria for basic health care"
+).fetch()
+
+saved = json.loads(data.ref.to_json())
+saved["members"][0]["artifact"]["digest"] = "sha256:" + "0" * 64
+
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    again = dfo.fetch(dfo.DatasetRef.from_json(json.dumps(saved)))
+
+for item in caught:
+    print(item.category.__name__, item.message.code)
+    print(item.message)
+```
+
+The error of step 5 names the newest version in its message and in `newest_version`: the version the fresh build returned, or else the newest version in the ref's rendering that the server lists, or None when it lists none. That version can be the ref's own, when the server lists it as the newest. The lookup reads the server's version list newest first, 100 to a page, for at most 20 pages. It considers only versions in the ref's own rendering, plain for a plain ref and party-totals cut for a cut ref, so a groupby collapse is ignored. A page cursor the walk has seen before raises `ContractError` with `contract_violation`. Any refusal of that lookup other than `NotFoundError` raises in its place. Fetch the spec for it, and save the new ref:
 
 ```python
 from pathlib import Path
@@ -194,7 +311,7 @@ opened = dfo.open_bundle("health.parquet")
 print(opened.sentence == data.sentence, opened.ref == data.ref)  # True True
 ```
 
-`open_bundle` also reads a bundle downloaded from the website: the ZIP, the folder it extracts to, or its `datapackage.json` or data file. It types the CSV or XLSX columns from `datapackage.json` and checks each file's hash before it reads the data. An XLSX bundle needs the `xlsx` extra.
+`open_bundle` also reads a bundle downloaded from the website: the ZIP, the folder it extracts to, or its `datapackage.json` or data file. It types the CSV or XLSX columns from `datapackage.json` and checks each file's hash before it reads the data. Every resource that names a file needs a `hash` written as `sha256:` and 64 lower-case hex digits. The data table is the resource whose `name` equals the descriptor's own `name`, so a descriptor written by hand names its one table like the package. An XLSX bundle needs the `xlsx` extra, and a cell holding `inf` or `nan` reads as null, because openpyxl writes no value for it.
 
 ## `open_bundle` limits
 
@@ -224,12 +341,12 @@ It raises `BundleError`, a `ValueError`, with a `reason`:
 
 - `not_a_bundle`: a Parquet file without a saved dataset's provenance.
 - `no_descriptor`: a CSV or XLSX with no `datapackage.json` beside it. Download the whole bundle, or fetch the dataset with `dfo.fetch`.
-- `no_data_resource`: a descriptor that names no data table.
+- `no_data_resource`: a descriptor with no resource named like the package.
 - `missing_file`: a file the descriptor lists and the bundle lacks.
 - `hash_mismatch`: a file whose bytes differ from its hash. Download the bundle again.
 - `resource_limit`: a bundle exceeded a `BundleLimits` bound.
 
-A descriptor that lists a file outside the bundle, by an absolute path or one that climbs out with `..`, raises `FormatError` before any file is read.
+`open_bundle` raises `FormatError` for a descriptor that is not a JSON object, lists a file outside the bundle by an absolute path or one that climbs out with `..`, or lists a file without a `sha256:` hash. Those checks run before any file is read. It raises the same error for data that does not fit the columns the descriptor types, and for a saved dataset whose provenance is damaged.
 
 A website bundle opened from a folder has no members, because the folder names no stored file, and reading its `ref` raises `ValueError`. Open the ZIP to keep them.
 

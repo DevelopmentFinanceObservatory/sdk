@@ -7,7 +7,6 @@
 
 import * as arrow from "apache-arrow";
 
-import type { Gap } from "../search/answer.ts";
 import { tableParts } from "./dataset.ts";
 import type { Dataset } from "./dataset.ts";
 import { decimalNumber, decodeStored } from "./parquet.ts";
@@ -102,10 +101,11 @@ function arrowVector(type: ColumnType, values: readonly unknown[]): arrow.Vector
  * reads as `Float64`, each value the float nearest the stored decimal. It decodes every member
  * and builds the whole table in memory.
  */
-export async function toArrow(dataset: Dataset<Gap>): Promise<arrow.Table> {
-  const vectors: Record<string, arrow.Vector> = {};
-  for (const { name, type, values } of await decodeStored(tableParts(dataset))) {
-    vectors[name] = arrowVector(type, values);
-  }
+export async function toArrow(dataset: Dataset): Promise<arrow.Table> {
+  const columns = await decodeStored(tableParts(dataset));
+  // fromEntries defines each column as an own property, `__proto__` included.
+  const vectors = Object.fromEntries(
+    columns.map(({ name, type, values }) => [name, arrowVector(type, values)]),
+  );
   return new arrow.Table(vectors);
 }

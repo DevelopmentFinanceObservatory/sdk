@@ -27,7 +27,7 @@ import {
   InvalidRequestError,
   NotFoundError,
 } from "../../src/index.ts";
-import type { Answer, Dataset, Gap, Operation, Row, SpecInput } from "../../src/index.ts";
+import type { Answer, Dataset, Operation, Row, SpecInput } from "../../src/index.ts";
 
 const baseUrl = process.env["DFO_BASE_URL"];
 if (baseUrl === undefined || baseUrl === "") {
@@ -178,7 +178,7 @@ const STEP_TIMEOUT = 300_000;
 
 // State the later steps read from the earlier ones.
 let health: Answer | undefined;
-let healthData: Dataset<Gap> | undefined;
+let healthData: Dataset | undefined;
 
 describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
   test("1. a definite answer carries the wire's sentence", { timeout: STEP_TIMEOUT }, async () => {
@@ -239,7 +239,7 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
     { timeout: STEP_TIMEOUT },
     async () => {
       // The step needs a question Search reads several ways.
-      const answer = await client.search("GNI in Germany from 2015 to 2022");
+      const answer = await client.search("government education spending Kenya");
       const error = await rejection(answer.fetch());
       assert.ok(error instanceof IncompleteAnswerError, String(error));
       assert.equal(error.code, "answer_incomplete");

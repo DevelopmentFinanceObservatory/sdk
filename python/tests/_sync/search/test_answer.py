@@ -21,9 +21,12 @@ import dfo._sync._search.answer as answer_module
 from dfo._core.errors import (
     ContractError,
     DeclinedError,
+    DfoError,
     IncompleteAnswerError,
     InvalidRequestError,
+    RateLimitError,
     SearchWarning,
+    ServerError,
 )
 from dfo._core.parse import parse_assumptions
 from dfo._core.types import Candidate, CandidatesPart, DefinitePart, Gap
@@ -230,7 +233,13 @@ def test_a_search_attempt_reads_until_the_search_deadline(
     server = Server(load("search-1.json"))
     client = transport(server)
     search(lambda: Session(client), "ODA", timeout=timeout)
-    assert server.read_timeouts == [pytest.approx(read) if read else None]
+    (seen,) = server.read_timeouts
+    if read is None:
+        assert seen is None
+    else:
+        # The time left on the deadline, so short of `read` by the attempt's start-up.
+        assert seen is not None
+        assert read - 1.0 < seen <= read
 
 
 def test_a_candidates_gap_offers_its_candidates_as_options() -> None:
@@ -295,6 +304,25 @@ def test_an_unknown_answer_kind_raises_contract_error(
         ask("ODA", wire)
     assert (caught.value.code, caught.value.pointer) == ("contract_violation", None)
     assert caught.value.trace_id == trace_id
+
+
+@pytest.mark.parametrize(
+    ("code", "error", "raised"),
+    [
+        ("query_too_long", InvalidRequestError, "query_too_long"),
+        ("service_unavailable", ServerError, "service_unavailable"),
+        ("rate_limited", RateLimitError, "rate_limited"),
+        ("a_code_from_the_future", ContractError, "contract_violation"),
+        ("query\ntoo_long", ContractError, "contract_violation"),
+    ],
+)
+def test_a_problem_document_with_a_success_status_raises_its_error(
+    code: str, error: type[DfoError], raised: str
+) -> None:
+    problem = {"title": "Too long", "code": code, "trace_id": "t-1"}
+    with pytest.raises(error) as caught:
+        ask("ODA", problem)
+    assert (caught.value.code, caught.value.trace_id) == (raised, "t-1")
 
 
 def test_a_part_without_its_payload_names_the_member_missing() -> None:
@@ -433,12 +461,17 @@ def test_a_candidate_fetches_as_the_answer_that_chooses_it(
     )
     (candidates,) = answer.parts
     assert isinstance(candidates, CandidatesPart)
-    assert candidates.candidates[1].fetch(layout="long", timeout=10.0) == ("dataset")
-    assert (answer.choose(1)).fetch(layout="long", timeout=10.0) == ("dataset")
+    chosen = answer.choose(1)
+    for reading in (candidates.candidates[1], chosen):
+        assert (
+            reading.fetch(layout="long", without_party_totals=True, timeout=10.0)
+            == "dataset"
+        )
     assert server.posted[1] == server.posted[2]
     (_, by_candidate, options), (_, by_choice, chosen_options) = fetched
     assert by_candidate == by_choice
     assert options == chosen_options
+    assert options["without_party_totals"] is True
     assert [(m.spec, m.sentence) for m in by_candidate] == [
         (candidates.candidates[1].spec, picked(part, 1)["rendered_sentence"])
     ]
@@ -589,6 +622,9 @@ def options_sharing_a_label() -> dict[str, Any]:
         (unknown_without_restatement, (0, 0)),
         (options_sharing_a_label, (0, "Congo [DRC]")),
         (options_sharing_a_label, (0, False)),
+        (lambda: load("search-2.json"), (0, None)),
+        (lambda: load("search-2.json"), ()),
+        (lambda: load("search-2.json"), (0, 0, 0)),
     ],
     ids=[
         "no-gap",
@@ -605,6 +641,9 @@ def options_sharing_a_label() -> dict[str, Any]:
         "unknown-status-without-restatement",
         "options-share-a-label",
         "option-key-a-boolean",
+        "option-key-none",
+        "no-keys",
+        "three-keys",
     ],
 )
 def test_a_choice_that_cannot_be_made_raises_invalid_request(
@@ -702,7 +741,10 @@ def test_fetch_builds_one_member_per_distinct_spec(
     unnamed["variable_text"] = ""
     wire["parts"].append(unnamed)
     answer, _ = ask(TWO_PARTS, wire)
-    assert answer.fetch(layout="long", timeout=10.0) == "dataset"
+    assert (
+        answer.fetch(layout="long", without_party_totals=True, timeout=10.0)
+        == "dataset"
+    )
     ((transport_used, members, options),) = fetched
     oda, gni = wire["parts"][0]["spec"], wire["parts"][1]["spec"]
     assert [(m.parts, m.spec.spec_id, m.sentence) for m in members] == [
@@ -720,6 +762,7 @@ def test_fetch_builds_one_member_per_distinct_spec(
     ]
     assert options == {
         "layout": "long",
+        "without_party_totals": True,
         "strict": False,
         "timeout": 10.0,
         "progress": None,
@@ -812,7 +855,6 @@ def assert_unbound(
             assert all(
                 a is b for a, b in zip(gap.options, gap.part.candidates, strict=True)
             )
-            assert len(gap.options) == len(gap.part.candidates)
     assert candidates
     for candidate, original in candidates:
         assert type(candidate) is Candidate

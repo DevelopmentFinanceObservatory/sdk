@@ -2,6 +2,10 @@ import type { Answer, Gap } from "../search/answer.ts";
 import { CODE_ACTIONS } from "../generated/actions.ts";
 import type { ACTIONS } from "../generated/actions.ts";
 import { CLIENT_CODE_CLASSES, CLIENT_CODE_RETRYABLE } from "../generated/client-codes.ts";
+import { PROXY_CODE_STATUSES } from "../generated/proxy-codes.ts";
+import type { Alternative, ProblemIssue } from "../wire.ts";
+import { isRecord, objects } from "./json.ts";
+import { printable } from "./text.ts";
 
 /** What the caller does next about a refusal, as `contract/actions.json` assigns it. */
 export type Action = (typeof ACTIONS)[number];
@@ -16,6 +20,9 @@ declare const SERVER_CODE: unique symbol;
  *  other string a newer server sends. `serverCode` is the only way to make one, so an error the
  *  client raises itself takes a `ClientErrorCode`. */
 export type ServerErrorCode = string & { readonly [SERVER_CODE]: true };
+
+/** A refusal code's shape: lower-case snake case, such as `spec_not_found`. */
+export const REFUSAL_CODE = /^[a-z][a-z0-9_]*$/;
 
 /** Marks a code read from a server response. */
 export const serverCode = (code: string): ServerErrorCode => code as ServerErrorCode;
@@ -32,6 +39,8 @@ export type DfoErrorOptions = {
   /** The HTTP status, or null when no response arrived. */
   status?: number | null;
   detail?: string;
+  /** The message, when it says more than `detail`; `detail` by default. */
+  message?: string;
   traceId?: string | null;
   retryable?: boolean;
   /** The wait the response's `Retry-After` header asked for, in milliseconds. */
@@ -42,7 +51,9 @@ export type DfoErrorOptions = {
   cause?: unknown;
 };
 
-/** The base of every error the client raises. `code` tells the errors apart. */
+/** The base of every error the client raises. `code` tells the errors apart. Its message and
+ *  `detail` drop the characters that steer a terminal or reorder text, since either can quote
+ *  the server. */
 export class DfoError extends Error {
   readonly code: DfoErrorCode;
   readonly status: number | null;
@@ -55,8 +66,11 @@ export class DfoError extends Error {
   readonly docsUrl: string | null;
 
   constructor(options: DfoErrorOptions) {
-    const detail = options.detail ?? options.code;
-    super(detail, options.cause === undefined ? undefined : { cause: options.cause });
+    const detail = printable(options.detail ?? options.code);
+    super(
+      options.message === undefined ? detail : printable(options.message),
+      options.cause === undefined ? undefined : { cause: options.cause },
+    );
     this.code = options.code;
     this.status = options.status ?? null;
     this.detail = detail;
@@ -70,6 +84,20 @@ export class DfoError extends Error {
 
 Object.defineProperty(DfoError.prototype, BRAND, { value: true });
 
+/** The options that build another error from `error`, with `error` as the cause. The message is
+ *  left out, so it defaults to the detail. */
+export const optionsOf = (error: DfoError): DfoErrorOptions => ({
+  code: error.code,
+  status: error.status,
+  detail: error.detail,
+  traceId: error.traceId,
+  retryable: error.retryable,
+  retryAfterMs: error.retryAfterMs,
+  problem: error.problem,
+  docsUrl: error.docsUrl,
+  cause: error,
+});
+
 /** True for an error this client raised, including one from another copy of the package. */
 export function isDfoError(value: unknown): value is DfoError {
   return (
@@ -78,28 +106,49 @@ export function isDfoError(value: unknown): value is DfoError {
 }
 
 /** The request is malformed. The caller fixes it. */
-export class InvalidRequestError extends DfoError {}
+export class InvalidRequestError extends DfoError {
+  /** The problem document's `issues`, each naming a member of the request and what is wrong
+   *  with it, such as the role a `role_incompatible` refusal could not bind. Empty when the
+   *  server sent none. */
+  readonly issues: readonly ProblemIssue[];
+  /** The problem document's `alternatives`, the values the server offers in place of what the
+   *  request named; an item without a string `ref` and `label` is left out. Empty when the
+   *  server sent none. */
+  readonly alternatives: readonly Alternative[];
+
+  constructor(options: DfoErrorOptions) {
+    super(options);
+    this.issues = objects(options.problem?.["issues"]);
+    this.alternatives = objects(options.problem?.["alternatives"]).filter(
+      (item): item is Alternative =>
+        typeof item["ref"] === "string" && typeof item["label"] === "string",
+    );
+  }
+}
 /** A spec, version or operation is unknown. The caller checks the id. */
 export class NotFoundError extends DfoError {}
 /** A part of the question has no reading. The caller chooses one or takes the answered parts. */
 export class IncompleteAnswerError extends DfoError {
   /** The answer whose fetch raised it, or null for a server refusal. */
-  readonly answer: Answer | null;
+  declare readonly answer: Answer | null;
   /** The parts with no reading, each with its kind, message and options. */
-  readonly gaps: readonly Gap[];
+  declare readonly gaps: readonly Gap[];
 
   constructor(options: DfoErrorOptions & { answer?: Answer; gaps?: readonly Gap[] }) {
     super(options);
-    this.answer = options.answer ?? null;
-    this.gaps = options.gaps ?? [];
+    // Not enumerable, so Node prints an uncaught error's message and code and omits the whole answer.
+    Object.defineProperties(this, {
+      answer: { value: options.answer ?? null },
+      gaps: { value: options.gaps ?? [] },
+    });
   }
 }
 /** Search declined the question or answered with the catalogue. The caller asks a data question. */
 export class DeclinedError extends DfoError {}
 /** A stored version cannot be rebuilt. The caller takes the newest version. */
 export class VersionUnavailableError extends DfoError {
-  /** The version a fresh build returned, or else the newest plain version the server holds,
-   *  which fetching the spec returns, or null. */
+  /** The version a fresh build returned, or else the newest version in the ref's rendering the
+   *  server lists, which can be the ref's own, or null. */
   readonly newestVersion: string | null;
 
   constructor(options: DfoErrorOptions & { newestVersion?: string | null }) {
@@ -174,7 +223,22 @@ const CLASS_BY_ACTION: Record<Action, ErrorClass> = {
 const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 
 /** Whether a refusal whose body does not say is retryable, by its HTTP status. */
-export const isRetryableStatus = (status: number): boolean => RETRYABLE_STATUSES.has(status);
+const isRetryableStatus = (status: number): boolean => RETRYABLE_STATUSES.has(status);
+
+/** The website proxy's `retry` value for a refusal that clears on its own. */
+const PROXY_RETRY = "retry_after_delay";
+
+/** Whether a refusal is retried: as a problem document's `retryable` says, or the website
+ *  proxy's `retry` when its body carries one, and otherwise by its status. */
+export function isRetryable(status: number, body: unknown): boolean {
+  if (isRecord(body)) {
+    if (!("code" in body) && "error" in body && typeof body["retry"] === "string") {
+      return body["retry"] === PROXY_RETRY;
+    }
+    if (typeof body["retryable"] === "boolean") return body["retryable"];
+  }
+  return isRetryableStatus(status);
+}
 
 function classForStatus(status: number): ErrorClass {
   if (status === 401) return AuthenticationError;
@@ -186,18 +250,79 @@ function classForStatus(status: number): ErrorClass {
   return InvalidRequestError;
 }
 
+/** The value a generated table holds for a code, or undefined for a code it lacks. */
+const lookUp = <T>(table: Readonly<Record<string, T>>, code: string): T | undefined =>
+  Object.hasOwn(table, code) ? table[code] : undefined;
+
 /** The action `contract/actions.json` assigns to a code, or undefined for a code it lacks. */
 export function actionFor(code: string): Action | undefined {
-  return Object.hasOwn(CODE_ACTIONS, code)
-    ? CODE_ACTIONS[code as keyof typeof CODE_ACTIONS]
-    : undefined;
+  return lookUp(CODE_ACTIONS, code);
 }
 
-/** The class for a refusal: by its code through the contract's actions, else by HTTP status. */
+/** A server refusal's message: its detail, naming the field its problem document's `pointer`
+ *  names unless the pointer is empty or the detail names it already, then its code, as in
+ *  `Field required at /input/definition (request_invalid)`. With `unmatched`, the request of a
+ *  404 that matched no route, the message names that request before the code, as in
+ *  `Not found. GET https://… matched no route; check baseUrl (not_found)`. A null code adds
+ *  none. */
+export function refusalMessage(
+  detail: string,
+  pointer: unknown,
+  code: string | null,
+  unmatched?: string,
+): string {
+  const at =
+    typeof pointer === "string" && pointer !== "" && !detail.includes(pointer)
+      ? `${detail.replace(/\.$/, "")} at ${pointer}`
+      : detail;
+  const said =
+    unmatched === undefined
+      ? at
+      : `${at.replace(/\.$/, "")}. ${unmatched} matched no route; check baseUrl`;
+  return code === null ? said : `${said} (${code})`;
+}
+
+/**
+ * The error a 200 response's problem document stands for, or undefined when the body is none. A
+ * problem document holds a string `code` and no `kind`. Its class is the one `errorClassFor`
+ * gives a code the contract maps to a class. Any other code raises `contract_violation`, since a
+ * 200 has no status to read a class from.
+ */
+export function problemAt200(body: unknown, traceId: string | null): DfoError | undefined {
+  if (!isRecord(body) || typeof body["code"] !== "string" || "kind" in body) return undefined;
+  const code = body["code"];
+  if (actionFor(code) === undefined && proxyStatusFor(code) === undefined) {
+    return clientError("contract_violation", {
+      detail:
+        `The response is a problem document with the code ${JSON.stringify(code)}, which this ` +
+        "client does not know, under HTTP 200. Upgrade the client, or report the trace id.",
+      pointer: "/code",
+      traceId,
+    });
+  }
+  const detail = typeof body["detail"] === "string" ? body["detail"] : code;
+  const ErrorClass = errorClassFor(code, 200);
+  return new ErrorClass({
+    code: serverCode(code),
+    status: 200,
+    detail,
+    message: refusalMessage(detail, body["pointer"], code),
+    traceId,
+    retryable: isRetryable(200, body),
+    problem: body,
+  });
+}
+
+/** The class for a refusal: by its code through the contract's actions, else by the status the
+ *  website proxy answers its code with, else by HTTP status. */
 export function errorClassFor(code: string, status: number): ErrorClass {
   const action = actionFor(code);
-  return action === undefined ? classForStatus(status) : CLASS_BY_ACTION[action];
+  if (action !== undefined) return CLASS_BY_ACTION[action];
+  return classForStatus(proxyStatusFor(code) ?? status);
 }
+
+/** The status `contract/proxy-codes.json` gives a code the website proxy answers itself. */
+const proxyStatusFor = (code: string): number | undefined => lookUp(PROXY_CODE_STATUSES, code);
 
 type ClientClassName = Exclude<(typeof CLIENT_CODE_CLASSES)[ClientErrorCode], "by_status">;
 

@@ -4,7 +4,9 @@
 the sync transport passes the same tests.
 """
 
+import gzip
 import json
+import math
 import ssl
 import time
 import warnings
@@ -28,14 +30,16 @@ from dfo._core.errors import (
     RateLimitError,
     ServerError,
 )
+from dfo._core.json_text import JSON_MAX_DEPTH
 from dfo._http.transport import (
+    JSON_BODY_MAX_BYTES,
     USER_AGENT,
     AsyncTransport,
     _DeadlineBackend,
     _keep_to_deadlines,
     attempt_deadline,
 )
-from tests._fetch_support import stalling_server
+from tests._fetch_support import Body, stalling_server
 
 pytestmark = pytest.mark.anyio
 
@@ -43,6 +47,7 @@ BASE = "https://api.example.org/api/v1"
 KEY = "dfo_k_4f8Kq2ZtR7mWx1NcB9vLp3YhD6sGa0Ue2wanxe"
 OTHER_KEY = "dfo_k_Zz9Yy8Xx7Ww6Vv5Uu4Tt3Ss2Rr1Qq0Pp448bfc"
 SIGNED = "https://storage.googleapis.com/bucket/object?X-Goog-Signature=redacted"
+AUTH = "X-Serverless-Authorization"
 
 type Handler = Callable[[httpx2.Request], httpx2.Response]
 
@@ -163,6 +168,19 @@ async def test_a_url_off_the_api_origin_is_refused_before_sending() -> None:
     assert recorder.requests == []
 
 
+@pytest.mark.parametrize(
+    "path",
+    ["/datasets/operations/../search/resolve", "/a/%2e%2E/b", "/./x", "/x/.."],
+)
+async def test_a_path_with_a_dot_segment_is_refused_before_sending(path: str) -> None:
+    recorder = Recorder()
+    async with make(recorder, api_key=KEY) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await transport.request("GET", path)
+    assert caught.value.code == "invalid_argument"
+    assert recorder.requests == []
+
+
 async def test_a_redirect_returns_unfollowed() -> None:
     recorder = Recorder(httpx2.Response(302, headers={"location": SIGNED}))
     async with make(recorder) as transport:
@@ -235,12 +253,43 @@ async def test_a_download_off_the_api_and_the_storage_host_is_refused(
     assert recorder.requests == []
 
 
-async def test_a_server_url_off_the_api_origin_is_a_contract_violation() -> None:
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://files.example.net/api/x",
+        "https://user:pw@api.example.org/api/x",
+        "https://api.example.org:8443/api/x",
+        "http://api.example.org/api/x",
+        "https://api.example.org:99999/api/x",
+    ],
+    ids=["other-host", "userinfo", "other-port", "other-scheme", "bad-port"],
+)
+async def test_a_server_url_off_the_api_origin_is_a_contract_violation(
+    url: str,
+) -> None:
     async with make(Recorder()) as transport:
         assert transport.origin_url("/api/x") == "https://api.example.org/api/x"
         with pytest.raises(ContractError) as caught:
-            transport.origin_url("https://files.example.net/api/x")
+            transport.origin_url(url)
     assert caught.value.code == "contract_violation"
+
+
+@pytest.mark.parametrize(
+    ("base_url", "url"),
+    [
+        ("https://api.example.org:443/api", "https://api.example.org/api/x"),
+        ("https://api.example.org/api", "https://api.example.org:443/api/x"),
+        ("https://API.Example.org./api", "https://api.example.org/api/x"),
+        ("https://api.example.org/api", "https://api.example.org./api/x"),
+        ("http://localhost:80/api", "http://LOCALHOST/api/x"),
+    ],
+    ids=["base-default-port", "url-default-port", "base-dot", "url-dot", "http-80"],
+)
+async def test_origins_compare_without_default_ports_case_or_a_trailing_dot(
+    base_url: str, url: str
+) -> None:
+    async with make(Recorder(), base_url=base_url) as transport:
+        assert transport.origin_url(url) == url
 
 
 @pytest.mark.parametrize(("seconds", "read"), [(None, None), (1800.0, 1800.0)])
@@ -483,12 +532,96 @@ async def test_a_refusal_body_is_a_problem_document_only_under_its_media_types(
     assert caught.value.code == code
 
 
+async def test_a_refusal_carries_its_issues_and_alternatives() -> None:
+    issue = {"pointer": "/input/parts/0", "code": "role_incompatible", "detail": "No."}
+    nigeria = {"ref": "country/NGA", "label": "Nigeria"}
+    refusal = problem(
+        422,
+        code="role_incompatible",
+        issues=[issue, "not an object"],
+        alternatives=[nigeria, {"ref": "country/GHA"}, 7],
+    )
+    async with make(
+        Recorder(refusal, problem(422, code="request_invalid"))
+    ) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await transport.request("POST", "/datasets", json={})
+        with pytest.raises(InvalidRequestError) as bare:
+            await transport.request("POST", "/datasets", json={})
+    assert (caught.value.issues, caught.value.alternatives) == ((issue,), (nigeria,))
+    assert (bare.value.issues, bare.value.alternatives) == ((), ())
+
+
 async def test_an_unknown_code_maps_on_its_status() -> None:
     recorder = Recorder(problem(422, code="a_code_from_the_future", detail="No."))
     async with make(recorder) as transport:
         with pytest.raises(InvalidRequestError) as caught:
             await transport.request("POST", "/datasets", json={})
     assert caught.value.code == "a_code_from_the_future"
+
+
+@pytest.mark.parametrize(
+    ("body", "raised"),
+    [
+        ({"code": "rate_limited"}, "rate_limited"),
+        ({"code": "a_code_from_the_future"}, "contract_violation"),
+        ({"code": "rate_limited", "kind": "answer"}, None),
+        ({"code": 7}, None),
+        ([{"code": "rate_limited"}], None),
+    ],
+    ids=["known-code", "unknown-code", "has-kind", "code-not-a-string", "not-object"],
+)
+async def test_a_success_body_is_a_problem_document_with_a_string_code_and_no_kind(
+    body: object, raised: str | None
+) -> None:
+    response = httpx2.Response(200, json=body)
+    response.request = httpx2.Request("POST", f"{BASE}/search/resolve")
+    async with make(Recorder()) as transport:
+        error = transport.success_problem(response, body)
+    assert (None if error is None else error.code) == raised
+
+
+@pytest.mark.parametrize(
+    ("response", "detail"),
+    [
+        (problem(422, code="query\ntoo_long", detail="No."), "query\ntoo_long: No."),
+        (problem(422, code="Query Too Long"), "Query Too Long"),
+        (httpx2.Response(422, json={"error": "Bad request"}), "Bad request"),
+        (
+            httpx2.Response(422, json={"error": "Bad request", "detail": "No."}),
+            "Bad request: No.",
+        ),
+    ],
+    ids=["control", "spaced", "proxy", "proxy-detail"],
+)
+async def test_text_in_a_codes_place_that_is_not_snake_case_is_no_code(
+    response: httpx2.Response, detail: str
+) -> None:
+    async with make(Recorder(response)) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await transport.request("POST", "/datasets", json={})
+    assert (caught.value.code, caught.value.detail) == ("refusal_without_code", detail)
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [
+        ("transient_unavailable", "transient_unavailable"),
+        ("Bad gateway", "refusal_without_code"),
+    ],
+)
+async def test_a_proxy_body_without_retry_retries_by_its_status(
+    error: str, code: str
+) -> None:
+    timeline = Timeline()
+    recorder = Recorder(
+        *(httpx2.Response(502, json={"error": error}) for _ in range(3))
+    )
+    async with make(recorder, timeline) as transport:
+        with pytest.raises(ServerError) as caught:
+            await transport.request("GET", "/datasets/schema")
+    assert (caught.value.code, caught.value.retryable) == (code, True)
+    assert timeline.sleeps == [0.5, 1.0]
 
 
 async def test_a_proxy_429_waits_for_retry_after_then_raises() -> None:
@@ -549,14 +682,22 @@ async def test_each_attempt_is_clamped_to_the_deadline() -> None:
     assert timeouts == [10.0, 9.5]
 
 
-async def test_a_passed_deadline_raises_a_timeout_error() -> None:
+# A passed deadline outranks the call's own invalid headers.
+@pytest.mark.parametrize(
+    "headers", [None, {AUTH: "a\r\nX-Evil: 1"}], ids=["valid", "invalid-headers"]
+)
+async def test_a_passed_deadline_raises_a_timeout_error(
+    headers: dict[str, str] | None,
+) -> None:
     timeline = Timeline()
     recorder = Recorder()
     async with make(recorder, timeline) as transport:
         deadline = transport.deadline(5)
         timeline.now += 6
         with pytest.raises(DfoTimeoutError) as caught:
-            await transport.request("GET", "/datasets/schema", deadline=deadline)
+            await transport.request(
+                "GET", "/datasets/schema", headers=headers, deadline=deadline
+            )
     assert isinstance(caught.value, TimeoutError)
     assert caught.value.code == "deadline_exceeded"
     assert recorder.requests == []
@@ -602,6 +743,25 @@ async def test_a_401_with_a_changed_key_is_sent_once_more_at_once(second: int) -
     assert timeline.sleeps == []
 
 
+async def test_a_401_whose_key_lookup_fails_raises_the_401() -> None:
+    calls = []
+
+    def lookup() -> str:
+        calls.append(1)
+        if len(calls) > 1:
+            raise RuntimeError("token service down")
+        return KEY
+
+    recorder = Recorder(problem(401, code="key_revoked", detail="Revoked."))
+    async with make(recorder, api_key=lookup) as transport:
+        with pytest.raises(AuthenticationError) as caught:
+            await transport.request("GET", "/datasets/schema")
+    assert caught.value.code == "key_revoked"
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert (len(calls), len(recorder.requests)) == (2, 1)
+    assert transport.key.key is not None
+
+
 async def test_a_401_with_the_same_key_raises() -> None:
     recorder = Recorder(problem(401, code="key_invalid", detail="Unknown key."))
     async with make(recorder, api_key=KEY) as transport:
@@ -631,6 +791,55 @@ async def test_deprecation_and_server_warnings_show_once_per_process() -> None:
     assert issubclass(DfoDeprecationWarning, DfoWarning)
 
 
+async def test_server_text_loses_terminal_and_bidi_controls() -> None:
+    steer = "\x1b]0;PWNED\x07\x1b[2J"
+    detail = f"Bad{steer}\u202e\x9b input."
+    refusal = problem(400, code="request_invalid", detail=detail)
+    refusal.headers["x-dfo-warning"] = f"Quota{steer} low."
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        async with make(Recorder(refusal)) as transport:
+            with pytest.raises(InvalidRequestError) as refused:
+                await transport.request("GET", "/datasets/schema")
+    texts = [str(refused.value), refused.value.detail, str(caught[0].message)]
+    assert texts == [
+        "Bad]0;PWNED[2J input. (request_invalid)",
+        "Bad]0;PWNED[2J input.",
+        "Quota]0;PWNED[2J low.",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("type_", "docs_url"),
+    [
+        ("/codes/request_invalid", "https://api.example.org/codes/request_invalid"),
+        ("https://API.example.org:443/codes/x", "https://API.example.org:443/codes/x"),
+        ("https://docs.example.net/e/x", None),
+        ("javascript:alert(1)", None),
+        ("http://api.example.org/codes/x", None),
+        ("http://[::1", None),
+        ("https://api.example.org/\x1b[2J", None),
+    ],
+    ids=[
+        "relative",
+        "same-origin",
+        "foreign",
+        "javascript",
+        "http",
+        "unparsable",
+        "control",
+    ],
+)
+async def test_docs_url_is_an_https_page_on_the_api_origin_or_none(
+    type_: str, docs_url: str | None
+) -> None:
+    refusal = problem(400, code="request_invalid", type=type_)
+    async with make(Recorder(refusal)) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await transport.request("GET", "/datasets/schema")
+    assert caught.value.docs_url == docs_url
+
+
 async def test_with_options_shares_the_pool_and_only_the_owner_closes_it() -> None:
     timeline = Timeline()
     recorder = Recorder(problem(503, retryable=True), httpx2.Response(200))
@@ -644,40 +853,238 @@ async def test_with_options_shares_the_pool_and_only_the_owner_closes_it() -> No
     assert (quick.max_retries, quick.timeout) == (0, 5.0)
     assert (transport.max_retries, transport.timeout) == (2, 30.0)
     await transport.aclose()
-    with pytest.raises(RuntimeError):
-        await transport.request("GET", "/datasets/schema")
+    for call in (
+        lambda: transport.request("GET", "/datasets/schema"),
+        lambda: quick.download(SIGNED),
+    ):
+        with pytest.raises(InvalidRequestError, match="closed") as caught:
+            await call()
+        assert caught.value.code == "invalid_argument"
+    assert len(recorder.requests) == 2
 
 
 @pytest.mark.parametrize(
     ("retry_after", "wait"),
-    [("Wed, 21 Oct 2015 07:28:00 GMT", 0.0), ("soon", 0.5), ("", 0.5)],
+    [
+        ("Wed, 21 Oct 2015 07:28:00 GMT", 0.0),
+        (" 3 ", 3.0),
+        ("60", 60.0),
+        ("soon", 0.5),
+        ("", 0.5),
+        ("\u00b2", 0.5),
+        ("-5", 0.5),
+        ("1.5", 0.5),
+        ("Wednesday, 21-Oct-15 07:28:00 GMT", 0.5),
+        ("Wed, 31 Feb 2015 07:28:00 GMT", 0.5),
+    ],
 )
-async def test_retry_after_as_a_date_or_unreadable(
+async def test_retry_after_as_seconds_a_date_or_unreadable(
     retry_after: str, wait: float
 ) -> None:
     timeline = Timeline()
-    busy = httpx2.Response(503, headers={"Retry-After": retry_after}, text="Busy")
+    # Latin-1, as a header's bytes reach the client.
+    header = [(b"Retry-After", retry_after.encode("latin-1"))]
+    busy = httpx2.Response(503, headers=header, text="Busy")
     recorder = Recorder(busy, httpx2.Response(200))
     async with make(recorder, timeline) as transport:
         await transport.request("GET", "/datasets/schema")
     assert timeline.sleeps == [wait]
 
 
-async def test_a_body_that_is_not_json_maps_on_the_status() -> None:
-    recorder = Recorder(httpx2.Response(404, text="<html>gone</html>"))
-    async with make(recorder) as transport:
+@pytest.mark.parametrize(
+    ("response", "code"),
+    [
+        (httpx2.Response(404, text="<html>gone</html>"), "refusal_without_code"),
+        (
+            problem(404, code="not_found", detail="No route exists for the path."),
+            "not_found",
+        ),
+        (problem(404, code="spec_not_found", detail="No spec."), "spec_not_found"),
+    ],
+    ids=["not-json", "no-route", "unknown-id"],
+)
+async def test_a_404_that_matched_no_route_names_the_request(
+    response: httpx2.Response, code: str
+) -> None:
+    async with make(Recorder(response)) as transport:
         with pytest.raises(NotFoundError) as caught:
             await transport.request("GET", "/datasets/spec_1")
-    assert (caught.value.problem, str(caught.value)) == (None, "Not Found")
+    named = f"GET {BASE}/datasets/spec_1 matched no route; check base_url"
+    assert caught.value.code == code
+    assert (named in str(caught.value)) == (code != "spec_not_found")
+    assert named not in (caught.value.detail or "")
 
 
 @pytest.mark.parametrize(
     "options",
-    [{"base_url": "ftp://api.example.org"}, {"timeout": 0}, {"max_retries": -1}],
+    [
+        {"timeout": 0},
+        {"timeout": -1},
+        {"timeout": math.nan},
+        {"timeout": math.inf},
+        {"timeout": None},
+        {"timeout": True},
+        {"timeout": "30"},
+        {"max_retries": -1},
+        {"max_retries": 11},
+        {"max_retries": 1.5},
+        {"max_retries": math.inf},
+        {"max_retries": True},
+        {"max_retries": None},
+    ],
 )
 async def test_invalid_options_are_refused(options: dict[str, object]) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(InvalidRequestError) as caught:
         make(Recorder(), **options)
+    assert caught.value.code == "invalid_argument"
+    if None in options.values():
+        return  # with_options keeps a limit passed as None
+    with pytest.raises(InvalidRequestError) as copied:
+        make(Recorder()).with_options(**options)  # ty: ignore[invalid-argument-type]
+    assert copied.value.code == "invalid_argument"
+
+
+@pytest.mark.parametrize("seconds", [math.nan, math.inf, 0, -1, True])
+async def test_a_call_timeout_that_is_not_a_finite_positive_number_is_refused(
+    seconds: float,
+) -> None:
+    async with make(Recorder()) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            transport.deadline(seconds)
+    assert caught.value.code == "invalid_argument"
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "",
+        "ftp://api.example.org/api",
+        "api.example.org/api",
+        "https://alice:pw@api.example.org/api",
+        "http://alice@127.0.0.1/api",
+        "https:// spaces/api",
+        "https://api.example.org/api\n",
+        "https://api.example.org:99999/api",
+        "https://:443/api",
+        "https://[::1/api",
+        "https://api.example.org/api?x=1",
+        "https://api.example.org/api#top",
+        "https://api.example.org/api/../other",
+        "https://api.example.org/api/%2e%2e/other",
+        "http://127.1/api",
+        "http://0x7f.1/api",
+        "http://2130706433/api",
+        "https://127.1/api",
+        "https://0x7f.1/api",
+        "https://2130706433/api",
+        "http://0177.0.0.1/api",
+        "http://127.0.0.01/api",
+        "https://api.example.0x10/api",
+    ],
+)
+async def test_an_invalid_base_url_is_refused(base_url: str) -> None:
+    with pytest.raises(InvalidRequestError) as caught:
+        make(Recorder(), base_url=base_url)
+    assert caught.value.code == "base_url_invalid"
+    assert "pw" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("base_url", "api_key", "refused"),
+    [
+        ("http://dfo.example.invalid/api", KEY, True),
+        ("http://10.0.0.5/api", KEY, True),
+        ("http://dfo.example.invalid/api", False, False),
+        ("http://127.0.0.1:8080/api", KEY, False),
+        ("http://127.9.8.7/api", KEY, False),
+        ("http://[::1]:8080/api", KEY, False),
+        ("http://localhost/api", KEY, False),
+        ("http://LocalHost./api", KEY, False),
+        ("http://dfo.localhost/api", KEY, False),
+        ("http://localhost../api", KEY, True),
+        ("http://localhost.example.invalid/api", KEY, True),
+        ("http://[0:0:0:0:0:0:0:1]/api", KEY, True),
+        ("http://[::ffff:127.0.0.1]/api", KEY, True),
+        ("https://dfo.example.invalid/api", KEY, False),
+    ],
+)
+async def test_a_key_over_plain_http_off_loopback_is_refused(
+    base_url: str, api_key: object, refused: bool
+) -> None:
+    if not refused:
+        make(Recorder(), base_url=base_url, api_key=api_key)
+        return
+    with pytest.raises(InvalidRequestError) as caught:
+        make(Recorder(), base_url=base_url, api_key=api_key)
+    assert caught.value.code == "insecure_transport"
+    assert KEY[6:20] not in str(caught.value)
+
+
+async def test_a_key_resolved_later_is_not_sent_over_plain_http() -> None:
+    recorder = Recorder()
+    transport = make(recorder, base_url="http://dfo.example.invalid/api")
+    # As after a 401, when the lookup finds a key the build did not.
+    transport._keys._argument = KEY
+    transport._keys.refresh()
+    async with transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await transport.request("GET", "/datasets/schema")
+    assert caught.value.code == "insecure_transport"
+    assert recorder.requests == []
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "fault"),
+    [
+        (AUTH, "Bearer id-token\n", "holds a line break at character 16"),
+        (AUTH, "a\r\nX-Evil: 1", "holds a line break at character 2"),
+        (AUTH, "tok\x00en", "holds a control character at character 4"),
+        (AUTH, "tok\x7f", "holds a control character at character 4"),
+        (AUTH, "caf\u00e9", "holds a non-ASCII character at character 4"),
+        ("X Bad", "id-token", "has a name HTTP cannot carry"),
+        ("X-Bad:", "id-token", "has a name HTTP cannot carry"),
+        ("X-Caf\u00e9", "id-token", "has a name HTTP cannot carry"),
+        ("", "id-token", "has a name HTTP cannot carry"),
+    ],
+    ids=[
+        "newline",
+        "crlf",
+        "nul",
+        "del",
+        "non-ascii",
+        "space-in-name",
+        "colon-in-name",
+        "non-ascii-name",
+        "empty-name",
+    ],
+)
+@pytest.mark.parametrize("source", ["default_headers", "header_provider"])
+async def test_a_header_with_a_character_http_cannot_carry_is_refused_unsent(
+    name: str, value: str, fault: str, source: str
+) -> None:
+    async def provider() -> dict[str, str]:
+        return {name: value}
+
+    recorder = Recorder()
+    timeline = Timeline()
+    with pytest.raises(InvalidRequestError) as caught:
+        if source == "default_headers":
+            make(recorder, default_headers={name: value})
+        else:
+            async with make(recorder, timeline, header_provider=provider) as t:
+                await t.request("GET", "/datasets/schema")
+    message = str(caught.value)
+    assert caught.value.code == "header_invalid"
+    assert name in message and f"from {source} {fault}" in message
+    assert "id-token" not in message and "Evil" not in message
+    assert (recorder.requests, timeline.sleeps) == ([], [])
+
+
+async def test_a_header_value_may_hold_spaces_and_tabs() -> None:
+    recorder = Recorder(httpx2.Response(200))
+    async with make(recorder, default_headers={"x-note": "a b\tc"}) as transport:
+        await transport.request("GET", "/datasets/schema")
+    assert recorder.requests[0].headers["x-note"] == "a b\tc"
 
 
 @pytest.mark.parametrize(
@@ -704,3 +1111,209 @@ async def test_the_transport_sleeps_and_reads_the_clock_it_was_given() -> None:
         assert transport.now() == start + 3
         assert transport.deadline(None) is None
     assert timeline.sleeps == [3]
+
+
+async def test_a_header_value_that_is_not_a_string_is_refused_unsent() -> None:
+    with pytest.raises(InvalidRequestError) as caught:
+        make(Recorder(), default_headers={"X-Retries": 3})
+    assert caught.value.code == "header_invalid"
+    assert "X-Retries header from default_headers is a int" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "retry_after",
+    ["61", "86400", "9" * 400, "Fri, 31 Dec 9999 23:59:59 GMT"],
+    ids=["61s", "a-day", "overflow", "year-9999"],
+)
+async def test_a_retry_after_past_the_ceiling_raises_at_once(retry_after: str) -> None:
+    timeline = Timeline()
+    limited = httpx2.Response(429, headers={"Retry-After": retry_after})
+    recorder = Recorder(limited)
+    async with make(recorder, timeline) as transport:
+        with pytest.raises(RateLimitError) as caught:
+            await transport.request("GET", "/datasets/schema")
+    assert timeline.sleeps == []
+    assert caught.value.retry_after is not None
+    assert caught.value.retry_after > 60
+
+
+async def test_a_body_is_not_read_past_its_limit() -> None:
+    megabyte = b"x" * 2**20
+    body = Body(megabyte for _ in range(64))
+    recorder = Recorder(httpx2.Response(200, stream=body))
+    async with make(recorder) as transport:
+        with pytest.raises(ServerError) as caught:
+            await transport.request("GET", "/datasets/schema")
+    assert (caught.value.code, caught.value.retryable) == ("response_too_large", False)
+    assert body.read == JSON_BODY_MAX_BYTES // 2**20 + 1
+    assert len(recorder.requests) == 1
+
+
+async def test_a_compressed_body_counts_its_decoded_bytes() -> None:
+    bomb = gzip.compress(b"0" * (JSON_BODY_MAX_BYTES + 1))
+    response = httpx2.Response(
+        200, headers={"content-encoding": "gzip"}, stream=Body([bomb])
+    )
+    async with make(Recorder(response)) as transport:
+        with pytest.raises(ServerError) as caught:
+            await transport.request("GET", "/datasets/schema")
+    assert caught.value.code == "response_too_large"
+
+
+async def test_a_body_at_its_limit_is_read_whole() -> None:
+    recorder = Recorder(httpx2.Response(200, stream=Body([b"abc", b"de"])))
+    async with make(recorder) as transport:
+        response = await transport.request("GET", "/datasets/schema", max_bytes=5)
+    assert response.content == b"abcde"
+
+
+async def test_a_download_stops_at_its_limit() -> None:
+    body = Body([b"x" * 8, b"x" * 8, b"x" * 8])
+    async with make(Recorder(httpx2.Response(200, stream=body))) as transport:
+        with pytest.raises(ServerError) as caught:
+            await transport.download(SIGNED, max_bytes=10)
+    assert caught.value.code == "response_too_large"
+    assert body.read == 2
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx2.Response(
+            200, headers={"content-encoding": "gzip"}, stream=Body([b"not gzip"])
+        ),
+        httpx2.Response(302, headers={"location": "javascript:alert(1)"}),
+        httpx2.Response(302, headers={"location": "https://[::1/x"}),
+        httpx2.Response(302, headers={"location": "https://[zz::1]/x"}),
+        httpx2.Response(302, headers={"location": "https://api.example.org:abc/x"}),
+    ],
+    ids=["bad-gzip", "location", "unclosed-ipv6", "bad-ipv6", "bad-port"],
+)
+async def test_a_response_the_client_cannot_read_is_unexpected(
+    response: httpx2.Response,
+) -> None:
+    async with make(Recorder(response)) as transport:
+        with pytest.raises(ContractError) as caught:
+            await transport.request("GET", "/datasets/schema")
+    assert caught.value.code == "unexpected_response"
+
+
+@pytest.mark.parametrize(
+    ("method", "target", "options"),
+    [
+        ("GET", "/x\r\nX-Evil: 1", {}),
+        ("GET", "/datasets/op_1\x00", {}),
+        ("CONNECT", "/x", {}),
+        ("TRACE", "/x", {}),
+        ("", "/x", {}),
+        ("G ET", "/x", {}),
+        ("GET", "/x", {"json": {"a": 1}}),
+        ("HEAD", "/x", {"json": {}}),
+        ("POST", "/x", {"json": {"a": math.nan}}),
+        ("POST", "/x", {"json": {"a": object()}}),
+        ("POST", "/x", {"json": "\ud800"}),
+    ],
+    ids=[
+        "crlf-path",
+        "nul-path",
+        "connect",
+        "trace",
+        "empty-method",
+        "spaced-method",
+        "get-body",
+        "head-body",
+        "nan",
+        "object",
+        "surrogate",
+    ],
+)
+async def test_a_malformed_request_is_refused_unsent(
+    method: str, target: str, options: dict[str, object]
+) -> None:
+    timeline = Timeline()
+    recorder = Recorder()
+    async with make(recorder, timeline) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await transport.request(method, target, **options)  # ty: ignore[invalid-argument-type]
+    assert (caught.value.code, caught.value.retryable) == ("invalid_argument", False)
+    assert (recorder.requests, timeline.sleeps) == ([], [])
+
+
+async def test_a_method_in_any_case_is_sent_upper_case() -> None:
+    recorder = Recorder(httpx2.Response(200))
+    async with make(recorder) as transport:
+        await transport.request("get", "/datasets/schema")
+    assert recorder.requests[0].method == "GET"
+
+
+async def test_a_cyclic_json_body_is_refused_unsent() -> None:
+    cycle: list[object] = []
+    cycle.append(cycle)
+    recorder = Recorder()
+    async with make(recorder) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await transport.request("POST", "/x", json=cycle)
+    assert caught.value.code == "invalid_argument"
+    assert recorder.requests == []
+
+
+async def test_a_refusal_nested_past_the_depth_bound_is_still_typed() -> None:
+    deep = b"[" * (JSON_MAX_DEPTH + 1) + b"]" * (JSON_MAX_DEPTH + 1)
+    refusal = httpx2.Response(
+        400, headers={"content-type": "application/problem+json"}, content=deep
+    )
+    async with make(Recorder(refusal)) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await transport.request("GET", "/datasets/schema")
+    assert caught.value.code == "refusal_without_code"
+
+
+@pytest.mark.parametrize(
+    ("members", "message"),
+    [
+        (
+            {"detail": "Field required", "pointer": "/input/schema_version"},
+            "Field required at /input/schema_version (request_invalid)",
+        ),
+        (
+            {"detail": "Bad value at /input/window.", "pointer": "/input/window"},
+            "Bad value at /input/window. (request_invalid)",
+        ),
+        (
+            {"detail": "Field required", "pointer": ""},
+            "Field required (request_invalid)",
+        ),
+        ({"detail": "Field required"}, "Field required (request_invalid)"),
+    ],
+    ids=["named", "already-named", "root", "none"],
+)
+async def test_a_refusal_names_the_field_its_pointer_names(
+    members: dict[str, str], message: str
+) -> None:
+    refusal = problem(400, code="request_invalid", **members)
+    async with make(Recorder(refusal)) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await transport.request("POST", "/datasets", json={})
+    assert str(caught.value) == message
+
+
+async def test_server_text_never_quotes_the_clients_key() -> None:
+    echoed = f"Bad header Authorization: Bearer {KEY}"
+    refusal = problem(
+        401, code="key_invalid", detail=echoed, issues=[{"detail": [echoed]}]
+    )
+    refusal.headers["x-dfo-warning"] = f"Key {KEY} is old."
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        async with make(Recorder(refusal), api_key=KEY) as transport:
+            with pytest.raises(AuthenticationError) as refused:
+                await transport.request("GET", "/datasets/schema")
+    texts = [str(refused.value), refused.value.detail, str(caught[0].message)]
+    assert texts == [
+        "Bad header Authorization: Bearer [redacted] (key_invalid)",
+        "Bad header Authorization: Bearer [redacted]",
+        "Key [redacted] is old.",
+    ]
+    assert refused.value.problem is not None
+    assert refused.value.problem["detail"] == texts[1]
+    assert refused.value.problem["issues"] == [{"detail": [texts[1]]}]

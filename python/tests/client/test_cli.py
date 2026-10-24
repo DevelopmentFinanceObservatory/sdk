@@ -93,15 +93,40 @@ def test_status_reports_a_broken_file(
     assert "line 1" in capsys.readouterr().err
 
 
-def test_cache_clear_removes_only_the_client_cache(
+@pytest.mark.parametrize("linked", [False, True], ids=["directory", "symlink"])
+def test_cache_clear_empties_only_the_client_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    linked: bool,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DFO_CACHE_DIR", "root")
+    directory = tmp_path / cache_directory(env={"DFO_CACHE_DIR": "root"})
+    if linked:
+        target = tmp_path / "elsewhere"
+        target.mkdir()
+        directory.parent.mkdir(parents=True)
+        directory.symlink_to(target)
+    (directory / "files").mkdir(parents=True)
+    (directory / "files" / "blob").write_bytes(b"x")
+    (directory / "manifests").symlink_to(tmp_path / "outside")
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / "kept").write_text("kept")
+    assert _cli.main(["cache", "clear"]) == 0
+    assert list(directory.iterdir()) == []
+    assert directory.is_symlink() is linked
+    assert (tmp_path / "outside" / "kept").read_text() == "kept"
+    assert f"Cleared the cache at {directory}." in capsys.readouterr().out
+    assert _cli.main(["cache", "clear"]) == 0
+
+
+def test_cache_clear_refuses_a_cache_path_that_is_a_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("DFO_CACHE_DIR", str(tmp_path))
     directory = Path(cache_directory())
-    (directory / "files").mkdir(parents=True)
-    (directory / "files" / "blob").write_bytes(b"x")
-    (tmp_path / "other").write_text("kept")
-    assert _cli.main(["cache", "clear"]) == 0
-    assert not directory.exists()
-    assert (tmp_path / "other").read_text() == "kept"
-    assert _cli.main(["cache", "clear"]) == 0
+    directory.parent.mkdir(parents=True)
+    directory.write_text("not a cache")
+    assert _cli.main(["cache", "clear"]) == 1
+    assert directory.read_text() == "not a cache"

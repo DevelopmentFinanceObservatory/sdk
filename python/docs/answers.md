@@ -43,12 +43,17 @@ In a notebook the answer renders as HTML with the same content.
 
 ## Look at each part
 
-Each part is one of five classes, and each matches by its main field:
+Each part is one of five classes, and each matches by its main field. "government education spending Kenya" has one part with two readings:
+
+```text
+[0] Kenya's percent of total government expenditure on education, 1980 to 2025. · World Development Indicators
+[1] Kenya's percent of nominal GDP spent on education, 1971 to 2024. · World Development Indicators
+```
 
 ```python
 import dfo
 
-answer = dfo.search("Germany's ODA and GNI from 2015 to 2022")
+answer = dfo.search("government education spending Kenya")
 
 for part in answer.parts:
     match part:
@@ -76,14 +81,11 @@ Every part also carries `variable_text` (the question's words for it), `departur
 `fetch` raises `IncompleteAnswerError` when a part has several readings. The message lists them and gives the line that settles it:
 
 ```text
-Search answered 1 of 2 parts of your question.
-  answered "official development assistance": Germany's gross disbursements for official development assistance, 2015 to 2022. Current US dollars · OECD DAC1.
-  missing  "gross national income": 3 readings
-    [0] Germany's primary income for gross of fixed capital consumption, 2015 to 2022 · OECD DAC1 · Current US dollars
-    [1] Germany's gross national income based on purchasing power parity in international dollars, 2015 to 2022 · World Development Indicators
-    [2] Germany's gross national income based on purchasing power parity per capita in international dollars, 2015 to 2022 · World Development Indicators
-  Choose: answer.choose("gross national income", 0).fetch()
-  Or take the answered part: answer.fetch(partial=True)
+Search answered 0 of 1 part of your question.
+  missing  "government education spending": 2 readings
+    [0] Kenya's percent of total government expenditure on education, 1980 to 2025 · World Development Indicators
+    [1] Kenya's percent of nominal GDP spent on education, 1971 to 2024 · World Development Indicators
+  Choose: answer.choose(0).fetch()
 ```
 
 `answer.choose(part, option)` settles the part and returns Search's new answer, from one Search request. Name the part by its index or its `variable_text`, and the option by its index or its label:
@@ -91,9 +93,9 @@ Search answered 1 of 2 parts of your question.
 ```python
 import dfo
 
-answer = dfo.search("Germany's ODA and GNI from 2015 to 2022")
+answer = dfo.search("government education spending Kenya")
 
-data = answer.choose(1, 1).fetch()
+data = answer.choose("government education spending", 1).fetch()
 print(data)
 ```
 
@@ -102,17 +104,19 @@ When only one part awaits a choice, `answer.choose(option)` picks in that part:
 ```python
 import dfo
 
-answer = dfo.search("GNI in Germany from 2015 to 2022")
+answer = dfo.search("government education spending Kenya")
 data = answer.choose(0).fetch()
 print(data.sentence)
 ```
+
+When a question has several parts, `fetch` lists each answered part as well, and the message ends with the line that settles the first part awaiting a choice, such as `answer.choose("government education spending", 0).fetch()`.
 
 A pick of a candidate makes one Search request, which runs no language model. It posts the reading's identity back with the assumptions Search made for it, and the new answer's sentence, with its "Assumed: ..." clause, is Search's. In an answer of several parts the request carries every part, so Search composes the joined sentence again. Each candidate also fetches on its own: `candidate.fetch()` asks Search for that reading alone, in one request, and builds the answer Search gives:
 
 ```python
 import dfo
 
-answer = dfo.search("GNI in Germany from 2015 to 2022")
+answer = dfo.search("government education spending Kenya")
 candidate = answer.parts[0].candidates[1]
 data = candidate.fetch()
 print(data.sentence)
@@ -130,20 +134,17 @@ A place name such as "Congo" can match two countries. The part is a `NoDataPart`
 ```python
 import dfo
 
-answer = dfo.search("ODA disbursements from Germany to Congo")
-gap = answer.gaps[0]
-print(gap.message)
-
-if gap.options:
-    answer = answer.choose(gap.part_index, gap.options[0].label)
-else:
-    answer = dfo.search(
-        "ODA disbursements from Germany to the Democratic Republic of the Congo"
-    )
+answer = dfo.search("GDP of Congo")
+for gap in answer.gaps:
+    print(gap.message)
+    if gap.options:
+        answer = answer.choose(gap.part_index, gap.options[0].label)
+    else:
+        answer = dfo.search("GDP of the Democratic Republic of the Congo")
 print(answer)
 ```
 
-Each `Option` has a `label` such as "Congo [DRC]" and `mentions`, the words of the question it settles. A word from `mentions` also names the part: `answer.choose("Congo", "Congo [DRC]")`.
+Whether Search asks or picks a country for you depends on the wording, so a script handles both answers, as the example does. Each `Option` has a `label` such as "Congo [DRC]" and `mentions`, the words of the question it settles. A word from `mentions` also names the part: `answer.choose("Congo", "Congo [DRC]")`.
 
 ## Take the answered parts
 
@@ -166,7 +167,7 @@ A scheduled job should leave `partial` off. A question that resolved in full thi
 
 ## Gap kinds
 
-`answer.gaps` and `IncompleteAnswerError.gaps` hold one `Gap` per part without a reading, with its `part_index`, `part`, `kind`, `message` and `options`. A candidates part's options are its candidates, and a place or source choice's are its `Option`s.
+`answer.gaps` and `IncompleteAnswerError.gaps` hold one `Gap` per part without a reading, with its `part_index`, `part`, `kind`, `message` and `options`. `kind` is a `dfo.GapKind`, one of the values below. A candidates part's options are its candidates, and a place or source choice's are its `Option`s.
 
 | `kind`           | What it means                                                     | What to do                              |
 | ---------------- | ----------------------------------------------------------------- | --------------------------------------- |
@@ -182,9 +183,9 @@ A scheduled job should leave `partial` off. A question that resolved in full thi
 A reading can differ from what was asked. "Top 5 donors to Ethiopia in 2022" returns the amounts for every provider, because Search does not rank. The answer lists what was not done and what was assumed under its sentence:
 
 ```text
-Gross disbursements to Ethiopia from 137 providers for official development assistance in 2022. Current US dollars · OECD DAC2a. You asked for a ranking. This shows the amounts behind it, because Search does not compute rankings.
+Gross disbursements to Ethiopia from 137 providers for official development assistance in 2022. Current US dollars · OECD DAC2a. You asked for a ranking. This shows the amounts behind it, because Search does not compute rankings. Assumed: official development assistance.
   Not done: rank ("top 5 donors")
-  Note: No aid type was named, so the answer covers official development assistance.
+  Note: The answer covers official development assistance of every aid type.
   Note: no provider was named; the answer was resolved across every provider with data.
 ```
 
@@ -210,7 +211,7 @@ top = donors.groupby("financingProvider_label")["value"].sum().nlargest(5)
 print(top)
 ```
 
-The provider column also holds totals. `financingProvider_kind` marks "DAC countries" and "Group of Seven" as `total`, and "official donors (DAC)" as `whole total`, the source's figure for every official donor. A single donor reads `official` or `private`. Keep those rows before you rank.
+The provider column also holds totals. `financingProvider_kind` marks "DAC countries" and "Group of Seven" as `total`, and "official donors (DAC)" as `whole total`, the source's figure for every official donor. A single donor reads `official` or `private`. Keep those rows before you rank, or fetch with `without_party_totals=True`, which leaves most of the total rows out. [Datasets and versions](datasets.md#leave-out-party-totals) lists the rows it keeps.
 
 `fetch(strict=True)` raises the `SearchWarning` instead of issuing it, and does the same for the dataset's own warnings. Use it where a reading that differs from the question should stop the run:
 

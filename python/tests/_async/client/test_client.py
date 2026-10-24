@@ -15,17 +15,29 @@ import pytest
 
 from dfo._client.client import AsyncClient
 from dfo._core.errors import (
+    ContractError,
     DataWarning,
+    DfoError,
     InvalidRequestError,
     NetworkError,
     NotFoundError,
+    RateLimitError,
+    ServerError,
 )
-from dfo._core.refs import DatasetRef
-from dfo._core.types import Spec
+from dfo._core.refs import DatasetRef, RefMember
+from dfo._core.types import Rendering, Spec
 from dfo._datasets.cache import Cache
 from dfo._datasets.fetch import Session
 from dfo._http.transport import AsyncTransport
-from tests._fetch_support import BASE, ORIGIN, Replay, Server, json_response, problem
+from tests._fetch_support import (
+    BASE,
+    ORIGIN,
+    Replay,
+    Server,
+    json_response,
+    posted_spec,
+    problem,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -90,8 +102,17 @@ async def test_with_options_shares_the_connections_and_only_the_owner_closes() -
         "ok": True
     }
     await client.aclose()
-    with pytest.raises(RuntimeError):
-        await quick.request("GET", "/datasets/capabilities")
+    await client.aclose()
+    calls = [
+        lambda: quick.request("GET", "/datasets/capabilities"),
+        lambda: client.search(QUESTION),
+        client.catalogue,
+    ]
+    for call in calls:
+        with pytest.raises(InvalidRequestError, match="closed") as caught:
+            await call()
+        assert caught.value.code == "invalid_argument"
+    assert len(server.requests) == 1
 
 
 async def test_request_returns_the_raw_response_and_raises_a_refusal() -> None:
@@ -119,10 +140,29 @@ async def test_request_returns_the_raw_response_and_raises_a_refusal() -> None:
     assert server.body(1) == {"input": {}}
 
 
+async def test_a_refused_method_is_the_callers_on_a_raw_request_only() -> None:
+    refused = problem(405, "method_not_allowed")
+    server = Server(refused, refused)
+    async with client_over(server) as client:
+        with pytest.raises(InvalidRequestError) as raw:
+            await client.request("DELETE", "/search/catalogue")
+        with pytest.raises(ContractError) as wrapped:
+            await client.catalogue()
+    assert (raw.value.code, raw.value.status) == ("method_not_allowed", 405)
+    assert raw.value.trace_id == "trace"
+    assert isinstance(raw.value.__cause__, ContractError)
+    assert wrapped.value.code == "method_not_allowed"
+
+
 @pytest.mark.parametrize(
     "path",
-    ["//files.example.net/x", f"{ORIGIN}/api/datasets", "datasets/schema"],
-    ids=["scheme-relative", "absolute-on-origin", "no-slash"],
+    [
+        "//files.example.net/x",
+        f"{ORIGIN}/api/datasets",
+        "datasets/schema",
+        "/../../etc/passwd",
+    ],
+    ids=["scheme-relative", "absolute-on-origin", "no-slash", "dot-segments"],
 )
 async def test_request_refuses_what_is_not_a_path_under_the_base_url(
     path: str,
@@ -135,12 +175,165 @@ async def test_request_refuses_what_is_not_a_path_under_the_base_url(
     assert server.calls() == []
 
 
+_FOREIGN_MEMBER = RefMember(
+    parts=(),
+    sentence="A reading.",
+    spec=Spec("../../search/resolve", {}),
+    content_version="cv_" + "0" * 32,
+    digest="sha256:" + "0" * 64,
+    rendering=Rendering("parquet", bundle=False),
+)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda client: client.operation("../search/resolve"),
+        lambda client: client.operation("op_x?foo=1"),
+        lambda client: client.operation("op_" + "A" * 64),
+        lambda client: client.graph.node("../x"),
+        lambda client: client.graph.node("country/%2e%2e/admin"),
+        lambda client: client.graph.node("country/NGA?x=1"),
+        lambda client: client.graph.node("country/NGA#x"),
+        lambda client: client.graph.node("country/\tNGA"),
+        lambda client: client.graph.node(""),
+        lambda client: client.fetch(DatasetRef((_FOREIGN_MEMBER,))),
+        lambda client: client.codes.get("../datasets"),
+        lambda client: client.codes.get("Spec_Not_Found"),
+        lambda client: client.codes.get("spec not found"),
+        lambda client: client.codes.get("_spec"),
+        lambda client: client.codes.get(""),
+    ],
+    ids=[
+        "operation-dots",
+        "operation-query",
+        "operation-upper-hex",
+        "dcid-dots",
+        "dcid-encoded-dots",
+        "dcid-query",
+        "dcid-fragment",
+        "dcid-control",
+        "dcid-empty",
+        "ref-spec-id",
+        "code-dots",
+        "code-upper",
+        "code-space",
+        "code-leading-underscore",
+        "code-empty",
+    ],
+)
+async def test_an_id_that_would_leave_its_route_is_refused_unsent(call) -> None:
+    server = Server()
+    async with client_over(server) as client:
+        with pytest.raises(InvalidRequestError) as caught:
+            await call(client)
+    assert caught.value.code == "invalid_argument"
+    assert server.calls() == []
+
+
+_SPEC = Spec(posted_spec()["spec_id"], posted_spec()["definition"])
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda client: client.search(""),
+        lambda client: client.search(" \t\n"),
+        lambda client: client.search(b"GDP of Kenya"),
+        lambda client: client.search("GDP \ud800 Kenya"),
+        lambda client: client.fetch(_SPEC, layout=""),
+        lambda client: client.fetch(_SPEC, window=(2020, 2010)),
+        lambda client: client.fetch(_SPEC, window=(10**30, 10**31)),
+        lambda client: client.fetch(_SPEC, entities={"origin": 5}),
+        lambda client: client.fetch(_SPEC, entities=["origin"]),
+        lambda client: client.fetch(_SPEC, facets="unit"),
+    ],
+    ids=[
+        "question-empty",
+        "question-whitespace",
+        "question-bytes",
+        "question-lone-surrogate",
+        "layout-empty",
+        "window-reversed",
+        "window-past-json-integers",
+        "role-bound-to-a-number",
+        "entities-a-list",
+        "facets-a-string",
+    ],
+)
+async def test_an_argument_the_client_checks_is_refused_unsent(call) -> None:
+    server = Server()
+    async with client_over(server) as client:
+        with pytest.raises(InvalidRequestError) as caught:
+            await call(client)
+    assert caught.value.code == "invalid_argument"
+    assert server.calls() == []
+
+
+LOOKUPS = {
+    "resolve": lambda client: client.graph.resolve("Nigeria"),
+    "node": lambda client: client.graph.node("country/NGA"),
+    "codes": lambda client: client.codes.get("spec_not_found"),
+    "catalogue": lambda client: client.catalogue(),
+}
+
+
+@pytest.mark.parametrize("lookup", LOOKUPS.values(), ids=LOOKUPS.keys())
+@pytest.mark.parametrize(
+    ("code", "error", "raised"),
+    [
+        ("service_unavailable", ServerError, "service_unavailable"),
+        ("query_too_long", InvalidRequestError, "query_too_long"),
+        ("rate_limited", RateLimitError, "rate_limited"),
+        ("a_code_from_the_future", ContractError, "contract_violation"),
+    ],
+)
+async def test_a_lookup_answering_a_problem_document_raises_its_error(
+    lookup, code: str, error: type[DfoError], raised: str
+) -> None:
+    server = Server(json_response(200, {"code": code, "trace_id": "t-1"}))
+    async with client_over(server) as client:
+        with pytest.raises(error) as caught:
+            await lookup(client)
+    assert (caught.value.code, caught.value.trace_id) == (raised, "t-1")
+
+
+CATALOGUE = {"catalogue_version": "v1", "counts": {}, "examples": []}
+
+
+@pytest.mark.parametrize(
+    ("lookup", "body", "pointer"),
+    [
+        ("resolve", [], ""),
+        ("resolve", {"results": {}}, "/results"),
+        ("node", {"kind": 1, "ref": "country/NGA"}, "/kind"),
+        ("node", {"kind": "country"}, "/ref"),
+        ("codes", None, ""),
+        ("catalogue", {"counts": {}, "examples": []}, "/catalogue_version"),
+        ("catalogue", {**CATALOGUE, "counts": []}, "/counts"),
+        ("catalogue", {**CATALOGUE, "examples": None}, "/examples"),
+    ],
+)
+async def test_a_lookup_refuses_a_body_its_schema_does_not_fit(
+    lookup: str, body: object, pointer: str
+) -> None:
+    server = Server(json_response(200, body, headers={"x-dfo-trace-id": "t-1"}))
+    async with client_over(server) as client:
+        with pytest.raises(ContractError) as caught:
+            await LOOKUPS[lookup](client)
+    assert (caught.value.code, caught.value.pointer, caught.value.trace_id) == (
+        "contract_violation",
+        pointer,
+        "t-1",
+    )
+
+
 async def test_lookups_reach_the_graph_the_registry_and_the_catalogue() -> None:
     server = Server(
         json_response(200, {"results": []}),
         json_response(200, {"ref": "country/NGA", "kind": "country"}),
-        json_response(200, {"code": "spec_not_found"}),
-        json_response(200, {"counts": {}}),
+        json_response(200, {"code": "spec_not_found", "mappings": []}),
+        json_response(200, CATALOGUE),
     )
     async with client_over(server) as client:
         resolved = await client.graph.resolve(
@@ -153,7 +346,7 @@ async def test_lookups_reach_the_graph_the_registry_and_the_catalogue() -> None:
         {"results": []},
         "country/NGA",
         "spec_not_found",
-        {"counts": {}},
+        CATALOGUE,
     )
     assert [str(request.url) for request in server.requests] == [
         f"{BASE}/graph/resolve",

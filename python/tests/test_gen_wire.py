@@ -1,25 +1,9 @@
 """`scripts/gen_wire.py` refuses a strict-fields contract the served document breaks."""
 
-import importlib.util
-from types import ModuleType
 from typing import Any
 
+import gen_wire
 import pytest
-
-from tests._data import CONTRACT
-
-
-def load_generator() -> ModuleType:
-    path = CONTRACT.parent / "scripts" / "gen_wire.py"
-    spec = importlib.util.spec_from_file_location("gen_wire", path)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-gen_wire = load_generator()
 
 SCHEMAS: dict[str, Any] = {
     "Op": {

@@ -16,14 +16,14 @@ from __future__ import annotations
 
 import html
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
+from datetime import date
 from os import PathLike
 from typing import TYPE_CHECKING, Any
 
-from dfo._core.codes import CONTRACT_VIOLATION
-from dfo._core.errors import client_error
+from dfo._core.codes import CONTRACT_VIOLATION, UNEXPECTED_RESPONSE
+from dfo._core.errors import ContractError, client_error
 from dfo._core.parse import parse_citation, parse_notices, parse_part
 from dfo._core.refs import DatasetRef, Member
 from dfo._core.types import (
@@ -34,6 +34,7 @@ from dfo._core.types import (
     Citation,
     CitationSource,
     Departure,
+    FormatError,
     Gap,
     Layout,
     Notice,
@@ -42,9 +43,20 @@ from dfo._core.types import (
     Rendering,
     RequestedOperation,
     Spec,
+    check_keys,
+    decode,
+    is_gap_kind,
+    is_integer,
+    object_at,
     unbound_gap,
 )
-from dfo._datasets.build import layout_of
+from dfo._datasets.build import (
+    Cache,
+    counted_rows,
+    layout_of,
+    read_held_until,
+    rendering_for,
+)
 
 if TYPE_CHECKING:
     import pandas
@@ -53,6 +65,9 @@ if TYPE_CHECKING:
 
 # The column that names each row's member in a dataset of several members.
 PART_COLUMN = "part"
+
+# The columns every artifact a dataset reads holds, in both layouts.
+REQUIRED_COLUMNS = ("time_period", "value")
 
 # The version of the provenance a saved file carries under `dfo.*` keys.
 SAVED_FORMAT_VERSION = 1
@@ -92,11 +107,13 @@ class FetchedMember:
         data: The artifact's bytes, a bare Parquet file, already checked against
             `digest`. A download that misses it raises `ServerError`
             (`digest_mismatch`), and a cache entry that misses it is a miss.
+            `build_dataset` decodes it.
         answer_parts: The answer parts the member answers, when it came from an
             answer; their departures and requested operations reach the dataset.
-        rendering: The rendering a `DatasetRef` member stores, for a member
-            fetched from a ref; it names the artifact's layout when the manifest
-            does not list `digest`. None for a member a fetch built.
+        rendering: The rendering the artifact is: the one a `DatasetRef`
+            member stores, or the one a fetch built. It names the artifact's
+            layout when the manifest does not list `digest`. None reads as the
+            bare Parquet rendering of the dataset's layout.
     """
 
     parts: tuple[str, ...]
@@ -343,12 +360,19 @@ def build_dataset(
     complete: bool,
     missing: Sequence[Gap[Candidate | AsyncCandidate]],
     stale: bool,
+    cache: Cache | None = None,
 ) -> Dataset:
     """Make one dataset from the members a fetch built and downloaded.
 
+    Each member's artifact must decode as Parquet, hold `time_period` and
+    `value` columns of distinct names, hold rows when its manifest's coverage
+    counts some, and, when it holds rows, a numeric `value`. One that does not
+    leaves `cache`, so the next fetch downloads it again. An empty member adds
+    no rows to a stacked table.
+
     Each member's layout comes from the manifest's artifact for its digest, else
-    from the rendering its `DatasetRef` stores. Several members stack into one
-    long table, a `part` column first, holding each member's parts joined by "; "
+    from the member's rendering. Several members stack into one long table, a
+    `part` column first, holding each member's parts joined by "; "
     (its sentence when it answers no part). Columns one member lacks are null in
     its rows, and a column whose types differ in width widens, as an int32 with an
     int64 to int64 and an integer with a double to double.
@@ -359,21 +383,23 @@ def build_dataset(
         complete: Whether every part of the question has a member.
         missing: The parts a partial fetch left out.
         stale: Whether the members came from the cache without asking the server.
+        cache: The cache the members' bytes were read from or stored in, or None.
 
     Raises:
         ValueError: No members, or several members in the frame layout.
-        ContractError: A member's manifest does not list its artifact and no
-            `DatasetRef` gives its rendering, or two members hold a column whose
-            types cannot widen to one (`contract_violation`).
+        ContractError: A member's artifact is not Parquet
+            (`unexpected_response`); an artifact breaks the rules above, a
+            member's manifest does not list its artifact and the member names
+            no rendering, or two members hold a column whose types cannot widen
+            to one (`contract_violation`).
     """
     import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
-    import pyarrow.parquet as pq  # noqa: PLC0415 - pyarrow loads on first use
 
     if not members:
         raise ValueError("a dataset needs at least one member")
     if layout == "frame" and len(members) > 1:
         raise ValueError("the frame layout holds one member")
-    rendering = Rendering("parquet", False, "frame" if layout == "frame" else None)
+    plain = rendering_for(layout)
 
     tables: list[pa.Table] = []
     built: list[Member] = []
@@ -390,19 +416,22 @@ def build_dataset(
                 sentence=fetched.sentence,
                 citation=parse_citation(fetched.manifest.get("citation")),
                 digest=fetched.digest,
-                rendering=rendering,
+                rendering=fetched.rendering or plain,
             )
         )
         retention = fetched.manifest.get("retention")
         retentions.append(retention if isinstance(retention, Mapping) else None)
         warnings.extend(parse_notices(fetched.manifest.get("warnings")))
-        tables.append(pq.read_table(pa.BufferReader(fetched.data)))
+        tables.append(_read_artifact(fetched, cache))
 
     if len(tables) > 1:
         tables = [
             _with_part(table, "; ".join(member.parts) or member.sentence)
             for table, member in zip(tables, built, strict=True)
         ]
+        # An empty member adds no rows, and its all-text columns would not
+        # widen to the others' types.
+        tables = [table for table in tables if table.num_rows] or tables[:1]
         try:
             table = pa.concat_tables(tables, promote_options="permissive")
         except (pa.ArrowTypeError, pa.ArrowInvalid) as error:
@@ -437,68 +466,258 @@ def build_dataset(
     )
 
 
+def _read_artifact(fetched: FetchedMember, cache: Cache | None) -> pa.Table:
+    """A member's artifact as a table, removed from `cache` when it does not read.
+
+    Raises:
+        ContractError: The bytes are not Parquet (`unexpected_response`), or
+            break a rule `_artifact_fault` checks (`contract_violation`).
+    """
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+    import pyarrow.parquet as pq  # noqa: PLC0415 - pyarrow loads on first use
+
+    name = f"The artifact {fetched.digest} of {fetched.spec.spec_id}"
+    try:
+        table = pq.ParquetFile(pa.BufferReader(fetched.data)).read()
+    # pyarrow raises OSError, outside ArrowException, for a damaged footer or page
+    except (pa.ArrowException, OSError) as error:
+        if cache is not None:
+            cache.discard(fetched.digest)
+        raise client_error(
+            UNEXPECTED_RESPONSE, f"{name} is not a Parquet file this client reads"
+        ) from error
+    if (fault := _artifact_fault(table, fetched.manifest)) is None:
+        return table
+    if cache is not None:
+        cache.discard(fetched.digest)
+    raise client_error(CONTRACT_VIOLATION, f"{name} {fault}")
+
+
+def _artifact_fault(table: pa.Table, manifest: Mapping[str, Any]) -> str | None:
+    """What keeps a decoded artifact from being a dataset's table, or None.
+
+    The server writes every column of an empty file as text, so the type of
+    `value` is checked only when the file holds rows.
+    """
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+
+    names = table.column_names
+    if len(set(names)) != len(names):
+        return "holds two columns of one name"
+    for column in REQUIRED_COLUMNS:
+        if column not in names:
+            return f"holds no {column} column"
+    if table.num_rows == 0:
+        if counted := counted_rows(manifest):
+            return f"holds no rows, and its manifest counts {counted}"
+        return None
+    kind = table.schema.field("value").type
+    if not (
+        pa.types.is_integer(kind)
+        or pa.types.is_floating(kind)
+        or pa.types.is_decimal(kind)
+        or pa.types.is_null(kind)
+    ):
+        return f"holds a value column of {kind}, not numbers"
+    return None
+
+
 def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
     """Rebuild a dataset from a file `Dataset.save` wrote.
 
     Raises:
         ValueError: The metadata is not a saved dataset's, or of a later format.
+        FormatError: A `dfo.*` key is missing or breaks the saved format. The
+            pointer starts with the key, as in `/dfo.dataset/missing`.
     """
-    values = {key.decode(): value.decode() for key, value in metadata.items()}
+    values = _saved_values(metadata)
     if values.get("dfo.format_version") != str(SAVED_FORMAT_VERSION):
         raise ValueError(
             "the file carries no dataset saved by this client's format version "
             f"{SAVED_FORMAT_VERSION}"
         )
-    rest = json.loads(values["dfo.dataset"])
+    rest = decode(_saved_value(values, "dfo.dataset"), "/dfo.dataset")
+    check_keys(rest, "/dfo.dataset", required=_SAVED_DATASET_KEYS)
     ref = DatasetRef.from_json(values["dfo.ref"]) if "dfo.ref" in values else None
     ref_members = ref.members if ref is not None else ()
+    citations = _array(rest["member_citations"], "/dfo.dataset/member_citations")
+    if len(citations) != len(ref_members):
+        raise FormatError(
+            "format_invalid",
+            "/dfo.dataset/member_citations",
+            f"holds {len(citations)} citations for the {len(ref_members)} members "
+            "dfo.ref names",
+        )
     members = tuple(
         Member(
             parts=stored.parts,
             spec=stored.spec,
             content_version=stored.content_version,
             sentence=stored.sentence,
-            citation=_load_citation(citation),
+            citation=_load_citation(citation, f"/dfo.dataset/member_citations/{index}"),
             digest=stored.digest,
             rendering=stored.rendering,
         )
-        for stored, citation in zip(ref_members, rest["member_citations"], strict=True)
+        for index, (stored, citation) in enumerate(
+            zip(ref_members, citations, strict=True)
+        )
     )
-    held_until = rest["held_until"]
     return Dataset(
-        sentence=values["dfo.sentence"],
+        sentence=_saved_value(values, "dfo.sentence"),
         members=members,
-        citation=_load_citation(json.loads(values["dfo.citation"])),
-        warnings=tuple(Notice(**notice) for notice in rest["warnings"]),
-        departures=tuple(Departure(**item) for item in rest["departures"]),
+        citation=_load_citation(
+            decode(_saved_value(values, "dfo.citation"), "/dfo.citation"),
+            "/dfo.citation",
+        ),
+        warnings=tuple(
+            Notice(
+                **_strings(item, pointer, ("code", "severity", "message"), ("spec_id",))
+            )
+            for pointer, item in _items(rest, "warnings")
+        ),
+        departures=tuple(
+            Departure(
+                **_strings(
+                    item, pointer, ("code", "text"), ("asked", "shown", "binding_ref")
+                )
+            )
+            for pointer, item in _items(rest, "departures")
+        ),
         requested_operations=tuple(
-            RequestedOperation(**item) for item in rest["requested_operations"]
+            _load_operation(item, pointer)
+            for pointer, item in _items(rest, "requested_operations")
         ),
         assumptions=tuple(
-            Assumption(
-                kind=item["kind"],
-                binding_ref=item["binding_ref"],
-                text=item["text"],
-                refs=tuple(item["refs"]),
-            )
-            for item in rest["assumptions"]
+            _load_assumption(item, pointer)
+            for pointer, item in _items(rest, "assumptions")
         ),
-        complete=rest["complete"],
-        missing=tuple(_load_gap(gap) for gap in rest["missing"]),
-        held_until=date.fromisoformat(held_until) if held_until else None,
-        pinned=rest["pinned"],
-        stale=rest["stale"],
-        layout_version=rest["layout_version"],
+        complete=_flag(rest, "complete"),
+        missing=tuple(
+            _load_gap(item, pointer) for pointer, item in _items(rest, "missing")
+        ),
+        held_until=_load_held_until(rest["held_until"]),
+        pinned=_flag(rest, "pinned"),
+        stale=_flag(rest, "stale"),
+        layout_version=_string(rest["layout_version"], "/dfo.dataset/layout_version"),
         _table=table.replace_schema_metadata(None),
     )
 
 
+# The keys a saved file's `dfo.dataset` object holds.
+_SAVED_DATASET_KEYS = (
+    "member_citations",
+    "warnings",
+    "departures",
+    "requested_operations",
+    "assumptions",
+    "complete",
+    "missing",
+    "held_until",
+    "pinned",
+    "stale",
+    "layout_version",
+)
+
+
+def _saved_values(metadata: Mapping[bytes, bytes]) -> dict[str, str]:
+    """A saved file's `dfo.*` metadata, decoded as text."""
+    values: dict[str, str] = {}
+    for key, value in metadata.items():
+        if not key.startswith(b"dfo."):
+            continue
+        name = key.decode(errors="replace")
+        try:
+            values[name] = value.decode()
+        except UnicodeDecodeError as error:
+            raise FormatError("format_invalid", f"/{name}", "not UTF-8") from error
+    return values
+
+
+def _saved_value(values: Mapping[str, str], key: str) -> str:
+    if key not in values:
+        raise FormatError("format_invalid", f"/{key}", "missing")
+    return values[key]
+
+
+def _items(obj: Mapping[str, Any], key: str) -> Iterator[tuple[str, Any]]:
+    """Each item of the saved array `obj[key]`, with its pointer."""
+    pointer = f"/dfo.dataset/{key}"
+    for index, item in enumerate(_array(obj[key], pointer)):
+        yield f"{pointer}/{index}", item
+
+
+def _array(value: object, pointer: str) -> list[Any]:
+    if not isinstance(value, list):
+        raise FormatError("format_invalid", pointer, "not an array")
+    return value
+
+
+def _string(value: object, pointer: str) -> str:
+    if not isinstance(value, str):
+        raise FormatError("format_invalid", pointer, "not a string")
+    return value
+
+
+def _flag(obj: Mapping[str, Any], key: str) -> bool:
+    value = obj[key]
+    if not isinstance(value, bool):
+        raise FormatError("format_invalid", f"/dfo.dataset/{key}", "not a boolean")
+    return value
+
+
+def _strings(
+    value: object,
+    pointer: str,
+    required: Sequence[str],
+    optional: Sequence[str] = (),
+) -> dict[str, Any]:
+    """A saved object of string members, of which the optional ones may be null."""
+    obj = object_at(value, pointer)
+    check_keys(obj, pointer, required=required, allowed=optional)
+    for key, item in obj.items():
+        if not (item is None and key in optional):
+            _string(item, f"{pointer}/{key}")
+    return dict(obj)
+
+
+def _load_held_until(value: object) -> date | None:
+    pointer = "/dfo.dataset/held_until"
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(_string(value, pointer))
+    except ValueError as error:
+        raise FormatError("format_invalid", pointer, "not an ISO date") from error
+
+
+def _load_operation(value: object, pointer: str) -> RequestedOperation:
+    obj = dict(object_at(value, pointer))
+    target_year = obj.pop("target_year", None)
+    if target_year is not None and not is_integer(target_year):
+        raise FormatError("format_invalid", f"{pointer}/target_year", "not an integer")
+    return RequestedOperation(
+        **_strings(obj, pointer, ("verb", "phrase"), ("over",)),
+        target_year=None if target_year is None else int(target_year),
+    )
+
+
+def _load_assumption(value: object, pointer: str) -> Assumption:
+    obj = dict(object_at(value, pointer))
+    refs = _array(obj.pop("refs", None), f"{pointer}/refs")
+    return Assumption(
+        **_strings(obj, pointer, ("kind", "binding_ref", "text")),
+        refs=tuple(
+            _string(ref, f"{pointer}/refs/{index}") for index, ref in enumerate(refs)
+        ),
+    )
+
+
 def _layout_version(fetched: FetchedMember, layout: Layout) -> str:
-    """The layout a member's artifact holds, from its manifest or else its ref.
+    """The layout a member's artifact holds, from its manifest or else its rendering.
 
     Raises:
         ContractError: The manifest lists no artifact with the member's digest
-            and the member came from no `DatasetRef` (`contract_violation`).
+            and the member names no rendering (`contract_violation`).
     """
     artifacts = fetched.manifest.get("artifacts")
     for artifact in artifacts if isinstance(artifacts, list) else ():
@@ -530,7 +749,7 @@ def _with_part(table: pa.Table, label: str) -> pa.Table:
         )
     import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
 
-    column = pa.array([label] * table.num_rows, type=pa.string())
+    column = pa.repeat(pa.scalar(label, pa.string()), table.num_rows)
     return table.add_column(0, PART_COLUMN, column)
 
 
@@ -538,27 +757,19 @@ def _retention(
     retentions: Sequence[Mapping[str, Any] | None],
 ) -> tuple[date | None, bool]:
     """The earliest `held_until` across members, and whether every member is pinned."""
-    known = [retention for retention in retentions if retention is not None]
-    if len(known) == len(retentions) and all(
-        retention.get("pinned") is True for retention in known
+    if all(
+        retention is not None and retention.get("pinned") is True
+        for retention in retentions
     ):
         return None, True
     dates = [
         held
-        for retention in known
-        if retention.get("pinned") is not True
-        and (held := _held_until(retention.get("held_until"))) is not None
+        for retention in retentions
+        if retention is not None
+        and retention.get("pinned") is not True
+        and (held := read_held_until(retention.get("held_until"))) is not None
     ]
     return (min(dates) if dates else None), False
-
-
-def _held_until(value: object) -> date | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        return datetime.fromisoformat(value).date()
-    except ValueError:
-        return None
 
 
 def _merge_citations(citations: Iterable[Citation]) -> Citation:
@@ -589,10 +800,23 @@ def _citation_object(citation: Citation) -> dict[str, Any]:
     }
 
 
-def _load_citation(obj: Mapping[str, Any]) -> Citation:
+def _load_citation(value: object, pointer: str) -> Citation:
+    obj = object_at(value, pointer)
+    check_keys(obj, pointer, required=("text", "sources"))
+    sources = _array(obj["sources"], f"{pointer}/sources")
     return Citation(
-        text=obj["text"],
-        sources=tuple(CitationSource(**source) for source in obj["sources"]),
+        text=_string(obj["text"], f"{pointer}/text"),
+        sources=tuple(
+            CitationSource(
+                **_strings(
+                    source,
+                    f"{pointer}/sources/{index}",
+                    ("ref", "label"),
+                    ("licence", "licence_url", "url"),
+                )
+            )
+            for index, source in enumerate(sources)
+        ),
     )
 
 
@@ -614,27 +838,50 @@ def _gap_object(gap: Gap[object]) -> dict[str, Any]:
     }
 
 
-def _load_gap(obj: Mapping[str, Any]) -> Gap[Candidate]:
+def _load_gap(value: object, pointer: str) -> Gap[Candidate]:
     """A saved gap. A candidates part's options are its candidates, as in an answer."""
-    part = parse_part(obj["part"])
+    obj = object_at(value, pointer)
+    check_keys(
+        obj, pointer, required=("part_index", "part", "kind", "message", "options")
+    )
+    part_index = obj["part_index"]
+    if not is_integer(part_index):
+        raise FormatError("format_invalid", f"{pointer}/part_index", "not an integer")
+    kind = obj["kind"]
+    if not is_gap_kind(kind):
+        raise FormatError("format_invalid", f"{pointer}/kind", "not a gap kind")
+    try:
+        part = parse_part(obj["part"], f"{pointer}/part")
+    except ContractError as error:
+        raise FormatError("format_invalid", f"{pointer}/part", str(error)) from error
     options: tuple[Candidate | Option, ...] = (
         part.candidates
         if isinstance(part, CandidatesPart)
         else tuple(
-            Option(
-                label=option["label"],
-                mentions=tuple(option["mentions"]),
-                data_query=option["data_query"],
-            )
-            for option in obj["options"]
+            _load_option(option, f"{pointer}/options/{index}")
+            for index, option in enumerate(_array(obj["options"], f"{pointer}/options"))
         )
     )
     return Gap(
-        part_index=obj["part_index"],
+        part_index=int(part_index),
         part=part,
-        kind=obj["kind"],
-        message=obj["message"],
+        kind=kind,
+        message=_string(obj["message"], f"{pointer}/message"),
         options=options,
+    )
+
+
+def _load_option(value: object, pointer: str) -> Option:
+    obj = object_at(value, pointer)
+    check_keys(obj, pointer, required=("label", "mentions", "data_query"))
+    mentions = _array(obj["mentions"], f"{pointer}/mentions")
+    return Option(
+        label=_string(obj["label"], f"{pointer}/label"),
+        mentions=tuple(
+            _string(mention, f"{pointer}/mentions/{index}")
+            for index, mention in enumerate(mentions)
+        ),
+        data_query=object_at(obj["data_query"], f"{pointer}/data_query"),
     )
 
 

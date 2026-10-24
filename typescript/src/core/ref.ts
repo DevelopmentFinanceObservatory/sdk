@@ -4,17 +4,19 @@
  */
 
 import { clientError } from "./errors.ts";
-import { isRecord } from "./json.ts";
+import { isRecord, parseJson } from "./json.ts";
 
 /** The layouts a dataset comes in: the labelled long table, or the pipeline frame. */
 export type Layout = "long" | "frame";
 
-/** Which rendering of a version an artifact is, as a ref stores it: the selector triple of
- *  format, bundle and layout. */
+/** Which rendering of a version an artifact is, as a ref stores it: format, bundle and layout,
+ *  and `without_party_totals` when the rows leave out the parties the code index declares
+ *  totals. The flag is present only when true, so a plain rendering's JSON has no such key. */
 export type Rendering = {
   readonly format: "csv" | "xlsx" | "parquet";
   readonly bundle: boolean;
   readonly layout?: "frame";
+  readonly without_party_totals?: true;
 };
 
 /** A spec as the client holds it: the server's id and its definition, unmodified, because the
@@ -45,7 +47,15 @@ export type DatasetRefJson = {
     sentence: string;
     spec: { spec_id: string; definition: Readonly<Record<string, unknown>> };
     content_version: string;
-    artifact: { digest: string; rendering: { format: string; bundle: boolean; layout?: "frame" } };
+    artifact: {
+      digest: string;
+      rendering: {
+        format: string;
+        bundle: boolean;
+        layout?: "frame";
+        without_party_totals?: true;
+      };
+    };
   }[];
 };
 
@@ -68,25 +78,37 @@ export class FormatError extends TypeError {
 }
 Object.defineProperty(FormatError.prototype, "name", { value: "FormatError", configurable: true });
 
+/** A `format_invalid` error at `pointer`. */
+const invalid = (pointer: string, detail: string): FormatError =>
+  new FormatError("format_invalid", pointer, detail);
+
 const FORMAT_VERSION = 1;
 const SPEC_ID = /^spec_[0-9a-f]{32}$/;
-const CONTENT_VERSION = /^cv_[0-9a-f]{32}$/;
+/** A version's id, as the ref format and the server write it. */
+export const CONTENT_VERSION = /^cv_[0-9a-f]{32}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const FORMATS: readonly string[] = ["csv", "xlsx", "parquet"];
 const isFormat = (value: unknown): value is Rendering["format"] =>
   typeof value === "string" && FORMATS.includes(value);
 
 /**
- * The bare Parquet rendering both clients build for a layout.
+ * The bare Parquet rendering both clients build for a layout, cut of party totals or not.
  *
- * @throws {InvalidRequestError} The layout is neither `long` nor `frame` (`invalid_argument`).
+ * @throws {InvalidRequestError} The layout is neither `long` nor `frame`, or
+ *   `withoutPartyTotals` is not a boolean (`invalid_argument`).
  */
-export function renderingFor(layout: Layout): Rendering {
+export function renderingFor(layout: Layout, withoutPartyTotals: boolean = false): Rendering {
+  if (typeof withoutPartyTotals !== "boolean") {
+    throw clientError("invalid_argument", {
+      detail: `withoutPartyTotals is true or false, not ${JSON.stringify(withoutPartyTotals)}.`,
+    });
+  }
+  const cut = withoutPartyTotals ? { without_party_totals: true as const } : {};
   switch (layout) {
     case "long":
-      return { format: "parquet", bundle: false };
+      return { format: "parquet", bundle: false, ...cut };
     case "frame":
-      return { format: "parquet", bundle: false, layout: "frame" };
+      return { format: "parquet", bundle: false, layout: "frame", ...cut };
     default:
       throw clientError("invalid_argument", {
         detail: `layout is "long" or "frame", not ${JSON.stringify(layout satisfies never)}.`,
@@ -98,25 +120,37 @@ export function renderingFor(layout: Layout): Rendering {
 export const layoutOf = (rendering: Rendering): Layout =>
   rendering.layout === "frame" ? "frame" : "long";
 
-/** The build request's `options`, and the file selector's query, for a rendering. */
-export function renderingOptions(rendering: Rendering): Record<string, string | boolean> {
-  const options: Record<string, string | boolean> = {
+/** The file selector's query for a rendering: format, bundle and layout. The selector takes no
+ *  other option. It renders a version with the options the version was minted with, so a
+ *  party-totals cut renders as itself. */
+export function fileParams(rendering: Rendering): Record<string, string | boolean> {
+  const params: Record<string, string | boolean> = {
     format: rendering.format,
     bundle: rendering.bundle,
   };
-  if (rendering.layout !== undefined) options["layout"] = rendering.layout;
+  if (rendering.layout !== undefined) params["layout"] = rendering.layout;
+  return params;
+}
+
+/** The build request's `options` for a rendering. `without_party_totals` is sent only when
+ *  true, as the server records it. */
+export function mintOptions(rendering: Rendering): Record<string, string | boolean> {
+  const options = fileParams(rendering);
+  if (rendering.without_party_totals === true) options["without_party_totals"] = true;
   return options;
 }
 
 /** Whether a manifest artifact's rendering object is this rendering. The server's object
- *  carries more members, such as the long layout's version, so it matches on format, bundle
- *  and whether its layout is the frame. */
+ *  carries more members, such as the long layout's version, so it matches on format, bundle,
+ *  whether its layout is the frame, and whether it leaves party totals out, which the server
+ *  records only when it does. */
 export function renderingMatches(rendering: Rendering, served: unknown): boolean {
   if (!isRecord(served)) return false;
   return (
     served["format"] === rendering.format &&
     served["bundle"] === rendering.bundle &&
-    (served["layout"] === "frame") === (rendering.layout === "frame")
+    (served["layout"] === "frame") === (rendering.layout === "frame") &&
+    (served["without_party_totals"] === true) === (rendering.without_party_totals === true)
   );
 }
 
@@ -153,19 +187,19 @@ export class DatasetRef {
     let parsed: unknown = value;
     if (typeof value === "string") {
       try {
-        parsed = JSON.parse(value);
+        parsed = parseJson(value);
       } catch (error) {
-        throw Object.assign(new FormatError("format_invalid", "", "not JSON"), { cause: error });
+        throw Object.assign(invalid("", "not JSON"), { cause: error });
       }
     }
     const ref = objectAt(parsed, "");
-    checkKeys(ref, "", ["format_version", "members"], []);
+    checkKeys(ref, "", ["format_version", "members"]);
     if (ref["format_version"] !== FORMAT_VERSION) {
-      throw new FormatError("format_invalid", "/format_version", `not ${FORMAT_VERSION}`);
+      throw invalid("/format_version", `not ${FORMAT_VERSION}`);
     }
     const members = ref["members"];
     if (!Array.isArray(members) || members.length === 0) {
-      throw new FormatError("format_invalid", "/members", "not a non-empty array");
+      throw invalid("/members", "not a non-empty array");
     }
     const loaded = members.map((member: unknown, index) => loadMember(member, `/members/${index}`));
     const seen = new Set<string>();
@@ -184,7 +218,7 @@ export class DatasetRef {
 }
 
 function objectAt(value: unknown, pointer: string): Record<string, unknown> {
-  if (!isRecord(value)) throw new FormatError("format_invalid", pointer, "not an object");
+  if (!isRecord(value)) throw invalid(pointer, "not an object");
   return value;
 }
 
@@ -192,16 +226,16 @@ function checkKeys(
   value: Record<string, unknown>,
   pointer: string,
   required: readonly string[],
-  optional: readonly string[],
+  optional: readonly string[] = [],
 ): void {
   for (const key of required) {
     if (!Object.hasOwn(value, key)) {
-      throw new FormatError("format_invalid", `${pointer}/${key}`, "missing");
+      throw invalid(`${pointer}/${key}`, "missing");
     }
   }
   for (const key of Object.keys(value)) {
     if (!required.includes(key) && !optional.includes(key)) {
-      throw new FormatError("format_invalid", `${pointer}/${key}`, "not a member of the format");
+      throw invalid(`${pointer}/${key}`, "not a member of the format");
     }
   }
 }
@@ -210,14 +244,14 @@ const isText = (value: unknown): value is string => typeof value === "string" &&
 
 function matching(pattern: RegExp, value: unknown, pointer: string, what: string): string {
   if (typeof value !== "string" || !pattern.test(value)) {
-    throw new FormatError("format_invalid", pointer, `not ${what}`);
+    throw invalid(pointer, `not ${what}`);
   }
   return value;
 }
 
 function loadMember(value: unknown, pointer: string): RefMember {
   const member = objectAt(value, pointer);
-  checkKeys(member, pointer, ["parts", "sentence", "spec", "content_version", "artifact"], []);
+  checkKeys(member, pointer, ["parts", "sentence", "spec", "content_version", "artifact"]);
   const parts = member["parts"];
   if (!Array.isArray(parts) || !parts.every(isText)) {
     throw new FormatError(
@@ -228,19 +262,14 @@ function loadMember(value: unknown, pointer: string): RefMember {
   }
   const sentence = member["sentence"];
   if (!isText(sentence)) {
-    throw new FormatError("format_invalid", `${pointer}/sentence`, "not a non-empty string");
+    throw invalid(`${pointer}/sentence`, "not a non-empty string");
   }
 
   const spec = objectAt(member["spec"], `${pointer}/spec`);
-  checkKeys(spec, `${pointer}/spec`, ["spec_id", "definition"], []);
+  checkKeys(spec, `${pointer}/spec`, ["spec_id", "definition"]);
   const specId = matching(SPEC_ID, spec["spec_id"], `${pointer}/spec/spec_id`, "a spec id");
   const definition = objectAt(spec["definition"], `${pointer}/spec/definition`);
-  checkKeys(
-    definition,
-    `${pointer}/spec/definition`,
-    ["schema_version", "spec_id", "identity"],
-    [],
-  );
+  checkKeys(definition, `${pointer}/spec/definition`, ["schema_version", "spec_id", "identity"]);
   if (!Number.isInteger(definition["schema_version"])) {
     throw new FormatError(
       "format_invalid",
@@ -270,31 +299,65 @@ function loadMember(value: unknown, pointer: string): RefMember {
     "a content version",
   );
   const artifact = objectAt(member["artifact"], `${pointer}/artifact`);
-  checkKeys(artifact, `${pointer}/artifact`, ["digest", "rendering"], []);
+  checkKeys(artifact, `${pointer}/artifact`, ["digest", "rendering"]);
   const digest = matching(DIGEST, artifact["digest"], `${pointer}/artifact/digest`, "a digest");
-  return {
+  return Object.freeze({
     parts: Object.freeze([...parts]),
     sentence,
-    spec: { spec_id: specId, definition },
+    spec: Object.freeze({
+      spec_id: specId,
+      definition: frozenCopy(definition, `${pointer}/spec/definition`),
+    }),
     contentVersion,
     digest,
-    rendering: loadRendering(artifact["rendering"], `${pointer}/artifact/rendering`),
-  };
+    rendering: Object.freeze(loadRendering(artifact["rendering"], `${pointer}/artifact/rendering`)),
+  });
+}
+
+/** A deep copy of a definition, frozen at every level, so a later change to the value the ref
+ *  was loaded from, or through the ref, leaves the ref as loaded.
+ *
+ * @throws {FormatError} The definition holds a value JSON cannot hold, such as a function.
+ */
+function frozenCopy<T extends object>(value: T, pointer: string): T {
+  let copy: T;
+  try {
+    copy = structuredClone(value);
+  } catch (error) {
+    throw Object.assign(invalid(pointer, "not JSON"), { cause: error });
+  }
+  return deepFreeze(copy);
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object") {
+    for (const item of Object.values(value)) deepFreeze(item);
+    Object.freeze(value);
+  }
+  return value;
 }
 
 function loadRendering(value: unknown, pointer: string): Rendering {
   const rendering = objectAt(value, pointer);
-  checkKeys(rendering, pointer, ["format", "bundle"], ["layout"]);
+  checkKeys(rendering, pointer, ["format", "bundle"], ["layout", "without_party_totals"]);
   const { format, bundle, layout } = rendering;
   if (!isFormat(format)) {
-    throw new FormatError("format_invalid", `${pointer}/format`, "not csv, xlsx or parquet");
+    throw invalid(`${pointer}/format`, "not csv, xlsx or parquet");
   }
   if (typeof bundle !== "boolean") {
-    throw new FormatError("format_invalid", `${pointer}/bundle`, "not a boolean");
+    throw invalid(`${pointer}/bundle`, "not a boolean");
   }
   if (layout !== undefined && layout !== "frame") {
-    throw new FormatError("format_invalid", `${pointer}/layout`, 'not "frame"');
+    throw invalid(`${pointer}/layout`, 'not "frame"');
   }
-  const selector = { format, bundle };
-  return layout === undefined ? selector : { ...selector, layout };
+  const cut = Object.hasOwn(rendering, "without_party_totals");
+  if (cut && rendering["without_party_totals"] !== true) {
+    throw invalid(`${pointer}/without_party_totals`, "not true");
+  }
+  return {
+    format,
+    bundle,
+    ...(layout === undefined ? {} : { layout }),
+    ...(cut ? { without_party_totals: true } : {}),
+  };
 }

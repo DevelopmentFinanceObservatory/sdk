@@ -150,31 +150,42 @@ class DatasetRef:
 
 
 def _member_object(member: RefMember) -> dict[str, Any]:
-    rendering: dict[str, Any] = {
-        "format": member.rendering.format,
-        "bundle": member.rendering.bundle,
-    }
-    if member.rendering.layout is not None:
-        rendering["layout"] = member.rendering.layout
     return {
         "parts": list(member.parts),
         "sentence": member.sentence,
         "spec": spec_object(member.spec, with_sentence=False),
         "content_version": member.content_version,
-        "artifact": {"digest": member.digest, "rendering": rendering},
+        "artifact": {
+            "digest": member.digest,
+            "rendering": member.rendering.to_object(),
+        },
     }
 
 
 def _load_rendering(value: object, pointer: str) -> Rendering:
     obj = object_at(value, pointer)
-    check_keys(obj, pointer, required=("format", "bundle"), allowed=("layout",))
+    check_keys(
+        obj,
+        pointer,
+        required=("format", "bundle"),
+        allowed=("layout", "without_party_totals"),
+    )
     if obj["format"] not in FORMATS:
         raise FormatError("format_invalid", f"{pointer}/format", "not a known format")
     if not isinstance(obj["bundle"], bool):
         raise FormatError("format_invalid", f"{pointer}/bundle", "not a boolean")
     if "layout" in obj and obj["layout"] != "frame":
         raise FormatError("format_invalid", f"{pointer}/layout", 'not "frame"')
-    return Rendering(obj["format"], obj["bundle"], "frame" if "layout" in obj else None)
+    if "without_party_totals" in obj and obj["without_party_totals"] is not True:
+        raise FormatError(
+            "format_invalid", f"{pointer}/without_party_totals", "not true"
+        )
+    return Rendering(
+        obj["format"],
+        obj["bundle"],
+        "frame" if "layout" in obj else None,
+        without_party_totals="without_party_totals" in obj,
+    )
 
 
 def _load_member(value: object, pointer: str) -> RefMember:
@@ -193,9 +204,7 @@ def _load_member(value: object, pointer: str) -> RefMember:
         raise FormatError(
             "format_invalid", f"{pointer}/sentence", "not a non-empty string"
         )
-    spec_obj = object_at(obj["spec"], f"{pointer}/spec")
-    check_keys(spec_obj, f"{pointer}/spec", required=("spec_id", "definition"))
-    spec = load_spec(spec_obj, f"{pointer}/spec")
+    spec = load_spec(obj["spec"], f"{pointer}/spec")
     if not matches(CONTENT_VERSION, obj["content_version"]):
         raise FormatError(
             "format_invalid", f"{pointer}/content_version", "not a content version"

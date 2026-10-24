@@ -177,6 +177,17 @@ def test_warn_once_shows_a_key_once(monkeypatch: pytest.MonkeyPatch) -> None:
     assert [str(warning.message) for warning in caught] == ["first", "third"]
 
 
+def test_warn_once_keeps_a_bounded_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_errors, "_warned", set())
+    monkeypatch.setattr(_errors, "_WARNED_MAX", 4)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for index in range(10):
+            warn_once(("x-dfo-warning", "x" * 5000 + str(index)), DfoWarning("w"))
+    assert len(caught) == 10
+    assert len(_errors._warned) <= 4
+
+
 _CLIENT_ROWS = json.loads((CONTRACT / "client-codes.json").read_text(encoding="utf-8"))[
     "codes"
 ]

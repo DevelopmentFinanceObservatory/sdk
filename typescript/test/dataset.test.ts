@@ -111,6 +111,59 @@ describe("Parquet types", () => {
   test("toRows refuses an int64 beyond a number's exact range", async () => {
     await assert.rejects((await types()).toRows(), RangeError);
   });
+
+  test("a column named __proto__ reads as any other", async () => {
+    const name = "__proto__";
+    const data = new Uint8Array(
+      parquetWriteBuffer({
+        columnData: [
+          { name, data: ["a", "b"] },
+          { name: "value", data: [1, 2] },
+        ],
+      }),
+    );
+    const dataset = new Dataset([member(data)], { layout: "long" });
+    assert.deepEqual(dataset.columns, [name, "value"]);
+    const rows = await dataset.toRows();
+    assert.deepEqual(
+      rows.map((row) => [
+        Object.getPrototypeOf(row) === Object.prototype,
+        Object.keys(row),
+        row[name],
+        row["value"],
+      ]),
+      [
+        [true, [name, "value"], "a", 1],
+        [true, [name, "value"], "b", 2],
+      ],
+    );
+    const table = await toArrow(dataset);
+    assert.deepEqual(
+      table.schema.fields.map((field) => field.name),
+      [name, "value"],
+    );
+    assert.equal(table.getChild(name)?.get(1), "b");
+    const saved = parquetMetadata((await dataset.bytes()).buffer as ArrayBuffer);
+    assert.deepEqual(
+      saved.schema.slice(1).map((element) => element.name),
+      [name, "value"],
+    );
+  });
+
+  test("a file with two columns of one name raises ContractError", () => {
+    const data = new Uint8Array(
+      parquetWriteBuffer({
+        columnData: [
+          { name: "a", data: [1] },
+          { name: "a", data: [2] },
+        ],
+      }),
+    );
+    assert.throws(() => new Dataset([member(data)], { layout: "long" }), {
+      name: "ContractError",
+      code: "contract_violation",
+    });
+  });
 });
 
 describe("DECIMAL values", async () => {
@@ -341,6 +394,48 @@ test("a stacked file keeps every column type the members store", async () => {
   const schema = parquetMetadata(stacked.slice().buffer).schema;
   assert.ok(schema.every((element) => element.logical_type?.type !== "INTEGER"));
   assert.equal(schema.find((element) => element.name === "small")?.converted_type, "UINT_8");
+});
+
+describe("an empty member beside a member with rows", async () => {
+  // The file dev builds for a window before the data starts, every column typed as a string.
+  const empty = new Uint8Array(
+    await readFile(new URL("data/empty-build.parquet", import.meta.url)),
+  );
+  const filled = await scenarioBytes("answer-several-readings-folded.parquet");
+  const emptySpec = `spec_${"3".repeat(32)}`;
+  const dataset = new Dataset(
+    [
+      member(filled, { sentence: "Health." }),
+      member(empty, {
+        sentence: "No data.",
+        spec: {
+          spec_id: emptySpec,
+          definition: { schema_version: 1, spec_id: emptySpec, identity: {} },
+        },
+      }),
+    ],
+    { layout: "long" },
+  );
+  const alone = new Dataset([member(filled)], { layout: "long" });
+
+  test("stacks, keeping the empty member and the other member's column types", async () => {
+    assert.deepEqual(
+      dataset.members.map((entry) => entry.spec.spec_id),
+      [`spec_${"0".repeat(32)}`, emptySpec],
+    );
+    assert.equal(dataset.rows, alone.rows);
+    assert.deepEqual(dataset.columns, ["part", ...alone.columns]);
+    const types = (columns: { name: string; type: ColumnType }[]) =>
+      columns.filter(({ name }) => name !== "part");
+    assert.deepEqual(
+      types(await decodeStored(tableParts(dataset))).map(({ name, type }) => [name, type]),
+      types(await decodeStored(tableParts(alone))).map(({ name, type }) => [name, type]),
+    );
+  });
+
+  test("an empty member alone keeps its own columns", () => {
+    assert.ok(new Dataset([member(empty)], { layout: "long" }).columns.includes("value"));
+  });
 });
 
 describe("retention", () => {

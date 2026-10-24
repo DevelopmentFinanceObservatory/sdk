@@ -33,7 +33,7 @@ import tokenize
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from _codegen import ROOT, format_python, relative, write_or_check
+from _codegen import ROOT, relative, write_or_check
 
 PACKAGE = ROOT / "python" / "src" / "dfo"
 SYNC_PACKAGE = PACKAGE / "_sync"
@@ -62,6 +62,7 @@ KEPT_NAMES = frozenset({"__init__.py", "conftest.py"})
 SUBS: tuple[tuple[str, str], ...] = (
     ("async def", "def"),
     ("async with", "with"),
+    ("async for", "for"),
     ("await ", ""),
     ("AsyncTransport", "Transport"),
     ("AsyncAnswer", "Answer"),
@@ -78,8 +79,10 @@ SUBS: tuple[tuple[str, str], ...] = (
     ("AsyncHeaderProvider", "HeaderProvider"),
     ("AsyncSleep", "Sleep"),
     ("async_sleep", "sync_sleep"),
+    ("async_offload", "sync_offload"),
     ("aclose", "close"),
     ("aread", "read"),
+    ("aiter_bytes", "iter_bytes"),
     ("__aenter__", "__enter__"),
     ("__aexit__", "__exit__"),
     ("pytestmark = pytest.mark.anyio", ""),
@@ -238,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     differs = [
         target
         for target, text in outputs.items()
-        if write_or_check(target, format_python(text, target), check=args.check)
+        if write_or_check(target, text, check=args.check)
     ]
     leftovers = stale(set(outputs))
     if args.check:

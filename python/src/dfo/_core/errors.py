@@ -6,7 +6,9 @@ constants `dfo._core.codes` builds from the contract's `client-codes.json`, so t
 code, its class and its retryable flag come from one row. A warning the client
 issues itself goes through `client_warning`, which takes one of the `WarningCode`
 constants built from `warning-codes.json`. `dfo._core.refusals` reads a server
-refusal into its class.
+refusal into its class. Every message and every error's `detail` drops the
+characters that steer a terminal or reorder text, since both can quote the
+server.
 """
 
 import os
@@ -15,9 +17,12 @@ from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from dfo._core.text import printable
+
 if TYPE_CHECKING:
     # `dfo._core.types` raises through this module, so the import is for types only.
     from dfo._core.types import Candidate, Gap
+    from dfo._generated.wire import Alternative, ProblemIssue
 
 # Every warning skips the frames under the `dfo` package directory, so it names the
 # caller's line.
@@ -54,10 +59,10 @@ class DfoError(Exception):
         docs_url: str | None = None,
         retry_after: float | None = None,
     ) -> None:
-        super().__init__(message)
+        super().__init__(printable(message))
         self.code = code
         self.status = status
-        self.detail = detail
+        self.detail: str | None = None if detail is None else printable(detail)
         self.trace_id = trace_id
         self.retryable = retryable
         self.problem = problem
@@ -66,7 +71,20 @@ class DfoError(Exception):
 
 
 class InvalidRequestError(DfoError):
-    """The request is malformed. The caller fixes it."""
+    """The request is malformed. The caller fixes it.
+
+    Attributes:
+        issues: The problem document's `issues`, each naming a member of the
+            request and what is wrong with it, such as the role a
+            `role_incompatible` refusal could not bind. Empty when the server
+            sent none.
+        alternatives: The problem document's `alternatives`, the graph nodes the
+            server offers in place of what the request named. Empty when the
+            server sent none.
+    """
+
+    issues: "tuple[ProblemIssue, ...]" = ()
+    alternatives: "tuple[Alternative, ...]" = ()
 
 
 class NotFoundError(DfoError):
@@ -148,13 +166,14 @@ class DfoWarning(UserWarning):
         code: The client's own code from the contract's `warning-codes.json`, or
             the server's code for a `DataWarning` or `SearchWarning`.
         trace_id: For a `DataWarning` or `SearchWarning`, the trace id of the
-            response that carried it, to quote when reporting it. None for any other warning.
+            response that carried it, to quote when reporting it. None for any
+            other warning.
     """
 
     def __init__(
         self, message: str, /, *, code: str | None = None, trace_id: str | None = None
     ) -> None:
-        super().__init__(message)
+        super().__init__(printable(message))
         self.code = code
         self.trace_id = trace_id
 
@@ -273,6 +292,30 @@ def client_error[E: DfoError](
     )
 
 
+def recast[E: DfoError](
+    error: DfoError, cls: type[E], /, *, message: str | None = None, **overrides: Any
+) -> E:
+    """Copy `error` as a `cls`, keeping every `DfoError` field `overrides` leaves out.
+
+    Args:
+        error: The error to copy.
+        cls: The class of the copy.
+        message: The copy's message, or None to keep the error's own.
+        overrides: `DfoError` fields the copy takes in place of the error's.
+    """
+    fields: dict[str, Any] = {
+        "code": error.code,
+        "status": error.status,
+        "detail": error.detail,
+        "trace_id": error.trace_id,
+        "retryable": error.retryable,
+        "problem": error.problem,
+        "docs_url": error.docs_url,
+        "retry_after": error.retry_after,
+    }
+    return cls(str(error) if message is None else message, **fields | overrides)
+
+
 def client_warning[W: DfoWarning](code: WarningCode[W], message: str, /) -> W:
     """Build the warning for a condition the client notices itself.
 
@@ -283,7 +326,11 @@ def client_warning[W: DfoWarning](code: WarningCode[W], message: str, /) -> W:
     return code.warning_class(message, code=code.code)
 
 
-_warned: set[Hashable] = set()
+# The hashes of the keys `warn_once` has seen. At `_WARNED_MAX` the set starts
+# again, so a server that sends a new warning with every response cannot grow it
+# without bound. A warning seen before the restart can show once more.
+_WARNED_MAX = 1024
+_warned: set[int] = set()
 
 
 def warn(warning: Warning, /) -> None:
@@ -293,7 +340,10 @@ def warn(warning: Warning, /) -> None:
 
 def warn_once(key: Hashable, warning: Warning, /) -> None:
     """Issue `warning` the first time this process sees `key`."""
-    if key in _warned:
+    marker = hash(key)
+    if marker in _warned:
         return
-    _warned.add(key)
+    if len(_warned) >= _WARNED_MAX:
+        _warned.clear()
+    _warned.add(marker)
     warn(warning)

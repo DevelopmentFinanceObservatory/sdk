@@ -3,9 +3,11 @@ import type { CredentialsFileReader } from "./credentials.ts";
 import { readProcessEnv } from "./env.ts";
 import type { EnvReader } from "./env.ts";
 import { clientError } from "../core/errors.ts";
+import { keyFault } from "../core/text.ts";
 
 const SECRET_PREFIX = "dfo_k_";
 const PUBLISHABLE_PREFIX = "dfo_p_";
+const PREFIXES = [SECRET_PREFIX, PUBLISHABLE_PREFIX];
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const CHECKSUM_LENGTH = 6;
 
@@ -27,7 +29,7 @@ export class ApiKey {
 
   /** The key's prefix and last four characters, for display. */
   get masked(): string {
-    const prefix = [SECRET_PREFIX, PUBLISHABLE_PREFIX].find((p) => this.#value.startsWith(p)) ?? "";
+    const prefix = PREFIXES.find((p) => this.#value.startsWith(p)) ?? "";
     const rest = this.#value.slice(prefix.length);
     return rest.length > 8 ? `${prefix}…${rest.slice(-4)}` : `${prefix}…`;
   }
@@ -82,7 +84,7 @@ function base62(value: number): string {
  * a warning. The client sends the key anyway, so a new key format forces no upgrade.
  */
 export function checkKeyFormat(key: string): KeyFormatVerdict {
-  const prefix = [SECRET_PREFIX, PUBLISHABLE_PREFIX].find((p) => key.startsWith(p));
+  const prefix = PREFIXES.find((p) => key.startsWith(p));
   if (prefix === undefined) return { verdict: "warn", reason: "unknown_prefix" };
   const rest = key.slice(prefix.length);
   if (!/^[0-9A-Za-z]*$/.test(rest)) {
@@ -105,24 +107,48 @@ export type KeySource = "argument" | "environment" | "credentials_file" | "anony
 
 export type ResolvedKey = { source: KeySource; key: ApiKey | null };
 
-const toKey = (value: string | ApiKey): ApiKey =>
-  value instanceof ApiKey ? value : new ApiKey(value);
-
 type KeyLookup = {
   apiKey?: ApiKeyOption | undefined;
   env?: EnvReader | undefined;
   readCredentialsFile?: CredentialsFileReader | undefined;
 };
 
-/** The key the `apiKey` argument gives. */
-function argumentKey(value: string | ApiKey): ResolvedKey {
-  const key = toKey(value);
+/**
+ * A key whose characters are all visible ASCII, which is all an Authorization header carries
+ * intact. The error names the source and the position and leaves the key out.
+ *
+ * @throws {AuthenticationError} The key holds another character (`key_invalid`).
+ */
+function visibleKey(key: ApiKey, source: string): ApiKey {
+  const fault = keyFault(key.reveal());
+  if (fault !== null) {
+    throw clientError("key_invalid", {
+      detail:
+        `The API key from ${source} holds ${fault}; a key holds visible ASCII only. Copy it ` +
+        "again without spaces or line breaks.",
+    });
+  }
+  return key;
+}
+
+/** The key the `apiKey` argument gives.
+ *
+ * @throws {AuthenticationError} The argument is empty (`key_empty`), or not a string or an
+ *   `ApiKey`, or holds a character outside visible ASCII (`key_invalid`).
+ */
+function argumentKey(value: unknown): ResolvedKey {
+  if (typeof value !== "string" && !(value instanceof ApiKey)) {
+    throw clientError("key_invalid", {
+      detail: "The API key from the apiKey argument is not a string or an ApiKey.",
+    });
+  }
+  const key = value instanceof ApiKey ? value : new ApiKey(value);
   if (key.reveal() === "") {
     throw clientError("key_empty", {
       detail: "The apiKey argument is empty; pass a key, or false for anonymous use.",
     });
   }
-  return { source: "argument", key };
+  return { source: "argument", key: visibleKey(key, "the apiKey argument") };
 }
 
 /**
@@ -130,7 +156,7 @@ function argumentKey(value: string | ApiKey): ResolvedKey {
  * `apiKey` argument, `DFO_API_KEY`, the credentials file's profile `$DFO_PROFILE` (else
  * `default`), then anonymous. A key function is called here, and only one that returns a promise
  * makes the result a promise. The file is read only when no earlier source wins. An empty
- * `DFO_API_KEY` reads as unset.
+ * `DFO_API_KEY` reads as unset. A key from any source must be visible ASCII.
  *
  * @throws {AuthenticationError} As `resolveApiKey` raises it, synchronously.
  */
@@ -149,7 +175,9 @@ export function lookUpApiKey({
   if (apiKey !== undefined) return argumentKey(apiKey);
 
   const fromEnv = env("DFO_API_KEY");
-  if (fromEnv !== undefined) return { source: "environment", key: new ApiKey(fromEnv) };
+  if (fromEnv !== undefined) {
+    return { source: "environment", key: visibleKey(new ApiKey(fromEnv), "DFO_API_KEY") };
+  }
 
   const text = readCredentialsFile(env);
   if (text === null) return { source: "anonymous", key: null };
@@ -174,7 +202,10 @@ export function lookUpApiKey({
       detail: `The credentials file's profile [${profileName}] has no key.`,
     });
   }
-  return { source: "credentials_file", key: new ApiKey(key) };
+  return {
+    source: "credentials_file",
+    key: visibleKey(new ApiKey(key), `the credentials file's profile [${profileName}]`),
+  };
 }
 
 /**
@@ -182,8 +213,9 @@ export function lookUpApiKey({
  * `DFO_API_KEY`, the credentials file's profile `$DFO_PROFILE` (else `default`), then anonymous.
  * The file is read only when no earlier source wins. An empty `DFO_API_KEY` reads as unset.
  *
- * @throws {AuthenticationError} The argument is an empty key, the credentials file is invalid,
- *   `DFO_PROFILE` names a profile it lacks, or the chosen profile's key is missing or empty.
+ * @throws {AuthenticationError} The argument is an empty key, the key holds a character outside
+ *   visible ASCII, the credentials file cannot be read or is invalid, `DFO_PROFILE` names a
+ *   profile it lacks, or the chosen profile's key is missing or empty.
  */
 export async function resolveApiKey(lookup: KeyLookup): Promise<ResolvedKey> {
   return lookUpApiKey(lookup);
@@ -204,11 +236,12 @@ export const inBrowser = (): boolean => {
  * script that holds it is delivered to every visitor.
  */
 export function refuseSecretKeyInBrowser(
-  key: string | ApiKey | null,
+  key: ApiKey | null,
   dangerouslyAllowBrowser: boolean,
 ): void {
   if (key === null || dangerouslyAllowBrowser || !inBrowser()) return;
-  if ((typeof key === "string" ? key : key.reveal()).startsWith(SECRET_PREFIX)) {
+  // The prefix is matched in any case, so `DFO_K_` is caught too.
+  if (key.reveal().toLowerCase().startsWith(SECRET_PREFIX)) {
     throw new TypeError(
       "A secret dfo_k_ key in a browser page or worker is readable by every visitor. Call the " +
         "API from a server, or pass dangerouslyAllowBrowser: true to send it anyway.",

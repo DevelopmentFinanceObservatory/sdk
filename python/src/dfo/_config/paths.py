@@ -68,7 +68,15 @@ def cache_root(
     platform: Platform | None = None,
     home: str | None = None,
 ) -> str:
-    """Return the cache root, from the argument, a variable, or the platform's cache."""
+    """Return the cache root, from the argument, a variable, or the platform's cache.
+
+    A leading `~` is the home directory, and a leading `~name` the home
+    directory of the user `name`.
+
+    Raises:
+        ValueError: The root starts `~name`, and the platform knows no home
+            directory for that user.
+    """
     env, platform, home = _context(env, platform, home)
     path = ntpath if platform == "windows" else posixpath
     chosen = (
@@ -79,6 +87,15 @@ def cache_root(
     if chosen:
         if chosen == "~" or chosen.startswith(("~/", "~\\")):
             chosen = home + chosen[1:]
+        elif chosen.startswith("~"):
+            expanded = path.expanduser(chosen)
+            if expanded.startswith("~"):
+                user = chosen.replace("\\", "/").split("/", 1)[0]
+                raise ValueError(
+                    f"The cache directory {chosen!r} starts with {user}, and no "
+                    "user of that name has a home directory"
+                )
+            chosen = expanded
         return path.normpath(chosen)
     if platform == "windows":
         local = _set(env, "LOCALAPPDATA") or ntpath.join(home, "AppData", "Local")

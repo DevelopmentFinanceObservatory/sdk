@@ -2,12 +2,14 @@
 
 `open_bundle` reads a Parquet file `Dataset.save` wrote, or a website bundle as a
 ZIP, an extracted folder, or a file inside one. A bundle's `datapackage.json`
-types the data's CSV or XLSX columns and gives each file's hash, which is checked
-before the data is read. `BundleLimits` bounds its descriptor, entry count,
+types the data's CSV or XLSX columns and gives each file's SHA-256 hash, which is
+checked before the data is read. `BundleLimits` bounds its descriptor, entry count,
 resource count, archive, resource and aggregate bytes. Every file it lists must
-lie inside the bundle. A path with a backslash, a drive, a root or a `..` segment
-is refused before any file is read, and so is a path in an extracted folder that
-resolves outside it through a symlink.
+lie inside the bundle under a plain relative path: `/`-separated names, none of
+them empty, `.` or `..`, with no backslash, drive or NUL. Any other path is refused
+before any file is read, and so is a path in an extracted folder that resolves
+outside it through a symlink. A ZIP and the folder it extracts to therefore read
+the same.
 
 Both clients call this module. It is sync and works on local files only. It imports
 pyarrow inside the functions that read a table, so `import dfo` stays light.
@@ -17,16 +19,28 @@ from __future__ import annotations
 
 import hashlib
 import io
-import json
 import zipfile
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from collections import Counter
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, fields
 from os import PathLike
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PureWindowsPath
 from typing import IO, TYPE_CHECKING, Any, Literal
 
 from dfo._core.refs import Member
-from dfo._core.types import Citation, CitationSource, FormatError, Rendering, Spec
+from dfo._core.types import (
+    CONTENT_VERSION,
+    DIGEST,
+    Citation,
+    CitationSource,
+    FormatError,
+    Rendering,
+    Spec,
+    decode,
+    load_definition,
+    matches,
+    object_at,
+)
 from dfo._datasets.dataset import Dataset, saved_dataset
 
 if TYPE_CHECKING:
@@ -43,6 +57,7 @@ type BundleErrorReason = Literal[
     "resource_limit",
 ]
 
+_SHA256 = "sha256:"
 _ZIP_MAGIC = b"PK\x03\x04"
 _PARQUET_MAGIC = b"PAR1"
 _CHUNK_SIZE = 64 * 1024
@@ -85,20 +100,10 @@ class BundleLimits:
     max_xlsx_cells: int = 1_000_000
 
     def __post_init__(self) -> None:
-        for name, value in (
-            ("max_descriptor_bytes", self.max_descriptor_bytes),
-            ("max_zip_entries", self.max_zip_entries),
-            ("max_resources", self.max_resources),
-            ("max_archive_bytes", self.max_archive_bytes),
-            ("max_resource_bytes", self.max_resource_bytes),
-            ("max_total_bytes", self.max_total_bytes),
-            ("max_xlsx_entries", self.max_xlsx_entries),
-            ("max_xlsx_expanded_bytes", self.max_xlsx_expanded_bytes),
-            ("max_xlsx_rows", self.max_xlsx_rows),
-            ("max_xlsx_cells", self.max_xlsx_cells),
-        ):
+        for limit in fields(self):
+            value = getattr(self, limit.name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                raise ValueError(f"{name} must be a positive integer")
+                raise ValueError(f"{limit.name} must be a positive integer")
 
 
 @dataclass(slots=True)
@@ -147,7 +152,10 @@ def open_bundle(
         BundleError: The path holds no saved dataset or bundle, a lone CSV or
             XLSX has no descriptor beside it, or a file's bytes differ from the
             hash its descriptor gives.
-        FormatError: The descriptor lists a file outside the bundle.
+        FormatError: The descriptor is not a JSON object, lists a file outside
+            the bundle or without a SHA-256 hash, or breaks the descriptor
+            format; the data does not fit the columns its descriptor types; or
+            a saved dataset's provenance is damaged.
         ValueError: A saved file comes from a later format version.
     """
     target = Path(path)
@@ -184,7 +192,7 @@ def _open_saved(path: Path) -> Dataset:
 
 
 def _open_zip(path: Path, limits: BundleLimits) -> Dataset:
-    digest = _digest_path(path, limits.max_archive_bytes, str(path))
+    digest = _digest_path(path, limits.max_archive_bytes)
     with zipfile.ZipFile(path) as archive:
         entries = archive.infolist()
         if len(entries) > limits.max_zip_entries:
@@ -205,14 +213,16 @@ def _open_folder(folder: Path, limits: BundleLimits) -> Dataset:
     root = folder.resolve()
 
     def open_file(name: str) -> IO[bytes] | None:
-        file = folder.joinpath(*PurePosixPath(name).parts)
+        file = folder.joinpath(*name.split("/"))
         return file.open("rb") if file.is_file() else None
 
     def escapes(name: str) -> bool:
-        return (
-            not root.joinpath(*PurePosixPath(name).parts).resolve().is_relative_to(root)
-        )
+        return not root.joinpath(*name.split("/")).resolve().is_relative_to(root)
 
+    if escapes(DESCRIPTOR):
+        raise FormatError(
+            "format_invalid", "", f"{folder}: {DESCRIPTOR} links outside the bundle"
+        )
     return _open_descriptor(
         open_file, str(folder), digest=None, limits=limits, escapes=escapes
     )
@@ -228,10 +238,13 @@ def _folder_holding(file: Path, limits: BundleLimits) -> Path | None:
         if resolved == descriptor:
             return folder
         package = _read_descriptor_path(descriptor, limits)
-        _check_resource_count(package, str(folder), limits)
-        for resource in _resources(package):
-            path = resource.get("path")
-            if isinstance(path, str) and (folder / path).resolve() == resolved:
+        for resource in _resources(package, str(folder), limits):
+            path = resource.get("path") if isinstance(resource, Mapping) else None
+            if (
+                isinstance(path, str)
+                and _plain(path)
+                and folder.joinpath(*path.split("/")).resolve() == resolved
+            ):
                 return folder
     return None
 
@@ -248,19 +261,13 @@ def _open_descriptor(
     resolves outside the bundle, for a folder on disk."""
     budget = _ByteBudget(limits)
     package = _read_descriptor(open_file, where, budget)
-    if not isinstance(package, Mapping):
-        raise BundleError(
-            "not_a_bundle", f"{where}: {DESCRIPTOR} must be a JSON object"
-        )
-    _check_resource_count(package, where, limits)
-    _check_paths(package, where, escapes)
-    resources = _resources(package)
+    files = _files(_resources(package, where, limits), where, escapes)
+    spec = _bundle_spec(package)
     data = next(
         (
-            resource
-            for resource in resources
+            (index, resource)
+            for index, resource in files
             if resource.get("name") == package.get("name")
-            and isinstance(resource.get("path"), str)
         ),
         None,
     )
@@ -269,69 +276,81 @@ def _open_descriptor(
             "no_data_resource",
             f"{where}: {DESCRIPTOR} names no data table called {package.get('name')!r}",
         )
-    for resource in resources:
-        if resource is not data and isinstance(resource.get("path"), str):
+    data_index, data_resource = data
+    for _, resource in files:
+        if resource is not data_resource:
             _checked(open_file, resource, where, budget, keep=False)
-    content = _checked(open_file, data, where, budget, keep=True)
+    content = _checked(open_file, data_resource, where, budget, keep=True)
     assert content is not None
-    table = _read_table(content, data, limits)
-    return _bundle_dataset(package, data, table, digest=digest)
+    table = _read_table(content, data_resource, f"/resources/{data_index}", limits)
+    return _bundle_dataset(package, data_resource, table, spec=spec, digest=digest)
 
 
-def _check_paths(
-    package: object, where: str, escapes: Callable[[str], bool] | None
-) -> None:
-    """Refuse a descriptor that lists a file outside its bundle.
+def _files(
+    resources: Sequence[Any], where: str, escapes: Callable[[str], bool] | None
+) -> list[tuple[int, Mapping[str, Any]]]:
+    """The resources that name a file, with their index, each checked before any read.
 
     Raises:
-        FormatError: A resource's `path` holds a backslash, a drive, a root or
-            a `..` segment, or resolves outside the bundle.
+        FormatError: A resource's `path` is not a plain relative path, resolves
+            outside the bundle, or comes without a SHA-256 `hash`.
     """
-    resources = package.get("resources") if isinstance(package, Mapping) else None
-    for index, resource in enumerate(resources if isinstance(resources, list) else ()):
+    files: list[tuple[int, Mapping[str, Any]]] = []
+    for index, resource in enumerate(resources):
         path = resource.get("path") if isinstance(resource, Mapping) else None
         if not isinstance(path, str):
             continue
-        if not _relative(path) or (escapes is not None and escapes(path)):
+        if not _plain(path) or (escapes is not None and escapes(path)):
             raise FormatError(
                 "format_invalid",
                 f"/resources/{index}/path",
-                f"{where}: {DESCRIPTOR} lists {path!r}, which is outside the bundle",
+                f"{where}: {DESCRIPTOR} lists {path!r}, which is not a plain path "
+                "inside the bundle",
             )
+        if not matches(DIGEST, resource.get("hash")):
+            raise FormatError(
+                "format_invalid",
+                f"/resources/{index}/hash",
+                f"{where}: {DESCRIPTOR} gives {path} no {_SHA256}<hex> hash",
+            )
+        files.append((index, resource))
+    return files
 
 
-def _relative(path: str) -> bool:
-    """Whether `path` is a plain relative path in both POSIX and Windows terms."""
-    if "\\" in path:
+def _plain(path: str) -> bool:
+    """Whether `path` is a plain relative path, which a ZIP and a folder read alike.
+
+    Its `/`-separated names are none of them empty, `.` or `..`, and it holds no
+    backslash, Windows drive or NUL.
+    """
+    if "\\" in path or "\0" in path or PureWindowsPath(path).drive:
         return False
-    windows = PureWindowsPath(path)
-    if windows.drive or windows.root or PurePosixPath(path).is_absolute():
-        return False
-    return ".." not in PurePosixPath(path).parts
+    return all(name not in {"", ".", ".."} for name in path.split("/"))
 
 
-def _resources(package: object) -> list[Mapping[str, Any]]:
-    resources = package.get("resources") if isinstance(package, Mapping) else None
-    if not isinstance(resources, list):
-        return []
-    return [resource for resource in resources if isinstance(resource, Mapping)]
+def _resources(
+    package: Mapping[str, Any], where: str, limits: BundleLimits
+) -> list[Any]:
+    """The descriptor's `resources` array, empty when it holds none.
 
-
-def _check_resource_count(package: object, where: str, limits: BundleLimits) -> None:
-    resources = package.get("resources") if isinstance(package, Mapping) else None
-    count = len(resources) if isinstance(resources, list) else 0
-    if count > limits.max_resources:
+    Raises:
+        BundleError: It lists more resources than `limits` allows (`resource_limit`).
+    """
+    resources = package.get("resources")
+    listed = resources if isinstance(resources, list) else []
+    if len(listed) > limits.max_resources:
         _limited(
             where,
-            f"lists {count} resources, above the limit of {limits.max_resources}",
+            f"lists {len(listed)} resources, above the limit of {limits.max_resources}",
         )
+    return listed
 
 
 def _limited(where: str, detail: str) -> None:
     raise BundleError("resource_limit", f"{where} {detail}")
 
 
-def _digest_path(path: Path, limit: int, where: str) -> str:
+def _digest_path(path: Path, limit: int) -> str:
     """Hash a ZIP from disk without retaining its compressed bytes."""
     digest = hashlib.sha256()
     size = 0
@@ -339,44 +358,34 @@ def _digest_path(path: Path, limit: int, where: str) -> str:
         while chunk := file.read(min(_CHUNK_SIZE, limit - size + 1)):
             size += len(chunk)
             if size > limit:
-                _limited(where, f"is larger than the archive limit of {limit} bytes")
+                _limited(
+                    str(path), f"is larger than the archive limit of {limit} bytes"
+                )
             digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
+    return _SHA256 + digest.hexdigest()
 
 
-def _read_descriptor_path(path: Path, limits: BundleLimits) -> object:
+def _read_descriptor_path(path: Path, limits: BundleLimits) -> Mapping[str, Any]:
     """Read one candidate folder descriptor under its descriptor limit."""
     with path.open("rb") as file:
-        raw = _read_limited(
-            file,
-            str(path),
-            _ByteBudget(limits),
-            limit=limits.max_descriptor_bytes,
-            keep=True,
-            digest=None,
-        )
-    assert raw is not None
-    return json.loads(raw)
+        return _decoded(file, str(path), _ByteBudget(limits))
 
 
 def _read_descriptor(
     open_file: Callable[[str], IO[bytes] | None], where: str, budget: _ByteBudget
-) -> object:
+) -> Mapping[str, Any]:
     """Read and decode a bundle descriptor under its byte budget."""
     file = open_file(DESCRIPTOR)
     if file is None:
         raise BundleError("no_descriptor", f"{where} holds no {DESCRIPTOR}")
     with file:
-        raw = _read_limited(
-            file,
-            DESCRIPTOR,
-            budget,
-            limit=budget.limits.max_descriptor_bytes,
-            keep=True,
-            digest=None,
-        )
-    assert raw is not None
-    return json.loads(raw)
+        return _decoded(file, DESCRIPTOR, budget)
+
+
+def _decoded(file: IO[bytes], name: str, budget: _ByteBudget) -> Mapping[str, Any]:
+    """A descriptor's JSON object, read under the descriptor limit."""
+    limit = budget.limits.max_descriptor_bytes
+    return decode(b"".join(_chunks(file, name, budget, limit=limit)))
 
 
 def _checked(
@@ -387,61 +396,44 @@ def _checked(
     *,
     keep: bool,
 ) -> bytes | None:
-    """Stream and hash one resource, retaining bytes only when `keep` is true."""
+    """Stream and hash one resource `_files` checked, retaining bytes only when
+    `keep` is true."""
     path = resource["path"]
     file = open_file(path)
     if file is None:
         raise BundleError("missing_file", f"{where} lacks {path}, which it lists")
-    expected = resource.get("hash")
-    algorithm, _, value = (
-        expected.rpartition(":") if isinstance(expected, str) else ("", "", "")
-    )
-    digest = hashlib.new(algorithm or "md5") if isinstance(expected, str) else None
+    digest = hashlib.sha256()
+    content = bytearray()
     with file:
-        content = _read_limited(
-            file,
-            path,
-            budget,
-            limit=budget.limits.max_resource_bytes,
-            keep=keep,
-            digest=digest,
+        for chunk in _chunks(
+            file, path, budget, limit=budget.limits.max_resource_bytes
+        ):
+            digest.update(chunk)
+            if keep:
+                content.extend(chunk)
+    if _SHA256 + digest.hexdigest() != resource["hash"]:
+        raise BundleError(
+            "hash_mismatch",
+            f"{where}: {path} does not match its hash; download the bundle again",
         )
-    if isinstance(expected, str):
-        assert digest is not None
-        if digest.hexdigest() != value.lower():
-            raise BundleError(
-                "hash_mismatch",
-                f"{where}: {path} does not match its hash; download the bundle again",
-            )
-    return content
+    return bytes(content) if keep else None
 
 
-def _read_limited(
-    file: IO[bytes],
-    path: str,
-    budget: _ByteBudget,
-    *,
-    limit: int,
-    keep: bool,
-    digest: Any | None,
-) -> bytes | None:
-    """Read one file in chunks, enforcing actual per-file and total bytes."""
-    content = bytearray() if keep else None
+def _chunks(
+    file: IO[bytes], path: str, budget: _ByteBudget, *, limit: int
+) -> Iterator[bytes]:
+    """Read one file in chunks, enforcing actual per-file and total bytes.
+
+    Each read asks for one byte more than the limits leave, so a file over a
+    limit is refused at its first excess byte.
+    """
     size = 0
     while True:
         resource_left = limit - size
         total_left = budget.limits.max_total_bytes - budget.total
-        if resource_left < 0:
-            _limited(path, f"is larger than the resource limit of {limit} bytes")
-        if total_left < 0:
-            _limited(
-                path,
-                f"exceeds the total bundle limit of {budget.limits.max_total_bytes} bytes",
-            )
-        read_size = min(_CHUNK_SIZE, resource_left, total_left)
-        chunk = file.read(read_size + 1)
+        chunk = file.read(min(_CHUNK_SIZE, resource_left, total_left) + 1)
         if not chunk:
-            break
+            return
         if len(chunk) > resource_left:
             _limited(path, f"is larger than the resource limit of {limit} bytes")
         if len(chunk) > total_left:
@@ -451,11 +443,7 @@ def _read_limited(
             )
         size += len(chunk)
         budget.total += len(chunk)
-        if digest is not None:
-            digest.update(chunk)
-        if content is not None:
-            content.extend(chunk)
-    return bytes(content) if content is not None else None
+        yield chunk
 
 
 def _field_types() -> Mapping[str, pa.DataType]:
@@ -477,42 +465,102 @@ def _field_types() -> Mapping[str, pa.DataType]:
 
 
 def _read_table(
-    content: bytes, resource: Mapping[str, Any], limits: BundleLimits
+    content: bytes, resource: Mapping[str, Any], pointer: str, limits: BundleLimits
 ) -> pa.Table:
+    """The data resource at `pointer` in the descriptor, typed by its schema.
+
+    Raises:
+        FormatError: A field's type is not a string, the missing values are not
+            strings, or the data does not fit its columns: a column without a
+            name, two columns of one name, an XLSX formula, or a value its
+            column's type cannot hold exactly.
+    """
     import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
     import pyarrow.csv as pa_csv  # noqa: PLC0415 - pyarrow loads on first use
 
-    schema = resource.get("schema")
-    fields = schema.get("fields", []) if isinstance(schema, Mapping) else []
-    field_types = _field_types()
-    types = {
-        field["name"]: field_types.get(field.get("type", "string"), pa.string())
-        for field in fields
-        if isinstance(field, Mapping) and isinstance(field.get("name"), str)
-    }
-    missing = schema.get("missingValues", [""]) if isinstance(schema, Mapping) else [""]
+    path = str(resource["path"])
+    types, missing = _schema(resource, pointer)
     if resource.get("format") == "xlsx":
-        return _read_xlsx(content, resource, types, missing, limits)
-    return pa_csv.read_csv(
-        io.BytesIO(content),
-        convert_options=pa_csv.ConvertOptions(
-            column_types=types,
-            null_values=missing,
-            strings_can_be_null=True,
-        ),
-    )
+        table = _read_xlsx(
+            content,
+            resource,
+            pointer=pointer,
+            types=types,
+            missing=missing,
+            limits=limits,
+        )
+    else:
+        try:
+            table = pa_csv.read_csv(
+                io.BytesIO(content),
+                convert_options=pa_csv.ConvertOptions(
+                    column_types=types,
+                    null_values=missing,
+                    strings_can_be_null=True,
+                ),
+            )
+        except pa.ArrowInvalid as error:
+            raise FormatError("format_invalid", pointer, f"{path}: {error}") from error
+    repeated = {
+        name for name, count in Counter(table.column_names).items() if count > 1
+    }
+    if repeated:
+        raise FormatError(
+            "format_invalid",
+            pointer,
+            f"{path} holds more than one column named {', '.join(sorted(repeated))}",
+        )
+    return table
+
+
+def _schema(
+    resource: Mapping[str, Any], pointer: str
+) -> tuple[dict[str, pa.DataType], list[str]]:
+    """The Arrow type of each column the resource's schema names, and the cell
+    texts that read as null."""
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+
+    schema = resource.get("schema")
+    if not isinstance(schema, Mapping):
+        return {}, [""]
+    fields = schema.get("fields", [])
+    field_types = _field_types()
+    types: dict[str, pa.DataType] = {}
+    for index, field in enumerate(fields if isinstance(fields, list) else ()):
+        if not isinstance(field, Mapping) or not isinstance(field.get("name"), str):
+            continue
+        kind = field.get("type", "string")
+        if not isinstance(kind, str):
+            raise FormatError(
+                "format_invalid",
+                f"{pointer}/schema/fields/{index}/type",
+                "not a string",
+            )
+        types[field["name"]] = field_types.get(kind, pa.string())
+    missing = schema.get("missingValues", [""])
+    if not isinstance(missing, list) or not all(
+        isinstance(value, str) for value in missing
+    ):
+        raise FormatError(
+            "format_invalid",
+            f"{pointer}/schema/missingValues",
+            "not an array of strings",
+        )
+    return types, missing
 
 
 def _read_xlsx(
     content: bytes,
     resource: Mapping[str, Any],
+    *,
+    pointer: str,
     types: Mapping[str, pa.DataType],
     missing: Sequence[str],
     limits: BundleLimits,
 ) -> pa.Table:
     import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
 
-    path = str(resource.get("path", "XLSX resource"))
+    path = str(resource["path"])
     _check_xlsx_archive(content, path, limits)
     try:
         import openpyxl  # noqa: PLC0415 - an optional extra, imported on use
@@ -522,7 +570,9 @@ def _read_xlsx(
             "pip install 'development-finance[xlsx]'"
         ) from error
     with io.BytesIO(content) as stream:
-        workbook = openpyxl.load_workbook(stream, read_only=True, data_only=True)
+        # Formulas stay unevaluated, so a formula cell reads as one and is refused,
+        # whether or not the workbook caches its result.
+        workbook = openpyxl.load_workbook(stream, read_only=True, data_only=False)
         try:
             dialect = resource.get("dialect")
             sheet_name = (
@@ -530,7 +580,7 @@ def _read_xlsx(
             )
             sheet = workbook[sheet_name] if sheet_name else workbook.worksheets[0]
             _check_xlsx_dimensions(sheet, path, limits)
-            rows = sheet.iter_rows(values_only=True)
+            rows = sheet.iter_rows()
             raw_header = next(rows, ())
             cells = len(raw_header)
             if cells > limits.max_xlsx_cells:
@@ -538,7 +588,16 @@ def _read_xlsx(
                     path,
                     f"has more than {limits.max_xlsx_cells} header and data cells",
                 )
-            header = [str(name) for name in raw_header]
+            header: list[str] = []
+            for number, cell in enumerate(raw_header, start=1):
+                name = _value(cell, path, pointer)
+                if name is None:
+                    raise FormatError(
+                        "format_invalid",
+                        pointer,
+                        f"{path}: column {number} has no name",
+                    )
+                header.append(str(name))
             columns: list[list[Any]] = [[] for _ in header]
             for data_rows, row in enumerate(rows, start=1):
                 if data_rows > limits.max_xlsx_rows:
@@ -550,19 +609,30 @@ def _read_xlsx(
                         f"has more than {limits.max_xlsx_cells} header and data cells",
                     )
                 for index, column in enumerate(columns):
-                    value = row[index] if index < len(row) else None
+                    value = (
+                        _value(row[index], path, pointer) if index < len(row) else None
+                    )
                     column.append(None if value in missing else value)
         finally:
             workbook.close()
-    return pa.table(
-        {
-            name: pa.array(
-                _cells(values, types.get(name, pa.string())),
-                type=types.get(name, pa.string()),
-            )
+    return pa.Table.from_arrays(
+        [
+            _column(values, types.get(name, pa.string()), name, path, pointer)
             for name, values in zip(header, columns, strict=True)
-        }
+        ],
+        names=header,
     )
+
+
+def _value(cell: Any, path: str, pointer: str) -> Any:
+    """An XLSX cell's value. A formula is refused, since its result is not data."""
+    if cell.data_type == "f":
+        raise FormatError(
+            "format_invalid",
+            pointer,
+            f"{path}: cell {cell.coordinate} holds a formula, not a value",
+        )
+    return cell.value
 
 
 def _check_xlsx_archive(content: bytes, path: str, limits: BundleLimits) -> None:
@@ -606,6 +676,33 @@ def _check_xlsx_dimensions(sheet: Any, path: str, limits: BundleLimits) -> None:
         )
 
 
+def _column(
+    values: list[Any], kind: pa.DataType, name: str, path: str, pointer: str
+) -> pa.Array:
+    """XLSX cells as one column of the Arrow type its schema gives.
+
+    Raises:
+        FormatError: A cell does not convert to the type exactly, such as
+            `2015.9` in an integer column.
+    """
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+
+    if pa.types.is_integer(kind):
+        for value in values:
+            if isinstance(value, float) and not value.is_integer():
+                raise FormatError(
+                    "format_invalid",
+                    pointer,
+                    f"{path}: column {name!r} holds {value}, which is not an integer",
+                )
+    try:
+        return pa.array(_cells(values, kind), type=kind)
+    except (pa.ArrowException, OverflowError) as error:
+        raise FormatError(
+            "format_invalid", pointer, f"{path}: column {name!r}: {error}"
+        ) from error
+
+
 def _cells(values: list[Any], kind: pa.DataType) -> list[Any]:
     """XLSX cells as the column's Arrow type takes them."""
     import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
@@ -617,25 +714,47 @@ def _cells(values: list[Any], kind: pa.DataType) -> list[Any]:
     return values
 
 
+def _bundle_spec(package: Mapping[str, Any]) -> tuple[Spec, str] | None:
+    """The spec and content version a website bundle's `dfo` member names.
+
+    Raises:
+        FormatError: `dfo` is not an object, or its `spec` or `content_version`
+            breaks the format.
+    """
+    if "dfo" not in package:
+        return None
+    dfo = object_at(package["dfo"], "/dfo")
+    if "spec" not in dfo:
+        return None
+    spec = load_definition(dfo["spec"], "/dfo/spec")
+    content_version = dfo.get("content_version")
+    if not isinstance(content_version, str) or not matches(
+        CONTENT_VERSION, content_version
+    ):
+        raise FormatError(
+            "format_invalid", "/dfo/content_version", "not a content version"
+        )
+    return spec, content_version
+
+
 def _bundle_dataset(
     package: Mapping[str, Any],
     data: Mapping[str, Any],
     table: pa.Table,
     *,
+    spec: tuple[Spec, str] | None,
     digest: str | None,
 ) -> Dataset:
     title = str(package.get("title") or data.get("title") or package.get("name"))
     citation = Citation(text=title, sources=_bundle_sources(package))
     members: tuple[Member, ...] = ()
-    dfo = package.get("dfo")
-    definition = dfo.get("spec") if isinstance(dfo, Mapping) else None
-    if digest is not None and isinstance(definition, Mapping):
-        assert isinstance(dfo, Mapping)
+    if digest is not None and spec is not None:
+        definition, content_version = spec
         members = (
             Member(
                 parts=(),
-                spec=Spec(str(definition["spec_id"]), definition),
-                content_version=str(dfo["content_version"]),
+                spec=definition,
+                content_version=content_version,
                 sentence=title,
                 citation=citation,
                 digest=digest,

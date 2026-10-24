@@ -1,10 +1,14 @@
 """Datasets from fetched members: provenance, stacking, conversions, display and saving."""
 
 import copy
+import json
 import pickle
 import sys
+from collections.abc import Callable
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -18,6 +22,7 @@ from dfo._core.types import (
     CandidatesPart,
     DefinitePart,
     Departure,
+    FormatError,
     Gap,
     Layout,
     Rendering,
@@ -28,6 +33,7 @@ from dfo._datasets.cache import sha256_digest
 from dfo._datasets.dataset import Dataset, FetchedMember, build_dataset
 from tests._data import load
 from tests._datasets import PARQUET, manifest, other_member, recorded_member, scenario
+from tests._fetch_support import FakeCache
 
 EXPECTED = scenario()["expect"][0]["dataset"]
 AID_TYPE = Assumption(
@@ -38,9 +44,10 @@ AID_TYPE = Assumption(
 )
 
 
-def one(member: FetchedMember | None = None, *, layout: Layout = "long") -> Dataset:
+def built(*members: FetchedMember, layout: Layout = "long") -> Dataset:
+    """A complete, fresh dataset of `members`, or of the recorded member."""
     return build_dataset(
-        [member or recorded_member()],
+        members or [recorded_member()],
         layout=layout,
         complete=True,
         missing=(),
@@ -53,20 +60,25 @@ def with_retention(
 ) -> FetchedMember:
     body = copy.deepcopy(dict(member.manifest))
     body["retention"] = retention
-    return FetchedMember(
-        parts=member.parts,
-        spec=member.spec,
-        sentence=member.sentence,
-        content_version=member.content_version,
-        manifest=body,
-        digest=member.digest,
-        data=member.data,
-        answer_parts=member.answer_parts,
-    )
+    return replace(member, manifest=body)
+
+
+def _parquet(table: pa.Table) -> bytes:
+    sink = pa.BufferOutputStream()
+    pq.write_table(table, sink)
+    return sink.getvalue().to_pybytes()
+
+
+def with_table(member: FetchedMember, table: pa.Table) -> FetchedMember:
+    """`member` holding `table`, its manifest listing the new artifact."""
+    data = _parquet(table)
+    body = copy.deepcopy(dict(member.manifest))
+    body["artifacts"][0]["artifact_digest"] = sha256_digest(data)
+    return replace(member, manifest=body, digest=sha256_digest(data), data=data)
 
 
 def test_one_member_matches_the_recorded_expectation() -> None:
-    data = one()
+    data = built()
     assert data.rows == len(data) == EXPECTED["rows"]
     assert data.to_arrow().column_names == EXPECTED["columns"]
     assert data.complete is EXPECTED["complete"]
@@ -81,7 +93,7 @@ def test_one_member_matches_the_recorded_expectation() -> None:
 
 
 def test_provenance_comes_from_the_manifest() -> None:
-    data = one()
+    data = built()
     assert data.citation.text == manifest()["citation"]["text"]
     assert data.sources == ("OECD Creditor Reporting System (CRS)",)
     assert data.licence == "OECD Terms and Conditions"
@@ -92,7 +104,7 @@ def test_provenance_comes_from_the_manifest() -> None:
 
 
 def test_the_ref_holds_the_exact_version() -> None:
-    data = one()
+    data = built()
     assert data.ref is not None
     (stored,) = DatasetRef.from_json(data.ref.to_json()).members
     assert stored.digest == manifest()["artifacts"][0]["artifact_digest"]
@@ -107,13 +119,13 @@ def test_the_frame_layout_names_its_rendering() -> None:
         "bundle": False,
         "layout": "frame",
     }
-    data = one(member, layout="frame")
+    data = built(member, layout="frame")
     assert data.layout_version == "frame"
     assert data.members[0].rendering == Rendering("parquet", False, "frame")
 
 
 def test_the_recorded_retention_reads_its_date() -> None:
-    data = one()
+    data = built()
     held_until = manifest()["retention"]["held_until"]
     assert data.held_until == datetime.fromisoformat(held_until).date()
     assert data.pinned is False
@@ -122,7 +134,7 @@ def test_the_recorded_retention_reads_its_date() -> None:
 def test_retention_absent_reads_none_and_is_not_shown() -> None:
     body = manifest()
     del body["retention"]
-    data = one(recorded_member(manifest=body))
+    data = built(recorded_member(manifest=body))
     assert data.held_until is None
     assert data.pinned is False
     assert "held until" not in repr(data).lower()
@@ -136,9 +148,7 @@ def test_held_until_is_the_earliest_member_date() -> None:
     second = with_retention(
         other_member(), {"pinned": False, "held_until": "2026-11-18T23:00:00+00:00"}
     )
-    data = build_dataset(
-        [first, second], layout="long", complete=True, missing=(), stale=False
-    )
+    data = built(first, second)
     assert data.held_until == date(2026, 11, 18)
     assert data.pinned is False
     assert "Held until 18 November 2026, not pinned" in repr(data)
@@ -149,27 +159,17 @@ def test_pinned_when_every_member_is_pinned() -> None:
     held = with_retention(
         other_member(), {"pinned": False, "held_until": "2026-11-18T00:00:00Z"}
     )
-    both = build_dataset(
-        [pinned, with_retention(other_member(), {"pinned": True})],
-        layout="long",
-        complete=True,
-        missing=(),
-        stale=False,
-    )
+    both = built(pinned, with_retention(other_member(), {"pinned": True}))
     assert (both.pinned, both.held_until) == (True, None)
     assert "Pinned" in repr(both)
-    mixed = build_dataset(
-        [pinned, held], layout="long", complete=True, missing=(), stale=False
-    )
+    mixed = built(pinned, held)
     assert (mixed.pinned, mixed.held_until) == (False, date(2026, 11, 18))
 
 
 def test_several_members_stack_with_a_part_column() -> None:
     first = recorded_member(parts=("ODA disbursements", "health ODA"))
     second = other_member()
-    data = build_dataset(
-        [first, second], layout="long", complete=True, missing=(), stale=False
-    )
+    data = built(first, second)
     table = data.to_arrow()
     assert table.column_names[0] == "part"
     assert table.column_names[1:-1] == EXPECTED["columns"]
@@ -194,20 +194,8 @@ def with_column(
 ) -> FetchedMember:
     """`member` with a `name` column holding `values` in every row."""
     table = pq.read_table(pa.BufferReader(member.data))
-    table = table.append_column(name, pa.repeat(values[0], table.num_rows))
-    sink = pa.BufferOutputStream()
-    pq.write_table(table, sink)
-    data = sink.getvalue().to_pybytes()
-    body = copy.deepcopy(dict(member.manifest))
-    body["artifacts"][0]["artifact_digest"] = sha256_digest(data)
-    return FetchedMember(
-        parts=member.parts,
-        spec=member.spec,
-        sentence=member.sentence,
-        content_version=member.content_version,
-        manifest=body,
-        digest=sha256_digest(data),
-        data=data,
+    return with_table(
+        member, table.append_column(name, pa.repeat(values[0], table.num_rows))
     )
 
 
@@ -229,38 +217,118 @@ def test_stacking_widens_a_column_or_raises_a_contract_error(
     ]
     if widened is None:
         with pytest.raises(ContractError) as caught:
-            build_dataset(
-                members, layout="long", complete=True, missing=(), stale=False
-            )
+            built(*members)
         assert caught.value.code == "contract_violation"
         return
-    data = build_dataset(members, layout="long", complete=True, missing=(), stale=False)
+    data = built(*members)
     assert data.to_arrow().schema.field("extra").type == widened
 
 
-def test_a_member_file_with_a_part_column_raises_only_when_members_stack() -> None:
-    held = with_column(recorded_member(), pa.array(["theirs"]), name="part")
-    alone = build_dataset([held], layout="long", complete=True, missing=(), stale=False)
-    assert alone.to_arrow().column("part")[0].as_py() == "theirs"
+def _recorded_table() -> pa.Table:
+    return pq.read_table(PARQUET)
+
+
+def _with_value(values: list[object]) -> bytes:
+    table = _recorded_table()
+    index = table.column_names.index("value")
+    return _parquet(table.set_column(index, "value", pa.array(values)))
+
+
+def _empty_as_served() -> bytes:
+    """The recorded table with no rows and every column text, as the server
+    writes an empty build."""
+    table = _recorded_table().slice(0, 0)
+    return _parquet(
+        table.cast(pa.schema([(name, pa.string()) for name in table.column_names]))
+    )
+
+
+_GARBLED = "unexpected_response"
+_MALFORMED = "contract_violation"
+
+
+@pytest.mark.parametrize(
+    ("data", "code"),
+    [
+        pytest.param(b"PAR1 not a parquet file PAR1", _GARBLED, id="garbage"),
+        pytest.param(b"", _GARBLED, id="empty-file"),
+        pytest.param(PARQUET.read_bytes()[:-100], _GARBLED, id="truncated"),
+        pytest.param(
+            PARQUET.read_bytes()[:4] + b"\xff" * 200 + PARQUET.read_bytes()[204:],
+            _GARBLED,
+            id="damaged-pages",
+        ),
+        pytest.param(
+            _parquet(pa.table({"time_period": [2020], "a": [1]})),
+            _MALFORMED,
+            id="no-value-column",
+        ),
+        pytest.param(
+            _parquet(pa.table({"value": [1.0]})), _MALFORMED, id="no-time-period"
+        ),
+        pytest.param(
+            _parquet(
+                pa.Table.from_arrays(
+                    [pa.array([2020]), pa.array([1.0]), pa.array([2.0])],
+                    names=["time_period", "value", "value"],
+                )
+            ),
+            _MALFORMED,
+            id="two-value-columns",
+        ),
+        pytest.param(_with_value(["x", "y", "z", "w"]), _MALFORMED, id="value-as-text"),
+        pytest.param(_empty_as_served(), _MALFORMED, id="no-rows-counted-4"),
+    ],
+)
+def test_an_artifact_that_is_not_a_dataset_raises_and_leaves_the_cache(
+    data: bytes, code: str
+) -> None:
+    member = recorded_member(
+        data=data, digest=sha256_digest(data), rendering=Rendering("parquet", False)
+    )
+    cache = FakeCache(files={member.digest: data})
     with pytest.raises(ContractError) as caught:
         build_dataset(
-            [held, other_member()],
+            [member],
             layout="long",
             complete=True,
             missing=(),
             stale=False,
+            cache=cache,
         )
+    assert caught.value.code == code
+    assert member.digest in str(caught.value)
+    assert cache.files == {}
+
+
+def test_an_empty_artifact_whose_manifest_counts_no_rows_is_empty_and_stacks() -> None:
+    data = _empty_as_served()
+    body = manifest()
+    body["coverage"]["rows"] = 0
+    empty = recorded_member(
+        data=data,
+        digest=sha256_digest(data),
+        rendering=Rendering("parquet", False),
+        manifest=body,
+    )
+    assert built(empty).rows == 0
+    beside = other_member()
+    stacked = built(empty, beside)
+    assert stacked.rows == pq.read_table(pa.BufferReader(beside.data)).num_rows
+    assert len(stacked.members) == 2
+
+
+def test_a_member_file_with_a_part_column_raises_only_when_members_stack() -> None:
+    held = with_column(recorded_member(), pa.array(["theirs"]), name="part")
+    alone = built(held)
+    assert alone.to_arrow().column("part")[0].as_py() == "theirs"
+    with pytest.raises(ContractError) as caught:
+        built(held, other_member())
     assert caught.value.code == "contract_violation"
 
 
 def test_a_member_with_no_part_is_labelled_by_its_sentence() -> None:
-    data = build_dataset(
-        [recorded_member(), other_member()],
-        layout="long",
-        complete=True,
-        missing=(),
-        stale=False,
-    )
+    data = built(recorded_member(), other_member())
     assert data.to_arrow().column("part")[0].as_py() == recorded_member().sentence
 
 
@@ -276,7 +344,7 @@ def test_departures_operations_and_assumptions_come_from_the_answer_parts() -> N
         operations=(operation, operation),
         assumptions=(AID_TYPE, AID_TYPE),
     )
-    data = one(recorded_member(answer_parts=(asked,)))
+    data = built(recorded_member(answer_parts=(asked,)))
     assert data.departures == (departure,)
     assert data.requested_operations == (operation,)
     assert data.assumptions == (AID_TYPE,)
@@ -286,33 +354,36 @@ def test_a_manifest_without_the_artifact_is_refused() -> None:
     member = recorded_member()
     member.manifest["artifacts"] = member.manifest["artifacts"][1:]
     with pytest.raises(ContractError) as caught:
-        one(member)
+        built(member)
     assert caught.value.code == "contract_violation"
 
 
-def test_a_ref_member_the_manifest_does_not_list_takes_the_refs_rendering() -> None:
-    member = recorded_member(rendering=Rendering("parquet", False))
+@pytest.mark.parametrize(
+    "rendering",
+    [
+        Rendering("parquet", False),
+        Rendering("parquet", False, without_party_totals=True),
+    ],
+)
+def test_a_ref_member_the_manifest_does_not_list_takes_the_refs_rendering(
+    rendering: Rendering,
+) -> None:
+    member = recorded_member(rendering=rendering)
     member.manifest["artifacts"] = member.manifest["artifacts"][1:]
-    data = one(member)
+    data = built(member)
     assert data.layout_version == "long"
-    assert data.members[0].rendering == Rendering("parquet", False)
+    assert data.members[0].rendering == rendering
 
 
 def test_the_frame_layout_refuses_several_members() -> None:
     with pytest.raises(ValueError, match="one member"):
-        build_dataset(
-            [recorded_member(), other_member()],
-            layout="frame",
-            complete=True,
-            missing=(),
-            stale=False,
-        )
+        built(recorded_member(), other_member(), layout="frame")
     with pytest.raises(ValueError, match="at least one"):
         build_dataset([], layout="long", complete=True, missing=(), stale=False)
 
 
 def test_to_arrow_carries_the_provenance() -> None:
-    data = one()
+    data = built()
     metadata = data.to_arrow().schema.metadata
     assert metadata[b"dfo.sentence"].decode() == data.sentence
     assert data.ref is not None
@@ -324,7 +395,7 @@ def test_to_arrow_carries_the_provenance() -> None:
 
 def test_pandas_gets_the_provenance_in_attrs() -> None:
     pytest.importorskip("pandas")
-    frame = one().to_pandas()
+    frame = built().to_pandas()
     assert len(frame) == 4
     assert frame.attrs["sentence"] == EXPECTED["members"][0]["sentence"]
     assert frame.attrs["sources"] == ["OECD Creditor Reporting System (CRS)"]
@@ -332,7 +403,7 @@ def test_pandas_gets_the_provenance_in_attrs() -> None:
 
 def test_polars_gets_the_table() -> None:
     polars = pytest.importorskip("polars")
-    frame = one().to_polars()
+    frame = built().to_polars()
     assert isinstance(frame, polars.DataFrame)
     assert frame.columns == EXPECTED["columns"]
 
@@ -345,11 +416,11 @@ def test_a_missing_extra_names_itself(
 ) -> None:
     monkeypatch.setitem(sys.modules, extra, None)
     with pytest.raises(ImportError, match=rf"development-finance\[{extra}\]"):
-        getattr(one(), method)()
+        getattr(built(), method)()
 
 
 def test_the_arrow_stream_is_fresh_per_call() -> None:
-    data = one()
+    data = built()
     assert hasattr(pa.Table, "__arrow_c_stream__")
     first = pa.RecordBatchReader.from_stream(data).read_all()
     second = pa.RecordBatchReader.from_stream(data).read_all()
@@ -361,21 +432,21 @@ def test_pandas_reads_the_arrow_stream() -> None:
     pandas = pytest.importorskip("pandas")
     if not hasattr(pandas.DataFrame, "from_arrow"):
         pytest.skip("this pandas has no DataFrame.from_arrow")
-    frame = pandas.DataFrame.from_arrow(one())
+    frame = pandas.DataFrame.from_arrow(built())
     assert list(frame.columns) == EXPECTED["columns"]
     assert len(frame) == 4
 
 
 def test_polars_reads_the_arrow_stream() -> None:
     polars = pytest.importorskip("polars")
-    frame = polars.DataFrame(one())
+    frame = polars.DataFrame(built())
     assert frame.columns == EXPECTED["columns"]
     assert frame.height == 4
 
 
 def test_duckdb_reads_the_arrow_stream() -> None:
     duckdb = pytest.importorskip("duckdb")
-    data = one()  # noqa: F841 - DuckDB finds it by name
+    data = built()  # noqa: F841 - DuckDB finds it by name
     assert duckdb.sql("select count(*) from data").fetchone() == (4,)
 
 
@@ -392,6 +463,19 @@ def test_a_dataset_pickles() -> None:
 
 
 def test_save_then_open_bundle_returns_an_equal_dataset(tmp_path: Path) -> None:
+    data = _saved()
+    path = tmp_path / "saved.parquet"
+    data.save(path)
+
+    stored = pq.read_metadata(path).metadata
+    assert stored[b"dfo.sentence"].decode() == data.sentence
+    assert data.ref is not None
+    assert stored[b"dfo.ref"].decode() == data.ref.to_json()
+    _assert_same(open_bundle(path), data)
+
+
+def _saved() -> Dataset:
+    """A dataset of two members and two gaps, with every provenance member filled."""
     (part,) = parse_parts(load("search-1.json"))
     assert isinstance(part, DefinitePart)
     asked = DefinitePart(
@@ -405,25 +489,104 @@ def test_save_then_open_bundle_returns_an_equal_dataset(tmp_path: Path) -> None:
         recorded_member(parts=("ODA",), answer_parts=(asked,)),
         {"pinned": False, "held_until": "2026-11-18T00:00:00Z"},
     )
-    data = build_dataset(
+    return build_dataset(
         [first, other_member()],
         layout="long",
         complete=False,
         missing=_gaps(),
         stale=False,
     )
-    path = tmp_path / "saved.parquet"
-    data.save(path)
 
-    stored = pq.read_metadata(path).metadata
-    assert stored[b"dfo.sentence"].decode() == data.sentence
-    assert data.ref is not None
-    assert stored[b"dfo.ref"].decode() == data.ref.to_json()
-    _assert_same(open_bundle(path), data)
+
+def _dataset_edit(
+    change: Callable[[dict[str, Any]], None],
+) -> Callable[[dict[bytes, bytes]], None]:
+    """A metadata edit that changes the decoded `dfo.dataset` object in place."""
+
+    def edit(metadata: dict[bytes, bytes]) -> None:
+        rest = json.loads(metadata[b"dfo.dataset"])
+        change(rest)
+        metadata[b"dfo.dataset"] = json.dumps(rest).encode()
+
+    return edit
+
+
+@pytest.mark.parametrize(
+    ("edit", "pointer"),
+    [
+        (lambda m: m.pop(b"dfo.citation"), "/dfo.citation"),
+        (lambda m: m.update({b"dfo.citation": b"null"}), "/dfo.citation"),
+        (lambda m: m.update({b"dfo.dataset": b"{garbage"}), "/dfo.dataset"),
+        (lambda m: m.pop(b"dfo.sentence"), "/dfo.sentence"),
+        (lambda m: m.update({b"dfo.sentence": b"\xff"}), "/dfo.sentence"),
+        (lambda m: m.pop(b"dfo.ref"), "/dfo.dataset/member_citations"),
+        (_dataset_edit(lambda d: d.pop("stale")), "/dfo.dataset/stale"),
+        (_dataset_edit(lambda d: d.update(complete="no")), "/dfo.dataset/complete"),
+        (
+            _dataset_edit(lambda d: d.update(held_until="soon")),
+            "/dfo.dataset/held_until",
+        ),
+        (
+            _dataset_edit(lambda d: d["missing"][0].update(kind="bogus")),
+            "/dfo.dataset/missing/0/kind",
+        ),
+        (
+            _dataset_edit(lambda d: d["missing"][1].update(part=[])),
+            "/dfo.dataset/missing/1/part",
+        ),
+        (
+            _dataset_edit(
+                lambda d: d["member_citations"][0]["sources"][0].update(label=5)
+            ),
+            "/dfo.dataset/member_citations/0/sources/0/label",
+        ),
+        (
+            _dataset_edit(lambda d: d["departures"][0].pop("code")),
+            "/dfo.dataset/departures/0/code",
+        ),
+        (
+            _dataset_edit(lambda d: d["requested_operations"][0].update(over=1)),
+            "/dfo.dataset/requested_operations/0/over",
+        ),
+        (
+            _dataset_edit(lambda d: d["assumptions"][0].update(refs="x")),
+            "/dfo.dataset/assumptions/0/refs",
+        ),
+    ],
+    ids=[
+        "citation-removed",
+        "citation-null",
+        "dataset-not-json",
+        "sentence-removed",
+        "sentence-not-utf8",
+        "ref-removed",
+        "flag-removed",
+        "flag-not-boolean",
+        "held-until-not-a-date",
+        "gap-kind-unknown",
+        "gap-part-not-object",
+        "source-label-not-text",
+        "departure-without-code",
+        "operation-over-not-text",
+        "assumption-refs-not-array",
+    ],
+)
+def test_a_damaged_saved_file_raises_format_error(
+    tmp_path: Path, edit: Callable[[dict[bytes, bytes]], None], pointer: str
+) -> None:
+    path = tmp_path / "saved.parquet"
+    _saved().save(path)
+    table = pq.read_table(path)
+    metadata = dict(table.schema.metadata)
+    edit(metadata)
+    pq.write_table(table.replace_schema_metadata(metadata), path)
+    with pytest.raises(FormatError) as caught:
+        open_bundle(path)
+    assert (caught.value.reason, caught.value.pointer) == ("format_invalid", pointer)
 
 
 def test_repr_leads_with_the_sentence() -> None:
-    text = repr(one())
+    text = repr(built())
     assert text.startswith("<Dataset " + EXPECTED["members"][0]["sentence"])
     assert "Source: OECD Creditor Reporting System (CRS)" in text
     assert "Version: cv_bf242138f8d0a892c97da9373d1626f4" in text
@@ -440,21 +603,7 @@ def test_the_html_display_escapes_every_server_string() -> None:
         "financingProvider_label",
         pa.array([hostile] * table.num_rows),
     )
-    sink = pa.BufferOutputStream()
-    pq.write_table(table, sink)
-    data_bytes = sink.getvalue().to_pybytes()
-    digest = sha256_digest(data_bytes)
-    member.manifest["artifacts"][0]["artifact_digest"] = digest
-    member = FetchedMember(
-        parts=member.parts,
-        spec=member.spec,
-        sentence=member.sentence,
-        content_version=member.content_version,
-        manifest=member.manifest,
-        digest=digest,
-        data=data_bytes,
-    )
-    markup = one(member)._repr_html_()
+    markup = built(with_table(member, table))._repr_html_()
     assert "<script>" not in markup
     assert "&lt;script&gt;alert(&#x27;x&#x27;)&lt;/script&gt;" in markup
     assert "Aid &lt;script&gt;" in markup

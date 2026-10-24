@@ -8,7 +8,7 @@
  * read forms. The strict check (`strict.ts`) owns the strict members and raises `ContractError`
  * at their pointer.
  */
-import { isRecord, list, objects, text } from "./json.ts";
+import { isRecord, objects, present, strings, text } from "./json.ts";
 import type {
   Assumption,
   Departure,
@@ -62,9 +62,6 @@ function itemsOf<T>(
   );
 }
 
-const strings = (value: unknown): string[] =>
-  list(value).filter((item): item is string => typeof item === "string");
-
 const optionalString = (value: unknown): string | null | undefined =>
   typeof value === "string" || value === null ? value : undefined;
 
@@ -101,15 +98,14 @@ function assumptionReadOf(item: Record<string, unknown>): Assumption | null {
 function departureOf(item: Record<string, unknown>): Departure | null {
   const { code, text: said } = item;
   if (typeof code !== "string" || typeof said !== "string") return null;
-  const bindingRef = optionalString(item["binding_ref"]);
-  const asked = optionalString(item["asked"]);
-  const shown = optionalString(item["shown"]);
   return {
     code,
     text: said,
-    ...(bindingRef === undefined ? {} : { binding_ref: bindingRef }),
-    ...(asked === undefined ? {} : { asked }),
-    ...(shown === undefined ? {} : { shown }),
+    ...present({
+      binding_ref: optionalString(item["binding_ref"]),
+      asked: optionalString(item["asked"]),
+      shown: optionalString(item["shown"]),
+    }),
   };
 }
 
@@ -121,15 +117,15 @@ export function operationsOf(value: unknown): readonly RequestedOperation[] {
 function operationOf(item: Record<string, unknown>): RequestedOperation | null {
   const { verb, phrase } = item;
   if (typeof verb !== "string" || typeof phrase !== "string") return null;
-  const over = optionalString(item["over"]);
-  const targetYear = item["target_year"];
+  const year = item["target_year"];
   return {
     verb,
     phrase,
-    ...(over === undefined ? {} : { over }),
-    ...((typeof targetYear === "number" && Number.isInteger(targetYear)) || targetYear === null
-      ? { target_year: targetYear }
-      : {}),
+    ...present({
+      over: optionalString(item["over"]),
+      target_year:
+        (typeof year === "number" && Number.isInteger(year)) || year === null ? year : undefined,
+    }),
   };
 }
 
@@ -143,10 +139,7 @@ function noticeOf(
   required: readonly (keyof Notice)[],
 ): Notice | null {
   if (required.some((name) => typeof item[name] !== "string")) return null;
-  const read = (name: keyof Notice): string => {
-    const value = item[name];
-    return typeof value === "string" ? value : "";
-  };
+  const read = (name: keyof Notice): string => text(item[name]) ?? "";
   return { code: read("code"), severity: read("severity"), message: read("message") };
 }
 
@@ -169,13 +162,13 @@ export function warningsOf(value: unknown): readonly Warning[] {
   return itemsOf(value, (item) => {
     const notice = noticeOf(item, ["severity", "message"]);
     if (notice === null) return null;
-    const specId = optionalString(item["spec_id"]);
     const params = item["params"];
     return {
       ...notice,
-      ...(specId === undefined ? {} : { spec_id: specId }),
-      ...(params === null ? { params } : {}),
-      ...(isRecord(params) ? { params: paramsOf(params) } : {}),
+      ...present({
+        spec_id: optionalString(item["spec_id"]),
+        params: params === null ? null : isRecord(params) ? paramsOf(params) : undefined,
+      }),
     };
   });
 }
@@ -187,13 +180,13 @@ export function manifestWarningsOf(value: unknown): readonly WarningModel[] {
     const notice = noticeOf(item, ["severity"]);
     if (notice === null) return null;
     const count = item["contributing_member_count"];
-    const ref = optionalString(item["stat_var_ref"]);
-    const label = optionalString(item["stat_var_label"]);
     return {
       ...notice,
-      ...(typeof count === "number" || count === null ? { contributing_member_count: count } : {}),
-      ...(ref === undefined ? {} : { stat_var_ref: ref }),
-      ...(label === undefined ? {} : { stat_var_label: label }),
+      ...present({
+        contributing_member_count: typeof count === "number" || count === null ? count : undefined,
+        stat_var_ref: optionalString(item["stat_var_ref"]),
+        stat_var_label: optionalString(item["stat_var_label"]),
+      }),
     };
   });
 }

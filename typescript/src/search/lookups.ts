@@ -3,9 +3,19 @@
  * catalogue.
  *
  * Each lookup returns the decoded response body, typed by the served OpenAPI document's schema.
- * The client reads none of it, so an unknown member or enum value passes through untouched.
+ * The body must be an object holding the members that schema requires and that tell it from a
+ * problem document. A body that does not, and is a problem document (a `code` and no `kind`),
+ * raises the class `errorClassFor` gives its code, or `ContractError` (`contract_violation`) for a
+ * code the contract does not map; any other body raises `contract_violation`. The client reads no
+ * more of it, so an unknown member or enum value passes through untouched.
  */
 
+import { clientError, problemAt200, REFUSAL_CODE } from "../core/errors.ts";
+import { checkRequired } from "../core/strict.ts";
+import type { JsonType } from "../core/strict.ts";
+import { describing } from "../core/trace.ts";
+import { controlFault, hasDotSegment } from "../core/text.ts";
+import type { JsonResponse } from "../http/transport.ts";
 import type { Transport } from "../http/transport.ts";
 import type {
   CatalogueResponse,
@@ -51,10 +61,22 @@ export type CatalogueOptions = LookupOptions & {
   readonly place?: string;
 };
 
-const callOptions = ({ signal, timeout }: LookupOptions) => ({
-  ...(signal === undefined ? {} : { signal }),
-  ...(timeout === undefined ? {} : { timeout }),
-});
+/** The body of a lookup's response, once it holds what `schema` requires. A body that does not,
+ *  and is a problem document, raises the error the document stands for. */
+const lookupBody = (
+  response: JsonResponse,
+  schema: string,
+  required: Readonly<Record<string, JsonType>>,
+): Readonly<Record<string, unknown>> =>
+  describing(response.traceId, () => {
+    try {
+      return checkRequired(schema, required, response.body);
+    } catch (error) {
+      throw problemAt200(response.body, response.traceId) ?? error;
+    }
+  });
+
+const callOptions = ({ signal, timeout }: LookupOptions) => ({ signal, timeout });
 
 /** The graph's lookups: names to dcids, and a node by its dcid. */
 export class Graph {
@@ -87,23 +109,45 @@ export class Graph {
       json: body,
       ...callOptions(options),
     });
-    return response.body as ResolveResponse;
+    return lookupBody(response, "ResolveResponse", { results: "array" }) as ResolveResponse;
   }
 
   /**
    * One graph node by its dcid, such as `country/NGA`.
    *
+   * @throws {InvalidRequestError} The dcid is empty, has a `.` or `..` segment, or holds `?`,
+   *   `#` or a control character (`invalid_argument`); no request is sent.
    * @throws {NotFoundError} The graph holds no node with that dcid.
    */
   async node(dcid: string, options: NodeOptions = {}): Promise<GraphNode> {
+    checkDcid(dcid);
     const path = `/graph/node/${dcid.split("/").map(encodeURIComponent).join("/")}`;
     const response = await this.#transport.request({
       path,
       query: { as_of: options.asOf },
       ...callOptions(options),
     });
-    return response.body as GraphNode;
+    return lookupBody(response, "GraphNode", { kind: "string", ref: "string" }) as GraphNode;
   }
+}
+
+/**
+ * Refuses a dcid that would leave the node route or carry a query: an empty one, one holding a
+ * control character, `?` or `#`, or one with a `.` or `..` segment, percent-encoded or not.
+ *
+ * @throws {InvalidRequestError} (`invalid_argument`).
+ */
+function checkDcid(dcid: string): void {
+  const fault = controlFault(dcid);
+  let problem: string;
+  if (dcid === "") problem = "is empty";
+  else if (fault !== null) problem = `holds ${fault}`;
+  else if (/[?#]/.test(dcid)) problem = "holds a ? or a #";
+  else if (hasDotSegment(dcid)) problem = "holds a . or .. segment";
+  else return;
+  throw clientError("invalid_argument", {
+    detail: `The dcid ${problem}; pass one such as country/NGA.`,
+  });
 }
 
 /** The code registry: what each refusal and warning code means. */
@@ -119,14 +163,23 @@ export class Codes {
    * The registry entry for one code, such as `spec_not_found`. The registry sits at the API
    * host's root, the page an error's `docsUrl` names.
    *
+   * @throws {InvalidRequestError} The code is not lower-case snake case (`invalid_argument`).
    * @throws {NotFoundError} The registry holds no such code.
    */
   async get(code: string, options: LookupOptions = {}): Promise<CodeRegistryEntry> {
+    if (!REFUSAL_CODE.test(code)) {
+      throw clientError("invalid_argument", {
+        detail: "A code is a lower-case letter followed by lower-case letters, digits or _.",
+      });
+    }
     const response = await this.#transport.request({
       url: `/codes/${encodeURIComponent(code)}`,
       ...callOptions(options),
     });
-    return response.body as CodeRegistryEntry;
+    return lookupBody(response, "CodeRegistryEntry", {
+      code: "string",
+      mappings: "array",
+    }) as CodeRegistryEntry;
   }
 }
 
@@ -140,5 +193,9 @@ export async function catalogue(
     query: { place: options.place },
     ...callOptions(options),
   });
-  return response.body as CatalogueResponse;
+  return lookupBody(response, "CatalogueResponse", {
+    catalogue_version: "string",
+    counts: "object",
+    examples: "array",
+  }) as CatalogueResponse;
 }

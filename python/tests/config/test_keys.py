@@ -1,6 +1,7 @@
 """Replay the contract's key-format and key-lookup vectors, and test `ApiKey`."""
 
 import copy
+import os
 import pickle
 import sys
 import types
@@ -66,6 +67,74 @@ def test_an_empty_key_argument_raises(api_key: Any) -> None:
     assert caught.value.code == "key_empty"
 
 
+@pytest.mark.parametrize(
+    ("value", "fault"),
+    [
+        (KEY + "\n", "a line break at character 45"),
+        (KEY[:10] + "\r\nX-Evil: 1" + KEY[10:], "a line break at character 11"),
+        (" " + KEY, "whitespace at character 1"),
+        ("   ", "whitespace at character 1"),
+        (KEY + "\t", "whitespace at character 45"),
+        (KEY + "\x00", "a control character at character 45"),
+        (KEY + "\u00e9", "a non-ASCII character at character 45"),
+    ],
+    ids=[
+        "newline",
+        "crlf",
+        "leading-space",
+        "whitespace-only",
+        "tab",
+        "nul",
+        "e-acute",
+    ],
+)
+@pytest.mark.parametrize(
+    ("source", "named"),
+    [
+        ("argument", "the api_key argument"),
+        ("callable", "the api_key argument"),
+        ("environment", "DFO_API_KEY"),
+        ("credentials_file", "profile 'default' of "),
+    ],
+)
+def test_a_key_outside_visible_ascii_is_refused_naming_where(
+    value: str, fault: str, source: str, named: str, tmp_path: Path
+) -> None:
+    path = tmp_path / "credentials.toml"
+    if source == "credentials_file":
+        if any(char < " " for char in value):
+            pytest.skip("the credentials file cannot hold a control character")
+        path.write_text(f'[default]\nkey = "{value}"\n', encoding="utf-8")
+    api_key: Any = {"argument": value, "callable": lambda: value}.get(source)
+    env = {"DFO_API_KEY": value} if source == "environment" else {}
+    with pytest.raises(AuthenticationError) as caught:
+        resolve_key(api_key, env=env, path=str(path))
+    message = str(caught.value)
+    assert caught.value.code == "key_invalid"
+    assert named in message
+    assert fault in message
+    assert KEY[6:20] not in message
+
+
+@pytest.mark.parametrize(
+    ("api_key", "named"),
+    [
+        (5, "api_key is a int"),
+        (True, "api_key is a bool"),
+        (lambda: None, "The api_key callable returned a NoneType"),
+        (lambda: 5, "The api_key callable returned a int"),
+    ],
+    ids=["int", "true", "callable-none", "callable-int"],
+)
+def test_a_key_that_is_not_a_string_is_refused_naming_where(
+    api_key: Any, named: str
+) -> None:
+    with pytest.raises(AuthenticationError) as caught:
+        resolve_key(api_key, env={})
+    assert caught.value.code == "key_invalid"
+    assert named in str(caught.value)
+
+
 def _look_up(vector: dict[str, Any], tmp_path: Path) -> Any:
     path = tmp_path / "credentials.toml"
     if vector["file"] is not None:
@@ -85,6 +154,25 @@ def test_key_lookup(vector: dict[str, Any], tmp_path: Path) -> None:
     resolved = _look_up(vector, tmp_path)
     key = None if resolved.key is None else resolved.key.reveal()
     assert (resolved.source, key) == (vector["source"], vector["key"])
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+@pytest.mark.parametrize("fault", ["directory", "no-permission"])
+def test_a_credentials_file_that_cannot_be_read_raises(
+    fault: str, tmp_path: Path
+) -> None:
+    path = tmp_path / "credentials.toml"
+    if fault == "directory":
+        path.mkdir()
+    else:
+        path.write_text(f'[default]\nkey = "{KEY}"\n')
+        path.chmod(0)
+        if os.access(path, os.R_OK):
+            pytest.skip("this user reads a file with no permissions")
+    with pytest.raises(AuthenticationError) as caught:
+        resolve_key(env={}, path=str(path))
+    assert caught.value.code == "credentials_file_unreadable"
+    assert str(path) in str(caught.value)
 
 
 def test_the_lookup_reads_the_contract_path_by_default(tmp_path: Path) -> None:
@@ -142,6 +230,17 @@ def test_a_colab_secret_comes_after_the_file(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DfoWarning)
         assert resolve_key(env={}, path=str(file)).source == "credentials_file"
+
+
+def test_a_colab_lookup_that_fails_leaves_no_secret(
+    colab: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def broken(name: str) -> str:
+        raise RuntimeError(f"colab broke {KEY}")
+
+    monkeypatch.setattr(sys.modules["google.colab.userdata"], "get", broken)
+    resolved = resolve_key(env={}, path=str(tmp_path / "none.toml"))
+    assert resolved.source == "anonymous"
 
 
 def test_api_key_hides_its_value() -> None:

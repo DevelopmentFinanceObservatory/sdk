@@ -216,9 +216,11 @@ def copy_checkout(spec_kit: Path, rev: str) -> int:
     """
 
     def fill(target: Path) -> int:
-        shutil.copyfile(spec_kit / PACKAGE_README, target / "README.md")
-        count = 1
-        for path in sorted((spec_kit / PACKAGE_DATA).rglob("*")):
+        count = 0
+        for path in [
+            spec_kit / PACKAGE_README,
+            *sorted((spec_kit / PACKAGE_DATA).rglob("*")),
+        ]:
             landing = destination(PurePosixPath(path.relative_to(spec_kit).as_posix()))
             if landing is None or not path.is_file():
                 continue

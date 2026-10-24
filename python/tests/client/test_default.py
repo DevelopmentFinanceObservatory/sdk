@@ -1,7 +1,8 @@
 """Tests for the module functions and the default client behind them.
 
-The default client is built on first use, replaced by `configure`, reset in a
-forked child and closed at exit; importing `dfo` reads nothing.
+The default client is built on first use, replaced by `configure`, kept with a
+fresh connection pool in a forked child and closed at exit; importing `dfo` reads
+nothing.
 """
 
 import gc
@@ -115,10 +116,10 @@ def test_an_answer_stays_usable_after_configure(
     assert [len(asked.requests), len(built.requests)] == [1, 3]
     # The replaced client stays open while referenced, and closes once collected.
     replaced = clients[0]._current().transport
-    assert not replaced._http.is_closed
+    assert not replaced._pool._client.is_closed
     clients.clear()
     gc.collect()
-    assert replaced._http.is_closed
+    assert replaced._pool._client.is_closed
 
 
 def test_an_in_flight_search_keeps_the_replaced_default_client_open(
@@ -156,7 +157,7 @@ def test_an_in_flight_search_keeps_the_replaced_default_client_open(
         clients.clear()
         gc.collect()
         assert replaced() is not None
-        assert not transport._http.is_closed
+        assert not transport._pool._client.is_closed
     finally:
         resume.set()
         worker.join(timeout=5)
@@ -165,7 +166,7 @@ def test_an_in_flight_search_keeps_the_replaced_default_client_open(
     assert len(result) == 1
     gc.collect()
     assert replaced() is None
-    assert transport._http.is_closed
+    assert transport._pool._client.is_closed
 
 
 def test_the_default_client_is_built_once_on_first_use(
@@ -185,8 +186,9 @@ def fetch_answer() -> None:
         dfo.search(QUESTION).fetch()
 
 
-def cached_files(cache: Cache) -> list[Path]:
-    return [path for path in cache.directory.rglob("*") if path.is_file()]
+def cached_files(root: Path) -> list[Path]:
+    """The files under a cache root, read from disk whether the cache is on or off."""
+    return [path for path in root.rglob("*") if path.is_file()]
 
 
 def replay_over_cache(
@@ -209,9 +211,9 @@ def replay_over_cache(
 def test_a_fetch_after_disable_cache_reads_nothing_from_the_cache(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    replay, cache = replay_over_cache(monkeypatch, tmp_path, [4, 4])
+    replay, _ = replay_over_cache(monkeypatch, tmp_path, [4, 4])
     fetch_answer()
-    assert cached_files(cache)
+    assert cached_files(tmp_path)
 
     dfo.disable_cache()
     fetch_answer()
@@ -223,15 +225,15 @@ def test_a_fetch_after_disable_cache_reads_nothing_from_the_cache(
 def test_disable_cache_stops_writes_and_enable_cache_restores_both(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    replay, cache = replay_over_cache(monkeypatch, tmp_path, [4, 4, 2])
+    replay, _ = replay_over_cache(monkeypatch, tmp_path, [4, 4, 2])
 
     dfo.disable_cache()
     fetch_answer()
-    assert cached_files(cache) == []
+    assert cached_files(tmp_path) == []
 
     dfo.enable_cache()
     fetch_answer()
-    assert cached_files(cache)
+    assert cached_files(tmp_path)
     fetch_answer()
     # The third pass reads the download from the cache, so it takes two exchanges.
     assert (replay.exchanges, len(replay.requests)) == ([], 10)
@@ -256,36 +258,54 @@ def test_disable_and_enable_cache_keep_the_configured_client(
 FORK = textwrap.dedent(
     """
     import os
+    import httpx2._utils
+    import dfo
     from dfo._client import default as _default
 
+    dfo.configure(base_url="https://configured.example.org/api", api_key=False)
     parent = _default.default_client()
+    transport = parent._current().transport
+    inherited = transport._pool.client
     # Another thread holds the lock as the process forks.
     _default._lock.acquire()
     pid = os.fork()
     if pid == 0:
-        inherited = _default._client is None and not _default._lock.locked()
-        rebuilt = _default.default_client()
-        unclosed = not parent._current().transport._http.is_closed
-        os._exit(0 if inherited and rebuilt is not parent and unclosed else 1)
+        # The platform's proxy lookup, which crashes here on macOS.
+        looked_up = []
+        httpx2._utils.getproxies = lambda: looked_up.append(True) or {}
+        kept = _default.default_client() is parent and not _default._lock.locked()
+        configured = parent.base_url == "https://configured.example.org/api"
+        fresh = transport._pool.client
+        proxied = fresh._mounts.keys() == inherited._mounts.keys() != set()
+        transport.close()
+        untouched = fresh is not inherited and fresh.is_closed
+        ok = kept and configured and proxied and untouched and not looked_up
+        os._exit(0 if ok and not inherited.is_closed else 1)
     _default._lock.release()
     _, status = os.waitpid(pid, 0)
-    assert os.waitstatus_to_exitcode(status) == 0, "the child kept the parent's client"
+    assert os.waitstatus_to_exitcode(status) == 0, "the child lost or reused the pool"
     assert _default._client is parent
+    assert transport._pool.client is inherited and not inherited.is_closed
     """
 )
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork")
-def test_a_forked_child_drops_the_inherited_client_unclosed() -> None:
+def test_a_forked_child_keeps_the_configured_client_on_a_fresh_pool() -> None:
     # A fresh interpreter, since this one runs pyarrow's threads and fork warns.
-    # NO_PROXY keeps httpx2 off macOS's system proxy lookup, which starts threads
-    # and crashes a forked child.
+    # A proxy in the environment keeps the parent off macOS's system proxy
+    # lookup, which starts threads; the child must build its pool over the same
+    # proxies without looking them up.
     result = subprocess.run(
         [sys.executable, "-W", "error", "-c", FORK],
         capture_output=True,
         text=True,
         check=False,
-        env={**os.environ, "NO_PROXY": "*"},
+        env={
+            **os.environ,
+            "HTTPS_PROXY": "http://proxy.example.invalid:3128",
+            "NO_PROXY": "",
+        },
     )
     assert result.returncode == 0, result.stderr
 
@@ -343,6 +363,9 @@ def test_importing_dfo_reads_no_file_environment_or_network() -> None:
     control = run("os.environ.get('HOME')")
     assert "importing dfo used os.environ" in control.stderr
     result = run("import dfo")
+    assert result.returncode == 0, result.stderr
+    # As on Windows, which has no fork.
+    result = run("del os.register_at_fork; import dfo")
     assert result.returncode == 0, result.stderr
 
 

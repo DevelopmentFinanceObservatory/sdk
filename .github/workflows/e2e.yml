@@ -118,6 +118,10 @@ jobs:
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
 
+      # The package scripts that read contract/ fetch it through uv first.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.0
+
       - name: Install dependencies
         working-directory: typescript
         run: pnpm install --frozen-lockfile
@@ -125,10 +129,6 @@ jobs:
       - name: Run the live journey
         working-directory: typescript
         run: pnpm test:e2e
-
-      - name: Install uv
-        if: ${{ !cancelled() }}
-        uses: astral-sh/setup-uv@v10.0.0
 
       - name: Set up Python
         if: ${{ !cancelled() }}

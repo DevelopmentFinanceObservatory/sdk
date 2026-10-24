@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -8,20 +8,18 @@ import { envFrom } from "../src/config/env.ts";
 import { resolveApiKey } from "../src/index.node.ts";
 import { VERSION } from "../src/version.ts";
 
+const readJson = async <T>(path: string): Promise<T> =>
+  JSON.parse(await readFile(new URL(path, import.meta.url), "utf8")) as T;
+
 test("VERSION matches package.json", async () => {
-  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
-    version: string;
-  };
+  const pkg = await readJson<{ version: string }>("../package.json");
   assert.equal(VERSION, pkg.version);
 });
 
 test("hyparquet is the version hyparquet-writer pins, so one copy installs", async () => {
-  const read = async (path: string): Promise<{ dependencies: Record<string, string> }> =>
-    JSON.parse(await readFile(new URL(path, import.meta.url), "utf8")) as {
-      dependencies: Record<string, string>;
-    };
-  const own = await read("../package.json");
-  const writer = await read("../node_modules/hyparquet-writer/package.json");
+  type Manifest = { dependencies: Record<string, string> };
+  const own = await readJson<Manifest>("../package.json");
+  const writer = await readJson<Manifest>("../node_modules/hyparquet-writer/package.json");
   assert.equal(own.dependencies["hyparquet"], writer.dependencies["hyparquet"]);
 });
 
@@ -40,6 +38,31 @@ test("the node entry point reads the credentials file from the file system", asy
       env: envFrom({ DFO_CREDENTIALS_FILE: join(directory, "absent.toml") }),
     });
     assert.equal(missing.source, "anonymous");
+  } finally {
+    await rm(directory, { recursive: true });
+  }
+});
+
+test("an unreadable credentials file raises credentials_file_unreadable", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "dfo-credentials-"));
+  try {
+    const loop = join(directory, "loop.toml");
+    await symlink(loop, loop);
+    const file = join(directory, "file");
+    await writeFile(file, "");
+    // A directory, a symlink to itself, and a path through a regular file.
+    for (const path of [directory, loop, join(file, "credentials.toml")]) {
+      await assert.rejects(resolveApiKey({ env: envFrom({ DFO_CREDENTIALS_FILE: path }) }), {
+        name: "AuthenticationError",
+        code: "credentials_file_unreadable",
+      });
+    }
+    // Anonymous use reads no file.
+    const anonymous = await resolveApiKey({
+      apiKey: false,
+      env: envFrom({ DFO_CREDENTIALS_FILE: directory }),
+    });
+    assert.equal(anonymous.source, "anonymous");
   } finally {
     await rm(directory, { recursive: true });
   }
