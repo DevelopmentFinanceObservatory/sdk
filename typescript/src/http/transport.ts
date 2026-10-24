@@ -6,6 +6,7 @@ import {
   errorClassFor,
   InvalidRequestError,
   isRetryableStatus,
+  REFUSAL_CODE,
   refusalMessage,
   serverCode,
 } from "../core/errors.ts";
@@ -43,11 +44,11 @@ export const POLL_INTERVAL_MIN_S = 1;
 export const POLL_INTERVAL_MAX_S = 60;
 /** The decoded bytes a downloaded file may hold when its manifest gives no size. */
 export const DEFAULT_MAX_BYTES = 2 * 2 ** 30;
-/** The decoded bytes an API response's body may hold: the larger of 16 MiB and ten times the
- *  largest JSON body recorded, rounded. The largest recorded is the `/search/schema` body in
- *  python/tests/data/search-schema.json, 267,493 bytes, above every response in
- *  contract/scenarios (137,783 bytes at most) and every manifest the e2e runs cached (140,748
- *  bytes at most), so the floor holds. The Python client uses the same value. */
+/** The decoded bytes an API response's body may hold, 16 MiB. The largest JSON body recorded
+ *  is the `/search/schema` body in python/tests/data/search-schema.json, 267,493 bytes, and the
+ *  largest response under contract/scenarios is 137,679 bytes as compact JSON, so the limit
+ *  leaves over 60 times the largest as headroom while bounding what a faulty server can make
+ *  the client hold. The Python client uses the same value. */
 export const JSON_BODY_MAX_BYTES = 16 * 2 ** 20;
 /** The most retries a client takes. */
 const RETRIES_MAX = 10;
@@ -61,8 +62,6 @@ const IMF_FIXDATE =
 const MAX_TIMER_MS = 2 ** 31 - 1;
 /** The website proxy's `retry` value for a refusal that clears on its own. */
 const PROXY_RETRY = "retry_after_delay";
-/** A refusal code: lower-case snake case. A proxy `error` of other text is no code. */
-const CODE = /^[a-z][a-z0-9_]*$/;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 /** The media types a refusal body is read as a problem document under. */
 const PROBLEM_TYPES = new Set(["application/problem+json", "application/json"]);
@@ -115,8 +114,9 @@ export type CallOptions = {
    *  default. A passed deadline raises `DfoTimeoutError` with `deadline_exceeded`. */
   deadline?: number;
   maxRetries?: number;
-  /** The most decoded bytes a response's body may hold; `JSON_BODY_MAX_BYTES` by default, and
-   *  `DEFAULT_MAX_BYTES` for a signed fetch. */
+  /** The most decoded bytes a 2xx response's body may hold; `JSON_BODY_MAX_BYTES` by default,
+   *  and `DEFAULT_MAX_BYTES` for a signed fetch. A redirect or a refusal is read under
+   *  `JSON_BODY_MAX_BYTES` whatever this says, so a refusal reads as on any other route. */
   maxBytes?: number;
 };
 
@@ -249,12 +249,18 @@ function resolveBaseUrl(baseUrl: string): URL {
   return url;
 }
 
-/** The value of each header `init` gives, as name and value pairs, in order. */
+/** The value of each header `init` gives, as name and value pairs, in order. Any iterable of
+ *  pairs reads as one, since a `Headers` from another realm or package, such as npm undici's,
+ *  is no instance of this realm's class. */
 function headerPairs(init: HeadersInit): [string, string][] {
-  if (init instanceof Headers) return [...init];
-  if (Array.isArray(init)) return init.map(([name, value]) => [name, value]);
+  if (isPairs(init)) return Array.from(init, ([name, value]) => [name, value]);
   return Object.entries(init);
 }
+
+/** Whether `init` is the iterable kind of `HeadersInit`, a `Headers` or an array of pairs, by
+ *  its shape, so a `Headers` of another realm's class counts. */
+const isPairs = (init: HeadersInit): init is Headers | [string, string][] =>
+  typeof (init as Partial<Iterable<unknown>>)[Symbol.iterator] === "function";
 
 /**
  * Sets each header after checking its value is a string of visible ASCII, spaces and tabs. The
@@ -723,9 +729,10 @@ export class Transport {
 
   /** Sends a request and parses its JSON body, raising a `DfoError` for a refusal and
    *  `ContractError` `unexpected_response` for a response with no JSON body. A redirect is never
-   *  followed, so no client header reaches another host. */
+   *  followed, so no client header reaches another host. The key sent reads as `[redacted]` in
+   *  the parsed body, as in a refusal's, so no error built from the body quotes it. */
   async request(options: RequestOptions): Promise<JsonResponse> {
-    const { response, body } = await this.#send(options);
+    const { response, body, key } = await this.#send(options);
     if (this.#isRedirect(response)) {
       throw clientError("unexpected_response", {
         status: response.status,
@@ -737,7 +744,7 @@ export class Transport {
     const url = new URL(response.url || this.url(options, options.query));
     let parsed: unknown;
     try {
-      parsed = parseJson(text);
+      parsed = redacted(parseJson(text), key);
     } catch (error) {
       throw clientError("unexpected_response", {
         status: response.status,
@@ -829,8 +836,9 @@ export class Transport {
    * end on the API's origin or the storage host.
    *
    * @throws {ContractError} A followed redirect ended on another host (`contract_violation`).
-   * @throws {ServerError} The host answered other than 200 (`download_failed`), or a body past
-   *   `maxBytes`, `DEFAULT_MAX_BYTES` by default (`response_too_large`).
+   * @throws {ServerError} The host answered other than 200 (`download_failed`), or a 2xx body
+   *   past `maxBytes`, `DEFAULT_MAX_BYTES` by default, or any other past `JSON_BODY_MAX_BYTES`
+   *   (`response_too_large`).
    * @throws {NetworkError} The connection failed.
    * @throws {DfoTimeoutError} The attempt or the call's deadline ran out.
    */
@@ -871,15 +879,16 @@ export class Transport {
   }
 
   /**
-   * Sends one request with retries, returning a 2xx response or a redirect with its body. A
-   * redirect is never followed. Each body is read no further than `maxBytes`.
+   * Sends one request with retries, returning a 2xx response or a redirect with its body and the
+   * key it carried. A redirect is never followed. A 2xx body is read no further than `maxBytes`,
+   * any other no further than `JSON_BODY_MAX_BYTES`.
    *
    * @throws {InvalidRequestError} The method is not one the API serves, `json` is not JSON or
    *   goes with a GET or HEAD, or the timeout or retry count is out of range
    *   (`invalid_argument`).
-   * @throws {ServerError} A decoded body passed `maxBytes` (`response_too_large`).
+   * @throws {ServerError} A decoded body passed its limit (`response_too_large`).
    */
-  async #send(options: RequestOptions): Promise<Received> {
+  async #send(options: RequestOptions): Promise<Received & { key: string | undefined }> {
     options.signal?.throwIfAborted();
     const method = options.method ?? (options.json === undefined ? "GET" : "POST");
     if (!METHODS.has(method)) {
@@ -912,7 +921,7 @@ export class Transport {
         const { response, body } = outcome;
         this.#warnFromHeaders(response.headers, url, key);
         if ((response.status >= 200 && response.status < 300) || this.#isRedirect(response)) {
-          return outcome;
+          return { ...outcome, key };
         }
         if (response.status === 401 && !reauthenticated) {
           // The key is resolved again after a 401, and a different key gets one more try.
@@ -1128,14 +1137,14 @@ export class Transport {
    * no timer. A caller's abort rejects with the caller's reason. A failure the next attempt may
    * clear returns as a retryable error: a network failure, or the attempt's own timeout. The
    * deadline passing returns a `DfoTimeoutError` that `passedDeadline` marks, which no retry
-   * follows. A body past `maxBytes` returns `response_too_large`, which no retry follows either.
+   * follows. A 2xx body past `maxBytes`, or any other body past `JSON_BODY_MAX_BYTES`, returns
+   * `response_too_large`, which no retry follows either.
    *
    * @throws {InvalidRequestError} The `fetch` option returned something that is not a Response
    *   (`invalid_argument`).
    */
   async #attempt(url: URL, options: CallOptions, init: RequestInit): Promise<Received | DfoError> {
     const limit = this.#limit(url, options);
-    const maxBytes = options.maxBytes ?? JSON_BODY_MAX_BYTES;
     const timer = Number.isFinite(limit.ms)
       ? AbortSignal.timeout(Math.min(Math.max(1, Math.ceil(limit.ms)), MAX_TIMER_MS))
       : undefined;
@@ -1148,6 +1157,8 @@ export class Transport {
           detail: "The fetch option returned something that is not a Response.",
         });
       }
+      const ok = response.status >= 200 && response.status < 300;
+      const maxBytes = ok ? (options.maxBytes ?? JSON_BODY_MAX_BYTES) : JSON_BODY_MAX_BYTES;
       const body = await readWithin(response, maxBytes);
       if (body !== null) return { response, body };
       return clientError("response_too_large", {
@@ -1208,7 +1219,7 @@ export class Transport {
     const opening = (detail: unknown): string =>
       typeof detail === "string" ? detail : `HTTP ${status}`;
 
-    if (isRecord(body) && typeof body["code"] === "string" && CODE.test(body["code"])) {
+    if (isRecord(body) && typeof body["code"] === "string" && REFUSAL_CODE.test(body["code"])) {
       const code = body["code"];
       const ErrorClass = errorClassFor(code, status);
       return new ErrorClass({
@@ -1228,7 +1239,7 @@ export class Transport {
       isRecord(body) &&
       !("code" in body) &&
       typeof body["error"] === "string" &&
-      CODE.test(body["error"])
+      REFUSAL_CODE.test(body["error"])
     ) {
       // The website proxy's own refusal: {error, retry, detail}.
       const code = body["error"];

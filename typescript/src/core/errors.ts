@@ -21,6 +21,9 @@ declare const SERVER_CODE: unique symbol;
  *  client raises itself takes a `ClientErrorCode`. */
 export type ServerErrorCode = string & { readonly [SERVER_CODE]: true };
 
+/** A refusal code's shape: lower-case snake case, such as `spec_not_found`. */
+export const REFUSAL_CODE = /^[a-z][a-z0-9_]*$/;
+
 /** Marks a code read from a server response. */
 export const serverCode = (code: string): ServerErrorCode => code as ServerErrorCode;
 

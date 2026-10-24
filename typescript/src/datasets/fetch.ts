@@ -347,7 +347,9 @@ function artifactFault({ columns, rows }: ParquetFile, counted: number): string 
  * digest, ask the route again and fetch once more, with no wait of their own, and a second
  * failure raises: `download_failed` for a refused signed URL, `digest_mismatch` for the bytes.
  * Reading stops once the decoded file passes `size`, the manifest's `bytes` for the artifact,
- * or `DEFAULT_MAX_BYTES` when that is not a byte count, and raises `response_too_large`.
+ * or `DEFAULT_MAX_BYTES` when that is not a byte count, and raises `response_too_large`. The
+ * limit bounds the response that carries the file; a redirect or a refusal is read under
+ * `JSON_BODY_MAX_BYTES`, as on any other route.
  */
 export async function download(
   transport: Transport,
@@ -724,11 +726,13 @@ export function resume(
   const { layout = "long", withoutPartyTotals, signal, onProgress } = options;
   const rendering = renderingFor(layout, withoutPartyTotals);
   const finishing = { parts: [], posted: undefined, sentence: undefined, rendering, strict: false };
-  return resumeOperation(transport, operationId, datasetFinisher(transport, finishing, layout), {
-    deadline: Infinity,
-    signal,
-    onProgress,
-  });
+  return resumeOperation(
+    transport,
+    operationId,
+    rendering,
+    datasetFinisher(transport, finishing, layout),
+    { deadline: Infinity, signal, onProgress },
+  );
 }
 
 function datasetFinisher(transport: Transport, finishing: Finishing, layout: Layout) {

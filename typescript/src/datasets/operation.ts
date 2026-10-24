@@ -31,7 +31,8 @@ import {
   refusalMessage,
   serverCode,
 } from "../core/errors.ts";
-import { CONTENT_VERSION } from "../core/ref.ts";
+import { CONTENT_VERSION, mintOptions } from "../core/ref.ts";
+import type { Rendering } from "../core/ref.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
 import {
@@ -269,12 +270,21 @@ async function postBuild(transport: Transport, body: unknown, { deadline, signal
   }
 }
 
+/** The `options` a build request posts, or none. */
+function postedOptions(body: unknown): Readonly<Record<string, unknown>> {
+  const options = isRecord(body) ? body["options"] : undefined;
+  return isRecord(options) ? options : {};
+}
+
 /** Polls one build until it is done, at the server's pacing. */
 class Poller implements LongBuild {
   readonly #transport: Transport;
   /** The build request, resubmitted once when the operation fails retryably. Undefined for a
    *  resumed operation. */
   readonly #body: unknown;
+  /** The build's rendering options, as its request's `options` writes them, which the resume
+   *  hint names. */
+  readonly #buildOptions: Readonly<Record<string, unknown>>;
   #onProgress: ProgressHandler | undefined;
   #manifest: Manifest | null = null;
   #state: OperationState | null = null;
@@ -292,10 +302,18 @@ class Poller implements LongBuild {
   constructor(
     transport: Transport,
     reply: Reply,
-    options: { body?: unknown; onProgress?: ProgressHandler | undefined },
+    options: {
+      body?: unknown;
+      rendering?: Rendering;
+      onProgress?: ProgressHandler | undefined;
+    },
   ) {
     this.#transport = transport;
     this.#body = options.body;
+    this.#buildOptions =
+      options.rendering === undefined
+        ? postedOptions(options.body)
+        : mintOptions(options.rendering);
     this.#onProgress = options.onProgress;
     this.#take(reply);
   }
@@ -375,9 +393,8 @@ class Poller implements LongBuild {
   }
 
   #stillRunning(cause?: unknown): DfoTimeoutError {
-    // The rendering is in the id, so the resuming call names the options the build posted.
-    const posted = isRecord(this.#body) ? this.#body["options"] : undefined;
-    const options = isRecord(posted) ? posted : {};
+    // The rendering is in the id, so the resuming call names the build's options.
+    const options = this.#buildOptions;
     const named = [
       ...(options["layout"] === "frame" ? ['layout: "frame"'] : []),
       ...(options["without_party_totals"] === true ? ["withoutPartyTotals: true"] : []),
@@ -569,7 +586,8 @@ export async function startOperation(
 }
 
 /**
- * Reads a running build's operation by id, to poll it from this process.
+ * Reads a running build's operation by id, to poll it from this process. `rendering` is the
+ * one the build was started with, which the resume hint in a deadline's message names.
  *
  * @throws {InvalidRequestError} The id is not `op_` and 64 lower-case hex digits
  *   (`invalid_argument`).
@@ -578,6 +596,7 @@ export async function startOperation(
 export async function resumeOperation(
   transport: Transport,
   operationId: string,
+  rendering: Rendering,
   finish: Finish,
   wait: Wait & { onProgress?: ProgressHandler | undefined },
 ): Promise<Operation> {
@@ -594,6 +613,7 @@ export async function resumeOperation(
     ...(wait.signal === undefined ? {} : { signal: wait.signal }),
   });
   const poller = new Poller(transport, pollReply(response), {
+    rendering,
     onProgress: wait.onProgress,
   });
   return new Operation(transport, poller, finish);

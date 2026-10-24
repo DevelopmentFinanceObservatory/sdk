@@ -326,36 +326,43 @@ describe("a long build", () => {
     assert.equal(seen[1]!.body, seen[0]!.body);
   });
 
-  // Each row gives a mint's options, the options its build posts, and the arguments of the
-  // call the timeout names to resume it.
-  for (const [options, posted, call] of [
-    [{}, {}, `"${OP}"`],
-    [{ layout: "frame" }, { layout: "frame" }, `"${OP}", { layout: "frame" }`],
-    [
-      { withoutPartyTotals: true },
-      { without_party_totals: true },
-      `"${OP}", { withoutPartyTotals: true }`,
-    ],
-  ] as const) {
-    test(`names the call that resumes it when the deadline passes: ${call}`, async () => {
-      const { spec } = await built();
-      const running = json(operation("running", { retry_after_ms: 1000 }));
-      const { fetch, seen } = mockFetch(
-        json(operation("pending", { retry_after_ms: 1000 }), 202),
-        running,
-        running,
-      );
-      const { transport } = client(fetch);
-      const op = await mint(transport, spec, options);
-      const body = JSON.parse(seen[0]!.body!) as { options: Record<string, unknown> };
-      assert.deepEqual(body.options, { format: "parquet", bundle: false, ...posted });
-      await assert.rejects(op.result({ timeout: 2500 }), (error: unknown) => {
-        assert.ok(error instanceof Error);
-        assert.equal(error.name, "DfoTimeoutError");
-        assert.ok(error.message.includes(`client.operation(${call}).`), error.message);
-        return true;
+  // Each row gives a mint's or a resume's options, the options a mint's build posts, and the
+  // arguments of the call the timeout names to resume it.
+  for (const started of ["mint", "resume"] as const) {
+    for (const [options, posted, call] of [
+      [{}, {}, `"${OP}"`],
+      [{ layout: "frame" }, { layout: "frame" }, `"${OP}", { layout: "frame" }`],
+      [
+        { withoutPartyTotals: true },
+        { without_party_totals: true },
+        `"${OP}", { withoutPartyTotals: true }`,
+      ],
+    ] as const) {
+      test(`names the call that resumes it at the deadline, after a ${started}: ${call}`, async () => {
+        const { spec } = await built();
+        const running = json(operation("running", { retry_after_ms: 1000 }));
+        const { fetch, seen } = mockFetch(
+          json(operation("pending", { retry_after_ms: 1000 }), started === "mint" ? 202 : 200),
+          running,
+          running,
+        );
+        const { transport } = client(fetch);
+        const op =
+          started === "mint"
+            ? await mint(transport, spec, options)
+            : await resume(transport, OP, options);
+        if (started === "mint") {
+          const body = JSON.parse(seen[0]!.body!) as { options: Record<string, unknown> };
+          assert.deepEqual(body.options, { format: "parquet", bundle: false, ...posted });
+        }
+        await assert.rejects(op.result({ timeout: 2500 }), (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.equal(error.name, "DfoTimeoutError");
+          assert.ok(error.message.includes(`client.operation(${call}).`), error.message);
+          return true;
+        });
       });
-    });
+    }
   }
 
   for (const isCut of [false, true]) {

@@ -11,6 +11,7 @@ import {
   InvalidRequestError,
   NetworkError,
   NotFoundError,
+  problemAt200,
   RateLimitError,
   ServerError,
 } from "../src/core/errors.ts";
@@ -73,23 +74,51 @@ describe("requests to the API", () => {
     assert.equal(seen[0]?.url, "https://api.example/api/datasets/operations/op_1");
   });
 
-  test("send default and provided headers to the API and never the key elsewhere", async () => {
-    const { fetch, seen } = mockFetch(json({}), json({}));
-    const client = transport({
-      baseUrl: "https://api.example/api/v1",
-      apiKey: KEY,
-      fetch,
-      defaultHeaders: { "x-first-party": "site" },
-      headerProvider: ({ url }) => ({ "x-serverless-authorization": `token for ${url.host}` }),
+  /** A `Headers` from another realm or package, such as npm undici's: iterable, and no
+   *  instance of this realm's class. */
+  class ForeignHeaders {
+    readonly #pairs: [string, string][];
+    constructor(pairs: [string, string][]) {
+      this.#pairs = pairs;
+    }
+    entries(): IterableIterator<[string, string]> {
+      return this.#pairs[Symbol.iterator]();
+    }
+    [Symbol.iterator](): IterableIterator<[string, string]> {
+      return this.entries();
+    }
+  }
+
+  // Each row gives what the headerProvider returns for one header pair.
+  for (const [shape, provide] of [
+    ["a record", (name: string, value: string) => ({ [name]: value })],
+    ["an array of pairs", (name: string, value: string) => [[name, value]]],
+    ["a Headers", (name: string, value: string) => new Headers([[name, value]])],
+    [
+      "a Headers from another realm",
+      (name: string, value: string) => new ForeignHeaders([[name, value]]),
+    ],
+  ] as const) {
+    test(`send default and provided headers, given ${shape}, to the API and never the key elsewhere`, async () => {
+      const { fetch, seen } = mockFetch(json({}), json({}));
+      const client = transport({
+        baseUrl: "https://api.example/api/v1",
+        apiKey: KEY,
+        fetch,
+        defaultHeaders: { "x-first-party": "site" },
+        // A foreign Headers stands for an iterable plain JavaScript can return.
+        headerProvider: ({ url }) =>
+          provide("x-serverless-authorization", `token for ${url.host}`) as HeadersInit,
+      });
+      await client.request({ path: "/graph/roots" });
+      await client.request({ url: "https://elsewhere.example/thing" });
+      const [api, elsewhere] = seen;
+      assert.ok(api && elsewhere);
+      assert.equal(api.headers.get("x-first-party"), "site");
+      assert.equal(api.headers.get("x-serverless-authorization"), "token for api.example");
+      assert.deepEqual([...elsewhere.headers], []);
     });
-    await client.request({ path: "/graph/roots" });
-    await client.request({ url: "https://elsewhere.example/thing" });
-    const [api, elsewhere] = seen;
-    assert.ok(api && elsewhere);
-    assert.equal(api.headers.get("x-first-party"), "site");
-    assert.equal(api.headers.get("x-serverless-authorization"), "token for api.example");
-    assert.deepEqual([...elsewhere.headers], []);
-  });
+  }
 
   test("send no Authorization header for anonymous use", async () => {
     const { fetch, seen } = mockFetch(json({}));
@@ -1368,21 +1397,28 @@ describe("server text", () => {
     });
   }
 
-  test("strip controls from a refusal's detail and mask the key it echoes", async () => {
-    const { fetch } = mockFetch(
-      problem({
-        code: "bad",
-        status: 400,
-        detail: `\u001b[31mred\u001b[0m\n\u202eevil, sent ${KEY}`,
-      }),
-    );
-    const error = await transport({ apiKey: KEY, fetch })
-      .request({ path: "/x" })
-      .catch((value: unknown) => value);
-    assert.ok(error instanceof DfoError);
-    assert.equal(error.message, "[31mred[0m\nevil, sent [redacted] (bad)");
-    assert.ok(!JSON.stringify(error.problem).includes(KEY));
-  });
+  // A problem document under HTTP 200, as Search and the lookups send one, raises through
+  // problemAt200 from the parsed body.
+  for (const status of [400, 200]) {
+    test(`strip controls from a refusal's detail and mask the key it echoes, at HTTP ${status}`, async () => {
+      const { fetch } = mockFetch(
+        problem({
+          code: "request_invalid",
+          status,
+          detail: `\u001b[31mred\u001b[0m\n\u202eevil, sent ${KEY}`,
+        }),
+      );
+      const sent = transport({ apiKey: KEY, fetch }).request({ path: "/x" });
+      const error =
+        status === 200
+          ? await sent.then((response) => problemAt200(response.body, response.traceId))
+          : await sent.catch((value: unknown) => value);
+      assert.ok(error instanceof DfoError);
+      assert.equal(error.message, "[31mred[0m\nevil, sent [redacted] (request_invalid)");
+      assert.ok(!error.detail.includes(KEY));
+      assert.ok(!JSON.stringify(error.problem).includes(KEY));
+    });
+  }
 
   test("redact the key a server warning echoes", async () => {
     const warnings: DfoWarning[] = [];

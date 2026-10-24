@@ -7,7 +7,7 @@ import { parquetWriteBuffer } from "hyparquet-writer";
 
 import { clientOver } from "../src/client.ts";
 import { envFrom } from "../src/config/env.ts";
-import { fetchMembers, mint } from "../src/datasets/fetch.ts";
+import { download, fetchMembers, mint } from "../src/datasets/fetch.ts";
 import { fetchDataset } from "../src/datasets/resolve.ts";
 import type { FetchOptions } from "../src/datasets/fetch.ts";
 import { DatasetRef } from "../src/core/ref.ts";
@@ -502,6 +502,44 @@ describe("a download", async () => {
       } else {
         await assert.rejects(fetched, { name: "ServerError", code, retryable: false });
       }
+    });
+  }
+
+  // The artifact's size bounds the response that carries it. Each row gives a files route's
+  // first answer, with a body longer than the file, that the download reads through.
+  const file = new TextEncoder().encode("PAR1 file");
+  const page = "<html>bad gateway</html>".padEnd(4096, " ");
+  for (const [name, first] of [
+    ["a 502 page, which it retries", () => new Response(page, { status: 502 })],
+    [
+      "a redirect with a body",
+      () =>
+        new Response(page, {
+          status: 302,
+          headers: { location: "https://storage.googleapis.com/bucket/object" },
+        }),
+    ],
+  ] as const) {
+    test(`reads a small file through ${name}`, async () => {
+      const { fetch, seen } = mockFetch(first, () => new Response(file));
+      const transport = new Transport({
+        baseUrl: "https://api.example/api",
+        apiKey: false,
+        fetch,
+        sleep: () => Promise.resolve(),
+        env: envFrom({}),
+        readCredentialsFile: () => null,
+      });
+      const digest = `sha256:${createHash("sha256").update(file).digest("hex")}`;
+      const data = await download(
+        transport,
+        { path: "/files/x" },
+        digest,
+        { deadline: Infinity },
+        file.byteLength,
+      );
+      assert.deepEqual(data, file);
+      assert.equal(seen.length, 2);
     });
   }
 

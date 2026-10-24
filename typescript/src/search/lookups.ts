@@ -10,7 +10,7 @@
  * more of it, so an unknown member or enum value passes through untouched.
  */
 
-import { clientError, problemAt200 } from "../core/errors.ts";
+import { clientError, problemAt200, REFUSAL_CODE } from "../core/errors.ts";
 import { checkRequired } from "../core/strict.ts";
 import type { JsonType } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
@@ -134,9 +134,6 @@ export class Graph {
   }
 }
 
-/** A registry code, such as `spec_not_found`. */
-const CODE = /^[a-z][a-z0-9_]*$/;
-
 /**
  * Refuses a dcid that would leave the node route or carry a query: an empty one, one holding a
  * control character, `?` or `#`, or one with a `.` or `..` segment, percent-encoded or not.
@@ -179,7 +176,7 @@ export class Codes {
    * @throws {NotFoundError} The registry holds no such code.
    */
   async get(code: string, options: LookupOptions = {}): Promise<CodeRegistryEntry> {
-    if (!CODE.test(code)) {
+    if (!REFUSAL_CODE.test(code)) {
       throw clientError("invalid_argument", {
         detail: "A code is a lower-case letter followed by lower-case letters, digits or _.",
       });
