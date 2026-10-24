@@ -14,7 +14,13 @@ export const ACTIONS = [
   "upgrade",
 ] as const;
 
-export const GAP_KINDS = ["choice", "no_data", "not_understood", "unsupported"] as const;
+export const GAP_KINDS = [
+  "choice",
+  "no_data",
+  "not_understood",
+  "unsupported",
+  "timed_out",
+] as const;
 
 export const CODE_ACTIONS = {
   artifact_expired: "take_newest_version",
@@ -109,6 +115,7 @@ export const CODE_ACTIONS = {
   spec_id_mismatch: "fix_request",
   spec_not_exportable: "fix_request",
   spec_not_found: "check_id",
+  timed_out: "ask_data_question",
   timeout: "report",
   unit_not_resolved: "ask_data_question",
   unsupported_children_anchor_type: "fix_request",
@@ -140,6 +147,7 @@ export const CODE_GAP_KINDS = {
   source_code_not_held: "no_data",
   source_code_shares_variable: "unsupported",
   source_not_resolved: "not_understood",
+  timed_out: "timed_out",
   unit_not_resolved: "not_understood",
   variable_not_resolved: "not_understood",
 } as const;

@@ -23,7 +23,9 @@ type Action = Literal[
     "report",
     "upgrade",
 ]
-type GapKind = Literal["choice", "no_data", "not_understood", "unsupported"]
+type GapKind = Literal[
+    "choice", "no_data", "not_understood", "unsupported", "timed_out"
+]
 type ClientCodeName = Literal[
     "answer_declined",
     "answer_incomplete",
@@ -150,6 +152,7 @@ ACTIONS: Final[dict[str, Action]] = {
     "spec_id_mismatch": "fix_request",
     "spec_not_exportable": "fix_request",
     "spec_not_found": "check_id",
+    "timed_out": "ask_data_question",
     "timeout": "report",
     "unit_not_resolved": "ask_data_question",
     "unsupported_children_anchor_type": "fix_request",
@@ -180,6 +183,7 @@ GAP_KINDS: Final[dict[str, GapKind]] = {
     "source_code_not_held": "no_data",
     "source_code_shares_variable": "unsupported",
     "source_not_resolved": "not_understood",
+    "timed_out": "timed_out",
     "unit_not_resolved": "not_understood",
     "variable_not_resolved": "not_understood",
 }
