@@ -57,6 +57,7 @@ from dfo._datasets.build import (
     Cache,
     Reading,
     build_body,
+    check_strict,
     counted_rows,
     layout_of,
     pick_artifact,
@@ -74,6 +75,7 @@ from dfo._sync._datasets.operation import (
     Operation,
     Poller,
     ProgressHook,
+    finishing,
     post_build,
     progress_hook,
     resume,
@@ -141,16 +143,20 @@ def fetch_members(
         narrowing: The build request's `scope`, applied to every member.
 
     Raises:
-        InvalidRequestError: `layout="frame"` with several members, or a build
-            the server refused as malformed.
+        InvalidRequestError: `layout="frame"` with several members, `strict`
+            is not a bool or `progress` neither a bool nor None
+            (`invalid_argument`), or the server refused a build as malformed.
         NetworkError: `DFO_OFFLINE=1` is set, and the cache holds no version of
             a spec, or the fetch narrows it (`offline`).
         DfoTimeoutError: The deadline passed; a long build's message names the
-            call that resumes it.
+            call that resumes it. A long build the poll at the deadline reads
+            done still downloads, each request for one attempt of the client's
+            timeout.
         DfoError: The server refused a request.
     """
     wants = _distinct(readings)
     rendering = rendering_for(layout, without_party_totals=without_party_totals)
+    check_strict(strict)
     if layout == "frame" and len(wants) > 1:
         raise client_error(
             INVALID_ARGUMENT,
@@ -169,13 +175,14 @@ def fetch_members(
     with ProgressRenderer(enabled=progress) as renderer:
         on_progress = progress_hook(renderer)
         for want in wants:
+            poller = None
             if stale:
                 manifest, cached_data = _latest_cached(
                     cache, want.spec.spec_id, rendering
                 )
                 trace_id = None
             else:
-                manifest, trace_id = _build_latest(
+                manifest, trace_id, poller = _build_latest(
                     transport,
                     build_body(want.spec, rendering, narrowing),
                     rendering=rendering,
@@ -183,19 +190,20 @@ def fetch_members(
                     on_progress=on_progress,
                 )
                 cached_data = None
-            fetched.append(
-                finish_member(
-                    transport,
-                    manifest,
-                    trace_id,
-                    want=want,
-                    rendering=rendering,
-                    strict=strict,
-                    cache=cache,
-                    deadline=deadline,
-                    cached_data=cached_data,
+            with finishing(transport, poller, deadline) as (finisher, bound):
+                fetched.append(
+                    finish_member(
+                        finisher,
+                        manifest,
+                        trace_id,
+                        want=want,
+                        rendering=rendering,
+                        strict=strict,
+                        cache=cache,
+                        deadline=bound,
+                        cached_data=cached_data,
+                    )
                 )
-            )
     return sync_offload(
         build_dataset,
         fetched,
@@ -214,7 +222,7 @@ def _build_latest(
     rendering: Rendering,
     deadline: float | None,
     on_progress: ProgressHook,
-) -> tuple[Wire, str | None]:
+) -> tuple[Wire, str | None, Poller | None]:
     """Build a spec's latest version, hinting a search when a member is gone."""
     try:
         return build_version(
@@ -303,8 +311,9 @@ def mint(
     The operation's `result` bounds the wait for the build.
 
     Raises:
-        InvalidRequestError: `spec` is not a `Spec`, such as a spec id
-            (`invalid_argument`); no request is sent.
+        InvalidRequestError: `spec` is not a `Spec`, such as a spec id, or
+            `progress` is neither a bool nor None (`invalid_argument`); no
+            request is sent.
         DfoError: The server refused the build.
     """
     if not isinstance(spec, Spec):
@@ -314,9 +323,9 @@ def mint(
             f"{type(spec).__name__}; a spec id alone does not build",
         )
     rendering = rendering_for(layout, without_party_totals=without_party_totals)
+    renderer = ProgressRenderer(enabled=progress)
     body = build_body(spec, rendering)
     reply = post_build(transport, body, deadline=None)
-    renderer = ProgressRenderer(enabled=progress)
     poller = Poller(
         transport,
         reply,
@@ -326,7 +335,7 @@ def mint(
     )
     return Operation(
         poller,
-        _finisher(transport, Reading((), spec, spec.sentence), rendering, cache=cache),
+        _finisher(Reading((), spec, spec.sentence), rendering, cache=cache),
         renderer=renderer,
     )
 
@@ -359,13 +368,12 @@ def operation(
     )
     return Operation(
         poller,
-        _finisher(transport, None, rendering, cache=cache),
+        _finisher(None, rendering, cache=cache),
         renderer=renderer,
     )
 
 
 def _finisher(
-    transport: Transport,
     want: Reading | None,
     rendering: Rendering,
     *,
@@ -374,7 +382,11 @@ def _finisher(
     """The step that downloads an operation's done build; it raises no warning."""
 
     def finish(
-        manifest: Wire, trace_id: str | None, deadline: float | None, /
+        transport: Transport,
+        manifest: Wire,
+        trace_id: str | None,
+        deadline: float | None,
+        /,
     ) -> Dataset:
         member = finish_member(
             transport,
@@ -423,20 +435,22 @@ def build_version(
     rendering: Rendering,
     deadline: float | None,
     on_progress: ProgressHook,
-) -> tuple[Wire, str | None]:
+) -> tuple[Wire, str | None, Poller | None]:
     """Post a build of `rendering` and wait for its manifest, through a long
     build if needed.
 
-    Returns the manifest and the trace id of the response that carried it.
+    Returns the manifest, the trace id of the response that carried it, and the
+    long build's poller, or None for a build the server finished inline, for
+    `finishing` to download it under.
     """
     reply = post_build(transport, body, deadline=deadline)
     if reply.manifest is not None:
-        return reply.manifest, reply.trace_id
+        return reply.manifest, reply.trace_id, None
     poller = Poller(
         transport, reply, rendering=rendering, body=body, on_progress=on_progress
     )
     manifest = poller.wait(deadline)
-    return manifest, poller.trace_id
+    return manifest, poller.trace_id, poller
 
 
 def finish_member(
@@ -639,7 +653,8 @@ def download(
     the storage host. A signed fetch that fails retryably, or bytes that do not
     hash to `digest`, ask the route once more for a fresh URL. Reading stops
     once the file passes `size`, the manifest's `bytes` for the artifact, or
-    `DOWNLOAD_MAX_BYTES` when that is not a byte count.
+    `DOWNLOAD_MAX_BYTES`, whichever is smaller. A `size` that is not a byte
+    count leaves `DOWNLOAD_MAX_BYTES`.
     A redirect or a refusal is read under `JSON_BODY_MAX_BYTES` whatever the size.
 
     Raises:
@@ -652,11 +667,9 @@ def download(
             neither the API's origin nor the storage host
             (`contract_violation`).
     """
-    limit = (
-        size
-        if isinstance(size, int) and not isinstance(size, bool) and size >= 0
-        else DOWNLOAD_MAX_BYTES
-    )
+    limit = DOWNLOAD_MAX_BYTES
+    if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
+        limit = min(size, DOWNLOAD_MAX_BYTES)
     failure: DfoError | None = None
     for _ in range(2):
         response = transport.request(

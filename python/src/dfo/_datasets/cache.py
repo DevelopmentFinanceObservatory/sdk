@@ -10,9 +10,10 @@ but never make an artifact name different bytes. A read re-hashes an artifact, a
 a mismatch is a miss. A manifest is read back only when it passes the checks a
 served manifest passes, any `held_until` it holds reads as a date, and it names
 the spec and version its path does; anything else is a miss, which a fetch fills
-from the server again. The citation text is read back as stored. A key that is not a
-server id, such as a malformed digest in a served manifest, is a miss on read and
-skipped on write.
+from the server again. An entry is read only from a regular file, so a directory,
+a FIFO or a device at an entry's path is a miss too. The citation text is read
+back as stored. A key that is not a server id, such as a malformed digest in a
+served manifest, is a miss on read and skipped on write.
 
 Concurrent fetches in one process download an artifact once: `downloading`
 holds its digest while the first fetch reads the cache, downloads and stores,
@@ -27,6 +28,7 @@ import hashlib
 import json
 import logging
 import os
+import stat
 import tempfile
 from collections.abc import Mapping
 from contextlib import nullcontext
@@ -43,6 +45,10 @@ from dfo._datasets.build import check_served_manifest, read_held_until
 from dfo._http.hooks import Hold, KeyedLock
 
 logger = logging.getLogger("dfo")
+
+# A cache read opens a file in binary mode on Windows and, where the platform has
+# FIFOs, without waiting for a writer.
+_READ_FLAGS = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
 
 # The default bound on the artifacts the cache keeps, in bytes.
 DEFAULT_MAX_BYTES = 2 * 1024**3
@@ -214,11 +220,7 @@ class Cache:
         """The artifact with `digest`, or None when it is absent or its bytes differ."""
         if (path := self._file(digest)) is None:
             return None
-        try:
-            data = path.read_bytes()
-        except OSError:  # absent, or a cache directory the disk refuses
-            return None
-        if sha256_digest(data) != digest:
+        if (data := _read_regular(path)) is None or sha256_digest(data) != digest:
             return None
         _touch(path)
         return data
@@ -376,10 +378,33 @@ def _replace(temporary: str, path: Path, *, digest: str | None) -> None:
 
 
 def _holds(path: Path, digest: str) -> bool:
+    return (data := _read_regular(path)) is not None and sha256_digest(data) == digest
+
+
+def _read_regular(path: Path) -> bytes | None:
+    """The bytes of the regular file at `path`, or None when it is absent,
+    unreadable or anything else, such as a directory or a FIFO.
+
+    The file opens without blocking, so a FIFO cannot hold the read, and its
+    kind is read from the open file, so a swap after the check cannot change it.
+    """
     try:
-        return sha256_digest(path.read_bytes()) == digest
+        handle = os.open(path, _READ_FLAGS)
+    except OSError:  # absent, or a cache directory the disk refuses
+        return None
+    # The kind is read before `fdopen`, which raises on a directory.
+    try:
+        regular = stat.S_ISREG(os.fstat(handle).st_mode)
     except OSError:
-        return False
+        regular = False
+    if not regular:
+        os.close(handle)
+        return None
+    with os.fdopen(handle, "rb") as file:
+        try:
+            return file.read()
+        except OSError:
+            return None
 
 
 def _held_manifest(
@@ -411,9 +436,11 @@ def _held_manifest(
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
+    if (data := _read_regular(path)) is None:
+        return None
     try:
-        value = loads(path.read_bytes())
-    except (OSError, ValueError):
+        value = loads(data)
+    except ValueError:
         return None
     return value if isinstance(value, dict) else None
 

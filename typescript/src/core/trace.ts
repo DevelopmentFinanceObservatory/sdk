@@ -12,15 +12,27 @@ import { isRecord } from "./json.ts";
 
 const TRACE_HEADER = "x-dfo-trace-id";
 
+/** A trace id's shape: one HTTP token (RFC 9110), so it holds no space, control or quote. */
+const TRACE_ID = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+/** A trace id, or null for a value that is not a string of the token shape or that holds
+ *  `key`, the key the request sent. */
+export const traceIdFrom = (value: unknown, key?: string): string | null =>
+  typeof value === "string" && TRACE_ID.test(value) && !(key !== undefined && value.includes(key))
+    ? value
+    : null;
+
 /** The client codes of errors that describe a response the client read. */
 const RESPONSE_CODES = new Set(["unexpected_response", "contract_violation"]);
 
 /** A response's trace id: its body's `trace_id` when the body is an object holding one, else
- *  its `x-dfo-trace-id` header, else null. */
-export function traceIdOf(headers: Headers, body?: unknown): string | null {
-  const found = isRecord(body) ? body["trace_id"] : undefined;
-  if (typeof found === "string" && found !== "") return found;
-  return headers.get(TRACE_HEADER) || null;
+ *  its `x-dfo-trace-id` header, else null. A value that is not an HTTP token, or that holds
+ *  `key`, the key the request sent, reads as none. */
+export function traceIdOf(headers: Headers, body?: unknown, key?: string): string | null {
+  return (
+    traceIdFrom(isRecord(body) ? body["trace_id"] : undefined, key) ??
+    traceIdFrom(headers.get(TRACE_HEADER), key)
+  );
 }
 
 /** Runs `read`, which reads the response whose trace id is `traceId`, and gives that id to an

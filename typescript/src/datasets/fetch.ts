@@ -24,9 +24,9 @@
 import type { Gap } from "../search/answer.ts";
 import { Dataset } from "./dataset.ts";
 import type { FetchedMember } from "./dataset.ts";
-import { clientError, DfoError, InvalidRequestError, optionsOf } from "../core/errors.ts";
+import { capped, clientError, DfoError, InvalidRequestError, optionsOf } from "../core/errors.ts";
 import type { ClientErrorCode, DfoErrorOptions } from "../core/errors.ts";
-import { build, deadlineOf, resumeOperation, startOperation } from "./operation.ts";
+import { build, deadlineOf, downloadBuilt, resumeOperation, startOperation } from "./operation.ts";
 import type { Built, Manifest, Operation, ProgressHandler, Wait } from "./operation.ts";
 import { manifestWarningsOf, partFacts } from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
@@ -307,7 +307,7 @@ function countedRows(manifest: Manifest): number {
  *   (`contract_violation`).
  */
 export function checkArtifact(data: Uint8Array, manifest: Manifest, digest: string): void {
-  const name = `The artifact ${digest} of ${specIdOf(manifest)}`;
+  const name = `The artifact ${capped(digest)} of ${capped(specIdOf(manifest))}`;
   let file: ParquetFile;
   try {
     file = readParquet(data);
@@ -344,20 +344,22 @@ function artifactFault({ columns, rows }: ParquetFile, counted: number): string 
  * digest, ask the route again and fetch once more, with no wait of their own, and a second
  * failure raises: `download_failed` for a refused signed URL, `digest_mismatch` for the bytes.
  * Reading stops once the decoded file passes `size`, the manifest's `bytes` for the artifact,
- * or `DEFAULT_MAX_BYTES` when that is not a byte count, and raises `response_too_large`. The
- * limit bounds the response that carries the file; a redirect or a refusal is read under
- * `JSON_BODY_MAX_BYTES`, as on any other route.
+ * or `DEFAULT_MAX_BYTES` when that is smaller or `size` is not a byte count, and raises
+ * `response_too_large`. The limit bounds the response that carries the file; a redirect or a
+ * refusal is read under `JSON_BODY_MAX_BYTES`, as on any other route.
  */
 export async function download(
   transport: Transport,
   target: Target,
   digest: string,
-  { deadline, signal }: Wait,
+  wait: Wait,
   size?: unknown,
 ): Promise<Uint8Array<ArrayBuffer>> {
   const maxBytes =
-    Number.isSafeInteger(size) && (size as number) >= 0 ? (size as number) : DEFAULT_MAX_BYTES;
-  const ask = { deadline, maxBytes, signal };
+    typeof size === "number" && Number.isSafeInteger(size) && size >= 0
+      ? Math.min(size, DEFAULT_MAX_BYTES)
+      : DEFAULT_MAX_BYTES;
+  const ask = { ...wait, maxBytes };
   let failure: DfoError | undefined;
   for (let round = 0; round < 2; round += 1) {
     const located = await transport.locate({ ...target, ...ask });
@@ -366,7 +368,7 @@ export async function download(
       try {
         data = await transport.fetchSigned(located.signed, {
           ...ask,
-          timeout: Infinity,
+          timeout: wait.timeout ?? Infinity,
           follow: located.follow,
         });
       } catch (error) {
@@ -394,9 +396,9 @@ function definitionOf(manifest: Manifest): Readonly<Record<string, unknown>> {
 export const specIdOf = (manifest: Manifest): string => String(definitionOf(manifest)["spec_id"]);
 export const contentVersionOf = (manifest: Manifest): string => String(manifest["content_version"]);
 
-/** The artifact a manifest lists for a rendering, or for a digest when given. Artifacts match
- *  on `renderingMatches`. A party-totals cut that leaves nothing out lists its file under the
- *  plain version, beside the plain file, so the flag tells the two apart. */
+/** The artifact a manifest lists for a rendering, and with a digest when given. Artifacts
+ *  match on `renderingMatches`. A party-totals cut that leaves nothing out lists its file under
+ *  the plain version, beside the plain file, so the flag tells the two apart. */
 export function pickArtifact(
   manifest: Manifest,
   rendering: Rendering,
@@ -406,10 +408,10 @@ export function pickArtifact(
   const artifacts = manifest["artifacts"] as unknown[];
   return artifacts
     .filter(isRecord)
-    .find((artifact) =>
-      digest === undefined
-        ? renderingMatches(rendering, artifact["rendering"])
-        : artifact["artifact_digest"] === digest,
+    .find(
+      (artifact) =>
+        renderingMatches(rendering, artifact["rendering"]) &&
+        (digest === undefined || artifact["artifact_digest"] === digest),
     );
 }
 
@@ -467,7 +469,7 @@ async function sentenceFor(
   manifest: Manifest,
   parts: readonly string[],
   held: Held | undefined,
-  { deadline, signal }: Wait,
+  wait: Wait,
 ): Promise<string> {
   const definition = definitionOf(manifest);
   const specId = specIdOf(manifest);
@@ -488,8 +490,7 @@ async function sentenceFor(
         ],
       },
     },
-    deadline,
-    signal,
+    ...wait,
   });
   return describing(response.traceId, () => {
     const answer = response.body;
@@ -516,7 +517,7 @@ async function sentenceFor(
     if (!isText(sentence)) {
       throw clientError("contract_violation", {
         detail:
-          `Search did not resolve the built identity ${specId} to itself, or to one no_data ` +
+          `Search did not resolve the built identity ${capped(specId)} to itself, or to one no_data ` +
           "part, with a sentence.",
       });
     }
@@ -540,8 +541,8 @@ type Finishing = {
   readonly answerFacts?: readonly PartFacts[];
 };
 
-/** Downloads a built version's artifact and gives it Search's sentence. The manifest's warnings
- *  and its artifact's `url` are checked before any request. */
+/** Downloads a built version's artifact and gives it Search's sentence, within `downloadBuilt`'s
+ *  time. The manifest's warnings and its artifact's `url` are checked before any request. */
 export async function finish(
   transport: Transport,
   built: Built,
@@ -558,16 +559,18 @@ export async function finish(
     if (found === undefined) {
       throw clientError("contract_violation", {
         detail:
-          `The manifest of ${specId} at ${contentVersion} lists no ` +
+          `The manifest of ${capped(specId)} at ${contentVersion} lists no ` +
           `${JSON.stringify(mintOptions(rendering))} artifact.`,
       });
     }
     return { artifact: found, route: transport.originUrl(String(found["url"])) };
   });
   const known = posted?.spec.spec_id === specId && isText(sentence);
-  const told = known ? sentence : await sentenceFor(transport, manifest, parts, posted, wait);
   const digest = String(artifact["artifact_digest"]);
-  const data = await download(transport, { url: route.href }, digest, wait, artifact["bytes"]);
+  const { told, data } = await downloadBuilt(transport, built, wait, async (within) => ({
+    told: known ? sentence : await sentenceFor(transport, manifest, parts, posted, within),
+    data: await download(transport, { url: route.href }, digest, within, artifact["bytes"]),
+  }));
   checkArtifact(data, manifest, digest);
   return {
     parts,

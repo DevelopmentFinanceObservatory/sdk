@@ -31,6 +31,7 @@ from dfo._core.errors import (
     ServerError,
 )
 from dfo._core.json_text import JSON_MAX_DEPTH
+from dfo._core.refusals import trace_id_of
 from dfo._http.transport import (
     JSON_BODY_MAX_BYTES,
     USER_AGENT,
@@ -48,6 +49,7 @@ KEY = "dfo_k_4f8Kq2ZtR7mWx1NcB9vLp3YhD6sGa0Ue2wanxe"
 OTHER_KEY = "dfo_k_Zz9Yy8Xx7Ww6Vv5Uu4Tt3Ss2Rr1Qq0Pp448bfc"
 SIGNED = "https://storage.googleapis.com/bucket/object?X-Goog-Signature=redacted"
 AUTH = "X-Serverless-Authorization"
+FRAMES = "frames the message or the connection"
 
 type Handler = Callable[[httpx2.Request], httpx2.Response]
 
@@ -86,7 +88,7 @@ class Recorder:
 
 
 def problem(
-    status: int, *, headers: dict[str, str] | None = None, **members: object
+    status: int, *, headers: dict[str, str | bytes] | None = None, **members: object
 ) -> httpx2.Response:
     return httpx2.Response(
         status,
@@ -257,16 +259,10 @@ async def test_a_download_off_the_api_and_the_storage_host_is_refused(
 
 @pytest.mark.parametrize(
     "url",
-    [
-        "https://files.example.net/api/x",
-        "https://user:pw@api.example.org/api/x",
-        "https://api.example.org:8443/api/x",
-        "http://api.example.org/api/x",
-        "https://api.example.org:99999/api/x",
-    ],
-    ids=["other-host", "userinfo", "other-port", "other-scheme", "bad-port"],
+    ["//api.example.org/api/x", "/api/x\r\nHost: evil"],
+    ids=["scheme-relative", "control"],
 )
-async def test_a_server_url_off_the_api_origin_is_a_contract_violation(
+async def test_a_server_url_the_shared_rule_refuses_is_a_contract_violation(
     url: str,
 ) -> None:
     async with make(Recorder()) as transport:
@@ -277,21 +273,42 @@ async def test_a_server_url_off_the_api_origin_is_a_contract_violation(
 
 
 @pytest.mark.parametrize(
-    ("base_url", "url"),
-    [
-        ("https://api.example.org:443/api", "https://api.example.org/api/x"),
-        ("https://api.example.org/api", "https://api.example.org:443/api/x"),
-        ("https://API.Example.org./api", "https://api.example.org/api/x"),
-        ("https://api.example.org/api", "https://api.example.org./api/x"),
-        ("http://localhost:80/api", "http://LOCALHOST/api/x"),
-    ],
-    ids=["base-default-port", "url-default-port", "base-dot", "url-dot", "http-80"],
+    "url",
+    [f"https://elsewhere.example/{KEY}/" + "x" * 2000, f"/api/../{KEY}/" + "x" * 2000],
+    ids=["off-origin", "dot-segment"],
 )
-async def test_origins_compare_without_default_ports_case_or_a_trailing_dot(
-    base_url: str, url: str
+async def test_a_refused_server_url_is_quoted_capped_and_redacted(url: str) -> None:
+    async with make(Recorder(), api_key=KEY) as transport:
+        with pytest.raises(ContractError) as caught:
+            transport.origin_url(url)
+    assert KEY not in str(caught.value)
+    assert "[redacted]" in str(caught.value)
+    assert len(str(caught.value)) < 1200
+
+
+@pytest.mark.parametrize(
+    ("base_url", "url", "resolved"),
+    [
+        (
+            "https://api.example.org:443/api",
+            "https://api.example.org/api/x",
+            "https://api.example.org/api/x",
+        ),
+        (
+            "https://API.Example.org./api",
+            "https://api.example.org/api/x",
+            "https://api.example.org/api/x",
+        ),
+        ("http://localhost:80/api", "http://LOCALHOST/api/x", "http://localhost/api/x"),
+        ("http://localhost:8080/api", "/api/x", "http://localhost:8080/api/x"),
+    ],
+    ids=["base-default-port", "base-dot", "http-80", "base-port"],
+)
+async def test_a_server_url_resolves_on_the_base_urls_origin(
+    base_url: str, url: str, resolved: str
 ) -> None:
     async with make(Recorder(), base_url=base_url) as transport:
-        assert transport.origin_url(url) == url
+        assert transport.origin_url(url) == resolved
 
 
 @pytest.mark.parametrize(("seconds", "read"), [(None, None), (1800.0, 1800.0)])
@@ -485,6 +502,11 @@ async def test_a_problem_document_fills_the_error() -> None:
         (problem(500, retryable=False, trace_id="in-body"), "in-body"),
         (problem(500, code="internal_error", trace_id=""), "trace-header"),
         (problem(500, code="internal_error", trace_id=7), "trace-header"),
+        (problem(500, code="internal_error", trace_id="a b\tc"), "trace-header"),
+        (
+            problem(500, code="internal_error", headers={"x-dfo-trace-id": "a b"}),
+            None,
+        ),
     ],
     ids=[
         "no-body-code",
@@ -493,12 +515,14 @@ async def test_a_problem_document_fills_the_error() -> None:
         "codeless-problem-trace",
         "empty-trace",
         "trace-not-a-string",
+        "trace-not-a-token",
+        "header-not-a-token",
     ],
 )
 async def test_a_refusal_takes_its_trace_id_from_the_header_when_the_body_has_none(
-    response: httpx2.Response, trace_id: str
+    response: httpx2.Response, trace_id: str | None
 ) -> None:
-    response.headers["x-dfo-trace-id"] = "trace-header"
+    response.headers.setdefault("x-dfo-trace-id", "trace-header")
     async with make(Recorder(response), max_retries=0) as transport:
         with pytest.raises(ServerError) as caught:
             await transport.request("GET", "/datasets/schema")
@@ -506,27 +530,30 @@ async def test_a_refusal_takes_its_trace_id_from_the_header_when_the_body_has_no
 
 
 @pytest.mark.parametrize(
-    ("content_type", "code"),
+    "headers",
     [
-        ("application/problem+json", "spec_not_found"),
-        ("application/json; charset=utf-8", "spec_not_found"),
-        ("Application/Problem+JSON", "spec_not_found"),
-        ("application/x-ndjson", "refusal_without_code"),
-        ("text/plain", "refusal_without_code"),
+        {"content-type": "application/problem+json"},
+        {"content-type": "application/json; charset=utf-8"},
+        {"content-type": "Application/Problem+JSON"},
+        {"content-type": "application/x-ndjson"},
+        {"content-type": "application/vnd.api+json"},
+        {"content-type": "text/plain"},
+        {},
     ],
+    ids=["problem", "json", "upper-case", "ndjson", "vendor", "text", "none"],
 )
-async def test_a_refusal_body_is_a_problem_document_only_under_its_media_types(
-    content_type: str, code: str
+async def test_a_refusal_body_is_a_problem_document_whatever_its_media_type(
+    headers: dict[str, str],
 ) -> None:
     refused = httpx2.Response(
         404,
-        headers={"content-type": content_type},
+        headers=headers,
         content=json.dumps({"code": "spec_not_found", "status": 404}).encode(),
     )
     async with make(Recorder(refused)) as transport:
         with pytest.raises(NotFoundError) as caught:
             await transport.request("GET", "/datasets/spec_1")
-    assert caught.value.code == code
+    assert caught.value.code == "spec_not_found"
 
 
 async def test_a_refusal_carries_its_issues_and_alternatives() -> None:
@@ -579,20 +606,25 @@ async def test_a_success_body_is_a_problem_document_with_a_string_code_and_no_ki
 
 
 @pytest.mark.parametrize(
-    ("response", "detail"),
+    ("response", "text"),
     [
-        (problem(422, code="query\ntoo_long", detail="No."), "query\ntoo_long: No."),
+        (problem(422, code="query\ntoo_long"), "query\ntoo_long"),
         (problem(422, code="Query Too Long"), "Query Too Long"),
+        (problem(422, code="a" * 65), "a" * 65),
+        (problem(422, code="Query Too Long", detail="No."), "No."),
     ],
-    ids=["control", "spaced"],
+    ids=["control", "spaced", "too-long", "detail-first"],
 )
 async def test_text_in_a_codes_place_that_is_not_snake_case_is_no_code(
-    response: httpx2.Response, detail: str
+    response: httpx2.Response, text: str
 ) -> None:
     async with make(Recorder(response)) as transport:
         with pytest.raises(InvalidRequestError) as caught:
             await transport.request("POST", "/datasets", json={})
-    assert (caught.value.code, caught.value.detail) == ("refusal_without_code", detail)
+    assert (caught.value.code, caught.value.detail) == (
+        "refusal_without_code",
+        f"HTTP 422 with no refusal code: {text}",
+    )
 
 
 async def test_a_request_can_turn_retries_off() -> None:
@@ -778,31 +810,43 @@ async def test_server_text_loses_terminal_and_bidi_controls() -> None:
 
 
 @pytest.mark.parametrize(
-    ("type_", "docs_url"),
+    ("base_url", "type_", "docs_url"),
     [
-        ("/codes/request_invalid", "https://api.example.org/codes/request_invalid"),
-        ("https://API.example.org:443/codes/x", "https://API.example.org:443/codes/x"),
-        ("https://docs.example.net/e/x", None),
-        ("javascript:alert(1)", None),
-        ("http://api.example.org/codes/x", None),
-        ("http://[::1", None),
-        ("https://api.example.org/\x1b[2J", None),
+        (
+            BASE,
+            "/codes/request_invalid",
+            "https://api.example.org/codes/request_invalid",
+        ),
+        (
+            BASE,
+            "https://API.example.org:443/codes/x",
+            "https://api.example.org/codes/x",
+        ),
+        (BASE, "//api.example.org/codes/x", None),
+        (BASE, "https://docs.example.net/e/x", None),
+        (BASE, "javascript:alert(1)", None),
+        (BASE, "http://api.example.org/codes/x", None),
+        (BASE, "http://[::1", None),
+        (BASE, "https://api.example.org/\x1b[2J", None),
+        ("http://localhost:8080/api", "/codes/x", "http://localhost:8080/codes/x"),
     ],
     ids=[
         "relative",
         "same-origin",
+        "scheme-relative",
         "foreign",
         "javascript",
         "http",
         "unparsable",
         "control",
+        "http-api",
     ],
 )
-async def test_docs_url_is_an_https_page_on_the_api_origin_or_none(
-    type_: str, docs_url: str | None
+async def test_docs_url_is_a_page_on_the_api_origin_or_none(
+    base_url: str, type_: str, docs_url: str | None
 ) -> None:
     refusal = problem(400, code="request_invalid", type=type_)
-    async with make(Recorder(refusal)) as transport:
+    async with make(Recorder(refusal), base_url=base_url) as transport:
         with pytest.raises(InvalidRequestError) as caught:
             await transport.request("GET", "/datasets/schema")
     assert caught.value.docs_url == docs_url
@@ -948,9 +992,11 @@ async def test_a_call_timeout_that_is_not_a_finite_positive_number_is_refused(
         "http://0177.0.0.1/api",
         "http://127.0.0.01/api",
         "https://api.example.0x10/api",
+        5,
+        b"https://api.example.org/api",
     ],
 )
-async def test_an_invalid_base_url_is_refused(base_url: str) -> None:
+async def test_an_invalid_base_url_is_refused(base_url: object) -> None:
     with pytest.raises(InvalidRequestError) as caught:
         make(Recorder(), base_url=base_url)
     assert caught.value.code == "base_url_invalid"
@@ -1013,6 +1059,14 @@ async def test_a_key_resolved_later_is_not_sent_over_plain_http() -> None:
         ("X-Bad:", "id-token", "has a name HTTP cannot carry"),
         ("X-Caf\u00e9", "id-token", "has a name HTTP cannot carry"),
         ("", "id-token", "has a name HTTP cannot carry"),
+        ("Content-Length", "99", FRAMES),
+        ("transfer-encoding", "chunked", FRAMES),
+        ("Host", "api.example.org", FRAMES),
+        ("Connection", "close", FRAMES),
+        ("Keep-Alive", "timeout=5", FRAMES),
+        ("TE", "trailers", FRAMES),
+        ("Trailer", "X-Sum", FRAMES),
+        ("Upgrade", "h2c", FRAMES),
     ],
     ids=[
         "newline",
@@ -1024,6 +1078,14 @@ async def test_a_key_resolved_later_is_not_sent_over_plain_http() -> None:
         "colon-in-name",
         "non-ascii-name",
         "empty-name",
+        "content-length",
+        "transfer-encoding",
+        "host",
+        "connection",
+        "keep-alive",
+        "te",
+        "trailer",
+        "upgrade",
     ],
 )
 @pytest.mark.parametrize("source", ["default_headers", "header_provider"])
@@ -1105,14 +1167,28 @@ async def test_a_retry_after_past_the_ceiling_raises_at_once(retry_after: str) -
     assert caught.value.retry_after > 60
 
 
-async def test_a_body_is_not_read_past_its_limit() -> None:
+@pytest.mark.parametrize(
+    ("status", "error", "code", "retryable"),
+    [
+        (200, ServerError, "response_too_large", False),
+        (503, ServerError, "refusal_without_code", True),
+        (400, InvalidRequestError, "refusal_without_code", False),
+    ],
+)
+async def test_a_body_is_not_read_past_its_limit(
+    status: int, error: type[DfoError], code: str, retryable: bool
+) -> None:
+    # A refusal past the limit still raises its status's class and retry.
     megabyte = b"x" * 2**20
     body = Body(megabyte for _ in range(64))
-    recorder = Recorder(httpx2.Response(200, stream=body))
-    async with make(recorder) as transport:
-        with pytest.raises(ServerError) as caught:
+    headers = {"retry-after": "7", "x-dfo-trace-id": "trace-1"}
+    recorder = Recorder(httpx2.Response(status, headers=headers, stream=body))
+    async with make(recorder, max_retries=0) as transport:
+        with pytest.raises(error) as caught:
             await transport.request("GET", "/datasets/schema")
-    assert (caught.value.code, caught.value.retryable) == ("response_too_large", False)
+    assert (caught.value.code, caught.value.retryable) == (code, retryable)
+    refused = (caught.value.retry_after, caught.value.trace_id)
+    assert refused == ((None, None) if status < 400 else (7.0, "trace-1"))
     assert body.read == JSON_BODY_MAX_BYTES // 2**20 + 1
     assert len(recorder.requests) == 1
 
@@ -1252,8 +1328,12 @@ async def test_a_refusal_nested_past_the_depth_bound_is_still_typed() -> None:
             "Field required (request_invalid)",
         ),
         ({"detail": "Field required"}, "Field required (request_invalid)"),
+        (
+            {"detail": "x" * 1001, "pointer": "/" + "p" * 1001},
+            "x" * 1000 + "… at /" + "p" * 999 + "… (request_invalid)",
+        ),
     ],
-    ids=["named", "already-named", "root", "none"],
+    ids=["named", "already-named", "root", "none", "capped"],
 )
 async def test_a_refusal_names_the_field_its_pointer_names(
     members: dict[str, str], message: str
@@ -1263,14 +1343,73 @@ async def test_a_refusal_names_the_field_its_pointer_names(
         with pytest.raises(InvalidRequestError) as caught:
             await transport.request("POST", "/datasets", json={})
     assert str(caught.value) == message
+    assert caught.value.detail == members["detail"]
 
 
-async def test_server_text_never_quotes_the_clients_key() -> None:
-    echoed = f"Bad header Authorization: Bearer {KEY}"
+@pytest.mark.parametrize(
+    ("body", "text"),
+    [
+        ({"detail": "Upstream slow.", "title": "Bad Gateway"}, "Upstream slow."),
+        ({"title": "Gateway down"}, "Gateway down"),
+        ({"error": "upstream timed out", "retry": True}, "upstream timed out"),
+        ({"detail": [{"msg": "x"}], "error": "bad gateway"}, "bad gateway"),
+        ({"detail": [{"msg": "x"}]}, None),
+    ],
+    ids=["detail", "title", "legacy-error", "detail-not-text", "no-text"],
+)
+async def test_a_codeless_refusal_reads_its_detail_title_or_error(
+    body: dict[str, object], text: str | None
+) -> None:
+    refusal = httpx2.Response(502, json=body)
+    async with make(Recorder(refusal), max_retries=0) as transport:
+        with pytest.raises(ServerError) as caught:
+            await transport.request("GET", "/datasets/schema")
+    shown = "HTTP 502 with no refusal code" + (f": {text}" if text else ".")
+    assert caught.value.code == "refusal_without_code"
+    assert (str(caught.value), caught.value.detail) == (shown, shown)
+
+
+@pytest.mark.parametrize(
+    "inside",
+    [
+        "",
+        "\x07",
+        "\x1b",
+        "\u200e",
+        "\u200b",
+        "\ufeff",
+        "\u2060",
+        "\u00ad",
+        "\u034f",
+        "\ufe0f",
+        "\u3164",
+    ],
+    ids=[
+        "plain",
+        "bel",
+        "esc",
+        "rlm",
+        "zwsp",
+        "bom",
+        "word-joiner",
+        "soft-hyphen",
+        "grapheme-joiner",
+        "variation-selector-16",
+        "hangul-filler",
+    ],
+)
+async def test_server_text_never_quotes_the_clients_key(inside: str) -> None:
+    # A character the shown text drops would otherwise join the key back up.
+    echoed_key = KEY[:12] + inside + KEY[12:]
+    echoed = f"Bad header Authorization: Bearer {echoed_key}"
     refusal = problem(
-        401, code="key_invalid", detail=echoed, issues=[{"detail": [echoed]}]
+        401,
+        code="key_invalid",
+        detail=echoed,
+        issues=[{"detail": [echoed]}],
+        headers={"x-dfo-warning": f"Key {echoed_key} is old.".encode()},
+        echoed={f"Bearer {echoed_key}": 1},
     )
-    refusal.headers["x-dfo-warning"] = f"Key {KEY} is old."
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         async with make(Recorder(refusal), api_key=KEY) as transport:
@@ -1285,3 +1424,23 @@ async def test_server_text_never_quotes_the_clients_key() -> None:
     assert refused.value.problem is not None
     assert refused.value.problem["detail"] == texts[1]
     assert refused.value.problem["issues"] == [{"detail": [texts[1]]}]
+    assert refused.value.problem["echoed"] == {"Bearer [redacted]": 1}
+
+
+@pytest.mark.parametrize("status", [200, 500])
+@pytest.mark.parametrize("where", ["body", "header"])
+async def test_a_trace_id_holding_the_clients_key_is_dropped(
+    where: str, status: int
+) -> None:
+    trace = {"trace_id": f"t-{KEY}"} if where == "body" else {}
+    headers = {"x-dfo-trace-id": f"t-{KEY}" if where == "header" else "trace-header"}
+    response = problem(status, code="internal_error", headers=headers, **trace)
+    async with make(Recorder(response), api_key=KEY, max_retries=0) as transport:
+        if status == 200:
+            answered = await transport.request("GET", "/datasets/schema")
+            found = trace_id_of(answered)
+        else:
+            with pytest.raises(ServerError) as caught:
+                await transport.request("GET", "/datasets/schema")
+            found = caught.value.trace_id
+    assert found == (None if where == "header" else "trace-header")

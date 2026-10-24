@@ -1,12 +1,14 @@
 """The callables a transport takes for its clock, its sleep and extra headers, the
-offload that keeps blocking work off the event loop, and the locks both flavours
-take.
+offload that keeps blocking work off the event loop, the time bound on a call
+the caller supplies, and the locks both flavours take.
 
 The async and sync transports take the same hooks in their own flavour, so the
 async source names the `Async` alias and `scripts/gen_sync.py` swaps in the
 sync one. Async sources run disk reads, writes, hashing and Parquet decoding
 through `async_offload`, which runs them on a worker thread; their sync twins
-call `sync_offload`, which runs them in place. `KeyedLock` serves `async with`
+call `sync_offload`, which runs them in place. `async_within` bounds an
+awaited call by a number of seconds; its twin `sync_within` makes the call on
+the caller's thread without a bound. `KeyedLock` serves `async with`
 in an async source and `with` in its sync twin, and `event_loop` names the loop
 an async httpx2 client sends on.
 """
@@ -47,6 +49,37 @@ def sync_offload[**P, R](
 ) -> R:
     """Run a blocking call on the calling thread, as the sync client does."""
     return function(*args, **kwargs)
+
+
+class OverranError(Exception):
+    """`async_within` stopped waiting for a call at its bound."""
+
+
+async def async_within[R](seconds: float | None, call: Callable[[], Awaitable[R]]) -> R:
+    """Await `call()` for at most `seconds`, or without limit for None.
+
+    Raises:
+        OverranError: `call()` did not finish in time; it is cancelled. A
+            `TimeoutError` that `call()` raises itself passes through.
+    """
+    scope = asyncio.timeout(seconds)
+    try:
+        async with scope:
+            return await call()
+    except TimeoutError as exc:
+        if scope.expired():
+            raise OverranError from exc
+        raise
+
+
+def sync_within[R](seconds: float | None, call: Callable[[], R]) -> R:
+    """Call `call()` on the caller's thread, without a bound.
+
+    A blocking call cannot be interrupted, and a thread per call to stop waiting
+    would leave the call running unseen, so the sync twin of `async_within`
+    leaves the bound to `call()` itself.
+    """
+    return call()
 
 
 def event_loop(client: httpx2.AsyncClient | httpx2.Client, /) -> object | None:

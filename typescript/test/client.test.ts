@@ -61,6 +61,8 @@ describe("lookups", () => {
     "",
     "../../x",
     "%2e%2e/x",
+    "..%2fx",
+    "a/.%5Cb",
     "country/./NGA",
     "country/..",
     "a?b=1",

@@ -21,6 +21,14 @@ _VALUE = r'[^"\\\x00-\x1f\x7f]*'
 _TABLE = re.compile(rf"\[({_NAME})\]")
 _ENTRY = re.compile(rf'({_NAME})[ \t]*=[ \t]*"({_VALUE})"')
 
+# The format as an error names it to someone fixing the file by hand.
+ACCEPTED_FORMAT = (
+    'The file holds [profile] headers, name = "value" entries in double quotes, '
+    "blank lines and lines that start with #. Other TOML, such as a trailing "
+    "comment, a single-quoted value, a nested or dotted table or a byte order "
+    "mark, is refused."
+)
+
 
 class CredentialsFileError(ValueError):
     """The credentials file breaks the format at one line.

@@ -23,6 +23,13 @@ export function credentialsPath({
   return `${config}/dfo/credentials.toml`;
 }
 
+/** The subset of TOML a credentials file may hold, which the error for a file that breaks it
+ *  names. */
+export const ACCEPTED_FORMAT =
+  'The file holds [profile] headers, name = "value" entries in double quotes, blank lines and ' +
+  "lines that start with #. Other TOML, such as a trailing comment, a single-quoted value, a " +
+  "nested or dotted table or a byte order mark, is refused.";
+
 /** Why a credentials file is refused. */
 export type CredentialsFileErrorReason =
   "outside_table" | "duplicate_table" | "duplicate_key" | "invalid_line";

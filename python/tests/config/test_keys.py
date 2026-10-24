@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from dfo._config.credentials import ACCEPTED_FORMAT
 from dfo._config.keys import ApiKey, KeyState, check_key_format, resolve_key
 from dfo._core import errors as _errors
 from dfo._core.errors import AuthenticationError, DfoWarning
@@ -173,6 +174,28 @@ def test_a_credentials_file_that_cannot_be_read_raises(
         resolve_key(env={}, path=str(path))
     assert caught.value.code == "credentials_file_unreadable"
     assert str(path) in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("content", "line", "reason"),
+    [
+        ('[default]\nkey = "k" # comment\n', 2, "invalid_line"),
+        ("[default]\nkey = 'k'\n", 2, "invalid_line"),
+        ('[default]\nkey = "k"\n[default.sub]\n', 3, "invalid_line"),
+        ('\ufeff[default]\nkey = "k"\n', 1, "invalid_line"),
+    ],
+    ids=["trailing-comment", "single-quoted", "nested-table", "bom"],
+)
+def test_a_credentials_file_outside_the_subset_names_the_subset(
+    content: str, line: int, reason: str, tmp_path: Path
+) -> None:
+    path = tmp_path / "credentials.toml"
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(AuthenticationError) as caught:
+        resolve_key(env={}, path=str(path))
+    assert caught.value.code == "credentials_file_invalid"
+    assert f"at line {line} ({reason})" in str(caught.value)
+    assert ACCEPTED_FORMAT in str(caught.value)
 
 
 def test_the_lookup_reads_the_contract_path_by_default(tmp_path: Path) -> None:

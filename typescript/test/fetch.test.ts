@@ -12,7 +12,7 @@ import { fetchDataset } from "../src/datasets/resolve.ts";
 import type { FetchOptions } from "../src/datasets/fetch.ts";
 import { DatasetRef } from "../src/core/ref.ts";
 import type { DatasetRefJson, SpecLike } from "../src/core/ref.ts";
-import { Transport } from "../src/http/transport.ts";
+import { DEFAULT_MAX_BYTES, Transport } from "../src/http/transport.ts";
 import { DataWarning } from "../src/core/warnings.ts";
 import type { Spec } from "../src/wire.ts";
 import type { DfoWarning } from "../src/core/warnings.ts";
@@ -483,10 +483,18 @@ describe("a download", async () => {
     assert.deepEqual(waits, []);
   });
 
-  for (const [name, size, code] of [
-    ["one byte short of the file", (bytes: number) => bytes - 1, "response_too_large"],
-    ["the file's size", (bytes: number) => bytes, null],
-    ["not a byte count", () => "large", null],
+  // Each row gives the manifest's size, the limit the download reads under, and the code it
+  // raises.
+  for (const [name, size, limit, code] of [
+    [
+      "one byte short of the file",
+      (bytes: number) => bytes - 1,
+      (bytes: number) => bytes - 1,
+      "response_too_large",
+    ],
+    ["the file's size", (bytes: number) => bytes, (bytes: number) => bytes, null],
+    ["not a byte count", () => "large", () => DEFAULT_MAX_BYTES, null],
+    ["past the download cap", () => 10 ** 15, () => DEFAULT_MAX_BYTES, null],
   ] as const) {
     test(`reads a file whose manifest gives a size ${name}`, async () => {
       const record = structuredClone(await scenario("fetch-spec-known-sentence"));
@@ -496,7 +504,15 @@ describe("a download", async () => {
       const file = await scenarioBytes("fetch-spec-known-sentence.parquet");
       for (const artifact of manifest.artifacts) artifact.bytes = size(file.byteLength);
       const { transport } = replay(record);
+      const limits: (number | undefined)[] = [];
+      const locate = transport.locate.bind(transport);
+      transport.locate = (options) => {
+        limits.push(options.maxBytes);
+        return locate(options);
+      };
       const fetched = fetchDataset(transport, stepOf(record, 0, "fetch").spec!);
+      await fetched.catch(() => undefined);
+      assert.deepEqual(limits, [limit(file.byteLength)]);
       if (code === null) {
         assert.deepEqual((await fetched).memberBytes(0), file);
       } else {

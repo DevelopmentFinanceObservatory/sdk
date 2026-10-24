@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
+import { ACCEPTED_FORMAT } from "../src/config/credentials.ts";
 import { envFrom } from "../src/config/env.ts";
 import {
   AuthenticationError,
@@ -259,18 +260,25 @@ describe("refusals", () => {
     });
   }
 
+  // A body with no refusal code shows its detail, else its title, else its legacy error, else
+  // the code that is not one.
   for (const [body, text] of [
-    [{ code: "x\nInjected", detail: "d" }, "x"],
+    [{ code: "x\nInjected", detail: "d" }, "d"],
     [{ code: "Rate_Limited" }, "Rate_Limited"],
+    [{ code: "a".repeat(65), title: "Too long a code" }, "Too long a code"],
+    [{ detail: "No code here" }, "No code here"],
+    [{ detail: [{ loc: ["body"], msg: "x" }], title: "Unprocessable" }, "Unprocessable"],
+    [{ error: "bad gateway", retry: "never" }, "bad gateway"],
   ] as const) {
-    test(`read the code ${JSON.stringify(text)}, which is not snake case, as no code`, async () => {
+    test(`show ${JSON.stringify(text)} for a refusal of ${JSON.stringify(body).slice(0, 40)} with no valid code`, async () => {
       const { fetch } = mockFetch(json(body, 400));
       const error = await transport({ fetch })
         .request({ path: "/x" })
         .catch((e: unknown) => e);
       assert.ok(error instanceof InvalidRequestError);
       assert.equal(error.code, "refusal_without_code");
-      assert.ok(error.detail.startsWith(`HTTP 400 with no refusal code: ${text}`));
+      assert.equal(error.detail, `HTTP 400 with no refusal code: ${text}`);
+      assert.equal(error.message, error.detail);
     });
   }
 
@@ -334,7 +342,8 @@ describe("refusals", () => {
     ["/input is required", "/input", "/input is required (request_invalid)"],
     ["Field required", "", "Field required (request_invalid)"],
     ["Field required", 7, "Field required (request_invalid)"],
-    [undefined, "/input", "HTTP 422 at /input (request_invalid)"],
+    // `problem` gives every document the title "Refused", which a document with no detail shows.
+    [undefined, "/input", "Refused at /input (request_invalid)"],
   ] as const) {
     test(`name the pointer ${JSON.stringify(pointer)} in the message of ${JSON.stringify(detail)}`, async () => {
       const { fetch } = mockFetch(
@@ -345,25 +354,66 @@ describe("refusals", () => {
         .catch((e: unknown) => e);
       assert.ok(error instanceof InvalidRequestError);
       assert.equal(error.message, message);
-      assert.equal(error.detail, detail ?? "request_invalid");
+      assert.equal(error.detail, detail ?? "Refused");
     });
   }
 
-  for (const [type, code] of [
-    ["application/problem+json", "snapshot_not_found"],
-    ["application/json; charset=utf-8", "snapshot_not_found"],
-    ["text/html", "refusal_without_code"],
+  // A coded body with no detail shows its title, else its legacy error, else the status.
+  for (const [body, message, detail] of [
+    [{ title: "Bad input", error: "bad" }, "Bad input (request_invalid)", "Bad input"],
+    [{ error: "bad" }, "bad (request_invalid)", "bad"],
+    [{}, "HTTP 400 (request_invalid)", "request_invalid"],
   ] as const) {
-    test(`read a ${type} refusal body as a problem document: ${code}`, async () => {
+    test(`show ${JSON.stringify(message)} for a coded refusal of ${JSON.stringify(body)}`, async () => {
+      const { fetch } = mockFetch(json({ code: "request_invalid", ...body }, 400));
+      const error = await transport({ fetch })
+        .request({ path: "/x" })
+        .catch((e: unknown) => e);
+      assert.ok(error instanceof InvalidRequestError);
+      assert.equal(error.message, message);
+      assert.equal(error.detail, detail);
+    });
+  }
+
+  for (const type of [
+    "application/problem+json",
+    "application/json; charset=utf-8",
+    "application/vnd.api+json",
+    "text/html",
+    "text/plain",
+    "",
+  ]) {
+    test(`read a refusal body under the media type ${JSON.stringify(type)} as a problem document`, async () => {
       const { fetch } = mockFetch(
         problem({ code: "snapshot_not_found", status: 404 }, { "content-type": type }),
       );
       await assert.rejects(transport({ fetch }).request({ path: "/x" }), {
         name: "NotFoundError",
-        code,
+        code: "snapshot_not_found",
       });
     });
   }
+
+  test("read a body that is not UTF-8 as no JSON, on a refusal and on a 2xx", async () => {
+    // `{"code":"snapshot_not_found","detail":"\xff"}`, whose 0xff byte is not UTF-8.
+    const bytes = new Uint8Array([
+      ...new TextEncoder().encode('{"code":"snapshot_not_found","detail":"'),
+      0xff,
+      ...new TextEncoder().encode('"}'),
+    ]);
+    const answer = (status: number) => () =>
+      new Response(bytes, { status, headers: { "content-type": "application/json" } });
+    const { fetch } = mockFetch(answer(404), answer(200));
+    const client = transport({ fetch });
+    await assert.rejects(client.request({ path: "/x" }), {
+      name: "NotFoundError",
+      code: "refusal_without_code",
+    });
+    await assert.rejects(client.request({ path: "/x" }), {
+      name: "ContractError",
+      code: "unexpected_response",
+    });
+  });
 
   test("type a refusal nested past the depth bound, which redacting it would overflow", async () => {
     const deep = `{"code":"snapshot_not_found","a":${"[".repeat(100_000)}${"]".repeat(100_000)}}`;
@@ -380,16 +430,33 @@ describe("refusals", () => {
     });
   });
 
-  test("take the trace id from x-dfo-trace-id when the problem names none", async () => {
-    const { fetch } = mockFetch(
-      problem(
-        { code: "snapshot_not_found", status: 404, trace_id: undefined },
-        { "x-dfo-trace-id": "trace-header" },
-      ),
-    );
-    await assert.rejects(transport({ fetch }).request({ path: "/x" }), {
-      traceId: "trace-header",
+  // A trace id that is not an HTTP token reads as none.
+  for (const [body, header, traceId] of [
+    [undefined, "trace-header", "trace-header"],
+    ["a b", "trace-header", "trace-header"],
+    [undefined, "a b\tc", null],
+    ['trace"1', 'trace"2', null],
+  ] as const) {
+    test(`take the trace id ${String(traceId)} from a body's ${JSON.stringify(body)} and a header's ${JSON.stringify(header)}`, async () => {
+      const { fetch } = mockFetch(
+        problem(
+          { code: "snapshot_not_found", status: 404, trace_id: body },
+          { "x-dfo-trace-id": header },
+        ),
+      );
+      await assert.rejects(transport({ fetch }).request({ path: "/x" }), { traceId });
     });
+  }
+
+  test("drop a trace id that holds the key sent, from a refusal or an answer", async () => {
+    const echoed = { "x-dfo-trace-id": `trace-${KEY}` };
+    const { fetch } = mockFetch(
+      problem({ code: "snapshot_not_found", status: 404, trace_id: undefined }, echoed),
+      json({}, 200, echoed),
+    );
+    const client = transport({ apiKey: KEY, fetch });
+    await assert.rejects(client.request({ path: "/x" }), { traceId: null });
+    assert.equal((await client.request({ path: "/x" })).traceId, null);
   });
 
   test("stop retrying when the next wait would pass the deadline", async () => {
@@ -486,6 +553,28 @@ describe("keys", () => {
         const { fetch, seen } = mockFetch(json({}));
         await transport({ apiKey: "dfo_p_publishable", fetch }).request({ path: "/x" });
         assert.equal(seen[0]?.headers.has("user-agent"), !browser);
+        // A secret key in an Authorization header of the caller's is refused as the apiKey is.
+        for (const [source, options, headers] of [
+          ["headers", { defaultHeaders: { Authorization: `Bearer ${KEY}` } }, {}],
+          ["headerProvider", { headerProvider: () => ({ authorization: `bearer ${KEY}` }) }, {}],
+          ["the call's headers", {}, { authorization: KEY.toUpperCase() }],
+          ["a quoted key", {}, { authorization: `Bearer "${KEY}"` }],
+          ["a key after a comma", {}, { authorization: `Token key=x,${KEY}` }],
+        ] as const) {
+          for (const dangerouslyAllowBrowser of [false, true]) {
+            const sending = mockFetch(json({}));
+            const sent = transport({
+              apiKey: false,
+              fetch: sending.fetch,
+              dangerouslyAllowBrowser,
+              ...options,
+            }).request({ path: "/x", headers });
+            if (browser && !dangerouslyAllowBrowser) {
+              await assert.rejects(sent, TypeError, source);
+              assert.equal(sending.seen.length, 0, source);
+            } else await sent;
+          }
+        }
       } finally {
         for (const name of Object.keys(globals)) Reflect.deleteProperty(global, name);
       }
@@ -885,6 +974,19 @@ describe("downloads", () => {
     });
   }
 
+  test("redact the key a redirect's host quotes, whatever its case", async () => {
+    // The URL parser lowercases a host, so the origin quoted holds the key in lower case.
+    const { fetch } = mockFetch(redirect(`https://${KEY}.elsewhere.example/object`));
+    const client = transport({ baseUrl: "https://api.example/api/v1", apiKey: KEY, fetch });
+    await assert.rejects(client.locate({ url: "/api/datasets/files/d" }), (error) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.name, "ContractError");
+      assert.ok(error.message.includes("https://[redacted].elsewhere.example"), error.message);
+      assert.ok(!error.message.toLowerCase().includes(KEY.toLowerCase()), error.message);
+      return true;
+    });
+  });
+
   for (const url of ["https://elsewhere.example/files/d", SIGNED]) {
     test(`refuse a file URL on ${new URL(url).host} before any request`, async () => {
       const client = transport({ fetch: mockFetch().fetch });
@@ -1061,7 +1163,8 @@ describe("body limits", () => {
     return { counts, response };
   }
 
-  for (const [name, call, status, chunk, limit] of [
+  // A refusal too large to read raises by its status, here a retryable 503.
+  for (const [name, call, status, chunk, limit, code = "response_too_large"] of [
     [
       "a JSON body, by JSON_BODY_MAX_BYTES",
       (client: Transport) => client.request({ path: "/x" }),
@@ -1071,10 +1174,11 @@ describe("body limits", () => {
     ],
     [
       "a refusal's body, by JSON_BODY_MAX_BYTES",
-      (client: Transport) => client.request({ path: "/x" }),
+      (client: Transport) => client.request({ path: "/x", maxRetries: 0 }),
       503,
       2 ** 20,
       JSON_BODY_MAX_BYTES,
+      "refusal_without_code",
     ],
     [
       "a files route's body, by the call's maxBytes",
@@ -1099,11 +1203,40 @@ describe("body limits", () => {
         .then(() => undefined)
         .catch((e: unknown) => e);
       assert.ok(error instanceof ServerError);
-      assert.equal(error.code, "response_too_large");
-      assert.equal(error.retryable, false);
+      assert.equal(error.code, code);
+      assert.equal(error.retryable, code !== "response_too_large");
       assert.equal(counts.pulls, limit / chunk + 1);
       assert.equal(counts.cancelled, true);
       assert.equal(seen.length, 1);
+    });
+  }
+
+  for (const [status, name, retried] of [
+    [503, "ServerError", true],
+    [400, "InvalidRequestError", false],
+  ] as const) {
+    test(`raise a ${status} refusal past JSON_BODY_MAX_BYTES as its status does: retried ${retried}`, async () => {
+      const { sleep, waits } = recordingSleep();
+      const oversized = () =>
+        new Response(new Uint8Array(JSON_BODY_MAX_BYTES + 1), {
+          status,
+          headers: { "retry-after": "1", "x-dfo-trace-id": "trace-big" },
+        });
+      const { fetch, seen } = mockFetch(oversized, json({ ok: true }));
+      const sent = transport({ fetch, sleep }).request({ path: "/x" });
+      if (retried) {
+        assert.deepEqual((await sent).body, { ok: true });
+        assert.deepEqual(waits, [1_000]);
+      } else {
+        await assert.rejects(sent, {
+          name,
+          code: "refusal_without_code",
+          status,
+          retryable: false,
+          traceId: "trace-big",
+        });
+        assert.equal(seen.length, 1);
+      }
     });
   }
 
@@ -1168,6 +1301,8 @@ describe("base URLs", () => {
     "https:// spaces/api",
     "https://api.example/api ",
     "https://api.example/v1/../api",
+    "https://api.example/v1/..%2fapi",
+    "https://api.example/v1/.%5Capi",
     "http://127.1/api",
     "http://0x7f.1:8080/api",
     "http://2130706433/api",
@@ -1188,13 +1323,155 @@ describe("base URLs", () => {
     });
   }
 
+  for (const baseUrl of [5, new Uint8Array([104]), {}]) {
+    test(`refuse a base URL of ${Object.prototype.toString.call(baseUrl)}, which is no string`, () => {
+      assert.throws(
+        // Plain JavaScript can pass any value.
+        () => transport({ baseUrl: baseUrl as unknown as string, apiKey: false }),
+        { name: "InvalidRequestError", code: "base_url_invalid" },
+      );
+    });
+  }
+
+  // One rule names a file URL and a problem's docs page on the API's origin. A row gives the
+  // URL each names under https://api.example/api, or null where the rule refuses it.
+  for (const [reference, named] of [
+    ["/api/datasets/s/c/files/d", "https://api.example/api/datasets/s/c/files/d"],
+    ["/datasets/s/c/files/d", "https://api.example/datasets/s/c/files/d"],
+    ["/codes/x", "https://api.example/codes/x"],
+    ["/", "https://api.example/"],
+    ["/api/x#/../..", "https://api.example/api/x#/../.."],
+    ["/api/x?a=../..", "https://api.example/api/x?a=../.."],
+    ["https://api.example/api/datasets/d", "https://api.example/api/datasets/d"],
+    ["HTTPS://API.EXAMPLE/api/datasets/d", "https://api.example/api/datasets/d"],
+    ["https://api.example:443/api/datasets/d", "https://api.example/api/datasets/d"],
+    ["https://api.example:0443/x", "https://api.example/x"],
+    ["https://api.example:/x", "https://api.example/x"],
+    ["https://api.example", "https://api.example/"],
+    ["https://api.example?x", "https://api.example/?x"],
+    ["https://api.example/x#/../..", "https://api.example/x#/../.."],
+    ["https://api.example//evil.example/x", "https://api.example//evil.example/x"],
+    // userinfo
+    ["https://u:p@api.example/x", null],
+    ["https://@api.example/x", null],
+    ["https://u@api.example/../x", null],
+    ["https://api.example\\@evil.example/x", null],
+    // another origin
+    ["https://other.example/x", null],
+    ["http://api.example/x", null],
+    ["https://api.example:8443/x", null],
+    ["https://api.example:99999/x", null],
+    ["https://api.example:44a/x", null],
+    ["https://[::1]/x", null],
+    ["javascript:alert(1)", null],
+    ["data:text/html,x", null],
+    // %2E in the host, a trailing-dot host, a backslash in the authority
+    ["https://api%2Eexample/x", null],
+    ["https://API.EXAMPLE./x", null],
+    // a character outside ASCII in the authority, such as a fullwidth letter
+    ["https://\uff41pi.example/x", null],
+    ["https://api.example\\x", null],
+    // scheme-relative, backslash and relative forms
+    ["//api.example/x", null],
+    ["/\\evil.example/x", null],
+    ["\\\\evil.example/x", null],
+    ["https:/x", null],
+    ["https:x", null],
+    ["https:../admin", null],
+    ["https:%2e%2e/admin", null],
+    ["x/y", null],
+    ["../x", null],
+    ["", null],
+    ["about:blank", null],
+    // dot segments, raw, percent-encoded or backslash-separated
+    ["/api/datasets/../../admin/x", null],
+    ["/api/%2e%2e/x", null],
+    ["/api/.%2E/x", null],
+    ["/api/datasets/%2E/files/d", null],
+    ["/api/%2e%2e%2f/x", null],
+    ["/api/..%2fadmin", null],
+    ["/api/..%5Cadmin", null],
+    ["/api/..%5cx", null],
+    ["/api/.%5Cx", null],
+    ["/api/..%2Fx", null],
+    ["/api/%2E%2E%5c/x", null],
+    ["https://api.example/x/..%2Fy", null],
+    ["/api\\..\\x", null],
+    ["/api/.", null],
+    ["https://api.example:443/api/../admin", null],
+    ["https://api.example/x/%2E%2E/y", null],
+    // a control character
+    ["/api/.\t./admin/x", null],
+    ["/api/x\r\nHost: evil", null],
+    ["/api/\u001b[2J", null],
+  ] as const) {
+    test(`name ${JSON.stringify(reference)} as ${String(named)} for a file URL and a docs URL`, async () => {
+      const client = transport({ baseUrl: "https://api.example/api", apiKey: false });
+      if (named === null) {
+        assert.throws(() => client.originUrl(reference), {
+          name: "ContractError",
+          code: "contract_violation",
+        });
+      } else {
+        assert.equal(client.originUrl(reference).href, named);
+      }
+      const { fetch } = mockFetch(problem({ code: "x", status: 400, type: reference }));
+      const error = await transport({ baseUrl: "https://api.example/api", fetch })
+        .request({ path: "/x" })
+        .catch((value: unknown) => value);
+      assert.ok(error instanceof DfoError);
+      assert.equal(error.docsUrl, named);
+    });
+  }
+
+  test("name a file URL on a loopback IPv6 origin with its port", () => {
+    const client = transport({ baseUrl: "http://[::1]:8080/api", apiKey: false });
+    assert.equal(client.originUrl("http://[::1]:8080/x").href, "http://[::1]:8080/x");
+    assert.throws(() => client.originUrl("http://[::1]/x"), { code: "contract_violation" });
+  });
+
+  test("compare an IPv6 host by its compressed form", () => {
+    const client = transport({ baseUrl: "http://[::1]:8080/api", apiKey: false });
+    assert.equal(client.originUrl("http://[0:0::1]:8080/x").href, "http://[::1]:8080/x");
+    assert.equal(
+      client.originUrl("http://[0000:0:0:0:0:0:0:1]:8080/x").href,
+      "http://[::1]:8080/x",
+    );
+    assert.throws(() => client.originUrl("http://[::2]:8080/x"), { code: "contract_violation" });
+    assert.throws(() => client.originUrl("http://[::1/x"), { code: "contract_violation" });
+  });
+
+  test("compare a host as ASCII lower case, with no Unicode case or IDNA mapping", () => {
+    // U+212A KELVIN SIGN lower-cases to ASCII k.
+    const client = transport({ baseUrl: "https://kv.example/api", apiKey: false });
+    assert.equal(client.originUrl("https://KV.example/x").href, "https://kv.example/x");
+    assert.throws(() => client.originUrl("https://\u212Av.example/x"), {
+      code: "contract_violation",
+    });
+  });
+
+  test("quote at most 1,000 characters of a refused file URL", () => {
+    const url = `/api/../${"x".repeat(5_000)}`;
+    assert.throws(() => transport({ apiKey: false }).originUrl(url), {
+      code: "contract_violation",
+      message: `The file URL ${url.slice(0, 1_000)}… holds a . or .. segment.`,
+    });
+  });
+
   test("drop every trailing slash of the base path", async () => {
     const { fetch, seen } = mockFetch(json({}));
     await transport({ baseUrl: "https://api.example/api//", fetch }).request({ path: "/x" });
     assert.equal(seen[0]?.url, "https://api.example/api/x");
   });
 
-  for (const path of ["/../../etc/passwd", "/%2e%2e/x", "/a/../b", "/a\r\nX-Injected: 1"]) {
+  for (const path of [
+    "/../../etc/passwd",
+    "/%2e%2e/x",
+    "/a/../b",
+    "/a/..%2fb",
+    "/a/.%5Cb",
+    "/a\r\nX-Injected: 1",
+  ]) {
     test(`refuse the path ${JSON.stringify(path)}, which leaves the base path or holds a control`, async () => {
       const { fetch, seen } = mockFetch();
       await assert.rejects(
@@ -1266,6 +1543,17 @@ describe("key and header characters", () => {
     }
   }
 
+  test("refuse a credentials file that breaks the format, naming its line and the format", () => {
+    assert.throws(
+      () => transport({ readCredentialsFile: () => "[default]\nkey = 'x'\n" }),
+      (error: unknown) =>
+        error instanceof AuthenticationError &&
+        error.code === "credentials_file_invalid" &&
+        error.message.includes("line 2") &&
+        error.message.includes(ACCEPTED_FORMAT),
+    );
+  });
+
   test("refuse a key function's value that is not a string", async () => {
     // Plain JavaScript can return undefined from a key function.
     const apiKey = (() => Promise.resolve(undefined)) as unknown as () => Promise<string>;
@@ -1276,6 +1564,34 @@ describe("key and header characters", () => {
     });
     assert.equal(seen.length, 0);
   });
+
+  // The headers HTTP sets itself, from any source and in any case.
+  for (const name of [
+    "Content-Length",
+    "transfer-encoding",
+    "Host",
+    "Connection",
+    "Keep-Alive",
+    "TE",
+    "Trailer",
+    "Upgrade",
+  ]) {
+    test(`refuse the header ${name} from every source`, async () => {
+      const header = { [name]: name === "Content-Length" ? "99" : "x" };
+      assert.throws(() => transport({ defaultHeaders: header }), {
+        name: "InvalidRequestError",
+        code: "header_invalid",
+      });
+      const { fetch, seen } = mockFetch();
+      for (const sent of [
+        transport({ fetch, headerProvider: () => header }).request({ path: "/x" }),
+        transport({ fetch }).request({ path: "/x", headers: header }),
+      ]) {
+        await assert.rejects(sent, { name: "InvalidRequestError", code: "header_invalid" });
+      }
+      assert.equal(seen.length, 0);
+    });
+  }
 
   test("refuse a default header with a control character when the client is built", () => {
     assert.throws(
@@ -1370,57 +1686,85 @@ describe("key providers", () => {
 });
 
 describe("server text", () => {
-  for (const [type, docsUrl] of [
-    ["/codes/x", "https://api.example/codes/x"],
-    ["javascript:alert(1)", null],
-    ["http://evil.example/doc", null],
-    ["https://evil.example/doc", null],
-    ["data:text/html,x", null],
-  ] as const) {
-    test(`give docsUrl ${String(docsUrl)} for a type ${type}`, async () => {
-      const { fetch } = mockFetch(problem({ code: "x", status: 400, type }));
-      const error = await transport({ baseUrl: "https://api.example/api", fetch })
-        .request({ path: "/x" })
-        .catch((value: unknown) => value);
-      assert.ok(error instanceof DfoError);
-      assert.equal(error.docsUrl, docsUrl);
-    });
-  }
-
   // A problem document under HTTP 200, as Search and the lookups send one, raises through
-  // problemAt200 from the parsed body.
+  // problemAt200 from the parsed body. The key echoed with a character the message strips
+  // inside it is masked too.
   for (const status of [400, 200]) {
-    test(`strip controls from a refusal's detail and mask the key it echoes, at HTTP ${status}`, async () => {
-      const { fetch } = mockFetch(
-        problem({
-          code: "request_invalid",
-          status,
-          detail: `\u001b[31mred\u001b[0m\n\u202eevil, sent ${KEY}`,
-        }),
-      );
-      const sent = transport({ apiKey: KEY, fetch }).request({ path: "/x" });
-      const error =
-        status === 200
-          ? await sent.then((response) => problemAt200(response.body, response.traceId))
-          : await sent.catch((value: unknown) => value);
-      assert.ok(error instanceof DfoError);
-      assert.equal(error.message, "[31mred[0m\nevil, sent [redacted] (request_invalid)");
-      assert.ok(!error.detail.includes(KEY));
-      assert.ok(!JSON.stringify(error.problem).includes(KEY));
-    });
+    // U+034F, U+FE0F and U+3164 are default-ignorable without being format characters.
+    for (const inside of [
+      "",
+      "\u0007",
+      "\u200e",
+      "\u001b",
+      "\u200b",
+      "\u00ad",
+      "\u034f",
+      "\ufe0f",
+      "\u3164",
+    ]) {
+      test(`strip controls from a refusal's detail and mask the key it echoes with ${JSON.stringify(inside)} inside, at HTTP ${status}`, async () => {
+        const echoed = `${KEY.slice(0, 12)}${inside}${KEY.slice(12)}`;
+        const { fetch } = mockFetch(
+          problem({
+            code: "request_invalid",
+            status,
+            detail: `\u001b[31mred\u001b[0m\n\u202eevil, sent ${echoed}`,
+            [`echo ${echoed}`]: true,
+          }),
+        );
+        const sent = transport({ apiKey: KEY, fetch }).request({ path: "/x" });
+        const error =
+          status === 200
+            ? await sent.then((response) => problemAt200(response.body, response.traceId))
+            : await sent.catch((value: unknown) => value);
+        assert.ok(error instanceof DfoError);
+        assert.equal(error.message, "[31mred[0m\nevil, sent [redacted] (request_invalid)");
+        assert.equal(error.detail, "[31mred[0m\nevil, sent [redacted]");
+        assert.equal(
+          error.problem?.["detail"],
+          "\u001b[31mred\u001b[0m\n\u202eevil, sent [redacted]",
+        );
+        assert.equal(error.problem["echo [redacted]"], true);
+      });
+    }
   }
 
-  test("redact the key a server warning echoes", async () => {
-    const warnings: DfoWarning[] = [];
-    const { fetch } = mockFetch(json({}, 200, { "x-dfo-warning": `key ${KEY} is anonymous-tier` }));
-    await transport({ apiKey: KEY, fetch, onWarning: (warning) => warnings.push(warning) }).request(
-      { path: "/x" },
+  test("quote at most 1,000 characters of server text in a message and keep it all in the detail", async () => {
+    const { fetch } = mockFetch(
+      problem({ code: "request_invalid", status: 400, detail: "x".repeat(5_000) }),
+      json({ detail: "y".repeat(5_000) }, 502),
     );
-    assert.deepEqual(
-      warnings.map((warning) => warning.message),
-      ["key [redacted] is anonymous-tier"],
-    );
+    const client = transport({ fetch, maxRetries: 0 });
+    const coded = await client.request({ path: "/x" }).catch((value: unknown) => value);
+    assert.ok(coded instanceof DfoError);
+    assert.equal(coded.message, `${"x".repeat(1_000)}… (request_invalid)`);
+    assert.equal(coded.detail.length, 5_000);
+    const codeless = await client.request({ path: "/x" }).catch((value: unknown) => value);
+    assert.ok(codeless instanceof DfoError);
+    assert.equal(codeless.code, "refusal_without_code");
+    // The cap counts the server's text alone, after the client's own lead.
+    assert.equal(codeless.message, `HTTP 502 with no refusal code: ${"y".repeat(1_000)}…`);
+    assert.ok(codeless.detail.endsWith("y".repeat(5_000)));
   });
+
+  for (const inside of ["", "\u0007"]) {
+    test(`redact the key a server warning echoes with ${JSON.stringify(inside)} inside`, async () => {
+      const warnings: DfoWarning[] = [];
+      const echoed = `${KEY.slice(0, 12)}${inside}${KEY.slice(12)}`;
+      const { fetch } = mockFetch(
+        json({}, 200, { "x-dfo-warning": `key ${echoed} is anonymous-tier ${inside.length}` }),
+      );
+      await transport({
+        apiKey: KEY,
+        fetch,
+        onWarning: (warning) => warnings.push(warning),
+      }).request({ path: "/x" });
+      assert.deepEqual(
+        warnings.map((warning) => warning.message),
+        [`key [redacted] is anonymous-tier ${inside.length}`],
+      );
+    });
+  }
 
   test("strip controls from a server warning", async () => {
     const warnings: DfoWarning[] = [];

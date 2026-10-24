@@ -634,10 +634,6 @@ def is_gap_kind(value: object) -> TypeGuard[GapKind]:
     return isinstance(value, str) and value in _GAP_KINDS
 
 
-def _no_constant(name: str) -> Never:
-    raise ValueError(f"{name} is not a JSON number")
-
-
 def decode(text: str | bytes, pointer: str = "") -> Mapping[str, Any]:
     """A stored JSON object. `NaN` and `Infinity` are refused, as JSON has neither.
 
@@ -651,7 +647,7 @@ def decode(text: str | bytes, pointer: str = "") -> Mapping[str, Any]:
             levels, or is not an object.
     """
     try:
-        obj = loads(text, parse_constant=_no_constant)
+        obj = loads(text)
     except ValueError as error:  # not JSON, nested too deeply, or not UTF-8
         raise FormatError("format_invalid", pointer, f"not JSON: {error}") from error
     return object_at(obj, pointer)
@@ -749,8 +745,8 @@ class RawResponse:
         """The body decoded as JSON.
 
         Raises:
-            ValueError: The body is not JSON, or nests arrays and objects deeper
-                than `JSON_MAX_DEPTH` levels.
+            ValueError: The body is not UTF-8 JSON, holds `NaN` or `Infinity`,
+                or nests arrays and objects deeper than `JSON_MAX_DEPTH` levels.
         """
         return loads(self.content)
 

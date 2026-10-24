@@ -1,6 +1,7 @@
 import type { CredentialsFileReader } from "../config/credentials.ts";
 import type { EnvReader } from "../config/env.ts";
 import {
+  capped,
   clientError,
   DfoError,
   errorClassFor,
@@ -11,20 +12,15 @@ import {
   serverCode,
 } from "../core/errors.ts";
 import type { DfoTimeoutError } from "../core/errors.ts";
-import {
-  checkKeyFormat,
-  inBrowser,
-  lookUpApiKey,
-  refuseSecretKeyInBrowser,
-} from "../config/keys.ts";
+import { checkKeyFormat, inBrowser, lookUpApiKey, refuseSecretInBrowser } from "../config/keys.ts";
 import type { ApiKeyOption, ResolvedKey } from "../config/keys.ts";
 import type { LongBuild } from "../datasets/operation.ts";
-import { traceIdOf } from "../core/trace.ts";
+import { traceIdFrom, traceIdOf } from "../core/trace.ts";
 import { VERSION } from "../version.ts";
 import { clientWarning, emitWarning, warnOnce } from "../core/warnings.ts";
 import type { DfoWarning, WarningHandler } from "../core/warnings.ts";
 import { isRecord, parseJson } from "../core/json.ts";
-import { controlFault, hasDotSegment, headerFault, keyFault } from "../core/text.ts";
+import { controlFault, hasDotSegment, headerFault, keyFault, secretPattern } from "../core/text.ts";
 
 /** The public API's base URL. */
 const DEFAULT_BASE_URL = "https://developmentfinance.org/api/v1";
@@ -60,8 +56,18 @@ const MAX_TIMER_MS = 2 ** 31 - 1;
 /** A timer's delay for `ms`: whole milliseconds, at least 1 and at most `MAX_TIMER_MS`. */
 const timerMs = (ms: number): number => Math.min(Math.max(1, Math.ceil(ms)), MAX_TIMER_MS);
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
-/** The media types a refusal body is read as a problem document under. */
-const PROBLEM_TYPES = new Set(["application/problem+json", "application/json"]);
+/** The headers HTTP itself sets, which frame a message or govern one connection, and which a
+ *  caller's header would contradict: the framing headers and RFC 9110's hop-by-hop ones. */
+const RESERVED_HEADERS = new Set([
+  "connection",
+  "content-length",
+  "host",
+  "keep-alive",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
 
 type Fetch = typeof globalThis.fetch;
 export type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -197,17 +203,18 @@ function isLoopback(hostname: string): boolean {
  * The base URL as an absolute http or https URL. A relative one resolves against the page. The
  * errors leave the URL out, since it may carry a password.
  *
- * @throws {InvalidRequestError} The base URL is empty, holds a character outside visible ASCII,
- *   does not resolve to an absolute http or https URL, carries userinfo, a query, a fragment
- *   or a dot segment, or writes an IPv4 host other than as four decimal octets
- *   (`base_url_invalid`).
+ * @throws {InvalidRequestError} The base URL is not a string, is empty, holds a character
+ *   outside visible ASCII, does not resolve to an absolute http or https URL, carries userinfo,
+ *   a query, a fragment or a dot segment, or writes an IPv4 host other than as four decimal
+ *   octets (`base_url_invalid`).
  */
-function resolveBaseUrl(baseUrl: string): URL {
+function resolveBaseUrl(baseUrl: unknown): URL {
   const refuse = (problem: string, cause?: unknown) =>
     clientError("base_url_invalid", {
       detail: `The base URL ${problem}. Pass an absolute https URL, such as ${DEFAULT_BASE_URL}.`,
       cause,
     });
+  if (typeof baseUrl !== "string") throw refuse(`is ${described(baseUrl)}, not a string`);
   if (baseUrl.trim() === "") throw refuse("is empty; leave baseUrl out for the public API");
   const fault = keyFault(baseUrl);
   if (fault !== null) throw refuse(`holds ${fault}`);
@@ -260,10 +267,17 @@ const headerPairs = (init: HeadersInit): Iterable<[string, unknown]> =>
  * since it may be a token.
  *
  * @throws {InvalidRequestError} A value is not a string or holds another character, or a name is
- *   one HTTP cannot carry (`header_invalid`).
+ *   one HTTP cannot carry or one of `RESERVED_HEADERS` (`header_invalid`).
  */
 function setHeaders(headers: Headers, pairs: Iterable<[string, unknown]>, source: string): void {
   for (const [name, value] of pairs) {
+    if (RESERVED_HEADERS.has(name.toLowerCase())) {
+      throw clientError("header_invalid", {
+        detail:
+          `The ${name} header from ${source} is one HTTP sets itself, to frame the ` +
+          "message or govern the connection; leave it out.",
+      });
+    }
     const fault = typeof value === "string" ? headerFault(value) : "a value that is not a string";
     if (fault !== null || typeof value !== "string") {
       throw clientError("header_invalid", {
@@ -285,25 +299,102 @@ function setHeaders(headers: Headers, pairs: Iterable<[string, unknown]>, source
   }
 }
 
-/** Decodes a body as UTF-8. */
+/** Decodes a body as UTF-8, replacing a byte sequence that is not UTF-8. */
 const UTF8 = new TextDecoder();
+/** Decodes a JSON body, which RFC 8259 requires to be UTF-8, refusing one that is not. */
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
+
+/** A body as JSON text, parsed.
+ *
+ * @throws {TypeError} The body is not UTF-8.
+ * @throws {SyntaxError} The body is not JSON, or nests too deeply.
+ */
+const parseBody = (body: Uint8Array): unknown => parseJson(STRICT_UTF8.decode(body));
 
 /** What the client's key reads as in server text it surfaces. */
 const REDACTED = "[redacted]";
 
-/** Server text with the key sent, if any, replaced by `[redacted]`. */
+/** Server text with the key sent, if any, replaced by `[redacted]`, as `redacted` does. */
 const redactedText = (text: string, key: string | undefined): string =>
-  key === undefined ? text : text.replaceAll(key, REDACTED);
+  key === undefined ? text : text.replace(secretPattern(key), REDACTED);
 
-/** Every string in a parsed body with the key sent, if any, replaced by `[redacted]`. */
+/** The default port of each scheme a URL on the API's origin may name. */
+const DEFAULT_PORTS: Readonly<Record<string, string>> = { "http:": "80", "https:": "443" };
+
+/** A host as `URL` writes it, which the base URL's hostname is, or null for an IPv6 literal that
+ *  is none. A name is ASCII lower-cased, with no IDNA mapping, since the caller refuses non-ASCII
+ *  text first; an IPv6 literal takes its compressed form. */
+function hostForm(host: string): string | null {
+  if (!host.startsWith("[")) return host.toLowerCase();
+  try {
+    return new URL(`http://${host}`).hostname;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The URL a server-sent reference names on the API's origin, or the detail of why it names
+ * none. It holds no control character, and is either a path starting with exactly one `/`, or
+ * `http://` or `https://`, an authority and a path that is empty or starts with `/`. The
+ * authority holds no `@`, `%`, `\` or character outside ASCII; its host matches the API's in
+ * ASCII lower case, with no IDNA mapping and no trailing dot, an IPv6 address by its compressed
+ * form; its port, the scheme's default when empty, matches the API's. The path up to
+ * `?` or `#`, read as written since a parser resolves a dot segment away, holds no `.` or `..`
+ * segment, as `hasDotSegment` reads one. Everything else, a scheme-relative
+ * `//host`, a relative path, `https:x` or a backslash form, names none.
+ */
+function onOrigin(reference: string, base: URL): URL | { fault: string } {
+  const controls = controlFault(reference);
+  if (controls !== null) return { fault: `holds ${controls}` };
+  const quoted = capped(reference);
+  const absolute = /^(https?:)\/\/([^/?#]*)(.*)$/i.exec(reference);
+  let rest = reference;
+  if (absolute === null) {
+    if (!/^\/(?![/\\])/.test(reference)) {
+      return { fault: `${quoted} is neither root-relative nor on the API's origin ${base.origin}` };
+    }
+  } else {
+    const [, scheme = "", authority = "", tail = ""] = absolute;
+    const parts = /^(\[[^\]]*\]|[^:]*)(?::(\d*))?$/.exec(authority);
+    const port = parts?.[2]?.replace(/^0+(?=\d)/, "") || DEFAULT_PORTS[scheme.toLowerCase()];
+    if (
+      /[@%\\]|[^\p{ASCII}]/u.test(authority) ||
+      hostForm(parts?.[1] ?? "") !== base.hostname ||
+      scheme.toLowerCase() !== base.protocol ||
+      port !== (base.port || DEFAULT_PORTS[base.protocol])
+    ) {
+      return { fault: `${quoted} is neither root-relative nor on the API's origin ${base.origin}` };
+    }
+    rest = tail;
+  }
+  if (hasDotSegment(rest.split(/[?#]/)[0] ?? ""))
+    return { fault: `${quoted} holds a . or .. segment` };
+  return new URL(`${base.origin}${rest}`);
+}
+
+/** An origin a client error quotes: redacted, then cut. The URL parser lowercases a host, so the
+ *  key is matched in any case. */
+const quotedOrigin = (origin: string, key: string | undefined): string =>
+  capped(
+    key === undefined ? origin : origin.replace(new RegExp(secretPattern(key), "giu"), REDACTED),
+  );
+
+/** Every string in a parsed body, member names included, with the key sent, if any, replaced
+ *  by `[redacted]`. The key is matched with the characters an error's message strips between
+ *  its characters, so no message, `detail` or `problem` quotes it once those are stripped. */
 function redacted(value: unknown, key: string | undefined): unknown {
   if (key === undefined) return value;
-  if (typeof value === "string") return redactedText(value, key);
-  if (Array.isArray(value)) return value.map((item) => redacted(item, key));
-  if (!isRecord(value)) return value;
-  return Object.fromEntries(
-    Object.entries(value).map(([name, item]) => [name, redacted(item, key)]),
-  );
+  const pattern = secretPattern(key);
+  const walk = (item: unknown): unknown => {
+    if (typeof item === "string") return item.replace(pattern, REDACTED);
+    if (Array.isArray(item)) return item.map(walk);
+    if (!isRecord(item)) return item;
+    return Object.fromEntries(
+      Object.entries(item).map(([name, member]) => [name.replace(pattern, REDACTED), walk(member)]),
+    );
+  };
+  return walk(value);
 }
 
 /** Why a fetch failed, from the platform's error: its cause's code, such as `ECONNREFUSED`,
@@ -337,10 +428,11 @@ export class RawResponse {
   /**
    * The body decoded as JSON.
    *
+   * @throws {TypeError} The body is not UTF-8.
    * @throws {SyntaxError} The body is not JSON, or nests arrays and objects deeper than 256 levels.
    */
   json(): unknown {
-    return parseJson(this.text());
+    return parseBody(this.body);
   }
 }
 
@@ -496,16 +588,23 @@ const DEADLINE_PASSED = new WeakSet<DfoError>();
  *  attempt running past its own timeout. */
 export const passedDeadline = (error: DfoError): boolean => DEADLINE_PASSED.has(error);
 
-/** A refusal body as a problem document: parsed when its media type is JSON, else undefined. */
-function problemBody(headers: Headers, body: Uint8Array): unknown {
-  const type = headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
-  if (type === undefined || !PROBLEM_TYPES.has(type)) return undefined;
+/** A refusal body as a problem document: the body parsed when it is a JSON object, whatever
+ *  its media type, as a 2xx body is read; else undefined. */
+function problemBody(body: Uint8Array): Record<string, unknown> | undefined {
   try {
-    return parseJson(UTF8.decode(body));
+    const parsed = parseBody(body);
+    return isRecord(parsed) ? parsed : undefined;
   } catch {
     return undefined;
   }
 }
+
+/** The first of a problem document's texts that is a string: its `detail`, else its `title`,
+ *  else the legacy `error`. */
+const problemText = (problem: Readonly<Record<string, unknown>> | null): string | undefined =>
+  [problem?.["detail"], problem?.["title"], problem?.["error"]].find(
+    (text): text is string => typeof text === "string" && text !== "",
+  );
 
 /**
  * The HTTP transport every client call goes through. It resolves URLs, sends the key to the API
@@ -634,7 +733,7 @@ export class Transport {
   /** Refuses a secret key in a browser page or worker and a key over plain http to a host that
    *  is not loopback, and warns once for a key that fails the format check. */
   #checkedKey(resolved: ResolvedKey): ResolvedKey {
-    refuseSecretKeyInBrowser(resolved.key, this.#options.dangerouslyAllowBrowser ?? false);
+    refuseSecretInBrowser(resolved.key?.reveal(), this.#options.dangerouslyAllowBrowser ?? false);
     if (resolved.key === null) return resolved;
     if (this.baseUrl.protocol === "http:" && !isLoopback(this.baseUrl.hostname)) {
       throw clientError("insecure_transport", {
@@ -659,20 +758,18 @@ export class Transport {
   }
 
   /**
-   * The URL a manifest's artifact `url` names, which must sit on the API's origin, root-relative
-   * or absolute.
+   * The URL a manifest's artifact `url` names on the API's origin, whatever the base URL's path,
+   * under `onOrigin`'s rule: a path starting with one `/`, or an absolute URL whose scheme, host
+   * and port are the API's, as `https://api.example:443/x` is for `https://api.example`.
    *
-   * @throws {ContractError} The URL is on another origin, the storage host's included
-   *   (`contract_violation`).
+   * @throws {ContractError} The URL holds a control character, is neither root-relative nor on
+   *   the API's origin, the storage host's included, or its path holds a `.` or `..` segment,
+   *   percent-encoded, backslash-separated or not (`contract_violation`).
    */
   originUrl(url: string): URL {
-    const resolved = this.url({ url });
-    if (resolved.origin !== this.baseUrl.origin) {
-      throw clientError("contract_violation", {
-        detail: `The file URL ${url} is on ${resolved.origin}, which is not the API's origin.`,
-      });
-    }
-    return resolved;
+    const named = onOrigin(url, this.baseUrl);
+    if (named instanceof URL) return named;
+    throw clientError("contract_violation", { detail: `The file URL ${named.fault}.` });
   }
 
   /**
@@ -721,23 +818,23 @@ export class Transport {
       throw clientError("unexpected_response", {
         status: response.status,
         detail: `${sent.pathname} answered with a redirect, which this call does not follow.`,
-        traceId: traceIdOf(response.headers),
+        traceId: traceIdOf(response.headers, undefined, key),
       });
     }
     const url = response.url ? new URL(response.url) : sent;
     let parsed: unknown;
     try {
-      parsed = redacted(parseJson(UTF8.decode(body)), key);
+      parsed = redacted(parseBody(body), key);
     } catch (error) {
       throw clientError("unexpected_response", {
         status: response.status,
         detail: `The response from ${url.pathname} has no JSON body.`,
-        traceId: traceIdOf(response.headers),
+        traceId: traceIdOf(response.headers, undefined, key),
         cause: error,
       });
     }
     const { status, headers } = response;
-    return { status, headers, url, body: parsed, traceId: traceIdOf(headers, parsed) };
+    return { status, headers, url, body: parsed, traceId: traceIdOf(headers, parsed, key) };
   }
 
   /** Sends a request and reads its body as bytes, raising a `DfoError` for a refusal. A
@@ -763,10 +860,10 @@ export class Transport {
    */
   async locate(options: Target & CallOptions): Promise<Located> {
     const target = options.url === undefined ? this.url(options) : this.originUrl(options.url);
-    const { response, body } = await this.#send({ ...options, method: "GET" });
+    const { response, body, key } = await this.#send({ ...options, method: "GET" });
     if (response.type === "opaqueredirect") return { signed: target, follow: true };
     if (response.status === 200) return { data: body };
-    const traceId = traceIdOf(response.headers, problemBody(response.headers, body));
+    const traceId = traceIdOf(response.headers, problemBody(body), key);
     if (response.status !== 302) {
       throw clientError("unexpected_response", {
         status: response.status,
@@ -797,7 +894,8 @@ export class Transport {
       throw clientError("contract_violation", {
         traceId,
         detail:
-          `The redirect from ${target.pathname} is on ${signed.origin}, which is neither the ` +
+          `The redirect from ${target.pathname} is on ${quotedOrigin(signed.origin, key)}, which is ` +
+          `neither the ` +
           `API's origin nor ${STORAGE_ORIGIN}.`,
       });
     }
@@ -819,8 +917,10 @@ export class Transport {
    *
    * @throws {ContractError} A followed redirect ended on another host (`contract_violation`).
    * @throws {ServerError} The host answered other than 200 (`download_failed`), or a 2xx body
-   *   past `maxBytes`, `DEFAULT_MAX_BYTES` by default, or any other past `JSON_BODY_MAX_BYTES`
+   *   past `maxBytes`, `DEFAULT_MAX_BYTES` by default, or a redirect's past `JSON_BODY_MAX_BYTES`
    *   (`response_too_large`).
+   * @throws {DfoError} A refusal's body passed `JSON_BODY_MAX_BYTES`, of the class its status
+   *   gives (`refusal_without_code`).
    * @throws {NetworkError} The connection failed.
    * @throws {DfoTimeoutError} The attempt or the call's deadline ran out.
    */
@@ -835,6 +935,7 @@ export class Transport {
       url,
       { ...options, maxBytes: options.maxBytes ?? DEFAULT_MAX_BYTES },
       { method: "GET", headers, redirect: follow ? "follow" : "manual" },
+      key,
     );
     if (outcome instanceof DfoError) throw outcome;
     const { response, body } = outcome;
@@ -843,7 +944,8 @@ export class Transport {
       throw clientError("contract_violation", {
         status: response.status,
         detail:
-          `The redirect from ${url.pathname} ended on ${ended.origin}, which is neither the ` +
+          `The redirect from ${url.pathname} ended on ${quotedOrigin(ended.origin, key)}, which is ` +
+          `neither the ` +
           `API's origin nor ${STORAGE_ORIGIN}.`,
       });
     }
@@ -888,12 +990,12 @@ export class Transport {
 
     for (let attempt = 0; ; attempt += 1) {
       const { headers, key } = await this.#headers(method, url, options);
-      const outcome = await this.#attempt(url, options, {
-        method,
-        headers,
-        redirect: "manual",
-        ...(body === undefined ? {} : { body }),
-      });
+      const outcome = await this.#attempt(
+        url,
+        options,
+        { method, headers, redirect: "manual", ...(body === undefined ? {} : { body }) },
+        key,
+      );
 
       let error: DfoError;
       if (outcome instanceof DfoError) {
@@ -1007,8 +1109,13 @@ export class Transport {
     return this.#keyHeader(url, options, headers);
   }
 
-  /** Sets the key, if any, as the `authorization` header of `headers`: by default a fresh set
-   *  holding it alone, for a request whose redirect the browser follows. */
+  /**
+   * Sets the key, if any, as the `authorization` header of `headers`: by default a fresh set
+   * holding it alone, for a request whose redirect the browser follows.
+   *
+   * @throws {TypeError} The `authorization` header carries a secret key, from the key or a
+   *   header of the caller's, in a browser page or worker without `dangerouslyAllowBrowser`.
+   */
   async #keyHeader(
     url: URL,
     options: CallOptions,
@@ -1018,6 +1125,11 @@ export class Transport {
       await this.#waitForProvider(() => this.#key.promise, url, options, "The apiKey function")
     ).key?.reveal();
     if (key !== undefined) headers.set("authorization", `Bearer ${key}`);
+    // The Authorization header the request carries, whichever source set it.
+    refuseSecretInBrowser(
+      headers.get("authorization") ?? undefined,
+      this.#options.dangerouslyAllowBrowser ?? false,
+    );
     return { headers, key };
   }
 
@@ -1094,13 +1206,20 @@ export class Transport {
    * no timer. A caller's abort rejects with the caller's reason. A failure the next attempt may
    * clear returns as a retryable error: a network failure, or the attempt's own timeout. The
    * deadline passing returns a `DfoTimeoutError` that `passedDeadline` marks, which no retry
-   * follows. A 2xx body past `maxBytes`, or any other body past `JSON_BODY_MAX_BYTES`, returns
-   * `response_too_large`, which no retry follows either.
+   * follows. A 2xx body past `maxBytes`, or a redirect's past `JSON_BODY_MAX_BYTES`, returns
+   * `response_too_large`, which no retry follows either. A refusal's body past
+   * `JSON_BODY_MAX_BYTES` returns `refusal_without_code`, of the class and retryable flag its
+   * status gives.
    *
    * @throws {InvalidRequestError} The `fetch` option returned something that is not a Response
    *   (`invalid_argument`).
    */
-  async #attempt(url: URL, options: CallOptions, init: RequestInit): Promise<Received | DfoError> {
+  async #attempt(
+    url: URL,
+    options: CallOptions,
+    init: RequestInit,
+    key: string | undefined,
+  ): Promise<Received | DfoError> {
     const limit = this.#limit(url, options);
     const timer = Number.isFinite(limit.ms) ? AbortSignal.timeout(timerMs(limit.ms)) : undefined;
     const signals = [options.signal, timer].filter((signal) => signal !== undefined);
@@ -1112,13 +1231,20 @@ export class Transport {
           detail: "The fetch option returned something that is not a Response.",
         });
       }
-      const ok = response.status >= 200 && response.status < 300;
+      const { status, headers } = response;
+      const ok = status >= 200 && status < 300;
       const maxBytes = ok ? (options.maxBytes ?? JSON_BODY_MAX_BYTES) : JSON_BODY_MAX_BYTES;
       const body = await readWithin(response, maxBytes);
       if (body !== null) return { response, body };
-      return clientError("response_too_large", {
-        status: response.status,
-        detail: `The response from ${url.host} passed its limit of ${maxBytes} decoded bytes.`,
+      const detail = `The response from ${url.host} passed its limit of ${maxBytes} decoded bytes.`;
+      // A refusal too large to read is still a refusal. Its status gives the class and whether
+      // it is retried.
+      if (status < 400) return clientError("response_too_large", { status, detail });
+      return clientError("refusal_without_code", {
+        status,
+        detail: `HTTP ${status} with no refusal code: ${detail}`,
+        traceId: traceIdOf(headers, undefined, key),
+        retryAfterMs: retryAfterMs(headers) ?? null,
       });
     } catch (error) {
       if (error instanceof InvalidRequestError) throw error;
@@ -1149,11 +1275,10 @@ export class Transport {
   }
 
   /**
-   * The error a refusal stands for, read from its problem document when it carries one. The
-   * key sent reads as `[redacted]` in the body. A code that is not snake case is no code, and
-   * its text stays in the detail. A 404 that matched no route, `not_found` or no code, names the
-   * request in the message, since the base URL is the likely fault. The detail stays the
-   * server's.
+   * The error a refusal stands for, read from its problem document when it carries one, as
+   * `problemError` builds it. The body is read whatever its media type, and the key sent reads
+   * as `[redacted]` in it. A 404 that matched no route, `not_found` or no code, names the request
+   * in the message, since the base URL is the likely fault.
    */
   #refusal(
     response: Response,
@@ -1161,63 +1286,103 @@ export class Transport {
     sent: { method: string; url: URL; key: string | undefined },
     cause?: unknown,
   ): DfoError {
-    const body = redacted(problemBody(response.headers, received), sent.key);
+    const body = redacted(problemBody(received), sent.key);
     const { status } = response;
-    const traceId = traceIdOf(response.headers, body);
-    const retryable = isRetryable(status, body);
-    const retryAfter = retryAfterMs(response.headers) ?? null;
-    const unmatched = (code: string): string | undefined =>
-      status === 404 && (code === "not_found" || code === "refusal_without_code")
-        ? `${sent.method} ${sent.url.href}`
-        : undefined;
-    // What a message opens with: the detail, or the status when the server gave none.
-    const opening = (detail: unknown): string =>
-      typeof detail === "string" ? detail : `HTTP ${status}`;
-
-    const code = isRecord(body) ? body["code"] : undefined;
-    if (isRecord(body) && typeof code === "string" && REFUSAL_CODE.test(code)) {
-      const ErrorClass = errorClassFor(code, status);
-      return new ErrorClass({
-        code: serverCode(code),
-        status,
-        detail: typeof body["detail"] === "string" ? body["detail"] : code,
-        message: refusalMessage(opening(body["detail"]), body["pointer"], code, unmatched(code)),
-        traceId,
-        retryable,
-        retryAfterMs: retryAfter,
-        problem: body,
-        docsUrl: this.#docsUrl(body["type"]),
-        cause,
-      });
-    }
-    // A body with no code keeps what a problem document says: whether to retry, its trace id. A
-    // code that is not snake case keeps its text.
-    const problem = isRecord(body) ? body : null;
-    const text = typeof code === "string" ? code : undefined;
-    const detail = `HTTP ${status} with no refusal code${text === undefined ? "" : `: ${text}`}.`;
-    return clientError("refusal_without_code", {
+    return this.problemError(isRecord(body) ? body : null, {
       status,
-      detail,
-      message: refusalMessage(detail, undefined, null, unmatched("refusal_without_code")),
-      traceId,
-      retryable,
-      retryAfterMs: retryAfter,
-      problem,
-      docsUrl: this.#docsUrl(problem?.["type"]),
+      traceId: traceIdOf(response.headers, undefined, sent.key),
+      untold: `HTTP ${status}`,
+      retryAfterMs: retryAfterMs(response.headers) ?? null,
+      unmatched: (code) =>
+        status === 404 && (code === "not_found" || code === "refusal_without_code")
+          ? `${sent.method} ${sent.url.href}`
+          : undefined,
       cause,
     });
   }
 
-  /** The page a problem document's `type` names, resolved against the API's origin, when it is
-   *  an https URL on that origin; else null. */
-  #docsUrl(type: unknown): string | null {
-    if (typeof type !== "string" || type === "" || type === "about:blank") return null;
-    try {
-      const url = new URL(type, this.baseUrl.origin);
-      return url.protocol === "https:" && url.origin === this.baseUrl.origin ? url.href : null;
-    } catch {
-      return null;
+  /**
+   * The error a problem document stands for: a refused response's body, or a failed
+   * operation's `error`. The document reaches here as the transport read it, the key sent
+   * already `[redacted]` in every string. A `code` that is not a refusal code is no code. A
+   * document with a code raises it, its message the `detail`, else `untold`. One with no code
+   * raises `fallbackCode` when given, else `refusal_without_code`, its text the `detail`, else
+   * the `title`, else the legacy `error`, else the code that is not one. The message quotes at
+   * most `MESSAGE_TEXT_MAX` characters of server text and names the `pointer`. The trace id is
+   * the document's `trace_id` when it is an HTTP token, else `traceId`; whether to retry is the
+   * document's `retryable`, else the status's rule. The detail stays the server's.
+   */
+  problemError(
+    problem: Readonly<Record<string, unknown>> | null,
+    refused: {
+      /** The status the refusal answered, or a failed operation's error gives. */
+      status: number;
+      /** The response's trace id header, for a document with none. */
+      traceId: string | null;
+      /** What the message says when the document gives no text. */
+      untold: string;
+      /** The code of a document that carries none; else `refusal_without_code`. */
+      fallbackCode?: "operation_failed";
+      retryAfterMs?: number | null;
+      /** The request a 404 that matched no route names, given the error's code. */
+      unmatched?: (code: string) => string | undefined;
+      cause?: unknown;
+    },
+  ): DfoError {
+    const { status, fallbackCode, cause } = refused;
+    const traceId = traceIdFrom(problem?.["trace_id"]) ?? refused.traceId;
+    const retryable = isRetryable(status, problem);
+    const retryAfter = refused.retryAfterMs ?? null;
+    const docsUrl = this.#docsUrl(problem?.["type"]);
+    const given = problem?.["code"];
+    const code = typeof given === "string" && REFUSAL_CODE.test(given) ? given : null;
+    const raised = code ?? fallbackCode;
+    // A codeless document's text falls back to its code that is no refusal code.
+    const text =
+      problemText(problem) ??
+      (code === null && typeof given === "string" ? given || undefined : undefined);
+    const unmatched = refused.unmatched?.(raised ?? "refusal_without_code");
+    if (raised !== undefined) {
+      const ErrorClass = errorClassFor(raised, status);
+      return new ErrorClass({
+        code: serverCode(raised),
+        status,
+        detail: text ?? code ?? refused.untold,
+        message: refusalMessage(text ?? refused.untold, problem?.["pointer"], raised, {
+          unmatched,
+        }),
+        traceId,
+        retryable,
+        retryAfterMs: retryAfter,
+        problem,
+        docsUrl,
+        cause,
+      });
     }
+    // A document with no code keeps what it says: whether to retry, its trace id, and its text.
+    const lead = `HTTP ${status} with no refusal code`;
+    return clientError("refusal_without_code", {
+      status,
+      detail: text === undefined ? `${lead}.` : `${lead}: ${text}`,
+      message:
+        text === undefined
+          ? refusalMessage(`${lead}.`, undefined, null, { unmatched })
+          : refusalMessage(text, undefined, null, { lead, unmatched }),
+      traceId,
+      retryable,
+      retryAfterMs: retryAfter,
+      problem,
+      docsUrl,
+      cause,
+    });
+  }
+
+  /** The page a problem document's `type` names on the API's origin, under the rule a file URL
+   *  follows; else null. */
+  #docsUrl(type: unknown): string | null {
+    if (typeof type !== "string") return null;
+    const named = onOrigin(type, this.baseUrl);
+    return named instanceof URL ? named.href : null;
   }
 
   /** Warns once per process for each distinct pair of `Deprecation` and `Sunset` values, on

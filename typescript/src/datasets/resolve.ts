@@ -10,7 +10,9 @@
  * both, since the ref pins the version and the digest names one rendering of it. The steps
  * after the snapshot run only for a version whose file has expired. A version the server never
  * built (`snapshot_not_found`) raises at once. A snapshot or build that answers another spec
- * raises `ContractError`, so a recovered member keeps the ref's identity.
+ * raises `ContractError`, so a recovered member keeps the ref's identity. A snapshot that lists
+ * the ref's digest under another rendering than the ref's raises `FormatError`, since the ref's
+ * label and its file disagree.
  *
  * The lookup reuses the build path's download, warnings and finishing steps, so this module
  * imports `fetch.ts` and `fetch.ts` imports nothing from here.
@@ -19,6 +21,7 @@
 import { Dataset } from "./dataset.ts";
 import type { FetchedMember } from "./dataset.ts";
 import {
+  capped,
   clientError,
   DfoError,
   InvalidRequestError,
@@ -44,7 +47,14 @@ import {
 import type { CallOptions, FetchOptions, Narrowing, SpecInput } from "./fetch.ts";
 import { build, deadlineOf, readManifest } from "./operation.ts";
 import type { Built, Manifest, Wait } from "./operation.ts";
-import { CONTENT_VERSION, DatasetRef, fileParams, layoutOf, mintOptions } from "../core/ref.ts";
+import {
+  CONTENT_VERSION,
+  DatasetRef,
+  fileParams,
+  FormatError,
+  layoutOf,
+  mintOptions,
+} from "../core/ref.ts";
 import type { Layout, Rendering, RefMember } from "../core/ref.ts";
 import { describing } from "../core/trace.ts";
 import type { Transport } from "../http/transport.ts";
@@ -129,8 +139,8 @@ async function fetchRef(
   }
   const wait = { deadline: deadlineOf(transport, options.timeout), signal: options.signal };
   const fetched: FetchedMember[] = [];
-  for (const member of ref.members) {
-    fetched.push(await fetchVersion(transport, member, options, wait));
+  for (const [index, member] of ref.members.entries()) {
+    fetched.push(await fetchVersion(transport, member, `/members/${index}`, options, wait));
   }
   return new Dataset<never>(fetched, { layout });
 }
@@ -146,10 +156,11 @@ const stored = (member: RefMember, manifest: Manifest, data: Uint8Array): Fetche
   data,
 });
 
-/** One stored version, through the lookup order. */
+/** One stored version, through the lookup order. `pointer` locates the member in the ref. */
 async function fetchVersion(
   transport: Transport,
   member: RefMember,
+  pointer: string,
   options: CallOptions,
   wait: Wait,
 ): Promise<FetchedMember> {
@@ -165,7 +176,7 @@ async function fetchVersion(
   }
   if (found !== undefined) {
     noteWarnings(transport, found, strict);
-    const file = await storedFile(transport, member, found, wait);
+    const file = await storedFile(transport, member, pointer, found, wait);
     if (file.data !== undefined) {
       checkArtifact(file.data, found.manifest, member.digest);
       return stored(member, found.manifest, file.data);
@@ -183,7 +194,7 @@ async function fetchVersion(
       const rebuilt = specIdOf(built.manifest);
       if (rebuilt !== member.spec.spec_id) {
         throw clientError("contract_violation", {
-          detail: `The server rebuilt ${rebuilt} for ${member.spec.spec_id}.`,
+          detail: `The server rebuilt ${capped(rebuilt)} for ${member.spec.spec_id}.`,
           pointer: "/definition/spec_id",
         });
       }
@@ -246,7 +257,7 @@ async function snapshot(
     const asked = `${member.spec.spec_id} at ${member.contentVersion}`;
     if (built !== asked) {
       throw clientError("contract_violation", {
-        detail: `The server answered ${built} for ${asked}.`,
+        detail: `The server answered ${capped(built)} for ${asked}.`,
         pointer:
           specIdOf(read) === member.spec.spec_id ? "/content_version" : "/definition/spec_id",
       });
@@ -257,15 +268,28 @@ async function snapshot(
 }
 
 /** The stored artifact's bytes from the files route, or else from the file selector, or the
- *  files route's refusal when neither serves bytes with the stored digest. */
+ *  files route's refusal when neither serves bytes with the stored digest.
+ *
+ * @throws {FormatError} The manifest lists the ref's digest only under another rendering
+ *   (`format_invalid` at the member's `artifact/rendering`).
+ */
 async function storedFile(
   transport: Transport,
   member: RefMember,
+  pointer: string,
   { manifest, traceId }: Built,
   wait: Wait,
 ): Promise<{ data?: Uint8Array; refusal?: DfoError | undefined }> {
   let refusal: DfoError | undefined;
   const artifact = pickArtifact(manifest, member.rendering, member.digest);
+  if (artifact === undefined && listsDigest(manifest, member.digest)) {
+    throw new FormatError(
+      "format_invalid",
+      `${pointer}/artifact/rendering`,
+      `${JSON.stringify(mintOptions(member.rendering))} is not the rendering the server lists ` +
+        `for ${member.digest}`,
+    );
+  }
   if (artifact !== undefined) {
     const route = describing(traceId, () => transport.originUrl(String(artifact["url"])));
     try {
@@ -299,6 +323,13 @@ async function storedFile(
     throw error;
   }
 }
+
+/** Whether a manifest lists an artifact with `digest`, in any rendering. */
+const listsDigest = (manifest: Manifest, digest: string): boolean =>
+  // readManifest has checked `artifacts` is a list.
+  (manifest["artifacts"] as unknown[]).some(
+    (artifact) => isRecord(artifact) && artifact["artifact_digest"] === digest,
+  );
 
 /** The versions one page of the versions route lists, the route's default page size. */
 const VERSIONS_PAGE = 100;

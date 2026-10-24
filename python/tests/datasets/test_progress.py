@@ -98,6 +98,12 @@ def test_a_shell_without_a_kernel_is_not_a_notebook(
             100_000,
             "Building op_1: [####################] 100% 150,000 of about 100,000 rows",
         ),
+        (1_500, -100_000, "Building op_1: 1,500 rows"),
+        (
+            -5_000,
+            100_000,
+            "Building op_1: [--------------------] 0% -5,000 of about 100,000 rows",
+        ),
     ],
 )
 def test_line(rows: int | None, estimate: int | None, line: str) -> None:

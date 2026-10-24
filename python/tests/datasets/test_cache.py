@@ -1,6 +1,7 @@
 """The download cache: the contract's layout, re-hashing, atomic writes, eviction,
 the checks on what it reads back, and where it lives."""
 
+import contextlib
 import getpass
 import json
 import logging
@@ -8,6 +9,7 @@ import os
 import pwd
 import threading
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -124,6 +126,36 @@ def test_a_corrupted_artifact_is_a_miss(cache: Cache) -> None:
     cache.put_bytes(digest, data)
     (cache.directory / file_entry(digest)).write_bytes(b"flipped bytes")
     assert cache.get_bytes(digest) is None
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="the platform has no FIFO")
+@pytest.mark.parametrize("entry", ["artifact", "manifest"])
+def test_a_fifo_at_an_entry_path_is_a_miss_that_never_blocks(
+    cache: Cache, entry: str
+) -> None:
+    data = b"parquet bytes"
+    digest = sha256_digest(data)
+    if entry == "artifact":
+        cache.put_bytes(digest, data)
+        path = cache.directory / file_entry(digest)
+        read: Callable[[], object] = partial(cache.get_bytes, digest)
+    else:
+        cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, stored(CV_OLD))
+        path = cache.directory / manifest_entry(SPEC_ID, CV_OLD, PARQUET)
+        read = partial(cache.get_manifest, SPEC_ID, CV_OLD, PARQUET)
+    path.unlink()
+    os.mkfifo(path)
+    found: list[object] = []
+    reader = threading.Thread(target=lambda: found.append(read()), daemon=True)
+    reader.start()
+    reader.join(2.0)
+    try:
+        assert not reader.is_alive(), "the read blocked on the FIFO"
+    finally:
+        # Opening the write end releases a reader that blocked, so none lingers.
+        with contextlib.suppress(OSError):
+            os.close(os.open(path, os.O_WRONLY | os.O_NONBLOCK))
+    assert found == [None]
 
 
 def test_put_refuses_bytes_that_do_not_hash_to_the_digest(cache: Cache) -> None:

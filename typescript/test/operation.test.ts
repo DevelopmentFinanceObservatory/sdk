@@ -31,6 +31,8 @@ async function built() {
   };
 }
 
+type Spec = Awaited<ReturnType<typeof built>>["spec"];
+
 function client(fetch: typeof globalThis.fetch, timeout?: number) {
   let clock = 0;
   const waits: number[] = [];
@@ -50,7 +52,7 @@ function client(fetch: typeof globalThis.fetch, timeout?: number) {
     },
     onWarning: (warning) => warnings.push(warning),
   });
-  return { transport, waits, warnings };
+  return { transport, waits, warnings, tick: (ms: number) => void (clock += ms) };
 }
 
 const operation = (status: string, extra: Record<string, unknown> = {}) => ({
@@ -193,14 +195,16 @@ describe("a long build", () => {
       limited("5"),
       limited("7"),
       limited(),
+      limited("0"),
       json({ ...operation("done"), manifest }),
       ...download(parquet),
     );
     const { transport, waits } = client(fetch);
     const dataset = await (await mint(transport, spec)).result();
     assert.equal(dataset.rows, 4);
-    // A 429 with no Retry-After falls back to the operation's own pacing.
-    assert.deepEqual(waits, [1000, 5000, 7000, 1000]);
+    // A 429 with no Retry-After falls back to the operation's own pacing, and one with
+    // Retry-After: 0 waits the poll interval's floor.
+    assert.deepEqual(waits, [1000, 5000, 7000, 1000, 1000]);
   });
 
   test("refuses a poll whose operation id is not one path segment, before requesting it", async () => {
@@ -287,27 +291,215 @@ describe("a long build", () => {
     });
   }
 
-  test("raises operation_failed for a failed operation with no error, with the header's trace id", async () => {
-    const { fetch } = mockFetch(json(operation("failed"), 200, { "x-dfo-trace-id": "trace-op" }));
-    const op = await resume(client(fetch).transport, OP);
-    await assert.rejects(op.result(), {
-      name: "ServerError",
-      code: "operation_failed",
-      traceId: "trace-op",
+  // Each row gives a failed operation's error, which raises operation_failed with the trace id
+  // of the response's header and the error's text, as a refusal with no code shows it.
+  for (const [name, error, message] of [
+    ["no error", undefined, "The build failed. (operation_failed)"],
+    [
+      "an error whose trace_id is not an HTTP token",
+      { status: 500, trace_id: "trace op" },
+      "The build failed. (operation_failed)",
+    ],
+    [
+      "an error whose code is not a refusal code",
+      { code: "Build Failed", status: 500 },
+      "Build Failed (operation_failed)",
+    ],
+    [
+      "an error with a title and no code",
+      { status: 500, title: "Out of memory", error: "oom" },
+      "Out of memory (operation_failed)",
+    ],
+    [
+      "an error with a legacy error and no code",
+      { status: 500, error: "oom" },
+      "oom (operation_failed)",
+    ],
+  ] as const) {
+    test(`raises operation_failed for a failed operation with ${name}, with the header's trace id`, async () => {
+      const { fetch } = mockFetch(
+        json({ ...operation("failed"), ...(error === undefined ? {} : { error }) }, 200, {
+          "x-dfo-trace-id": "trace-op",
+        }),
+      );
+      const op = await resume(client(fetch).transport, OP);
+      await assert.rejects(op.result(), {
+        name: "ServerError",
+        code: "operation_failed",
+        traceId: "trace-op",
+        message,
+      });
     });
+  }
+
+  // Each row gives a poll's answer that breaks the contract.
+  for (const [name, answer] of [
+    ["the status cancelled", operation("cancelled")],
+    ["the status queued", operation("queued")],
+    ["an empty status", operation("")],
+    ["another operation", operation("running", { operation_id: `op_${"b".repeat(64)}` })],
+    [
+      "a failed operation whose error has the status 200",
+      { ...operation("failed"), error: { code: "build_failed", status: 200 } },
+    ],
+  ] as const) {
+    test(`raises contract_violation on the poll that answers ${name}`, async () => {
+      const { spec } = await built();
+      const { fetch, seen } = mockFetch(
+        json(operation("pending", { retry_after_ms: 1000 }), 202),
+        json(answer, 200, { "x-dfo-trace-id": "trace-poll" }),
+      );
+      const op = await mint(client(fetch).transport, spec);
+      await assert.rejects(op.result(), {
+        name: "ContractError",
+        code: "contract_violation",
+        traceId: "trace-poll",
+      });
+      assert.equal(seen.length, 2);
+    });
+  }
+
+  test("polls at the deadline when the server's pace is longer than the time left", async () => {
+    const { spec } = await built();
+    const { fetch, seen } = mockFetch(
+      json(operation("pending", { retry_after_ms: 60_000 }), 202),
+      json(operation("running", { retry_after_ms: 60_000 })),
+    );
+    const { transport, waits } = client(fetch);
+    await assert.rejects((await mint(transport, spec)).result({ timeout: 4000 }), {
+      name: "DfoTimeoutError",
+      code: "deadline_exceeded",
+    });
+    assert.deepEqual(waits, [4000]);
+    assert.equal(seen.length, 2);
   });
 
-  test("strips controls from a failed operation's detail", async () => {
+  test("polls at the deadline once more after a poll the deadline cuts off", async () => {
+    const { spec } = await built();
+    const { fetch, seen } = mockFetch(
+      json(operation("pending", { retry_after_ms: 1000 }), 202),
+      // The deadline cuts this poll off 100 ms in.
+      answerAfter(2_000, json(operation("running"))),
+      json(operation("running")),
+    );
+    const { transport, waits } = client(fetch);
+    await assert.rejects((await mint(transport, spec)).result({ timeout: 1100 }), (error) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.name, "DfoTimeoutError");
+      assert.ok(error.message.includes(`client.operation("${OP}").`), error.message);
+      return true;
+    });
+    // The clock stands still while the cut poll runs, so the last wait is the 100 ms left.
+    assert.deepEqual(waits, [1000, 100]);
+    assert.equal(seen.length, 3);
+  });
+
+  test("polls once at the deadline when the build's POST leaves no time", async () => {
+    const { spec } = await built();
+    // The POST answers 5 s later on the client's clock.
+    const clock: { tick?: (ms: number) => void } = {};
+    const { fetch, seen } = mockFetch(
+      () => {
+        clock.tick?.(5000);
+        return json(operation("pending", { retry_after_ms: 1000 }), 202)();
+      },
+      json(operation("running")),
+    );
+    const { transport, waits, tick } = client(fetch);
+    clock.tick = tick;
+    await assert.rejects(fetchDataset(transport, spec, { timeout: 4000 }), {
+      name: "DfoTimeoutError",
+      code: "deadline_exceeded",
+    });
+    assert.deepEqual(waits, [0]);
+    assert.equal(seen.length, 2);
+  });
+
+  // Each row starts the build through one call: `mint` then `result`, or a fetch.
+  const calls = {
+    result: async (transport: Transport, spec: Spec) =>
+      (await mint(transport, spec)).result({ timeout: 4000 }),
+    fetch: (transport: Transport, spec: Spec) => fetchDataset(transport, spec, { timeout: 4000 }),
+  };
+  for (const [call, start] of Object.entries(calls)) {
+    test(`${call} returns the data of a build the deadline poll reads done`, async () => {
+      const { spec, manifest, parquet } = await built();
+      const { fetch, seen } = mockFetch(
+        json(operation("pending", { retry_after_ms: 60_000 }), 202),
+        json({ ...operation("done"), manifest }),
+        ...download(parquet),
+      );
+      const dataset = await start(client(fetch).transport, spec);
+      assert.equal(dataset.rows, 4);
+      assert.equal(seen.length, 4);
+    });
+
+    // Each row gives the requests of a download whose every attempt outlives the client's
+    // timeout: the files route, or the signed URL, which the download asks for again once.
+    const route = () => new Response(null, { status: 302, headers: { location: SIGNED } });
+    const slow = () => new Response(new Uint8Array(8), { status: 200 });
+    for (const [hangs, requests] of [
+      ["files route", [answerAfter(1_000, route)]],
+      ["signed URL", [route, answerAfter(1_000, slow), route, answerAfter(1_000, slow)]],
+    ] as const) {
+      test(`${call} names the call that resumes a build the deadline poll reads done when one attempt at its ${hangs} runs out of time`, async () => {
+        const { spec, manifest } = await built();
+        const { fetch, seen } = mockFetch(
+          json(operation("pending", { retry_after_ms: 60_000 }), 202),
+          json({ ...operation("done"), manifest }),
+          ...requests,
+        );
+        await assert.rejects(start(client(fetch, 20).transport, spec), (error) => {
+          assert.ok(error instanceof Error);
+          assert.equal(error.name, "DfoTimeoutError");
+          assert.ok(error.message.includes(`client.operation("${OP}").`), error.message);
+          assert.ok(
+            error.message.startsWith("The build is done, but its download ran out of time."),
+            error.message,
+          );
+          return true;
+        });
+        // Each request gets one attempt, with no retry.
+        assert.equal(seen.length, 2 + requests.length);
+      });
+    }
+  }
+
+  for (const [call, start] of Object.entries(calls)) {
+    test(`${call} names the call that resumes a build done before the deadline whose download attempts all run out of time`, async () => {
+      const { spec, manifest } = await built();
+      const route = () => new Response(null, { status: 302, headers: { location: SIGNED } });
+      const { fetch } = mockFetch(
+        json(operation("pending", { retry_after_ms: 1000 }), 202),
+        json({ ...operation("done"), manifest }),
+        ...Array.from({ length: 11 }, () => answerAfter(1_000, route)),
+      );
+      await assert.rejects(start(client(fetch, 20).transport, spec), (error) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.name, "DfoTimeoutError");
+        assert.ok(error.message.includes(`client.operation("${OP}").`), error.message);
+        return true;
+      });
+    });
+  }
+
+  test("strips controls from a failed operation's detail and links its code's page", async () => {
     const { fetch } = mockFetch(
       json({
         ...operation("failed"),
-        error: { code: "build_failed", status: 500, detail: "\u001b[31mfailed\u0007\nhere" },
+        error: {
+          code: "build_failed",
+          status: 500,
+          detail: "\u001b[31mfailed\u0007\nhere",
+          type: "/codes/build_failed",
+        },
       }),
     );
     const op = await resume(client(fetch).transport, OP);
     await assert.rejects(op.result(), {
       code: "build_failed",
       message: "[31mfailed\nhere (build_failed)",
+      docsUrl: "https://api.example/codes/build_failed",
     });
   });
 
@@ -345,8 +537,9 @@ describe("a long build", () => {
           json(operation("pending", { retry_after_ms: 1000 }), started === "mint" ? 202 : 200),
           running,
           running,
+          running,
         );
-        const { transport } = client(fetch);
+        const { transport, waits } = client(fetch);
         const op =
           started === "mint"
             ? await mint(transport, spec, options)
@@ -361,6 +554,9 @@ describe("a long build", () => {
           assert.ok(error.message.includes(`client.operation(${call}).`), error.message);
           return true;
         });
+        // The last wait ends at the deadline, and the poll at the deadline reads it running.
+        assert.deepEqual(waits, [1000, 1000, 500]);
+        assert.equal(seen.length, 4);
       });
     }
   }
@@ -412,6 +608,36 @@ describe("a long build", () => {
     assert.equal(seen[2]!.method, "POST");
     assert.equal(seen[2]!.body, seen[0]!.body);
   });
+
+  // Each row gives the poll at the deadline reading a retryable failure: a refused poll, or a
+  // failed operation retryable by its status.
+  for (const [name, failure, code] of [
+    [
+      "a refused poll",
+      problem({ code: "operation_failed", status: 500, retryable: true }),
+      "operation_failed",
+    ],
+    [
+      "a failed operation",
+      json({ ...operation("failed"), error: { code: "build_failed", status: 503 } }),
+      "build_failed",
+    ],
+  ] as const) {
+    test(`raises the retryable failure ${name} reads at the deadline, resubmitting none`, async () => {
+      const { spec } = await built();
+      const { fetch, seen } = mockFetch(
+        json(operation("pending", { retry_after_ms: 1000 }), 202),
+        failure,
+      );
+      const { transport } = client(fetch);
+      await assert.rejects((await mint(transport, spec)).result({ timeout: 1000 }), {
+        name: "ServerError",
+        code,
+        retryable: true,
+      });
+      assert.equal(seen.length, 2);
+    });
+  }
 
   test("resubmits a failed operation retryable by its status alone", async () => {
     const { spec, manifest, parquet } = await built();
@@ -515,11 +741,32 @@ describe("a stored version's lookup order", () => {
 
     test(`asks the file selector when the stored file has expired${isCut ? ", a cut" : ""}`, async () => {
       const { ref, manifest, parquet, version } = await stored(isCut);
-      const { fetch, seen } = mockFetch(json(manifest), expired, ...download(parquet));
+      const { fetch, seen } = mockFetch(
+        json(withDecoy(manifest, isCut)),
+        expired,
+        ...download(parquet),
+      );
       const dataset = await fetchDataset(client(fetch).transport, ref);
       // The selector renders the version with the options it was minted with.
       assert.equal(seen[2]!.url, `${version}/file?format=parquet&bundle=false`);
       assert.equal(dataset.rows, 30);
+    });
+
+    test(`refuses a ref whose digest the snapshot lists under the other rendering${isCut ? ", a cut" : ""}`, async () => {
+      const { ref, manifest } = await stored(isCut);
+      // The member's digest sits under the rendering the ref does not hold.
+      const [artifact, ...rest] = manifest["artifacts"] as Record<string, unknown>[];
+      const rendering = artifact!["rendering"] as Record<string, unknown>;
+      const other = isCut ? rendering : { ...rendering, without_party_totals: true };
+      const { fetch, seen } = mockFetch(
+        json({ ...manifest, artifacts: [{ ...artifact, rendering: other }, ...rest] }),
+      );
+      await assert.rejects(fetchDataset(client(fetch).transport, ref), {
+        name: "FormatError",
+        reason: "format_invalid",
+        pointer: "/members/0/artifact/rendering",
+      });
+      assert.equal(seen.length, 1);
     });
   }
 

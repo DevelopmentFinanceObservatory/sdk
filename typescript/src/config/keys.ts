@@ -1,4 +1,4 @@
-import { parseCredentialsFile, platformCredentialsFile } from "./credentials.ts";
+import { ACCEPTED_FORMAT, parseCredentialsFile, platformCredentialsFile } from "./credentials.ts";
 import type { CredentialsFileReader } from "./credentials.ts";
 import { readProcessEnv } from "./env.ts";
 import type { EnvReader } from "./env.ts";
@@ -184,7 +184,7 @@ export function lookUpApiKey({
   const parsed = parseCredentialsFile(text);
   if (!parsed.ok) {
     throw clientError("credentials_file_invalid", {
-      detail: `The credentials file is invalid at line ${parsed.line}: ${parsed.reason}.`,
+      detail: `The credentials file is invalid at line ${parsed.line}: ${parsed.reason}. ${ACCEPTED_FORMAT}`,
     });
   }
   const named = env("DFO_PROFILE");
@@ -233,15 +233,19 @@ export const inBrowser = (): boolean => {
 
 /**
  * Refuses a secret key in a browser page or worker unless the caller allows it, since the
- * script that holds it is delivered to every visitor.
+ * script that holds it is delivered to every visitor. `credential` is a key or the value of an
+ * `Authorization` header, refused when it holds the secret prefix anywhere, in any case, so
+ * `Bearer dfo_k_…`, `Bearer "dfo_k_…"` and `DFO_K_…` are caught too. A well-formed publishable
+ * key holds no `_` after its prefix, so it never holds the secret one.
+ *
+ * @throws {TypeError} It carries a secret key in a browser without `dangerouslyAllowBrowser`.
  */
-export function refuseSecretKeyInBrowser(
-  key: ApiKey | null,
+export function refuseSecretInBrowser(
+  credential: string | undefined,
   dangerouslyAllowBrowser: boolean,
 ): void {
-  if (key === null || dangerouslyAllowBrowser || !inBrowser()) return;
-  // The prefix is matched in any case, so `DFO_K_` is caught too.
-  if (key.reveal().toLowerCase().startsWith(SECRET_PREFIX)) {
+  if (credential === undefined || dangerouslyAllowBrowser || !inBrowser()) return;
+  if (credential.toLowerCase().includes(SECRET_PREFIX)) {
     throw new TypeError(
       "A secret dfo_k_ key in a browser page or worker is readable by every visitor. Call the " +
         "API from a server, or pass dangerouslyAllowBrowser: true to send it anyway.",
