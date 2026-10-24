@@ -9,7 +9,6 @@ import os
 import shutil
 import sys
 from collections.abc import Sequence
-from typing import TextIO
 
 from dfo._config.credentials import CredentialsFileError, store_key
 from dfo._config.keys import check_key_format, mask, resolve_key
@@ -20,11 +19,7 @@ from dfo._datasets.cache import cache_path
 _PROMPT = "Paste your DFO API key: "
 
 
-def _profile() -> str:
-    return os.environ.get("DFO_PROFILE") or "default"
-
-
-def _save(key: str, out: TextIO) -> None:
+def _save(key: str) -> None:
     """Store `key` under the chosen profile and say where it went.
 
     Raises:
@@ -35,7 +30,7 @@ def _save(key: str, out: TextIO) -> None:
     if not key:
         raise ValueError("No key given")
     path = credentials_path()
-    profile = _profile()
+    profile = os.environ.get("DFO_PROFILE") or "default"
     try:
         store_key(path, profile, key)
     except CredentialsFileError as error:
@@ -43,12 +38,11 @@ def _save(key: str, out: TextIO) -> None:
             f"The credentials file {path} is invalid at line {error.line} "
             f"({error.reason}); fix or remove it, then log in again"
         ) from error
-    print(f"Saved the key {mask(key)} to {path}, profile {profile!r}.", file=out)
+    print(f"Saved the key {mask(key)} to {path}, profile {profile!r}.")
     if problem := check_key_format(key):
         print(
             f"The key does not look like a DFO key ({problem}); it is saved and "
-            "sent anyway.",
-            file=out,
+            "sent anyway."
         )
 
 
@@ -62,21 +56,19 @@ def login() -> None:
         ValueError: The key is empty or cannot be stored, or the existing
             credentials file is invalid.
     """
-    _save(getpass.getpass(_PROMPT), sys.stdout)
+    _save(getpass.getpass(_PROMPT))
 
 
-def _auth_login(args: argparse.Namespace) -> int:
-    key = sys.stdin.read() if args.with_token else getpass.getpass(_PROMPT)
-    _save(key, sys.stdout)
-    return 0
+def _auth_login(args: argparse.Namespace) -> None:
+    _save(sys.stdin.read() if args.with_token else getpass.getpass(_PROMPT))
 
 
-def _auth_status(_: argparse.Namespace) -> int:
+def _auth_status(_: argparse.Namespace) -> None:
     resolved = resolve_key()
     if resolved.key is None:
         print("No key: requests are anonymous.")
         print(f"Run `dfo auth login` to store one in {credentials_path()}.")
-        return 0
+        return
     where = {
         "argument": "the api_key argument",
         "environment": "the DFO_API_KEY environment variable",
@@ -84,10 +76,9 @@ def _auth_status(_: argparse.Namespace) -> int:
         "colab": "the Colab secret DFO_API_KEY",
     }[resolved.source]
     print(f"Key {mask(resolved.key.reveal())} from {where}.")
-    return 0
 
 
-def _cache_clear(_: argparse.Namespace) -> int:
+def _cache_clear(_: argparse.Namespace) -> None:
     """Empty the cache directory, or the directory it links to, and keep it.
 
     Raises:
@@ -96,7 +87,7 @@ def _cache_clear(_: argparse.Namespace) -> int:
     directory = cache_path()
     if not directory.exists():
         print(f"The cache at {directory} is already empty.")
-        return 0
+        return
     if not directory.is_dir():
         raise ValueError(
             f"The cache path {directory} is a file, not a directory; remove it, "
@@ -108,7 +99,6 @@ def _cache_clear(_: argparse.Namespace) -> int:
         else:
             entry.unlink()
     print(f"Cleared the cache at {directory}.")
-    return 0
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -142,7 +132,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the `dfo` command; return its exit status."""
     args = _parser().parse_args(argv)
     try:
-        return args.run(args)
+        args.run(args)
     except (DfoError, ValueError, OSError) as error:
         print(f"dfo: {error}", file=sys.stderr)
         return 1
+    return 0

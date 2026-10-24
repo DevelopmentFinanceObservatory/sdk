@@ -229,9 +229,9 @@ def _sends_in_clear(url: str) -> bool:
     Loopback is `localhost`, a name under `.localhost`, an address in 127.0.0.0/8
     written as four decimal numbers, or `[::1]`.
     """
-    host = _host(url)
     if urlsplit(url).scheme != "http":
         return False
+    host = _host(url)
     if host in ("localhost", "::1") or host.endswith(".localhost"):
         return False
     address = _dotted_quad(host)
@@ -271,7 +271,7 @@ def _checked_headers(headers: Mapping[str, str], source: str) -> Mapping[str, st
     return headers
 
 
-def _checked_timeout(timeout: float, name: str) -> float:
+def _checked_timeout(timeout: float) -> float:
     """Return `timeout` once it is a finite number of seconds above 0.
 
     Raises:
@@ -285,7 +285,7 @@ def _checked_timeout(timeout: float, name: str) -> float:
     ):
         raise client_error(
             INVALID_ARGUMENT,
-            f"{name} is a finite number of seconds above 0, not {timeout!r}",
+            f"timeout is a finite number of seconds above 0, not {timeout!r}",
         )
     return float(timeout)
 
@@ -669,7 +669,7 @@ class Transport:
                 (`invalid_argument`).
             AuthenticationError: The key lookup failed.
         """
-        timeout = _checked_timeout(timeout, "timeout")
+        timeout = _checked_timeout(timeout)
         max_retries = _checked_retries(max_retries)
         base_url = DEFAULT_BASE_URL if base_url is None else base_url
         self._base_url, self._origin = _split_base_url(base_url)
@@ -724,7 +724,7 @@ class Transport:
         clone = copy.copy(self)
         clone._owner = False
         if timeout is not None:
-            clone._timeout = _checked_timeout(timeout, "timeout")
+            clone._timeout = _checked_timeout(timeout)
         if max_retries is not None:
             clone._max_retries = _checked_retries(max_retries)
         return clone
@@ -742,7 +742,7 @@ class Transport:
         """
         if seconds is None:
             return None
-        return self._clock() + _checked_timeout(seconds, "timeout")
+        return self._clock() + _checked_timeout(seconds)
 
     def sleep(self, seconds: float) -> None:
         """Wait `seconds` through the transport's sleep."""
@@ -947,11 +947,12 @@ class Transport:
         key = self._keys.resolved.key
         return None if key is None else key.reveal()
 
-    def _note_headers(self, method: str, response: httpx2.Response) -> None:
+    def _note_headers(self, response: httpx2.Response) -> None:
         deprecation = response.headers.get("deprecation")
         sunset = response.headers.get("sunset")
         if deprecation or sunset:
-            route = f"{method} {response.request.url.path}"
+            request = response.request
+            route = f"{request.method} {request.url.path}"
             marks = ", ".join(
                 f"{name}: {value}"
                 for name, value in (("Deprecation", deprecation), ("Sunset", sunset))
@@ -1087,7 +1088,7 @@ class Transport:
             except DfoError as failure:
                 error = failure
             else:
-                self._note_headers(method, response)
+                self._note_headers(response)
                 if response.status_code < 400:
                     return response
                 error = problem_error(
@@ -1143,14 +1144,15 @@ class Transport:
             DfoTimeoutError: The fetch timed out or the deadline passed.
             InvalidRequestError: The transport is closed (`invalid_argument`).
         """
-        if origin_of(url) not in (self._origin, STORAGE_ORIGIN):
+        origin = origin_of(url)
+        if origin not in (self._origin, STORAGE_ORIGIN):
             raise client_error(
                 CONTRACT_VIOLATION,
                 f"A files route redirected to {url}, which is on neither the API "
                 f"at {self._origin} nor the storage host {STORAGE_ORIGIN}",
             )
         _refuse_offline("the signed download")
-        on_api = origin_of(url) == self._origin
+        on_api = origin == self._origin
         limit, _ = self._attempt_bounds(math.inf, deadline)
         request = self._pool.client.build_request(
             "GET",
@@ -1160,7 +1162,7 @@ class Transport:
         )
         response = self._send(request, deadline, "the signed download", max_bytes)
         if on_api:
-            self._note_headers("GET", response)
+            self._note_headers(response)
         if response.status_code != 200:
             raise client_error(
                 DOWNLOAD_FAILED,

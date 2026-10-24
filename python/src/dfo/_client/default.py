@@ -36,8 +36,6 @@ from dfo._sync._search.search import search as _search
 
 _lock = threading.Lock()
 _client: Client | None = None
-# Close each default client when it is collected, or at exit if it never is.
-_closers: list[weakref.finalize] = []
 
 
 def default_client() -> Client:
@@ -55,8 +53,8 @@ def default_client() -> Client:
 def _install(client: Client) -> None:
     global _client  # noqa: PLW0603  # the module holds the one default client
     _client = client
-    _closers[:] = [closer for closer in _closers if closer.alive]
-    _closers.append(weakref.finalize(client, client._current().transport.close))
+    # Close each default client when it is collected, or at exit if it never is.
+    weakref.finalize(client, client._current().transport.close)
 
 
 def _session() -> Session:

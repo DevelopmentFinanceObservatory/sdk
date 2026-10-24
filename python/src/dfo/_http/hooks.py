@@ -111,18 +111,17 @@ class _Entry[L]:
 class Hold:
     """One hold of a `KeyedLock` key, entered once, sync or async."""
 
-    __slots__ = ("_key", "_owner", "_task", "_thread", "_timeout")
+    __slots__ = ("_held", "_key", "_owner", "_timeout")
 
     def __init__(self, owner: KeyedLock, key: Hashable, timeout: float | None) -> None:
         self._owner = owner
         self._key = key
         self._timeout = timeout
-        self._thread: _Entry[threading.Lock] | None = None
-        self._task: _Entry[asyncio.Lock] | None = None
+        self._held: tuple[Hashable, _Entry[Any]] | None = None
 
     def __enter__(self) -> None:
         key = ("thread", self._key)
-        self._thread = entry = self._owner._enter(key, threading.Lock)
+        entry = self._owner._enter(key, threading.Lock)
         try:
             wait = -1 if self._timeout is None else max(self._timeout, 0)
             if not entry.lock.acquire(timeout=wait):
@@ -130,16 +129,15 @@ class Hold:
         except BaseException:
             self._owner._leave(key, entry)
             raise
+        self._held = key, entry
 
     def __exit__(self, *exc_info: object) -> None:
-        assert self._thread is not None
-        self._thread.lock.release()
-        self._owner._leave(("thread", self._key), self._thread)
+        self._release()
 
     async def __aenter__(self) -> None:
         # An asyncio lock serves one loop, so each loop holds its own.
         key = (asyncio.get_running_loop(), self._key)
-        self._task = entry = self._owner._enter(key, asyncio.Lock)
+        entry = self._owner._enter(key, asyncio.Lock)
         try:
             async with asyncio.timeout(self._timeout):
                 await entry.lock.acquire()
@@ -149,11 +147,16 @@ class Hold:
         except BaseException:
             self._owner._leave(key, entry)
             raise
+        self._held = key, entry
 
     async def __aexit__(self, *exc_info: object) -> None:
-        assert self._task is not None
-        self._task.lock.release()
-        self._owner._leave((asyncio.get_running_loop(), self._key), self._task)
+        self._release()
+
+    def _release(self) -> None:
+        assert self._held is not None
+        key, entry = self._held
+        entry.lock.release()
+        self._owner._leave(key, entry)
 
 
 def _waited_too_long() -> DfoError:
