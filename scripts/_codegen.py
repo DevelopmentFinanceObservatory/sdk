@@ -15,18 +15,15 @@ def _ruff() -> list[str]:
     return [sys.executable, "-m", "ruff"]
 
 
-def format_python(source: str, path: Path) -> str:
-    """Sort imports and format `source` as ruff would for a file at `path`.
-
-    Raises:
-        subprocess.CalledProcessError: ruff could not run or refused the source.
-    """
+def _format_python(source: str, path: Path) -> str:
+    """Sort imports and format `source` as ruff would for a file at `path`."""
+    ruff = _ruff()
     for args in (
         ["check", "--fix-only", "--select", "I", "--exit-zero"],
         ["format"],
     ):
         source = subprocess.run(
-            [*_ruff(), *args, "--stdin-filename", str(path), "-"],
+            [*ruff, *args, "--stdin-filename", str(path), "-"],
             input=source,
             capture_output=True,
             text=True,
@@ -35,12 +32,18 @@ def format_python(source: str, path: Path) -> str:
     return source
 
 
-def write_or_check(path: Path, text: str, *, check: bool) -> bool:
-    """Write `text` to `path`, or in check mode report whether it differs.
+def write_or_check(path: Path, source: str, *, check: bool) -> bool:
+    """Format the Python `source` as ruff would for `path` and write it there, or in
+    check mode report whether the file differs.
 
     Returns:
-        True when the file on disk differs from `text` (before any write).
+        True when the file on disk differs from the formatted source (before any
+        write).
+
+    Raises:
+        subprocess.CalledProcessError: ruff could not run or refused the source.
     """
+    text = _format_python(source, path)
     current = path.read_text(encoding="utf-8") if path.exists() else None
     if current == text:
         return False

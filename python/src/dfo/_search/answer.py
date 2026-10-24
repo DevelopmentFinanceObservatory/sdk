@@ -167,7 +167,9 @@ class AsyncAnswer:
         """
         with describing(self.trace_id):
             request = self._choice_input(choice)
-        return await self._resolve(request)
+        return await resolve(
+            self._source, request, question=self.question, timeout=SEARCH_TIMEOUT
+        )
 
     def _choice_input(self, choice: Sequence[object]) -> Mapping[str, Any]:
         """The Search input a choice posts, from `choose`'s one or two keys."""
@@ -298,11 +300,6 @@ class AsyncAnswer:
             raise client_error(CHOICE_INVALID, f"Part {key!r} already has a reading.")
         return gap
 
-    async def _resolve(self, request: Mapping[str, Any]) -> AsyncAnswer:
-        return await resolve(
-            self._source, request, question=self.question, timeout=SEARCH_TIMEOUT
-        )
-
 
 async def resolve(
     source: SessionSource,
@@ -325,13 +322,14 @@ async def resolve(
             the asynchronous client can cancel it.
 
     Raises:
-        DfoError: The response is a problem document with a `code` but no
-            `kind`, raised as the class the contract's registry maps its code to.
+        DfoError: The response is a problem document with a string `code` but
+            no `kind`, raised as the class the contract's registry maps its code to.
         ContractError: The body is not JSON (`unexpected_response`), the
             answer's kind is absent or unknown, a member the client acts on is
             missing, or a problem document's code is one the registry does not
             hold (`contract_violation`).
     """
+    # The session holds its client open until the request returns.
     session = source()
     transport = session.transport
     response = await transport.request(
@@ -343,7 +341,11 @@ async def resolve(
     )
     body = response_json(response)
     trace_id = trace_id_of(response, body)
-    if isinstance(body, Mapping) and "kind" not in body and "code" in body:
+    if (
+        isinstance(body, Mapping)
+        and isinstance(body.get("code"), str)
+        and "kind" not in body
+    ):
         # A problem document Search sent with a success status.
         raise transport.success_problem(response, body)
     with describing(trace_id):
@@ -416,7 +418,9 @@ def answer_from_body(
         status=status if isinstance(status, str) else _status(parts),
         sentence=sentence,
         parts=parts,
-        specs=tuple(dict.fromkeys(spec for _, spec in _readings(parts))),
+        specs=tuple(
+            dict.fromkeys(part.spec for part in parts if isinstance(part, DefinitePart))
+        ),
         complete=not gaps,
         gaps=gaps,
         question=question,
@@ -497,7 +501,7 @@ def _gap(
             return None
         case CandidatesPart(candidates):
             return Gap(index, part, "choice", f"{len(candidates)} readings", candidates)
-        case NoDataPart(reason) if timed_out:
+        case NoDataPart() if timed_out:
             return Gap(index, part, "timed_out", _TIMED_OUT)
         case NoDataPart(reason):
             return Gap(
@@ -519,21 +523,16 @@ def _gap(
             )
 
 
-def _readings(
-    parts: Sequence[Part[AsyncCandidate]],
-) -> list[tuple[Part[AsyncCandidate], Spec]]:
-    return [(part, part.spec) for part in parts if isinstance(part, DefinitePart)]
-
-
 def _members(parts: Sequence[Part[AsyncCandidate]]) -> list[Reading]:
     """One reading per distinct spec, in query order.
 
     Parts folded onto one spec share its reading, which names each of them that
     has variable text; a part without any names nothing.
     """
-    grouped: dict[Spec, list[Part[AsyncCandidate]]] = {}
-    for part, spec in _readings(parts):
-        grouped.setdefault(spec, []).append(part)
+    grouped: dict[Spec, list[DefinitePart]] = {}
+    for part in parts:
+        if isinstance(part, DefinitePart):
+            grouped.setdefault(part.spec, []).append(part)
     return [
         Reading(
             tuple(part.variable_text for part in folded if part.variable_text),

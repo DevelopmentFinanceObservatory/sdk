@@ -855,7 +855,6 @@ def assert_unbound(
             assert all(
                 a is b for a, b in zip(gap.options, gap.part.candidates, strict=True)
             )
-            assert len(gap.options) == len(gap.part.candidates)
     assert candidates
     for candidate, original in candidates:
         assert type(candidate) is Candidate

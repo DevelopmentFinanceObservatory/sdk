@@ -33,7 +33,7 @@ import tokenize
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from _codegen import ROOT, format_python, relative, write_or_check
+from _codegen import ROOT, relative, write_or_check
 
 PACKAGE = ROOT / "python" / "src" / "dfo"
 SYNC_PACKAGE = PACKAGE / "_sync"
@@ -241,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     differs = [
         target
         for target, text in outputs.items()
-        if write_or_check(target, format_python(text, target), check=args.check)
+        if write_or_check(target, text, check=args.check)
     ]
     leftovers = stale(set(outputs))
     if args.check:

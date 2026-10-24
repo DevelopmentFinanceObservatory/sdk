@@ -2,17 +2,13 @@
 
 import http.client
 import io
-import sys
 import tarfile
 from pathlib import Path
 from typing import Self
 
-import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-
 import gen_errors
 import gen_sync
+import pytest
 import sync_contract
 
 _WARNING_CODES = {

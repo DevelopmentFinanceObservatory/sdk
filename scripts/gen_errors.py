@@ -23,9 +23,10 @@ only and imports nothing from `dfo`.
 import argparse
 import json
 import sys
+from pathlib import Path
 
 import sync_contract
-from _codegen import ROOT, format_python, relative, write_or_check
+from _codegen import ROOT, relative, write_or_check
 
 ACTIONS = ROOT / "contract" / "actions.json"
 SCHEMA = ROOT / "contract" / "actions.schema.json"
@@ -36,6 +37,16 @@ TARGET = ROOT / "python" / "src" / "dfo" / "_generated" / "error_map.py"
 
 
 BY_STATUS = "by_status"
+
+
+def _rows(document: dict, path: Path) -> list[dict]:
+    """The `codes` rows of a contract file, refused unless it is format version 1
+    and holds at least one row."""
+    if document.get("format_version") != 1:
+        raise SystemExit(f"{relative(path)}: format_version is not 1")
+    if not document["codes"]:
+        raise SystemExit(f"{relative(path)}: no codes")
+    return document["codes"]
 
 
 def _literal(values: list[str]) -> str:
@@ -51,9 +62,7 @@ def _retryable_fits(row: dict) -> bool:
 
 def _client_codes(client_codes: dict) -> tuple[str, list[str], str]:
     """The by-status code and the code names and rows of every other code."""
-    if client_codes.get("format_version") != 1:
-        raise SystemExit(f"{relative(CLIENT_CODES)}: format_version is not 1")
-    rows = client_codes["codes"]
+    rows = _rows(client_codes, CLIENT_CODES)
     by_status = [row["code"] for row in rows if row["class"] == BY_STATUS]
     if len(by_status) != 1:
         raise SystemExit(f"{relative(CLIENT_CODES)}: not exactly one {BY_STATUS} row")
@@ -74,11 +83,7 @@ def _client_codes(client_codes: dict) -> tuple[str, list[str], str]:
 
 def _warning_codes(warning_codes: dict) -> tuple[list[str], str]:
     """The warning code names and their rows."""
-    if warning_codes.get("format_version") != 1:
-        raise SystemExit(f"{relative(WARNING_CODES)}: format_version is not 1")
-    rows = warning_codes["codes"]
-    if not rows:
-        raise SystemExit(f"{relative(WARNING_CODES)}: no codes")
+    rows = _rows(warning_codes, WARNING_CODES)
     lines = "".join(
         f"    {json.dumps(row['code'])}: {json.dumps(row['class'])},\n" for row in rows
     )
@@ -89,11 +94,7 @@ def _proxy_codes(proxy_codes: dict, codes: set[str]) -> str:
     """The rows pairing each proxy code with its status. A proxy code that also
     has a row in `actions.json` (the `codes` set) is refused, since it would take
     that row's class in place of its status's."""
-    if proxy_codes.get("format_version") != 1:
-        raise SystemExit(f"{relative(PROXY_CODES)}: format_version is not 1")
-    rows = proxy_codes["codes"]
-    if not rows:
-        raise SystemExit(f"{relative(PROXY_CODES)}: no codes")
+    rows = _rows(proxy_codes, PROXY_CODES)
     seen: set[str] = set()
     for row in rows:
         if row["code"] in seen:
@@ -115,11 +116,7 @@ def render(
     proxy_codes: dict,
 ) -> str:
     """Return the source of `_generated/error_map.py` for the parsed contract files."""
-    if actions.get("format_version") != 1:
-        raise SystemExit(f"{relative(ACTIONS)}: format_version is not 1")
-    rows = actions["codes"]
-    if not rows:
-        raise SystemExit(f"{relative(ACTIONS)}: no codes")
+    rows = _rows(actions, ACTIONS)
     item = schema["properties"]["codes"]["items"]["properties"]
     action_values = item["action"]["enum"]
     gap_values = item["gap_kind"]["enum"]
@@ -181,15 +178,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     sync_contract.require_current()
     source = render(
-        json.loads(ACTIONS.read_text(encoding="utf-8")),
-        json.loads(SCHEMA.read_text(encoding="utf-8")),
-        json.loads(CLIENT_CODES.read_text(encoding="utf-8")),
-        json.loads(WARNING_CODES.read_text(encoding="utf-8")),
-        json.loads(PROXY_CODES.read_text(encoding="utf-8")),
+        *(
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in (ACTIONS, SCHEMA, CLIENT_CODES, WARNING_CODES, PROXY_CODES)
+        )
     )
-    differs = write_or_check(TARGET, format_python(source, TARGET), check=args.check)
+    differs = write_or_check(TARGET, source, check=args.check)
     if differs and args.check:
-        print(f"{relative(TARGET)} is out of date; run scripts/gen_errors.py")
+        print(
+            f"{relative(TARGET)} is out of date; run scripts/gen_errors.py",
+            file=sys.stderr,
+        )
         return 1
     if differs:
         print(f"wrote {relative(TARGET)}")

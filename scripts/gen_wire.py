@@ -32,8 +32,8 @@ from pathlib import Path
 from typing import Any
 
 import sync_contract
+from _codegen import ROOT, relative, write_or_check
 
-ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = ROOT / "python"
 OPENAPI = ROOT / "contract" / "served" / "openapi.json"
 STRICT_FIELDS = ROOT / "contract" / "strict-fields.json"
@@ -219,57 +219,33 @@ def render_wire() -> str:
     return WIRE_DOCSTRING + "".join(lines)
 
 
-def ruff(source: str, target: Path, *args: str) -> str:
-    """Run a ruff command over `source` as if it were `target`, returning stdout."""
-    return subprocess.run(
-        [sys.executable, "-m", "ruff", *args, "--stdin-filename", str(target), "-"],
-        input=source,
-        cwd=PACKAGE,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-
-
-def ruff_format(source: str, target: Path) -> str:
-    """Fix and format `source` as ruff would `target`, under the package's settings."""
-    fixed = ruff(source, target, "check", "--fix-only", "--exit-zero")
-    return ruff(fixed, target, "format")
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+def main(argv: list[str] | None = None) -> int:
+    """Write or check both modules and return the exit status."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--check",
         action="store_true",
         help="exit 1 when a generated module differs instead of writing",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     sync_contract.require_current()
-    document = json.loads(OPENAPI.read_text())
-    fields = json.loads(STRICT_FIELDS.read_text())
-    generated = {
-        WIRE: ruff_format(render_wire(), WIRE),
-        STRICT: ruff_format(render_strict(document, fields), STRICT),
-    }
-
+    document = json.loads(OPENAPI.read_text(encoding="utf-8"))
+    fields = json.loads(STRICT_FIELDS.read_text(encoding="utf-8"))
+    generated = {WIRE: render_wire(), STRICT: render_strict(document, fields)}
+    differs = [
+        path
+        for path, source in generated.items()
+        if write_or_check(path, source, check=args.check)
+    ]
     if args.check:
-        stale = [
-            path
-            for path, source in generated.items()
-            if not path.exists() or path.read_text() != source
-        ]
-        for path in stale:
+        for path in differs:
             print(
-                f"{path.relative_to(ROOT)} is stale; run scripts/gen_wire.py",
-                file=sys.stderr,
+                f"{relative(path)} is stale; run scripts/gen_wire.py", file=sys.stderr
             )
-        return 1 if stale else 0
-
-    for path, source in generated.items():
-        path.write_text(source)
-        print(f"wrote {path.relative_to(ROOT)}")
+        return 1 if differs else 0
+    for path in differs:
+        print(f"wrote {relative(path)}")
     return 0
 
 
