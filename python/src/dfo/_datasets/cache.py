@@ -300,26 +300,24 @@ class Cache:
         directory = self.directory
         if directory is None or SPEC_ID.fullmatch(spec_id) is None:
             return []
-        found: list[tuple[str, dict[str, Any]]] = []
+        found: list[dict[str, Any]] = []
         name = f"{rendering_name(rendering)}.json"
         for path in sorted((directory / "manifests" / spec_id).glob(f"*/{name}")):
             manifest = _held_manifest(path, spec_id, path.parent.name)
             if manifest is not None and isinstance(manifest.get("prepared_at"), str):
-                found.append((manifest["prepared_at"], manifest))
-        return [
-            manifest
-            for _, manifest in sorted(found, key=lambda item: item[0], reverse=True)
-        ]
+                found.append(manifest)
+        return sorted(found, key=lambda manifest: manifest["prepared_at"], reverse=True)
 
     def _file(self, digest: str) -> Path | None:
         """The artifact's path, or None when the cache is disabled or `digest` is
         not a sha256 digest."""
         if (directory := self.directory) is None:
             return None
-        if DIGEST.fullmatch(digest) is None:
+        try:
+            return directory / file_entry(digest)
+        except ValueError:
             logger.debug("dfo cache: %r is not a digest; skipped", digest)
             return None
-        return directory / file_entry(digest)
 
     def _manifest(
         self, spec_id: str, content_version: str, rendering: Rendering
@@ -328,16 +326,15 @@ class Cache:
         not server ids."""
         if (directory := self.directory) is None:
             return None
-        if SPEC_ID.fullmatch(spec_id) is None or (
-            CONTENT_VERSION.fullmatch(content_version) is None
-        ):
+        try:
+            return directory / manifest_entry(spec_id, content_version, rendering)
+        except ValueError:
             logger.debug(
                 "dfo cache: %r at %r is not a spec version; skipped",
                 spec_id,
                 content_version,
             )
             return None
-        return directory / manifest_entry(spec_id, content_version, rendering)
 
     def _evict(self, *, keep: Path) -> None:
         if (directory := self.directory) is None:

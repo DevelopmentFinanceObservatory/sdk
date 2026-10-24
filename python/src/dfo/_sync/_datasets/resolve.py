@@ -216,12 +216,13 @@ def _fetch_ref(
     deadline = transport.deadline(timeout)
     stale = offline()
     with ProgressRenderer(enabled=progress) as renderer:
+        on_progress = progress_hook(renderer)
         fetched = [
             _fetch_version(
                 transport,
                 member,
                 strict=strict,
-                on_progress=progress_hook(renderer),
+                on_progress=on_progress,
                 cache=cache,
                 cache_only=stale,
                 deadline=deadline,
@@ -263,7 +264,7 @@ def _fetch_version(
     member: RefMember,
     *,
     strict: bool,
-    on_progress: ProgressHook | None,
+    on_progress: ProgressHook,
     cache: Cache | None,
     cache_only: bool,
     deadline: float | None,

@@ -150,10 +150,6 @@ def _is_cut_off(error: DfoError) -> bool:
     )
 
 
-def _fits(transport: Transport, wait: float, deadline: float | None) -> bool:
-    return deadline is None or transport.now() + wait < deadline
-
-
 def _poll_interval(seconds: float) -> float:
     """The server's poll interval, held between `POLL_INTERVAL_MIN_S` and
     `POLL_INTERVAL_MAX_S`."""
@@ -210,8 +206,8 @@ class Poller:
         reply: Reply,
         *,
         rendering: Rendering,
+        on_progress: ProgressHook,
         body: Wire | None = None,
-        on_progress: ProgressHook | None = None,
     ) -> None:
         """Start from the server's answer to a build request.
 
@@ -220,9 +216,9 @@ class Poller:
             reply: The answer to the build request, or the first poll.
             rendering: The rendering the build makes, which the deadline's
                 resume hint names.
+            on_progress: Called with each progress the server reports.
             body: The build request, resubmitted once when the operation fails
                 with a retryable refusal. None for a resumed operation.
-            on_progress: Called with each progress the server reports.
         """
         self._transport = transport
         self._rendering = rendering
@@ -295,7 +291,7 @@ class Poller:
         """
         while not self._finished():
             wait = self._next_wait()
-            if not _fits(self._transport, wait, deadline):
+            if deadline is not None and self._transport.now() + wait >= deadline:
                 raise self._still_running()
             self._poll_waits.append(wait)
             self._transport.sleep(wait)
@@ -333,13 +329,12 @@ class Poller:
         )
 
     def _take(self, reply: Reply) -> None:
-        self._state = reply.state if reply.state is not None else self._state
         self._header_wait = reply.retry_after
         self._trace_id = reply.trace_id
-        state = reply.state
-        if reply.manifest is not None or state is None:
+        if (state := reply.state) is None:
             self._manifest = reply.manifest
             return
+        self._state = state
         if state.status == _DONE:
             self._manifest = state.manifest
         elif state.status == _FAILED:
@@ -353,7 +348,7 @@ class Poller:
                 fallback_code=_OPERATION_FAILED,
                 key=None if key is None else key.reveal(),
             )
-        elif state.progress is not None and self._on_progress is not None:
+        elif state.progress is not None:
             self._on_progress(state.operation_id, state.progress, self._trace_id)
 
     def _poll(self, deadline: float | None) -> None:
@@ -487,7 +482,7 @@ def resume(
     operation_id: str,
     *,
     rendering: Rendering,
-    on_progress: ProgressHook | None = None,
+    on_progress: ProgressHook,
 ) -> Poller:
     """Read a running build's operation by id, to poll it from this process.
 

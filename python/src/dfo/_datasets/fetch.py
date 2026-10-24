@@ -166,6 +166,7 @@ async def fetch_members(
     deadline = transport.deadline(timeout)
     fetched = []
     with ProgressRenderer(enabled=progress) as renderer:
+        on_progress = progress_hook(renderer)
         for want in wants:
             if stale:
                 manifest, cached_data = await _latest_cached(
@@ -178,7 +179,7 @@ async def fetch_members(
                     build_body(want.spec, rendering, narrowing),
                     rendering=rendering,
                     deadline=deadline,
-                    on_progress=progress_hook(renderer),
+                    on_progress=on_progress,
                 )
                 cached_data = None
             fetched.append(
@@ -211,7 +212,7 @@ async def _build_latest(
     *,
     rendering: Rendering,
     deadline: float | None,
-    on_progress: ProgressHook | None,
+    on_progress: ProgressHook,
 ) -> tuple[Wire, str | None]:
     """Build a spec's latest version, hinting a search when a member is gone."""
     try:
@@ -278,12 +279,10 @@ def _is_plain_rendering(rendering: Mapping[str, Any], /) -> bool:
     Besides those members it may carry `metadata` set to `incomplete`. Any other
     member, such as `columns`, `pivot` or `groupby`, reshapes the rows.
     """
-    for key, value in rendering.items():
-        if key == "metadata" and value == "incomplete":
-            continue
-        if key not in RENDERING_SELECTORS:
-            return False
-    return True
+    return all(
+        key in RENDERING_SELECTORS or (key == "metadata" and value == "incomplete")
+        for key, value in rendering.items()
+    )
 
 
 async def mint(
@@ -434,7 +433,7 @@ async def build_version(
     *,
     rendering: Rendering,
     deadline: float | None,
-    on_progress: ProgressHook | None,
+    on_progress: ProgressHook,
 ) -> tuple[Wire, str | None]:
     """Post a build of `rendering` and wait for its manifest, through a long
     build if needed.
@@ -467,8 +466,9 @@ async def finish_member(
 
     `want` is the reading posted, or None for a build resumed by its id, and
     `trace_id` the trace id of the response that carried the manifest, or None
-    for a cached one. The manifest's warnings and its artifact's `url` are
-    checked before any request.
+    for a cached one. `cached_data` is the artifact's bytes when the manifest
+    came from the cache, which already lists it. The manifest's warnings and its
+    artifact's `url` are checked before any request.
     """
     definition = manifest["definition"]
     spec_id = definition["spec_id"]
@@ -493,7 +493,6 @@ async def finish_member(
             None if want is None else want.spec,
             deadline=deadline,
         )
-    digest = artifact["artifact_digest"]
     data = cached_data
     if data is None:
         data = await _cached_download(
@@ -505,15 +504,13 @@ async def finish_member(
             route=route,
             deadline=deadline,
         )
-    elif cache is not None:
-        await async_offload(store, cache, manifest, rendering, digest)
     return FetchedMember(
         parts=parts,
         spec=Spec(spec_id, definition, sentence),
         sentence=sentence,
         content_version=content_version,
         manifest=manifest,
-        digest=digest,
+        digest=artifact["artifact_digest"],
         data=data,
         answer_parts=() if want is None else want.answer_parts,
         rendering=rendering,
@@ -591,22 +588,26 @@ def store(
     ]
     with cache.merging(spec_id, content_version, rendering):
         stored = cache.get_manifest(spec_id, content_version, rendering)
-        prior = [] if stored is None else stored.get("artifacts", [])
+        prior = [] if stored is None else stored["artifacts"]
         cached["artifacts"] = _merge_artifacts(prior, downloaded)
         cache.put_manifest(spec_id, content_version, rendering, cached)
 
 
-def _merge_artifacts(prior: object, downloaded: Sequence[Wire], /) -> list[Wire]:
-    """Keep same-version artifact records distinct by digest and rendering."""
-    artifacts: list[Wire] = []
-    if isinstance(prior, list):
-        artifacts = [artifact for artifact in prior if isinstance(artifact, dict)]
+def _merge_artifacts(
+    prior: Sequence[Wire], downloaded: Sequence[Wire], /
+) -> list[Wire]:
+    """Keep same-version artifact records distinct by digest and rendering.
+
+    `prior` is a stored manifest's list, whose entries the cache checked carry
+    both members.
+    """
+    artifacts = list(prior)
     artifacts.extend(
         artifact
         for artifact in downloaded
         if not any(
-            artifact["artifact_digest"] == seen.get("artifact_digest")
-            and artifact["rendering"] == seen.get("rendering")
+            artifact["artifact_digest"] == seen["artifact_digest"]
+            and artifact["rendering"] == seen["rendering"]
             for seen in artifacts
         )
     )
