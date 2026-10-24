@@ -20,8 +20,9 @@ from __future__ import annotations
 import hashlib
 import io
 import zipfile
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from collections import Counter
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, fields
 from os import PathLike
 from pathlib import Path, PureWindowsPath
 from typing import IO, TYPE_CHECKING, Any, Literal
@@ -99,20 +100,10 @@ class BundleLimits:
     max_xlsx_cells: int = 1_000_000
 
     def __post_init__(self) -> None:
-        for name, value in (
-            ("max_descriptor_bytes", self.max_descriptor_bytes),
-            ("max_zip_entries", self.max_zip_entries),
-            ("max_resources", self.max_resources),
-            ("max_archive_bytes", self.max_archive_bytes),
-            ("max_resource_bytes", self.max_resource_bytes),
-            ("max_total_bytes", self.max_total_bytes),
-            ("max_xlsx_entries", self.max_xlsx_entries),
-            ("max_xlsx_expanded_bytes", self.max_xlsx_expanded_bytes),
-            ("max_xlsx_rows", self.max_xlsx_rows),
-            ("max_xlsx_cells", self.max_xlsx_cells),
-        ):
+        for limit in fields(self):
+            value = getattr(self, limit.name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                raise ValueError(f"{name} must be a positive integer")
+                raise ValueError(f"{limit.name} must be a positive integer")
 
 
 @dataclass(slots=True)
@@ -201,7 +192,7 @@ def _open_saved(path: Path) -> Dataset:
 
 
 def _open_zip(path: Path, limits: BundleLimits) -> Dataset:
-    digest = _digest_path(path, limits.max_archive_bytes, str(path))
+    digest = _digest_path(path, limits.max_archive_bytes)
     with zipfile.ZipFile(path) as archive:
         entries = archive.infolist()
         if len(entries) > limits.max_zip_entries:
@@ -247,9 +238,8 @@ def _folder_holding(file: Path, limits: BundleLimits) -> Path | None:
         if resolved == descriptor:
             return folder
         package = _read_descriptor_path(descriptor, limits)
-        _check_resource_count(package, str(folder), limits)
-        for resource in _resources(package):
-            path = resource.get("path")
+        for resource in _resources(package, str(folder), limits):
+            path = resource.get("path") if isinstance(resource, Mapping) else None
             if (
                 isinstance(path, str)
                 and _plain(path)
@@ -271,8 +261,7 @@ def _open_descriptor(
     resolves outside the bundle, for a folder on disk."""
     budget = _ByteBudget(limits)
     package = _read_descriptor(open_file, where, budget)
-    _check_resource_count(package, where, limits)
-    files = _files(package, where, escapes)
+    files = _files(_resources(package, where, limits), where, escapes)
     spec = _bundle_spec(package)
     data = next(
         (
@@ -298,7 +287,7 @@ def _open_descriptor(
 
 
 def _files(
-    package: Mapping[str, Any], where: str, escapes: Callable[[str], bool] | None
+    resources: Sequence[Any], where: str, escapes: Callable[[str], bool] | None
 ) -> list[tuple[int, Mapping[str, Any]]]:
     """The resources that name a file, with their index, each checked before any read.
 
@@ -307,8 +296,7 @@ def _files(
             outside the bundle, or comes without a SHA-256 `hash`.
     """
     files: list[tuple[int, Mapping[str, Any]]] = []
-    resources = package.get("resources")
-    for index, resource in enumerate(resources if isinstance(resources, list) else ()):
+    for index, resource in enumerate(resources):
         path = resource.get("path") if isinstance(resource, Mapping) else None
         if not isinstance(path, str):
             continue
@@ -340,28 +328,29 @@ def _plain(path: str) -> bool:
     return all(name not in {"", ".", ".."} for name in path.split("/"))
 
 
-def _resources(package: object) -> list[Mapping[str, Any]]:
-    resources = package.get("resources") if isinstance(package, Mapping) else None
-    if not isinstance(resources, list):
-        return []
-    return [resource for resource in resources if isinstance(resource, Mapping)]
+def _resources(
+    package: Mapping[str, Any], where: str, limits: BundleLimits
+) -> list[Any]:
+    """The descriptor's `resources` array, empty when it holds none.
 
-
-def _check_resource_count(package: object, where: str, limits: BundleLimits) -> None:
-    resources = package.get("resources") if isinstance(package, Mapping) else None
-    count = len(resources) if isinstance(resources, list) else 0
-    if count > limits.max_resources:
+    Raises:
+        BundleError: It lists more resources than `limits` allows (`resource_limit`).
+    """
+    resources = package.get("resources")
+    listed = resources if isinstance(resources, list) else []
+    if len(listed) > limits.max_resources:
         _limited(
             where,
-            f"lists {count} resources, above the limit of {limits.max_resources}",
+            f"lists {len(listed)} resources, above the limit of {limits.max_resources}",
         )
+    return listed
 
 
 def _limited(where: str, detail: str) -> None:
     raise BundleError("resource_limit", f"{where} {detail}")
 
 
-def _digest_path(path: Path, limit: int, where: str) -> str:
+def _digest_path(path: Path, limit: int) -> str:
     """Hash a ZIP from disk without retaining its compressed bytes."""
     digest = hashlib.sha256()
     size = 0
@@ -369,24 +358,17 @@ def _digest_path(path: Path, limit: int, where: str) -> str:
         while chunk := file.read(min(_CHUNK_SIZE, limit - size + 1)):
             size += len(chunk)
             if size > limit:
-                _limited(where, f"is larger than the archive limit of {limit} bytes")
+                _limited(
+                    str(path), f"is larger than the archive limit of {limit} bytes"
+                )
             digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
+    return _SHA256 + digest.hexdigest()
 
 
 def _read_descriptor_path(path: Path, limits: BundleLimits) -> Mapping[str, Any]:
     """Read one candidate folder descriptor under its descriptor limit."""
     with path.open("rb") as file:
-        raw = _read_limited(
-            file,
-            str(path),
-            _ByteBudget(limits),
-            limit=limits.max_descriptor_bytes,
-            keep=True,
-            digest=None,
-        )
-    assert raw is not None
-    return decode(raw)
+        return _decoded(file, str(path), _ByteBudget(limits))
 
 
 def _read_descriptor(
@@ -397,16 +379,13 @@ def _read_descriptor(
     if file is None:
         raise BundleError("no_descriptor", f"{where} holds no {DESCRIPTOR}")
     with file:
-        raw = _read_limited(
-            file,
-            DESCRIPTOR,
-            budget,
-            limit=budget.limits.max_descriptor_bytes,
-            keep=True,
-            digest=None,
-        )
-    assert raw is not None
-    return decode(raw)
+        return _decoded(file, DESCRIPTOR, budget)
+
+
+def _decoded(file: IO[bytes], name: str, budget: _ByteBudget) -> Mapping[str, Any]:
+    """A descriptor's JSON object, read under the descriptor limit."""
+    limit = budget.limits.max_descriptor_bytes
+    return decode(b"".join(_chunks(file, name, budget, limit=limit)))
 
 
 def _checked(
@@ -424,49 +403,37 @@ def _checked(
     if file is None:
         raise BundleError("missing_file", f"{where} lacks {path}, which it lists")
     digest = hashlib.sha256()
+    content = bytearray()
     with file:
-        content = _read_limited(
-            file,
-            path,
-            budget,
-            limit=budget.limits.max_resource_bytes,
-            keep=keep,
-            digest=digest,
-        )
+        for chunk in _chunks(
+            file, path, budget, limit=budget.limits.max_resource_bytes
+        ):
+            digest.update(chunk)
+            if keep:
+                content.extend(chunk)
     if _SHA256 + digest.hexdigest() != resource["hash"]:
         raise BundleError(
             "hash_mismatch",
             f"{where}: {path} does not match its hash; download the bundle again",
         )
-    return content
+    return bytes(content) if keep else None
 
 
-def _read_limited(
-    file: IO[bytes],
-    path: str,
-    budget: _ByteBudget,
-    *,
-    limit: int,
-    keep: bool,
-    digest: Any | None,
-) -> bytes | None:
-    """Read one file in chunks, enforcing actual per-file and total bytes."""
-    content = bytearray() if keep else None
+def _chunks(
+    file: IO[bytes], path: str, budget: _ByteBudget, *, limit: int
+) -> Iterator[bytes]:
+    """Read one file in chunks, enforcing actual per-file and total bytes.
+
+    Each read asks for one byte more than the limits leave, so a file over a
+    limit is refused at its first excess byte.
+    """
     size = 0
     while True:
         resource_left = limit - size
         total_left = budget.limits.max_total_bytes - budget.total
-        if resource_left < 0:
-            _limited(path, f"is larger than the resource limit of {limit} bytes")
-        if total_left < 0:
-            _limited(
-                path,
-                f"exceeds the total bundle limit of {budget.limits.max_total_bytes} bytes",
-            )
-        read_size = min(_CHUNK_SIZE, resource_left, total_left)
-        chunk = file.read(read_size + 1)
+        chunk = file.read(min(_CHUNK_SIZE, resource_left, total_left) + 1)
         if not chunk:
-            break
+            return
         if len(chunk) > resource_left:
             _limited(path, f"is larger than the resource limit of {limit} bytes")
         if len(chunk) > total_left:
@@ -476,11 +443,7 @@ def _read_limited(
             )
         size += len(chunk)
         budget.total += len(chunk)
-        if digest is not None:
-            digest.update(chunk)
-        if content is not None:
-            content.extend(chunk)
-    return bytes(content) if content is not None else None
+        yield chunk
 
 
 def _field_types() -> Mapping[str, pa.DataType]:
@@ -539,7 +502,7 @@ def _read_table(
         except pa.ArrowInvalid as error:
             raise FormatError("format_invalid", pointer, f"{path}: {error}") from error
     repeated = {
-        name for name in table.column_names if table.column_names.count(name) > 1
+        name for name, count in Counter(table.column_names).items() if count > 1
     }
     if repeated:
         raise FormatError(

@@ -172,14 +172,10 @@ def test_a_missing_file_is_refused(tmp_path: Path) -> None:
 
 
 def test_a_descriptor_without_the_data_table_is_refused(tmp_path: Path) -> None:
-    folder = extracted(CSV_BUNDLE, tmp_path / "bundle")
-    descriptor = folder / "datapackage.json"
-    package = json.loads(descriptor.read_text())
-    package["name"] = "renamed"
-    descriptor.write_text(json.dumps(package))
-    with pytest.raises(BundleError) as caught:
-        open_bundle(folder)
-    assert caught.value.reason == "no_data_resource"
+    for target in edited(tmp_path, package_edit(lambda p: p.update(name="renamed"))):
+        with pytest.raises(BundleError) as caught:
+            open_bundle(target)
+        assert caught.value.reason == "no_data_resource"
 
 
 @pytest.mark.parametrize(
@@ -426,19 +422,20 @@ def test_bundle_limits_are_public_immutable_and_keyword_only() -> None:
         BundleLimits(1)
 
 
-@pytest.mark.parametrize("source", ["zip", "folder"])
-def test_a_bundle_enforces_actual_resource_bytes(tmp_path: Path, source: str) -> None:
-    target = CSV_BUNDLE if source == "zip" else extracted(CSV_BUNDLE, tmp_path / source)
-    with pytest.raises(BundleError) as caught:
-        open_bundle(target, limits=BundleLimits(max_resource_bytes=1))
-    assert caught.value.reason == "resource_limit"
+@pytest.mark.parametrize("value", [0, True, 1.0])
+def test_a_bundle_limit_is_a_positive_integer(value: object) -> None:
+    with pytest.raises(ValueError, match="max_xlsx_cells"):
+        BundleLimits(max_xlsx_cells=value)  # ty: ignore[invalid-argument-type]
 
 
+@pytest.mark.parametrize("limit", ["max_resource_bytes", "max_descriptor_bytes"])
 @pytest.mark.parametrize("source", ["zip", "folder"])
-def test_a_bundle_enforces_actual_descriptor_bytes(tmp_path: Path, source: str) -> None:
+def test_a_bundle_enforces_actual_file_bytes(
+    tmp_path: Path, source: str, limit: str
+) -> None:
     target = CSV_BUNDLE if source == "zip" else extracted(CSV_BUNDLE, tmp_path / source)
     with pytest.raises(BundleError) as caught:
-        open_bundle(target, limits=BundleLimits(max_descriptor_bytes=1))
+        open_bundle(target, limits=BundleLimits(**{limit: 1}))
     assert caught.value.reason == "resource_limit"
 
 

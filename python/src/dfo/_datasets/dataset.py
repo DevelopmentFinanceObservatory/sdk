@@ -50,7 +50,13 @@ from dfo._core.types import (
     object_at,
     unbound_gap,
 )
-from dfo._datasets.build import Cache, counted_rows, layout_of, read_held_until
+from dfo._datasets.build import (
+    Cache,
+    counted_rows,
+    layout_of,
+    read_held_until,
+    rendering_for,
+)
 
 if TYPE_CHECKING:
     import pandas
@@ -393,7 +399,7 @@ def build_dataset(
         raise ValueError("a dataset needs at least one member")
     if layout == "frame" and len(members) > 1:
         raise ValueError("the frame layout holds one member")
-    plain = Rendering("parquet", False, "frame" if layout == "frame" else None)
+    plain = rendering_for(layout)
 
     tables: list[pa.Table] = []
     built: list[Member] = []
@@ -743,7 +749,7 @@ def _with_part(table: pa.Table, label: str) -> pa.Table:
         )
     import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
 
-    column = pa.array([label] * table.num_rows, type=pa.string())
+    column = pa.repeat(pa.scalar(label, pa.string()), table.num_rows)
     return table.add_column(0, PART_COLUMN, column)
 
 
@@ -751,15 +757,16 @@ def _retention(
     retentions: Sequence[Mapping[str, Any] | None],
 ) -> tuple[date | None, bool]:
     """The earliest `held_until` across members, and whether every member is pinned."""
-    known = [retention for retention in retentions if retention is not None]
-    if len(known) == len(retentions) and all(
-        retention.get("pinned") is True for retention in known
+    if all(
+        retention is not None and retention.get("pinned") is True
+        for retention in retentions
     ):
         return None, True
     dates = [
         held
-        for retention in known
-        if retention.get("pinned") is not True
+        for retention in retentions
+        if retention is not None
+        and retention.get("pinned") is not True
         and (held := read_held_until(retention.get("held_until"))) is not None
     ]
     return (min(dates) if dates else None), False

@@ -130,12 +130,6 @@ class Cache(Protocol):
         """Store the manifest for one rendering of one version."""
         ...
 
-    def latest_manifest(
-        self, spec_id: str, rendering: Rendering, /
-    ) -> dict[str, Any] | None:
-        """The manifest of a spec's newest stored version in one rendering, or None."""
-        ...
-
     def manifest_candidates(
         self, spec_id: str, rendering: Rendering, /
     ) -> list[dict[str, Any]]:
@@ -354,7 +348,7 @@ def build_body(
     }
 
 
-def kept_entity_groups(held: Spec | None, built: Wire) -> dict[str, Any]:
+def _kept_entity_groups(held: Spec | None, built: Wire) -> dict[str, Any]:
     """The held spec's entity groups that hold for a built definition.
 
     A role keeps its group when the built identity binds it to the same entities
@@ -379,7 +373,7 @@ def resubmit_body(
     """The Search request that re-resolves one built definition for its sentence.
 
     `held` is the spec the client built from, None for a resumed build. Its
-    groups that `kept_entity_groups` keeps go with the identity, so a group of
+    groups that `_kept_entity_groups` keeps go with the identity, so a group of
     places reads the same way again.
     """
     entry: dict[str, Any] = {
@@ -387,7 +381,7 @@ def resubmit_body(
         "variable_text": variable_text,
         "identity": built["identity"],
     }
-    if groups := kept_entity_groups(held, built):
+    if groups := _kept_entity_groups(held, built):
         entry["entity_groups"] = groups
     return {
         "schema_version": 1,
