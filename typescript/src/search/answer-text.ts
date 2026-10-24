@@ -4,6 +4,7 @@
  */
 import { definiteParts, partSentence } from "./answer.ts";
 import type { Answer, Candidate, Gap } from "./answer.ts";
+import { mentionsOf } from "./choices.ts";
 import { partFacts } from "../core/parse.ts";
 import { partText } from "../core/parts.ts";
 import type { Warning } from "../wire.ts";
@@ -59,7 +60,7 @@ export function answerText(answer: Answer): string {
     const hints = readingHints(answer, { departures: false });
     return [answer.sentence ?? "", ...hints.map((hint) => `  ${hint.line}`)].join("\n");
   }
-  return [answered(answer, "Answered"), ...gapLines(answer)].join("\n");
+  return gapText(answer, "Answered");
 }
 
 /** Why Search gave a declined or catalogue answer, which holds no readings. */
@@ -76,21 +77,19 @@ export function declinedText(kind: string, reason: string | null): string {
 
 /** The `IncompleteAnswerError` message: every gap and the call that settles it. */
 export function incompleteMessage(answer: Answer): string {
-  return [answered(answer, "Search answered"), ...gapLines(answer)].join("\n");
+  return gapText(answer, "Search answered");
 }
 
 const quote = (value: string | null | undefined): string => JSON.stringify(value ?? "");
 
 const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
-function answered(answer: Answer, lead: string): string {
+/** An incomplete answer's text: how many parts it answered, each part with its gap and
+ *  options, and the calls that settle the gaps. */
+function gapText(answer: Answer, lead: string): string {
   const count = definiteParts(answer.parts).length;
-  return `${lead} ${count} of ${plural(answer.parts.length, "part")} of your question.`;
-}
-
-function gapLines(answer: Answer): string[] {
   const gaps = new Map(answer.gaps.map((gap) => [gap.partIndex, gap]));
-  const lines: string[] = [];
+  const lines = [`${lead} ${count} of ${plural(answer.parts.length, "part")} of your question.`];
   for (const [index, part] of answer.parts.entries()) {
     const name = quote(partText(part));
     const gap = gaps.get(index);
@@ -109,13 +108,12 @@ function gapLines(answer: Answer): string[] {
     const call = chooseCall(answer, gap);
     if (call !== null) lines.push(`  Choose: (await ${call}).fetch()`);
   }
-  const count = definiteParts(answer.parts).length;
   if (count > 0) {
     lines.push(
       `  Or take the answered ${count === 1 ? "part" : "parts"}: answer.fetch({ partial: true })`,
     );
   }
-  return lines;
+  return lines.join("\n");
 }
 
 function candidateLine(candidate: Candidate): string {
@@ -153,9 +151,7 @@ function optionKey(answer: Answer, gap: Gap, mentions: readonly string[]): strin
       answer.gaps.some(
         (other) =>
           other.partIndex !== gap.partIndex &&
-          other.options.some(
-            (option) => option.kind === "query" && option.mentions.includes(mention),
-          ),
+          other.options.some((option) => mentionsOf(option).includes(mention)),
       );
     if (!elsewhere) return quote(mention);
   }

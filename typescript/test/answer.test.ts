@@ -547,15 +547,13 @@ describe("fetch", () => {
   });
 
   test("a declined or catalogue answer raises DeclinedError", async () => {
-    await assert.rejects(answerOf("answer-declined").fetch(), (error: unknown) => {
-      assert.ok(error instanceof DeclinedError);
-      assert.equal(error.code, "answer_declined");
-      return true;
-    });
-    await assert.rejects(answerOf("answer-catalogue").fetch(), {
-      name: "DeclinedError",
-      code: "answer_declined",
-    });
+    for (const name of ["answer-declined", "answer-catalogue"]) {
+      await assert.rejects(answerOf(name).fetch(), (error: unknown) => {
+        assert.ok(error instanceof DeclinedError, name);
+        assert.equal(error.code, "answer_declined");
+        return true;
+      });
+    }
   });
 
   test("partial with no answered part still raises IncompleteAnswerError", async () => {

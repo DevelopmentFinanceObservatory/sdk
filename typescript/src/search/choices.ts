@@ -36,7 +36,8 @@ import type {
   Spec,
 } from "../wire.ts";
 
-type ChoiceKey = number | string;
+/** A part or option named by its index or its words. */
+export type ChoiceKey = number | string;
 type Entry = DatasetResubmitInput["entries"][number];
 
 const refuse = (detail: string): InvalidRequestError => clientError("choice_invalid", { detail });
@@ -79,7 +80,8 @@ function partIndex(answer: Answer, key: ChoiceKey): number {
   throw refuse(`${named.length} parts are named ${JSON.stringify(key)}; use an index.`);
 }
 
-const mentionsOf = (option: Candidate | QueryOption): readonly string[] =>
+/** The question's words an option settles; none for a candidate. */
+export const mentionsOf = (option: Candidate | QueryOption): readonly string[] =>
   option.kind === "query" ? option.mentions : [];
 
 /**
@@ -136,12 +138,6 @@ export function choiceInput(
   };
 }
 
-/** The identity entry that picks `candidate` in its part, the one entry a pick posts on its
- *  own. */
-export function pickedEntry(part: Part, candidate: Candidate): ResubmitIdentityEntry {
-  return identityEntry(part, candidate.spec);
-}
-
 /** A chosen option's `data_query` and the one part it holds. */
 function onePart(option: QueryOption): { query: ParsedInput; part: ParsedPart } {
   const query = option.dataQuery;
@@ -160,7 +156,7 @@ function onePart(option: QueryOption): { query: ParsedInput; part: ParsedPart } 
 }
 
 function chosenEntry(part: Part, chosen: Candidate | QueryOption): Entry {
-  if (chosen.kind === "candidate") return pickedEntry(part, chosen);
+  if (chosen.kind === "candidate") return identityEntry(part, chosen.spec);
   return { entry_kind: "parsed", part: onePart(chosen).part };
 }
 
@@ -216,7 +212,9 @@ function identityOf(
   };
 }
 
-function identityEntry(part: Part, spec: Spec): ResubmitIdentityEntry {
+/** The identity entry that posts `spec` as the reading of `part`, the one entry a candidate's
+ *  fetch posts on its own. */
+export function identityEntry(part: Part, spec: Spec): ResubmitIdentityEntry {
   return { ...echoed(part), entry_kind: "identity", ...identityOf(spec, readingEcho(part, spec)) };
 }
 

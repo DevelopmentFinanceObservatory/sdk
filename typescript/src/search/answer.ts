@@ -6,7 +6,8 @@
  * that awaits a choice and returns a new answer.
  */
 import { answerText, declinedText, incompleteMessage, readingHints } from "./answer-text.ts";
-import { choiceInput, gapNamed, onlyChoice, pick, pickedEntry } from "./choices.ts";
+import { choiceInput, gapNamed, identityEntry, onlyChoice, pick } from "./choices.ts";
+import type { ChoiceKey } from "./choices.ts";
 import { clientError, problemAt200 } from "../core/errors.ts";
 import type { IncompleteAnswerError } from "../core/errors.ts";
 import type { Dataset } from "../datasets/dataset.ts";
@@ -40,7 +41,7 @@ import { isRecord, list, objects, text } from "../core/json.ts";
 export const RESOLVE_PATH = "/search/resolve";
 const SCHEMA_VERSION = 1;
 /** Longer than Search's 45-second soft deadline, so a slow answer arrives whole. */
-export const SEARCH_TIMEOUT_MS = 60_000;
+const SEARCH_TIMEOUT_MS = 60_000;
 
 const NO_ASSUMPTIONS: readonly Assumption[] = Object.freeze([]);
 
@@ -179,8 +180,6 @@ export type AnswerFetchOptions = Omit<FetchMembersOptions<Gap>, "missing" | "nar
   readonly partial?: boolean;
 };
 
-type ChoiceKey = number | string;
-
 /** How the readings an answer builds differ from the question: departures, computations Search
  *  did not run, and its `warn` and `degraded` warnings. */
 export class SearchWarning extends DfoWarning {}
@@ -233,6 +232,8 @@ export class Answer {
   /** The decoded response body, untouched. */
   readonly raw: unknown;
   readonly #context: AnswerContext;
+  /** The members `fetch` builds, one per distinct spec. */
+  readonly #members: readonly MemberRequest[];
 
   /** Answers come from `client.search`. This constructor is the client's. */
   constructor(init: AnswerInit) {
@@ -253,7 +254,7 @@ export class Answer {
       async (candidate, options) => {
         const input: DatasetResubmitInput = {
           kind: "dataset_resubmit",
-          entries: [pickedEntry(part, candidate)],
+          entries: [identityEntry(part, candidate.spec)],
         };
         const signal = options.signal === undefined ? {} : { signal: options.signal };
         const picked = await resolveAnswer(this.#context, input, {
@@ -267,7 +268,9 @@ export class Answer {
       return gap === null ? [] : [gap];
     });
     this.complete = this.kind === "resolution" && this.gaps.length === 0;
-    this.specs = membersOf(this.parts).map((member) => member.spec);
+    const members = membersOf(this.parts);
+    this.#members = members;
+    this.specs = members.map((member) => member.spec);
   }
 
   /**
@@ -321,7 +324,7 @@ export class Answer {
       });
     }
     const { partial, ...fetchOptions } = options;
-    const members = membersOf(this.parts);
+    const members = this.#members;
     if (this.gaps.length > 0 && (partial !== true || members.length === 0)) {
       throw this.incompleteError();
     }
@@ -440,12 +443,7 @@ export function answerFromBody(
   return new Answer({
     kind,
     status: status ?? sharedStatus(typed),
-    sentence:
-      sentence ||
-      typed
-        .map((part) => partSentence(part))
-        .filter(Boolean)
-        .join(" "),
+    sentence: sentence || typed.map(partSentence).filter(Boolean).join(" "),
     parts: typed,
     question,
     warnings,

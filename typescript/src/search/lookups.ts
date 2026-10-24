@@ -142,21 +142,15 @@ export class Graph {
  */
 function checkDcid(dcid: string): void {
   const fault = controlFault(dcid);
-  const problem =
-    dcid === ""
-      ? "is empty"
-      : fault !== null
-        ? `holds ${fault}`
-        : /[?#]/.test(dcid)
-          ? "holds a ? or a #"
-          : hasDotSegment(dcid)
-            ? "holds a . or .. segment"
-            : null;
-  if (problem !== null) {
-    throw clientError("invalid_argument", {
-      detail: `The dcid ${problem}; pass one such as country/NGA.`,
-    });
-  }
+  let problem: string;
+  if (dcid === "") problem = "is empty";
+  else if (fault !== null) problem = `holds ${fault}`;
+  else if (/[?#]/.test(dcid)) problem = "holds a ? or a #";
+  else if (hasDotSegment(dcid)) problem = "holds a . or .. segment";
+  else return;
+  throw clientError("invalid_argument", {
+    detail: `The dcid ${problem}; pass one such as country/NGA.`,
+  });
 }
 
 /** The code registry: what each refusal and warning code means. */
