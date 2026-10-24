@@ -55,10 +55,10 @@ print(
 )
 ```
 
-When a part of the question has several readings, `fetch` stops before it builds anything and says how to settle it. "GNI in Germany" has one part with two readings of GNI:
+When a part of the question has several readings, `fetch` stops before it builds anything and says how to settle it. "government education spending Kenya" has one part with two readings of government education spending:
 
 ```python
-answer = dfo.search("GNI in Germany from 2015 to 2022")
+answer = dfo.search("government education spending Kenya")
 print(answer)  # lists the readings, numbered from 0
 
 data = answer.choose(0).fetch()  # reading 0
@@ -72,9 +72,9 @@ Keep the result. `data.ref` records the exact version of each reading. Save it b
 ```python
 from pathlib import Path
 
-Path("gni.ref.json").write_text(data.ref.to_json())
+Path("education.ref.json").write_text(data.ref.to_json())
 
-ref = dfo.DatasetRef.from_json(Path("gni.ref.json").read_text())
+ref = dfo.DatasetRef.from_json(Path("education.ref.json").read_text())
 same = dfo.fetch(ref)
 assert [m.content_version for m in same.members] == [
     m.content_version for m in data.members

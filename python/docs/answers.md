@@ -43,17 +43,17 @@ In a notebook the answer renders as HTML with the same content.
 
 ## Look at each part
 
-Each part is one of five classes, and each matches by its main field. "GNI in Germany from 2015 to 2022" has one part with two readings:
+Each part is one of five classes, and each matches by its main field. "government education spending Kenya" has one part with two readings:
 
 ```text
-[0] Germany's primary income for gross of fixed capital consumption, 2015 to 2022. · OECD DAC1
-[1] Germany's gross national income based on purchasing power parity in international dollars, 2015 to 2022. · World Development Indicators
+[0] Kenya's percent of total government expenditure on education, 1980 to 2025. · World Development Indicators
+[1] Kenya's percent of nominal GDP spent on education, 1971 to 2024. · World Development Indicators
 ```
 
 ```python
 import dfo
 
-answer = dfo.search("GNI in Germany from 2015 to 2022")
+answer = dfo.search("government education spending Kenya")
 
 for part in answer.parts:
     match part:
@@ -82,9 +82,9 @@ Every part also carries `variable_text` (the question's words for it), `departur
 
 ```text
 Search answered 0 of 1 part of your question.
-  missing  "GNI": 2 readings
-    [0] Germany's primary income for gross of fixed capital consumption, 2015 to 2022 · OECD DAC1 · Current US dollars
-    [1] Germany's gross national income based on purchasing power parity in international dollars, 2015 to 2022 · World Development Indicators
+  missing  "government education spending": 2 readings
+    [0] Kenya's percent of total government expenditure on education, 1980 to 2025 · World Development Indicators
+    [1] Kenya's percent of nominal GDP spent on education, 1971 to 2024 · World Development Indicators
   Choose: answer.choose(0).fetch()
 ```
 
@@ -93,9 +93,9 @@ Search answered 0 of 1 part of your question.
 ```python
 import dfo
 
-answer = dfo.search("GNI in Germany from 2015 to 2022")
+answer = dfo.search("government education spending Kenya")
 
-data = answer.choose("GNI", 1).fetch()
+data = answer.choose("government education spending", 1).fetch()
 print(data)
 ```
 
@@ -104,19 +104,19 @@ When only one part awaits a choice, `answer.choose(option)` picks in that part:
 ```python
 import dfo
 
-answer = dfo.search("GNI in Germany from 2015 to 2022")
+answer = dfo.search("government education spending Kenya")
 data = answer.choose(0).fetch()
 print(data.sentence)
 ```
 
-When a question has several parts, `fetch` lists each answered part as well, and the message ends with the line that settles the first part awaiting a choice, such as `answer.choose("GNI", 0).fetch()`.
+When a question has several parts, `fetch` lists each answered part as well, and the message ends with the line that settles the first part awaiting a choice, such as `answer.choose("government education spending", 0).fetch()`.
 
 A pick of a candidate makes one Search request, which runs no language model. It posts the reading's identity back with the assumptions Search made for it, and the new answer's sentence, with its "Assumed: ..." clause, is Search's. In an answer of several parts the request carries every part, so Search composes the joined sentence again. Each candidate also fetches on its own: `candidate.fetch()` asks Search for that reading alone, in one request, and builds the answer Search gives:
 
 ```python
 import dfo
 
-answer = dfo.search("GNI in Germany from 2015 to 2022")
+answer = dfo.search("government education spending Kenya")
 candidate = answer.parts[0].candidates[1]
 data = candidate.fetch()
 print(data.sentence)

@@ -28,8 +28,8 @@ const rows = await dataset.toRows();
 A part with several readings, or an ambiguous place, stops the fetch with an `IncompleteAnswerError` whose message numbers the choices. `answer.choose(option)` settles the only part that awaits a choice, and `answer.choose(part, option)` names the part by its index or its words:
 
 ```ts
-const gni = await client.search("GNI in Germany from 2015 to 2022");
-const chosen = await gni.choose(0);
+const spending = await client.search("government education spending Kenya");
+const chosen = await spending.choose(0);
 const data = await chosen.fetch();
 ```
 

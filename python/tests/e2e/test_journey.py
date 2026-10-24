@@ -48,7 +48,7 @@ pytestmark = pytest.mark.live
 
 DEFINITE = "ODA disbursements from Germany to Nigeria for basic health care"
 # The step needs a question Search reads several ways.
-CANDIDATES = "GNI in Germany from 2015 to 2022"
+CANDIDATES = "government education spending Kenya"
 MIXED = "debt service of Kenya and the price of tea in Kenya"
 SEVERAL = (
     "ODA disbursements for health and for education from Germany to Kenya, "

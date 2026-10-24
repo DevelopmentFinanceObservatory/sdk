@@ -239,7 +239,7 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
     { timeout: STEP_TIMEOUT },
     async () => {
       // The step needs a question Search reads several ways.
-      const answer = await client.search("GNI in Germany from 2015 to 2022");
+      const answer = await client.search("government education spending Kenya");
       const error = await rejection(answer.fetch());
       assert.ok(error instanceof IncompleteAnswerError, String(error));
       assert.equal(error.code, "answer_incomplete");
