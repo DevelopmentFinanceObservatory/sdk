@@ -8,7 +8,7 @@ sends what the server sent, and stays out of equality, hashing and `repr`.
 import json
 import re
 from collections.abc import Awaitable, Mapping, Sequence
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, replace
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -140,8 +140,7 @@ class Spec:
                 spec.
         """
         obj = decode(text)
-        check_keys(obj, "", required=("spec_id", "definition"), allowed=("sentence",))
-        spec = load_spec(obj, "")
+        spec = load_spec(obj, "", allowed=("sentence",))
         sentence = obj.get("sentence")
         if sentence is not None and not is_text(sentence):
             raise FormatError("format_invalid", "/sentence", "not a non-empty string")
@@ -475,7 +474,10 @@ class UnsupportedPart(Part[Never]):
 
 @dataclass(frozen=True, slots=True, kw_only=True, match_args=False)
 class UnknownPart(Part[Never]):
-    """A part whose status this client does not know. Matches as `UnknownPart(status, raw)`."""
+    """A part whose status this client does not know.
+
+    Matches as `UnknownPart(status, raw)`.
+    """
 
     __match_args__ = ("status", "raw")
 
@@ -508,11 +510,7 @@ def with_candidates[D](
     part: CandidatesPart[Any], candidates: tuple[D, ...], /
 ) -> CandidatesPart[D]:
     """`part` with its candidates swapped for `candidates`, every other field kept."""
-    kept: dict[str, Any] = {
-        field.name: getattr(part, field.name) for field in fields(part)
-    }
-    kept["candidates"] = candidates
-    return CandidatesPart(**kept)
+    return replace(part, candidates=candidates)
 
 
 def unbound_gap(gap: Gap[Candidate | AsyncCandidate], /) -> Gap[Candidate]:
@@ -683,7 +681,11 @@ def check_keys(
             raise FormatError("format_invalid", f"{pointer}/{key}", "not in the format")
 
 
-def load_spec(obj: Mapping[str, Any], pointer: str) -> Spec:
+def load_spec(value: object, pointer: str, *, allowed: Sequence[str] = ()) -> Spec:
+    """The spec a stored `{spec_id, definition}` object names, which may also
+    carry the members `allowed` lists."""
+    obj = object_at(value, pointer)
+    check_keys(obj, pointer, required=("spec_id", "definition"), allowed=allowed)
     spec_id = obj["spec_id"]
     if not matches(SPEC_ID, spec_id):
         raise FormatError("format_invalid", f"{pointer}/spec_id", "not a spec id")

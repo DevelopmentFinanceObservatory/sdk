@@ -342,16 +342,11 @@ def test_a_strict_integer_is_a_whole_number_other_than_a_boolean(
     assert caught.value.pointer == "/definition/schema_version"
 
 
-def search_2_with(edit: Callable[[dict[str, Any]], object]) -> dict[str, Any]:
-    """search-2.json with `edit` applied to its candidates part."""
-    answer = load("search-2.json")
-    edit(answer["parts"][0])
-    return answer
-
-
-def search_1_with(edit: Callable[[dict[str, Any]], object]) -> dict[str, Any]:
-    """search-1.json with `edit` applied to its definite part."""
-    answer = load("search-1.json")
+def edited(name: str, edit: Callable[[dict[str, Any]], object]) -> dict[str, Any]:
+    """The recorded answer `name` with `edit` applied to its first part: the
+    definite part of search-1.json, the candidates part of search-2.json or the
+    no-data part of search-3.json."""
+    answer = load(name)
     edit(answer["parts"][0])
     return answer
 
@@ -362,7 +357,9 @@ def search_1_with(edit: Callable[[dict[str, Any]], object]) -> dict[str, Any]:
         (lambda: {**load("search-1.json"), "parts": {}}, "/parts"),
         (lambda: {**load("search-1.json"), "parts": ["x"]}, "/parts/0"),
         (
-            lambda: search_2_with(lambda part: part["candidates"].update(specs={})),
+            lambda: edited(
+                "search-2.json", lambda part: part["candidates"].update(specs={})
+            ),
             "/parts/0/candidates/specs",
         ),
     ],
@@ -374,13 +371,6 @@ def test_a_malformed_strict_member_raises_at_its_pointer(
     with pytest.raises(ContractError) as caught:
         parse_parts(body())
     assert (caught.value.code, caught.value.pointer) == ("contract_violation", pointer)
-
-
-def search_3_with(edit: Callable[[dict[str, Any]], object]) -> dict[str, Any]:
-    """search-3.json with `edit` applied to its no-data part."""
-    answer = load("search-3.json")
-    edit(answer["parts"][0])
-    return answer
 
 
 def first_spec(part: dict[str, Any]) -> dict[str, Any]:
@@ -395,8 +385,9 @@ def first_label(part: Any) -> object:
     ("body", "read", "absent"),
     [
         (
-            lambda: search_2_with(
-                lambda part: first_spec(part)["resolved"].update(sentence_plan={})
+            lambda: edited(
+                "search-2.json",
+                lambda part: first_spec(part)["resolved"].update(sentence_plan={}),
             ),
             first_label,
             # With no plan the label falls back to the reading's sentence.
@@ -405,29 +396,32 @@ def first_label(part: Any) -> object:
             ],
         ),
         (
-            lambda: search_2_with(
+            lambda: edited(
+                "search-2.json",
                 lambda part: first_spec(part)["resolved"].update(
                     sentence_plan=[], rendered_sentence=""
-                )
+                ),
             ),
             first_label,
             None,
         ),
         (
-            lambda: search_2_with(
+            lambda: edited(
+                "search-2.json",
                 lambda part: first_spec(part)["resolved"]["sentence_plan"].insert(
                     0, None
-                )
+                ),
             ),
             first_label,
             first_label(parse_parts(load("search-2.json"))[0]),
         ),
         *(
             (
-                lambda segment=segment: search_2_with(
+                lambda segment=segment: edited(
+                    "search-2.json",
                     lambda part: first_spec(part)["resolved"]["sentence_plan"].insert(
                         0, {"kind": "text", "segment": segment, "text": "ZZZ "}
-                    )
+                    ),
                 ),
                 first_label,
                 "ZZZ " + first_label(parse_parts(load("search-2.json"))[0]),
@@ -435,40 +429,44 @@ def first_label(part: Any) -> object:
             for segment in (None, 5)
         ),
         (
-            lambda: search_3_with(
+            lambda: edited(
+                "search-3.json",
                 lambda part: part["no_data"].update(
                     options=[{"label": "Congo [DRC]", "mentions": ["Congo", 5, None]}]
-                )
+                ),
             ),
             lambda part: part.options[0].mentions,
             ("Congo",),
         ),
         (
-            lambda: search_1_with(lambda part: part.update(variable_text=5)),
+            lambda: edited("search-1.json", lambda part: part.update(variable_text=5)),
             lambda part: part.variable_text,
             None,
         ),
         (
-            lambda: search_2_with(
+            lambda: edited(
+                "search-2.json",
                 lambda part: part.update(
                     reading_assumptions={first_spec(part)["spec_id"]: {}}
-                )
+                ),
             ),
             lambda part: part.candidates[0].assumptions,
             (),
         ),
         (
-            lambda: search_1_with(lambda part: part.update(operations={})),
+            lambda: edited("search-1.json", lambda part: part.update(operations={})),
             lambda part: part.operations,
             (),
         ),
         (
-            lambda: search_1_with(lambda part: part.update(warnings={})),
+            lambda: edited("search-1.json", lambda part: part.update(warnings={})),
             lambda part: part.warnings,
             (),
         ),
         (
-            lambda: search_1_with(lambda part: part.update(departures=[None])),
+            lambda: edited(
+                "search-1.json", lambda part: part.update(departures=[None])
+            ),
             lambda part: part.departures,
             (),
         ),
@@ -563,11 +561,12 @@ def test_assumptions_and_operations_parse_from_their_read_forms() -> None:
     """An item that does not read is dropped, and a member that reads as absent
     takes the field's default."""
     (part, *_) = parse_parts(
-        search_1_with(
+        edited(
+            "search-1.json",
             lambda part: part.update(
                 assumptions=[{**_ASSUMED, "text": 5}, {**_ASSUMED, "refs": "A"}],
                 operations=[{"verb": 7, "phrase": "x"}, {**_RANK, "target_year": True}],
-            )
+            ),
         )
     )
     assert part.assumptions == (Assumption("declared_default", "how:x", "grants"),)

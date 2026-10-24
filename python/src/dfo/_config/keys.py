@@ -160,10 +160,6 @@ class ResolvedKey:
 _ANONYMOUS = ResolvedKey("anonymous", None)
 
 
-def _wrap(value: str | ApiKey) -> ApiKey:
-    return value if isinstance(value, ApiKey) else ApiKey(value)
-
-
 def _from_file(path: str, env: Mapping[str, str]) -> ResolvedKey | None:
     try:
         profiles = read_profiles(path)
@@ -219,7 +215,7 @@ def _colab_secret() -> str | None:
 
 
 def _found(source: KeySource, value: str | ApiKey) -> ResolvedKey:
-    return ResolvedKey(source, _wrap(value))
+    return ResolvedKey(source, value if isinstance(value, ApiKey) else ApiKey(value))
 
 
 def _from_argument(api_key: ApiKeyArgument) -> ResolvedKey | None:
@@ -305,21 +301,22 @@ def resolve_key(
             empty one (`profile_without_key`).
     """
     resolved = _lookup(api_key, os.environ if env is None else env, path)
-    if resolved.key is not None and (fault := key_fault(resolved.key.reveal())):
+    if resolved.key is None:
+        return resolved
+    value = resolved.key.reveal()
+    if fault := key_fault(value):
         raise client_error(
             KEY_INVALID,
             f"The API key from {_source_name(resolved)} holds {fault}; a key "
             "holds visible ASCII only. Copy it again without spaces or line "
             "breaks.",
         )
-    if resolved.key is not None and (
-        problem := check_key_format(resolved.key.reveal())
-    ):
+    if problem := check_key_format(value):
         warn_once(
             ("key_format", problem, resolved.key),
             client_warning(
                 _FORMAT_WARNINGS[problem],
-                f"The API key {mask(resolved.key.reveal())} from the "
+                f"The API key {mask(value)} from the "
                 f"{resolved.source.replace('_', ' ')} does not look like a DFO "
                 f"key ({problem}); the client sends it anyway.",
             ),

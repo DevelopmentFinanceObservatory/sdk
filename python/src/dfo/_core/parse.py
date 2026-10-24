@@ -2,11 +2,12 @@
 
 The parser reads the plain dicts `json.loads` returns. It checks the members the
 client acts on, as `dfo._generated.strict` lists them, through `require`, which
-raises `ContractError` with the JSON Pointer of a member that is missing, null or of
-another JSON type, and reads everything else tolerantly: an unknown member is ignored, a member of another
-JSON type reads as absent, an unknown enum value passes through as a string, and a
-part with an unknown status becomes `UnknownPart`.
-Server JSON the client posts back, such as a spec's `definition`, is kept as decoded.
+raises `ContractError` with the JSON Pointer of a member that is missing, null or
+of another JSON type, and reads everything else tolerantly: an unknown member is
+ignored, a member of another JSON type reads as absent, an unknown enum value
+passes through as a string, and a part with an unknown status becomes
+`UnknownPart`. Server JSON the client posts back, such as a spec's `definition`,
+is kept as decoded.
 """
 
 from collections.abc import Callable, Iterable, Mapping
@@ -476,7 +477,8 @@ def _option(option: Wire) -> Option:
 
 
 def _segment(token: Wire) -> str:
-    """A sentence-plan token's segment, or the heading when it is missing or not a string."""
+    """A sentence-plan token's segment, or the heading when it is missing or not a
+    string."""
     segment = token.get("segment")
     return segment if isinstance(segment, str) else "heading"
 

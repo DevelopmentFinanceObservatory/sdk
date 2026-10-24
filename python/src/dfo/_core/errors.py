@@ -166,7 +166,8 @@ class DfoWarning(UserWarning):
         code: The client's own code from the contract's `warning-codes.json`, or
             the server's code for a `DataWarning` or `SearchWarning`.
         trace_id: For a `DataWarning` or `SearchWarning`, the trace id of the
-            response that carried it, to quote when reporting it. None for any other warning.
+            response that carried it, to quote when reporting it. None for any
+            other warning.
     """
 
     def __init__(

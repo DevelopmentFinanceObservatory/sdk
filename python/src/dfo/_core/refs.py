@@ -210,9 +210,7 @@ def _load_member(value: object, pointer: str) -> RefMember:
         raise FormatError(
             "format_invalid", f"{pointer}/sentence", "not a non-empty string"
         )
-    spec_obj = object_at(obj["spec"], f"{pointer}/spec")
-    check_keys(spec_obj, f"{pointer}/spec", required=("spec_id", "definition"))
-    spec = load_spec(spec_obj, f"{pointer}/spec")
+    spec = load_spec(obj["spec"], f"{pointer}/spec")
     if not matches(CONTENT_VERSION, obj["content_version"]):
         raise FormatError(
             "format_invalid", f"{pointer}/content_version", "not a content version"
