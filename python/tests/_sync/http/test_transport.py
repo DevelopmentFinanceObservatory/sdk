@@ -84,10 +84,12 @@ class Recorder:
         return response
 
 
-def problem(status: int, **members: object) -> httpx2.Response:
+def problem(
+    status: int, *, headers: dict[str, str] | None = None, **members: object
+) -> httpx2.Response:
     return httpx2.Response(
         status,
-        headers={"content-type": "application/problem+json"},
+        headers={"content-type": "application/problem+json", **(headers or {})},
         content=json.dumps({"status": status, **members}).encode(),
     )
 
@@ -634,6 +636,30 @@ def test_a_passed_deadline_raises_a_timeout_error(
     assert isinstance(caught.value, TimeoutError)
     assert caught.value.code == "deadline_exceeded"
     assert recorder.requests == []
+
+
+@pytest.mark.parametrize(
+    ("refusal", "error", "sleeps"),
+    [
+        (
+            problem(
+                429, code="rate_limited", retryable=True, headers={"Retry-After": "7"}
+            ),
+            RateLimitError,
+            [7.0, 7.0],
+        ),
+    ],
+    ids=["rate-limited-with-retry-after"],
+)
+def test_a_refusal_that_repeats_raises_once_the_retries_run_out(
+    refusal: httpx2.Response, error: type[Exception], sleeps: list[float]
+) -> None:
+    timeline = Timeline()
+    recorder = Recorder(refusal, refusal, refusal)
+    with make(recorder, timeline) as transport:
+        with pytest.raises(error):
+            transport.request("GET", "/datasets/schema")
+    assert timeline.sleeps == sleeps
 
 
 def test_connection_failures_retry_then_raise_a_network_error() -> None:

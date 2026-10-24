@@ -54,8 +54,9 @@ from dfo._generated.error_map import (
 TRACE_HEADER = "x-dfo-trace-id"
 
 # The media types a response's body is read as JSON under when it is not one the
-# client asked for. They cover a refusal's problem document, the website
-# proxy's included.
+# client asked for. The contract reads a refusal body of either type: a problem
+# document under `application/problem+json`, or the same members sent under the
+# plain `application/json`.
 _JSON_TYPES = frozenset({"application/problem+json", "application/json"})
 
 # The client codes of errors that describe a response the client read.
