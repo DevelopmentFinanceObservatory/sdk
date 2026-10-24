@@ -56,9 +56,9 @@ type ProcessLike = { emitWarning?: (warning: Error) => void };
 
 /** Emits through `process.emitWarning` where the platform has it, else `console.warn`. */
 export const emitWarning: WarningHandler = (warning) => {
-  const emit = (globalThis as { process?: ProcessLike }).process?.emitWarning;
-  if (typeof emit === "function") {
-    emit.call((globalThis as { process?: ProcessLike }).process, warning);
+  const process = (globalThis as { process?: ProcessLike }).process;
+  if (typeof process?.emitWarning === "function") {
+    process.emitWarning(warning);
   } else {
     console.warn(`${warning.name}: ${warning.message}`);
   }

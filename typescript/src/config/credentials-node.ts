@@ -8,9 +8,8 @@ import { clientError } from "../core/errors.ts";
 const platform = (): Platform =>
   process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
 
-/** Errors that mean no file is there: none exists, or the runtime refuses the read, as Deno does
- *  without `--allow-read`. A path through a regular file (`ENOTDIR`) is unreadable. */
-const ABSENT = new Set(["ENOENT"]);
+/** The names of the errors Deno raises when it refuses a read, as it does without
+ *  `--allow-read`. */
 const REFUSED = new Set(["PermissionDenied", "NotCapable"]);
 
 /**
@@ -26,8 +25,9 @@ export const readCredentialsFile: CredentialsFileReader = (env) => {
     return readFileSync(path, "utf8");
   } catch (error) {
     const code = error instanceof Error ? (error as { code?: unknown }).code : undefined;
-    if (typeof code === "string" && ABSENT.has(code)) return null;
-    if (error instanceof Error && REFUSED.has(error.name)) return null;
+    // No file is there, or the runtime refuses the read. A path through a regular file
+    // (`ENOTDIR`) is unreadable.
+    if (code === "ENOENT" || (error instanceof Error && REFUSED.has(error.name))) return null;
     throw clientError("credentials_file_unreadable", {
       detail:
         `The credentials file at ${JSON.stringify(path)} cannot be read ` +

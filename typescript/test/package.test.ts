@@ -8,20 +8,18 @@ import { envFrom } from "../src/config/env.ts";
 import { resolveApiKey } from "../src/index.node.ts";
 import { VERSION } from "../src/version.ts";
 
+const readJson = async <T>(path: string): Promise<T> =>
+  JSON.parse(await readFile(new URL(path, import.meta.url), "utf8")) as T;
+
 test("VERSION matches package.json", async () => {
-  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
-    version: string;
-  };
+  const pkg = await readJson<{ version: string }>("../package.json");
   assert.equal(VERSION, pkg.version);
 });
 
 test("hyparquet is the version hyparquet-writer pins, so one copy installs", async () => {
-  const read = async (path: string): Promise<{ dependencies: Record<string, string> }> =>
-    JSON.parse(await readFile(new URL(path, import.meta.url), "utf8")) as {
-      dependencies: Record<string, string>;
-    };
-  const own = await read("../package.json");
-  const writer = await read("../node_modules/hyparquet-writer/package.json");
+  type Manifest = { dependencies: Record<string, string> };
+  const own = await readJson<Manifest>("../package.json");
+  const writer = await readJson<Manifest>("../node_modules/hyparquet-writer/package.json");
   assert.equal(own.dependencies["hyparquet"], writer.dependencies["hyparquet"]);
 });
 

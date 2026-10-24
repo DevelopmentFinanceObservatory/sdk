@@ -84,6 +84,20 @@ export class DfoError extends Error {
 
 Object.defineProperty(DfoError.prototype, BRAND, { value: true });
 
+/** The options that build another error from `error`, with `error` as the cause. The message is
+ *  left out, so it defaults to the detail. */
+export const optionsOf = (error: DfoError): DfoErrorOptions => ({
+  code: error.code,
+  status: error.status,
+  detail: error.detail,
+  traceId: error.traceId,
+  retryable: error.retryable,
+  retryAfterMs: error.retryAfterMs,
+  problem: error.problem,
+  docsUrl: error.docsUrl,
+  cause: error,
+});
+
 /** True for an error this client raised, including one from another copy of the package. */
 export function isDfoError(value: unknown): value is DfoError {
   return (
@@ -221,11 +235,13 @@ function classForStatus(status: number): ErrorClass {
   return InvalidRequestError;
 }
 
+/** The value a generated table holds for a code, or undefined for a code it lacks. */
+const lookUp = <T>(table: Readonly<Record<string, T>>, code: string): T | undefined =>
+  Object.hasOwn(table, code) ? table[code] : undefined;
+
 /** The action `contract/actions.json` assigns to a code, or undefined for a code it lacks. */
 export function actionFor(code: string): Action | undefined {
-  return Object.hasOwn(CODE_ACTIONS, code)
-    ? CODE_ACTIONS[code as keyof typeof CODE_ACTIONS]
-    : undefined;
+  return lookUp(CODE_ACTIONS, code);
 }
 
 /** A server refusal's message: its detail, naming the field its problem document's `pointer`
@@ -291,10 +307,7 @@ export function errorClassFor(code: string, status: number): ErrorClass {
 }
 
 /** The status `contract/proxy-codes.json` gives a code the website proxy answers itself. */
-const proxyStatusFor = (code: string): number | undefined =>
-  Object.hasOwn(PROXY_CODE_STATUSES, code)
-    ? PROXY_CODE_STATUSES[code as keyof typeof PROXY_CODE_STATUSES]
-    : undefined;
+const proxyStatusFor = (code: string): number | undefined => lookUp(PROXY_CODE_STATUSES, code);
 
 type ClientClassName = Exclude<(typeof CLIENT_CODE_CLASSES)[ClientErrorCode], "by_status">;
 

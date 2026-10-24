@@ -20,6 +20,11 @@ const records = async (): Promise<RefRecord[]> => {
   return Promise.all(names.map((name) => contractJson<RefRecord>(`refs/${name}`)));
 };
 
+/** The stored ref of the contract's one-member record. */
+const oneMember = async (): Promise<{ members: Record<string, unknown>[] }> =>
+  (await contractJson<{ ref: { members: Record<string, unknown>[] } }>("refs/ref-one-member.json"))
+    .ref;
+
 describe("the contract's DatasetRef records", async () => {
   for (const record of await records()) {
     test(record.name, () => {
@@ -44,9 +49,7 @@ describe("the contract's DatasetRef records", async () => {
 
 describe("DatasetRef.fromJSON", () => {
   test("keeps a definition of another integer schema_version as stored", async () => {
-    const { ref } = await contractJson<{ ref: { members: Record<string, unknown>[] } }>(
-      "refs/ref-one-member.json",
-    );
+    const ref = await oneMember();
     const stored = structuredClone(ref);
     const spec = stored.members[0]!["spec"] as { definition: Record<string, unknown> };
     spec.definition["schema_version"] = 2;
@@ -54,9 +57,7 @@ describe("DatasetRef.fromJSON", () => {
   });
 
   test("holds a frozen copy of the value it loads", async () => {
-    const { ref } = await contractJson<{ ref: { members: Record<string, unknown>[] } }>(
-      "refs/ref-one-member.json",
-    );
+    const ref = await oneMember();
     const stored = structuredClone(ref);
     const loaded = DatasetRef.fromJSON(stored);
     const written = JSON.stringify(loaded);
@@ -82,9 +83,7 @@ describe("DatasetRef.fromJSON", () => {
   });
 
   test("names the offending value by JSON Pointer", async () => {
-    const { ref } = await contractJson<{ ref: { members: Record<string, unknown>[] } }>(
-      "refs/ref-one-member.json",
-    );
+    const ref = await oneMember();
     const cases: [path: string[], value: unknown][] = [
       [["content_version"], "cv_short"],
       [["spec", "definition", "schema_version"], true],
@@ -112,9 +111,7 @@ describe("DatasetRef.fromJSON", () => {
 
 describe("a party-totals cut in a ref", () => {
   test("is written only when true, so a plain recorded ref stays byte-identical", async () => {
-    const { ref } = await contractJson<{ ref: { members: Record<string, unknown>[] } }>(
-      "refs/ref-one-member.json",
-    );
+    const ref = await oneMember();
     const plain = DatasetRef.fromJSON(JSON.stringify(ref));
     assert.equal(JSON.stringify(plain), JSON.stringify(ref));
     assert.ok(!("without_party_totals" in plain.members[0]!.rendering));

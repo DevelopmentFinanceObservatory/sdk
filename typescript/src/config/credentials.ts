@@ -38,31 +38,32 @@ const TABLE = /^\[([A-Za-z0-9_-]+)\]$/;
 // eslint-disable-next-line no-control-regex -- the rule refuses control characters in a value
 const ENTRY = /^([A-Za-z0-9_-]+)[ \t]*=[ \t]*"([^"\\\u0000-\u001f\u007f]*)"$/;
 
+const refuse = (line: number, reason: CredentialsFileErrorReason): ParsedCredentialsFile => ({
+  ok: false,
+  line,
+  reason,
+});
+
 /** Parses the TOML subset of `[profile]` tables with `name = "value"` lines. */
 export function parseCredentialsFile(text: string): ParsedCredentialsFile {
   const profiles: CredentialsProfiles = Object.create(null) as CredentialsProfiles;
   let open: Record<string, string> | undefined;
   for (const [index, raw] of text.split("\n").entries()) {
     const line = raw.replace(/[ \t]*\r?[ \t]*$/, "").replace(/^[ \t]+/, "");
-    const refuse = (reason: CredentialsFileErrorReason): ParsedCredentialsFile => ({
-      ok: false,
-      line: index + 1,
-      reason,
-    });
     if (line === "" || line.startsWith("#")) continue;
     const table = TABLE.exec(line);
     if (table !== null) {
       const name = table[1]!;
-      if (Object.hasOwn(profiles, name)) return refuse("duplicate_table");
+      if (Object.hasOwn(profiles, name)) return refuse(index + 1, "duplicate_table");
       open = Object.create(null) as Record<string, string>;
       profiles[name] = open;
       continue;
     }
     const entry = ENTRY.exec(line);
-    if (entry === null) return refuse("invalid_line");
-    if (open === undefined) return refuse("outside_table");
+    if (entry === null) return refuse(index + 1, "invalid_line");
+    if (open === undefined) return refuse(index + 1, "outside_table");
     const name = entry[1]!;
-    if (Object.hasOwn(open, name)) return refuse("duplicate_key");
+    if (Object.hasOwn(open, name)) return refuse(index + 1, "duplicate_key");
     open[name] = entry[2]!;
   }
   return { ok: true, profiles };
@@ -72,10 +73,8 @@ export function parseCredentialsFile(text: string): ParsedCredentialsFile {
  *  reads synchronously, since a client resolves its key when it is built. */
 export type CredentialsFileReader = (env: EnvReader) => string | null;
 
-/** The reader for platforms with no file system, which finds no file. */
-export const noCredentialsFile: CredentialsFileReader = () => null;
-
-let platformReader: CredentialsFileReader = noCredentialsFile;
+/** The installed reader; platforms with no file system find no file. */
+let platformReader: CredentialsFileReader = () => null;
 
 /** The reader the platform entry point installs: the file system reader under the `node` export
  *  condition, else none. */

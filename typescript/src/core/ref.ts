@@ -78,6 +78,10 @@ export class FormatError extends TypeError {
 }
 Object.defineProperty(FormatError.prototype, "name", { value: "FormatError", configurable: true });
 
+/** A `format_invalid` error at `pointer`. */
+const invalid = (pointer: string, detail: string): FormatError =>
+  new FormatError("format_invalid", pointer, detail);
+
 const FORMAT_VERSION = 1;
 const SPEC_ID = /^spec_[0-9a-f]{32}$/;
 /** A version's id, as the ref format and the server write it. */
@@ -185,17 +189,17 @@ export class DatasetRef {
       try {
         parsed = parseJson(value);
       } catch (error) {
-        throw Object.assign(new FormatError("format_invalid", "", "not JSON"), { cause: error });
+        throw Object.assign(invalid("", "not JSON"), { cause: error });
       }
     }
     const ref = objectAt(parsed, "");
-    checkKeys(ref, "", ["format_version", "members"], []);
+    checkKeys(ref, "", ["format_version", "members"]);
     if (ref["format_version"] !== FORMAT_VERSION) {
-      throw new FormatError("format_invalid", "/format_version", `not ${FORMAT_VERSION}`);
+      throw invalid("/format_version", `not ${FORMAT_VERSION}`);
     }
     const members = ref["members"];
     if (!Array.isArray(members) || members.length === 0) {
-      throw new FormatError("format_invalid", "/members", "not a non-empty array");
+      throw invalid("/members", "not a non-empty array");
     }
     const loaded = members.map((member: unknown, index) => loadMember(member, `/members/${index}`));
     const seen = new Set<string>();
@@ -214,7 +218,7 @@ export class DatasetRef {
 }
 
 function objectAt(value: unknown, pointer: string): Record<string, unknown> {
-  if (!isRecord(value)) throw new FormatError("format_invalid", pointer, "not an object");
+  if (!isRecord(value)) throw invalid(pointer, "not an object");
   return value;
 }
 
@@ -222,16 +226,16 @@ function checkKeys(
   value: Record<string, unknown>,
   pointer: string,
   required: readonly string[],
-  optional: readonly string[],
+  optional: readonly string[] = [],
 ): void {
   for (const key of required) {
     if (!Object.hasOwn(value, key)) {
-      throw new FormatError("format_invalid", `${pointer}/${key}`, "missing");
+      throw invalid(`${pointer}/${key}`, "missing");
     }
   }
   for (const key of Object.keys(value)) {
     if (!required.includes(key) && !optional.includes(key)) {
-      throw new FormatError("format_invalid", `${pointer}/${key}`, "not a member of the format");
+      throw invalid(`${pointer}/${key}`, "not a member of the format");
     }
   }
 }
@@ -240,14 +244,14 @@ const isText = (value: unknown): value is string => typeof value === "string" &&
 
 function matching(pattern: RegExp, value: unknown, pointer: string, what: string): string {
   if (typeof value !== "string" || !pattern.test(value)) {
-    throw new FormatError("format_invalid", pointer, `not ${what}`);
+    throw invalid(pointer, `not ${what}`);
   }
   return value;
 }
 
 function loadMember(value: unknown, pointer: string): RefMember {
   const member = objectAt(value, pointer);
-  checkKeys(member, pointer, ["parts", "sentence", "spec", "content_version", "artifact"], []);
+  checkKeys(member, pointer, ["parts", "sentence", "spec", "content_version", "artifact"]);
   const parts = member["parts"];
   if (!Array.isArray(parts) || !parts.every(isText)) {
     throw new FormatError(
@@ -258,19 +262,14 @@ function loadMember(value: unknown, pointer: string): RefMember {
   }
   const sentence = member["sentence"];
   if (!isText(sentence)) {
-    throw new FormatError("format_invalid", `${pointer}/sentence`, "not a non-empty string");
+    throw invalid(`${pointer}/sentence`, "not a non-empty string");
   }
 
   const spec = objectAt(member["spec"], `${pointer}/spec`);
-  checkKeys(spec, `${pointer}/spec`, ["spec_id", "definition"], []);
+  checkKeys(spec, `${pointer}/spec`, ["spec_id", "definition"]);
   const specId = matching(SPEC_ID, spec["spec_id"], `${pointer}/spec/spec_id`, "a spec id");
   const definition = objectAt(spec["definition"], `${pointer}/spec/definition`);
-  checkKeys(
-    definition,
-    `${pointer}/spec/definition`,
-    ["schema_version", "spec_id", "identity"],
-    [],
-  );
+  checkKeys(definition, `${pointer}/spec/definition`, ["schema_version", "spec_id", "identity"]);
   if (!Number.isInteger(definition["schema_version"])) {
     throw new FormatError(
       "format_invalid",
@@ -300,7 +299,7 @@ function loadMember(value: unknown, pointer: string): RefMember {
     "a content version",
   );
   const artifact = objectAt(member["artifact"], `${pointer}/artifact`);
-  checkKeys(artifact, `${pointer}/artifact`, ["digest", "rendering"], []);
+  checkKeys(artifact, `${pointer}/artifact`, ["digest", "rendering"]);
   const digest = matching(DIGEST, artifact["digest"], `${pointer}/artifact/digest`, "a digest");
   return Object.freeze({
     parts: Object.freeze([...parts]),
@@ -325,7 +324,7 @@ function frozenCopy<T extends object>(value: T, pointer: string): T {
   try {
     copy = structuredClone(value);
   } catch (error) {
-    throw Object.assign(new FormatError("format_invalid", pointer, "not JSON"), { cause: error });
+    throw Object.assign(invalid(pointer, "not JSON"), { cause: error });
   }
   return deepFreeze(copy);
 }
@@ -343,17 +342,17 @@ function loadRendering(value: unknown, pointer: string): Rendering {
   checkKeys(rendering, pointer, ["format", "bundle"], ["layout", "without_party_totals"]);
   const { format, bundle, layout } = rendering;
   if (!isFormat(format)) {
-    throw new FormatError("format_invalid", `${pointer}/format`, "not csv, xlsx or parquet");
+    throw invalid(`${pointer}/format`, "not csv, xlsx or parquet");
   }
   if (typeof bundle !== "boolean") {
-    throw new FormatError("format_invalid", `${pointer}/bundle`, "not a boolean");
+    throw invalid(`${pointer}/bundle`, "not a boolean");
   }
   if (layout !== undefined && layout !== "frame") {
-    throw new FormatError("format_invalid", `${pointer}/layout`, 'not "frame"');
+    throw invalid(`${pointer}/layout`, 'not "frame"');
   }
   const cut = Object.hasOwn(rendering, "without_party_totals");
   if (cut && rendering["without_party_totals"] !== true) {
-    throw new FormatError("format_invalid", `${pointer}/without_party_totals`, "not true");
+    throw invalid(`${pointer}/without_party_totals`, "not true");
   }
   return {
     format,

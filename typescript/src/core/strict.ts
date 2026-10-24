@@ -79,17 +79,16 @@ export function checkRequired(
   if (!isRecord(value)) {
     throw violation(`The ${schema} at ${pointer || "/"} is not an object.`, pointer);
   }
-  const body = value;
   for (const [member, type] of Object.entries(required)) {
     const at = `${pointer}/${escape(member)}`;
-    if (body[member] === undefined || body[member] === null) {
+    if (value[member] === undefined || value[member] === null) {
       throw violation(
         `The response has no ${member} at ${pointer || "/"}, which ` +
           `${schema} requires and this client acts on. Upgrade the client, or report the trace id.`,
         at,
       );
     }
-    if (!IS_TYPE[type](body[member])) {
+    if (!IS_TYPE[type](value[member])) {
       throw violation(
         `The ${member} at ${at} is not a JSON ${type}, which ${schema} requires and this ` +
           "client acts on. Upgrade the client, or report the trace id.",
@@ -97,7 +96,7 @@ export function checkRequired(
       );
     }
   }
-  return body;
+  return value;
 }
 
 /**

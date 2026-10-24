@@ -2,7 +2,8 @@
 
 import type { Answer, AnswerContext, SearchOptions } from "./search/answer.ts";
 import type { Dataset } from "./datasets/dataset.ts";
-import { clientError, DfoError, InvalidRequestError } from "./core/errors.ts";
+import { clientError, DfoError, InvalidRequestError, optionsOf } from "./core/errors.ts";
+import { present } from "./core/json.ts";
 import { mint, resume } from "./datasets/fetch.ts";
 import { fetchDataset } from "./datasets/resolve.ts";
 import type { FetchOptions, MintOptions, ResumeOptions, SpecInput } from "./datasets/fetch.ts";
@@ -56,7 +57,8 @@ export type RawRequestOptions = LookupOptions & {
   readonly json?: unknown;
 };
 
-let adopt: ((transport: Transport) => Client) | undefined;
+/** The transport `clientOver` hands the next constructor call. */
+let adopting: Transport | undefined;
 
 /**
  * A connection to the DFO API with its key. Every call goes through one transport, which
@@ -69,20 +71,6 @@ export class Client {
   readonly codes: Codes;
   readonly #transport: Transport;
   readonly #answers: AnswerContext;
-
-  /** The transport `clientOver` hands the next constructor call. */
-  static #adopting: Transport | undefined;
-
-  static {
-    adopt = (transport) => {
-      Client.#adopting = transport;
-      try {
-        return new Client();
-      } finally {
-        Client.#adopting = undefined;
-      }
-    };
-  }
 
   /**
    * Builds the client and resolves its key, which it resolves again after a 401.
@@ -101,7 +89,7 @@ export class Client {
   constructor(options: ClientOptions = {}) {
     const { headers, ...rest } = options;
     this.#transport =
-      Client.#adopting ??
+      adopting ??
       new Transport({ ...rest, ...(headers === undefined ? {} : { defaultHeaders: headers }) });
     this.#answers = {
       transport: this.#transport,
@@ -209,10 +197,7 @@ export class Client {
       return await transport.requestRaw({
         method: method.toUpperCase(),
         path,
-        ...(params === undefined ? {} : { query: params }),
-        ...(json === undefined ? {} : { json }),
-        ...(signal === undefined ? {} : { signal }),
-        ...(timeout === undefined ? {} : { timeout }),
+        ...present({ query: params, json, signal, timeout }),
       });
     } catch (error) {
       throw callerRefusal(error);
@@ -235,21 +220,15 @@ function callerRefusal(error: unknown): unknown {
   ) {
     return error;
   }
-  return new InvalidRequestError({
-    code: error.code,
-    status: error.status,
-    detail: error.detail,
-    message: error.message,
-    traceId: error.traceId,
-    retryable: error.retryable,
-    retryAfterMs: error.retryAfterMs,
-    problem: error.problem,
-    docsUrl: error.docsUrl,
-    cause: error,
-  });
+  return new InvalidRequestError({ ...optionsOf(error), message: error.message });
 }
 
 /** A client over an existing transport, for tests and replays. */
 export function clientOver(transport: Transport): Client {
-  return adopt!(transport);
+  adopting = transport;
+  try {
+    return new Client();
+  } finally {
+    adopting = undefined;
+  }
 }

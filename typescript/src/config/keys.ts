@@ -7,6 +7,7 @@ import { keyFault } from "../core/text.ts";
 
 const SECRET_PREFIX = "dfo_k_";
 const PUBLISHABLE_PREFIX = "dfo_p_";
+const PREFIXES = [SECRET_PREFIX, PUBLISHABLE_PREFIX];
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const CHECKSUM_LENGTH = 6;
 
@@ -28,7 +29,7 @@ export class ApiKey {
 
   /** The key's prefix and last four characters, for display. */
   get masked(): string {
-    const prefix = [SECRET_PREFIX, PUBLISHABLE_PREFIX].find((p) => this.#value.startsWith(p)) ?? "";
+    const prefix = PREFIXES.find((p) => this.#value.startsWith(p)) ?? "";
     const rest = this.#value.slice(prefix.length);
     return rest.length > 8 ? `${prefix}…${rest.slice(-4)}` : `${prefix}…`;
   }
@@ -83,7 +84,7 @@ function base62(value: number): string {
  * a warning. The client sends the key anyway, so a new key format forces no upgrade.
  */
 export function checkKeyFormat(key: string): KeyFormatVerdict {
-  const prefix = [SECRET_PREFIX, PUBLISHABLE_PREFIX].find((p) => key.startsWith(p));
+  const prefix = PREFIXES.find((p) => key.startsWith(p));
   if (prefix === undefined) return { verdict: "warn", reason: "unknown_prefix" };
   const rest = key.slice(prefix.length);
   if (!/^[0-9A-Za-z]*$/.test(rest)) {
@@ -105,9 +106,6 @@ export type ApiKeyOption =
 export type KeySource = "argument" | "environment" | "credentials_file" | "anonymous";
 
 export type ResolvedKey = { source: KeySource; key: ApiKey | null };
-
-const toKey = (value: string | ApiKey): ApiKey =>
-  value instanceof ApiKey ? value : new ApiKey(value);
 
 type KeyLookup = {
   apiKey?: ApiKeyOption | undefined;
@@ -144,7 +142,7 @@ function argumentKey(value: unknown): ResolvedKey {
       detail: "The API key from the apiKey argument is not a string or an ApiKey.",
     });
   }
-  const key = toKey(value);
+  const key = value instanceof ApiKey ? value : new ApiKey(value);
   if (key.reveal() === "") {
     throw clientError("key_empty", {
       detail: "The apiKey argument is empty; pass a key, or false for anonymous use.",
@@ -238,12 +236,12 @@ export const inBrowser = (): boolean => {
  * script that holds it is delivered to every visitor.
  */
 export function refuseSecretKeyInBrowser(
-  key: string | ApiKey | null,
+  key: ApiKey | null,
   dangerouslyAllowBrowser: boolean,
 ): void {
   if (key === null || dangerouslyAllowBrowser || !inBrowser()) return;
   // The prefix is matched in any case, so `DFO_K_` is caught too.
-  if ((typeof key === "string" ? key : key.reveal()).toLowerCase().startsWith(SECRET_PREFIX)) {
+  if (key.reveal().toLowerCase().startsWith(SECRET_PREFIX)) {
     throw new TypeError(
       "A secret dfo_k_ key in a browser page or worker is readable by every visitor. Call the " +
         "API from a server, or pass dangerouslyAllowBrowser: true to send it anyway.",
