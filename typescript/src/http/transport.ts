@@ -5,7 +5,7 @@ import {
   DfoError,
   errorClassFor,
   InvalidRequestError,
-  isRetryableStatus,
+  isRetryable,
   REFUSAL_CODE,
   refusalMessage,
   serverCode,
@@ -39,9 +39,6 @@ const BACKOFF_CAP_MS = 8_000;
 /** The longest `Retry-After` a refusal is waited for, in seconds. A longer one, or one past the
  *  call's deadline, raises the refusal at once with its `retryAfterMs` set. */
 export const RETRY_AFTER_MAX_S = 60;
-/** The bounds a long build's poll interval from the server is clamped to, in seconds. */
-export const POLL_INTERVAL_MIN_S = 1;
-export const POLL_INTERVAL_MAX_S = 60;
 /** The decoded bytes a downloaded file may hold when its manifest gives no size. */
 export const DEFAULT_MAX_BYTES = 2 * 2 ** 30;
 /** The decoded bytes an API response's body may hold, 16 MiB. The largest JSON body recorded
@@ -62,8 +59,6 @@ const IMF_FIXDATE =
 const MAX_TIMER_MS = 2 ** 31 - 1;
 /** A timer's delay for `ms`: whole milliseconds, at least 1 and at most `MAX_TIMER_MS`. */
 const timerMs = (ms: number): number => Math.min(Math.max(1, Math.ceil(ms)), MAX_TIMER_MS);
-/** The website proxy's `retry` value for a refusal that clears on its own. */
-const PROXY_RETRY = "retry_after_delay";
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 /** The media types a refusal body is read as a problem document under. */
 const PROBLEM_TYPES = new Set(["application/problem+json", "application/json"]);
@@ -108,10 +103,10 @@ export type TransportOptions = {
 export type Target = { path: string; url?: never } | { url: string; path?: never };
 
 export type CallOptions = {
-  signal?: AbortSignal;
+  signal?: AbortSignal | undefined;
   /** The longest one attempt waits, in milliseconds, within `deadline`; `Infinity` reads until
    *  the deadline. The transport's `timeout` by default. */
-  timeout?: number;
+  timeout?: number | undefined;
   /** The clock reading the whole call, retries and waits included, must finish by; none by
    *  default. A passed deadline raises `DfoTimeoutError` with `deadline_exceeded`. */
   deadline?: number;
@@ -144,7 +139,7 @@ export type JsonResponse = {
  *  them from. That URL is the signed URL the route's redirect names, or, with `follow`, the
  *  route itself, whose redirect a browser hid and follows on the fetch. */
 export type Located =
-  | { data: Uint8Array; signed?: never; follow?: never }
+  | { data: Uint8Array<ArrayBuffer>; signed?: never; follow?: never }
   | { signed: URL; follow: boolean; data?: never };
 
 export type SignedFetchOptions = CallOptions & {
@@ -153,7 +148,7 @@ export type SignedFetchOptions = CallOptions & {
 };
 
 /** A response with its whole body, read under the attempt's limit. */
-type Received = { response: Response; body: Uint8Array };
+type Received = { response: Response; body: Uint8Array<ArrayBuffer> };
 
 /** How long one attempt may run, and whether the call's deadline or the attempt's own timeout
  *  sets that. */
@@ -459,7 +454,10 @@ const isRedirect = (response: Response): boolean =>
  *
  * @returns The body, or null once it passed `limit`.
  */
-async function readWithin(response: Response, limit: number): Promise<Uint8Array | null> {
+async function readWithin(
+  response: Response,
+  limit: number,
+): Promise<Uint8Array<ArrayBuffer> | null> {
   const stream = response.body;
   if (!isRecord(stream)) {
     // A Response with no body, or a stand-in that reads its body whole.
@@ -467,7 +465,7 @@ async function readWithin(response: Response, limit: number): Promise<Uint8Array
     return whole.byteLength > limit ? null : whole;
   }
   const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
   let size = 0;
   for (;;) {
     const { done, value } = await reader.read();
@@ -497,18 +495,6 @@ const DEADLINE_PASSED = new WeakSet<DfoError>();
 /** Whether an error is a timeout raised because the call's deadline passed, as opposed to one
  *  attempt running past its own timeout. */
 export const passedDeadline = (error: DfoError): boolean => DEADLINE_PASSED.has(error);
-
-/** Whether a refusal is retried: as a problem document's `retryable` says, or the website
- *  proxy's `retry` when its body carries one, and otherwise by its status. */
-export function isRetryable(status: number, body: unknown): boolean {
-  if (isRecord(body)) {
-    if (!("code" in body) && "error" in body && typeof body["retry"] === "string") {
-      return body["retry"] === PROXY_RETRY;
-    }
-    if (typeof body["retryable"] === "boolean") return body["retryable"];
-  }
-  return isRetryableStatus(status);
-}
 
 /** A refusal body as a problem document: parsed when its media type is JSON, else undefined. */
 function problemBody(headers: Headers, body: Uint8Array): unknown {
@@ -838,7 +824,7 @@ export class Transport {
    * @throws {NetworkError} The connection failed.
    * @throws {DfoTimeoutError} The attempt or the call's deadline ran out.
    */
-  async fetchSigned(url: URL, options: SignedFetchOptions = {}): Promise<Uint8Array> {
+  async fetchSigned(url: URL, options: SignedFetchOptions = {}): Promise<Uint8Array<ArrayBuffer>> {
     options.signal?.throwIfAborted();
     const follow = options.follow ?? false;
     // `#headers` gives no header for a URL off the API's origin.
@@ -989,6 +975,8 @@ export class Transport {
   ): Promise<{ headers: Headers; key: string | undefined }> {
     const headers = new Headers();
     if (url.origin !== this.baseUrl.origin) return { headers, key: undefined };
+    // A passed deadline raises before any header is checked, as in the Python client.
+    if ((options.deadline ?? Infinity) <= this.#now()) throw this.#deadlinePassed(url);
     // The caller's headers replace the client's User-Agent, as in the Python client.
     if (!inBrowser()) headers.set("user-agent", `dfo-ts/${VERSION}`);
     setHeaders(headers, Object.entries(this.#options.defaultHeaders ?? {}), "the headers option");

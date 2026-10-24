@@ -223,7 +223,22 @@ const CLASS_BY_ACTION: Record<Action, ErrorClass> = {
 const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 
 /** Whether a refusal whose body does not say is retryable, by its HTTP status. */
-export const isRetryableStatus = (status: number): boolean => RETRYABLE_STATUSES.has(status);
+const isRetryableStatus = (status: number): boolean => RETRYABLE_STATUSES.has(status);
+
+/** The website proxy's `retry` value for a refusal that clears on its own. */
+const PROXY_RETRY = "retry_after_delay";
+
+/** Whether a refusal is retried: as a problem document's `retryable` says, or the website
+ *  proxy's `retry` when its body carries one, and otherwise by its status. */
+export function isRetryable(status: number, body: unknown): boolean {
+  if (isRecord(body)) {
+    if (!("code" in body) && "error" in body && typeof body["retry"] === "string") {
+      return body["retry"] === PROXY_RETRY;
+    }
+    if (typeof body["retryable"] === "boolean") return body["retryable"];
+  }
+  return isRetryableStatus(status);
+}
 
 function classForStatus(status: number): ErrorClass {
   if (status === 401) return AuthenticationError;
@@ -293,7 +308,7 @@ export function problemAt200(body: unknown, traceId: string | null): DfoError | 
     detail,
     message: refusalMessage(detail, body["pointer"], code),
     traceId,
-    retryable: body["retryable"] === true,
+    retryable: isRetryable(200, body),
     problem: body,
   });
 }

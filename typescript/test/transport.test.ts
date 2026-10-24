@@ -755,6 +755,21 @@ describe("timeouts", () => {
     assert.equal(error.code, "deadline_exceeded");
   });
 
+  for (const [name, options] of [
+    ["without a header provider", {}],
+    ["with a header provider", { headerProvider: () => ({ "x-team": "dfo" }) }],
+  ] as const) {
+    test(`raise deadline_exceeded for a passed deadline before invalid call headers, ${name}`, async () => {
+      const { fetch, seen } = mockFetch(json({ ok: true }));
+      const error = await transport({ fetch, now: () => 1_000, ...options })
+        .request({ path: "/x", deadline: 1_000, headers: { "x-token": "bad\nvalue" } })
+        .catch((value: unknown) => value);
+      assert.ok(error instanceof DfoTimeoutError);
+      assert.equal(error.code, "deadline_exceeded");
+      assert.equal(seen.length, 0);
+    });
+  }
+
   for (const timeout of [2 ** 31, 30 * 24 * 3_600_000]) {
     test(`take a client timeout of ${timeout} ms as its clamp`, async () => {
       const { fetch } = mockFetch(answerAfter(20));

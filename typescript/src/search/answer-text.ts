@@ -2,11 +2,10 @@
  * How an answer reads: its text, the hints under its sentence, and its incomplete-answer
  * message, which lists every gap and the call that settles it.
  */
-import { definiteParts, partSentence } from "./answer.ts";
 import type { Answer, Candidate, Gap } from "./answer.ts";
 import { mentionsOf } from "./choices.ts";
 import { partFacts } from "../core/parse.ts";
-import { partText } from "../core/parts.ts";
+import { definiteParts, partSentence, partText } from "../core/parts.ts";
 import type { Warning } from "../wire.ts";
 
 const SHOWN_SEVERITIES = new Set(["warn", "degraded"]);

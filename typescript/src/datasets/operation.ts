@@ -28,6 +28,7 @@ import {
   DfoError,
   DfoTimeoutError,
   errorClassFor,
+  isRetryable,
   refusalMessage,
   serverCode,
 } from "../core/errors.ts";
@@ -35,14 +36,7 @@ import { CONTENT_VERSION, mintOptions } from "../core/ref.ts";
 import type { Rendering } from "../core/ref.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
-import {
-  isRetryable,
-  passedDeadline,
-  POLL_INTERVAL_MAX_S,
-  POLL_INTERVAL_MIN_S,
-  RETRY_AFTER_MAX_S,
-  retryAfterMs,
-} from "../http/transport.ts";
+import { passedDeadline, RETRY_AFTER_MAX_S, retryAfterMs } from "../http/transport.ts";
 import type { JsonResponse, Transport } from "../http/transport.ts";
 import { isRecord, text } from "../core/json.ts";
 
@@ -223,6 +217,10 @@ function problemError(
   });
 }
 
+/** The bounds a long build's poll interval from the server is clamped to, in seconds. */
+const POLL_INTERVAL_MIN_S = 1;
+const POLL_INTERVAL_MAX_S = 60;
+
 /** The server's poll interval, clamped to `POLL_INTERVAL_MIN_S` .. `POLL_INTERVAL_MAX_S`. */
 const pollInterval = (ms: number): number =>
   Math.min(Math.max(ms, POLL_INTERVAL_MIN_S * 1000), POLL_INTERVAL_MAX_S * 1000);
@@ -257,7 +255,7 @@ async function postBuild(transport: Transport, body: unknown, { deadline, signal
         timeout: BUILD_READ_TIMEOUT_MS,
         deadline,
         maxRetries: 0,
-        ...(signal === undefined ? {} : { signal }),
+        signal,
       });
       return buildReply(response);
     } catch (error) {
@@ -437,7 +435,7 @@ class Poller implements LongBuild {
         path: `/datasets/operations/${encodeURIComponent(this.operationId ?? "")}`,
         deadline: wait.deadline,
         maxRetries: 0,
-        ...(wait.signal === undefined ? {} : { signal: wait.signal }),
+        signal: wait.signal,
       });
     } catch (error) {
       if (!(error instanceof DfoError)) throw error;
@@ -607,7 +605,7 @@ export async function resumeOperation(
   const response = await transport.request({
     path: `/datasets/operations/${operationId}`,
     deadline: wait.deadline,
-    ...(wait.signal === undefined ? {} : { signal: wait.signal }),
+    signal: wait.signal,
   });
   const poller = new Poller(transport, pollReply(response), {
     rendering,

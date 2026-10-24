@@ -23,6 +23,7 @@ import {
   DfoError,
   InvalidRequestError,
   NotFoundError,
+  optionsOf,
   VersionUnavailableError,
 } from "../core/errors.ts";
 import {
@@ -47,7 +48,7 @@ import { CONTENT_VERSION, DatasetRef, fileParams, layoutOf, mintOptions } from "
 import type { Layout, Rendering, RefMember } from "../core/ref.ts";
 import { describing } from "../core/trace.ts";
 import type { Transport } from "../http/transport.ts";
-import { isRecord } from "../core/json.ts";
+import { isRecord, present } from "../core/json.ts";
 import { clientWarning } from "../core/warnings.ts";
 
 /** Refusals after which a stored version's lookup goes on. The version exists, but its file
@@ -68,11 +69,7 @@ export async function fetchDataset(
   options: FetchOptions = {},
 ): Promise<Dataset<never>> {
   const { window, entities, facets, ...rest } = options;
-  const narrowing: Narrowing = {
-    ...(window === undefined ? {} : { window }),
-    ...(entities === undefined ? {} : { entities }),
-    ...(facets === undefined ? {} : { facets }),
-  };
+  const narrowing: Narrowing = present({ window, entities, facets });
   if (target instanceof DatasetRef) {
     if (narrows(narrowing)) {
       throw invalid(
@@ -240,7 +237,7 @@ async function snapshot(
   const response = await transport.request({
     path: `/datasets/${member.spec.spec_id}/${member.contentVersion}`,
     deadline,
-    ...(signal === undefined ? {} : { signal }),
+    signal,
   });
   const { traceId } = response;
   const manifest = describing(traceId, () => {
@@ -341,7 +338,7 @@ export async function newestVersion(
       ({ body, traceId } = await transport.request({
         path: `/datasets/${specId}/versions?${query}`,
         deadline,
-        ...(signal === undefined ? {} : { signal }),
+        signal,
       }));
     } catch (error) {
       if (error instanceof NotFoundError) return null;
@@ -411,13 +408,10 @@ function unavailable(
   }
   // The server's refusal names why the file is gone; its code stays on the error.
   return new VersionUnavailableError({
-    code: refusal.code,
-    status: refusal.status,
+    ...optionsOf(refusal),
     detail,
-    traceId: refusal.traceId,
-    problem: refusal.problem,
-    docsUrl: refusal.docsUrl,
-    cause: refusal,
+    retryable: false,
+    retryAfterMs: null,
     newestVersion: newest,
   });
 }

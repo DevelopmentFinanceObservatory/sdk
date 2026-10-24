@@ -24,7 +24,7 @@
 import type { Gap } from "../search/answer.ts";
 import { Dataset } from "./dataset.ts";
 import type { FetchedMember } from "./dataset.ts";
-import { clientError, DfoError, InvalidRequestError } from "../core/errors.ts";
+import { clientError, DfoError, InvalidRequestError, optionsOf } from "../core/errors.ts";
 import type { ClientErrorCode, DfoErrorOptions } from "../core/errors.ts";
 import { build, deadlineOf, resumeOperation, startOperation } from "./operation.ts";
 import type { Built, Manifest, Operation, ProgressHandler, Wait } from "./operation.ts";
@@ -41,6 +41,10 @@ import { DataWarning } from "../core/warnings.ts";
 import { isRecord } from "../core/json.ts";
 import { readParquet } from "./parquet.ts";
 import type { ColumnType, ParquetFile } from "./parquet.ts";
+
+/** The Search endpoint, and the `schema_version` of the bodies posted to it. */
+export const RESOLVE_PATH = "/search/resolve";
+export const RESOLVE_SCHEMA_VERSION = 1;
 
 /** A year range, or every year, or the latest year. */
 export type Window = "all" | "latest" | readonly [startYear: number, endYear: number];
@@ -273,8 +277,8 @@ export function buildBody(spec: SpecLike, rendering: Rendering, scope?: Record<s
 }
 
 /** The SHA-256 digest of bytes, as the server names stored objects. */
-async function digestOf(data: Uint8Array): Promise<string> {
-  const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", data.slice()));
+async function digestOf(data: Uint8Array<ArrayBuffer>): Promise<string> {
+  const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
   return `sha256:${Array.from(hash, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
@@ -350,14 +354,14 @@ export async function download(
   digest: string,
   { deadline, signal }: Wait,
   size?: unknown,
-): Promise<Uint8Array> {
+): Promise<Uint8Array<ArrayBuffer>> {
   const maxBytes =
     Number.isSafeInteger(size) && (size as number) >= 0 ? (size as number) : DEFAULT_MAX_BYTES;
-  const ask = { deadline, maxBytes, ...(signal === undefined ? {} : { signal }) };
+  const ask = { deadline, maxBytes, signal };
   let failure: DfoError | undefined;
   for (let round = 0; round < 2; round += 1) {
     const located = await transport.locate({ ...target, ...ask });
-    let data: Uint8Array;
+    let data: Uint8Array<ArrayBuffer>;
     if (located.data === undefined) {
       try {
         data = await transport.fetchSigned(located.signed, {
@@ -469,9 +473,9 @@ async function sentenceFor(
   const specId = specIdOf(manifest);
   const groups = keptEntityGroups(held, definition);
   const response = await transport.request({
-    path: "/search/resolve",
+    path: RESOLVE_PATH,
     json: {
-      schema_version: 1,
+      schema_version: RESOLVE_SCHEMA_VERSION,
       input: {
         kind: "dataset_resubmit",
         entries: [
@@ -485,7 +489,7 @@ async function sentenceFor(
       },
     },
     deadline,
-    ...(signal === undefined ? {} : { signal }),
+    signal,
   });
   return describing(response.traceId, () => {
     const answer = response.body;
@@ -581,17 +585,7 @@ export async function finish(
 /** The same refusal with a hint added to its detail. */
 function withHint(error: DfoError, hint: string): DfoError {
   const ErrorClass = error.constructor as new (options: DfoErrorOptions) => DfoError;
-  return new ErrorClass({
-    code: error.code,
-    status: error.status,
-    detail: `${error.detail}${hint}`,
-    traceId: error.traceId,
-    retryable: error.retryable,
-    retryAfterMs: error.retryAfterMs,
-    problem: error.problem,
-    docsUrl: error.docsUrl,
-    cause: error,
-  });
+  return new ErrorClass({ ...optionsOf(error), detail: `${error.detail}${hint}` });
 }
 
 /** One entry per `spec_id`, in first-seen order, with the parts merged. */

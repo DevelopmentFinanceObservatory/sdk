@@ -76,10 +76,7 @@ const lookupBody = (
     }
   });
 
-const callOptions = ({ signal, timeout }: LookupOptions) => ({
-  ...(signal === undefined ? {} : { signal }),
-  ...(timeout === undefined ? {} : { timeout }),
-});
+const callOptions = ({ signal, timeout }: LookupOptions) => ({ signal, timeout });
 
 /** The graph's lookups: names to dcids, and a node by its dcid. */
 export class Graph {

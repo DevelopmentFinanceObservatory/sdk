@@ -11,12 +11,16 @@ import type { ChoiceKey } from "./choices.ts";
 import { clientError, problemAt200 } from "../core/errors.ts";
 import type { IncompleteAnswerError } from "../core/errors.ts";
 import type { Dataset } from "../datasets/dataset.ts";
-import { fetchMembers as defaultFetchMembers } from "../datasets/fetch.ts";
+import {
+  fetchMembers as defaultFetchMembers,
+  RESOLVE_PATH,
+  RESOLVE_SCHEMA_VERSION,
+} from "../datasets/fetch.ts";
 import type { FetchMembersOptions, MemberRequest } from "../datasets/fetch.ts";
 import { CODE_GAP_KINDS } from "../generated/actions.ts";
 import type { GAP_KINDS } from "../generated/actions.ts";
 import { parsedInputOf, partFacts, warningsOf } from "../core/parse.ts";
-import { isKnownPart, partText } from "../core/parts.ts";
+import { definiteParts, isKnownPart, partSentence, partText } from "../core/parts.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
 import type { Transport } from "../http/transport.ts";
@@ -26,7 +30,6 @@ import type {
   Assumption,
   CandidatesPart,
   DatasetResubmitInput,
-  DefinitePart,
   Diagnostics,
   KnownPart,
   NoData,
@@ -36,10 +39,8 @@ import type {
   Spec,
   Warning,
 } from "../wire.ts";
-import { isRecord, list, objects, text } from "../core/json.ts";
+import { isRecord, list, objects, strings, text } from "../core/json.ts";
 
-export const RESOLVE_PATH = "/search/resolve";
-const SCHEMA_VERSION = 1;
 /** Longer than Search's 45-second soft deadline, so a slow answer arrives whole. */
 const SEARCH_TIMEOUT_MS = 60_000;
 
@@ -370,10 +371,10 @@ export async function resolveAnswer(
   const { transport } = context;
   const response = await transport.request({
     path: RESOLVE_PATH,
-    json: { schema_version: SCHEMA_VERSION, input },
+    json: { schema_version: RESOLVE_SCHEMA_VERSION, input },
     timeout: Infinity,
     deadline: transport.deadlineAfter(options.timeout ?? SEARCH_TIMEOUT_MS),
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    signal: options.signal,
   });
   const { body, traceId } = response;
   return describing(traceId, () => answerFromBody(body, context, options.question, traceId));
@@ -503,20 +504,6 @@ function sharedStatus(parts: readonly Part[]): string {
   return statuses.size === 1 ? [...statuses][0]! : "mixed";
 }
 
-/** The sentence a part reads as: its spec's for a definite part, else its own. */
-export function partSentence(part: Part): string | null {
-  if (isKnownPart(part) && part.status === "definite") {
-    return text(part.spec.resolved.rendered_sentence);
-  }
-  return text(part.rendered_sentence);
-}
-
-export function definiteParts(parts: readonly Part[]): DefinitePart[] {
-  return parts.filter(
-    (part): part is DefinitePart => isKnownPart(part) && part.status === "definite",
-  );
-}
-
 /** One member per distinct `spec_id`, in query order, with the first part's spec; folded parts
  *  share their spec's member, which names each of them that has variable text. A part without
  *  any names nothing. */
@@ -603,7 +590,7 @@ function queryOptions(noData: NoData): QueryOption[] {
   return objects(noData.options).map((option) => ({
     kind: "query",
     label: text(option["label"]) ?? "",
-    mentions: list(option["mentions"]).filter((m): m is string => typeof m === "string"),
+    mentions: strings(option["mentions"]),
     dataQuery: parsedInputOf(option["data_query"]),
   }));
 }
