@@ -38,10 +38,12 @@ Key dfo_k_***Qjsd from /home/amina/.config/dfo/credentials.toml, profile 'defaul
 The client resolves its key when it is built, and again after a 401. The first source that has one wins:
 
 1. the `api_key=` argument to `Client` or `configure`;
-2. the `DFO_API_KEY` environment variable;
-3. the credentials file, profile `DFO_PROFILE`, else `default`;
-4. inside Google Colab, a notebook secret named `DFO_API_KEY`;
-5. otherwise, anonymous.
+1. the `DFO_API_KEY` environment variable;
+1. the credentials file, profile `DFO_PROFILE`, else `default`;
+1. inside Google Colab, a notebook secret named `DFO_API_KEY`;
+1. otherwise, anonymous.
+
+A Colab secret that is missing or cannot be read moves on to anonymous use.
 
 `api_key=` takes a string, a `dfo.ApiKey`, or a callable that returns either, which suits a secret manager. `api_key=False` forces anonymous use whatever the environment holds. The second client below reads its key from a `TEAM_DFO_KEY` variable your secret manager sets:
 
@@ -59,7 +61,11 @@ with dfo.Client(api_key=lambda: dfo.ApiKey(os.environ["TEAM_DFO_KEY"])) as clien
 
 The client calls the callable when it is built and again after a 401. A callable that returns an empty string raises `AuthenticationError` with code `key_empty`.
 
-The key travels as `Authorization: Bearer` to the API host only. Downloads redirect to signed storage URLs, and those requests carry no key.
+A key holds visible ASCII only, the characters 0x21 to 0x7E. A key from any source that holds a space, a line break or a non-ASCII character raises `AuthenticationError` with `key_invalid`, and so does an `api_key` argument, or a callable's result, that is neither a string nor an `ApiKey`. The message names the source and the position of the first bad character, and leaves the key out. A key copied from a terminal often ends with a line break.
+
+The key travels as `Authorization: Bearer` to the API host only. Downloads redirect to signed storage URLs, and those requests carry no key. The client refuses to send a key over plain http to a host that is not loopback, and raises `InvalidRequestError` with `insecure_transport`. Loopback is `localhost`, a name under `.localhost`, an address in 127.0.0.0/8 written as four decimal numbers, or `[::1]`.
+
+`base_url` is an absolute http or https URL. An empty one, one with userinfo, a query, a fragment or a `.` or `..` segment, and one that writes an IPv4 address in another form than four decimal numbers, such as `127.1`, raises `InvalidRequestError` with `base_url_invalid`.
 
 ## The credentials file
 
@@ -81,15 +87,18 @@ key = "dfo_k_..."
 
 `DFO_PROFILE=staging` picks the second profile, for the CLI and for every client. `dfo auth login` with `DFO_PROFILE` set stores the key under that profile and keeps the others.
 
-The file is a subset of TOML: blank lines, `#` comments on their own line, `[name]` headers and `name = "value"` lines. Three faults raise `AuthenticationError` when the client is built:
+The file is a strict subset of TOML: UTF-8 text with blank lines, `#` comments on their own line, `[name]` headers and `name = "value"` lines, where a name holds `A-Z`, `a-z`, `0-9`, `_` and `-`, and a value holds no `"`, `\` or control character. Anything else is a fault, though a full TOML reader would accept it: a byte order mark, a comment after a value, single quotes, an unquoted value, or a dotted table such as `[a.b]`. The message names the line and one of the reasons `outside_table`, `duplicate_table`, `duplicate_key` and `invalid_line`. Four faults raise `AuthenticationError` when the client is built:
 
-| Code                       | Cause                                                         | Fix                                                       |
-| -------------------------- | ------------------------------------------------------------- | --------------------------------------------------------- |
-| `credentials_file_invalid` | A line breaks the format; the message names it and the reason | Fix the line, or delete the file and run `dfo auth login` |
-| `profile_not_found`        | `DFO_PROFILE` names a profile the file lacks                  | Run `dfo auth login` with that `DFO_PROFILE`              |
-| `profile_without_key`      | The chosen profile has no `key` line                          | Run `dfo auth login` with that `DFO_PROFILE`              |
+| Code                          | Cause                                                         | Fix                                                        |
+| ----------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------- |
+| `credentials_file_invalid`    | A line breaks the format; the message names it and the reason | Fix the line, or delete the file and run `dfo auth login`  |
+| `credentials_file_unreadable` | The path exists but cannot be read, such as a directory       | Make it a file you can read, or set `DFO_CREDENTIALS_FILE` |
+| `profile_not_found`           | `DFO_PROFILE` names a profile the file lacks                  | Run `dfo auth login` with that `DFO_PROFILE`               |
+| `profile_without_key`         | The chosen profile has no `key` line, or an empty one         | Run `dfo auth login` with that `DFO_PROFILE`               |
 
 A missing file, or a file without a `default` profile when `DFO_PROFILE` is unset, moves on to the next source.
+
+`dfo auth login` writes a new file beside the old one and renames it over the path. A symlink at the path becomes a regular file, and the file it pointed to is left as it was.
 
 ## Keep the key out of logs
 
@@ -125,7 +134,7 @@ The server writes each message. After a 401 the client resolves its key once mor
 
 ## Other headers
 
-`default_headers=` adds headers to every API request. `header_provider=` is a callable that returns more headers before each request, such as an identity token for a deployment behind a proxy:
+`default_headers=` adds headers to every API request. `header_provider=` is a callable that returns more headers before each request, such as an identity token for a deployment behind a proxy. A header of the provider replaces one of the same name in `default_headers`, and a `User-Agent` in either replaces the client's own. While the client has a key, its `Authorization` header replaces one from either source. With `api_key=False`, an `Authorization` header you set is sent. Every value is a string of visible ASCII, spaces and tabs, and a value with a control or non-ASCII character raises `InvalidRequestError` with `header_invalid`, naming the header and the position and leaving the value out:
 
 ```python
 import dfo

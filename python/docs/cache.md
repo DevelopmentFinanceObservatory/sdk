@@ -7,9 +7,9 @@ The client keeps every file it downloads, keyed by digest, so fetching a ref a s
 The cache root is the first of:
 
 1. the `cache_dir=` argument to `Client` or `configure`;
-2. `DFO_CACHE_DIR`;
-3. `BBLOCKS_CACHE_DIR`, shared with the bblocks family of packages;
-4. the platform's cache directory: `~/.cache/readerkit` on Linux (or `$XDG_CACHE_HOME/readerkit`), `~/Library/Caches/readerkit` on macOS, and `%LOCALAPPDATA%\readerkit\Cache` on Windows.
+1. `DFO_CACHE_DIR`;
+1. `BBLOCKS_CACHE_DIR`, shared with the bblocks family of packages;
+1. the platform's cache directory: `~/.cache/readerkit` on Linux (or `$XDG_CACHE_HOME/readerkit`), `~/Library/Caches/readerkit` on macOS, and `%LOCALAPPDATA%\readerkit\Cache` on Windows.
 
 The client's entries sit under `<root>/v1/dfo/cache1`, laid out as:
 
@@ -30,7 +30,9 @@ Each entry is written to a temporary name and renamed into place, so a reader ne
 
 ## Size and clearing
 
-The cache keeps up to 2 GiB of files and evicts the least recently read first. A write the disk refuses logs a warning on the `dfo` logger and the fetch carries on.
+The cache keeps up to 2 GiB of files and evicts the least recently read first. A write the disk refuses logs a warning on the `dfo` logger and the fetch carries on. Fetches in one process that need the same file download it once, and the others read the stored copy.
+
+A relative `cache_dir`, or a relative `DFO_CACHE_DIR`, resolves against the working directory when the client is built, so a later `chdir` does not move the cache. An empty path, or one with a NUL character, raises `InvalidRequestError` with `invalid_argument`.
 
 `dfo cache clear` empties it:
 
@@ -41,6 +43,8 @@ dfo cache clear
 ```text
 Cleared the cache at /home/amina/.cache/readerkit/v1/dfo/cache1.
 ```
+
+The command empties the directory and keeps it, and follows a cache directory that is a symlink. It prints that the cache is already empty when the directory does not exist, and refuses a cache path that is a file.
 
 To point one client elsewhere, or fetch without the cache:
 
@@ -109,6 +113,7 @@ Set the variable before the call runs. The client reads it on each call.
   Source: OECD Creditor Reporting System (CRS)
   Version: cv_b92d94774702c7f05f2075d0b03dd756
   Rows: 30
+  Pinned
   Stale: read from the cache without asking for a newer version>
 ```
 

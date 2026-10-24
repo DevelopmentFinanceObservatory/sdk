@@ -6,7 +6,7 @@ Each example on this page runs on its own.
 
 ## What fetch does while it waits
 
-The server answers a build within its synchronous limits (up to 100,000 rows) with the finished manifest. A larger build becomes an operation with an `op_` id, which `fetch` polls at the pace the server asks for, backing off from 1 to 8 seconds when it names none. A build above 2,000,000 rows is refused with `over_ceiling`, an `InvalidRequestError`. Narrow the spec with `window` or `entities`.
+The server answers a build with the finished manifest when it fits the server's synchronous budget, 100,000 rows by default, or when it has built that version before, whatever its size. Any other build becomes an operation with an `op_` id, which `fetch` polls at the pace the server asks for, clamped to between 1 and 60 seconds, and backing off from 1 to 8 seconds when it names none. A build above 2,000,000 rows is refused with `over_ceiling`, an `InvalidRequestError`. Narrow the spec with `window` or `entities`.
 
 While it waits, `fetch` shows progress: a bar in a terminal, a live display in a notebook, and log records on the `dfo` logger anywhere else, naming the operation id, the trace id and the rows written. `progress=False` silences it for one call, and `DFO_PROGRESS=0` for the process.
 
@@ -32,7 +32,7 @@ print(data.rows)
 dfo.DfoTimeoutError: The build is still running at the deadline. Resume it with client.operation("op_...").result()
 ```
 
-The build keeps running on the server. Resuming it costs nothing extra, because the server deduplicates builds and fetching the same spec again joins the running operation.
+A poll wait that would pass the deadline raises this error at once, with the same resuming line, instead of polling one last time. The build keeps running on the server. Resuming it costs nothing extra, because the server deduplicates builds and fetching the same spec again joins the running operation.
 
 ## Start a build and collect it later
 
@@ -61,11 +61,11 @@ An `Operation` has:
 - `done()`: polls once when the build was not done, and returns whether it is now.
 - `result(timeout=1800.0)`: waits for the build and returns its dataset.
 
-`mint` takes `layout="long"` or `layout="frame"`. It builds the spec as given. To narrow a spec, use `fetch`.
+`mint` takes a `Spec`, and a spec id alone raises `invalid_argument`. It takes `layout="long"` or `layout="frame"` and `without_party_totals`. It builds the spec as given. To narrow a spec, use `fetch`.
 
 ### Resume from another process
 
-Store the operation id, and `client.operation(op_id)` picks the build up in any process. Pass the layout the build was started with:
+Store the operation id, and `client.operation(op_id)` picks the build up in any process. Pass the `layout` and `without_party_totals` the build was started with:
 
 ```python
 import dfo
@@ -89,7 +89,7 @@ with dfo.Client() as client:
 
 ## Retries the client makes
 
-The client retries a failure that can clear, twice by default (`max_retries`), and waits for the response's `Retry-After` when it gives one. One layer owns build retries. Every refusal of a build shares the same retries, a build the server cut off with a 504 is posted once more only, whatever that post answers, and an operation that failed retryably is resubmitted once. A 429 during a poll waits inside the deadline without spending a retry. You see an error only after these run out.
+The client retries a failure that can clear, twice by default (`max_retries`), and waits for the response's `Retry-After` when it gives one and the wait is at most 60 seconds and fits the deadline. A longer wait raises the refusal at once with `retry_after` set. One layer owns build retries. Every refusal of a build shares the same retries, a build the server cut off with a 504 is posted once more only, whatever that post answers, and an operation that failed retryably is resubmitted once. A 429 during a poll waits inside the deadline without spending a retry. You see an error only after these run out.
 
 ## Async
 

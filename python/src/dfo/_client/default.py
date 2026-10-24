@@ -11,7 +11,9 @@ closes at exit.
 A forked child keeps the default client, and with it the options `configure`
 set. Its transport builds a fresh connection pool on the child's first request
 and leaves the parent's connections untouched; the child takes a fresh lock,
-since another thread may have held the parent's as the process forked.
+since another thread may have held the parent's as the process forked. That
+pool routes through the proxy settings the parent resolved. A client the child
+builds for itself looks the platform's proxy settings up in the child.
 """
 
 import os
@@ -157,9 +159,15 @@ def fetch(
     client can cancel it.
 
     Raises:
-        InvalidRequestError: A ref is narrowed or given another layout or
-            `without_party_totals`.
+        InvalidRequestError: The target is neither a `Spec` nor a `DatasetRef`,
+            such as a spec id, and no request is sent; a ref is narrowed or
+            given another layout or `without_party_totals`; `window`,
+            `entities`, `facets` or `layout` is malformed; or `timeout` is not
+            None or a finite number above 0 (`invalid_argument`).
         VersionUnavailableError: A ref's version can no longer be fetched.
+        ContractError: An artifact is not Parquet (`unexpected_response`), or
+            lacks a `time_period` or numeric `value` column
+            (`contract_violation`); the cache drops it.
         DfoTimeoutError: The deadline passed. A long build's message names the
             call that resumes it.
         DfoError: The server refused a request.
