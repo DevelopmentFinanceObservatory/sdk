@@ -12,8 +12,9 @@ import type { ResolvedSpec } from "../wire.ts";
 export type Layout = "long" | "frame";
 
 /** Which rendering of a version an artifact is, as a ref stores it: format, bundle and layout,
- *  and `without_party_totals` when the rows leave out the parties the code index declares
- *  totals. The flag is present only when true, so a plain rendering's JSON has no such key. */
+ *  and `without_party_totals` when its fetch posted the party-totals cut, the default, whether
+ *  or not the cut left a row out. The flag is present only when true, so the JSON of a
+ *  rendering fetched with `partyTotals: true` has no such key. */
 export type Rendering = {
   readonly format: "csv" | "xlsx" | "parquet";
   readonly bundle: boolean;
@@ -99,15 +100,9 @@ const isFormat = (value: unknown): value is Rendering["format"] =>
 /**
  * The bare Parquet rendering both clients build for a layout, cut of party totals or not.
  *
- * @throws {InvalidRequestError} The layout is neither `long` nor `frame`, or
- *   `withoutPartyTotals` is not a boolean (`invalid_argument`).
+ * @throws {InvalidRequestError} The layout is neither `long` nor `frame` (`invalid_argument`).
  */
 export function renderingFor(layout: Layout, withoutPartyTotals: boolean = false): Rendering {
-  if (typeof withoutPartyTotals !== "boolean") {
-    throw clientError("invalid_argument", {
-      detail: `withoutPartyTotals is true or false, not ${JSON.stringify(withoutPartyTotals)}.`,
-    });
-  }
   const cut = withoutPartyTotals ? { without_party_totals: true as const } : {};
   switch (layout) {
     case "long":
@@ -125,37 +120,29 @@ export function renderingFor(layout: Layout, withoutPartyTotals: boolean = false
 export const layoutOf = (rendering: Rendering): Layout =>
   rendering.layout === "frame" ? "frame" : "long";
 
-/** The file selector's query for a rendering: format, bundle and layout. The selector takes no
- *  other option. It renders a version with the options the version was minted with, so a
- *  party-totals cut renders as itself. */
-export function fileParams(rendering: Rendering): Record<string, string | boolean> {
-  const params: Record<string, string | boolean> = {
+/** A rendering as the server takes it, both as a build request's `options` and as the file
+ *  selector's query: format, bundle, layout, and `without_party_totals`, sent only when true,
+ *  as the server records it. */
+export function mintOptions(rendering: Rendering): Record<string, string | boolean> {
+  const options: Record<string, string | boolean> = {
     format: rendering.format,
     bundle: rendering.bundle,
   };
-  if (rendering.layout !== undefined) params["layout"] = rendering.layout;
-  return params;
-}
-
-/** The build request's `options` for a rendering. `without_party_totals` is sent only when
- *  true, as the server records it. */
-export function mintOptions(rendering: Rendering): Record<string, string | boolean> {
-  const options = fileParams(rendering);
+  if (rendering.layout !== undefined) options["layout"] = rendering.layout;
   if (rendering.without_party_totals === true) options["without_party_totals"] = true;
   return options;
 }
 
 /** Whether a manifest artifact's rendering object is this rendering. The server's object
- *  carries more members, such as the long layout's version, so it matches on format, bundle,
- *  whether its layout is the frame, and whether it leaves party totals out, which the server
- *  records only when it does. */
+ *  carries more members, such as the long layout's version, so it matches on format, bundle
+ *  and whether its layout is the frame. `without_party_totals` plays no part: the version a
+ *  build answers is already the cut or the plain one. */
 export function renderingMatches(rendering: Rendering, served: unknown): boolean {
   if (!isRecord(served)) return false;
   return (
     served["format"] === rendering.format &&
     served["bundle"] === rendering.bundle &&
-    (served["layout"] === "frame") === (rendering.layout === "frame") &&
-    (served["without_party_totals"] === true) === (rendering.without_party_totals === true)
+    (served["layout"] === "frame") === (rendering.layout === "frame")
   );
 }
 

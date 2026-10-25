@@ -44,6 +44,7 @@ export type FetchStep = Narrowing & {
   op: "fetch";
   partial?: boolean;
   strict?: boolean;
+  party_totals?: boolean;
   layout?: Layout;
   spec?: Spec;
   ref?: unknown;

@@ -102,10 +102,11 @@ export type CallOptions = {
    *  handler. */
   strict?: boolean;
   layout?: Layout;
-  /** Leave out the rows of parties the code index declares totals, such as the DAC total beside
-   *  its members, on each party role a reading leaves open. False for a spec. A ref holds its
-   *  own choice, and naming another raises. */
-  withoutPartyTotals?: boolean;
+  /** Keep the rows of parties the code index declares totals, such as the DAC total beside its
+   *  members. False by default: on each party role a reading leaves open the build leaves them
+   *  out, so a sum over the rows counts each flow once, and a role the caller binds keeps what
+   *  it binds. A ref holds its own choice, and naming another raises. */
+  partyTotals?: boolean;
 };
 
 export type FetchOptions = CallOptions &
@@ -122,7 +123,7 @@ export const FETCH_OPTIONS = declareOptions<FetchOptions>("client.fetch", {
   onProgress: true,
   strict: true,
   layout: true,
-  withoutPartyTotals: true,
+  partyTotals: true,
   window: true,
   entities: true,
   facets: true,
@@ -331,6 +332,17 @@ export function buildBody(spec: Spec, rendering: Rendering, scope?: Record<strin
   };
 }
 
+/**
+ * Whether a fetch keeps party totals: false unless the caller says true.
+ *
+ * @throws {InvalidRequestError} `partyTotals` is given and not a boolean (`invalid_argument`).
+ */
+export function checkedPartyTotals(partyTotals: unknown): boolean {
+  if (partyTotals === undefined) return false;
+  if (typeof partyTotals === "boolean") return partyTotals;
+  throw invalid(`partyTotals is true or false, not ${JSON.stringify(partyTotals)}.`);
+}
+
 /** The SHA-256 digest of bytes, as the server names stored objects. */
 async function digestOf(data: Uint8Array<ArrayBuffer>): Promise<string> {
   const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
@@ -454,8 +466,8 @@ export const specIdOf = (manifest: Manifest): string => String(definitionOf(mani
 export const contentVersionOf = (manifest: Manifest): string => String(manifest["content_version"]);
 
 /** The artifact a manifest lists for a rendering, and with a digest when given. Artifacts
- *  match on `renderingMatches`. A party-totals cut that leaves nothing out lists its file under
- *  the plain version, beside the plain file, so the flag tells the two apart. */
+ *  match on `renderingMatches`: format, bundle and frame layout, whatever party totals they
+ *  leave out. */
 export function pickArtifact(
   manifest: Manifest,
   rendering: Rendering,
@@ -731,7 +743,7 @@ export async function fetchMembers(
   options: FetchMembersOptions = {},
 ): Promise<Dataset> {
   const layout = options.layout ?? "long";
-  const rendering = renderingFor(layout, options.withoutPartyTotals);
+  const rendering = renderingFor(layout, !checkedPartyTotals(options.partyTotals));
   const wants = distinct(members);
   if (wants.length === 0) throw invalid("A fetch needs at least one spec.");
   if (layout === "frame" && wants.length > 1) {

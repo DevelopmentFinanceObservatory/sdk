@@ -689,11 +689,14 @@ describe("a long build", () => {
 });
 
 describe("a stored version's lookup order", () => {
-  /** The fetch-ref scenario's ref, or its member's party-totals cut. */
-  const stored = async (isCut = false) => {
+  /** The fetch-ref scenario's ref, a party-totals cut, or its member fetched with party
+   *  totals. */
+  const stored = async (isCut = true) => {
     const record = await scenario("fetch-ref");
     const saved = structuredClone(stepOf(record, 0, "fetch").ref) as DatasetRefJson;
-    if (isCut) saved.members[0]!.artifact.rendering.without_party_totals = true;
+    const { rendering } = saved.members[0]!.artifact;
+    if (isCut) rendering.without_party_totals = true;
+    else delete rendering.without_party_totals;
     const ref = DatasetRef.fromJSON(saved);
     const member = ref.members[0]!;
     return {
@@ -706,40 +709,14 @@ describe("a stored version's lookup order", () => {
   };
   const expired = problem({ code: "artifact_expired", status: 410 });
 
-  /** The manifest's first plain artifact, which carries no `without_party_totals`, and every
-   *  other artifact in manifest order. The recorded version lists a party-totals cut that leaves
-   *  nothing out ahead of each plain file, with the plain file's digest. */
-  const plainOf = (manifest: Record<string, unknown>) => {
-    const artifacts = manifest["artifacts"] as Record<string, unknown>[];
-    const index = artifacts.findIndex(
-      (artifact) => !(artifact["rendering"] as Record<string, unknown>)["without_party_totals"],
-    );
-    assert.ok(index >= 0);
-    return { artifact: artifacts[index]!, rest: artifacts.toSpliced(index, 1) };
-  };
-
-  /** The manifest with the member's artifact listed second, in the member's rendering, after a
-   *  decoy in the other one, as the server lists a party-totals cut that leaves nothing out
-   *  beside the plain file under one version. */
-  const withDecoy = (manifest: Record<string, unknown>, isCut: boolean) => {
-    const { artifact, rest } = plainOf(manifest);
-    const rendering = artifact["rendering"] as Record<string, unknown>;
-    const asCut = (cut: boolean) =>
-      cut ? { ...rendering, without_party_totals: true } : rendering;
-    const decoy = `sha256:${"f".repeat(64)}`;
-    return {
-      ...manifest,
-      artifacts: [
-        {
-          ...artifact,
-          artifact_digest: decoy,
-          rendering: asCut(!isCut),
-          url: String(artifact["url"]).replace(String(artifact["artifact_digest"]), decoy),
-        },
-        { ...artifact, rendering: asCut(isCut) },
-        ...rest,
-      ],
-    };
+  /** The manifest with the member's artifact in the rendering a build of the ref's rendering
+   *  records: `without_party_totals` on a cut's artifact, and none on a plain one. */
+  const served = (manifest: Record<string, unknown>, isCut: boolean) => {
+    const [artifact, ...rest] = manifest["artifacts"] as Record<string, unknown>[];
+    const rendering = { ...(artifact!["rendering"] as Record<string, unknown>) };
+    if (isCut) rendering["without_party_totals"] = true;
+    else delete rendering["without_party_totals"];
+    return { ...manifest, artifacts: [{ ...artifact, rendering }, ...rest] };
   };
 
   for (const isCut of [false, true]) {
@@ -747,7 +724,7 @@ describe("a stored version's lookup order", () => {
       const { ref, member, manifest, parquet, version } = await stored(isCut);
       const { fetch, seen } = mockFetch(
         expired,
-        json(withDecoy(manifest, isCut)),
+        json(served(manifest, isCut)),
         ...download(parquet),
       );
       const { transport, warnings } = client(fetch);
@@ -774,27 +751,26 @@ describe("a stored version's lookup order", () => {
     test(`asks the file selector when the stored file has expired${isCut ? ", a cut" : ""}`, async () => {
       const { ref, manifest, parquet, version } = await stored(isCut);
       const { fetch, seen } = mockFetch(
-        json(withDecoy(manifest, isCut)),
+        json(served(manifest, isCut)),
         expired,
         ...download(parquet),
       );
       const dataset = await fetchDataset(client(fetch).transport, ref);
-      // The selector renders the version with the options it was minted with.
-      assert.equal(seen[2]!.url, `${version}/file?format=parquet&bundle=false`);
+      // The selector takes the ref's rendering as its query.
+      const cut = isCut ? "&without_party_totals=true" : "";
+      assert.equal(seen[2]!.url, `${version}/file?format=parquet&bundle=false${cut}`);
       assert.equal(dataset.rowCount, 30);
     });
 
-    test(`refuses a ref whose digest the snapshot lists under the other rendering${isCut ? ", a cut" : ""}`, async () => {
-      const { ref, manifest } = await stored(isCut);
-      // The member's digest sits only under the rendering the ref does not hold.
-      const { artifact, rest } = plainOf(manifest);
-      const rendering = artifact["rendering"] as Record<string, unknown>;
-      const other = isCut ? rendering : { ...rendering, without_party_totals: true };
-      const digest = artifact["artifact_digest"];
-      const others = rest.filter((listed) => listed["artifact_digest"] !== digest);
-      const { fetch, seen } = mockFetch(
-        json({ ...manifest, artifacts: [{ ...artifact, rendering: other }, ...others] }),
+    test(`refuses a ref whose digest the snapshot lists under the other layout${isCut ? ", a cut" : ""}`, async () => {
+      const { ref, member, manifest } = await stored(isCut);
+      // The member's digest sits only under the frame layout, which the ref does not hold.
+      const artifacts = (manifest["artifacts"] as Record<string, unknown>[]).map((artifact) =>
+        artifact["artifact_digest"] === member.digest
+          ? { ...artifact, rendering: { ...(artifact["rendering"] as object), layout: "frame" } }
+          : artifact,
       );
+      const { fetch, seen } = mockFetch(json({ ...manifest, artifacts }));
       await assert.rejects(fetchDataset(client(fetch).transport, ref), {
         name: "FormatError",
         reason: "format_invalid",
@@ -815,14 +791,14 @@ describe("a stored version's lookup order", () => {
     assert.ok(at > 0);
     rebuilt[at + stamp.length - 1] = "1".charCodeAt(0);
     const digest = `sha256:${createHash("sha256").update(rebuilt).digest("hex")}`;
-    const { artifact, rest } = plainOf(manifest);
+    const [artifact, ...rest] = manifest["artifacts"] as Record<string, unknown>[];
     const rebuiltManifest = {
       ...manifest,
       artifacts: [
         {
           ...artifact,
           artifact_digest: digest,
-          url: String(artifact["url"]).replace(member.digest, digest),
+          url: String(artifact!["url"]).replace(member.digest, digest),
         },
         ...rest,
       ],
@@ -856,7 +832,9 @@ describe("a stored version's lookup order", () => {
       const saved = ref.toJSON();
       const held = `sha256:${"0".repeat(64)}`;
       saved.members[0]!.artifact.digest = held;
-      const served = String(plainOf(manifest).artifact["artifact_digest"]);
+      const served = String(
+        (manifest["artifacts"] as Record<string, unknown>[])[0]!["artifact_digest"],
+      );
       const { fetch } = mockFetch(expired, json(manifest), ...download(parquet));
       const { transport, warnings } = client(fetch);
       const dataset = await fetchDataset(transport, DatasetRef.fromJSON(saved), { strict });
@@ -881,7 +859,10 @@ describe("a stored version's lookup order", () => {
       assert.ok(error.message.includes("client.fetch(ref, { latest: true }) ["), error.message);
       return true;
     });
-    assert.equal(seen[2]!.url, `${version}/file?format=parquet&bundle=false`);
+    assert.equal(
+      seen[2]!.url,
+      `${version}/file?format=parquet&bundle=false&without_party_totals=true`,
+    );
   });
 
   test("refuses a build whose content_version is not a version id", async () => {
@@ -946,19 +927,27 @@ describe("a stored version's lookup order", () => {
       [],
       { newest: older },
     ],
+    // The newest version names the newest plain build, for a cut ref too.
+    [
+      "lists a cut first, for a cut ref",
+      true,
+      [page([cut(newer, older), plain(older)])],
+      [],
+      { newest: older },
+    ],
     [
       "lists a plain version first, for a cut ref",
       true,
       [page([plain(newer), cut(older, newer)])],
       [],
-      { newest: older },
+      { newest: newer },
     ],
     [
-      "lists no cut, for a cut ref",
-      true,
-      [page([plain(newer), derived(older, newer)])],
+      "lists a derived version as plain, by its base",
+      false,
+      [page([{ ...derived(newer, older), rendering: "plain" }, plain(older)])],
       [],
-      { newest: null },
+      { newest: older },
     ],
     [
       "lists the plain version on its second page",
@@ -991,18 +980,18 @@ describe("a stored version's lookup order", () => {
       { pointer: "/versions/0/content_version" },
     ],
     [
-      "lists a version with no rendering",
+      "lists a version with no base_content_version",
       false,
-      [page([{ content_version: older, base_content_version: null }])],
+      [page([{ content_version: older, rendering: "plain" }])],
       [],
-      { pointer: "/versions/0/rendering" },
+      { pointer: "/versions/0/base_content_version" },
     ],
     [
-      "lists a version whose rendering is not a string",
+      "lists a version whose base_content_version is not a string",
       false,
-      [page([derived(newer, older), { ...plain(older), rendering: null }])],
+      [page([derived(newer, older), { ...plain(older), base_content_version: 5 }])],
       [],
-      { pointer: "/versions/1/rendering" },
+      { pointer: "/versions/1/base_content_version" },
     ],
     [
       "has a next_cursor that is not a string",
@@ -1085,7 +1074,16 @@ describe("a stored version's lookup order", () => {
       assert.equal(error.name, "VersionUnavailableError");
       assert.equal(error.code, "artifact_expired");
       assert.equal((error as VersionUnavailableError).newestVersion, newest);
-      assert.ok(error.message.includes("client.fetch(ref, { latest: true }) ["), error.message);
+      // The text names the call and leaves out the plain build's id, which a cut ref's version
+      // need not equal even when no newer data exists.
+      assert.ok(
+        error.message.startsWith(
+          `${member.spec.spec_id} at ${member.contentVersion} can no longer be fetched. ` +
+            "For the newest version: client.fetch(ref, { latest: true }) [",
+        ),
+        error.message,
+      );
+      assert.ok(!error.message.includes(newest), error.message);
       return true;
     });
     assert.equal(seen[2]!.url, `${BASE}/datasets/${member.spec.spec_id}/versions?limit=100`);

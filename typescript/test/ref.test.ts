@@ -125,22 +125,26 @@ describe("a party-totals cut in a ref", () => {
     assert.equal(JSON.stringify(loaded), JSON.stringify(cut));
   });
 
-  test("tells a cut artifact from a plain one both ways", () => {
+  // The contract matches an artifact on format, bundle and frame layout only, so the cut flag
+  // on either side changes nothing and the layout still does.
+  test("matches an artifact whatever party totals either side leaves out", () => {
     const plain = renderingFor("long");
     const cut = renderingFor("long", true);
     const served = { format: "parquet", bundle: false, layout: 4 };
     // Each row gives a rendering, a manifest artifact's rendering object, and whether they match.
     for (const [rendering, object, matches] of [
       [plain, served, true],
-      [plain, { ...served, without_party_totals: true }, false],
+      [plain, { ...served, without_party_totals: true }, true],
       [plain, { ...served, without_party_totals: false }, true],
-      [cut, served, false],
+      [cut, served, true],
       [cut, { ...served, without_party_totals: true }, true],
+      [cut, { ...served, layout: "frame", without_party_totals: true }, false],
       [
         renderingFor("frame", true),
         { ...served, layout: "frame", without_party_totals: true },
         true,
       ],
+      [renderingFor("frame", true), { ...served, without_party_totals: true }, false],
     ] as const) {
       assert.equal(
         renderingMatches(rendering, object),

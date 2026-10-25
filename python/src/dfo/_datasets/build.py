@@ -139,27 +139,27 @@ class Cache(Protocol):
         ...
 
 
-def rendering_for(layout: str, *, without_party_totals: bool = False) -> Rendering:
-    """The bare Parquet rendering both clients build for `layout`.
+def rendering_for(layout: str, *, party_totals: bool) -> Rendering:
+    """The bare Parquet rendering both clients build for `layout`, the party-totals
+    cut unless `party_totals` keeps every total.
 
     Raises:
         InvalidRequestError: `layout` is neither `long` nor `frame`, or
-            `without_party_totals` is not a bool.
+            `party_totals` is not a bool.
     """
     if layout not in _LAYOUTS:
         raise client_error(
             INVALID_ARGUMENT, f'layout is "long" or "frame", not {layout!r}'
         )
-    if not isinstance(without_party_totals, bool):
+    if not isinstance(party_totals, bool):
         raise client_error(
-            INVALID_ARGUMENT,
-            f"without_party_totals is True or False, not {without_party_totals!r}",
+            INVALID_ARGUMENT, f"party_totals is True or False, not {party_totals!r}"
         )
     return Rendering(
         "parquet",
         False,
         "frame" if layout == "frame" else None,
-        without_party_totals=without_party_totals,
+        without_party_totals=not party_totals,
     )
 
 
@@ -179,15 +179,9 @@ def layout_of(rendering: Rendering) -> Layout:
 
 
 def file_params(rendering: Rendering) -> dict[str, Any]:
-    """The file selector's query for `rendering`: format, bundle and layout.
-
-    The selector takes no other option. It renders a version with the options
-    the version was minted with, so a party-totals cut renders as itself.
-    """
-    params: dict[str, Any] = {"format": rendering.format, "bundle": rendering.bundle}
-    if rendering.layout is not None:
-        params["layout"] = rendering.layout
-    return params
+    """The file selector's query for `rendering`, the selector a ref stores:
+    format, bundle, layout when set, and `without_party_totals` when true."""
+    return rendering.to_object()
 
 
 def scope(
@@ -460,9 +454,8 @@ def pick_artifact(
 ) -> Wire | None:
     """The artifact a manifest lists for `rendering`, with `digest` when given.
 
-    Artifacts match on `Rendering.matches`. A party-totals cut that leaves
-    nothing out lists its file under the plain version, beside the plain file,
-    so the flag tells the two apart.
+    Artifacts match on `Rendering.matches`, so the first artifact of the
+    selector's format, bundle and layout is the one.
     """
     for artifact in manifest["artifacts"]:
         if digest is not None and artifact["artifact_digest"] != digest:

@@ -122,7 +122,7 @@ def fetch_members(
     readings: Sequence[Reading],
     *,
     layout: Layout = "long",
-    without_party_totals: bool = False,
+    party_totals: bool = False,
     strict: bool = False,
     timeout: float | None = None,
     progress: bool | None = None,
@@ -138,8 +138,10 @@ def fetch_members(
         readings: The readings to build, in query order. A spec listed twice
             builds once, answering both readings' parts.
         layout: `long`, or `frame` for one reading.
-        without_party_totals: Leave out the rows of parties the code index
-            declares totals, on each party role the reading leaves open.
+        party_totals: Keep the rows of parties the code index declares totals
+            on each party role a reading leaves open. False, the default, builds
+            the cut that leaves them out; a role the reading binds keeps what it
+            binds.
         strict: Raise the first dataset warning instead of issuing it.
         timeout: The longest the fetch takes, in seconds; None waits as long as
             the build takes.
@@ -165,7 +167,7 @@ def fetch_members(
         DfoError: The server refused a request.
     """
     wants = _distinct(readings)
-    rendering = rendering_for(layout, without_party_totals=without_party_totals)
+    rendering = rendering_for(layout, party_totals=party_totals)
     check_strict(strict)
     if layout == "frame" and len(wants) > 1:
         raise client_error(
@@ -346,12 +348,17 @@ def _plain_cached_manifest(
 
     A `DatasetRef` records only the coarse selector, while an artifact can also
     record a column projection or pivot. Such an artifact remains available to
-    its exact-digest ref, but cannot stand in for a plain spec fetch.
+    its exact-digest ref, but cannot stand in for a plain spec fetch. The cache
+    keys a manifest without the party-totals flag, so the artifact's flag must be
+    the fetch's: a plain version's file keeps the totals a cut leaves out.
     """
     for artifact in manifest["artifacts"]:
         artifact_rendering = artifact["rendering"]
-        if not rendering.matches(artifact_rendering) or not _is_plain_rendering(
-            artifact_rendering
+        if (
+            not rendering.matches(artifact_rendering)
+            or not _is_plain_rendering(artifact_rendering)
+            or (artifact_rendering.get("without_party_totals") is True)
+            is not rendering.without_party_totals
         ):
             continue
         data = sync_offload(cache.get_bytes, artifact["artifact_digest"])

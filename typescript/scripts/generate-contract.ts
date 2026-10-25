@@ -5,6 +5,7 @@
 //   src/generated/client-codes.ts  from client-codes.json
 //   src/generated/warning-codes.ts from warning-codes.json
 //   src/generated/proxy-codes.ts   from proxy-codes.json, checked against actions.json
+//   src/generated/column-order.ts  from rules/column-order.json
 //
 //   node scripts/generate-contract.ts           rewrite every file
 //   node scripts/generate-contract.ts --check   exit 1 when a committed file differs
@@ -259,6 +260,31 @@ export function renderProxyCodes(codesText: string, actionsText: string): Record
   return { PROXY_CODE_STATUSES: Object.fromEntries(statuses) };
 }
 
+/** The reading slots of the column-order rule, each the names that fill it in order. */
+export function renderColumnOrder(ruleText: string): Record<string, unknown> {
+  const rule = JSON.parse(ruleText) as {
+    format_version?: unknown;
+    rule?: unknown;
+    reading_columns?: unknown;
+  };
+  if (rule.format_version !== 1 || rule.rule !== "column-order") {
+    throw new Error("rules/column-order.json is not format version 1 of the column-order rule");
+  }
+  const slots = rule.reading_columns;
+  const isSlot = (slot: unknown): slot is string[] =>
+    Array.isArray(slot) &&
+    slot.length > 0 &&
+    slot.every((name) => typeof name === "string" && name !== "");
+  if (!Array.isArray(slots) || slots.length === 0 || !slots.every(isSlot)) {
+    throw new Error("rules/column-order.json lists no reading_columns slots of names");
+  }
+  const names = slots.flat();
+  if (new Set(names).size !== names.length || names.includes("stat_var")) {
+    throw new Error("rules/column-order.json names a column twice, or names stat_var in a slot");
+  }
+  return { READING_COLUMNS: slots };
+}
+
 async function module(
   source: string,
   tables: Record<string, unknown>,
@@ -312,6 +338,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         "contract/proxy-codes.json and contract/actions.json",
         renderProxyCodes(await read("proxy-codes.json"), await read("actions.json")),
         output("proxy-codes.ts"),
+      ),
+    ],
+    [
+      output("column-order.ts"),
+      await module(
+        "contract/rules/column-order.json",
+        renderColumnOrder(await read("rules/column-order.json")),
+        output("column-order.ts"),
       ),
     ],
   ];

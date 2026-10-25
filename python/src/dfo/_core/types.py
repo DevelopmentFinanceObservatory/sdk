@@ -522,8 +522,8 @@ class Citation:
         return single_line(f"Citation({_quoted(self.text)}, {sources})")
 
 
-# The members of a manifest artifact's `rendering` object that `Rendering.matches`
-# compares.
+# The members of a manifest artifact's `rendering` object a ref's selector holds.
+# `Rendering.matches` compares all but `without_party_totals`.
 RENDERING_SELECTORS = frozenset({"format", "bundle", "layout", "without_party_totals"})
 
 
@@ -561,15 +561,14 @@ class Rendering:
         """Whether a manifest artifact's `rendering` object is this rendering.
 
         The server's object carries more members than the selector, so it matches
-        on format, bundle, whether its layout is the frame, and whether it leaves
-        party totals out, which the server records only when it does.
+        on format, bundle and whether its layout is the frame. Whether it leaves
+        party totals out plays no part: the build request names that, and a cut
+        that leaves nothing out answers the plain version.
         """
         return (
             rendering.get("format") == self.format
             and rendering.get("bundle") is self.bundle
             and (rendering.get("layout") == "frame") == (self.layout == "frame")
-            and (rendering.get("without_party_totals") is True)
-            is self.without_party_totals
         )
 
 

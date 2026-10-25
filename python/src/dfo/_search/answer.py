@@ -274,7 +274,7 @@ class AsyncAnswer:
         partial: bool = False,
         strict: bool = False,
         layout: Layout = "long",
-        without_party_totals: bool = False,
+        party_totals: bool = False,
         timeout: float | None = None,
         progress: bool | None = None,
     ) -> Dataset:
@@ -290,9 +290,11 @@ class AsyncAnswer:
             strict: Raise the `SearchWarning`, and the datasets surface's
                 warnings, instead of issuing them.
             layout: `long`, or `frame` for one reading's pipeline frame.
-            without_party_totals: Leave out the rows of parties the code index
-                declares totals, such as the DAC total beside its members, on
-                each party role a reading leaves open.
+            party_totals: Keep the rows of parties the code index declares
+                totals, such as the DAC total beside its members, on each party
+                role a reading leaves open. False, the default, leaves them out,
+                so a sum over the table counts each party once; a role a reading
+                binds keeps what it binds.
             timeout: The longest the whole build waits, in seconds. None, the
                 default, waits as long as the build takes, which the server
                 always ends. In the synchronous client, platform name
@@ -338,7 +340,7 @@ class AsyncAnswer:
             session.transport,
             members,
             layout=layout,
-            without_party_totals=without_party_totals,
+            party_totals=party_totals,
             strict=strict,
             timeout=timeout,
             progress=progress,

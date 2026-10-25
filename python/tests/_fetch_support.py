@@ -5,6 +5,7 @@ use the same helpers.
 """
 
 import copy
+import dataclasses
 import json
 import socket
 import threading
@@ -104,9 +105,11 @@ def manifest(
     warnings: Sequence[Mapping[str, str]] = (),
     retention: Mapping[str, Any] | None = None,
     size: int | None = None,
+    party_totals: bool = False,
 ) -> dict[str, Any]:
     """The recorded narrowed manifest, renamed and pointed at `data`, whose
-    artifact names `size` as its `bytes` when given."""
+    artifact names `size` as its `bytes` when given. Its artifact is the
+    party-totals cut a default fetch builds unless `party_totals` keeps them."""
     body = load("probe-mint-narrowed.json")
     body["definition"]["spec_id"] = spec_id
     body["content_version"] = content_version
@@ -124,6 +127,8 @@ def manifest(
             "url": f"/api/datasets/{spec_id}/{content_version}/files/{digest}",
         },
     ]
+    if not party_totals:
+        body["artifacts"][1]["rendering"]["without_party_totals"] = True
     if size is not None:
         body["artifacts"][1]["bytes"] = size
     if retention is not None:
@@ -253,7 +258,9 @@ class Replay:
 
 @dataclass
 class FakeCache:
-    """The cache interface over dicts, recording what fetches store."""
+    """The cache interface over dicts, recording what fetches store. A manifest's
+    key leaves out the rendering's `without_party_totals`, as the cache layout
+    rule's does."""
 
     files: dict[str, bytes] = field(default_factory=dict)
     manifests: dict[tuple[str, str, Rendering], dict[str, Any]] = field(
@@ -283,7 +290,7 @@ class FakeCache:
     def get_manifest(
         self, spec_id: str, content_version: str, rendering: Rendering, /
     ) -> dict[str, Any] | None:
-        return self.manifests.get((spec_id, content_version, rendering))
+        return self.manifests.get((spec_id, content_version, _keyed(rendering)))
 
     def put_manifest(
         self,
@@ -293,7 +300,7 @@ class FakeCache:
         manifest: Mapping[str, Any],
         /,
     ) -> None:
-        self.manifests[(spec_id, content_version, rendering)] = copy.deepcopy(
+        self.manifests[(spec_id, content_version, _keyed(rendering))] = copy.deepcopy(
             dict(manifest)
         )
 
@@ -303,9 +310,14 @@ class FakeCache:
         stored = [
             manifest
             for (stored_id, _, stored_rendering), manifest in self.manifests.items()
-            if (stored_id, stored_rendering) == (spec_id, rendering)
+            if (stored_id, stored_rendering) == (spec_id, _keyed(rendering))
         ]
         return sorted(stored, key=lambda body: body["prepared_at"], reverse=True)
+
+
+def _keyed(rendering: Rendering) -> Rendering:
+    """The rendering as a manifest's cache key names it, without party totals."""
+    return dataclasses.replace(rendering, without_party_totals=False)
 
 
 @dataclass

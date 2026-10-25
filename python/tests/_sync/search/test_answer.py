@@ -786,10 +786,7 @@ def test_fetch_builds_one_member_per_distinct_spec(
     unnamed["variable_text"] = ""
     wire["parts"].append(unnamed)
     answer, _ = ask(TWO_PARTS, wire)
-    assert (
-        answer.fetch(layout="long", without_party_totals=True, timeout=10.0)
-        == "dataset"
-    )
+    assert answer.fetch(layout="long", party_totals=True, timeout=10.0) == "dataset"
     ((transport_used, members, options),) = fetched
     oda, gni = wire["parts"][0]["spec"], wire["parts"][1]["spec"]
     assert [(m.parts, m.spec.spec_id, m.sentence) for m in members] == [
@@ -807,7 +804,7 @@ def test_fetch_builds_one_member_per_distinct_spec(
     ]
     assert options == {
         "layout": "long",
-        "without_party_totals": True,
+        "party_totals": True,
         "strict": False,
         "timeout": 10.0,
         "progress": None,

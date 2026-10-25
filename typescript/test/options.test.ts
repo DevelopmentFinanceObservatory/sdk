@@ -41,8 +41,23 @@ describe("an options key a call does not take", () => {
     ["client.fetch", () => client.fetch(spec, { windw: [2020, 2021] } as FetchOptions), "window"],
     [
       "client.fetch, in the Python spelling",
+      () => client.fetch(spec, { party_totals: true } as FetchOptions),
+      "partyTotals",
+    ],
+    [
+      "client.fetch, in the old wire spelling",
       () => client.fetch(spec, { without_party_totals: true } as FetchOptions),
-      "withoutPartyTotals",
+      "partyTotals",
+    ],
+    [
+      "client.fetch, in the old spelling",
+      () => client.fetch(spec, { withoutPartyTotals: true } as FetchOptions),
+      "partyTotals",
+    ],
+    [
+      "answer.fetch, in the old spelling",
+      () => definite.fetch({ withoutPartyTotals: true } as never),
+      "partyTotals",
     ],
     ["answer.fetch", () => definite.fetch({ partal: true } as never), "partial"],
     ["answer.choose", () => choosing.choose(0, { prat: 0 } as never), "part"],

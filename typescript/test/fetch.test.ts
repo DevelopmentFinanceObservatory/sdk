@@ -10,7 +10,7 @@ import { envFrom } from "../src/config/env.ts";
 import { download, fetchMembers } from "../src/datasets/fetch.ts";
 import { fetchDataset } from "../src/datasets/resolve.ts";
 import type { FetchOptions } from "../src/datasets/fetch.ts";
-import { DatasetRef } from "../src/core/ref.ts";
+import { DatasetRef, renderingFor } from "../src/core/ref.ts";
 import type { DatasetRefJson, Spec } from "../src/core/ref.ts";
 import { DEFAULT_MAX_BYTES, Transport } from "../src/http/transport.ts";
 import { DataWarning } from "../src/core/warnings.ts";
@@ -41,12 +41,14 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
 }
 
 describe("a fetched spec's ref", () => {
+  // The fetch leaves party totals out by default, so its ref records the cut rendering it
+  // posted, as the contract's cut ref of that member does.
   test("is the contract's ref for that member", async () => {
     const record = await scenario("fetch-spec-known-sentence");
     const { spec } = stepOf(record, 0, "fetch");
     assert.ok(spec);
     const dataset = await fetchDataset(replay(record).transport, spec);
-    const { ref } = await contractJson<{ ref: unknown }>("refs/ref-one-member.json");
+    const { ref } = await contractJson<{ ref: unknown }>("refs/ref-without-party-totals.json");
     assert.deepEqual(JSON.parse(JSON.stringify(dataset.ref)), ref);
   });
 });
@@ -93,6 +95,53 @@ describe("a ref fetched with latest", () => {
     assert.deepEqual(newest.columns, fetched.columns);
     assert.deepEqual(await newest.toRows(), await fetched.toRows());
   });
+
+  // A ref records the rendering its fetch posted, so a latest fetch of a cut ref posts the cut
+  // and answers the cut's own version, and one of a ref fetched with party totals posts none.
+  for (const [name, cut] of [
+    ["fetch-spec-party-totals-left-out", true],
+    ["fetch-spec-party-totals-kept", false],
+  ] as const) {
+    test(`rebuilds ${name}'s ref in the ref's rendering`, async () => {
+      const record = await scenario(name);
+      const step = stepOf(record, 0, "fetch");
+      assert.ok(step.spec);
+      const fetched = await fetchDataset(replay(record).transport, step.spec, {
+        window: step.window,
+        entities: step.entities,
+        ...(step.party_totals === undefined ? {} : { partyTotals: step.party_totals }),
+      });
+      const [member] = fetched.ref.members;
+      assert.equal(member!.rendering.without_party_totals === true, cut);
+      // The latest fetch posts the built spec with no narrowing, and knows its sentence.
+      const [built, , ...download] = record.exchanges;
+      const rebuild = structuredClone(built!);
+      rebuild.request.json = {
+        input: {
+          kind: "spec_id",
+          spec_id: member!.spec.spec_id,
+          definition: member!.spec.definition,
+        },
+        options: {
+          format: "parquet",
+          bundle: false,
+          ...(cut ? { without_party_totals: true } : {}),
+        },
+      };
+      const { transport, remaining } = replay({
+        ...record,
+        origin: { kind: "synthetic", derived_from: name },
+        exchanges: [rebuild, ...download],
+      });
+      const newest = await fetchDataset(transport, fetched.ref, { latest: true });
+      assert.deepEqual(remaining(), []);
+      const expected = record.expect[0]!;
+      assert.ok("dataset" in expected);
+      assert.equal(newest.members[0]!.contentVersion, expected.dataset.members[0]!.content_version);
+      assert.equal(newest.rowCount, expected.dataset.rows);
+      assert.ok(newest.ref.equals(fetched.ref));
+    });
+  }
 });
 
 describe("a manifest's warnings", () => {
@@ -231,17 +280,21 @@ describe("arguments a fetch refuses before any request", () => {
   test("a latest fetch of a ref whose members differ in rendering", async () => {
     const [held] = (await storedRef()).members;
     const specId = `spec_${"0".repeat(32)}`;
-    const cut = {
+    assert.equal(held!.rendering.without_party_totals, true);
+    const plain = {
       ...held!,
       spec: { spec_id: specId, definition: { ...held!.spec.definition, spec_id: specId } },
-      rendering: { ...held!.rendering, without_party_totals: true as const },
+      rendering: renderingFor("long"),
     };
-    await assert.rejects(fetchDataset(transport, new DatasetRef([held!, cut]), { latest: true }), {
-      name: "InvalidRequestError",
-      code: "invalid_argument",
-      message:
-        /client\.fetch\(ref\.members\[1\]\.spec, \{ layout: "long", withoutPartyTotals: true \}\)/,
-    });
+    await assert.rejects(
+      fetchDataset(transport, new DatasetRef([held!, plain]), { latest: true }),
+      {
+        name: "InvalidRequestError",
+        code: "invalid_argument",
+        message:
+          /client\.fetch\(ref\.members\[1\]\.spec, \{ layout: "long", partyTotals: true \}\)/,
+      },
+    );
   });
 
   test("entities for a spec whose definition holds no identity", async () => {
@@ -251,28 +304,27 @@ describe("arguments a fetch refuses before any request", () => {
     );
   });
 
-  for (const [name, held, withoutPartyTotals] of [
-    ["a plain ref given withoutPartyTotals", false, true],
-    ["a cut ref given withoutPartyTotals false", true, false],
+  for (const [name, cut, partyTotals] of [
+    ["a cut ref given partyTotals", true, true],
+    ["a plain ref given partyTotals false", false, false],
   ] as const) {
     test(name, async () => {
       const record = await scenario("fetch-ref");
       const saved = structuredClone(stepOf(record, 0, "fetch").ref) as DatasetRefJson;
-      if (held) saved.members[0]!.artifact.rendering.without_party_totals = true;
-      await assert.rejects(
-        fetchDataset(transport, DatasetRef.fromJSON(saved), { withoutPartyTotals }),
-        {
-          name: "InvalidRequestError",
-          code: "invalid_argument",
-          message: new RegExp(`withoutPartyTotals ${held}, not ${withoutPartyTotals}`),
-        },
-      );
+      const { rendering } = saved.members[0]!.artifact;
+      if (cut) rendering.without_party_totals = true;
+      else delete rendering.without_party_totals;
+      await assert.rejects(fetchDataset(transport, DatasetRef.fromJSON(saved), { partyTotals }), {
+        name: "InvalidRequestError",
+        code: "invalid_argument",
+        message: new RegExp(`partyTotals ${!partyTotals}, not ${partyTotals}`),
+      });
     });
   }
 
-  test("a withoutPartyTotals that is not a boolean", async () => {
+  test("a partyTotals that is not a boolean", async () => {
     await assert.rejects(
-      fetchDataset(transport, spec("spec_1"), { withoutPartyTotals: "yes" as unknown as boolean }),
+      fetchDataset(transport, spec("spec_1"), { partyTotals: "yes" as unknown as boolean }),
       { name: "InvalidRequestError", code: "invalid_argument" },
     );
   });
@@ -994,9 +1046,9 @@ describe("a fetch that builds no rows", () => {
 
 describe("a fetch's party-totals cut", () => {
   for (const [options, posted] of [
-    [{}, {}],
-    [{ withoutPartyTotals: false }, {}],
-    [{ withoutPartyTotals: true }, { without_party_totals: true }],
+    [{}, { without_party_totals: true }],
+    [{ partyTotals: false }, { without_party_totals: true }],
+    [{ partyTotals: true }, {}],
   ] as const) {
     test(`posts ${JSON.stringify(posted)} for ${JSON.stringify(options)}`, async () => {
       const spec: Spec = { spec_id: "spec_1", definition: { spec_id: "spec_1" } };

@@ -10,6 +10,7 @@ import pytest
 
 from dfo import Client, DatasetRef
 from dfo._datasets.cache import Cache, sha256_digest
+from dfo._datasets.dataset import reading_order
 from dfo._sync._datasets.fetch import Session
 from dfo._sync._http.transport import Transport
 from dfo.types import RefMember, Rendering
@@ -55,17 +56,19 @@ def test_restoring_a_plain_ref_from_a_multi_render_snapshot_works_offline(
                 spec=member.spec,
                 content_version=member.content_version,
                 digest=member.digest,
-                rendering=Rendering("parquet", False),
+                # The recorded build is a default fetch, the party-totals cut.
+                rendering=Rendering("parquet", False, without_party_totals=True),
             ),
         )
     )
+    ordered = table.select(reading_order(table.column_names))
     with Client._over(Session(transport, cache)) as client:
-        assert client.fetch(ref, progress=False).to_arrow().equals(table)
+        assert client.fetch(ref, progress=False).to_arrow().equals(ordered)
     monkeypatch.setenv("DFO_OFFLINE", "1")
     with Client(
         api_key=False, base_url="https://api.example/api/v1", cache_dir=tmp_path
     ) as client:
         restored = client.fetch(member.spec, progress=False)
     assert restored.stale
-    assert restored.to_arrow().equals(table)
+    assert restored.to_arrow().equals(ordered)
     assert requests == [snapshot, plain["url"]]

@@ -148,8 +148,12 @@ class VersionUnavailableError(DfoError):
     """A stored version cannot be rebuilt. The caller takes the newest version.
 
     Attributes:
-        newest_version: The version a fresh build returned, or else the newest
-            plain version of the spec the server holds, or None when it names none.
+        newest_version: The version a fresh build in the ref's rendering
+            answered, or else the newest plain build of the spec the server
+            lists, or None when it names none. A party-totals cut answers a
+            version of its own, so this is not comparable with the
+            `content_version` of a cut ref: two different versions need not
+            mean newer data.
     """
 
     newest_version: str | None = None

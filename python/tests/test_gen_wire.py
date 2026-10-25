@@ -117,3 +117,42 @@ def test_a_named_enum_without_a_string_enum_or_with_a_taken_name_is_refused(
     schemas = {**SCHEMAS, "Level": {"properties": {"rank": {"enum": [1, 2]}}}}
     with pytest.raises(SystemExit):
         gen_wire.named_enums(schemas, declared)
+
+
+def _column_rule(slots: object) -> dict[str, Any]:
+    return {"format_version": 1, "rule": "column-order", "reading_columns": slots}
+
+
+def test_the_reading_columns_render_as_a_tuple_of_slots() -> None:
+    source = gen_wire.render_columns(_column_rule([["a"], ["b_label", "b"]]))
+    assert "    ('a',),\n    ('b_label', 'b'),\n" in source
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        {**_column_rule([["a"]]), "format_version": 2},
+        {**_column_rule([["a"]]), "rule": "key-format"},
+        _column_rule([]),
+        _column_rule([[]]),
+        _column_rule([["a", 1]]),
+        _column_rule([["a"], ["b", "a"]]),
+        _column_rule([["a", "a"]]),
+        _column_rule([["a"], ["stat_var"]]),
+    ],
+    ids=[
+        "format",
+        "rule",
+        "no-slot",
+        "empty-slot",
+        "not-a-name",
+        "repeated",
+        "repeated-in-slot",
+        "stat-var",
+    ],
+)
+def test_a_column_order_rule_that_breaks_the_format_is_refused(
+    rule: dict[str, Any],
+) -> None:
+    with pytest.raises(SystemExit):
+        gen_wire.render_columns(rule)

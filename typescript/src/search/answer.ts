@@ -175,7 +175,7 @@ const ANSWER_FETCH_OPTIONS = declareOptions<AnswerFetchOptions>("answer.fetch", 
   onProgress: true,
   strict: true,
   layout: true,
-  withoutPartyTotals: true,
+  partyTotals: true,
   partial: true,
 });
 

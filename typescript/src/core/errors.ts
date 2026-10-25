@@ -182,8 +182,11 @@ export class IncompleteAnswerError extends DfoError {
 export class DeclinedError extends DfoError {}
 /** A stored version cannot be rebuilt. The caller takes the newest version. */
 export class VersionUnavailableError extends DfoError {
-  /** The version a fresh build returned, or else the newest version in the ref's rendering the
-   *  server lists, which can be the ref's own, or null. */
+  /** The version a fresh build in the ref's rendering returned, or else the newest plain build
+   *  the server lists, which can be the ref's own, or null. A ref that left party totals out
+   *  holds a cut version, which need not equal the plain build even when no newer data exists,
+   *  so a differing id is no sign of newer data. `client.fetch(ref, { latest: true })` fetches the
+   *  newest version in the ref's rendering. */
   readonly newestVersion: string | null;
 
   constructor(options: DfoErrorOptions & { newestVersion?: string | null }) {

@@ -258,8 +258,9 @@ def _served_inline(client: Client, spec: Spec, manifest: Mapping[str, Any]) -> s
 
 
 def _post_build(client: Client, spec: Spec) -> tuple[int, dict[str, Any]]:
-    """The status and body `POST /datasets` answers for `spec`'s long build."""
-    body = build_body(spec, rendering_for("long"))
+    """The status and body `POST /datasets` answers for `spec`'s long build, in
+    the rendering a default fetch posts, so the fetch joins it."""
+    body = build_body(spec, rendering_for("long", party_totals=False))
     # A build answers within 150 s; the client's default attempt is 30 s.
     response = client.with_options(timeout=160.0).request(
         "POST", "/datasets", json=body

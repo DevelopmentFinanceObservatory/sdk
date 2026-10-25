@@ -62,7 +62,6 @@ from tests._fetch_support import (
     problem,
     redirect,
     resubmitted,
-    with_cut,
 )
 
 pytestmark = pytest.mark.anyio
@@ -228,7 +227,11 @@ async def test_a_narrowed_spec_stores_the_built_identity_and_asks_search_its_sen
         "entities": {"destination": ["country/NGA"], "origin": ["country/DEU"]},
         "facets": {"measurementMethod": {"ref": None}},
     }
-    assert posted["options"] == {"format": "parquet", "bundle": False}
+    assert posted["options"] == {
+        "format": "parquet",
+        "bundle": False,
+        "without_party_totals": True,
+    }
     assert server.body(1) == {
         "schema_version": 1,
         "input": {
@@ -451,6 +454,7 @@ async def test_a_frame_builds_the_frame_rendering() -> None:
         "format": "parquet",
         "bundle": False,
         "layout": "frame",
+        "without_party_totals": True,
     }
     assert built.layout == "frame"
     assert built.members[0].data == FRAME
@@ -1019,13 +1023,22 @@ async def test_a_ref_with_an_unknown_version_raises_at_the_snapshot() -> None:
     assert len(server.requests) == 1
 
 
-# The selector renders a version with the options it was minted with, so a cut
-# ref asks it for format and bundle alone.
-@pytest.mark.parametrize(("rendering", "data"), [(LONG, DATA), (CUT, CUT_DATA)])
+# The selector's query is the ref's rendering, the cut's flag included.
+@pytest.mark.parametrize(
+    ("rendering", "data", "query"),
+    [
+        (LONG, DATA, {"format": "parquet", "bundle": "false"}),
+        (
+            CUT,
+            CUT_DATA,
+            {"format": "parquet", "bundle": "false", "without_party_totals": "true"},
+        ),
+    ],
+)
 async def test_an_expired_file_is_rendered_again_by_the_file_selector(
-    rendering: Rendering, data: bytes
+    rendering: Rendering, data: bytes, query: dict[str, str]
 ) -> None:
-    body = with_cut(manifest())
+    body = manifest(data=data, party_totals=rendering == LONG)
     server = Server(
         json_response(200, body),
         problem(410, "artifact_expired"),
@@ -1039,7 +1052,7 @@ async def test_an_expired_file_is_rendered_again_by_the_file_selector(
     assert str(selector.url.copy_with(query=None)) == (
         f"{BASE}/datasets/{NARROWED_ID}/{NARROWED_CV}/file"
     )
-    assert dict(selector.url.params) == {"format": "parquet", "bundle": "false"}
+    assert dict(selector.url.params) == query
     assert built.members[0].digest == sha256_digest(data)
 
 
@@ -1057,7 +1070,7 @@ async def test_an_expired_file_is_rendered_again_by_the_file_selector(
 async def test_an_expired_file_without_the_selector_rebuilds_the_same_version(
     rendering: Rendering, data: bytes, options: dict
 ) -> None:
-    body = with_cut(manifest())
+    body = manifest(data=data, party_totals=rendering == LONG)
     server = Server(
         json_response(200, body),
         problem(410, "artifact_expired"),
@@ -1118,10 +1131,11 @@ async def test_a_rebuild_with_another_version_names_the_newest() -> None:
         json_response(200, manifest(content_version=newer)),
     )
     async with make(server) as transport:
-        with pytest.raises(VersionUnavailableError, match=newer) as caught:
+        with pytest.raises(VersionUnavailableError) as caught:
             await fetch(transport, DatasetRef((ref_member(),)))
     assert caught.value.code == "artifact_expired"
     assert caught.value.newest_version == newer
+    assert newer not in str(caught.value)
     assert len(server.requests) == 4
 
 
@@ -1191,15 +1205,16 @@ ENDLESS = [versions_page([derived(NEWER, OLDER)], f"c{page}") for page in range(
 
 # Each row gives the ref member's rendering, the responses the versions route
 # answers in turn, the cursor each page after the first is asked with, and the
-# newest version the error names. The last row reads `VERSIONS_PAGE_BUDGET` pages.
+# newest plain build the error names, whatever the ref's rendering. The last row
+# reads `VERSIONS_PAGE_BUDGET` pages.
 @pytest.mark.parametrize(
     ("rendering", "pages", "cursors", "named"),
     [
         (LONG, [versions_page([plain(NEWER)], "c1")], [], NEWER),
         (LONG, [versions_page([derived(NEWER, OLDER), plain(OLDER)])], [], OLDER),
         (LONG, [versions_page([cut(NEWER, OLDER), plain(OLDER)])], [], OLDER),
-        (CUT, [versions_page([plain(NEWER), cut(OLDER, NEWER)])], [], OLDER),
-        (CUT, [versions_page([plain(NEWER), derived(OLDER, NEWER)])], [], None),
+        (CUT, [versions_page([plain(NEWER), cut(OLDER, NEWER)])], [], NEWER),
+        (CUT, [versions_page([cut(NEWER, OLDER)])], [], None),
         (
             LONG,
             [
@@ -1219,7 +1234,7 @@ ENDLESS = [versions_page([derived(NEWER, OLDER)], f"c{page}") for page in range(
         "derived-first",
         "cut-first",
         "cut-ref",
-        "cut-ref-none",
+        "cut-ref-no-plain",
         "second-page",
         "no-plain",
         "none",
@@ -1245,21 +1260,29 @@ async def test_a_spec_that_cannot_rebuild_names_the_newest_stored_version(
     assert error.newest_version == named
 
 
+# The message names the latest fetch unless the ref's own version is the
+# newest, and never another version, which need not be comparable with the
+# ref's: a cut ref's version is not a plain build.
 @pytest.mark.parametrize(
-    ("listed", "names_latest"),
-    [(NARROWED_CV, False), (NEWER, True), (None, True)],
-    ids=["the-ref-version", "another-version", "none-listed"],
+    ("rendering", "listed", "names_latest"),
+    [
+        (LONG, NARROWED_CV, False),
+        (LONG, NEWER, True),
+        (LONG, None, True),
+        (CUT, NEWER, True),
+    ],
+    ids=["the-ref-version", "another-version", "none-listed", "cut-ref"],
 )
 @CALLERS
-async def test_the_unavailable_error_names_the_latest_fetch_unless_it_is_newest(
-    listed: str | None, caller: str, *, names_latest: bool
+async def test_the_unavailable_error_names_the_latest_fetch_and_no_other_version(
+    rendering: Rendering, listed: str | None, caller: str, *, names_latest: bool
 ) -> None:
     page = versions_page([plain(listed)] if listed is not None else [])
-    _, error = await versions_lookup(page, caller=caller)
+    _, error = await versions_lookup(page, rendering=rendering, caller=caller)
     assert isinstance(error, VersionUnavailableError)
     assert error.newest_version == listed
     assert (f"{caller}.fetch(ref, latest=True)" in str(error)) is names_latest
-    assert listed is None or listed in str(error)
+    assert NEWER not in str(error)
 
 
 @pytest.mark.parametrize(
@@ -1269,10 +1292,17 @@ async def test_the_unavailable_error_names_the_latest_fetch_unless_it_is_newest(
         ([versions_page([{}])], "/versions/0/content_version"),
         ([versions_page(["cv"])], "/versions/0/content_version"),
         ([versions_page([plain("cv_" + "A" * 32)])], "/versions/0/content_version"),
-        ([versions_page([{"content_version": OLDER}])], "/versions/0/rendering"),
         (
-            [versions_page([plain(NEWER), {**plain(OLDER), "rendering": None}])],
-            "/versions/1/rendering",
+            [versions_page([{"content_version": OLDER}])],
+            "/versions/0/base_content_version",
+        ),
+        (
+            [
+                versions_page(
+                    [plain(NEWER), {**plain(OLDER), "base_content_version": 3}]
+                )
+            ],
+            "/versions/1/base_content_version",
         ),
         ([versions_page([derived(NEWER, OLDER)], 2)], "/next_cursor"),
         (
@@ -1555,13 +1585,12 @@ async def test_same_bytes_under_two_renderings_keep_the_plain_offline_artifact(
 async def test_a_ref_digest_listed_under_another_rendering_raises_before_download() -> (
     None
 ):
-    cut_listing = manifest()
-    cut_listing["artifacts"][1]["rendering"]["without_party_totals"] = True
-    plain_member = ref_member(rendering=LONG)
-    server = Server(json_response(200, cut_listing))
+    frame_listing = manifest(layout="frame")
+    long_member = ref_member(rendering=LONG)
+    server = Server(json_response(200, frame_listing))
     async with make(server) as transport:
         with pytest.raises(FormatError) as caught:
-            await fetch(transport, DatasetRef((plain_member,)))
+            await fetch(transport, DatasetRef((long_member,)))
     assert (caught.value.reason, caught.value.pointer) == (
         "format_invalid",
         "/members/0/artifact/rendering",
@@ -1569,36 +1598,38 @@ async def test_a_ref_digest_listed_under_another_rendering_raises_before_downloa
     assert len(server.requests) == 1
 
 
-async def test_plain_and_cut_files_of_one_version_share_a_manifest_and_stay_apart(
+# A cut that leaves rows out answers a version of its own. The cache keys both
+# versions' manifests `parquet.json`, and offline the plain build, cached as the
+# newer, does not stand in for the cut.
+async def test_plain_and_cut_versions_stay_apart_offline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    body = with_cut(manifest(POSTED_ID))
+    plain_body = manifest(POSTED_ID, NEWER, party_totals=True)
+    plain_body["prepared_at"] = "2026-03-01T00:00:00Z"
+    cut_body = manifest(POSTED_ID, OLDER, CUT_DATA)
+    cut_body["prepared_at"] = "2026-02-01T00:00:00Z"
     cache = Cache(tmp_path, env={})
     server = Server(
-        json_response(200, body),
-        redirect(),
-        parquet(),
-        json_response(200, body),
+        json_response(200, cut_body),
         redirect(),
         parquet(CUT_DATA),
+        json_response(200, plain_body),
+        redirect(),
+        parquet(),
     )
     async with make(server) as transport:
-        plain = await fetch(transport, spec(SENTENCE), cache=cache)
-        cut = await fetch(
-            transport, spec(SENTENCE), without_party_totals=True, cache=cache
-        )
-        assert "without_party_totals" not in server.body(0)["options"]
-        assert server.body(3)["options"]["without_party_totals"] is True
+        cut = await fetch(transport, spec(SENTENCE), cache=cache)
+        plain = await fetch(transport, spec(SENTENCE), party_totals=True, cache=cache)
+        assert server.body(0)["options"]["without_party_totals"] is True
+        assert "without_party_totals" not in server.body(3)["options"]
         assert (plain.members[0].data, cut.members[0].data) == (DATA, CUT_DATA)
-        assert cut.members[0].rendering == CUT
-        manifests = list((cache.directory / "manifests" / POSTED_ID).rglob("*.json"))
-        assert [path.name for path in manifests] == ["parquet.json"]
+        assert (plain.members[0].rendering, cut.members[0].rendering) == (LONG, CUT)
+        manifests = (cache.directory / "manifests" / POSTED_ID).rglob("*.json")
+        assert {path.name for path in manifests} == {"parquet.json"}
 
         monkeypatch.setenv("DFO_OFFLINE", "1")
-        plain = await fetch(transport, spec(SENTENCE), cache=cache)
-        cut = await fetch(
-            transport, spec(SENTENCE), without_party_totals=True, cache=cache
-        )
+        cut = await fetch(transport, spec(SENTENCE), cache=cache)
+        plain = await fetch(transport, spec(SENTENCE), party_totals=True, cache=cache)
     assert (plain.members[0].data, cut.members[0].data) == (DATA, CUT_DATA)
     assert len(server.requests) == 6
 
@@ -1676,13 +1707,11 @@ async def test_a_refused_latest_or_ref_narrowing_names_the_call_to_run(
 async def test_a_latest_ref_fetch_builds_each_spec_in_the_refs_rendering(
     rendering: Rendering,
 ) -> None:
-    held = ref_member(rendering=rendering)
-    body = with_cut(manifest(content_version=NEWER))
-    server = Server(
-        json_response(200, body),
-        redirect(),
-        parquet(CUT_DATA if rendering == CUT else DATA),
-    )
+    data = CUT_DATA if rendering == CUT else DATA
+    held = ref_member(data=data, rendering=rendering)
+    # A cut ref's latest fetch answers the newest cut, a version of its own.
+    body = manifest(content_version=NEWER, data=data, party_totals=rendering == LONG)
+    server = Server(json_response(200, body), redirect(), parquet(data))
     async with make(server) as transport:
         built = await fetch(transport, DatasetRef((held,)), latest=True)
     assert server.calls()[0] == f"POST {BASE}/datasets"
@@ -1716,7 +1745,7 @@ async def test_a_latest_fetch_refuses_a_ref_of_mixed_renderings(caller: str) -> 
             await fetch(transport, mixed, latest=True)
     assert raised.value.code == "invalid_argument"
     assert f"{caller}.fetch(ref.members[1].spec" in str(raised.value)
-    assert "without_party_totals=True" in str(raised.value)
+    assert "party_totals=False" in str(raised.value)
     assert server.requests == []
 
 
@@ -1726,11 +1755,11 @@ async def test_a_ref_keeps_its_layout() -> None:
     async with make(server) as transport:
         with pytest.raises(InvalidRequestError, match="long layout"):
             await fetch(transport, ref, layout="frame")
-        with pytest.raises(InvalidRequestError, match="without_party_totals=False"):
-            await fetch(transport, ref, without_party_totals=True)
+        with pytest.raises(InvalidRequestError, match="party_totals True, not False"):
+            await fetch(transport, ref, party_totals=False)
         cut_ref = DatasetRef((ref_member(rendering=CUT),))
-        with pytest.raises(InvalidRequestError, match="without_party_totals=True"):
-            await fetch(transport, cut_ref, without_party_totals=False)
+        with pytest.raises(InvalidRequestError, match="party_totals False, not True"):
+            await fetch(transport, cut_ref, party_totals=True)
         bundled = RefMember(
             parts=(),
             sentence=SENTENCE,

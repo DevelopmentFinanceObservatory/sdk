@@ -118,8 +118,9 @@ def test_a_ref_of_dataset_members_writes_the_stored_format() -> None:
     # The manifest of the build the contract's ref names, which serves its member.
     record = example(CONTRACT / "refs" / "ref-answer-member.json")
     scenario = example(CONTRACT / "scenarios" / f"{record['scenario']}.json")
-    manifest = scenario["exchanges"][0]["response"]["json"]
-    (part,) = parse_parts(load("probe-resubmit-identity.json"))
+    search, build = scenario["exchanges"][:2]
+    manifest = build["response"]["json"]
+    (part,) = parse_parts(search["response"]["json"])
     assert isinstance(part, DefinitePart)
     assert part.spec.sentence is not None
     member = Member(
@@ -129,7 +130,7 @@ def test_a_ref_of_dataset_members_writes_the_stored_format() -> None:
         sentence=part.spec.sentence,
         citation=parse_citation(manifest["citation"]),
         digest=manifest["artifacts"][0]["artifact_digest"],
-        rendering=Rendering("parquet", bundle=False),
+        rendering=Rendering("parquet", bundle=False, without_party_totals=True),
     )
     ref = DatasetRef.of([member])
     stored = json.loads(ref.to_json())
@@ -157,11 +158,16 @@ def test_a_ref_pickles() -> None:
     assert pickle.loads(pickle.dumps(ref)) == ref
 
 
+# The format writes `without_party_totals` only when true, so a plain rendering is
+# the key removed.
+DROPPED = object()
+
+
 @pytest.mark.parametrize(
     ("pointer", "value", "equal"),
     [
         ("/content_version", "cv_" + "0" * 32, False),
-        ("/artifact/rendering/without_party_totals", True, False),
+        ("/artifact/rendering/without_party_totals", DROPPED, False),
         ("/artifact/digest", "sha256:" + "0" * 64, True),
         ("/sentence", "Another sentence for the same reading.", True),
         ("/parts", ["another part"], True),
@@ -176,7 +182,10 @@ def test_refs_are_equal_on_spec_version_and_rendering(
     target: Any = edited["members"][0]
     for step in parents:
         target = target[step]
-    target[key] = value
+    if value is DROPPED:
+        del target[key]
+    else:
+        target[key] = value
     ref = DatasetRef.from_json(json.dumps(ref_json))
     other = DatasetRef.from_json(json.dumps(edited))
     assert (ref == other, hash(ref) == hash(other)) == (equal, equal)
@@ -215,24 +224,20 @@ def test_a_ref_repr_names_each_spec_at_its_version() -> None:
             False,
         ),
         (Rendering("csv", bundle=True), {"format": "csv", "bundle": True}, True),
+        # The party-totals flag plays no part in the match.
         (
             Rendering("parquet", bundle=False),
-            {"format": "parquet", "bundle": False, "without_party_totals": True},
-            False,
-        ),
-        (
-            Rendering("parquet", bundle=False, without_party_totals=True),
             {"format": "parquet", "bundle": False, "without_party_totals": True},
             True,
         ),
         (
             Rendering("parquet", bundle=False, without_party_totals=True),
             {"format": "parquet", "bundle": False, "layout": 3},
-            False,
+            True,
         ),
     ],
 )
-def test_a_rendering_matches_on_format_bundle_frame_and_party_totals(
+def test_a_rendering_matches_on_format_bundle_and_frame(
     selector: Rendering, server: dict[str, Any], matches: bool
 ) -> None:
     assert selector.matches(server) is matches
