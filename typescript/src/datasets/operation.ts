@@ -314,8 +314,6 @@ export class Poller implements LongBuild {
   #resubmissions = 0;
   readonly #pollWaits: number[] = [];
   #started = false;
-  /** Whether the poll at the deadline read the build done. */
-  #late = false;
 
   constructor(
     transport: Transport,
@@ -352,17 +350,6 @@ export class Poller implements LongBuild {
     return this.#resubmissions;
   }
 
-  /** The trace id of the response the build was last read from. */
-  get traceId(): string | null {
-    return this.#traceId;
-  }
-
-  /** Whether the poll at the deadline read the build done, which leaves its download no time
-   *  within the deadline. */
-  get late(): boolean {
-    return this.#late;
-  }
-
   get status(): string {
     if (this.#error !== null) return FAILED;
     if (this.#manifest !== null) return DONE;
@@ -379,11 +366,13 @@ export class Poller implements LongBuild {
     return this.#finished();
   }
 
-  /** Polls until the build is done and returns its manifest. A wait that would reach the
-   *  deadline ends at it, and the poll after it runs for one attempt, so the build is still
-   *  running at the deadline only when the poll at the deadline does not read it finished. */
-  async wait(wait: Wait): Promise<Manifest> {
+  /** Polls until the build is done and returns it. A wait that would reach the deadline ends
+   *  at it, and the poll after it runs for one attempt, so the build is still running at the
+   *  deadline only when the poll at the deadline does not read it finished. The returned build
+   *  is `late` when that poll read it done. A build already finished before this call is not. */
+  async wait(wait: Wait): Promise<Built> {
     this.#start();
+    let late = false;
     while (!this.#finished()) {
       const left = wait.deadline - this.#transport.now();
       const next = this.#nextWait();
@@ -393,10 +382,10 @@ export class Poller implements LongBuild {
       await this.#transport.sleep(ms, wait.signal);
       await this.#poll(wait, last);
       if (last && !this.#finished()) throw this.#stillRunning();
-      this.#late = last;
+      late = last;
     }
     if (this.#error !== null) throw this.#error;
-    return this.#manifest!;
+    return { manifest: this.#manifest!, traceId: this.#traceId, poller: this, late };
   }
 
   /** Reports the long build to the transport's observer when polling first starts. A build the
@@ -594,22 +583,24 @@ export class Operation {
   async result(options: ResultOptions = {}): Promise<Dataset<never>> {
     const wait = { deadline: deadlineOf(this.#transport, options.timeout), signal: options.signal };
     if (options.onProgress !== undefined) this.#poller.onProgress = options.onProgress;
-    const manifest = await this.#poller.wait(wait);
-    return this.#finish({ manifest, traceId: this.#poller.traceId, poller: this.#poller }, wait);
+    return this.#finish(await this.#poller.wait(wait), wait);
   }
 }
 
 /** A built version's manifest, the trace id of the response that carried it, and the poller
- *  of the long build that made it, if any. */
+ *  of the long build that made it, if any. `late` is whether this call's poll at its deadline
+ *  read the build done, which leaves its download no time within that deadline. It is absent
+ *  or false when an earlier poll, or an earlier call, read it. */
 export type Built = {
   readonly manifest: Manifest;
   readonly traceId: string | null;
   readonly poller?: Poller;
+  readonly late?: boolean;
 };
 
 /**
- * Runs the requests that download a done build. Once the poll at the deadline has read the
- * build done, each request runs for one attempt of the client's timeout, so the call returns
+ * Runs the requests that download a done build. Once this call's poll at its deadline has read
+ * the build done, each request runs for one attempt of the client's timeout, so the call returns
  * the data. Any `deadline_exceeded` the download of a long build raises, an attempt's own
  * timeout with no retry left included, names the call that resumes it.
  */
@@ -619,9 +610,8 @@ export async function downloadBuilt<T>(
   wait: Wait,
   run: (wait: Wait) => Promise<T>,
 ): Promise<T> {
-  const { poller } = built;
+  const { poller, late = false } = built;
   if (poller === undefined || poller.operationId === null) return run(wait);
-  const late = poller.late;
   const once = {
     deadline: Infinity,
     maxRetries: 0,
@@ -646,9 +636,7 @@ export async function build(
 ): Promise<Built> {
   const reply = await postBuild(transport, body, wait);
   if (reply.manifest !== null) return { manifest: reply.manifest, traceId: reply.traceId };
-  const poller = new Poller(transport, reply, { body, onProgress: wait.onProgress });
-  const manifest = await poller.wait(wait);
-  return { manifest, traceId: poller.traceId, poller };
+  return new Poller(transport, reply, { body, onProgress: wait.onProgress }).wait(wait);
 }
 
 /** Posts a build and returns it as an operation, done or running. */

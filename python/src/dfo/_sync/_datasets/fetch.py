@@ -71,6 +71,7 @@ from dfo._datasets.progress import ProgressRenderer
 from dfo._generated.strict import RESOLUTION_KIND
 from dfo._http.hooks import Hold, sync_offload
 from dfo._sync._datasets.operation import (
+    Built,
     Finish,
     Operation,
     Poller,
@@ -175,14 +176,13 @@ def fetch_members(
     with ProgressRenderer(enabled=progress) as renderer:
         on_progress = progress_hook(renderer)
         for want in wants:
-            poller = None
             if stale:
                 manifest, cached_data = _latest_cached(
                     cache, want.spec.spec_id, rendering
                 )
-                trace_id = None
+                built = Built(manifest, None)
             else:
-                manifest, trace_id, poller = _build_latest(
+                built = _build_latest(
                     transport,
                     build_body(want.spec, rendering, narrowing),
                     rendering=rendering,
@@ -190,12 +190,12 @@ def fetch_members(
                     on_progress=on_progress,
                 )
                 cached_data = None
-            with finishing(transport, poller, deadline) as (finisher, bound):
+            with finishing(transport, built, deadline) as (finisher, bound):
                 fetched.append(
                     finish_member(
                         finisher,
-                        manifest,
-                        trace_id,
+                        built.manifest,
+                        built.trace_id,
                         want=want,
                         rendering=rendering,
                         strict=strict,
@@ -222,7 +222,7 @@ def _build_latest(
     rendering: Rendering,
     deadline: float | None,
     on_progress: ProgressHook,
-) -> tuple[Wire, str | None, Poller | None]:
+) -> Built:
     """Build a spec's latest version, hinting a search when a member is gone."""
     try:
         return build_version(
@@ -435,22 +435,17 @@ def build_version(
     rendering: Rendering,
     deadline: float | None,
     on_progress: ProgressHook,
-) -> tuple[Wire, str | None, Poller | None]:
-    """Post a build of `rendering` and wait for its manifest, through a long
-    build if needed.
-
-    Returns the manifest, the trace id of the response that carried it, and the
-    long build's poller, or None for a build the server finished inline, for
-    `finishing` to download it under.
+) -> Built:
+    """Post a build of `rendering` and wait for it, through a long build if
+    needed, for `finishing` to download it under.
     """
     reply = post_build(transport, body, deadline=deadline)
     if reply.manifest is not None:
-        return reply.manifest, reply.trace_id, None
+        return Built(reply.manifest, reply.trace_id)
     poller = Poller(
         transport, reply, rendering=rendering, body=body, on_progress=on_progress
     )
-    manifest = poller.wait(deadline)
-    return manifest, poller.trace_id, poller
+    return poller.wait(deadline)
 
 
 def finish_member(

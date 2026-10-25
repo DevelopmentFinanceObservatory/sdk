@@ -629,6 +629,24 @@ async def test_a_download_failing_after_the_deadline_names_the_resuming_call(
     assert len(server.requests) == 3
 
 
+async def test_a_later_result_downloads_within_its_own_deadline() -> None:
+    # The first call's poll at its deadline reads the build done and its
+    # download fails. The second call polls nothing, so the first call's
+    # one-attempt grace does not carry over and its download keeps to its own
+    # deadline.
+    timeline = Timeline()
+    slow = httpx2.ReadTimeout("slow")
+    server = Server(accepted(), done(), slow, slow)
+    async with make(server, timeline, timeout=30.0) as transport:
+        started = await mint(transport, spec())
+        for timeout in (1.0, 0.05):
+            with pytest.raises(DfoTimeoutError):
+                await started.result(timeout=timeout)
+    reads = [r.extensions["timeout"]["read"] for r in server.requests[2:]]
+    # One attempt of the client's timeout, then one bound by the 0.05 s left.
+    assert reads == [30.0, pytest.approx(0.05)]
+
+
 @pytest.mark.parametrize(
     ("options", "arguments"),
     [

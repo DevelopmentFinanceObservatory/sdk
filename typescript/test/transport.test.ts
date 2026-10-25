@@ -494,6 +494,42 @@ describe("keys", () => {
     );
   });
 
+  test("resolve the key again after a 401 whose body passed JSON_BODY_MAX_BYTES", async () => {
+    let calls = 0;
+    const { fetch, seen } = mockFetch(
+      () => new Response(new Uint8Array(JSON_BODY_MAX_BYTES + 1), { status: 401 }),
+      json({ ok: true }),
+    );
+    const apiKey = (): string => (calls++ === 0 ? "dfo_k_old" : "dfo_k_new");
+    const client = transport({ fetch, apiKey, onWarning: () => undefined });
+    assert.deepEqual((await client.request({ path: "/x" })).body, { ok: true });
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      seen.map((request) => request.headers.get("authorization")),
+      ["Bearer dfo_k_old", "Bearer dfo_k_new"],
+    );
+  });
+
+  test("raise a 401 whose body passed JSON_BODY_MAX_BYTES with the failed key lookup as its cause", async () => {
+    const lookupFailure = new Error("key store down");
+    let calls = 0;
+    const apiKey = (): string => {
+      if (calls++ > 0) throw lookupFailure;
+      return KEY;
+    };
+    const { fetch, seen } = mockFetch(
+      () => new Response(new Uint8Array(JSON_BODY_MAX_BYTES + 1), { status: 401 }),
+    );
+    const error = await transport({ fetch, apiKey })
+      .request({ path: "/x" })
+      .then(() => undefined)
+      .catch((e: unknown) => e);
+    assert.ok(error instanceof AuthenticationError);
+    assert.equal(error.code, "refusal_without_code");
+    assert.equal(error.cause, lookupFailure);
+    assert.equal(seen.length, 1);
+  });
+
   test("raise AuthenticationError on a 401 when the key stays the same", async () => {
     const { fetch, seen } = mockFetch(problem({ code: "key_invalid", status: 401 }));
     const client = transport({ fetch, apiKey: new ApiKey(KEY) });
@@ -1214,6 +1250,8 @@ describe("body limits", () => {
   for (const [status, name, retried] of [
     [503, "ServerError", true],
     [400, "InvalidRequestError", false],
+    // A static key resolves to itself again, so the 401 is not retried with a new key.
+    [401, "AuthenticationError", false],
   ] as const) {
     test(`raise a ${status} refusal past JSON_BODY_MAX_BYTES as its status does: retried ${retried}`, async () => {
       const { sleep, waits } = recordingSleep();
@@ -1223,7 +1261,7 @@ describe("body limits", () => {
           headers: { "retry-after": "1", "x-dfo-trace-id": "trace-big" },
         });
       const { fetch, seen } = mockFetch(oversized, json({ ok: true }));
-      const sent = transport({ fetch, sleep }).request({ path: "/x" });
+      const sent = transport({ fetch, sleep, apiKey: KEY }).request({ path: "/x" });
       if (retried) {
         assert.deepEqual((await sent).body, { ok: true });
         assert.deepEqual(waits, [1_000]);

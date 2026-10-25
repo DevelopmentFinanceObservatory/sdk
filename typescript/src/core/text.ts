@@ -35,7 +35,9 @@ export const printable = (text: string): string => text.replace(UNPRINTABLE, "")
 
 /** A pattern that matches `secret` with any run of the characters `printable` strips between
  *  its characters, so text whose every match is replaced holds no `secret` once `printable`
- *  has run on it either. */
+ *  has run on it either. Tab and line feed are visible whitespace that `printable` keeps, so a
+ *  key split by them shows as two pieces and is not matched. Redaction catches the copies the
+ *  text would display as the key. */
 export const secretPattern = (secret: string): RegExp =>
   new RegExp(
     Array.from(secret, (character) => character.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&")).join(

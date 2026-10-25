@@ -120,7 +120,10 @@ def redacted(text: str, key: str | None, /) -> str:
 
     A copy with characters inside it that `printable` drops counts too, since
     the text shown would join it back into the key. Text holding such a copy
-    comes back as `printable` gives it, with the copy replaced.
+    comes back as `printable` gives it, with the copy replaced. Tab and line
+    feed are visible whitespace that `printable` keeps, so a key split by them
+    shows as two pieces and stays as it is. Redaction catches the copies the
+    text would display as the key.
     """
     if not key:
         return text

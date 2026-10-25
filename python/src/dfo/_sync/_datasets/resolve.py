@@ -327,7 +327,7 @@ def _fetch_version(
                 return _stored(member, manifest, data)
 
     try:
-        manifest, trace_id, poller = build_version(
+        built = build_version(
             transport,
             build_body(member.spec, member.rendering),
             rendering=member.rendering,
@@ -338,14 +338,14 @@ def _fetch_version(
         refusal = refusal or error
         newest = _newest(transport, spec_id, member.rendering, deadline=deadline)
     else:
-        with describing(trace_id):
-            check_built(manifest, spec_id)
-        if manifest["content_version"] == version:
-            with finishing(transport, poller, deadline) as (finisher, bound):
+        with describing(built.trace_id):
+            check_built(built.manifest, spec_id)
+        if built.manifest["content_version"] == version:
+            with finishing(transport, built, deadline) as (finisher, bound):
                 fetched = finish_member(
                     finisher,
-                    manifest,
-                    trace_id,
+                    built.manifest,
+                    built.trace_id,
                     want=Reading(member.parts, member.spec, member.sentence),
                     rendering=member.rendering,
                     strict=strict,
@@ -355,7 +355,7 @@ def _fetch_version(
             if fetched.digest != member.digest:
                 warn(_digest_changed(member, fetched.digest))
             return fetched
-        newest = manifest["content_version"]
+        newest = built.manifest["content_version"]
     raise _unavailable(member, newest, refusal)
 
 

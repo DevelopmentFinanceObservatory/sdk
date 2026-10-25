@@ -156,6 +156,10 @@ export type SignedFetchOptions = CallOptions & {
 /** A response with its whole body, read under the attempt's limit. */
 type Received = { response: Response; body: Uint8Array<ArrayBuffer> };
 
+/** A response with its whole body, or with null for a refusal whose body passed
+ *  `JSON_BODY_MAX_BYTES`, so the refusal keeps its status. */
+type Attempted = { response: Response; body: Uint8Array<ArrayBuffer> | null };
+
 /** How long one attempt may run, and whether the call's deadline or the attempt's own timeout
  *  sets that. */
 type Limit = { ms: number; byDeadline: boolean };
@@ -588,6 +592,11 @@ const DEADLINE_PASSED = new WeakSet<DfoError>();
  *  attempt running past its own timeout. */
 export const passedDeadline = (error: DfoError): boolean => DEADLINE_PASSED.has(error);
 
+/** What a body that passed its limit of `maxBytes` decoded bytes from `url` says. */
+function tooLarge(url: URL, maxBytes: number): string {
+  return `The response from ${url.host} passed its limit of ${maxBytes} decoded bytes.`;
+}
+
 /** A refusal body as a problem document: the body parsed when it is a JSON object, whatever
  *  its media type, as a 2xx body is read; else undefined. */
 function problemBody(body: Uint8Array): Record<string, unknown> | undefined {
@@ -935,10 +944,10 @@ export class Transport {
       url,
       { ...options, maxBytes: options.maxBytes ?? DEFAULT_MAX_BYTES },
       { method: "GET", headers, redirect: follow ? "follow" : "manual" },
-      key,
     );
     if (outcome instanceof DfoError) throw outcome;
     const { response, body } = outcome;
+    if (body === null) throw this.#refusal(response, null, { method: "GET", url, key });
     const ended = response.url ? new URL(response.url) : url;
     if (follow && ended.origin !== this.baseUrl.origin && ended.origin !== STORAGE_ORIGIN) {
       throw clientError("contract_violation", {
@@ -990,12 +999,12 @@ export class Transport {
 
     for (let attempt = 0; ; attempt += 1) {
       const { headers, key } = await this.#headers(method, url, options);
-      const outcome = await this.#attempt(
-        url,
-        options,
-        { method, headers, redirect: "manual", ...(body === undefined ? {} : { body }) },
-        key,
-      );
+      const outcome = await this.#attempt(url, options, {
+        method,
+        headers,
+        redirect: "manual",
+        ...(body === undefined ? {} : { body }),
+      });
 
       let error: DfoError;
       if (outcome instanceof DfoError) {
@@ -1003,8 +1012,12 @@ export class Transport {
       } else {
         const { response, body } = outcome;
         this.#warnFromHeaders(response.headers, url, key);
-        if ((response.status >= 200 && response.status < 300) || isRedirect(response)) {
-          return { ...outcome, key, url };
+        // Only a refusal's body is null, so a 2xx or redirect always has one.
+        if (
+          body !== null &&
+          ((response.status >= 200 && response.status < 300) || isRedirect(response))
+        ) {
+          return { response, body, key, url };
         }
         if (response.status === 401 && !reauthenticated) {
           // The key is resolved again after a 401, and a different key gets one more try.
@@ -1207,19 +1220,13 @@ export class Transport {
    * clear returns as a retryable error: a network failure, or the attempt's own timeout. The
    * deadline passing returns a `DfoTimeoutError` that `passedDeadline` marks, which no retry
    * follows. A 2xx body past `maxBytes`, or a redirect's past `JSON_BODY_MAX_BYTES`, returns
-   * `response_too_large`, which no retry follows either. A refusal's body past
-   * `JSON_BODY_MAX_BYTES` returns `refusal_without_code`, of the class and retryable flag its
-   * status gives.
+   * `response_too_large`, which no retry follows either. A refusal whose body passes
+   * `JSON_BODY_MAX_BYTES` returns with a null body, so a 401 still resolves the key again.
    *
    * @throws {InvalidRequestError} The `fetch` option returned something that is not a Response
    *   (`invalid_argument`).
    */
-  async #attempt(
-    url: URL,
-    options: CallOptions,
-    init: RequestInit,
-    key: string | undefined,
-  ): Promise<Received | DfoError> {
+  async #attempt(url: URL, options: CallOptions, init: RequestInit): Promise<Attempted | DfoError> {
     const limit = this.#limit(url, options);
     const timer = Number.isFinite(limit.ms) ? AbortSignal.timeout(timerMs(limit.ms)) : undefined;
     const signals = [options.signal, timer].filter((signal) => signal !== undefined);
@@ -1231,20 +1238,15 @@ export class Transport {
           detail: "The fetch option returned something that is not a Response.",
         });
       }
-      const { status, headers } = response;
+      const { status } = response;
       const ok = status >= 200 && status < 300;
       const maxBytes = ok ? (options.maxBytes ?? JSON_BODY_MAX_BYTES) : JSON_BODY_MAX_BYTES;
       const body = await readWithin(response, maxBytes);
-      if (body !== null) return { response, body };
-      const detail = `The response from ${url.host} passed its limit of ${maxBytes} decoded bytes.`;
-      // A refusal too large to read is still a refusal. Its status gives the class and whether
-      // it is retried.
-      if (status < 400) return clientError("response_too_large", { status, detail });
-      return clientError("refusal_without_code", {
+      // A refusal too large to read is still a refusal, which `#refusal` raises by its status.
+      if (body !== null || status >= 400) return { response, body };
+      return clientError("response_too_large", {
         status,
-        detail: `HTTP ${status} with no refusal code: ${detail}`,
-        traceId: traceIdOf(headers, undefined, key),
-        retryAfterMs: retryAfterMs(headers) ?? null,
+        detail: tooLarge(url, maxBytes),
       });
     } catch (error) {
       if (error instanceof InvalidRequestError) throw error;
@@ -1278,16 +1280,27 @@ export class Transport {
    * The error a refusal stands for, read from its problem document when it carries one, as
    * `problemError` builds it. The body is read whatever its media type, and the key sent reads
    * as `[redacted]` in it. A 404 that matched no route, `not_found` or no code, names the request
-   * in the message, since the base URL is the likely fault.
+   * in the message, since the base URL is the likely fault. A body that passed
+   * `JSON_BODY_MAX_BYTES`, read as null, raises `refusal_without_code`, of the class and
+   * retryable flag its status gives.
    */
   #refusal(
     response: Response,
-    received: Uint8Array,
+    received: Uint8Array | null,
     sent: { method: string; url: URL; key: string | undefined },
     cause?: unknown,
   ): DfoError {
-    const body = redacted(problemBody(received), sent.key);
     const { status } = response;
+    if (received === null) {
+      return clientError("refusal_without_code", {
+        status,
+        detail: `HTTP ${status} with no refusal code: ${tooLarge(sent.url, JSON_BODY_MAX_BYTES)}`,
+        traceId: traceIdOf(response.headers, undefined, sent.key),
+        retryAfterMs: retryAfterMs(response.headers) ?? null,
+        cause,
+      });
+    }
+    const body = redacted(problemBody(received), sent.key);
     return this.problemError(isRecord(body) ? body : null, {
       status,
       traceId: traceIdOf(response.headers, undefined, sent.key),

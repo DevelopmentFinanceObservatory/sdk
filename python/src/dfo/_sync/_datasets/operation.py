@@ -41,6 +41,8 @@ operation whose error's `status` is not an integer from 400 to 599, and a poll
 that answers for another operation each raise `contract_violation`.
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -291,7 +293,6 @@ class Poller:
         self._backoff_step = 0
         self._retries = 0
         self._resubmissions = 0
-        self._at_deadline = False
         self._poll_waits: list[float] = []
         self._take(reply)
 
@@ -311,19 +312,9 @@ class Poller:
         return None if self._state is None else self._state.progress
 
     @property
-    def trace_id(self) -> str | None:
-        """The trace id of the response the build was last read from."""
-        return self._trace_id
-
-    @property
     def poll_waits(self) -> tuple[float, ...]:
         """The waits taken before each poll, in seconds, in order."""
         return tuple(self._poll_waits)
-
-    @property
-    def at_deadline(self) -> bool:
-        """Whether the poll that found the build finished ran at the deadline."""
-        return self._at_deadline
 
     @property
     def resubmissions(self) -> int:
@@ -346,12 +337,13 @@ class Poller:
             self._poll(None)
         return self._finished()
 
-    def wait(self, deadline: float | None) -> Wire:
-        """Poll until the build is done and return its manifest.
+    def wait(self, deadline: float | None) -> Built:
+        """Poll until the build is done and return it.
 
         A wait that would pass `deadline` ends at it, and the poll after it runs
-        for one attempt of the transport's timeout. `at_deadline` says whether
-        that poll found the build finished.
+        for one attempt of the transport's timeout. The returned build's
+        `at_deadline` says whether that poll found the build finished. It is
+        False for a build already finished before this call.
 
         Raises:
             DfoTimeoutError: The poll at `deadline` read the build running, or
@@ -359,6 +351,7 @@ class Poller:
             DfoError: The build failed. A retryable failure the poll at
                 `deadline` reads raises as it is, with no resubmission.
         """
+        at_deadline = False
         while not self._finished():
             wait = self._next_wait()
             last = False
@@ -369,13 +362,13 @@ class Poller:
             self._poll_waits.append(wait)
             self._transport.sleep(wait)
             self._poll(deadline, last=last)
-            self._at_deadline = last
+            at_deadline = last
             if last and not self._finished():
                 raise self.resume_error("The build is still running at the deadline")
         if self._error is not None:
             raise self._error
         assert self._manifest is not None
-        return self._manifest
+        return Built(self._manifest, self._trace_id, self, at_deadline)
 
     def _finished(self) -> bool:
         return self._manifest is not None or self._error is not None
@@ -487,6 +480,26 @@ class Poller:
         self._take(post_build(self._transport, self._body, deadline=deadline))
 
 
+@dataclass(frozen=True, slots=True)
+class Built:
+    """A done build, as one call read it.
+
+    Attributes:
+        manifest: The build's manifest.
+        trace_id: The trace id of the response that carried the manifest.
+        poller: The long build's poller, or None for a build the server finished
+            inline.
+        at_deadline: Whether this call's poll at its deadline read the build
+            done, which leaves its download no time within that deadline. False
+            when an earlier poll, or an earlier call, read it.
+    """
+
+    manifest: Wire
+    trace_id: str | None
+    poller: Poller | None = None
+    at_deadline: bool = False
+
+
 class Operation:
     """A long dataset build, running on the server or already done.
 
@@ -554,12 +567,12 @@ class Operation:
         """
         deadline = self._transport.deadline(timeout)
         try:
-            manifest = self._poller.wait(deadline)
+            built = self._poller.wait(deadline)
         finally:
             if self._renderer is not None:
                 self._renderer.close()
-        with finishing(self._transport, self._poller, deadline) as (transport, bound):
-            return self._finish(transport, manifest, self._poller.trace_id, bound)
+        with finishing(self._transport, built, deadline) as (transport, bound):
+            return self._finish(transport, built.manifest, built.trace_id, bound)
 
     def __repr__(self) -> str:
         return f"<Operation {self.operation_id or 'inline'} {self.status}>"
@@ -567,21 +580,21 @@ class Operation:
 
 @contextmanager
 def finishing(
-    transport: Transport, poller: Poller | None, deadline: float | None
+    transport: Transport, built: Built, deadline: float | None
 ) -> Generator[tuple[Transport, float | None]]:
     """The transport and deadline that download a done build's data.
 
-    `poller` is the long build's, or None for a build the server finished
-    inline. A build the poll at the deadline read done finishes without the
+    A build this call's poll at its deadline read done finishes without the
     deadline, each request sent once for one attempt of the transport's timeout.
     A long build's finish that runs out of time raises `deadline_exceeded`
     naming the call that resumes it.
     """
+    poller = built.poller
     if poller is None or poller.operation_id is None:
         yield transport, deadline
         return
     try:
-        if poller.at_deadline:
+        if built.at_deadline:
             yield transport.single_attempt(), None
         else:
             yield transport, deadline

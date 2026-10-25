@@ -483,6 +483,30 @@ describe("a long build", () => {
     });
   }
 
+  test("gives a later result its own deadline after the deadline poll's download fails", async () => {
+    const { spec, manifest, parquet } = await built();
+    let tick: (ms: number) => void = () => undefined;
+    const { fetch, seen } = mockFetch(
+      json(operation("pending", { retry_after_ms: 60_000 }), 202),
+      json({ ...operation("done"), manifest }),
+      problem({ code: "build_capacity", status: 503, retryable: true }),
+      // The second call's files route answers once its 50 ms have passed.
+      () => {
+        tick(60);
+        return new Response(null, { status: 302, headers: { location: SIGNED } });
+      },
+      () => new Response(parquet.slice(), { status: 200 }),
+    );
+    const made = client(fetch);
+    tick = made.tick;
+    const started = await mint(made.transport, spec);
+    await assert.rejects(started.result({ timeout: 4000 }), { code: "build_capacity" });
+    // The second call polls nothing, so the first call's one-attempt grace does not carry over.
+    await assert.rejects(started.result({ timeout: 50 }), { code: "deadline_exceeded" });
+    // The signed URL, past the second call's deadline, is never requested.
+    assert.equal(seen.length, 4);
+  });
+
   test("strips controls from a failed operation's detail and links its code's page", async () => {
     const { fetch } = mockFetch(
       json({
