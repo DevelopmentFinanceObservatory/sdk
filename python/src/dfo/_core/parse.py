@@ -474,6 +474,7 @@ def _option(option: Wire) -> Option:
             if isinstance(mention, str)
         ),
         data_query=_object(option.get("data_query")),
+        entity_choice=_optional_index(option.get("entity_choice")),
     )
 
 
@@ -490,6 +491,13 @@ def _text(value: object) -> str:
 
 def _optional_text(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _optional_index(value: object) -> int | None:
+    """A non-negative JSON integer as an int, or None for any other value."""
+    if isinstance(value, int | float) and is_integer(value) and value >= 0:
+        return int(value)
+    return None
 
 
 def _object(value: object) -> Wire:

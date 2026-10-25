@@ -234,11 +234,17 @@ class Option:
         mentions: The question's words the choice settles.
         data_query: The parsed question with the choice pinned, posted back to
             Search unchanged.
+        entity_choice: For a choice of place, the index of the ambiguous wording
+            this option settles, shared by that wording's options and its sentence
+            slot. Two wordings can share one text, as "Congo" does in "aid from
+            Congo to Congo", so a menu groups options by this index. None for
+            any other option.
     """
 
     label: str
     mentions: tuple[str, ...]
     data_query: Mapping[str, Any] = field(repr=False, compare=False)
+    entity_choice: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

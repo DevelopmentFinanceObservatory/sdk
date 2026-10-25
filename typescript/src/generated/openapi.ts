@@ -1443,7 +1443,7 @@ export interface components {
       restatement?: components["schemas"]["ParsedPart"] | null;
       /**
        * Entity Refs
-       * @description the binding of each entity text of `restatement`, once per text in restatement order, so a client can tell which node a text such as 'G7' bound. A response field kept off `restatement`, which posts back unchanged. The binding is the one the answer reads: for a candidates part, the elected reading's; for a part folded into an earlier part's spec, its own. [] when `restatement` is null or names no entity
+       * @description the binding of each entity of `restatement`, one per restatement.entities row, in row order, so a client can tell which node a text such as 'G7' bound. A response field kept off `restatement`, which posts back unchanged. The binding is the one the answer reads: for a candidates part, the elected reading's; for a part folded into an earlier part's spec, its own. [] when `restatement` is null or names no entity
        */
       entity_refs?: components["schemas"]["EntityRefs"][];
       /**
@@ -2373,6 +2373,42 @@ export interface components {
       base_year?: number | null;
     };
     /**
+     * CountedEntityYearsModel
+     * @description The entities a conversion left rows out of, each with its years: how many, and the
+     *     first ten, sorted (`materialise.codes.CountedEntityYears`). The message states the count
+     *     and names none, so a reader labels the refs.
+     */
+    CountedEntityYearsModel: {
+      /**
+       * Count
+       * @description how many entities there are
+       */
+      count: number;
+      /**
+       * Entities
+       * @description the first ten of them, sorted
+       */
+      entities: components["schemas"]["EntityYearsModel"][];
+    };
+    /**
+     * CountedRefsModel
+     * @description The things of one kind a warning counts: how many, and the `dcid:` refs of the first
+     *     five, or ten for a conversion's left-out entities (`materialise.codes.CountedRefs`). The message states the count and names none, so a
+     *     reader labels the refs.
+     */
+    CountedRefsModel: {
+      /**
+       * Count
+       * @description how many there are
+       */
+      count: number;
+      /**
+       * Refs
+       * @description the `dcid:` refs of the first five of them, ten for omitted_entities: a group's members in request order, entities sorted
+       */
+      refs: string[];
+    };
+    /**
      * CountedStatVarModel
      * @description One side of a composed unit whose measure declares no unit, named by its StatVar.
      */
@@ -2961,7 +2997,7 @@ export interface components {
       restatement?: components["schemas"]["ParsedPart"] | null;
       /**
        * Entity Refs
-       * @description the binding of each entity text of `restatement`, once per text in restatement order, so a client can tell which node a text such as 'G7' bound. A response field kept off `restatement`, which posts back unchanged. The binding is the one the answer reads: for a candidates part, the elected reading's; for a part folded into an earlier part's spec, its own. [] when `restatement` is null or names no entity
+       * @description the binding of each entity of `restatement`, one per restatement.entities row, in row order, so a client can tell which node a text such as 'G7' bound. A response field kept off `restatement`, which posts back unchanged. The binding is the one the answer reads: for a candidates part, the elected reading's; for a part folded into an earlier part's spec, its own. [] when `restatement` is null or names no entity
        */
       entity_refs?: components["schemas"]["EntityRefs"][];
       /**
@@ -3523,12 +3559,12 @@ export interface components {
     };
     /**
      * EntityRefs
-     * @description The graph nodes one entity text of a part's restatement binds in the answer.
+     * @description The graph nodes one entity row of a part's restatement binds in the answer.
      */
     EntityRefs: {
       /**
        * Text
-       * @description the entity text, equal to some restatement.entities[i].text
+       * @description the entity text, equal to restatement.entities[i].text, where i is this entry's position in Part.entity_refs
        */
       text: string;
       /**
@@ -3536,6 +3572,23 @@ export interface components {
        * @description the refs the part's answer binds for `text`: a place gives its node; a group, continent or subregion bound as itself gives its own node, or the total its dataset publishes for it (G7 bound as GroupOfSeven); one bound as its members gives the set's own ref first (its node, else that total, else its registry id) and then the members, sorted. [] for an ambiguous text, one that resolved to no node or a node the answer does not bind, and every text of a part refused before its places were bound
        */
       refs: string[];
+    };
+    /**
+     * EntityYearsModel
+     * @description One entity a conversion left rows out of, and the years of those rows
+     *     (`materialise.codes.EntityYears`).
+     */
+    EntityYearsModel: {
+      /**
+       * Ref
+       * @description the entity's `dcid:` ref
+       */
+      ref: string;
+      /**
+       * Years
+       * @description the years left out, as runs of consecutive years, `1990-2001` or `2004`
+       */
+      years: string[];
     };
     /**
      * Exclusion
@@ -5041,6 +5094,11 @@ export interface components {
       label: string;
       /** @description a one-part parsed input settling this choice only. Post it unchanged as the input of /api/search/resolve; its one part is a dataset_resubmit parsed entry's part. A second ambiguous wording refuses again. Whether data exists for it is not checked */
       data_query: components["schemas"]["ParsedInput"];
+      /**
+       * Entity Choice
+       * @description for an entity_ambiguous option, the index into NoData.ambiguous_entities of the group this option settles; null on every other option. Two groups can share one wording ('aid from Congo to Congo' asks 'Congo' for each end), so a client groups an entity menu by this index, never by mentions, and joins it to the sentence slot token with the same entity_choice
+       */
+      entity_choice?: number | null;
     };
     /**
      * NoDataPart
@@ -5079,7 +5137,7 @@ export interface components {
       restatement?: components["schemas"]["ParsedPart"] | null;
       /**
        * Entity Refs
-       * @description the binding of each entity text of `restatement`, once per text in restatement order, so a client can tell which node a text such as 'G7' bound. A response field kept off `restatement`, which posts back unchanged. The binding is the one the answer reads: for a candidates part, the elected reading's; for a part folded into an earlier part's spec, its own. [] when `restatement` is null or names no entity
+       * @description the binding of each entity of `restatement`, one per restatement.entities row, in row order, so a client can tell which node a text such as 'G7' bound. A response field kept off `restatement`, which posts back unchanged. The binding is the one the answer reads: for a candidates part, the elected reading's; for a part folded into an earlier part's spec, its own. [] when `restatement` is null or names no entity
        */
       entity_refs?: components["schemas"]["EntityRefs"][];
       /**
@@ -5816,9 +5874,14 @@ export interface components {
     ParsedEntity: {
       /**
        * Text
-       * @description the entity's text as the caller identified it
+       * @description the entity's text as the caller identified it: the request's own words for it, which name resolution reads and a rendered sentence quotes
        */
       text: string;
+      /**
+       * Name
+       * @description the entity's name, when its words (`text`) could name more than one entity and no `dcid` pins it: the row's identity, which keys its role and members within the part. Name resolution reads `text` with `name` beside it, as the raw-text door reads a query's words beside the name extraction gave them, so two rows whose words are alike stay two entities. Words that differ from `name` only in case read as `name`, and one `name` posted with two texts that differ beyond case in a part refuses `request_invalid`. Without it, `text` is the identity; a `name` equal to `text` is the field left out, and a `name` beside a `dcid` is invalid. A row no dcid pins whose identity, its `name` or else its `text`, is a dcid another row of the part pins refuses `request_invalid` at the row
+       */
+      name?: string | null;
       /**
        * Role Text
        * @description the caller's free-form role hint for this entity, when available; recognised words (case-insensitive) are 'from'/'to' and synonyms such as donor/provider/funder/source/creditor/lender/exporter for the 'from' side, recipient/beneficiary/debtor/borrower/importer for the 'to' side -- unrecognised text warns role_text_not_recognised and the entity is treated as undirected
@@ -5826,12 +5889,12 @@ export interface components {
       role_text?: string | null;
       /**
        * Dcid
-       * @description an optional caller-pinned dcid for this entity, naming exactly which graph node `text` refers to -- the door a client with a candidate's dcid in hand (e.g. from NoData.ambiguous_entities) posts through, instead of relying on name resolution to disambiguate `text` on its own. When present, this entity's name resolution is skipped: the pinned dcid seeds the entry's pre_resolved map directly, still confirmed against the graph. An unconfirmable dcid (absent from the graph, or present but type-less) refuses invalid_role_ref (422). `text` stays required and is not re-derived from the dcid; it is still what a rendered sentence and any further restatement echo back.
+       * @description an optional caller-pinned dcid for this entity, naming exactly which graph node `text` refers to -- the door a client with a candidate's dcid in hand (e.g. from NoData.ambiguous_entities) posts through, instead of relying on name resolution to disambiguate `text` on its own. When present, this entity's name resolution is skipped: the pinned dcid seeds the entry's pre_resolved map directly, still confirmed against the graph. An unconfirmable dcid (absent from the graph, or present but type-less) refuses invalid_role_ref (422). `text` stays required and is not re-derived from the dcid; it is still what a rendered sentence and any further restatement echo back. The dcid is the row's identity, so rows pinning one dcid under different texts are one entity, whose words are the first row's. A row no dcid pins whose `name`, or else `text`, is this dcid refuses request_invalid at that row.
        */
       dcid?: string | null;
       /**
        * Members
-       * @description true asks for the members of the set `text` names, each as its own series: the countries of a continent or UN subregion, or the members of a group. It has no effect on a single place. Text whose wording names members, such as 'EU member states', reads as true without the flag. With a pinned `dcid` it is honoured for a continent or subregion that the membership policy holds or omits, whatever the node's graph type, and refuses request_invalid for a group's own node, whose members a pin cannot supply. One part names a set once: the same `text` posted with both values refuses request_invalid
+       * @description true asks for the members of the set `text` names, each as its own series: the countries of a continent or UN subregion, or the members of a group. It has no effect on a single place. Text whose wording names members, such as 'EU member states', reads as true without the flag. With a pinned `dcid` it is honoured for a continent or subregion that the membership policy holds or omits, whatever the node's graph type, and refuses request_invalid for a group's own node, whose members a pin cannot supply. One part names a set once: the same entity posted with both values refuses request_invalid
        */
       members?: boolean | null;
     };
@@ -6940,19 +7003,22 @@ export interface components {
      *     `query_text`, or from an admitted qualifier tie (see
      *     `_resolve_query_qualifiers`). `text` is the verbatim span of whichever
      *     source named it. `named` is every code row -- any system -- that span
-     *     names in the packaged index;
-     *     empty when the text names no code at all (a `no_vocabulary` term). `slot`
+     *     names in the packaged index, and every measure value it names that the
+     *     answer does not carry (a dcid of the index's measure values, such as
+     *     `amountMobilised`);
+     *     empty when the text names neither (a `no_vocabulary` term). `slot`
      *     is the constraint property dcid of the `slot_filters` entry whose
      *     binding consumed the term, or, on an `"unbound"` value the answer's shape
      *     has a slot for but leaves unmet, that slot's property; `None` otherwise.
      *     `disposition` is
      *     `"bound"` when some final binding on a named row's code system covers
-     *     it (that row or a descendant), `"unbound"` when a row was named but no
-     *     binding covers it, and `"no_vocabulary"` when the term names no code at
-     *     all: an LLM-reported phrase (`bind`'s own `unplaced` output) that no
-     *     taxonomy in this deployment's index can express, an exclusion or comparison
-     *     phrase (`"unsupported"`), or words beside no code the binder rated as not
-     *     stated on the elected shape (`"uncovered"`).
+     *     it (that row or a descendant), `"unbound"` when a code row was named but
+     *     no binding covers it or a measure value was named that the answer does not
+     *     carry, and `"no_vocabulary"` when the term names neither: an LLM-reported
+     *     phrase (`bind`'s own `unplaced` output) that no taxonomy in this
+     *     deployment's index can express, an exclusion or comparison phrase
+     *     (`"unsupported"`), or words beside no code the binder rated as not stated
+     *     on the elected shape (`"uncovered"`).
      *
      *     `start` and `end` locate the term in the part's variable phrase. `evidence` says what
      *     read it, and `None` means a code's label or synonym matched the term as the query
@@ -6965,10 +7031,14 @@ export interface components {
      *       (`phase_rank_bind._model_records`); `named` holds the chosen codes.
      *     - `"uncovered"` marks words no reader covers on the elected shape
      *       (`phase_rank_bind._coverage_records`). Beside a recognised code they are recorded
-     *       `"unbound"` with that code's rows as `named`. Beside no code they are recorded
-     *       `"no_vocabulary"` with `named` empty when the binder rates them below
-     *       `SearchSettings.stated_word_bar` as not stated by the shape's series; a word it rates
-     *       at the bar or above, or leaves unrated, reads as stated.
+     *       `"unbound"` with that code's rows as `named`. On a shape the measure index describes,
+     *       a word that every name of a measure value's reading holds names that value when no
+     *       span names it and the answer does not carry it, and its record adds the value to
+     *       `named`. Beside no code such a word is recorded `"unbound"` naming the value, whatever
+     *       the binder rates it; "mobilised" names `amountMobilised` on an amount series. Other
+     *       words beside no code are recorded `"no_vocabulary"` with `named` empty when the
+     *       binder rates them below `SearchSettings.stated_word_bar` as not stated by the shape's
+     *       series; a word it rates at the bar or above, or leaves unrated, reads as stated.
      *     - `"unavailable"` marks a code term the elected shape cannot apply: one naming only
      *       codes no shape can bind, or, on a part naming a dataset, one no row of that dataset
      *       holds (`phase_rank_bind._unavailable_qualifiers`), recorded `"unbound"`.
@@ -6987,7 +7057,7 @@ export interface components {
       text: string;
       /**
        * Named
-       * @description every code row the span names in the packaged index, any code system; empty when none did
+       * @description every code row the span names in the packaged index, any code system, and every measure value it names that the answer does not carry; empty when none did
        */
       named: components["schemas"]["GraphRef"][];
       /**
@@ -6997,7 +7067,7 @@ export interface components {
       slot?: string | null;
       /**
        * Disposition
-       * @description "bound" when a final binding covers a named row (or a descendant of one); "unbound" when a row was named but no binding covers it; "no_vocabulary" when the term names no code at all
+       * @description "bound" when a final binding covers a named row (or a descendant of one); "unbound" when a code row was named but no binding covers it, or a measure value was named that the answer does not carry; "no_vocabulary" when the term names neither
        */
       disposition: ("bound" | "unbound" | "no_vocabulary") | (string & {});
       /**
@@ -7012,7 +7082,7 @@ export interface components {
       end?: number | null;
       /**
        * Evidence
-       * @description what read the term: a code label or synonym, the bind model, "uncovered" for words no reader covers on the elected shape, unbound beside a recognised code and no_vocabulary beside none when the binder rated them as not stated by its series, "unavailable" for a code no table holds, "unsupported" for a distinction no binding expresses
+       * @description what read the term: a code label or synonym, the bind model, "uncovered" for words no reader covers on the elected shape, unbound beside a recognised code or naming a measure value the answer does not carry, and no_vocabulary beside none when the binder rated them as not stated by its series, "unavailable" for a code no table holds, "unsupported" for a distinction no binding expresses
        */
       evidence?:
         | (
@@ -7699,8 +7769,13 @@ export interface components {
        * @description the constraint property dcid this token renders, when one exists; null or omitted for property-less axes (when/source), for a shape-label fallback phrase with no backing slot, and for entity-role tokens with no backing where slot. Set on a 'destination' entity-role token when the shape declares a where slot backing that axis (e.g. dev-finance).
        */
       property_dcid?: string | null;
-      /** @description origin/destination when this token renders a directional entity role (the flow's two endpoints read back), or the directional scope an unbound where slot resolved to. entity_refs is the discriminator: non-empty on the entity read-back, empty on the unbound-where-slot fallback. binding_ref is not: an entity read-back carries binding_ref too whenever the shape declares a where slot backing the 'destination' axis (e.g. dev-finance), the same condition under which the unbound-where-slot fallback always carries it, so a present binding_ref value never separates the two. Both kinds join to the Spec.resolved.entity_options entry on the same role. A third token sits on an entity_ambiguous no_data plan, which has no Spec: the ambiguous wording, with the role the request gave it (null when it gave none), no entity_refs and no binding_ref, and text equal to one NoData.ambiguous_entities[i].text on the same part. The client titles that wording's candidate menu by this role and posts the pick's entry of NoData.options. */
+      /** @description origin/destination when this token renders a directional entity role (the flow's two endpoints read back), or the directional scope an unbound where slot resolved to. entity_refs is the discriminator: non-empty on the entity read-back, empty on the unbound-where-slot fallback. binding_ref is not: an entity read-back carries binding_ref too whenever the shape declares a where slot backing the 'destination' axis (e.g. dev-finance), the same condition under which the unbound-where-slot fallback always carries it, so a present binding_ref value never separates the two. Both kinds join to the Spec.resolved.entity_options entry on the same role. A third token sits on an entity_ambiguous no_data plan, which has no Spec: the ambiguous wording, with the role the request gave it (null when it gave none), no entity_refs and no binding_ref, and text equal to one NoData.ambiguous_entities[i].text on the same part, the i its entity_choice names. The client titles that wording's candidate menu by this role and posts the pick's entry of NoData.options. */
       role?: components["schemas"]["RoleAxis"] | null;
+      /**
+       * Entity Choice
+       * @description on the slot token an entity_ambiguous no_data plan marks for an ambiguous wording, the index into NoData.ambiguous_entities of the group it asks, on the part its part_index names in an envelope plan. The NoData.options with the same entity_choice form that slot's menu. Null on every other token
+       */
+      entity_choice?: number | null;
       /**
        * Binding Ref
        * @description join key correlating this token to its Spec.resolved.slots / SlotOptions entry: 'axis:property_dcid', i.e. SlotKey.as_ref() (matching Slot.key and SlotOptions.key). Set for a slot-backed token, and also for a 'destination' entity-role token when the shape declares a where slot backing that axis (e.g. dev-finance) -- see entity_refs for the entity side of that token. The byline's unit token carries 'unit:', which no slot backs; its options are the resolved.alternative_measures entries with axis 'unit'. The byline's method token carries 'method:', which no slot backs either. Null or omitted for plain connective text, a shape-label fallback phrase with no backing slot, and 'origin'/unbacked-'destination' entity-role tokens.
@@ -9235,7 +9310,7 @@ export interface components {
       restatement?: components["schemas"]["ParsedPart"] | null;
       /**
        * Entity Refs
-       * @description the binding of each entity text of `restatement`, once per text in restatement order, so a client can tell which node a text such as 'G7' bound. A response field kept off `restatement`, which posts back unchanged. The binding is the one the answer reads: for a candidates part, the elected reading's; for a part folded into an earlier part's spec, its own. [] when `restatement` is null or names no entity
+       * @description the binding of each entity of `restatement`, one per restatement.entities row, in row order, so a client can tell which node a text such as 'G7' bound. A response field kept off `restatement`, which posts back unchanged. The binding is the one the answer reads: for a candidates part, the elected reading's; for a part folded into an earlier part's spec, its own. [] when `restatement` is null or names no entity
        */
       entity_refs?: components["schemas"]["EntityRefs"][];
       /**
@@ -9387,8 +9462,9 @@ export interface components {
      * Warning
      * @description A run-health signal. Note: this name shadows the Python builtin Warning.
      *
-     *     Only `observations_series_truncated`, `elected_shape_no_data`, `un_system_unavailable`
-     *     and `whole_total_available` set `params`. A `None` `params` is left out of every dump, so other codes' warnings stay
+     *     Only `observations_series_truncated`, `elected_shape_no_data`, `un_system_unavailable`,
+     *     `whole_total_available`, `currency_unmapped_omitted` and `deflator_missing_omitted` set
+     *     `params`. A `None` `params` is left out of every dump, so other codes' warnings stay
      *     exactly `{code, severity, message}` plus `spec_id` where one applies.
      */
     Warning: {
@@ -9414,7 +9490,7 @@ export interface components {
       spec_id?: string | null;
       /**
        * Params
-       * @description the counts and labels the message states, for a client to compose its own text. observations_series_truncated: {shown, total, order}, the series shown, the confirmed series behind them, and how the shown series were chosen: 'ranked' (the most recent and largest) or 'fixed' (a selection made before values were read, not ranked by value). elected_shape_no_data: {no_data, elected}, the labels of the readings with no data and of the readings answered instead. un_system_unavailable: {places, variables, variable_labels}, the place dcids the UN front door refused, the variables of the UN reads that failed, each empty when none, and each variable's graph name, in variables order, '' where the graph holds none; a warning without params says the UN search itself was unavailable. whole_total_available: {total, total_label, whole_of}, the dcid and label of the total the source publishes for the side the answer lists member by member, and the classes of party it covers, comma-joined (official, private, residual). Omitted for every other code
+       * @description the counts and labels the message states, for a client to compose its own text. observations_series_truncated: {shown, total, order}, the series shown, the confirmed series behind them, and how the shown series were chosen: 'ranked' (the most recent and largest) or 'fixed' (a selection made before values were read, not ranked by value). elected_shape_no_data: {no_data, elected}, the labels of the readings with no data and of the readings answered instead. un_system_unavailable: {places, variables, variable_labels}, the place dcids the UN front door refused, the variables of the UN reads that failed, each empty when none, and each variable's graph name, in variables order, '' where the graph holds none; a warning without params says the UN search itself was unavailable. whole_total_available: {total, total_label, whole_of}, the dcid and label of the total the source publishes for the side the answer lists member by member, and the classes of party it covers, comma-joined (official, private, residual). currency_unmapped_omitted: {count, entities, entity_labels}, how many entities the conversion left out, the dcids of the first ten, sorted, and each one's name, in entities order, '' where the conversion tables hold none, which is usual here, since an entity no currency names, such as a regional aggregate, is rarely in those tables; its dcid stays in entities. deflator_missing_omitted: the same with entity_years, the years each entity's rows were left out, as runs of consecutive years ('1990-2001, 2004'), in entities order; a warning without params says the loaded tables cannot tell which entities. Omitted for every other code
        */
       params?: {
         [key: string]: number | string | string[];
@@ -9422,9 +9498,11 @@ export interface components {
     };
     /**
      * WarningModel
-     * @description One manifest warning. Only `stat_vars_summed` sets the three structured fields. A `None`
-     *     field is left out of every dump, so other codes' warnings, on the wire and in stored version
-     *     bodies, stay exactly `{code, severity, message}`.
+     * @description One manifest warning. Only `stat_vars_summed` sets its three structured fields, a
+     *     group's `coverage_below_scope` its three member fields, `coverage_below_scope`
+     *     `unserved_entities`, `currency_unmapped_omitted` `omitted_entities`, and
+     *     `deflator_missing_omitted` `omitted_entity_years`. A `None` field is left out of every dump, so other codes' warnings, on
+     *     the wire and in stored version bodies, stay exactly `{code, severity, message}`.
      */
     WarningModel: {
       /** Code */
@@ -9448,6 +9526,21 @@ export interface components {
        * @description stat_vars_summed only: the family's label, the string the presentation door gives `stat_var_ref` on a chart (`code_index.labels.family_label` over the spec identity: its measure partition label, then its bound slots' labels); absent when neither has a label
        */
       stat_var_label?: string | null;
+      /**
+       * Member Count
+       * @description coverage_below_scope only, when it names a group member: how many series the group requested
+       */
+      member_count?: number | null;
+      /** @description coverage_below_scope only: the group members holding observations in the requested years at another frequency than the group serves, which the figures leave out; absent when there are none */
+      off_cadence_members?: components["schemas"]["CountedRefsModel"] | null;
+      /** @description coverage_below_scope only: the group members holding no observation in the requested years; absent when there are none, and when the served provenance reads an absent member as zero */
+      out_of_window_members?: components["schemas"]["CountedRefsModel"] | null;
+      /** @description coverage_below_scope only: the entities the request binds that served no observation, sorted; absent when there are none */
+      unserved_entities?: components["schemas"]["CountedRefsModel"] | null;
+      /** @description currency_unmapped_omitted only: the entities whose rows the conversion left out, sorted */
+      omitted_entities?: components["schemas"]["CountedRefsModel"] | null;
+      /** @description deflator_missing_omitted only: the entities whose rows the conversion left out for a missing deflator, sorted, each with the years of those rows */
+      omitted_entity_years?: components["schemas"]["CountedEntityYearsModel"] | null;
     };
     /** WindowAll */
     WindowAll: {
@@ -12473,6 +12566,8 @@ export type ContinentNode = components["schemas"]["ContinentNode"];
 export type ContinentalUnionNode = components["schemas"]["ContinentalUnionNode"];
 export type ConversionCurrency = components["schemas"]["ConversionCurrency"];
 export type ConvertedUnitModel = components["schemas"]["ConvertedUnitModel"];
+export type CountedEntityYearsModel = components["schemas"]["CountedEntityYearsModel"];
+export type CountedRefsModel = components["schemas"]["CountedRefsModel"];
 export type CountedStatVarModel = components["schemas"]["CountedStatVarModel"];
 export type CountryNode = components["schemas"]["CountryNode"];
 export type Counts = components["schemas"]["Counts"];
@@ -12516,6 +12611,7 @@ export type EntityGroup = components["schemas"]["EntityGroup"];
 export type EntityOptions = components["schemas"]["EntityOptions"];
 export type EntityRef = components["schemas"]["EntityRef"];
 export type EntityRefs = components["schemas"]["EntityRefs"];
+export type EntityYearsModel = components["schemas"]["EntityYearsModel"];
 export type Exclusion = components["schemas"]["Exclusion"];
 export type Expansion = components["schemas"]["Expansion"];
 export type FacetItem = components["schemas"]["FacetItem"];

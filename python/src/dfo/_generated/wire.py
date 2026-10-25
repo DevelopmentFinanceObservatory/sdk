@@ -211,6 +211,11 @@ class ConvertedUnitModel(TypedDict):
     base_year: NotRequired[int | None]
 
 
+class CountedRefsModel(TypedDict):
+    count: int
+    refs: list[str]
+
+
 class CountedStatVarModel(TypedDict):
     stat_var: str
     label: str
@@ -397,6 +402,11 @@ class EntityRef(TypedDict):
 class EntityRefs(TypedDict):
     text: str
     refs: list[str]
+
+
+class EntityYearsModel(TypedDict):
+    ref: str
+    years: list[str]
 
 
 class Exclusion(TypedDict):
@@ -763,6 +773,7 @@ class OtherNode(TypedDict):
 
 class ParsedEntity(TypedDict):
     text: str
+    name: NotRequired[str | None]
     role_text: NotRequired[str | None]
     dcid: NotRequired[str | None]
     members: NotRequired[bool | None]
@@ -1034,6 +1045,7 @@ class SentenceToken(TypedDict):
     ]
     property_dcid: NotRequired[str | None]
     role: NotRequired[RoleAxis | None]
+    entity_choice: NotRequired[int | None]
     binding_ref: NotRequired[str | None]
     entity_refs: NotRequired[list[str]]
     states: NotRequired[list[str]]
@@ -1245,15 +1257,6 @@ class Warning(TypedDict):
     message: str
     spec_id: NotRequired[str | None]
     params: NotRequired[dict[str, int | str | list[str]] | None]
-
-
-class WarningModel(TypedDict):
-    code: str
-    severity: str
-    message: str
-    contributing_member_count: NotRequired[int | None]
-    stat_var_ref: NotRequired[str | None]
-    stat_var_label: NotRequired[str | None]
 
 
 class WindowAll(TypedDict):
@@ -1557,6 +1560,11 @@ class ConversionCurrency(TypedDict):
     constant_years: TimeWindow | None
     base_year_min: int | None
     base_year_max: int | None
+
+
+class CountedEntityYearsModel(TypedDict):
+    count: int
+    entities: list[EntityYearsModel]
 
 
 class Counts(TypedDict):
@@ -2168,6 +2176,21 @@ class VariableDefinition(TypedDict):
     source_indicator_codes: list[str]
     constraints: list[Constraint] | None
     definitions: list[DefinitionText]
+
+
+class WarningModel(TypedDict):
+    code: str
+    severity: str
+    message: str
+    contributing_member_count: NotRequired[int | None]
+    stat_var_ref: NotRequired[str | None]
+    stat_var_label: NotRequired[str | None]
+    member_count: NotRequired[int | None]
+    off_cadence_members: NotRequired[CountedRefsModel | None]
+    out_of_window_members: NotRequired[CountedRefsModel | None]
+    unserved_entities: NotRequired[CountedRefsModel | None]
+    omitted_entities: NotRequired[CountedRefsModel | None]
+    omitted_entity_years: NotRequired[CountedEntityYearsModel | None]
 
 
 class WriteReplyResponse(TypedDict):
@@ -2813,6 +2836,7 @@ class NoDataOption(TypedDict):
     mentions: list[str]
     label: str
     data_query: ParsedInput
+    entity_choice: NotRequired[int | None]
 
 
 class NodesResponse(TypedDict):
