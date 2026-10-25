@@ -13,8 +13,15 @@ const BASE = "https://api.example.org/api";
 
 /** The least of each lookup's body its schema requires. */
 const CATALOGUE = { catalogue_version: "c1", counts: {}, examples: [] };
-const NODE = { kind: "country", ref: "country/NGA" };
+const NODE = { kind: "country", ref: "country/NGA", types: [] };
 const ENTRY = { code: "spec_not_found", mappings: [] };
+const KENYA = {
+  input: "Kenya",
+  status: "resolved",
+  entity: { ref: "country/KEN", label: "Kenya", kind: "country" },
+  candidates: null,
+  near_matches: null,
+};
 
 function client(fetch: typeof globalThis.fetch, options: ClientOptions = {}): Client {
   return new Client({ baseUrl: BASE, apiKey: "dfo_k_test", fetch, ...options });
@@ -38,6 +45,53 @@ describe("lookups", () => {
     });
   });
 
+  test("lookup.resolve gives one match per name, in order, with the result as raw", async () => {
+    const germny = {
+      ...KENYA,
+      input: "Germny",
+      status: "not_found",
+      entity: null,
+      near_matches: [{ ref: "country/DEU", label: "Germany", kind: "country" }],
+    };
+    const { fetch } = mockFetch(json({ results: [KENYA, germny] }));
+    const [kenya, nearest] = await client(fetch).lookup.resolve(["Kenya", "Germny"]);
+    assert.deepEqual(
+      [kenya!.text, kenya!.status, kenya!.entity?.dcid, kenya!.entity?.name, kenya!.entity?.kind],
+      ["Kenya", "resolved", "country/KEN", "Kenya", "country"],
+    );
+    assert.deepEqual([kenya!.candidates, kenya!.nearMatches], [[], []]);
+    assert.equal(nearest!.entity, null);
+    assert.deepEqual(
+      nearest!.nearMatches.map((entity) => entity.dcid),
+      ["country/DEU"],
+    );
+    assert.deepEqual(nearest!.raw, germny);
+    assert.ok(
+      Object.isFrozen(kenya) &&
+        Object.isFrozen(kenya!.entity) &&
+        Object.isFrozen(kenya!.nearMatches),
+    );
+  });
+
+  test("lookup.node, code and catalogue read their fields and keep the body as raw", async () => {
+    const node = { ...NODE, label: "Nigeria", types: ["Country"], country: {} };
+    const entry = { ...ENTRY, definition: "No spec." };
+    const catalogue = { ...CATALOGUE, examples: [{ text: "GDP of Kenya", place: "country/KEN" }] };
+    const { fetch } = mockFetch(json(node), json(entry), json(catalogue));
+    const lookup = client(fetch).lookup;
+    const read = await lookup.node("country/NGA");
+    assert.deepEqual(
+      [read.dcid, read.name, read.kind, read.types],
+      ["country/NGA", "Nigeria", "country", ["Country"]],
+    );
+    assert.deepEqual(read.raw, node);
+    const code = await lookup.code("spec_not_found");
+    assert.deepEqual([code.code, code.definition], ["spec_not_found", "No spec."]);
+    const held = await lookup.catalogue();
+    assert.deepEqual([held.version, held.counts, held.examples], ["c1", {}, ["GDP of Kenya"]]);
+    assert.deepEqual(held.raw, catalogue);
+  });
+
   test("lookup.node keeps the dcid's slashes and sends as_of only when given", async () => {
     const { fetch, seen } = mockFetch(json(NODE), json(NODE));
     const lookup = client(fetch).lookup;
@@ -53,7 +107,7 @@ describe("lookups", () => {
       problem({ code: "code_not_found", status: 404 }),
     );
     const lookup = client(fetch).lookup;
-    assert.deepEqual(await lookup.code("spec_not_found"), ENTRY);
+    assert.deepEqual((await lookup.code("spec_not_found")).raw, ENTRY);
     assert.equal(seen[0]!.url, "https://api.example.org/codes/spec_not_found");
     await assert.rejects(lookup.code("nothing"), NotFoundError);
   });
@@ -131,7 +185,43 @@ describe("lookups", () => {
     ["lookup.code", (dfo: Client) => dfo.lookup.code("spec_not_found"), unknown200, "/code"],
     ["lookup.node", (dfo: Client) => dfo.lookup.node("country/NGA"), { code: "x" }, "/code"],
     ["lookup.node", (dfo: Client) => dfo.lookup.node("country/NGA"), { kind: 1 }, "/kind"],
+    [
+      "lookup.node",
+      (dfo: Client) => dfo.lookup.node("country/NGA"),
+      { ...NODE, types: null },
+      "/types",
+    ],
     ["lookup.resolve", (dfo: Client) => dfo.lookup.resolve("Kenya"), [], ""],
+    [
+      "lookup.resolve",
+      (dfo: Client) => dfo.lookup.resolve("Kenya"),
+      { results: [{ input: "Kenya" }] },
+      "/results/0/status",
+    ],
+    [
+      "lookup.resolve",
+      (dfo: Client) => dfo.lookup.resolve("Kenya"),
+      { results: [{ ...KENYA, entity: { label: "Kenya" } }] },
+      "/results/0/entity/ref",
+    ],
+    [
+      "lookup.resolve",
+      (dfo: Client) => dfo.lookup.resolve("Kenya"),
+      { results: [{ ...KENYA, candidates: "x" }] },
+      "/results/0/candidates",
+    ],
+    [
+      "lookup.resolve",
+      (dfo: Client) => dfo.lookup.resolve("Kenya"),
+      { results: [{ ...KENYA, near_matches: [{ ref: "x" }] }] },
+      "/results/0/near_matches/0/label",
+    ],
+    [
+      "lookup.catalogue",
+      (dfo: Client) => dfo.lookup.catalogue(),
+      { ...CATALOGUE, examples: [{}] },
+      "/examples/0/text",
+    ],
   ] as const) {
     test(`${name} refuses a 200 body ${JSON.stringify(body).slice(0, 20)} its schema does not fit`, async () => {
       const { fetch } = mockFetch(json(body, 200, { "x-dfo-trace-id": "trace-200" }));

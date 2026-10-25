@@ -245,35 +245,42 @@ console.log(data.sentence);
 
 ## Look up names and codes
 
-`client.lookup` resolves names to places, reads a place by its id, explains a server code, and lists what Search holds data on:
+`client.lookup` resolves names to graph nodes, reads a node by its id, explains a server code, and lists what Search holds data on. Each result prints as one line:
 
 ```text
-country/NGA not_found
-Nigeria [ 'Sub-Saharan Africa', 'Western Africa', 'Africa' ]
-The role is a real property, but the resolved StatVar does not declare it.
-7
+Kenya -> Kenya  country/KEN  (country)
+Congo -> ambiguous: Congo [DRC]  country/COD | Congo [Republic]  country/COG
+Germny -> not found; nearest: Germany  country/DEU
+not_found country/DEU
+Nigeria  country/NGA  (country)  types: Country [ 'Sub-Saharan Africa', 'Western Africa', 'Africa' ]
+role_incompatible: The role is a real property, but the resolved StatVar does not declare it.
+7 publishers, 12,437 variables; 5 example questions, such as "ODA to Nigeria since 2015"
+ODA to Nigeria since 2015
 ```
 
 ```ts
 import { Client } from "@developmentfinance/client";
 
 const client = new Client();
-const places = await client.lookup.resolve(["Nigeria", "Sahel"]);
-console.log(places.results[0]?.entity?.ref, places.results[1]?.status);
+for (const match of await client.lookup.resolve(["Kenya", "Congo", "Germny"])) {
+  console.log(`${match}`);
+}
+
+const [germny] = await client.lookup.resolve("Germny");
+console.log(germny?.status, germny?.nearMatches[0]?.dcid);
 
 const nigeria = await client.lookup.node("country/NGA");
-const regions = nigeria.kind === "country" ? nigeria.country.contained_in : [];
-console.log(
-  nigeria.label,
-  regions.map((region) => region.label),
-);
+const regions = nigeria.raw.kind === "country" ? nigeria.raw.country.contained_in : [];
+console.log(`${nigeria}`, regions.map((region) => region.label));
 
-const code = await client.lookup.code("role_incompatible");
-console.log(code.definition);
+console.log(`${await client.lookup.code("role_incompatible")}`);
 
 const catalogue = await client.lookup.catalogue({ place: "country/NGA" });
-console.log(catalogue.counts.publishers);
+console.log(`${catalogue}`);
+console.log(catalogue.examples[0]);
 ```
+
+`resolve` returns one `Match` per name, in order. A match holds the name as asked in `text`, its `status` (`resolved`, `ambiguous`, `not_found` or `not_held`), the node it resolved to in `entity`, the nodes an ambiguous name may mean in `candidates`, and names close to one in `nearMatches`. Each node is an `Entity` with a `dcid`, a `name` and a `kind`. `node` returns a `Node` with `dcid`, `name`, `kind` and `types`, `code` a `Code` with `code` and `definition`, and `catalogue` a `Catalogue` with its `version`, `counts` and example questions in `examples`. Every result keeps what the server sent for it in `raw`, which holds the country's regions above.
 
 ## Errors
 

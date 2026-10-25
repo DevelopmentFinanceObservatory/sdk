@@ -188,21 +188,20 @@ Answer JSON that comes back from a browser can carry any reading, and its build 
 
 ## Look up a place code
 
-`dfo.lookup.resolve` turns names into the codes `entities` takes. A name that matches several places lists them:
+`dfo.lookup.resolve` turns names into the codes `entities` takes. It returns one `Match` per name, which prints what the name resolved to. A name that matches several places lists them, and a misspelt name names the nearest:
 
 ```python
-found = dfo.lookup.resolve("Nigeria", "Ghana", "Congo")
-for result in found["results"]:
-    print(result["input"], result["status"], result["entity"] or result["candidates"])
+for match in dfo.lookup.resolve("Nigeria", "Congo", "Germny"):
+    print(match)
 ```
 
 ```text
-Nigeria resolved {'ref': 'country/NGA', 'label': 'Nigeria', 'kind': 'country'}
-Ghana resolved {'ref': 'country/GHA', 'label': 'Ghana', 'kind': 'country'}
-Congo ambiguous [{'ref': 'country/COD', 'label': 'Congo [DRC]', 'kind': 'country'}, {'ref': 'country/COG', 'label': 'Congo [Republic]', 'kind': 'country'}]
+Nigeria -> Nigeria  country/NGA  (country)
+Congo -> ambiguous: Congo [DRC]  country/COD | Congo [Republic]  country/COG
+Germny -> not found; nearest: Germany  country/DEU
 ```
 
-`dfo.lookup.node("country/NGA")` returns one place with the regions it belongs to, `dfo.lookup.code("spec_not_found")` explains a code from an error, and `dfo.lookup.catalogue()` lists what Search holds data on, with example questions.
+`match.entity.dcid` holds the code of a resolved name, `match.candidates` the places an ambiguous one could mean, and `match.near_matches` the nearest spellings. `match.raw` keeps the server's result. `dfo.lookup.node("country/NGA")` returns one place, with the regions it belongs to in `node.raw`, `dfo.lookup.code("spec_not_found")` explains a code from an error, and `dfo.lookup.catalogue()` lists what Search holds data on, with example questions. The result types live in `dfo.types`.
 
 ## Settings, keys and errors
 

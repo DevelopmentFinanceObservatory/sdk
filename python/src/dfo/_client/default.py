@@ -22,15 +22,11 @@ from datetime import date
 from os import PathLike
 
 from dfo._config.keys import ApiKeyArgument
+from dfo._core.lookup_results import Catalogue, Code, Match, Node
 from dfo._core.refs import DatasetRef
-from dfo._core.types import Layout, Node, Spec, Window
+from dfo._core.types import Layout, Spec, Window
 from dfo._datasets.dataset import Dataset
-from dfo._generated.wire import (
-    CatalogueResponse,
-    CodeRegistryEntry,
-    ResolveKind,
-    ResolveResponse,
-)
+from dfo._generated.wire import ResolveKind
 from dfo._http.hooks import HeaderProvider
 from dfo._search.answer import SEARCH_TIMEOUT
 from dfo._sync._client.client import Client
@@ -198,7 +194,7 @@ def resolve(
     kinds: Sequence[ResolveKind] | None = None,
     code_system: str | None = None,
     expand_members: bool = False,
-) -> ResolveResponse:
+) -> list[Match]:
     """Resolve names, such as "Nigeria" or "Sahel", to graph nodes, with the
     default client.
 
@@ -226,7 +222,7 @@ def node(dcid: str, /, *, as_of: date | None = None) -> Node:
     return default_client().lookup.node(dcid, as_of=as_of)
 
 
-def code(code: str, /) -> CodeRegistryEntry:
+def code(code: str, /) -> Code:
     """The registry entry for one code, such as `spec_not_found`, with the
     default client.
 
@@ -238,7 +234,7 @@ def code(code: str, /) -> CodeRegistryEntry:
     return default_client().lookup.code(code)
 
 
-def catalogue(*, place: str | None = None) -> CatalogueResponse:
+def catalogue(*, place: str | None = None) -> Catalogue:
     """What Search holds data on, counts and example questions, with the default
     client.
 

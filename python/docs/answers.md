@@ -241,15 +241,19 @@ Search declined the question: it asks for an argument and names no data to show.
 
 ```python
 catalogue = dfo.lookup.catalogue(place="country/KEN")
-for example in catalogue["examples"][:3]:
-    print(example["text"])
+print(catalogue)
+for question in catalogue.examples[:3]:
+    print(question)
 ```
 
 ```text
+7 publishers, 13,847 variables; 5 example questions, such as "ODA to Kenya since 2015"
 ODA to Kenya since 2015
 Emergency response aid to Kenya
 PPG external debt service of Kenya
 ```
+
+`catalogue.counts` holds the counts, aid flows included, and `catalogue.raw` the variable and place behind each example.
 
 ## Gap kinds
 

@@ -758,7 +758,7 @@ class RawResponse:
         return loads(self.content)
 
 
-type Node = (
+type GraphNode = (
     StatVarNode
     | CodeSystemNode
     | CodeNode
@@ -776,4 +776,4 @@ type Node = (
     | ProvenanceNode
     | OtherNode
 )
-"""One graph node, told apart by its `kind`."""
+"""One graph node as the server sends it, told apart by its `kind`."""

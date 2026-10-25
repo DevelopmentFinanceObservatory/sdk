@@ -23,6 +23,7 @@ from dfo._core.errors import (
     RateLimitError,
     ServerError,
 )
+from dfo._core.lookup_results import Catalogue, Code, Entity, Match, Node
 from dfo._core.refs import DatasetRef, RefMember
 from dfo._core.types import Rendering, Spec
 from dfo._datasets.cache import Cache
@@ -317,6 +318,17 @@ CATALOGUE = {"catalogue_version": "v1", "counts": {}, "examples": []}
     [
         ("resolve", [], ""),
         ("resolve", {"results": {}}, "/results"),
+        ("resolve", {"results": [{"status": "resolved"}]}, "/results/0/input"),
+        (
+            "resolve",
+            {"results": [{"input": "Nigeria", "status": "resolved", "entity": {}}]},
+            "/results/0/entity/ref",
+        ),
+        (
+            "resolve",
+            {"results": [{"input": "x", "status": "not_found", "near_matches": [1]}]},
+            "/results/0/near_matches/0",
+        ),
         ("node", {"kind": 1, "ref": "country/NGA"}, "/kind"),
         ("node", {"kind": "country"}, "/ref"),
         ("code", None, ""),
@@ -339,12 +351,39 @@ def test_a_lookup_refuses_a_body_its_schema_does_not_fit(
     )
 
 
+NIGERIA = {"ref": "country/NGA", "label": "Nigeria", "kind": "country"}
+RESOLVED = {
+    "results": [
+        {"input": "Nigeria", "status": "resolved", "entity": NIGERIA},
+        {
+            "input": "Nigria",
+            "status": "not_found",
+            "entity": None,
+            "candidates": None,
+            "near_matches": [NIGERIA],
+        },
+    ]
+}
+NODE = {
+    "ref": "country/NGA",
+    "label": "Nigeria",
+    "kind": "country",
+    "types": ["Country"],
+}
+ENTRY = {"code": "spec_not_found", "definition": "No such spec.", "mappings": []}
+PLACE_CATALOGUE = {
+    "catalogue_version": "v1",
+    "counts": {"publishers": 7, "variables": 13847, "aid": {}},
+    "examples": [{"text": "ODA to Nigeria since 2015"}, {"template": "x"}],
+}
+
+
 def test_lookups_reach_the_graph_the_registry_and_the_catalogue() -> None:
     server = Server(
-        json_response(200, {"results": []}),
-        json_response(200, {"ref": "country/NGA", "kind": "country"}),
-        json_response(200, {"code": "spec_not_found", "mappings": []}),
-        json_response(200, CATALOGUE),
+        json_response(200, RESOLVED),
+        json_response(200, NODE),
+        json_response(200, ENTRY),
+        json_response(200, PLACE_CATALOGUE),
     )
     with client_over(server) as client:
         resolved = client.lookup.resolve(
@@ -353,12 +392,19 @@ def test_lookups_reach_the_graph_the_registry_and_the_catalogue() -> None:
         node = client.lookup.node("country/NGA", as_of=date(2026, 1, 31))
         entry = client.lookup.code("spec_not_found")
         catalogue = client.lookup.catalogue(place="country/NGA")
-    assert (resolved, node["ref"], entry["code"], catalogue) == (
-        {"results": []},
-        "country/NGA",
-        "spec_not_found",
-        CATALOGUE,
+    nigeria = Entity("country/NGA", "Nigeria", "country")
+    assert resolved == [
+        Match("Nigeria", "resolved", nigeria, (), (), RESOLVED["results"][0]),
+        Match("Nigria", "not_found", None, (), (nigeria,), RESOLVED["results"][1]),
+    ]
+    assert [match.raw for match in resolved] == RESOLVED["results"]
+    assert node == Node("country/NGA", "Nigeria", "country", ("Country",), NODE)
+    assert entry == Code("spec_not_found", "No such spec.", ENTRY)
+    # An example without its text is left out.
+    assert catalogue == Catalogue(
+        "v1", PLACE_CATALOGUE["counts"], ("ODA to Nigeria since 2015",), PLACE_CATALOGUE
     )
+    assert (node.raw, entry.raw, catalogue.raw) == (NODE, ENTRY, PLACE_CATALOGUE)
     assert [str(request.url) for request in server.requests] == [
         f"{BASE}/graph/resolve",
         f"{BASE}/graph/node/country/NGA?as_of=2026-01-31",

@@ -53,6 +53,7 @@ export type {
   DepartureCode,
   Diagnostics,
   EntityGroup,
+  EntityRef,
   KnownPart,
   NoDataPart,
   NoDataReason,
@@ -64,6 +65,7 @@ export type {
   ResolvedSpec,
   ResolveKind,
   ResolveResponse,
+  ResolveResult,
   Severity,
   UnknownPart,
   UnsupportedPart,
@@ -83,11 +85,12 @@ export type { ApiKeyOption } from "./config/keys.ts";
 export { Lookup } from "./search/lookups.ts";
 export type {
   CatalogueOptions,
-  GraphNode,
   LookupOptions,
   NodeOptions,
   ResolveOptions,
 } from "./search/lookups.ts";
+export { Catalogue, Code, Entity, Match, Node } from "./search/lookup-results.ts";
+export type { GraphNode } from "./search/lookup-results.ts";
 export type { Progress, ProgressEvent, ProgressHandler } from "./datasets/operation.ts";
 export type { Row, Value } from "./datasets/parquet.ts";
 export { isKnownPart, PART_STATUSES } from "./core/parts.ts";

@@ -16,7 +16,7 @@ The first release of `development-finance`, the Python client for the Developmen
 - `data.to_pandas()`, `data.to_polars()` and `data.to_arrow()` convert a dataset, with pandas and polars as optional extras. `data.save(path)` writes a Parquet file that `dfo.load(path)` reads back.
 - `data.ref` names the exact versions a dataset holds. `dfo.fetch(data.ref)` reads them again, and `dfo.fetch(data.ref, latest=True)` builds the newest.
 - `answer.to_json()` and `Answer.from_json(text)` save an answer and restore it.
-- `dfo.lookup` resolves names to graph nodes, reads a node or a code's registry entry, and lists what Search holds data on.
+- `dfo.lookup` resolves names to graph nodes, reads a node or a code's registry entry, and lists what Search holds data on. Each returns a small type from `dfo.types` that prints one line, such as `Germny -> not found; nearest: Germany  country/DEU`, and keeps the server's JSON as `raw`.
 - `Client` and `AsyncClient` carry the same calls for one configuration each: `api_key`, `base_url`, `headers`, `header_provider`, `timeout`, `max_retries` and the cache. `dfo.configure` sets the client the module functions use.
 - The client works without a key under a per-IP quota. `dfo auth login` stores a key in a credentials file every DFO client reads, and `dfo auth status` prints the key the client sends, masked, and where its requests go. `DFO_API_KEY`, `DFO_PROFILE` and `DFO_BASE_URL` configure the client from the environment.
 - Downloads are cached on disk, verified against their digest, and readable offline with `DFO_OFFLINE=1`. `dfo cache clear` empties the cache.

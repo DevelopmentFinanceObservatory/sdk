@@ -8,6 +8,7 @@ import pytest
 
 import dfo
 from dfo._core.errors import DataWarning, DfoWarning, NotFoundError, SearchWarning
+from dfo._core.lookup_results import Catalogue, Code, Entity, Match, Node
 from dfo._core.parse import parse_parts
 from dfo._core.refs import DatasetRef, Member, RefMember
 from dfo._core.types import (
@@ -81,6 +82,25 @@ def _ref_member() -> object:
 
 
 _OPTION = Option("Congo [DRC]", ("Congo",), {})
+_GERMANY = Entity("country/DEU", "Germany", "country")
+_CONGO = Entity("country/COD", "Congo [DRC]", "country")
+
+
+def _match(
+    text: str,
+    status: str,
+    entity: Entity | None = None,
+    candidates: tuple[Entity, ...] = (),
+    near_matches: tuple[Entity, ...] = (),
+) -> Match:
+    return Match(text, status, entity, candidates, near_matches, {})
+
+
+def _catalogue(examples: tuple[str, ...]) -> Catalogue:
+    counts = {"publishers": 7, "variables": 13847, "aid": {}}
+    return Catalogue("v1", counts, examples, {})
+
+
 _EDUCATION = Notice("empty_result", "warn", "The frame holds zero observations.")
 
 # Each row builds the object and names what its repr must hold: the whole repr
@@ -213,6 +233,78 @@ ROWS: list[tuple[str, Callable[[], object], str, bool]] = [
         True,
     ),
     (
+        "entity",
+        lambda: Entity("country/KEN", "Kenya", "country"),
+        "Entity(Kenya  country/KEN  (country))",
+        True,
+    ),
+    (
+        "match-resolved",
+        lambda: _match(
+            "Georgia",
+            "resolved",
+            Entity("country/GEO", "Georgia", "country"),
+            near_matches=(Entity("geoId/13", "Georgia", "place_other"),),
+        ),
+        "Match(Georgia -> Georgia  country/GEO  (country)  +1 near match)",
+        True,
+    ),
+    (
+        "match-ambiguous",
+        lambda: _match("Congo", "ambiguous", candidates=(_CONGO,) * 4),
+        "Match(Congo -> ambiguous: Congo [DRC]  country/COD | Congo [DRC]  "
+        "country/COD | Congo [DRC]  country/COD | +1 more)",
+        True,
+    ),
+    (
+        "match-not-found",
+        lambda: _match("Germny", "not_found", near_matches=(_GERMANY,)),
+        "Match(Germny -> not found; nearest: Germany  country/DEU)",
+        True,
+    ),
+    (
+        "match-not-held",
+        lambda: _match("Sahel", "not_held"),
+        "Match(Sahel -> not held)",
+        True,
+    ),
+    (
+        "entity-unnamed",
+        lambda: Entity("geoId/13", None, None),
+        "Entity(geoId/13)",
+        True,
+    ),
+    ("code-undefined", lambda: Code("x_y", None, {}), "Code(x_y)", True),
+    (
+        "match-widest",
+        lambda: _match(
+            LONG,
+            "ambiguous",
+            candidates=(Entity("x/" + "y" * 80, LONG, "place_other"),) * 120,
+        ),
+        "Match(Kenya's percent",
+        False,
+    ),
+    (
+        "node",
+        lambda: Node("country/KEN", "Kenya", "country", ("Country",), {}),
+        "Node(Kenya  country/KEN  (country)  types: Country)",
+        True,
+    ),
+    (
+        "code",
+        lambda: Code("spec_not_found", "No definition is registered.", {}),
+        "Code(spec_not_found: No definition is registered.)",
+        True,
+    ),
+    (
+        "catalogue",
+        lambda: _catalogue(("ODA to Kenya since 2015",)),
+        'Catalogue(7 publishers, 13,847 variables; 1 example question, such as "ODA '
+        'to Kenya since 2015")',
+        True,
+    ),
+    (
         "error",
         lambda: NotFoundError("No entry.", code="code_not_found", trace_id="4f2a"),
         "NotFoundError('No entry. [code_not_found · trace 4f2a]')",
@@ -319,6 +411,20 @@ HOSTILE_ROWS: list[tuple[str, Callable[[], str], bool]] = [
     ("gap-no-options", lambda: repr(Gap(0, _HOSTILE_PART, "choice", HOSTILE)), False),
     ("citation", lambda: repr(Citation(HOSTILE)), False),
     (
+        "match",
+        lambda: str(
+            _match(
+                HOSTILE,
+                "not_found",
+                near_matches=(Entity(HOSTILE, HOSTILE, HOSTILE),),
+            )
+        ),
+        False,
+    ),
+    ("entity", lambda: repr(Entity(HOSTILE, HOSTILE, HOSTILE)), False),
+    ("code", lambda: str(Code(HOSTILE, HOSTILE, {})), False),
+    ("catalogue", lambda: str(_catalogue((HOSTILE,))), False),
+    (
         "citation-source",
         lambda: repr(CitationSource("x", HOSTILE, licence=HOSTILE)),
         False,
@@ -364,3 +470,9 @@ def test_server_text_reaches_a_display_without_control_characters(
     assert controls == set()
     # The server's text shows, its line break a space.
     assert "a[2Jbc d" in text
+
+
+def test_a_match_prints_the_line_its_repr_wraps() -> None:
+    match = _match("Germny", "not_found", near_matches=(_GERMANY,))
+    assert str(match) == "Germny -> not found; nearest: Germany  country/DEU"
+    assert repr(match) == f"Match({match})"
