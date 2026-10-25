@@ -14,7 +14,7 @@ Fetch once with the network, then set `DFO_OFFLINE=1`. A ref loads the exact ver
   Stale: read from the cache without asking for a newer version
   Keep: data.save(path) · newest later: dfo.fetch(data.ref, latest=True)>
 True True
-DFO_OFFLINE=1 is set, and POST https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app/api/search/resolve needs the network [offline]
+DFO_OFFLINE=1 is set, and POST https://developmentfinance.org/api/v1/search/resolve needs the network [offline]
 ```
 
 ```python

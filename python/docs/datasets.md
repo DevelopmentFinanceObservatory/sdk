@@ -2,7 +2,7 @@
 
 `dfo.fetch` builds a table and returns a `Dataset`: the rows, Search's sentence for them, the citation, and a ref that names the exact version you received. This page covers what comes after the search: narrowing a fetch, summing a column, moving the table into pandas, polars or Arrow, and keeping it so that a later run can tell whether the data changed.
 
-Each example on this page runs on its own.
+The blocks on this page run in order, as cells of one notebook.
 
 ## Fetch a spec, narrowed
 
@@ -40,7 +40,7 @@ print(data.to_pandas()[["time_period", "financingProvider_label", "value"]])
 
 Three arguments narrow a spec:
 
-- `window` takes `"all"`, `"latest"`, or a `(start_year, end_year)` pair.
+- `window` takes `"all"`, `"latest"`, or a `(start_year, end_year)` pair of years from 1000 to 2200; `(2020, 2020)` is one year.
 - `entities` binds roles to place dcids. The roles you name change, the spec's other roles keep their places, and a role set to None drops out. `spec.roles` lists the role keys a spec takes, each with the dcids it binds, or None for a role it leaves open. This spec binds only `destination`, so `origin` adds the two donors and Ethiopia stays the recipient. A key the spec does not take, such as the column name `financingProvider`, raises `InvalidRequestError` before any request, and the message lists the spec's roles.
 - `facets` binds the `provenance`, `measurementMethod` or `unit` axis to a ref. None picks the facets that declare no value on that axis.
 
@@ -110,6 +110,26 @@ import dfo
 data = dfo.search("ODA to Ethiopia from each donor in 2022").fetch()
 print(data.to_arrow().schema.names)
 ```
+
+## Get the pipeline frame
+
+`layout="frame"` returns the table the pipeline wrote, which has code columns and no label columns:
+
+```text
+frame 95
+['time_period', 'financingProvider', 'financingRecipient', 'value', 'unit', 'stat_var_dac2aAidType', 'provenance', 'measurementMethod', 'status', 'stat_var']
+```
+
+```python
+import dfo
+
+spec = dfo.search("ODA to Ethiopia from each donor in 2022").specs[0]
+frame = dfo.fetch(spec, layout="frame")
+print(frame.layout_version, len(frame))
+print(frame.to_arrow().schema.names)
+```
+
+A frame holds one reading. `answer.fetch(layout="frame")` on an answer with several readings raises `InvalidRequestError` with the code `invalid_argument`, so fetch each spec on its own.
 
 ## Convert to pandas, polars or Arrow
 
@@ -215,7 +235,7 @@ print(len(data))
 - `stale`: True when the rows came from the cache under `DFO_OFFLINE=1`.
 - `layout_version`: the column set, or `frame` for the pipeline frame that `layout="frame"` returns for one reading.
 
-`dfo.load` also opens a bundle downloaded from the website: the ZIP, the folder it extracts to, or its `datapackage.json`. It checks each file against its hash before it reads the data, and raises `dfo.errors.BundleError` when a file is missing or its bytes differ.
+`dfo.load` also opens a bundle downloaded from the website: the ZIP, the folder it extracts to, or its `datapackage.json`. It checks each file against its hash before it reads the data, and raises `dfo.errors.BundleError` when a file is missing or its bytes differ. `dfo.load(path, limits=dfo.types.BundleLimits(...))` changes the size bounds it enforces on a bundle.
 
 ## Next
 

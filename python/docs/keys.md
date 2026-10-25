@@ -166,7 +166,7 @@ The file lives at the first of:
 
 - `$DFO_CREDENTIALS_FILE`;
 - on Linux and macOS, `$XDG_CONFIG_HOME/dfo/credentials.toml`, else `~/.config/dfo/credentials.toml`;
-- on Windows, `%APPDATA%\dfo\credentials.toml`.
+- on Windows, `%APPDATA%\dfo\credentials.toml`, else `<home>\AppData\Roaming\dfo\credentials.toml`. Windows ignores `XDG_CONFIG_HOME`.
 
 Every DFO client reads the same file. It holds one table per profile, with a `key` line in each:
 

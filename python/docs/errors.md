@@ -74,7 +74,7 @@ A web service answers its own caller. A question the caller can rephrase is the 
 
 ```text
 (200, {'rows': 66})
-(422, {'error': 'answer_declined', 'message': 'Search declined the question: it asks for no published statistic about a place, a population or a financial flow. [answer_declined · trace 81207b5ac0c94ed39020d15d52a0fb8f]'})
+(422, {'error': 'answer_declined', 'message': 'Search declined the question: it asks for no published statistic about a place, a population or a financial flow.\n  Next: ask for a figure DFO publishes; dfo.lookup.catalogue() lists example questions.\n[answer_declined · trace 201b1583fbc045d08668fc45479e9d6b]'})
 ```
 
 ```python
@@ -202,11 +202,13 @@ An error the client raises before any request, such as `invalid_argument`, has a
 
 `NetworkError` is also a `ConnectionError`, and `DfoTimeoutError` a `TimeoutError`, so code that catches those keeps working.
 
-An `InvalidRequestError` from the server lists each member at fault in `issues` and what the server offers in its place:
+An `InvalidRequestError` from the server lists each member at fault in `issues`, and an issue carries what the server offers in its place under `alternatives`:
 
 ```text
-stat_var 'dcid:Amount_EconomicActivity_GrossDomesticProduction_Nominal' does not declare role 'origin'. The server offers observationAbout (observationAbout). [invalid_role_ref · trace 107e70b801e343edbfea89c936faee1c]
-origin [{'ref': 'observationAbout', 'label': 'observationAbout'}]
+one or more facet axes could not be resolved. The server offers USDollar (USDollar). [default_facet_undefined · trace d7c925bb9b19474f88e817b8b5097179]
+/facets/provenance None
+/facets/measurementMethod None
+/facets/unit [{'ref': 'USDollar', 'label': 'USDollar'}]
 ```
 
 ```python
@@ -215,11 +217,14 @@ from dfo.errors import InvalidRequestError
 
 spec = dfo.search("GDP of Kenya").specs[0]
 try:
-    dfo.fetch(spec, entities={"origin": ["country/DEU"]})
+    dfo.fetch(spec, facets={"unit": None})
 except InvalidRequestError as error:
     print(error)
-    print(error.issues[0]["member"], error.issues[0]["alternatives"])
+    for issue in error.issues:
+        print(issue["pointer"], issue.get("alternatives"))
 ```
+
+The client refuses a role the spec does not declare before any request, as `invalid_argument` with no issues: `entities names "origin", a role the spec does not declare; its roles are observationAbout. [invalid_argument]`.
 
 ## Reference
 
@@ -238,7 +243,7 @@ except InvalidRequestError as error:
 
 Four classes carry more:
 
-- `InvalidRequestError.issues` holds the problem document's `issues`, each a `dfo.errors.ProblemIssue` naming a request member, and `.alternatives` the `dfo.errors.Alternative` values the server offers. Both are empty tuples when the server sent none.
+- `InvalidRequestError.issues` holds the problem document's `issues`, each a `dfo.errors.ProblemIssue` naming a request member, and `.alternatives` the problem document's top-level `alternatives`, each a `dfo.errors.Alternative`. An issue's own offers sit in `issue["alternatives"]`. Both tuples are empty when the server sent none.
 - `IncompleteAnswerError.answer` is the answer whose fetch raised it, or None for a server refusal, and `.gaps` lists each part without a reading.
 - `VersionUnavailableError.newest_version` is the newest version the server names, or None. A ref cut with `party_totals` has a version of its own, so compare refs to tell whether data changed.
 - `ContractError.pointer` is the JSON Pointer of the member at fault, or None.
@@ -292,7 +297,7 @@ The client raises these codes itself, for a fault it finds before a request or i
 
 ### Errors outside DfoError
 
-Two errors in `dfo.errors` concern files and text on your side and derive from `ValueError`. `FormatError` means `DatasetRef.from_json` or `dfo.load` read JSON that breaks its format, with `reason` and a `pointer` to the bad value. `BundleError` means `dfo.load` found no saved dataset at the path, with `reason` naming why.
+Two errors in `dfo.errors` concern files and text on your side and derive from `ValueError`. `FormatError` means `DatasetRef.from_json` or `dfo.load` read JSON that breaks its format, with `reason` and a `pointer` to the bad value. `BundleError` means `dfo.load` opened a file or folder that is not a saved dataset or a complete bundle, with `reason` naming why. A path that does not exist raises `FileNotFoundError`.
 
 ```python
 import dfo

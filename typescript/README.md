@@ -6,7 +6,7 @@ Ask the Development Finance Observatory a question in words and get the data tha
 npm install @developmentfinance/client
 ```
 
-The package is ESM only. Everything imports from the package root except `toArrow`, which comes from `@developmentfinance/client/arrow`. It runs on Node 22.18 and later, Bun, Deno, Workers and browsers. `toArrow` needs the optional `apache-arrow` package (`npm install apache-arrow`).
+The package is ESM only. Everything imports from the package root except `toArrow`, which comes from `@developmentfinance/client/arrow`, and the generated wire types in `@developmentfinance/client/wire`. It runs on Node 22.18 and later, Bun, Deno, Workers and browsers. The API's CORS admits only the origins it lists, so a page on another origin calls your own server route, or a same-origin proxy of the API with `baseUrl: "/api/v1"`. `toArrow` needs the optional `apache-arrow` package (`npm install apache-arrow`).
 
 ## Ask a question and get the data
 
@@ -95,10 +95,12 @@ console.log(ghana.sentence);
 console.log(ghana.rowCount);
 ```
 
-- `window` is `"all"`, `"latest"` or `[startYear, endYear]`.
+- `window` is `"all"`, `"latest"` or `[startYear, endYear]`, with years from 1000 to 2200. One year is `[2020, 2020]`.
 - `entities` rebinds a role by the key the spec uses, here `origin` and `destination`. `specRoles(spec)` lists the keys, each with the dcids it binds, or `null` for a flow direction it binds none of. A role you leave out keeps its places, and `null` unbinds one. A key the spec does not take, such as the column name `financingRecipient`, raises `InvalidRequestError` with `invalid_argument` and the spec's roles, before any request.
 - `facets` binds an axis, such as `{ provenance: "provenance/OECDCreditorReportingSystem" }`.
 - `partyTotals: true` keeps the rows of totals such as "DAC countries" beside their members. They are left out by default, so a sum over `value` counts each flow once.
+
+`layout: "frame"` returns the table the pipeline wrote for one reading, with code columns and no label columns; on an answer with several readings it raises `invalid_argument`. `data.memberBytes(index)` returns one member's Parquet file as the server wrote it.
 
 `answer.fetch` takes the same `window`, `entities` and `facets` and narrows every reading, as `answer.fetch({ window: [2015, 2020] })`. A role that one reading does not take is refused before any request, with each reading's roles.
 
@@ -123,7 +125,7 @@ console.log(members.rowCount, withTotals.rowCount);
 
 ## Stop a call
 
-Every call that goes to the server takes a `signal` and a `timeout` in milliseconds. `search` stops after 60 seconds by default. `fetch` waits as long as the build takes, showing progress to `onProgress`, unless you give it a `timeout`.
+Every call that goes to the server takes a `signal` and a `timeout` in milliseconds. For `search` and `fetch` the `timeout` bounds the whole call, and `search` stops after 60 seconds by default. For a lookup or `client.request` it bounds one attempt, which is retried up to `maxRetries` times. `fetch` waits as long as the build takes, showing progress to `onProgress`, unless you give it a `timeout`.
 
 ```text
 TimeoutError
@@ -284,7 +286,7 @@ console.log(catalogue.examples[0]);
 
 ## Errors
 
-A refusal, a failed connection, a passed deadline or a response the client cannot read raises a `DfoError`. Its message ends with the code and the trace id, `[code · trace id]`, which is what to quote when you report a fault:
+A refusal, a failed connection, a passed deadline or a response the client cannot read raises a `DfoError`. Its message ends with the code, and with the trace id when there is one, `[code · trace id]`. Quote both when you report a fault:
 
 ```text
 NotFoundError code_not_found
@@ -310,7 +312,7 @@ Branch on the class, or on `error.code` for one case. Each error also carries `s
 | ------------------------- | ----------------------------------------------------------------------------- |
 | `InvalidRequestError`     | An argument breaks a rule; `issues` and `alternatives` name the valid values  |
 | `IncompleteAnswerError`   | You fetch an answer with a part that has no reading; `gaps` lists them        |
-| `DeclinedError`           | You fetch an answer Search declined; `answer.reason` says why                 |
+| `DeclinedError`           | You fetch an answer Search declined or answered with the catalogue; `answer.reason` says why a decline happened |
 | `NotFoundError`           | A spec, place, code or version is unknown                                     |
 | `VersionUnavailableError` | A ref's version can no longer be built; `newestVersion` names the current one |
 | `AuthenticationError`     | The key is malformed, unknown, revoked or expired, or the credentials file is broken |
@@ -319,22 +321,24 @@ Branch on the class, or on `error.code` for one case. Each error also carries `s
 | `QuotaExceededError`      | The key's quota is spent                                                      |
 | `DfoTimeoutError`         | A `timeout` passed (`deadline_exceeded`)                                      |
 | `NetworkError`            | The connection failed                                                         |
-| `ServerError`             | The server failed; retried before you see it                                  |
+| `ServerError`             | The server failed or a download did not verify; a retryable failure is retried before you see it |
 | `ContractError`           | A response the client cannot act on; upgrade the package                      |
 
 `client.lookup.code(code)` explains a code the server sends. The client raises these itself: `answer_declined`, `answer_incomplete`, `base_url_invalid`, `choice_invalid`, `contract_violation`, `credentials_file_invalid`, `credentials_file_unreadable`, `deadline_exceeded`, `digest_mismatch`, `download_failed`, `header_invalid`, `insecure_transport`, `invalid_argument`, `key_empty`, `key_invalid`, `network_error`, `offline`, `profile_not_found`, `profile_without_key`, `refusal_without_code`, `response_too_large`, `unexpected_response` and `version_unavailable`.
 
-Some faults raise other errors. An aborted call rejects with its signal's `reason`. A `strict` fetch throws its first `SearchWarning` or `DataWarning` in place of passing it to `onWarning`. `DatasetRef.fromJSON` and `Answer.fromJSON` throw a `FormatError` for JSON in the wrong format, and `new Client()` throws a `TypeError` for a secret key in a browser.
+Some faults raise other errors. An aborted call rejects with its signal's `reason`. A `strict` fetch throws its first `SearchWarning` or `DataWarning` in place of passing it to `onWarning`. `DatasetRef.fromJSON` and `Answer.fromJSON` throw a `FormatError` for JSON in the wrong format, and in a browser `new Client()` throws a `TypeError` for a secret key from `apiKey`, as the first request does for one in `headers` or from `headerProvider`.
 
 ## Use it in a web app
 
 Run the client on your server and keep the key there. [Use it in a web app](docs/web-apps.md) builds a route that answers a question from a page, streams build progress as NDJSON, stops under the platform's time limit, and joins the build when the page posts again.
 
-A page can also call the API itself with a publishable `dfo_p_` key. In a browser page or worker the client refuses a secret `dfo_k_` key, which every visitor could read, with a `TypeError`.
+A page on an origin the API's CORS lists can call the API itself with a publishable `dfo_p_` key. A page on any other origin calls your server route, or a proxy of the API on its own origin with `new Client({ baseUrl: "/api/v1" })`. In a browser page or worker the client refuses a secret `dfo_k_` key, which every visitor could read, with a `TypeError`.
 
 ## Keys and base URL
 
-`new Client()` reads `DFO_BASE_URL` for the API, else uses `https://developmentfinance.org/api/v1`. It takes the first key it finds: the `apiKey` option, the `DFO_API_KEY` environment variable, then the credentials file that the Python client's `dfo auth login` writes (`~/.config/dfo/credentials.toml`, or the file `DFO_CREDENTIALS_FILE` names), read on Node only. Without one it calls the API anonymously.
+`new Client()` takes the API from the `baseUrl` option, else `DFO_BASE_URL`, else uses `https://developmentfinance.org/api/v1`. In a page, a relative `baseUrl` such as `/api/v1` resolves against the page. It takes the first key it finds: the `apiKey` option, the `DFO_API_KEY` environment variable, then the credentials file that the Python client's `dfo auth login` writes, read on Node only. The file is the one `DFO_CREDENTIALS_FILE` names, else `$XDG_CONFIG_HOME/dfo/credentials.toml` or `~/.config/dfo/credentials.toml`, and on Windows `%APPDATA%\dfo\credentials.toml`. `DFO_PROFILE` picks a profile in it, `default` when unset. Without a key the client calls the API anonymously.
+
+Warnings go to `onWarning`, which by default passes each `SearchWarning` and `DataWarning` to `process.emitWarning`, else `console.warn`. The examples here pass `onWarning: () => {}` to keep their output short, which also hides the notes on how the data differs from the question.
 
 ```ts
 import { Client } from "@developmentfinance/client";
@@ -346,7 +350,7 @@ const client = new Client({
 console.log(String(client));
 ```
 
-Every request to the API carries `X-DFO-Client`, which names the client and its runtime, such as `dfo-ts/0.1.0 (Node 22.18)` or `dfo-ts/0.1.0 (browser)`. A header of that name in `headers` or from `headerProvider`, in any letter case, raises `InvalidRequestError` with `header_invalid`. A download from the storage host carries none of the client's headers.
+Every request to the API carries `X-DFO-Client`, except a browser's download request, whose redirect to the storage host the browser follows and which carries the key alone. The header names the client and its runtime, such as `dfo-ts/0.1.0 (Node 22.18)` or `dfo-ts/0.1.0 (browser)`. A header of that name in `headers` or from `headerProvider`, in any letter case, raises `InvalidRequestError` with `header_invalid`. A download from the storage host carries none of the client's headers.
 
 The constructor also takes `fetch`, `timeout` (one request attempt, 30 seconds by default), `maxRetries` (2 by default), `headerProvider`, `onWarning` and `dangerouslyAllowBrowser`. A key travels only over https, or plain http to a loopback host. `client.withOptions({ timeout, maxRetries })` returns a copy with other limits, and `client.request(method, path, options)` reaches a route the client does not wrap, with the client's key and retries.
 

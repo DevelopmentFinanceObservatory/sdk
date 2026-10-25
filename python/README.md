@@ -54,7 +54,7 @@ df = data.to_pandas()
 print(df.iloc[:, :4].tail())
 ```
 
-The reading columns come first: the year, the parties, the value and its unit, each with a `_label` column of names beside the codes. The columns that tell the rows apart follow, then the ones that hold one value throughout, with `stat_var` last, and the years of each series read in order. `len(data)` is the row count, `data.to_polars()` gives a polars frame, and `pyarrow.table(data)` gives an Arrow table. While a build runs on the server, `fetch` shows its progress in a terminal or notebook. [Long builds](docs/long-builds.md) covers waiting, timeouts and Ctrl-C.
+The reading columns come first: the year, the parties, the value and its unit, as `_label` columns of names. The other columns follow, codes included, with those that tell the rows apart before those that hold one value throughout, and `stat_var` last. The years of each series read in order. `len(data)` is the row count, `data.to_polars()` gives a polars frame, and `pyarrow.table(data)` gives an Arrow table. While a build runs on the server, `fetch` shows its progress in a terminal or notebook. [Long builds](docs/long-builds.md) covers waiting, timeouts and Ctrl-C.
 
 ## Choose a reading
 
@@ -92,7 +92,7 @@ answer = dfo.search("ODA from Germany to Kenya and Ghana, 2015 to 2022")
 print(answer)
 ```
 
-To vary a reading you already have without a new search, pass its spec to `dfo.fetch` with `window` and `entities`. `window` takes `(start_year, end_year)`, `"latest"` or `"all"`. `entities` maps each role the spec names to place codes, and `spec.roles` lists those roles with the places each binds, or None for a role left open. `answer.fetch` takes the same arguments and narrows every reading in the answer:
+To vary a reading you already have without a new search, pass its spec to `dfo.fetch` with `window` and `entities`. `window` takes `(start_year, end_year)` with years from 1000 to 2200, `"latest"` or `"all"`. `entities` maps each role the spec names to place codes, and `spec.roles` lists those roles with the places each binds, or None for a role left open. `answer.fetch` takes the same arguments and narrows every reading in the answer:
 
 ```text
 <Dataset Germany's gross disbursements to Ghana and Kenya for official development assistance, 2015 to 2022. Current US dollars · OECD DAC2a.
@@ -201,7 +201,7 @@ Congo -> ambiguous: Congo [DRC]  country/COD | Congo [Republic]  country/COG
 Germny -> not found; nearest: Germany  country/DEU
 ```
 
-`match.entity.dcid` holds the code of a resolved name, `match.candidates` the places an ambiguous one could mean, and `match.near_matches` the nearest spellings. `match.raw` keeps the server's result. `dfo.lookup.node("country/NGA")` returns one place, with the regions it belongs to in `node.raw`, `dfo.lookup.code("spec_not_found")` explains a code from an error, and `dfo.lookup.catalogue()` lists what Search holds data on, with example questions. The result types live in `dfo.types`.
+`match.entity.dcid` holds the code of a resolved name, `match.candidates` the places an ambiguous one could mean, and `match.near_matches` the nearest spellings. `match.raw` keeps the server's result. `resolve` also takes `kinds`, such as `["country"]`, to limit the node kinds a name may match, `code_system` with `kinds=["code"]` to match one code system's codes, such as `CRSPurposeCodeEnum`, and `expand_members=True` to inline each group's members. `dfo.lookup.node("country/NGA")` returns one place, with the regions it belongs to in `node.raw` and `as_of=` reading the graph on a past date, `dfo.lookup.code("spec_not_found")` explains a code from an error, and `dfo.lookup.catalogue()` lists what Search holds data on, with example questions. The result types live in `dfo.types`.
 
 ## Settings, keys and errors
 
@@ -213,11 +213,11 @@ with dfo.Client(timeout=60.0, max_retries=3) as client:
     print(len(data))
 ```
 
-`Client` takes `api_key`, `base_url`, `timeout` (one request attempt, 30 seconds by default), `max_retries` (0 to 10, default 2), `cache_dir`, `cache`, `headers` and `header_provider`. `dfo.configure(...)` takes the same options and replaces the default client. `dfo.AsyncClient` has the same methods as coroutines. `client.lookup` holds the lookups.
+`Client` takes `api_key`, `base_url`, `timeout` (one request attempt, 30 seconds by default), `max_retries` (0 to 10, default 2), `cache_dir`, `cache`, `headers` and `header_provider`. `dfo.configure(...)` takes the same options and replaces the default client. `dfo.AsyncClient` has the same methods as coroutines. `client.lookup` holds the lookups. `client.with_options(timeout=..., max_retries=...)` returns a copy with other limits that shares the client's connections and cache.
 
 Run `dfo auth login` to store a key, and `dfo auth status` to see which key the client sends. [Keys and credentials](docs/keys.md) covers the lookup order.
 
-Every error derives from `dfo.errors.DfoError`, carries a `code`, and ends its message with `[code · trace id]`. A refusal names the fix, such as the call that settles an incomplete answer. [Errors](docs/errors.md) lists every class by what you do next. The types answers and datasets contain live in `dfo.types`.
+Every error derives from `dfo.errors.DfoError`, carries a `code`, and ends its message with the code, and with the trace id when there is one: `[code · trace id]`. A refusal names the fix, such as the call that settles an incomplete answer. [Errors](docs/errors.md) lists every class by what you do next. The types answers and datasets contain live in `dfo.types`.
 
 ## Limits the client enforces
 

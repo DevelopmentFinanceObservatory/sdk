@@ -9,13 +9,14 @@ The route is one function from a web `Request` to a `Response`. Next.js App Rout
 The page posts `{ question }`, `{ answerId, option }` to settle a choice, or `{ answerId }` to fetch an answer again after a `retry`. The route answers with one JSON object per line:
 
 ```text
-{"type":"choose","answerId":"e4491629-3492-4277-b965-83110f9029b7","options":["Kenya's percent of nominal GDP spent on education, 1971 to 2024.","Kenya's percent of total government expenditure on education, 1980 to 2025."]}
+{"type":"choose","answerId":"60b35cdc-5e2b-42f5-b34a-2e4fd8ec5fe1","options":["Kenya's percent of nominal GDP spent on education, 1971 to 2024.","Kenya's percent of total government expenditure on education, 1980 to 2025."]}
 data: 67 rows · Kenya's health expenditure per capita in international dollars, 2000 to 2023. World Development Indicators. Kenya's percent of nominal GDP spent on education, 1971 to 2024. World Development Indicators.
+{"type":"error","code":"answer_declined","message":"Search declined the question: it asks for an argument and names no data to show.\n  Next: ask for a figure DFO publishes; client.lookup.catalogue() lists example questions.\n[answer_declined · trace 3261047291064622933591b87a7b39e2]"}
 ```
 
 ```ts
 // app/api/data/route.ts
-import { Answer, Client, isDfoError } from "@developmentfinance/client";
+import { Answer, Client, isDfoError, type Gap } from "@developmentfinance/client";
 
 /** Next.js on Vercel ends the function after this many seconds. */
 export const maxDuration = 60;
@@ -71,12 +72,15 @@ async function respond(ask: Ask, signal: AbortSignal, send: (line: Line) => void
     send({ type: "error", code: "answer_expired", message: "Ask the question again." });
     return;
   }
-  const answerId = "answerId" in ask && ask.option === undefined ? ask.answerId : keep(answer);
-  if (!answer.complete) {
-    const options = answer.gaps[0]?.options.map((option) => option.label ?? "") ?? [];
-    send({ type: "choose", answerId, options });
+  const answerId = () =>
+    "answerId" in ask && ask.option === undefined ? ask.answerId : keep(answer);
+  const choice = choiceOf(answer);
+  if (choice !== undefined) {
+    const options = choice.options.map((option) => option.label ?? "");
+    send({ type: "choose", answerId: answerId(), options });
     return;
   }
+  // A declined or catalogue answer, or a part with nothing to pick, makes `fetch` raise.
   try {
     const data = await answer.fetch({
       signal,
@@ -85,8 +89,13 @@ async function respond(ask: Ask, signal: AbortSignal, send: (line: Line) => void
     send({ type: "data", sentence: data.sentence, rows: await data.toRows() });
   } catch (error) {
     if (!signal.aborted) throw error;
-    send({ type: "retry", answerId });
+    send({ type: "retry", answerId: answerId() });
   }
+}
+
+/** The first part that awaits a pick among readings or places. */
+function choiceOf(answer: Answer): Gap | undefined {
+  return answer.gaps.find((gap) => gap.kind === "choice" && gap.options.length > 0);
 }
 
 /** Stores the answer and returns its id. */
@@ -101,7 +110,9 @@ async function answerFor(ask: Ask, signal: AbortSignal): Promise<Answer | null> 
   const saved = answers.get(ask.answerId);
   if (saved === undefined) return null;
   const answer = Answer.fromJSON(saved, client);
-  return ask.option === undefined ? answer : answer.choose(ask.option, { signal });
+  if (ask.option === undefined) return answer;
+  const part = choiceOf(answer)?.partIndex;
+  return answer.choose(ask.option, part === undefined ? { signal } : { part, signal });
 }
 
 function readAsk(body: unknown): Ask | null {
@@ -118,7 +129,7 @@ A few choices in that route matter:
 - One `Client` serves every request. It holds no per-request state, and it resolves the key when it is built.
 - The work runs inside the stream, so the page gets the response headers at once and each progress line as the server reports it. A build the server has made before sends no progress, only `data`.
 - `AbortSignal.any` stops the search and the fetch when the request aborts or when `BUDGET_MS` passes. Keep the budget about ten seconds under the platform's limit, so the route still has time to send `retry` and close the stream. A budget that passes during the search sends `retry` with no answer id, and the page posts the question again.
-- An error the client raises goes to the page as its `code` and `message`. The message ends with `[code · trace id]`, which is what the reader quotes to you, and the client has already replaced its own key in any server text with `[redacted]`.
+- An error the client raises goes to the page as its `code` and `message`. The message ends with the code, and with the trace id when there is one, `[code · trace id]`, which is what the reader quotes to you, and the client has already replaced its own key in any server text with `[redacted]`.
 
 ## Read the stream in the page
 
@@ -193,9 +204,10 @@ const first = await ask(
 if (first?.type === "choose") {
   await ask(callRoute, { answerId: first.answerId, option: 0 }, show);
 }
+await ask(callRoute, { question: "Is aid good for Africa? Argue both sides." }, show);
 ```
 
-Answering the first post with `choose` means the answer had a part with several readings, and the page shows `options` as buttons. A part with no reading at all, such as one Search has no data for, also arrives as `choose`, with no options.
+The route sends `choose` for a part that awaits a pick among readings or places, and the page shows `options` as buttons. A question Search declines or answers with the catalogue, and a part with no reading to pick, make `fetch` raise, so the page gets an `error` line with the client's message.
 
 ## Join a build that outlived the request
 
@@ -218,7 +230,7 @@ The first post searched once and started the build, `op_ab6a4c80…`. The second
 
 ## Share an answer between requests
 
-The route keeps each answer as `JSON.stringify(answer)`, which writes `answer.toJSON()`, under a random id, and revives it with `Answer.fromJSON(saved, client)` when the page posts the id back, to settle a choice or to fetch again after `retry`. A `Map` holds them in one process. A deployment with several instances, which serverless platforms run, needs a store they share, such as Redis or Workers KV, since each instance has its own memory.
+The route keeps each answer as `JSON.stringify(answer)`, which writes `answer.toJSON()`, under a random id, and revives it with `Answer.fromJSON(saved, client)` when the page posts the id back, to settle a choice or to fetch again after `retry`. A `Map` holds them in one process and keeps every one, so give each entry a lifetime, such as 15 minutes, or use a store with a TTL. A deployment with several instances, which serverless platforms run, needs a store they share, such as Redis or Workers KV, since each instance has its own memory.
 
 You can send the answer's JSON to the page and take it back, which needs no store. `Answer.fromJSON` checks that the JSON is well formed, and cannot tell whether it came from Search. `choose` and `fetch` post what the answer holds, so a forged answer can send any spec or parsed question to the API under your key. With a public-tier key that costs quota, as the question route already does, so rate-limit the route per visitor. With a key scoped beyond the public tier, keep the answer on the server as this route does, or sign it before it leaves.
 
@@ -226,7 +238,9 @@ You can send the answer's JSON to the page and take it back, which needs no stor
 
 The route's `new Client()` reads `DFO_API_KEY` from the server's environment. Set it as a server-side variable on your host, and never under a prefix the framework copies into the page bundle, such as Next.js's `NEXT_PUBLIC_`. Anything in the bundle, every visitor can read.
 
-A page that calls the API itself uses a publishable `dfo_p_` key. In a browser page or worker, `new Client()` throws a `TypeError` for a secret `dfo_k_` key, from `apiKey`, `headers` or `headerProvider`, before any request leaves. `dangerouslyAllowBrowser: true` turns that check off, for a page only you can open.
+The API's CORS admits only the origins it lists. A page on another origin calls your own server route, such as the one above, or a proxy of the API on the page's origin with `new Client({ baseUrl: "/api/v1" })`.
+
+A page that calls the API itself uses a publishable `dfo_p_` key. In a browser page or worker, `new Client()` throws a `TypeError` for a secret `dfo_k_` key from `apiKey`, and the first request rejects with it for one in `headers` or from `headerProvider`. No request leaves. `dangerouslyAllowBrowser: true` turns that check off, for a page only you can open.
 
 ## Next
 
