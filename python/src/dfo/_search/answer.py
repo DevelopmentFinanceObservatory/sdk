@@ -72,6 +72,9 @@ from dfo._core.types import (
     Part,
     Spec,
     UnsupportedPart,
+    Window,
+    option_line,
+    shown_text,
 )
 from dfo._datasets.build import Reading, check_strict, response_json
 from dfo._datasets.dataset import Dataset
@@ -218,7 +221,9 @@ class AsyncAnswer:
         `choose(option)` picks in the only part that awaits a choice;
         `choose(option, part=part)` names the part. A part is named by its
         index, its variable text, or a word of the question one of its options
-        settles. An option is named by its index or its label.
+        settles. An option is named by its index, its label, or its line as
+        `print(answer)` shows it, a candidate's with its source and unit; a key
+        is read without closing full stops.
 
         Raises:
             TypeError: A second positional argument, as the earlier
@@ -268,6 +273,9 @@ class AsyncAnswer:
         self,
         *,
         partial: bool = False,
+        window: Window | None = None,
+        entities: Mapping[str, list[str] | tuple[str, ...] | None] | None = None,
+        facets: Mapping[str, str | None] | None = None,
         strict: bool = False,
         layout: Layout = "long",
         party_totals: bool = False,
@@ -278,11 +286,20 @@ class AsyncAnswer:
 
         Each distinct spec builds once; several readings stack into one long table
         with a `part` column. Departures, skipped computations and Search's `warn`
-        and `degraded` warnings arrive as one `SearchWarning`.
+        and `degraded` warnings arrive as one `SearchWarning`. `window`,
+        `entities` and `facets` narrow every reading as `fetch` narrows one spec.
 
         Args:
             partial: Build the parts that have a reading when others do not. The
                 dataset then lists the gaps in `missing`.
+            window: Narrow every reading to `"all"`, `"latest"` or
+                `(start_year, end_year)`.
+            entities: Rebind the named roles of every reading to dcids, such as
+                `{"destination": ["country/NGA"]}`; each spec's `roles` lists
+                its keys. None drops a role. Each reading keeps its other
+                roles' binding, and an empty map narrows nothing.
+            facets: Bind every reading's provenance, measurement method or
+                unit. An empty map narrows nothing.
             strict: Raise the `SearchWarning`, and the datasets surface's
                 warnings, instead of issuing them.
             layout: `long`, or `frame` for one reading's pipeline frame.
@@ -307,9 +324,11 @@ class AsyncAnswer:
                 question.
             DataWarning: `strict` is True and a manifest carries a warning
                 above `info`.
-            InvalidRequestError: `layout="frame"` with several readings, or
-                `strict` is not a bool or `progress` neither a bool nor None
-                (`invalid_argument`).
+            InvalidRequestError: `layout="frame"` with several readings;
+                `strict` is not a bool or `progress` neither a bool nor None;
+                `window`, `entities` or `facets` is malformed; or `entities`
+                names a role a reading does not declare, and the message lists
+                each part's roles (`invalid_argument`). No build is sent.
             DfoTimeoutError: `timeout` passed (`deadline_exceeded`). The build
                 keeps running on the server, and the same fetch joins it.
             DfoError: The server refused a request.
@@ -342,6 +361,9 @@ class AsyncAnswer:
             progress=progress,
             cache=session.cache,
             missing=self.gaps,
+            window=window,
+            entities=entities,
+            facets=facets,
         )
 
     def _incomplete_error(self) -> IncompleteAnswerError:
@@ -607,10 +629,15 @@ def _pick(gap: Gap, key: int | str, *, mention: int | str | None) -> Candidate |
         )
     # A part named by a word its options settle offers only those options' labels.
     scope = mention if isinstance(mention, str) and mention in _mentions(gap) else None
+    asked = shown_text(key)
     found = [
         choice
         for choice in choices
-        if choice.label == key
+        if asked
+        and (
+            (choice.label is not None and shown_text(choice.label) == asked)
+            or option_line(choice) == asked
+        )
         and (
             scope is None or not isinstance(choice, Option) or scope in choice.mentions
         )
@@ -618,10 +645,10 @@ def _pick(gap: Gap, key: int | str, *, mention: int | str | None) -> Candidate |
     if len(found) == 1:
         return found[0]
     if not found:
-        labels = [choice.label for choice in choices if choice.label is not None]
+        lines = [line for choice in choices if (line := option_line(choice))]
         raise _unmatched(
             f"Part {gap.part_index} has no option labelled {cited(key)}",
-            nearest(key, labels, _label_fold),
+            nearest(key, lines, _label_fold),
             "name it by index or label",
             _option_list(gap),
         )
@@ -660,15 +687,16 @@ def _label_fold(label: str) -> str:
 
 def _option_list(gap: Gap) -> str:
     """A gap's options as a refusal lists them, as `0 = Congo [DRC], 1 = Congo
-    [Republic]`. A candidate with no label shows its spec id."""
+    [Republic]`, each as the answer prints it. A candidate the answer prints as
+    nothing shows its spec id."""
     return ", ".join(
-        f"{index} = {_shown_label(option)}" for index, option in enumerate(gap.options)
+        f"{index} = {_listed(option)}" for index, option in enumerate(gap.options)
     )
 
 
-def _shown_label(option: Candidate | Option) -> str:
-    if option.label is not None:
-        return option.label
+def _listed(option: Candidate | Option) -> str:
+    if line := option_line(option):
+        return line
     return option.spec.spec_id if isinstance(option, Candidate) else ""
 
 

@@ -11,6 +11,7 @@ import { download, fetchMembers } from "../src/datasets/fetch.ts";
 import { fetchDataset } from "../src/datasets/resolve.ts";
 import type { FetchOptions } from "../src/datasets/fetch.ts";
 import { DatasetRef, renderingFor } from "../src/core/ref.ts";
+import { specRoles } from "../src/core/roles.ts";
 import type { DatasetRefJson, Spec } from "../src/core/ref.ts";
 import { DEFAULT_MAX_BYTES, Transport } from "../src/http/transport.ts";
 import { DataWarning } from "../src/core/warnings.ts";
@@ -375,6 +376,46 @@ describe("arguments a fetch refuses before any request", () => {
       });
     });
   }
+});
+
+describe("a fetch's roles", () => {
+  const { transport } = replay(NO_EXCHANGES);
+  const top5 = (async () => {
+    const record = await scenario("search-warning-top5");
+    return (record.exchanges[0]!.response.json as { parts: { spec: WireSpec }[] }).parts[0]!.spec;
+  })();
+
+  test("refuses a role the spec does not take, naming its roles, with no request", async () => {
+    const error = await rejection(
+      fetchDataset(transport, await top5, { entities: { financingRecipient: ["country/KEN"] } }),
+    );
+    assert.ok(error instanceof InvalidRequestError);
+    assert.equal(error.code, "invalid_argument");
+    assert.equal(
+      error.detail,
+      'entities names "financingRecipient", a role the spec does not declare; its roles are ' +
+        "destination, origin.",
+    );
+  });
+
+  test("specRoles gives each role's dcids, a flow direction it binds none of as null", async () => {
+    const spec = await top5;
+    assert.deepEqual(specRoles(spec), { destination: ["country/ETH"], origin: null });
+    const identity = spec.definition["identity"] as Record<string, unknown>;
+    const place: Record<string, unknown> = {
+      ...identity,
+      entities: { observationAbout: ["country/KEN"] },
+    };
+    delete place["open_roles"];
+    assert.deepEqual(specRoles({ ...spec, definition: { ...spec.definition, identity: place } }), {
+      observationAbout: ["country/KEN"],
+    });
+    assert.deepEqual(specRoles({ spec_id: "spec_1", definition: {} }), {});
+    assert.throws(() => specRoles("spec_1" as unknown as Spec), {
+      name: "InvalidRequestError",
+      code: "invalid_argument",
+    });
+  });
 });
 
 // The build answers the narrowed definition; the resubmit for its sentence is refused, so each

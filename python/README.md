@@ -92,7 +92,7 @@ answer = dfo.search("ODA from Germany to Kenya and Ghana, 2015 to 2022")
 print(answer)
 ```
 
-To vary a reading you already have without a new search, pass its spec to `dfo.fetch` with `window` and `entities`. `window` takes `(start_year, end_year)`, `"latest"` or `"all"`. `entities` maps each role the spec names to place codes, and `spec.definition["identity"]["entities"]` lists those roles:
+To vary a reading you already have without a new search, pass its spec to `dfo.fetch` with `window` and `entities`. `window` takes `(start_year, end_year)`, `"latest"` or `"all"`. `entities` maps each role the spec names to place codes, and `spec.roles` lists those roles with the places each binds, or None for a role left open. `answer.fetch` takes the same arguments and narrows every reading in the answer:
 
 ```text
 <Dataset Germany's gross disbursements to Ghana and Kenya for official development assistance, 2015 to 2022. Current US dollars · OECD DAC2a.
@@ -104,8 +104,8 @@ To vary a reading you already have without a new search, pass its spec to `dfo.f
 
 ```python
 spec = dfo.search("ODA from Germany to Nigeria").specs[0]
-print(spec.definition["identity"]["entities"])
-# {'destination': ['country/NGA'], 'origin': ['country/DEU']}
+print(spec.roles)
+# {'destination': ('country/NGA',), 'origin': ('country/DEU',)}
 
 data = dfo.fetch(
     spec,

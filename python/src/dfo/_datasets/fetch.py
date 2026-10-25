@@ -52,16 +52,19 @@ from dfo._core.types import (
     NoDataPart,
     Rendering,
     Spec,
+    Window,
     Wire,
 )
 from dfo._datasets.build import (
-    NOTHING_ASKED,
     Asked,
     Cache,
+    Entities,
     Reading,
+    asked,
     build_body,
     check_strict,
     counted_rows,
+    narrowings,
     pick_artifact,
     rendering_for,
     response_json,
@@ -127,8 +130,9 @@ async def fetch_members(
     progress: bool | None = None,
     cache: Cache | None = None,
     missing: Sequence[Gap] = (),
-    narrowing: Mapping[str, Any] | None = None,
-    asked: Asked = NOTHING_ASKED,
+    window: Window | None = None,
+    entities: Entities | None = None,
+    facets: Mapping[str, str | None] | None = None,
 ) -> Dataset:
     """Build the latest version of each spec and assemble one dataset.
 
@@ -148,15 +152,18 @@ async def fetch_members(
         cache: The local cache, or None to fetch without one.
         missing: The gaps a partial answer leaves out; the dataset is complete
             when there are none.
-        narrowing: The build request's `scope`, applied to every member.
-        asked: The values the caller's narrowing names, which a refusal of the
-            narrowing answers with the server's alternatives and, for a place
-            name, the lookup that finds its dcid.
+        window: Narrow every reading to `"all"`, `"latest"` or
+            `(start_year, end_year)`.
+        entities: Rebind the named roles of every reading to dcids; None drops
+            a role. Each reading keeps its other roles' binding.
+        facets: Bind every reading's provenance, measurement method or unit.
 
     Raises:
         InvalidRequestError: `layout="frame"` with several members, `strict`
-            is not a bool or `progress` neither a bool nor None
-            (`invalid_argument`), or the server refused a build as malformed.
+            is not a bool or `progress` neither a bool nor None, the narrowing
+            is malformed or `entities` names a role a reading does not declare
+            (`invalid_argument`), all before any request; or the server refused
+            a build as malformed.
         NetworkError: `DFO_OFFLINE=1` is set, and the cache holds no version of
             a spec, or the fetch narrows it (`offline`).
         DfoTimeoutError: The deadline passed; the message says the build carries
@@ -174,8 +181,10 @@ async def fetch_members(
             'layout="frame" holds one reading; fetch each spec on its own for its '
             "frame",
         )
+    scopes = narrowings(wants, window=window, entities=entities, facets=facets)
+    named = asked(entities=entities, facets=facets)
     stale = offline()
-    if stale and narrowing is not None:
+    if stale and any(narrowed is not None for narrowed in scopes):
         raise client_error(
             OFFLINE,
             "DFO_OFFLINE=1 is set, and a narrowed spec's version is known only to "
@@ -185,7 +194,7 @@ async def fetch_members(
     fetched = []
     with ProgressRenderer(enabled=progress) as renderer:
         on_progress = progress_hook(renderer)
-        for want in wants:
+        for want, narrowing in zip(wants, scopes, strict=True):
             if stale:
                 manifest, cached_data = await _latest_cached(
                     cache, want.spec.spec_id, rendering
@@ -195,7 +204,7 @@ async def fetch_members(
                 built = await _build_latest(
                     transport,
                     build_body(want.spec, rendering, narrowing),
-                    asked,
+                    named,
                     deadline=deadline,
                     timeout=timeout,
                     on_progress=on_progress,
@@ -220,7 +229,7 @@ async def fetch_members(
                 except InvalidRequestError as error:
                     # Search refuses an entity of the built identity when it is
                     # resubmitted for its sentence.
-                    hinted = _narrowing_refusal(error, asked, transport.caller)
+                    hinted = _narrowing_refusal(error, named, transport.caller)
                     if hinted is error:
                         raise
                     raise hinted from error

@@ -37,6 +37,7 @@ from dfo._generated.wire import (
     OtherNode,
     PlaceOtherNode,
     ProvenanceNode,
+    RoleAxis,
     Severity,
     SourceNode,
     StatVarNode,
@@ -67,6 +68,9 @@ type GapKind = SearchGapKind | _ClientGapKind
 _GAP_KINDS: frozenset[str] = frozenset(
     get_args(SearchGapKind.__value__) + get_args(_ClientGapKind.__value__)
 )
+
+# The flow axes, origin and destination: a spec that names one can bind both.
+_FLOW_AXES: tuple[str, ...] = get_args(RoleAxis.__value__)
 
 # The most characters of one text, such as a label or a message, a repr quotes.
 REPR_TEXT_MAX = 60
@@ -158,6 +162,27 @@ class Spec:
     @override
     def __repr__(self) -> str:
         return _joined("Spec", self.spec_id, _quoted(self.sentence))
+
+    @property
+    def roles(self) -> dict[str, tuple[str, ...] | None]:
+        """The role keys `entities=` takes for this spec, each with the dcids the
+        definition binds it to, or None when it binds none.
+
+        The roles are those `definition.identity` binds in `entities` or lists
+        in `open_roles`. A flow spec, one that names `origin` or `destination`,
+        takes both. Empty when the definition names no role.
+        """
+        identity = self.definition.get("identity")
+        identity = identity if isinstance(identity, Mapping) else {}
+        bound = identity.get("entities")
+        bound = bound if isinstance(bound, Mapping) else {}
+        named = [*bound, *(identity.get("open_roles") or ())]
+        if any(role in _FLOW_AXES for role in named):
+            named.extend(_FLOW_AXES)
+        return {
+            role: tuple(bound[role]) if role in bound else None
+            for role in dict.fromkeys(named)
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -571,11 +596,32 @@ class Rendering:
         )
 
 
-def option_label(option: Candidate | Option, /) -> str:
-    """How a repr names a choice: its label, else its sentence, else its spec id."""
+def shown_text(text: str, /) -> str:
+    """Text as an answer prints a choice: on one line, trimmed, without closing
+    full stops. `choose` reads a caller's key the same way, so a label or line
+    copied from either client's printout names its choice."""
+    return single_line(text).strip().rstrip(".")
+
+
+def option_line(option: Candidate | Option, /) -> str:
+    """A choice as an answer prints it: a candidate's label, its sentence standing
+    in for a missing one, then its source and unit, joined by ` · `; or a place
+    or source option's label. Each piece is on one line, the label in
+    `shown_text`'s form."""
     if isinstance(option, Option):
-        return option.label
-    return option.label or option.sentence or option.spec.spec_id
+        return shown_text(option.label)
+    label = shown_text(option.label or option.sentence or "")
+    return " · ".join(
+        single_line(text) for text in (label, option.source, option.unit) if text
+    )
+
+
+def option_label(option: Candidate | Option, /) -> str:
+    """How a repr names a choice: its label, else its sentence, each in
+    `shown_text`'s form, else its spec id."""
+    if isinstance(option, Option):
+        return shown_text(option.label)
+    return shown_text(option.label or option.sentence or "") or option.spec.spec_id
 
 
 def spec_object(spec: Spec) -> dict[str, Any]:

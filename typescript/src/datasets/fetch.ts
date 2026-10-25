@@ -5,7 +5,8 @@
  * `facets`. A narrowing gives the build its own `spec_id`, so the member keeps the spec, the
  * version and the definition the server answered with. The server replaces the spec's whole
  * entity binding with the posted `entities`, so the client posts the spec's own bound roles
- * with the caller's roles replaced.
+ * with the caller's roles replaced. A role key outside a member's `specRoles` is refused before
+ * any build. An answer's fetch narrows every member the same way.
  *
  * Each member's sentence is Search's: the one the caller holds when the built `spec_id` equals
  * the posted one, else the sentence Search gives the built identity when it is resubmitted,
@@ -46,9 +47,10 @@ import { DEFAULT_MAX_BYTES, passedDeadline } from "../http/transport.ts";
 import type { Target, Transport } from "../http/transport.ts";
 import type { EntityGroup, Part } from "../wire.ts";
 import { DataWarning } from "../core/warnings.ts";
-import { isRecord } from "../core/json.ts";
+import { isRecord, present } from "../core/json.ts";
 import { nearest } from "../core/nearest.ts";
 import { declareOptions } from "../core/options.ts";
+import { specRoles } from "../core/roles.ts";
 import { readParquet } from "./parquet.ts";
 import type { ColumnType, ParquetFile } from "./parquet.ts";
 
@@ -316,6 +318,51 @@ function mapOf(name: string, map: unknown): Readonly<Record<string, unknown>> {
 
 export const narrows = ({ window, entities, facets }: Narrowing): boolean =>
   window !== undefined || namesAny(entities) || namesAny(facets);
+
+/** A call's narrowing, null read as unset, as None is in the Python client. */
+export const narrowingOf = ({ window, entities, facets }: Narrowing): Narrowing =>
+  present({
+    window: window ?? undefined,
+    entities: entities ?? undefined,
+    facets: facets ?? undefined,
+  });
+
+/** A reading as a refusal names it: its parts' words, else `the spec`. */
+const readingName = ({ parts }: MemberRequest): string =>
+  parts.map((part) => JSON.stringify(part)).join(" / ") || "the spec";
+
+const roleKeys = ({ spec }: MemberRequest): string =>
+  Object.keys(specRoles(spec)).join(", ") || "none stated";
+
+/**
+ * Refuses an `entities` key that a reading does not declare, before any request, naming each
+ * reading's role keys as `specRoles` gives them. A reading whose definition names no role is
+ * left to the server, since the client cannot tell which roles it takes.
+ *
+ * @throws {InvalidRequestError} A key is not one of a reading's roles (`invalid_argument`).
+ */
+function checkRoles(wants: readonly MemberRequest[], entities: unknown): void {
+  if (!isRecord(entities)) return;
+  for (const role of Object.keys(entities)) {
+    const lacking = wants.filter(({ spec }) => {
+      const roles = Object.keys(specRoles(spec));
+      return roles.length > 0 && !roles.includes(role);
+    });
+    if (lacking.length === 0) continue;
+    const named = `entities names ${JSON.stringify(role)}, a role`;
+    if (wants.length === 1) {
+      throw invalid(
+        `${named} ${readingName(lacking[0]!)} does not declare; its roles are ` +
+          `${roleKeys(lacking[0]!)}.`,
+      );
+    }
+    const listed = wants.map((want) => `${readingName(want)}: ${roleKeys(want)}`).join("\n  ");
+    throw invalid(
+      `${named} ${lacking.map(readingName).join(" and ")} ` +
+        `${lacking.length === 1 ? "does" : "do"} not declare. Each part's roles:\n  ${listed}`,
+    );
+  }
+}
 
 /** The `POST /datasets` body that builds a spec's latest version. It always carries the
  *  spec's unmodified definition, so a spec the server has not registered still builds. */
@@ -732,8 +779,9 @@ function distinct(members: readonly MemberRequest[]): MemberRequest[] {
  * Builds the latest version of each spec and assembles one dataset. A spec listed twice builds
  * once, answering both parts.
  *
- * @throws {InvalidRequestError} `layout: "frame"` with several members, or a build the server
- *   refused as malformed.
+ * @throws {InvalidRequestError} `layout: "frame"` with several members, a narrowing that breaks
+ *   its rule for any member or names a role a member does not take, all before any request, or
+ *   a build the server refused as malformed.
  * @throws {DfoTimeoutError} The deadline passed.
  * @throws {DfoError} The server refused a request.
  */
@@ -750,10 +798,13 @@ export async function fetchMembers(
     throw invalid('layout "frame" holds one reading; fetch each spec on its own for its frame.');
   }
   const narrowing = options.narrowing ?? {};
+  // Every reading's narrowing is checked before the first build.
+  const scopes = wants.map(({ spec }) => scopeOf(spec, narrowing));
+  checkRoles(wants, narrowing.entities);
   const wait = waitFor(transport, options);
   const fetched: FetchedMember[] = [];
-  for (const { parts, spec, sentence, entityGroups, answerParts } of wants) {
-    const scope = scopeOf(spec, narrowing);
+  for (const [at, { parts, spec, sentence, entityGroups, answerParts }] of wants.entries()) {
+    const scope = scopes[at];
     let built: Built;
     try {
       built = await build(transport, buildBody(spec, rendering, scope), {

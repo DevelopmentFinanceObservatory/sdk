@@ -16,12 +16,12 @@ from typing import Any, Protocol
 
 from dfo._core.text import single_line
 from dfo._core.types import (
-    Candidate,
     DefinitePart,
     Gap,
     Notice,
     Option,
     Part,
+    option_line,
 )
 from dfo._datasets.progress import progress_mode
 
@@ -40,7 +40,12 @@ _DECLINED_REASONS = {
 _FETCH_LINE = "  Fetch: answer.fetch()"
 _CATALOGUE = (
     "Search answered with the catalogue: the question asks what DFO holds and names "
-    "no indicator."
+    "no indicator.\n"
+    "  Next: dfo.lookup.catalogue() lists what DFO holds, with example questions."
+)
+_DECLINED_NEXT = (
+    "\n  Next: ask for a figure DFO publishes; dfo.lookup.catalogue() lists "
+    "example questions."
 )
 
 
@@ -108,16 +113,18 @@ def answer_html(answer: AnswerView, /) -> str:
 
 
 def declined_text(kind: str, reason: str | None, /) -> str:
-    """Why Search gave a declined or catalogue answer instead of readings."""
+    """Why Search gave a declined or catalogue answer instead of readings, and
+    the call to make next."""
     if kind == "catalogue":
         return _CATALOGUE
     if kind == "declined":
-        return _DECLINED_REASONS.get(
+        why = _DECLINED_REASONS.get(
             reason or "",
             single_line(
                 f"Search declined the question ({reason or 'no reason given'})."
             ),
         )
+        return why + _DECLINED_NEXT
     return single_line(f"Search answered with kind {kind!r}, which holds no readings.")
 
 
@@ -181,7 +188,7 @@ def _incomplete(answer: AnswerView, *, lead: str) -> str:
             continue
         lines.append(f"  missing  {name}: {gap.message}")
         lines.extend(
-            f"    [{number}] {_choice_line(choice)}"
+            f"    [{number}] {option_line(choice)}"
             for number, choice in enumerate(gap.options)
         )
     several = len(waiting(answer.gaps)) > 1
@@ -201,13 +208,6 @@ def _text_lines(lines: Sequence[str]) -> str:
     return "\n".join(single_line(line) for line in lines)
 
 
-def _choice_line(choice: Candidate | Option) -> str:
-    if isinstance(choice, Option):
-        return choice.label
-    label = (choice.label or choice.sentence or "").rstrip(".")
-    return " · ".join(text for text in (label, choice.source, choice.unit) if text)
-
-
 def waiting(gaps: Sequence[Gap], /) -> list[Gap]:
     """The gaps that await a choice, which `choose` without `part` picks among."""
     return [gap for gap in gaps if gap.kind == "choice" or gap.options]
@@ -222,7 +222,7 @@ def _choose_call(answer: AnswerView, gap: Gap, *, several: bool) -> str | None:
         return None
     first = gap.options[0]
     if isinstance(first, Option):
-        option = _quote(first.label)
+        option = _quote(option_line(first))
         part = _option_key(answer, first, gap)
     else:
         option = "0"

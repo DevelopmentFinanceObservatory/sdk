@@ -53,7 +53,7 @@ Answered 1 of 2 parts of your question.
   Or take the answered part: answer.fetch(partial=True)
 ```
 
-`answer.choose(option)` picks in the only part that awaits a choice. `answer.choose(option, part=...)` names the part, by its index or its words in the question. The option is its index or its label:
+`answer.choose(option)` picks in the only part that awaits a choice. `answer.choose(option, part=...)` names the part, by its index or its words in the question. The option is its index, its label, or its whole line as the list prints it, such as `"Kenya's percent of nominal GDP spent on education, 1971 to 2024 · World Development Indicators"`. A closing full stop makes no difference, and a line copied from the TypeScript client's printout works too:
 
 ```python
 answer = dfo.search("GDP of Kenya and government education spending in Kenya")
@@ -230,8 +230,12 @@ except dfo.errors.DeclinedError as error:
 ```
 
 ```text
-Search declined the question: it asks for an argument and names no data to show. [answer_declined · trace ebc1967a88fb4655a42b421f736a425e]
+Search declined the question: it asks for an argument and names no data to show.
+  Next: ask for a figure DFO publishes; dfo.lookup.catalogue() lists example questions.
+[answer_declined · trace ebc1967a88fb4655a42b421f736a425e]
 ```
+
+`print(answer)` shows the same two lines. A catalogue answer's next line names `dfo.lookup.catalogue()` too.
 
 `dfo.lookup.catalogue()` returns what Search holds data on, with counts and example questions. `place=` scopes it to one country:
 

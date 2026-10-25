@@ -41,8 +41,10 @@ print(data.to_pandas()[["time_period", "financingProvider_label", "value"]])
 Three arguments narrow a spec:
 
 - `window` takes `"all"`, `"latest"`, or a `(start_year, end_year)` pair.
-- `entities` binds roles to place dcids. The roles you name change, the spec's other roles keep their places, and a role set to None drops out. `spec.definition["identity"]["entities"]` lists the roles a spec binds. This spec binds only `destination`, so `origin` adds the two donors and Ethiopia stays the recipient.
+- `entities` binds roles to place dcids. The roles you name change, the spec's other roles keep their places, and a role set to None drops out. `spec.roles` lists the role keys a spec takes, each with the dcids it binds, or None for a role it leaves open. This spec binds only `destination`, so `origin` adds the two donors and Ethiopia stays the recipient. A key the spec does not take, such as the column name `financingProvider`, raises `InvalidRequestError` before any request, and the message lists the spec's roles.
 - `facets` binds the `provenance`, `measurementMethod` or `unit` axis to a ref. None picks the facets that declare no value on that axis.
+
+`answer.fetch` takes the same three arguments and narrows every reading of the answer with them. Each reading keeps the roles you leave out, and a role one reading does not take raises before any build, naming each part's roles.
 
 A narrowed fetch is a reading of its own, with its own `spec_id` in `data.members[0].spec`. A narrowing that leaves no rows returns a dataset with zero rows and the usual columns, and issues a `DataWarning` with the code `empty_result`.
 

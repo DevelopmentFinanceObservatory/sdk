@@ -172,7 +172,7 @@ export class Client {
    * running on the server, and the same fetch joins it.
    *
    * @throws {InvalidRequestError} `options` holds a key outside `FetchOptions`, a window year
-   *   falls outside 1000 to 2200, the target is neither a ref nor a spec with its `spec_id` and
+   *   falls outside 1000 to 2200, `entities` names a role outside `specRoles(spec)`, the target is neither a ref nor a spec with its `spec_id` and
    *   `definition`, a ref is narrowed or given another layout or `partyTotals`, or
    *   `latest` is given a spec or a ref whose members differ in rendering.
    * @throws {VersionUnavailableError} A ref's version can no longer be fetched.

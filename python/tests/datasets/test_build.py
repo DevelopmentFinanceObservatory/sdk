@@ -5,6 +5,8 @@ import pytest
 from dfo._core.errors import ContractError, InvalidRequestError
 from dfo._core.types import Rendering, Spec
 from dfo._datasets.build import (
+    Reading,
+    narrowings,
     read_operation,
     rebind,
     rendering_for,
@@ -109,6 +111,90 @@ def test_rebinding_a_spec_without_an_identity_is_refused() -> None:
     with pytest.raises(InvalidRequestError) as caught:
         rebind(spec, {"origin": ["country/DEU"]})
     assert caught.value.code == "invalid_argument"
+
+
+def _spec(number: int, **identity: object) -> Spec:
+    spec_id = f"spec_{number:032x}"
+    return Spec(spec_id, {"spec_id": spec_id, "identity": identity})
+
+
+FLOW = _spec(1, entities={"destination": ["country/NGA"]})
+PLACE = _spec(2, entities={"observationAbout": ["country/KEN"]})
+
+
+@pytest.mark.parametrize(
+    ("spec", "roles"),
+    [
+        # A flow spec takes both flow axes, the one it leaves open as None.
+        (FLOW, {"destination": ("country/NGA",), "origin": None}),
+        (
+            _spec(3, entities={"origin": ["country/DEU"]}, open_roles=["destination"]),
+            {"origin": ("country/DEU",), "destination": None},
+        ),
+        (PLACE, {"observationAbout": ("country/KEN",)}),
+        (_spec(4, entities={}), {}),
+        (Spec("spec_" + "5" * 32, {"spec_id": "spec_" + "5" * 32}), {}),
+    ],
+    ids=["flow", "flow-open-role", "place", "no-role", "no-identity"],
+)
+def test_a_spec_lists_the_role_keys_entities_takes(spec, roles) -> None:
+    assert spec.roles == roles
+
+
+def test_one_narrowing_rebinds_each_reading_on_its_own_binding() -> None:
+    other = _spec(6, entities={"destination": ["country/KEN"], "origin": ["DAC"]})
+    scopes = narrowings(
+        [Reading(("ODA",), FLOW), Reading(("aid",), other)],
+        window="latest",
+        entities={"origin": ["country/FRA"]},
+    )
+    assert scopes == [
+        {
+            "window": {"kind": "latest"},
+            "entities": {"destination": ["country/NGA"], "origin": ["country/FRA"]},
+        },
+        {
+            "window": {"kind": "latest"},
+            "entities": {"destination": ["country/KEN"], "origin": ["country/FRA"]},
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("readings", "message"),
+    [
+        (
+            [Reading((), FLOW)],
+            'entities names "financingRecipient", a role the spec does not '
+            "declare; its roles are destination, origin. [invalid_argument]",
+        ),
+        (
+            [Reading(("ODA",), FLOW), Reading(("GDP",), PLACE)],
+            'entities names "financingRecipient", a role "ODA" and "GDP" do not '
+            'declare. Each part\'s roles:\n  "ODA": destination, origin\n  '
+            '"GDP": observationAbout\n[invalid_argument]',
+        ),
+    ],
+    ids=["spec", "answer"],
+)
+def test_a_role_a_reading_does_not_declare_is_refused_naming_its_roles(
+    readings, message
+) -> None:
+    with pytest.raises(InvalidRequestError) as caught:
+        narrowings(readings, entities={"financingRecipient": ["country/KEN"]})
+    assert caught.value.code == "invalid_argument"
+    assert str(caught.value) == message
+
+
+def test_a_role_one_part_lacks_names_that_part() -> None:
+    with pytest.raises(InvalidRequestError) as caught:
+        narrowings(
+            [Reading(("ODA",), FLOW), Reading(("GDP",), PLACE)],
+            entities={"origin": ["country/DEU"]},
+        )
+    assert str(caught.value).startswith(
+        'entities names "origin", a role "GDP" does not declare.'
+    )
 
 
 def test_each_layout_builds_bare_parquet() -> None:

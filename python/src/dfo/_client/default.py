@@ -167,8 +167,9 @@ def fetch(
             such as a spec id, and no request is sent; a ref is narrowed or
             given another layout or `party_totals`; `latest` is not a
             bool, is given a spec, or is given a ref whose members differ in
-            rendering; `window`,
-            `entities`, `facets` or `layout` is malformed; or `timeout` is not
+            rendering; `window`, `entities`, `facets` or `layout` is
+            malformed; `entities` names a role the spec does not declare; or
+            `timeout` is not
             None or a finite number above 0 (`invalid_argument`).
         VersionUnavailableError: A ref's version can no longer be fetched.
         ContractError: An artifact is not Parquet (`unexpected_response`), or

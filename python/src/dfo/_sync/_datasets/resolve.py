@@ -60,8 +60,8 @@ from dfo._core.types import (
 )
 from dfo._datasets.build import (
     Cache,
+    Entities,
     Reading,
-    asked,
     build_body,
     check_built,
     check_served_manifest,
@@ -70,9 +70,7 @@ from dfo._datasets.build import (
     layout_of,
     lists_digest,
     pick_artifact,
-    rebind,
     response_json,
-    scope,
 )
 from dfo._datasets.dataset import Dataset, FetchedMember, build_dataset
 from dfo._datasets.progress import ProgressRenderer
@@ -110,7 +108,7 @@ def fetch(
     target: Spec | DatasetRef,
     *,
     window: Window | None = None,
-    entities: Mapping[str, list[str] | tuple[str, ...] | None] | None = None,
+    entities: Entities | None = None,
     facets: Mapping[str, str | None] | None = None,
     layout: Layout | None = None,
     party_totals: bool | None = None,
@@ -128,8 +126,8 @@ def fetch(
         target: A `Spec` to build, or a `DatasetRef` to read back.
         window: Narrow a spec to `"all"`, `"latest"` or `(start_year, end_year)`.
         entities: Rebind the named roles of a spec to dcids; None drops a role.
-            The spec's other roles keep their binding, and an empty map
-            narrows nothing.
+            The keys are the spec's role keys, `spec.roles`. The spec's other
+            roles keep their binding, and an empty map narrows nothing.
         facets: Bind a spec's provenance, measurement method or unit.
         layout: `long` (the default for a spec) or `frame`. A ref holds its own
             layout; naming another raises.
@@ -152,7 +150,8 @@ def fetch(
             `party_totals`; `latest` is not a bool, is given a spec, or
             is given a ref whose members differ in rendering; `window`,
             `entities`, `facets`, `layout`, `strict` or `progress` is malformed;
-            or `entities` rebinds a spec whose definition holds no identity.
+            `entities` names a role the spec does not declare; or `entities`
+            rebinds a spec whose definition holds no identity.
             No request is sent.
         VersionUnavailableError: A ref's version can no longer be fetched.
         FormatError: A ref's stored version lists the member's digest under
@@ -220,12 +219,9 @@ def fetch(
         timeout=timeout,
         progress=progress,
         cache=cache,
-        narrowing=scope(
-            window=window,
-            entities=rebind(target, entities) if entities else None,
-            facets=facets,
-        ),
-        asked=asked(entities=entities, facets=facets),
+        window=window,
+        entities=entities,
+        facets=facets,
     )
 
 

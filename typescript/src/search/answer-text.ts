@@ -2,8 +2,8 @@
  * How an answer reads: its text, the hints under its sentence, and its incomplete-answer
  * message, which lists every gap and the call that settles it.
  */
-import type { Answer, Candidate, Gap } from "./answer.ts";
-import { mentionsOf, waitingGaps } from "./choices.ts";
+import type { Answer, Gap } from "./answer.ts";
+import { mentionsOf, optionLine, waitingGaps } from "./choices.ts";
 import { partFacts } from "../core/parse.ts";
 import { definiteParts, partSentence, partText } from "../core/parts.ts";
 import { inline } from "../core/text.ts";
@@ -19,7 +19,10 @@ const DECLINED_REASONS: Readonly<Record<string, string>> = {
     "Search declined the question: it asks for an argument and names no data to show.",
 };
 const CATALOGUE =
-  "Search answered with the catalogue: the question asks what DFO holds and names no indicator.";
+  "Search answered with the catalogue: the question asks what DFO holds and names no indicator.\n" +
+  "  Next: client.lookup.catalogue() lists what DFO holds, with example questions.";
+const DECLINED_NEXT =
+  "\n  Next: ask for a figure DFO publishes; client.lookup.catalogue() lists example questions.";
 
 export type Hint = { readonly code: string; readonly line: string };
 
@@ -54,8 +57,9 @@ export function readingHints(answer: Answer, { departures }: { departures: boole
   return [...found].map(([line, code]) => ({ code, line }));
 }
 
-/** The answer as a reader sees it: the sentence, its hints and the call that fetches it, or
- *  what is missing. Each line passes through `inline`, so the server's text keeps to its line. */
+/** The answer as a reader sees it: the sentence, its hints and the call that fetches it, what
+ *  is missing, or why Search gave no readings and the call that lists what it holds. Each line
+ *  passes through `inline`, so the server's text keeps to its line. */
 export function answerText(answer: Answer): string {
   if (answer.kind !== "resolution") return declinedText(answer.kind, answer.reason);
   if (answer.complete) {
@@ -71,14 +75,15 @@ export function answerText(answer: Answer): string {
   return gapText(answer, "Answered");
 }
 
-/** Why Search gave a declined or catalogue answer, which holds no readings, on one line. */
+/** Why Search gave a declined or catalogue answer, which holds no readings, and the call that
+ *  lists what DFO holds, each on a line of its own. */
 export function declinedText(kind: string, reason: string | null): string {
   if (kind === "catalogue") return CATALOGUE;
   if (kind === "declined") {
-    return (
+    const why =
       DECLINED_REASONS[reason ?? ""] ??
-      inline(`Search declined the question (${reason ?? "no reason given"}).`)
-    );
+      inline(`Search declined the question (${reason ?? "no reason given"}).`);
+    return why + DECLINED_NEXT;
   }
   return inline(`Search answered with kind ${JSON.stringify(kind)}, which holds no readings.`);
 }
@@ -107,9 +112,7 @@ function gapText(answer: Answer, lead: string): string {
     }
     lines.push(`  missing  ${name}: ${gap.message}`);
     for (const [number, option] of gap.options.entries()) {
-      lines.push(
-        `    [${number}] ${option.kind === "candidate" ? candidateLine(option) : option.label}`,
-      );
+      lines.push(`    [${number}] ${optionLine(option)}`);
     }
   }
   const several = waitingGaps(answer).length > 1;
@@ -123,11 +126,6 @@ function gapText(answer: Answer, lead: string): string {
     );
   }
   return lines.map(inline).join("\n");
-}
-
-function candidateLine(candidate: Candidate): string {
-  const label = (candidate.label || candidate.sentence || "").replace(/\.+$/, "");
-  return [label, candidate.source, candidate.unit].filter(Boolean).join(" · ");
 }
 
 /** The call that settles a gap with its first choice, or null when none can. A place option is

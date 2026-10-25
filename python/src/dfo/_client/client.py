@@ -188,9 +188,9 @@ class AsyncClient:
             window: Narrow a spec to `"all"`, `"latest"` or
                 `(start_year, end_year)`.
             entities: Rebind the named roles of a spec to dcids, such as
-                `{"recipient": ["country/NGA"]}`. None drops a role. The
-                spec's other roles keep their binding, and an empty map
-                narrows nothing.
+                `{"destination": ["country/NGA"]}`; `spec.roles` lists the
+                keys. None drops a role. The spec's other roles keep their
+                binding, and an empty map narrows nothing.
             facets: Bind a spec's provenance, measurement method or unit. An
                 empty map narrows nothing.
             layout: `long` or `frame`; None builds a spec in `long` and reads a
@@ -220,7 +220,8 @@ class AsyncClient:
                 is narrowed or given another layout or `party_totals`;
                 `latest` is not a bool, is given a spec, or is given a ref
                 whose members differ in rendering; `window`, `entities`,
-                `facets` or `layout` is malformed; or
+                `facets` or `layout` is malformed; `entities` names a role the
+                spec does not declare; or
                 `timeout` is not None or a finite number above 0
                 (`invalid_argument`).
             VersionUnavailableError: A ref's version can no longer be fetched.

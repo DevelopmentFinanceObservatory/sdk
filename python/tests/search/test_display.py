@@ -104,11 +104,27 @@ def test_several_waiting_gaps_name_the_part_by_keyword(
     ]
 
 
-def test_a_declined_answer_reads_as_its_reason() -> None:
-    assert repr(read("search-declined.json")) == (
-        "Search declined the question: it asks for an argument and names no data "
-        "to show."
-    )
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            "search-declined.json",
+            "Search declined the question: it asks for an argument and names no "
+            "data to show.\n  Next: ask for a figure DFO publishes; "
+            "dfo.lookup.catalogue() lists example questions.",
+        ),
+        (
+            "search-catalogue.json",
+            "Search answered with the catalogue: the question asks what DFO holds "
+            "and names no indicator.\n  Next: dfo.lookup.catalogue() lists what DFO "
+            "holds, with example questions.",
+        ),
+    ],
+)
+def test_a_declined_answer_reads_as_its_reason_and_next_call(
+    body: str, expected: str
+) -> None:
+    assert repr(read(body)) == expected
 
 
 def test_the_html_escapes_every_server_string() -> None:

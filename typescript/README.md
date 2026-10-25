@@ -62,13 +62,14 @@ const data = await chosen.fetch();
 console.log(data.sentence);
 ```
 
-`choose` takes the option's index or its label, and returns Search's answer for that reading. When several parts await a choice, name the part: `answer.choose(0, { part: "education spending" })`. A label or part that names nothing raises `InvalidRequestError` with the code `choice_invalid`, the nearest match and the valid choices. `answer.gaps` holds the same choices as data, for a page that draws its own buttons: each gap's `options` carry a `label`.
+`choose` takes the option's index, its label, or its line as `String(answer)` prints it, such as `"Kenya's percent of nominal GDP spent on education, 1971 to 2024 · World Development Indicators"`, and returns Search's answer for that reading. When several parts await a choice, name the part: `answer.choose(0, { part: "education spending" })`. A label or part that names nothing raises `InvalidRequestError` with the code `choice_invalid`, the nearest match and the valid choices. `answer.gaps` holds the same choices as data, for a page that draws its own buttons: each gap's `options` carry a `label`.
 
 ## Narrow a fetch
 
 `client.fetch(spec, options)` builds one of the answer's readings, `answer.specs[0]` here, with a narrower window, other places, or a fixed facet:
 
 ```text
+{ destination: [ 'country/NGA' ], origin: [ 'country/DEU' ] }
 Germany's gross ODA disbursements to Nigeria for basic health care, 2015 to 2020. Current US dollars · OECD Creditor Reporting System (CRS).
 4
 Germany's gross ODA disbursements to Ghana for basic health care, 2003 to 2023. Current US dollars · OECD Creditor Reporting System (CRS).
@@ -76,7 +77,7 @@ Germany's gross ODA disbursements to Ghana for basic health care, 2003 to 2023. 
 ```
 
 ```ts
-import { Client } from "@developmentfinance/client";
+import { Client, specRoles } from "@developmentfinance/client";
 
 const client = new Client({ onWarning: () => {} });
 const answer = await client.search(
@@ -84,6 +85,7 @@ const answer = await client.search(
 );
 const [spec] = answer.specs;
 if (spec === undefined) throw new Error(`Search found nothing to fetch:\n${answer}`);
+console.log(specRoles(spec));
 
 const recent = await client.fetch(spec, { window: [2015, 2020] });
 const ghana = await client.fetch(spec, { entities: { destination: ["country/GHA"] } });
@@ -94,9 +96,11 @@ console.log(ghana.rowCount);
 ```
 
 - `window` is `"all"`, `"latest"` or `[startYear, endYear]`.
-- `entities` rebinds a role by the name the spec uses, `spec.definition.identity.entities`, here `origin` and `destination`. A role you leave out keeps its places, and `null` unbinds one.
+- `entities` rebinds a role by the key the spec uses, here `origin` and `destination`. `specRoles(spec)` lists the keys, each with the dcids it binds, or `null` for a flow direction it binds none of. A role you leave out keeps its places, and `null` unbinds one. A key the spec does not take, such as the column name `financingRecipient`, raises `InvalidRequestError` with `invalid_argument` and the spec's roles, before any request.
 - `facets` binds an axis, such as `{ provenance: "provenance/OECDCreditorReportingSystem" }`.
 - `partyTotals: true` keeps the rows of totals such as "DAC countries" beside their members. They are left out by default, so a sum over `value` counts each flow once.
+
+`answer.fetch` takes the same `window`, `entities` and `facets` and narrows every reading, as `answer.fetch({ window: [2015, 2020] })`. A role that one reading does not take is refused before any request, with each reading's roles.
 
 A narrowing that holds no data returns an empty `Dataset` under Search's no-data sentence, with an `empty_result` warning. An option the call does not take raises `InvalidRequestError` with `invalid_argument` and names the nearest one, so `party_totals` points you to `partyTotals`.
 

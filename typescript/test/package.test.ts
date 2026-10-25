@@ -46,6 +46,7 @@ test("the root entry exports these values and no others", async () => {
     "VersionUnavailableError",
     "isDfoError",
     "isKnownPart",
+    "specRoles",
   ]);
 });
 

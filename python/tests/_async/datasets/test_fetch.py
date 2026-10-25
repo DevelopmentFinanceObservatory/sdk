@@ -294,7 +294,7 @@ async def test_an_answer_part_resubmits_with_its_first_part() -> None:
         built = await fetch_members(
             transport,
             [Reading(("ODA", "aid"), spec())],
-            narrowing={"window": {"kind": "latest"}},
+            window="latest",
         )
     entry = server.body(1)["input"]["entries"][0]
     assert entry["variable_text"] == "ODA"
