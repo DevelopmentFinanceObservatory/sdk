@@ -78,3 +78,12 @@ const SEGMENT_SEPARATOR = /[/\\]|%2f|%5c/i;
  *  backslashes, raw or percent-encoded, which a server resolves to another path. */
 export const hasDotSegment = (path: string): boolean =>
   path.split(SEGMENT_SEPARATOR).some((segment) => DOT_SEGMENT.test(segment));
+
+/** `message` with one bracket naming `labels`, joined by ` · `, as in
+ *  `No entry. [code_not_found · trace 4f2a]`: on its last line, or on a line of its own after a
+ *  message of several lines. The bracket passes through `printable`, as the message has. No
+ *  labels leave the message as it is. */
+export function bracketed(message: string, labels: readonly string[]): string {
+  if (labels.length === 0) return message;
+  return `${message}${message.includes("\n") ? "\n" : " "}[${printable(labels.join(" · "))}]`;
+}

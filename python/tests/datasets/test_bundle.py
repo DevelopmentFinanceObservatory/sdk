@@ -17,7 +17,7 @@ import pytest
 import dfo
 from dfo._core.refs import DatasetRef
 from dfo._core.types import FormatError, Rendering
-from dfo._datasets.bundle import BundleError, BundleLimits, open_bundle
+from dfo._datasets.bundle import BundleError, BundleLimits, load
 from dfo._datasets.cache import sha256_digest
 from tests._data import DATA
 
@@ -111,12 +111,12 @@ FIELDS = [
 def test_a_bundle_types_its_columns_like_the_bare_parquet(bundle: Path) -> None:
     if bundle is XLSX_BUNDLE:
         pytest.importorskip("openpyxl")
-    table = open_bundle(bundle).to_arrow()
+    table = load(bundle).to_arrow()
     assert table.equals(pq.read_table(PARQUET))
 
 
 def test_a_zip_bundle_names_its_exact_version() -> None:
-    data = open_bundle(CSV_BUNDLE)
+    data = load(CSV_BUNDLE)
     (member,) = data.members
     assert member.spec.spec_id == SPEC_ID
     assert member.content_version == CONTENT_VERSION
@@ -127,7 +127,7 @@ def test_a_zip_bundle_names_its_exact_version() -> None:
 
 
 def test_a_bundle_carries_its_sources_and_licence() -> None:
-    data = open_bundle(CSV_BUNDLE)
+    data = load(CSV_BUNDLE)
     assert data.sentence == "OECD Creditor Reporting System (CRS), 2020\u20132023"
     assert data.sources == ("OECD Creditor Reporting System (CRS)",)
     assert data.licence == "OECD Terms and Conditions"
@@ -138,7 +138,7 @@ def test_a_bundle_carries_its_sources_and_licence() -> None:
 @pytest.mark.parametrize("entry", [".", "datapackage.json", DATA_FILE])
 def test_a_folder_or_a_file_in_it_opens(tmp_path: Path, entry: str) -> None:
     folder = extracted(CSV_BUNDLE, tmp_path / "bundle")
-    data = open_bundle(folder / entry)
+    data = load(folder / entry)
     assert data.to_arrow().equals(pq.read_table(PARQUET))
     assert data.members == ()
     with pytest.raises(ValueError, match="names no version"):
@@ -150,7 +150,7 @@ def test_a_lone_csv_is_refused(tmp_path: Path) -> None:
     with zipfile.ZipFile(CSV_BUNDLE) as archive:
         lone.write_bytes(archive.read(DATA_FILE))
     with pytest.raises(BundleError, match="download the bundle") as caught:
-        open_bundle(lone)
+        load(lone)
     assert caught.value.reason == "no_descriptor"
 
 
@@ -159,7 +159,7 @@ def test_a_changed_file_is_refused(tmp_path: Path) -> None:
     data_file = folder / DATA_FILE
     data_file.write_text(data_file.read_text().replace("41880.0", "41881.0"))
     with pytest.raises(BundleError) as caught:
-        open_bundle(folder)
+        load(folder)
     assert caught.value.reason == "hash_mismatch"
 
 
@@ -167,14 +167,14 @@ def test_a_missing_file_is_refused(tmp_path: Path) -> None:
     folder = extracted(CSV_BUNDLE, tmp_path / "bundle")
     (folder / "data" / "codes.csv").unlink()
     with pytest.raises(BundleError) as caught:
-        open_bundle(folder)
+        load(folder)
     assert caught.value.reason == "missing_file"
 
 
 def test_a_descriptor_without_the_data_table_is_refused(tmp_path: Path) -> None:
     for target in edited(tmp_path, package_edit(lambda p: p.update(name="renamed"))):
         with pytest.raises(BundleError) as caught:
-            open_bundle(target)
+            load(target)
         assert caught.value.reason == "no_data_resource"
 
 
@@ -223,7 +223,7 @@ def test_a_descriptor_path_outside_the_bundle_is_refused_before_any_read(
     zipped = zipped_from(folder, tmp_path / "escaping.zip")
     for target in (folder, zipped):
         with pytest.raises(FormatError) as caught:
-            open_bundle(target)
+            load(target)
         assert (caught.value.reason, caught.value.pointer) == (
             "format_invalid",
             f"/resources/{index}/path",
@@ -242,7 +242,7 @@ def test_a_symlink_out_of_an_extracted_folder_is_refused(
     (folder / linked).unlink()
     (folder / linked).symlink_to(secret)
     with pytest.raises(FormatError) as caught:
-        open_bundle(folder)
+        load(folder)
     assert (caught.value.reason, caught.value.pointer) == ("format_invalid", pointer)
 
 
@@ -281,7 +281,7 @@ def test_a_file_without_a_sha256_hash_is_refused(tmp_path: Path, value: object) 
 
     for target in edited(tmp_path, package_edit(change)):
         with pytest.raises(FormatError) as caught:
-            open_bundle(target)
+            load(target)
         assert (caught.value.reason, caught.value.pointer) == (
             "format_invalid",
             "/resources/0/hash",
@@ -339,7 +339,7 @@ def test_a_damaged_descriptor_raises_format_error(
 ) -> None:
     for target in edited(tmp_path, edit):
         with pytest.raises(FormatError) as caught:
-            open_bundle(target)
+            load(target)
         assert (caught.value.reason, caught.value.pointer) == (
             "format_invalid",
             pointer,
@@ -382,7 +382,7 @@ def test_data_that_does_not_fit_its_columns_raises_format_error(
         else "".join(",".join(map(str, row)) + "\n" for row in rows).encode()
     )
     with pytest.raises(FormatError) as caught:
-        open_bundle(small_bundle(tmp_path, data, fmt, FIELDS))
+        load(small_bundle(tmp_path, data, fmt, FIELDS))
     assert (caught.value.reason, caught.value.pointer) == (
         "format_invalid",
         "/resources/0",
@@ -393,7 +393,7 @@ def test_data_that_does_not_fit_its_columns_raises_format_error(
 def test_a_small_bundle_reads_its_typed_values(tmp_path: Path, fmt: str) -> None:
     rows: list[list[Any]] = [["country", "year", "value"], ["KEN", 2015.0, 1.5]]
     data = xlsx(rows) if fmt == "xlsx" else b"country,year,value\nKEN,2015,1.5\n"
-    table = open_bundle(small_bundle(tmp_path, data, fmt, FIELDS)).to_arrow()
+    table = load(small_bundle(tmp_path, data, fmt, FIELDS)).to_arrow()
     assert table.to_pydict() == {"country": ["KEN"], "year": [2015], "value": [1.5]}
 
 
@@ -401,7 +401,7 @@ def test_a_folder_without_a_descriptor_is_refused(tmp_path: Path) -> None:
     folder = extracted(CSV_BUNDLE, tmp_path / "bundle")
     (folder / "datapackage.json").unlink()
     with pytest.raises(BundleError) as caught:
-        open_bundle(folder)
+        load(folder)
     assert caught.value.reason == "no_descriptor"
 
 
@@ -409,12 +409,12 @@ def test_a_bare_server_parquet_is_refused(tmp_path: Path) -> None:
     bare = tmp_path / "bare.parquet"
     shutil.copy(PARQUET, bare)
     with pytest.raises(BundleError) as caught:
-        open_bundle(bare)
+        load(bare)
     assert caught.value.reason == "not_a_bundle"
 
 
 def test_bundle_limits_are_public_immutable_and_keyword_only() -> None:
-    limits = dfo.BundleLimits()
+    limits = dfo.types.BundleLimits()
     assert limits == BundleLimits()
     with pytest.raises(FrozenInstanceError):
         limits.max_resources = 1
@@ -435,7 +435,7 @@ def test_a_bundle_enforces_actual_file_bytes(
 ) -> None:
     target = CSV_BUNDLE if source == "zip" else extracted(CSV_BUNDLE, tmp_path / source)
     with pytest.raises(BundleError) as caught:
-        open_bundle(target, limits=BundleLimits(**{limit: 1}))
+        load(target, limits=BundleLimits(**{limit: 1}))
     assert caught.value.reason == "resource_limit"
 
 
@@ -446,13 +446,13 @@ def test_a_bundle_enforces_actual_aggregate_bytes() -> None:
         max_total_bytes=15 * 1024,
     )
     with pytest.raises(BundleError) as caught:
-        open_bundle(CSV_BUNDLE, limits=limits)
+        load(CSV_BUNDLE, limits=limits)
     assert caught.value.reason == "resource_limit"
 
 
 def test_a_zip_bundle_limits_its_entry_count_before_reading_resources() -> None:
     with pytest.raises(BundleError) as caught:
-        open_bundle(CSV_BUNDLE, limits=BundleLimits(max_zip_entries=1))
+        load(CSV_BUNDLE, limits=BundleLimits(max_zip_entries=1))
     assert caught.value.reason == "resource_limit"
 
 
@@ -461,7 +461,7 @@ def test_finding_a_bundle_folder_limits_its_descriptor_resources(
 ) -> None:
     folder = extracted(CSV_BUNDLE, tmp_path / "bundle")
     with pytest.raises(BundleError) as caught:
-        open_bundle(folder / DATA_FILE, limits=BundleLimits(max_resources=1))
+        load(folder / DATA_FILE, limits=BundleLimits(max_resources=1))
     assert caught.value.reason == "resource_limit"
 
 
@@ -503,7 +503,7 @@ def test_an_xlsx_bundle_enforces_its_inner_resource_limits(limit_name: str) -> N
     limit = fixture_limits[limit_name]
     assert limit > 1
     with pytest.raises(BundleError) as caught:
-        open_bundle(XLSX_BUNDLE, limits=BundleLimits(**{limit_name: limit - 1}))
+        load(XLSX_BUNDLE, limits=BundleLimits(**{limit_name: limit - 1}))
     assert caught.value.reason == "resource_limit"
 
 
@@ -535,7 +535,7 @@ def test_an_xlsx_without_declared_dimensions_streams_with_limits(
     resource["hash"] = sha256_digest(path.read_bytes())
     descriptor.write_text(json.dumps(package))
 
-    assert open_bundle(folder).to_arrow().equals(pq.read_table(PARQUET))
+    assert load(folder).to_arrow().equals(pq.read_table(PARQUET))
     with pytest.raises(BundleError) as caught:
-        open_bundle(folder, limits=BundleLimits(max_xlsx_rows=1))
+        load(folder, limits=BundleLimits(max_xlsx_rows=1))
     assert caught.value.reason == "resource_limit"

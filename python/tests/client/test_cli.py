@@ -8,6 +8,7 @@ import pytest
 from dfo._client import cli as _cli
 from dfo._config.credentials import read_profiles
 from dfo._config.paths import cache_directory
+from dfo._http.transport import DEFAULT_BASE_URL
 
 KEY = "dfo_k_4f8Kq2ZtR7mWx1NcB9vLp3YhD6sGa0Ue2wanxe"
 
@@ -82,6 +83,31 @@ def test_status_names_the_source_and_masks_the_key(
     monkeypatch.setenv("DFO_API_KEY", KEY)
     assert _cli.main(["auth", "status"]) == 0
     assert "DFO_API_KEY environment variable" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("env", "status"),
+    [(None, 0), ("https://dev.example.org/api", 0), ("dev.example.org/api", 1)],
+    ids=["unset", "set", "invalid"],
+)
+def test_status_names_where_requests_go(
+    credentials: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    env: str | None,
+    status: int,
+) -> None:
+    if env is not None:
+        monkeypatch.setenv("DFO_BASE_URL", env)
+    assert _cli.main(["auth", "status"]) == status
+    captured = capsys.readouterr()
+    assert ("https://dev.example.org/api" in captured.out) is (
+        status == 0 and env is not None
+    )
+    assert (f"Requests go to {DEFAULT_BASE_URL}, the public API" in captured.out) is (
+        env is None
+    )
+    assert ("DFO_BASE_URL" in captured.err) is (status == 1)
 
 
 def test_status_reports_a_broken_file(

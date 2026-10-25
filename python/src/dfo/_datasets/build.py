@@ -8,11 +8,12 @@ client's rendering, and paces polls.
 requests themselves.
 """
 
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeGuard
 
 import httpx2
 
@@ -21,7 +22,7 @@ from dfo._core.errors import client_error
 from dfo._core.json_text import loads
 from dfo._core.parse import check_manifest, check_operation, violation
 from dfo._core.refusals import sent_key, trace_id_of
-from dfo._core.text import quoted, redacted_json
+from dfo._core.text import cited, quoted, redacted_json
 from dfo._core.types import (
     CONTENT_VERSION,
     OPERATION_ID,
@@ -44,10 +45,10 @@ POLL_BACKOFF_CAP = 8.0
 
 _LAYOUTS = ("long", "frame")
 
-# The years a window range may name: the integers JSON carries exactly, as the
-# build request's schema bounds them.
-WINDOW_FIRST_YEAR = -(2**53 - 1)
-WINDOW_LAST_YEAR = 2**53 - 1
+# The years a window range may name. The server takes any integer JSON carries
+# exactly, and a year outside these builds an identity Search cannot resolve back.
+WINDOW_FIRST_YEAR = 1000
+WINDOW_LAST_YEAR = 2200
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +80,7 @@ class Reading:
     parts: tuple[str, ...]
     spec: Spec
     sentence: str | None = None
-    answer_parts: tuple[Part[object], ...] = ()
+    answer_parts: tuple[Part, ...] = ()
 
 
 class Cache(Protocol):
@@ -226,8 +227,38 @@ def scope(
     return result or None
 
 
+@dataclass(frozen=True, slots=True)
+class Asked:
+    """The values a caller's narrowing names, which a build's refusal answers.
+
+    Attributes:
+        dcids: The dcids the caller bound its roles to, stripped, in role order.
+        refs: The refs the caller bound its facet axes to.
+    """
+
+    dcids: tuple[str, ...] = ()
+    refs: tuple[str, ...] = ()
+
+
+# What a fetch with no narrowing names.
+NOTHING_ASKED = Asked()
+
+
+def asked(
+    *,
+    entities: Mapping[str, list[str] | tuple[str, ...] | None] | None = None,
+    facets: Mapping[str, str | None] | None = None,
+) -> Asked:
+    """The values a narrowing `scope` has accepted, for a refusal's hints."""
+    dcids = [
+        dcid for given in (entities or {}).values() for dcid in dcids_of(given) or ()
+    ]
+    refs = [ref for ref in (facets or {}).values() if isinstance(ref, str) and ref]
+    return Asked(tuple(dcids), tuple(refs))
+
+
 def rebind(
-    spec: Spec, entities: Mapping[str, Sequence[str] | None]
+    spec: Spec, entities: Mapping[str, list[str] | tuple[str, ...] | None]
 ) -> dict[str, Sequence[str]]:
     """The whole entity binding a fetch posts, the spec's own with `entities` applied.
 
@@ -245,7 +276,8 @@ def rebind(
         raise client_error(
             INVALID_ARGUMENT,
             f"The definition of {spec.spec_id} holds no identity to rebind; use a "
-            "spec from a search, or one Spec.from_json loaded from Spec.to_json",
+            "spec from a search, such as answer.specs[0], or a saved dataset's "
+            "data.members[0].spec",
         )
     bound: dict[str, Sequence[str]] = dict(identity.get("entities", {}))
     for role, dcids in entities.items():
@@ -260,21 +292,45 @@ def _window(window: Window) -> dict[str, Any]:
     if window in ("all", "latest"):
         return {"kind": window}
     match window:
-        case (int() as start, int() as end) if not isinstance(
-            start, bool
-        ) and not isinstance(end, bool):
-            if not WINDOW_FIRST_YEAR <= start <= end <= WINDOW_LAST_YEAR:
+        case (start, end) if _is_year(start) and _is_year(end):
+            if start < WINDOW_FIRST_YEAR or end > WINDOW_LAST_YEAR:
                 raise client_error(
                     INVALID_ARGUMENT,
-                    "window is (start_year, end_year), start_year first, each "
-                    f"within ±{WINDOW_LAST_YEAR}, not {window!r}",
+                    f"window years run from {WINDOW_FIRST_YEAR} to "
+                    f"{WINDOW_LAST_YEAR}, not {cited(window)}.",
+                )
+            if start > end:
+                raise client_error(
+                    INVALID_ARGUMENT,
+                    "window is (start_year, end_year), start_year first, not "
+                    f"{cited(window)}.",
                 )
             return {"kind": "range", "start_year": start, "end_year": end}
-        case _:
-            raise client_error(
-                INVALID_ARGUMENT,
-                f'window is "all", "latest" or (start_year, end_year), not {window!r}',
-            )
+    year = _one_year(window)
+    hint = "." if year is None else f"; for one year use window=({year}, {year})."
+    raise client_error(
+        INVALID_ARGUMENT,
+        f'window is "all", "latest" or (start_year, end_year), not '
+        f"{cited(window)}{hint}",
+    )
+
+
+def _is_year(value: object) -> TypeGuard[int]:
+    """Whether `value` is an integer, which a bool is not."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _one_year(window: object) -> int | None:
+    """The year a window names on its own: an integer, a string of up to four
+    digits, or a list or tuple of one."""
+    only = (
+        window[0] if isinstance(window, list | tuple) and len(window) == 1 else window
+    )
+    if _is_year(only):
+        return only
+    if isinstance(only, str) and re.fullmatch(r"[0-9]{1,4}", only):
+        return int(only)
+    return None
 
 
 def _names(argument: str, value: object) -> Mapping[str, object]:
@@ -306,8 +362,8 @@ def _entities(entities: Mapping[str, Sequence[str]]) -> dict[str, list[str]]:
                 f"entities[{role!r}] is a string; bind the role to a list of dcids, "
                 f"such as [{dcids!r}]",
             )
-        listed = list(dcids) if isinstance(dcids, Iterable) else None
-        if not listed or not all(isinstance(dcid, str) and dcid for dcid in listed):
+        listed = dcids_of(dcids)
+        if listed is None:
             raise client_error(
                 INVALID_ARGUMENT,
                 f"entities[{role!r}] is a list of dcids, such as ['country/NGA'], "
@@ -315,6 +371,16 @@ def _entities(entities: Mapping[str, Sequence[str]]) -> dict[str, list[str]]:
             )
         bound[role] = listed
     return bound
+
+
+def dcids_of(value: object) -> list[str] | None:
+    """A role's dcids, each without surrounding white space, which no dcid holds;
+    None unless `value` is a non-empty sequence of strings that are not empty once
+    stripped."""
+    if isinstance(value, str) or not isinstance(value, Iterable):
+        return None
+    dcids = [dcid.strip() if isinstance(dcid, str) else "" for dcid in value]
+    return dcids if dcids and all(dcids) else None
 
 
 def _ref(axis: str, ref: object) -> str | None:

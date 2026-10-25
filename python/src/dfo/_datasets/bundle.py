@@ -1,6 +1,6 @@
 """Open a saved dataset or a bundle downloaded from the website.
 
-`open_bundle` reads a Parquet file `Dataset.save` wrote, or a website bundle as a
+`load` reads a Parquet file `Dataset.save` wrote, or a website bundle as a
 ZIP, an extracted folder, or a file inside one. A bundle's `datapackage.json`
 types the data's CSV or XLSX columns and gives each file's SHA-256 hash, which is
 checked before the data is read. `BundleLimits` bounds its descriptor, entry count,
@@ -25,7 +25,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, fields
 from os import PathLike
 from pathlib import Path, PureWindowsPath
-from typing import IO, TYPE_CHECKING, Any, Literal
+from typing import IO, TYPE_CHECKING, Any, Literal, override
 
 from dfo._core.refs import Member
 from dfo._core.types import (
@@ -65,7 +65,7 @@ _CHUNK_SIZE = 64 * 1024
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class BundleLimits:
-    """The resource limits `open_bundle` applies to website bundles.
+    """The resource limits `load` applies to website bundles.
 
     Attributes:
         max_descriptor_bytes: The largest `datapackage.json` the reader accepts.
@@ -99,6 +99,16 @@ class BundleLimits:
     max_xlsx_rows: int = 100_000
     max_xlsx_cells: int = 1_000_000
 
+    @override
+    def __repr__(self) -> str:
+        """The limits that differ from the defaults, as `BundleLimits(max_zip_entries=10)`."""
+        changed = ", ".join(
+            f"{limit.name}={getattr(self, limit.name):_}"
+            for limit in fields(self)
+            if getattr(self, limit.name) != limit.default
+        )
+        return f"BundleLimits({changed})"
+
     def __post_init__(self) -> None:
         for limit in fields(self):
             value = getattr(self, limit.name)
@@ -118,7 +128,7 @@ DEFAULT_BUNDLE_LIMITS = BundleLimits()
 
 
 class BundleError(ValueError):
-    """A path holds no dataset `open_bundle` can read.
+    """A path holds no dataset `dfo.load` can read.
 
     Attributes:
         reason: `not_a_bundle` for a file that is neither a saved dataset nor part
@@ -134,7 +144,7 @@ class BundleError(ValueError):
         self.reason: BundleErrorReason = reason
 
 
-def open_bundle(
+def load(
     path: str | PathLike[str], /, *, limits: BundleLimits = DEFAULT_BUNDLE_LIMITS
 ) -> Dataset:
     """Open a dataset saved by `Dataset.save`, or a bundle downloaded from the website.

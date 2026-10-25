@@ -7,10 +7,12 @@
  * problem document. A body that does not, and is a problem document (a `code` and no `kind`),
  * raises the class `errorClassFor` gives its code, or `ContractError` (`contract_violation`) for a
  * code the contract does not map; any other body raises `contract_violation`. The client reads no
- * more of it, so an unknown member or enum value passes through untouched.
+ * more of it, so an unknown member or enum value passes through untouched. An options key a
+ * lookup does not take raises `InvalidRequestError` (`invalid_argument`) before any request.
  */
 
 import { clientError, problemAt200, REFUSAL_CODE } from "../core/errors.ts";
+import { checkOptions, declareOptions } from "../core/options.ts";
 import { checkRequired } from "../core/strict.ts";
 import type { JsonType } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
@@ -22,11 +24,9 @@ import type {
   CodeRegistryEntry,
   GraphApiResolveModelsResolveRequest,
   paths,
+  ResolveKind,
   ResolveResponse,
 } from "../wire.ts";
-
-/** A kind of graph node a name can resolve to. */
-export type ResolveKind = NonNullable<GraphApiResolveModelsResolveRequest["kinds"]>[number];
 
 /** One graph node, told apart by its `kind`. */
 export type GraphNode =
@@ -61,6 +61,28 @@ export type CatalogueOptions = LookupOptions & {
   readonly place?: string;
 };
 
+const RESOLVE_OPTIONS = declareOptions<ResolveOptions>("client.lookup.resolve", {
+  signal: true,
+  timeout: true,
+  kinds: true,
+  codeSystem: true,
+  expandMembers: true,
+});
+const NODE_OPTIONS = declareOptions<NodeOptions>("client.lookup.node", {
+  signal: true,
+  timeout: true,
+  asOf: true,
+});
+const CODE_OPTIONS = declareOptions<LookupOptions>("client.lookup.code", {
+  signal: true,
+  timeout: true,
+});
+const CATALOGUE_OPTIONS = declareOptions<CatalogueOptions>("client.lookup.catalogue", {
+  signal: true,
+  timeout: true,
+  place: true,
+});
+
 /** The body of a lookup's response, once it holds what `schema` requires. A body that does not,
  *  and is a problem document, raises the error the document stands for. */
 const lookupBody = (
@@ -78,13 +100,24 @@ const lookupBody = (
 
 const callOptions = ({ signal, timeout }: LookupOptions) => ({ signal, timeout });
 
-/** The graph's lookups: names to dcids, and a node by its dcid. */
-export class Graph {
+/** The lookups: names to graph nodes, a node by its dcid, a code's registry entry, and what
+ *  Search holds data on. */
+export class Lookup {
   readonly #transport: Transport;
 
-  /** Graphs come from `client.graph`. The client calls this constructor. */
+  /** @internal Lookups come from `client.lookup`. The client calls this constructor. */
   constructor(transport: Transport) {
     this.#transport = transport;
+  }
+
+  /** The lookups' calls, as `<Lookup: resolve(names), node(dcid), code(code), catalogue()>`. */
+  toString(): string {
+    return "<Lookup: resolve(names), node(dcid), code(code), catalogue()>";
+  }
+
+  /** Node's `console.log` and `util.inspect` show the lookups as `String(client.lookup)` does. */
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return this.toString();
   }
 
   /**
@@ -97,7 +130,8 @@ export class Graph {
     texts: string | readonly string[],
     options: ResolveOptions = {},
   ): Promise<ResolveResponse> {
-    const { kinds, codeSystem, expandMembers = false } = options;
+    const call = checkOptions(RESOLVE_OPTIONS, options);
+    const { kinds, codeSystem, expandMembers = false } = call;
     const body: GraphApiResolveModelsResolveRequest = {
       texts: typeof texts === "string" ? [texts] : [...texts],
       ...(kinds === undefined ? {} : { kinds: [...kinds] }),
@@ -107,7 +141,7 @@ export class Graph {
     const response = await this.#transport.request({
       path: "/graph/resolve",
       json: body,
-      ...callOptions(options),
+      ...callOptions(call),
     });
     return lookupBody(response, "ResolveResponse", { results: "array" }) as ResolveResponse;
   }
@@ -120,14 +154,54 @@ export class Graph {
    * @throws {NotFoundError} The graph holds no node with that dcid.
    */
   async node(dcid: string, options: NodeOptions = {}): Promise<GraphNode> {
+    const call = checkOptions(NODE_OPTIONS, options);
     checkDcid(dcid);
     const path = `/graph/node/${dcid.split("/").map(encodeURIComponent).join("/")}`;
     const response = await this.#transport.request({
       path,
-      query: { as_of: options.asOf },
-      ...callOptions(options),
+      query: { as_of: call.asOf },
+      ...callOptions(call),
     });
     return lookupBody(response, "GraphNode", { kind: "string", ref: "string" }) as GraphNode;
+  }
+
+  /**
+   * The registry entry for one code, such as `spec_not_found`: what a refusal or warning code
+   * means. The registry sits at the API host's root, the page an error's `docsUrl` names.
+   *
+   * @throws {InvalidRequestError} The code is not lower-case snake case (`invalid_argument`).
+   * @throws {NotFoundError} The registry holds no such code.
+   */
+  async code(code: string, options: LookupOptions = {}): Promise<CodeRegistryEntry> {
+    const call = checkOptions(CODE_OPTIONS, options);
+    if (!REFUSAL_CODE.test(code)) {
+      throw clientError("invalid_argument", {
+        detail: "A code is a lower-case letter followed by lower-case letters, digits or _.",
+      });
+    }
+    const response = await this.#transport.request({
+      url: `/codes/${encodeURIComponent(code)}`,
+      ...callOptions(call),
+    });
+    return lookupBody(response, "CodeRegistryEntry", {
+      code: "string",
+      mappings: "array",
+    }) as CodeRegistryEntry;
+  }
+
+  /** What Search holds data on: counts and example questions, for one country with `place`. */
+  async catalogue(options: CatalogueOptions = {}): Promise<CatalogueResponse> {
+    const call = checkOptions(CATALOGUE_OPTIONS, options);
+    const response = await this.#transport.request({
+      path: "/search/catalogue",
+      query: { place: call.place },
+      ...callOptions(call),
+    });
+    return lookupBody(response, "CatalogueResponse", {
+      catalogue_version: "string",
+      counts: "object",
+      examples: "array",
+    }) as CatalogueResponse;
   }
 }
 
@@ -148,54 +222,4 @@ function checkDcid(dcid: string): void {
   throw clientError("invalid_argument", {
     detail: `The dcid ${problem}; pass one such as country/NGA.`,
   });
-}
-
-/** The code registry: what each refusal and warning code means. */
-export class Codes {
-  readonly #transport: Transport;
-
-  /** Code lookups come from `client.codes`. The client calls this constructor. */
-  constructor(transport: Transport) {
-    this.#transport = transport;
-  }
-
-  /**
-   * The registry entry for one code, such as `spec_not_found`. The registry sits at the API
-   * host's root, the page an error's `docsUrl` names.
-   *
-   * @throws {InvalidRequestError} The code is not lower-case snake case (`invalid_argument`).
-   * @throws {NotFoundError} The registry holds no such code.
-   */
-  async get(code: string, options: LookupOptions = {}): Promise<CodeRegistryEntry> {
-    if (!REFUSAL_CODE.test(code)) {
-      throw clientError("invalid_argument", {
-        detail: "A code is a lower-case letter followed by lower-case letters, digits or _.",
-      });
-    }
-    const response = await this.#transport.request({
-      url: `/codes/${encodeURIComponent(code)}`,
-      ...callOptions(options),
-    });
-    return lookupBody(response, "CodeRegistryEntry", {
-      code: "string",
-      mappings: "array",
-    }) as CodeRegistryEntry;
-  }
-}
-
-/** What Search holds data on: counts and example questions. */
-export async function catalogue(
-  transport: Transport,
-  options: CatalogueOptions = {},
-): Promise<CatalogueResponse> {
-  const response = await transport.request({
-    path: "/search/catalogue",
-    query: { place: options.place },
-    ...callOptions(options),
-  });
-  return lookupBody(response, "CatalogueResponse", {
-    catalogue_version: "string",
-    counts: "object",
-    examples: "array",
-  }) as CatalogueResponse;
 }

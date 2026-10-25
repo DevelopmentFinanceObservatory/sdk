@@ -1,13 +1,12 @@
 """The parser over recorded dev bodies, the contract's scenarios and edited copies."""
 
 import json
-import re
 from collections.abc import Callable
 from typing import Any
 
 import pytest
 
-from dfo._core.errors import ContractError, InvalidRequestError
+from dfo._core.errors import ContractError
 from dfo._core.parse import (
     check_manifest,
     check_operation,
@@ -684,12 +683,3 @@ def test_scenario_bodies_parse(
         check_manifest(json_body)
     else:
         pytest.fail(f"no reader for {status} from {path}")
-
-
-def test_a_candidate_from_no_answer_names_the_call() -> None:
-    (part,) = parse_parts(load("search-2.json"))
-    assert isinstance(part, CandidatesPart)
-    hint = "dfo.fetch(candidate.spec)"
-    with pytest.raises(InvalidRequestError, match=re.escape(hint)) as caught:
-        part.candidates[0].fetch()
-    assert caught.value.code == "invalid_argument"

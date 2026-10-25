@@ -4,12 +4,50 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
+// The node entry point installs the file-system credentials reader the key lookup uses.
+import "../src/index.node.ts";
 import { envFrom } from "../src/config/env.ts";
-import { resolveApiKey } from "../src/index.node.ts";
+import { resolveApiKey } from "../src/config/keys.ts";
 import { VERSION } from "../src/version.ts";
 
 const readJson = async <T>(path: string): Promise<T> =>
   JSON.parse(await readFile(new URL(path, import.meta.url), "utf8")) as T;
+
+test("the root entry exports these values and no others", async () => {
+  const root = await import("../src/index.node.ts");
+  assert.deepEqual(Object.keys(root).sort(), [
+    "Answer",
+    "ApiKey",
+    "AuthenticationError",
+    "Client",
+    "ContractError",
+    "DataWarning",
+    "Dataset",
+    "DatasetRef",
+    "DeclinedError",
+    "DfoDeprecationWarning",
+    "DfoError",
+    "DfoTimeoutError",
+    "DfoWarning",
+    "FormatError",
+    "IncompleteAnswerError",
+    "InvalidRequestError",
+    "Lookup",
+    "NetworkError",
+    "NotFoundError",
+    "PART_STATUSES",
+    "PermissionDeniedError",
+    "QuotaExceededError",
+    "RateLimitError",
+    "RawResponse",
+    "SearchWarning",
+    "ServerError",
+    "VERSION",
+    "VersionUnavailableError",
+    "isDfoError",
+    "isKnownPart",
+  ]);
+});
 
 test("VERSION matches package.json", async () => {
   const pkg = await readJson<{ version: string }>("../package.json");

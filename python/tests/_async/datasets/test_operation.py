@@ -1,4 +1,4 @@
-"""Tests for build retries and long builds: the 504 rule, polling, pacing, resuming.
+"""Tests for build retries and long builds: the 504 rule, polling, pacing, waiting.
 
 `scripts/gen_sync.py` derives `tests/_sync/datasets/test_operation.py` from this
 file, so the sync client passes the same tests.
@@ -16,6 +16,7 @@ from dfo._core.errors import (
     ContractError,
     DfoError,
     DfoTimeoutError,
+    InvalidRequestError,
     NotFoundError,
     RateLimitError,
     ServerError,
@@ -24,14 +25,13 @@ from dfo._core.json_text import JSON_MAX_DEPTH
 from dfo._core.parse import parse_spec
 from dfo._core.types import Spec
 from dfo._datasets.cache import sha256_digest
-from dfo._datasets.fetch import mint, operation
+from dfo._datasets.operation import resume
 from dfo._datasets.resolve import fetch
 from dfo._http.transport import AsyncTransport
 from tests._fetch_support import (
     BASE,
     CUT,
     CUT_DATA,
-    NARROWED_ID,
     OP_ID,
     POSTED_ID,
     Server,
@@ -42,7 +42,6 @@ from tests._fetch_support import (
     posted_spec,
     problem,
     redirect,
-    resubmitted,
     with_cut,
 )
 from tests._fetch_support import (
@@ -98,6 +97,12 @@ def spec() -> Spec:
 
 def done(body: dict | None = None) -> httpx2.Response:
     return json_response(200, resource("done", body=body or manifest(POSTED_ID)))
+
+
+async def resumed(transport: AsyncTransport) -> None:
+    """Read the operation `OP_ID` by its id, as the contract's `operation` step
+    does."""
+    await resume(transport, OP_ID, on_progress=lambda *_: None)
 
 
 def accepted(**members) -> httpx2.Response:
@@ -276,7 +281,7 @@ async def test_an_operation_status_outside_the_contract_raises_on_its_read(
     async with make(server) as transport:
         with pytest.raises(ContractError) as caught:
             if reply == "resumed":
-                await operation(transport, OP_ID)
+                await resumed(transport)
             else:
                 await fetch(transport, spec())
     assert (caught.value.code, caught.value.pointer) == (
@@ -294,7 +299,7 @@ async def test_a_poll_answering_for_another_operation_raises(reply: str) -> None
     async with make(server) as transport:
         with pytest.raises(ContractError) as caught:
             if reply == "resumed":
-                await operation(transport, OP_ID)
+                await resumed(transport)
             else:
                 await fetch(transport, spec())
     assert (caught.value.code, caught.value.pointer) == (
@@ -523,13 +528,12 @@ async def test_the_poll_at_the_deadline_runs_for_one_attempt() -> None:
     timeline = Timeline()
     server = Server(accepted(), json_response(200, resource("running")))
     async with make(server, timeline, timeout=30.0) as transport:
-        started = await mint(transport, spec())
         with pytest.raises(DfoTimeoutError) as caught:
-            await started.result(timeout=1.0)
+            await fetch(transport, spec(), timeout=1.0)
     assert timeline.sleeps == [1.0]
     assert server.calls()[1] == POLL
     assert server.requests[1].extensions["timeout"]["read"] == 30.0
-    assert "still running at the deadline" in str(caught.value)
+    assert caught.value.code == "deadline_exceeded"
 
 
 def _failed_retryably() -> dict[str, object]:
@@ -552,9 +556,8 @@ async def test_a_retryable_failure_read_at_the_deadline_raises_without_resubmitt
     timeline = Timeline()
     server = Server(accepted(), poll, accepted(), done(), redirect(), parquet())
     async with make(server, timeline, timeout=30.0) as transport:
-        started = await mint(transport, spec())
         with pytest.raises(ServerError) as caught:
-            await started.result(timeout=1.0)
+            await fetch(transport, spec(), timeout=1.0)
     assert (caught.value.code, caught.value.retryable) == (code, True)
     assert server.calls() == [f"POST {BASE}/datasets", POLL]
 
@@ -577,35 +580,23 @@ async def test_a_poll_cut_by_the_deadline_spends_no_retry(finishes: bool) -> Non
         return server(request)
 
     async with make(handler, timeline, max_retries=0, timeout=30.0) as transport:
-        started = await mint(transport, spec())
         if finishes:
-            built = await started.result(timeout=5.0)
+            built = await fetch(transport, spec(), timeout=5.0)
             assert built.members[0].sentence == SENTENCE
         else:
             with pytest.raises(DfoTimeoutError) as caught:
-                await started.result(timeout=5.0)
-            assert "still running at the deadline" in str(caught.value)
+                await fetch(transport, spec(), timeout=5.0)
+            assert caught.value.code == "deadline_exceeded"
     assert timeline.sleeps == [1.0, 0.0]
     assert server.calls()[1:3] == [POLL] * 2
     assert server.requests[2].extensions["timeout"]["read"] == 30.0
 
 
-async def deadline_call(transport: AsyncTransport, start: str):
-    """A one-second call on a posted build, through `result()` or `fetch()`."""
-    if start == "fetch":
-        return await fetch(transport, spec(), timeout=1.0)
-    started = await mint(transport, spec())
-    return await started.result(timeout=1.0)
-
-
-@pytest.mark.parametrize("start", ["mint", "fetch"])
-async def test_a_build_done_at_the_deadline_downloads_one_attempt_per_request(
-    start: str,
-) -> None:
+async def test_a_build_done_at_the_deadline_downloads_one_attempt_per_request() -> None:
     timeline = Timeline()
     server = Server(accepted(), done(), redirect(), parquet())
     async with make(server, timeline, timeout=30.0) as transport:
-        built = await deadline_call(transport, start)
+        built = await fetch(transport, spec(), timeout=1.0)
     assert built.members[0].sentence == SENTENCE
     assert timeline.sleeps == [1.0]
     # The poll, the files route and the signed download each get the client's
@@ -613,73 +604,55 @@ async def test_a_build_done_at_the_deadline_downloads_one_attempt_per_request(
     assert [r.extensions["timeout"]["read"] for r in server.requests[1:]] == [30.0] * 3
 
 
-@pytest.mark.parametrize("start", ["mint", "fetch"])
-async def test_a_download_failing_after_the_deadline_names_the_resuming_call(
-    start: str,
-) -> None:
+async def test_a_download_failing_after_the_deadline_says_the_build_is_done() -> None:
     timeline = Timeline()
     server = Server(accepted(), done(), httpx2.ReadTimeout("slow"))
     async with make(server, timeline) as transport:
         with pytest.raises(DfoTimeoutError) as caught:
-            await deadline_call(transport, start)
-    assert caught.value.code == "deadline_exceeded"
-    assert f'client.operation("{OP_ID}").result()' in str(caught.value)
+            await fetch(transport, spec(), timeout=1.0)
+    assert (caught.value.code, caught.value.retryable) == ("deadline_exceeded", True)
+    assert "The same fetch downloads it again" in str(caught.value)
     assert isinstance(caught.value.__cause__, DfoTimeoutError)
     # The files route is asked once, with no retry.
     assert len(server.requests) == 3
 
 
-async def test_a_later_result_downloads_within_its_own_deadline() -> None:
-    # The first call's poll at its deadline reads the build done and its
-    # download fails. The second call polls nothing, so the first call's
-    # one-attempt grace does not carry over and its download keeps to its own
-    # deadline.
-    timeline = Timeline()
-    slow = httpx2.ReadTimeout("slow")
-    server = Server(accepted(), done(), slow, slow)
-    async with make(server, timeline, timeout=30.0) as transport:
-        started = await mint(transport, spec())
-        for timeout in (1.0, 0.05):
-            with pytest.raises(DfoTimeoutError):
-                await started.result(timeout=timeout)
-    reads = [r.extensions["timeout"]["read"] for r in server.requests[2:]]
-    # One attempt of the client's timeout, then one bound by the 0.05 s left.
-    assert reads == [30.0, pytest.approx(0.05)]
-
-
 @pytest.mark.parametrize(
-    ("options", "arguments"),
-    [
-        ({}, f'"{OP_ID}"'),
-        ({"layout": "frame"}, f'"{OP_ID}", layout="frame"'),
-        ({"without_party_totals": True}, f'"{OP_ID}", without_party_totals=True'),
-    ],
+    "options", [{}, {"layout": "frame"}, {"without_party_totals": True}]
 )
-@pytest.mark.parametrize("start", ["posted", "resumed"])
-async def test_the_deadline_names_the_call_that_resumes_the_build(
-    options: dict, arguments: str, start: str
-) -> None:
+async def test_the_deadline_says_the_same_fetch_joins_the_build(options: dict) -> None:
     timeline = Timeline()
-    first = accepted(retry_after_ms=8000)
-    if start == "resumed":
-        first = json_response(200, resource("running", retry_after_ms=8000))
     running = json_response(200, resource("running", retry_after_ms=8000))
-    server = Server(first, running, running)
+    server = Server(accepted(retry_after_ms=8000), running, running)
     async with make(server, timeline) as transport:
         with pytest.raises(DfoTimeoutError) as caught:
-            if start == "posted":
-                await fetch(transport, spec(), timeout=10.0, **options)
-            else:
-                resumed = await operation(transport, OP_ID, **options)
-                await resumed.result(timeout=10.0)
-    assert f"client.operation({arguments}).result()" in str(caught.value)
-    assert caught.value.code == "deadline_exceeded"
+            await fetch(transport, spec(), timeout=10.0, **options)
+    assert (caught.value.code, caught.value.retryable) == ("deadline_exceeded", True)
+    assert "after 10 s. The same fetch joins it if one started" in str(caught.value)
     # The last wait ends at the deadline, and the poll there still reads running.
     assert timeline.sleeps == [8.0, 2.0]
     assert len(server.requests) == 3
 
 
-async def test_mint_returns_an_operation_and_progress_is_logged(
+async def test_a_default_fetch_waits_past_thirty_minutes_for_its_build() -> None:
+    # The server paces polls at the 60 s ceiling; 31 running polls take the
+    # build past 1,800 s, which the default fetch waits out.
+    timeline = Timeline()
+    running = json_response(200, resource("running", retry_after_ms=60000))
+    server = Server(
+        accepted(retry_after_ms=60000),
+        *[running] * 31,
+        done(),
+        redirect(),
+        parquet(),
+    )
+    async with make(server, timeline) as transport:
+        built = await fetch(transport, spec())
+    assert sum(timeline.sleeps) > 1800.0
+    assert built.members[0].sentence == SENTENCE
+
+
+async def test_a_long_builds_progress_is_logged(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     server = Server(
@@ -694,74 +667,43 @@ async def test_mint_returns_an_operation_and_progress_is_logged(
     )
     async with make(server) as transport:
         with caplog.at_level(logging.INFO, logger="dfo"):
-            started = await mint(transport, spec())
-            assert (started.operation_id, started.status) == (OP_ID, "pending")
-            assert await started.done() is False
-            assert started.progress is not None
-            assert started.progress.rows_written == 9
-            built = await started.result()
+            built = await fetch(transport, spec())
     assert built.members[0].sentence == SENTENCE
     assert OP_ID in caplog.text
 
 
-async def test_an_inline_mint_is_already_done() -> None:
-    server = Server(json_response(200, manifest(POSTED_ID)), redirect(), parquet())
-    async with make(server) as transport:
-        started = await mint(transport, spec(), progress=False)
-        assert started.operation_id is None
-        assert await started.done() is True
-        built = await started.result()
-    assert len(server.requests) == 3
-    assert built.members[0].content_version == manifest(POSTED_ID)["content_version"]
-
-
-async def test_a_resumed_operation_asks_search_for_its_sentence() -> None:
-    body = manifest(NARROWED_ID)
+async def test_a_long_build_selects_the_party_totals_cut() -> None:
     server = Server(
-        json_response(200, resource("running")),
-        done(body),
-        json_response(200, resubmitted()),
-        redirect(),
-        parquet(),
-    )
-    async with make(server) as transport:
-        resumed = await operation(transport, OP_ID)
-        built = await resumed.result()
-    assert server.calls()[:2] == [POLL, POLL]
-    assert server.calls()[2] == f"POST {BASE}/search/resolve"
-    assert built.members[0].spec.spec_id == NARROWED_ID
-    assert "2020 to 2023" in built.members[0].sentence
-
-
-async def test_mint_and_resume_select_the_party_totals_cut() -> None:
-    minted = with_cut(manifest(POSTED_ID))
-    resumed = with_cut(manifest(NARROWED_ID))
-    server = Server(
-        json_response(200, minted),
-        redirect(),
-        parquet(CUT_DATA),
-        done(resumed),
-        json_response(200, resubmitted()),
+        accepted(),
+        done(with_cut(manifest(POSTED_ID))),
         redirect(),
         parquet(CUT_DATA),
     )
     async with make(server) as transport:
-        started = await mint(transport, spec(), without_party_totals=True)
-        built = await started.result()
-        assert server.body(0)["options"] == {
-            "format": "parquet",
-            "bundle": False,
-            "without_party_totals": True,
-        }
-        later = await operation(transport, OP_ID, without_party_totals=True)
-        again = await later.result()
-    for dataset in (built, again):
-        (member,) = dataset.members
-        assert (member.digest, member.rendering) == (sha256_digest(CUT_DATA), CUT)
+        built = await fetch(transport, spec(), without_party_totals=True)
+    assert server.body(0)["options"] == {
+        "format": "parquet",
+        "bundle": False,
+        "without_party_totals": True,
+    }
+    (member,) = built.members
+    assert (member.digest, member.rendering) == (sha256_digest(CUT_DATA), CUT)
 
 
 async def test_resuming_an_unknown_operation_raises() -> None:
     server = Server(problem(404, "operation_not_found"))
     async with make(server) as transport:
         with pytest.raises(NotFoundError):
-            await operation(transport, OP_ID)
+            await resumed(transport)
+
+
+@pytest.mark.parametrize("operation_id", ["../search/resolve", *HOSTILE_IDS])
+async def test_an_id_that_is_not_an_operation_id_is_never_read(
+    operation_id: str,
+) -> None:
+    server = Server()
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await resume(transport, operation_id, on_progress=lambda *_: None)
+    assert caught.value.code == "invalid_argument"
+    assert server.requests == []

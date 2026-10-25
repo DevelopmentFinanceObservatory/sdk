@@ -3119,3 +3119,93 @@ class Spec(TypedDict):
     spec_id: str
     definition: SpecDefinition
     resolved: ResolvedSpec
+
+
+type Severity = Literal["info", "warn", "degraded"]
+"""How much a Search warning matters.
+
+The values of `Warning.severity` in the served document.
+"""
+
+
+type AssumptionKind = Literal["declared_default", "open_role", "place_scope"]
+"""What Search filled in that the question left open.
+
+The values of `Assumption.kind` in the served document.
+"""
+
+
+type DepartureCode = Literal[
+    "closest_match",
+    "measure_not_applied",
+    "operation_not_applied",
+    "breakdown_not_applied",
+    "entity_unavailable",
+    "year_unavailable",
+    "modelled_values",
+    "group_read_as_members",
+    "whole_total_read",
+    "whole_total_unpublished",
+    "direction_discarded",
+    "direction_inferred",
+    "scope_limited",
+]
+"""How a reading differs from what the question asked.
+
+The values of `Departure.code` in the served document.
+"""
+
+
+type NoDataReason = Literal[
+    "source_not_resolved",
+    "source_ambiguous",
+    "source_code_not_held",
+    "source_code_ambiguous",
+    "source_code_shares_variable",
+    "entity_not_resolved",
+    "entity_ambiguous",
+    "entity_set_too_large",
+    "entity_role_not_admitted",
+    "variable_not_resolved",
+    "role_not_resolved",
+    "unit_not_resolved",
+    "rate_coverage_gap",
+    "no_matching_slice",
+    "binding_mismatch",
+    "denominator_not_available",
+    "no_observations",
+    "facet_not_available",
+    "role_incompatible",
+    "role_signature_incompatible",
+    "qualifier_not_bound",
+    "timed_out",
+]
+"""Why a part has no data.
+
+The values of `NoData.reason` in the served document.
+"""
+
+
+type DeclinedReason = Literal["out_of_scope", "requires_analysis"]
+"""Why Search declined a question.
+
+The values of `DeclinedAnswer.reason` in the served document.
+"""
+
+
+type ResolveKind = Literal[
+    "country",
+    "continent",
+    "subregion",
+    "continental_union",
+    "organisation",
+    "aggregate",
+    "place_other",
+    "group",
+    "code",
+    "other",
+]
+"""A kind of graph node a name can resolve to.
+
+The values of `graph_api__resolve_models__ResolveRequest.kinds.items` in the served document.
+"""

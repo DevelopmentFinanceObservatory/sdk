@@ -3,8 +3,12 @@
 import subprocess
 import sys
 from importlib.metadata import version
+from types import ModuleType
+
+import pytest
 
 import dfo
+from dfo._core.errors import DfoError, DfoWarning
 
 
 def test_version_matches_the_distribution() -> None:
@@ -29,3 +33,159 @@ def test_import_leaves_pyarrow_unloaded() -> None:
         check=True,
     )
     assert result.stdout.split() == ["False", "True"]
+
+
+def test_type_hints_resolve_without_pyarrow() -> None:
+    """`typing.get_type_hints` reads every public class's fields, `Dataset._table`
+    included, in a fresh interpreter that never loads pyarrow."""
+    script = (
+        "import inspect, sys, typing, dfo\n"
+        "modules = (dfo, dfo.types, dfo.errors, dfo.lookup, dfo.auth)\n"
+        "classes = [getattr(m, n) for m in modules for n in m.__all__]\n"
+        "classes = [c for c in classes if inspect.isclass(c)]\n"
+        "for cls in classes:\n"
+        "    typing.get_type_hints(cls)\n"
+        "print(len(classes), 'pyarrow' in sys.modules)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+    )
+    count, loaded = result.stdout.split()
+    assert int(count) > 40
+    assert loaded == "False"
+
+
+def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> None:
+    public = [name for name in dir(dfo) if not name.startswith("_")]
+    assert public == [
+        "Answer",
+        "AsyncClient",
+        "Client",
+        "Dataset",
+        "DatasetRef",
+        "Spec",
+        "auth",
+        "configure",
+        "errors",
+        "fetch",
+        "load",
+        "lookup",
+        "search",
+        "types",
+    ]
+    assert sorted(dfo.__all__) == sorted([*public, "__version__"])
+
+
+@pytest.mark.parametrize(
+    ("module", "names"),
+    [
+        (
+            dfo.errors,
+            [
+                "Alternative",
+                "AuthenticationError",
+                "BundleError",
+                "ClientErrorCode",
+                "ContractError",
+                "DataWarning",
+                "DeclinedError",
+                "DfoDeprecationWarning",
+                "DfoError",
+                "DfoTimeoutError",
+                "DfoWarning",
+                "ErrorCode",
+                "FormatError",
+                "IncompleteAnswerError",
+                "InvalidRequestError",
+                "NetworkError",
+                "NotFoundError",
+                "PermissionDeniedError",
+                "ProblemIssue",
+                "QuotaExceededError",
+                "RateLimitError",
+                "SearchWarning",
+                "ServerError",
+                "VersionUnavailableError",
+            ],
+        ),
+        (
+            dfo.types,
+            [
+                "Assumption",
+                "AssumptionKind",
+                "AsyncAnswer",
+                "BundleLimits",
+                "Candidate",
+                "CandidatesPart",
+                "Citation",
+                "CitationSource",
+                "DeclinedReason",
+                "DefinitePart",
+                "Departure",
+                "DepartureCode",
+                "Gap",
+                "GapKind",
+                "Layout",
+                "Member",
+                "NoDataPart",
+                "NoDataReason",
+                "Notice",
+                "Option",
+                "Part",
+                "Progress",
+                "RawResponse",
+                "RefMember",
+                "Rendering",
+                "RequestedOperation",
+                "ResolveKind",
+                "Severity",
+                "UnknownPart",
+                "UnsupportedPart",
+                "Window",
+            ],
+        ),
+        (
+            dfo.lookup,
+            [
+                "CatalogueResponse",
+                "CodeRegistryEntry",
+                "Node",
+                "ResolveKind",
+                "ResolveResponse",
+                "catalogue",
+                "code",
+                "node",
+                "resolve",
+            ],
+        ),
+        (
+            dfo.auth,
+            [
+                "ApiKey",
+                "ApiKeyArgument",
+                "AsyncHeaderProvider",
+                "HeaderProvider",
+                "login",
+            ],
+        ),
+    ],
+    ids=["errors", "types", "lookup", "auth"],
+)
+def test_each_task_module_exports_its_names(
+    module: ModuleType, names: list[str]
+) -> None:
+    assert module.__all__ == names
+    assert all(hasattr(module, name) for name in names)
+
+
+def test_every_error_and_warning_class_is_in_dfo_errors() -> None:
+    """A class the client raises or issues cannot be left out of `dfo.errors`."""
+    found: set[str] = set()
+    pending: list[type] = [DfoError, DfoWarning]
+    while pending:
+        cls = pending.pop()
+        if cls.__module__.startswith("dfo."):
+            found.add(cls.__name__)
+        pending.extend(cls.__subclasses__())
+    assert len(found) == 18
+    assert found <= set(dfo.errors.__all__)

@@ -1,4 +1,4 @@
-"""Specs and dataset refs: the stored formats, equality and pickling."""
+"""Specs and dataset refs: the ref format, equality and pickling."""
 
 import json
 import pickle
@@ -137,58 +137,13 @@ def test_a_ref_of_dataset_members_writes_the_stored_format() -> None:
     assert stored == accepted_ref()
 
 
-def test_spec_round_trips_with_its_sentence() -> None:
-    (part,) = parse_parts(load("search-1.json"))
-    assert isinstance(part, DefinitePart)
-    loaded = Spec.from_json(part.spec.to_json())
-    assert loaded == part.spec
-    assert (loaded.definition, loaded.sentence) == (
-        part.spec.definition,
-        part.spec.sentence,
-    )
-
-
-@pytest.mark.parametrize(
-    ("edit", "reason"),
-    [
-        ({"sentence": ""}, "format_invalid"),
-        ({"resolved": {}}, "format_invalid"),
-        (
-            {"spec_id": "spec_" + "0" * 32},
-            "definition_spec_id_mismatch",
-        ),
-    ],
-)
-def test_spec_json_breaking_the_format_raises(
-    edit: dict[str, Any], reason: str
-) -> None:
-    (part,) = parse_parts(load("search-1.json"))
-    assert isinstance(part, DefinitePart)
-    obj = json.loads(part.spec.to_json()) | edit
-    with pytest.raises(FormatError) as raised:
-        Spec.from_json(json.dumps(obj))
-    assert raised.value.reason == reason
-
-
-@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
-def test_spec_json_with_a_non_finite_number_raises(constant: str) -> None:
-    (part,) = parse_parts(load("search-1.json"))
-    assert isinstance(part, DefinitePart)
-    obj = json.loads(part.spec.to_json())
-    obj["definition"]["identity"]["novel"] = "constant"
-    text = json.dumps(obj).replace('"constant"', constant)
-    with pytest.raises(FormatError) as raised:
-        Spec.from_json(text)
-    assert (raised.value.reason, raised.value.pointer) == ("format_invalid", "")
-
-
 def test_specs_are_equal_and_hashed_on_spec_id() -> None:
     (part,) = parse_parts(load("search-1.json"))
     assert isinstance(part, DefinitePart)
     bare = Spec(part.spec.spec_id, {"spec_id": part.spec.spec_id})
     assert bare == part.spec
     assert len({bare, part.spec}) == 1
-    assert repr(bare) == f"Spec(spec_id='{bare.spec_id}', sentence=None)"
+    assert repr(bare) == f"Spec({bare.spec_id})"
 
 
 def test_answer_parts_hash_and_pickle() -> None:
@@ -200,6 +155,39 @@ def test_answer_parts_hash_and_pickle() -> None:
 def test_a_ref_pickles() -> None:
     ref = DatasetRef.from_json(json.dumps(accepted_ref()))
     assert pickle.loads(pickle.dumps(ref)) == ref
+
+
+@pytest.mark.parametrize(
+    ("pointer", "value", "equal"),
+    [
+        ("/content_version", "cv_" + "0" * 32, False),
+        ("/artifact/rendering/without_party_totals", True, False),
+        ("/artifact/digest", "sha256:" + "0" * 64, True),
+        ("/sentence", "Another sentence for the same reading.", True),
+        ("/parts", ["another part"], True),
+    ],
+)
+def test_refs_are_equal_on_spec_version_and_rendering(
+    pointer: str, value: object, *, equal: bool
+) -> None:
+    ref_json = accepted_ref()
+    edited = json.loads(json.dumps(ref_json))
+    *parents, key = pointer.strip("/").split("/")
+    target: Any = edited["members"][0]
+    for step in parents:
+        target = target[step]
+    target[key] = value
+    ref = DatasetRef.from_json(json.dumps(ref_json))
+    other = DatasetRef.from_json(json.dumps(edited))
+    assert (ref == other, hash(ref) == hash(other)) == (equal, equal)
+
+
+def test_a_ref_repr_names_each_spec_at_its_version() -> None:
+    ref = DatasetRef.from_json(json.dumps(accepted_ref()))
+    (member,) = ref.members
+    text = repr(ref)
+    assert text.startswith("DatasetRef(1 member: ")
+    assert f"{member.spec.spec_id} at {member.content_version}" in text
 
 
 @pytest.mark.parametrize(

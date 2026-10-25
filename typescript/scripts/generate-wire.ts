@@ -4,10 +4,11 @@
 //   node scripts/generate-wire.ts           rewrite src/generated/openapi.ts
 //   node scripts/generate-wire.ts --check   exit 1 when the committed file differs
 //
-// Two transforms run during generation. Every string `enum` becomes an open union, so a value
+// Three transforms run during generation. Every string `enum` becomes an open union, so a value
 // added by the server still typechecks. `const` members stay closed, since they discriminate
-// unions. Every array of parts discriminated on `status` gains the hand-written `UnknownPart`, so
-// a part status added by the server narrows to it.
+// unions. The enums in `NAMED_ENUMS` are also declared as closed unions of their own, which the
+// wire fields name and the client's options take. Every array of parts discriminated on `status`
+// gains the hand-written `UnknownPart`, so a part status added by the server narrows to it.
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
@@ -57,17 +58,84 @@ function openParts(schema: SchemaObject): ts.TypeNode | undefined {
   );
 }
 
+/** The enums declared as named closed unions: each one's schema path and the line that documents
+ *  it. A wire field reads `Name | (string & {})`; an option the client takes reads `Name`. */
+const NAMED_ENUMS: Record<string, { path: readonly string[]; doc: string }> = {
+  Severity: {
+    path: ["Warning", "properties", "severity"],
+    doc: "How much a Search warning matters.",
+  },
+  AssumptionKind: {
+    path: ["Assumption", "properties", "kind"],
+    doc: "What Search filled in that the question left open.",
+  },
+  DepartureCode: {
+    path: ["Departure", "properties", "code"],
+    doc: "How a reading differs from what the question asked.",
+  },
+  NoDataReason: { path: ["NoData", "properties", "reason"], doc: "Why a part has no data." },
+  DeclinedReason: {
+    path: ["DeclinedAnswer", "properties", "reason"],
+    doc: "Why Search declined a question.",
+  },
+  ResolveKind: {
+    path: ["graph_api__resolve_models__ResolveRequest", "properties", "kinds", "items"],
+    doc: "A kind of graph node a name can resolve to.",
+  },
+};
+
+/** The vendor key on the schema that `openEnums` writes for a named enum's closed union. */
+const ENUM_NAME = "x-dfo-enum-name";
+
+/** Each enum in `NAMED_ENUMS` by its schema object, with its name and values, failing when a path
+ *  holds no string enum or a name is a schema's. */
+function nameEnums(
+  schemas: Record<string, unknown>,
+): Map<object, { name: string; values: readonly string[] }> {
+  const named = new Map<object, { name: string; values: readonly string[] }>();
+  for (const [name, { path }] of Object.entries(NAMED_ENUMS)) {
+    if (name in schemas) throw new Error(`the enum name ${name} is a schema's`);
+    const node = path.reduce<unknown>(
+      (at, key) =>
+        at !== null && typeof at === "object" ? (at as Record<string, unknown>)[key] : undefined,
+      schemas,
+    );
+    const values: unknown =
+      node !== null && typeof node === "object" ? (node as { enum?: unknown }).enum : undefined;
+    if (!Array.isArray(values) || !values.every((value) => typeof value === "string")) {
+      throw new Error(`${path.join(".")} holds no string enum for ${name}`);
+    }
+    named.set(node as object, { name, values });
+  }
+  return named;
+}
+
+/** The closed unions `nameEnums` found, one documented type each. */
+const namedUnions = (named: Map<object, { name: string; values: readonly string[] }>): string =>
+  [...named.values()]
+    .map(({ name, values }) => {
+      const { path, doc } = NAMED_ENUMS[name]!;
+      const field = path.filter((key) => key !== "properties").join(".");
+      const union = values.map((value) => JSON.stringify(value)).join(" | ");
+      return `/** ${doc} The values of \`${field}\` in the served document. */\nexport type ${name} = ${union};`;
+    })
+    .join("\n\n");
+
 /** The vendor key on the schema that stands for "any other string". */
 const OTHER_STRING = "x-dfo-other-string";
 
 /** Rewrites every string `enum` in the served document as the union of that enum and any other
  *  string, in place. openapi-typescript replaces the property a union discriminates on with an
- *  `enum` of its own after this runs, so discriminators stay closed. */
-function openEnums(node: unknown): number {
+ *  `enum` of its own after this runs, so discriminators stay closed. An enum in `names` becomes
+ *  its named union and any other string. */
+function openEnums(node: unknown, names: ReadonlyMap<object, { name: string }>): number {
   if (Array.isArray(node))
-    return node.reduce((count: number, child) => count + openEnums(child), 0);
+    return node.reduce((count: number, child) => count + openEnums(child, names), 0);
   if (node === null || typeof node !== "object") return 0;
-  let count = Object.values(node).reduce((total: number, child) => total + openEnums(child), 0);
+  let count = Object.values(node).reduce(
+    (total: number, child) => total + openEnums(child, names),
+    0,
+  );
   if ("enum" in node && Array.isArray(node.enum)) {
     const values: unknown[] = node.enum;
     const strings = values.filter((value): value is string => typeof value === "string");
@@ -78,10 +146,15 @@ function openEnums(node: unknown): number {
       );
     }
     const schema = node as Record<string, unknown>;
+    const name = names.get(node)?.name;
     delete schema["enum"];
     delete schema["type"];
     schema["anyOf"] = [
-      { type: "string", enum: strings },
+      // openapi-typescript writes an enum before the transform sees it, so a named enum's
+      // member carries only its name.
+      name === undefined
+        ? { type: "string", enum: strings }
+        : { type: "string", [ENUM_NAME]: name },
       { type: "string", [OTHER_STRING]: true },
       ...(nullable ? [{ type: "null" }] : []),
     ];
@@ -139,9 +212,11 @@ function aliases(schemas: string[], recursive: Map<string, string>): string {
 
 export async function renderWire(text: string): Promise<string> {
   const openapi = JSON.parse(text) as OpenAPI3;
-  if (openEnums(openapi) === 0) throw new Error("the served document holds no string enum");
-  let joined = 0;
   const schemas = openapi.components?.schemas ?? {};
+  const named = nameEnums(schemas);
+  if (openEnums(openapi, named) === 0) throw new Error("the served document holds no string enum");
+  let joined = 0;
+  let referenced = 0;
   const selfReferringSchemas = selfReferring(schemas);
   const recursive = new Map<string, string>();
 
@@ -154,6 +229,11 @@ export async function renderWire(text: string): Promise<string> {
       if (parts !== undefined) {
         joined += 1;
         return parts;
+      }
+      const name: unknown = (schema as Record<string, unknown>)[ENUM_NAME];
+      if (typeof name === "string") {
+        referenced += 1;
+        return ts.factory.createTypeReferenceNode(name);
       }
       return OTHER_STRING in schema ? OTHER_STRING_TYPE : undefined;
     },
@@ -169,8 +249,11 @@ export async function renderWire(text: string): Promise<string> {
     throw new Error("a self-referring schema was not generated as a recursive alias");
   }
   if (joined === 0) throw new Error("UnknownPart joined no array of parts");
+  if (referenced < named.size) throw new Error("a named enum's field was not generated");
 
-  const source = `${HEADER}${astToString(ast)}\n${aliases(Object.keys(schemas), recursive)}\n`;
+  const source =
+    `${HEADER}${astToString(ast)}\n${aliases(Object.keys(schemas), recursive)}\n\n` +
+    `${namedUnions(named)}\n`;
   return format(source, { ...(await resolveConfig(OUTPUT)), filepath: OUTPUT });
 }
 

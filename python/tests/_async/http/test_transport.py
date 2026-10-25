@@ -16,6 +16,7 @@ import httpcore2
 import httpx2
 import pytest
 
+import dfo._http.transport as transport_module
 from dfo._core import errors as _errors
 from dfo._core.errors import (
     AuthenticationError,
@@ -33,6 +34,7 @@ from dfo._core.errors import (
 from dfo._core.json_text import JSON_MAX_DEPTH
 from dfo._core.refusals import trace_id_of
 from dfo._http.transport import (
+    DEFAULT_BASE_URL,
     JSON_BODY_MAX_BYTES,
     USER_AGENT,
     AsyncTransport,
@@ -142,7 +144,7 @@ async def test_api_requests_carry_the_user_agent_key_and_first_party_headers() -
     async with make(
         recorder,
         api_key=KEY,
-        default_headers={"x-dfo-caller": "data-mcp"},
+        headers={"x-dfo-caller": "data-mcp"},
         header_provider=provider,
     ) as transport:
         await transport.request("GET", "/datasets/schema")
@@ -213,7 +215,7 @@ async def test_download_is_bare_only_on_the_storage_host(url: str, bare: bool) -
     async with make(
         recorder,
         api_key=KEY,
-        default_headers={"x-dfo-principal": "someone"},
+        headers={"x-dfo-principal": "someone"},
         header_provider=provider,
     ) as transport:
         assert await transport.download(url) == b"PAR1"
@@ -311,15 +313,37 @@ async def test_a_server_url_resolves_on_the_base_urls_origin(
         assert transport.origin_url(url) == resolved
 
 
-@pytest.mark.parametrize(("seconds", "read"), [(None, None), (1800.0, 1800.0)])
-async def test_a_download_reads_until_the_deadline(
-    seconds: float | None, read: float | None
+@pytest.mark.parametrize(
+    ("seconds", "read"), [(None, 30.0), (1800.0, 30.0), (5.0, 5.0)]
+)
+async def test_a_download_reads_until_the_deadline_waiting_30_s_at_most_per_read(
+    seconds: float | None, read: float
 ) -> None:
     timeline = Timeline()
     recorder = Recorder(httpx2.Response(200, content=b"PAR1"))
     async with make(recorder, timeline, timeout=30.0) as transport:
         await transport.download(SIGNED, deadline=transport.deadline(seconds))
-    assert recorder.requests[0].extensions["timeout"]["read"] == read
+    timeouts = recorder.requests[0].extensions["timeout"]
+    assert (timeouts["connect"], timeouts["read"]) == (seconds, read)
+
+
+async def test_a_download_that_stalls_fails_retryably_as_a_network_fault(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real sockets, since httpcore2 times each network read; under a second.
+    monkeypatch.setenv("NO_PROXY", "*")
+    monkeypatch.setattr(transport_module, "DOWNLOAD_STALL_S", 0.4)
+    with stalling_server(first_chunk_after=0.1) as origin:
+        async with AsyncTransport(
+            api_key=False, base_url=origin, max_retries=0
+        ) as transport:
+            start = time.monotonic()
+            with pytest.raises(NetworkError) as caught:
+                await transport.download(f"{origin}/files/a")
+            elapsed = time.monotonic() - start
+    assert (caught.value.code, caught.value.retryable) == ("network_error", True)
+    # The first chunk resets the bound, so the stall ends 0.4 s after it.
+    assert 0.45 < elapsed < 0.8
 
 
 async def test_a_body_that_stalls_after_its_first_chunk_raises_at_the_attempt_end(
@@ -787,7 +811,7 @@ async def test_deprecation_and_server_warnings_show_once_per_process() -> None:
     categories = sorted(type(warning.message).__name__ for warning in caught)
     assert categories == ["DfoDeprecationWarning", "DfoWarning"]
     texts = [str(warning.message) for warning in caught]
-    assert marked["x-dfo-warning"] in texts
+    assert f"{marked['x-dfo-warning']} [server_warning]" in texts
     assert issubclass(DfoDeprecationWarning, DfoWarning)
 
 
@@ -803,9 +827,9 @@ async def test_server_text_loses_terminal_and_bidi_controls() -> None:
                 await transport.request("GET", "/datasets/schema")
     texts = [str(refused.value), refused.value.detail, str(caught[0].message)]
     assert texts == [
-        "Bad]0;PWNED[2J input. (request_invalid)",
+        "Bad]0;PWNED[2J input. [request_invalid]",
         "Bad]0;PWNED[2J input.",
-        "Quota]0;PWNED[2J low.",
+        "Quota]0;PWNED[2J low. [server_warning]",
     ]
 
 
@@ -1004,6 +1028,53 @@ async def test_an_invalid_base_url_is_refused(base_url: object) -> None:
 
 
 @pytest.mark.parametrize(
+    ("argument", "env", "url", "source"),
+    [
+        (BASE, "https://env.example.org/api", BASE, "argument"),
+        (
+            None,
+            "https://env.example.org/api/",
+            "https://env.example.org/api",
+            "environment",
+        ),
+        (None, "", DEFAULT_BASE_URL, "default"),
+        (None, None, DEFAULT_BASE_URL, "default"),
+    ],
+    ids=["argument-wins", "environment", "empty-is-unset", "unset"],
+)
+async def test_the_base_url_is_the_argument_then_dfo_base_url_then_the_public_api(
+    monkeypatch: pytest.MonkeyPatch,
+    argument: str | None,
+    env: str | None,
+    url: str,
+    source: str,
+) -> None:
+    if env is None:
+        monkeypatch.delenv("DFO_BASE_URL", raising=False)
+    else:
+        monkeypatch.setenv("DFO_BASE_URL", env)
+    async with make(Recorder(), base_url=argument) as transport:
+        assert (transport.base_url, transport.base_url_source) == (url, source)
+
+
+@pytest.mark.parametrize(
+    ("env", "api_key", "code"),
+    [
+        ("api.example.org/api", False, "base_url_invalid"),
+        ("http://dfo.example.invalid/api", KEY, "insecure_transport"),
+    ],
+)
+async def test_a_refused_dfo_base_url_is_named_in_the_error(
+    monkeypatch: pytest.MonkeyPatch, env: str, api_key: object, code: str
+) -> None:
+    monkeypatch.setenv("DFO_BASE_URL", env)
+    with pytest.raises(InvalidRequestError) as caught:
+        make(Recorder(), base_url=None, api_key=api_key)
+    assert caught.value.code == code
+    assert "DFO_BASE_URL" in str(caught.value)
+
+
+@pytest.mark.parametrize(
     ("base_url", "api_key", "refused"),
     [
         ("http://dfo.example.invalid/api", KEY, True),
@@ -1088,7 +1159,7 @@ async def test_a_key_resolved_later_is_not_sent_over_plain_http() -> None:
         "upgrade",
     ],
 )
-@pytest.mark.parametrize("source", ["default_headers", "header_provider"])
+@pytest.mark.parametrize("source", ["headers", "header_provider"])
 async def test_a_header_with_a_character_http_cannot_carry_is_refused_unsent(
     name: str, value: str, fault: str, source: str
 ) -> None:
@@ -1098,8 +1169,8 @@ async def test_a_header_with_a_character_http_cannot_carry_is_refused_unsent(
     recorder = Recorder()
     timeline = Timeline()
     with pytest.raises(InvalidRequestError) as caught:
-        if source == "default_headers":
-            make(recorder, default_headers={name: value})
+        if source == "headers":
+            make(recorder, headers={name: value})
         else:
             async with make(recorder, timeline, header_provider=provider) as t:
                 await t.request("GET", "/datasets/schema")
@@ -1112,7 +1183,7 @@ async def test_a_header_with_a_character_http_cannot_carry_is_refused_unsent(
 
 async def test_a_header_value_may_hold_spaces_and_tabs() -> None:
     recorder = Recorder(httpx2.Response(200))
-    async with make(recorder, default_headers={"x-note": "a b\tc"}) as transport:
+    async with make(recorder, headers={"x-note": "a b\tc"}) as transport:
         await transport.request("GET", "/datasets/schema")
     assert recorder.requests[0].headers["x-note"] == "a b\tc"
 
@@ -1120,7 +1191,8 @@ async def test_a_header_value_may_hold_spaces_and_tabs() -> None:
 @pytest.mark.parametrize(
     ("failure", "error", "code"),
     [
-        (httpx2.ReadTimeout("slow"), DfoTimeoutError, "deadline_exceeded"),
+        # With no deadline, a read timeout is the stall bound.
+        (httpx2.ReadTimeout("slow"), NetworkError, "network_error"),
         (httpx2.ConnectError("x"), NetworkError, "network_error"),
     ],
 )
@@ -1145,9 +1217,9 @@ async def test_the_transport_sleeps_and_reads_the_clock_it_was_given() -> None:
 
 async def test_a_header_value_that_is_not_a_string_is_refused_unsent() -> None:
     with pytest.raises(InvalidRequestError) as caught:
-        make(Recorder(), default_headers={"X-Retries": 3})
+        make(Recorder(), headers={"X-Retries": 3})
     assert caught.value.code == "header_invalid"
-    assert "X-Retries header from default_headers is a int" in str(caught.value)
+    assert "X-Retries header from headers is a int" in str(caught.value)
 
 
 @pytest.mark.parametrize(
@@ -1317,20 +1389,20 @@ async def test_a_refusal_nested_past_the_depth_bound_is_still_typed() -> None:
     [
         (
             {"detail": "Field required", "pointer": "/input/schema_version"},
-            "Field required at /input/schema_version (request_invalid)",
+            "Field required at /input/schema_version [request_invalid]",
         ),
         (
             {"detail": "Bad value at /input/window.", "pointer": "/input/window"},
-            "Bad value at /input/window. (request_invalid)",
+            "Bad value at /input/window. [request_invalid]",
         ),
         (
             {"detail": "Field required", "pointer": ""},
-            "Field required (request_invalid)",
+            "Field required [request_invalid]",
         ),
-        ({"detail": "Field required"}, "Field required (request_invalid)"),
+        ({"detail": "Field required"}, "Field required [request_invalid]"),
         (
             {"detail": "x" * 1001, "pointer": "/" + "p" * 1001},
-            "x" * 1000 + "… at /" + "p" * 999 + "… (request_invalid)",
+            "x" * 1000 + "… at /" + "p" * 999 + "… [request_invalid]",
         ),
     ],
     ids=["named", "already-named", "root", "none", "capped"],
@@ -1366,7 +1438,10 @@ async def test_a_codeless_refusal_reads_its_detail_title_or_error(
             await transport.request("GET", "/datasets/schema")
     shown = "HTTP 502 with no refusal code" + (f": {text}" if text else ".")
     assert caught.value.code == "refusal_without_code"
-    assert (str(caught.value), caught.value.detail) == (shown, shown)
+    assert (str(caught.value), caught.value.detail) == (
+        f"{shown} [refusal_without_code]",
+        shown,
+    )
 
 
 @pytest.mark.parametrize(
@@ -1417,9 +1492,9 @@ async def test_server_text_never_quotes_the_clients_key(inside: str) -> None:
                 await transport.request("GET", "/datasets/schema")
     texts = [str(refused.value), refused.value.detail, str(caught[0].message)]
     assert texts == [
-        "Bad header Authorization: Bearer [redacted] (key_invalid)",
+        "Bad header Authorization: Bearer [redacted] [key_invalid]",
         "Bad header Authorization: Bearer [redacted]",
-        "Key [redacted] is old.",
+        "Key [redacted] is old. [server_warning]",
     ]
     assert refused.value.problem is not None
     assert refused.value.problem["detail"] == texts[1]

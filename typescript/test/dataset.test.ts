@@ -13,6 +13,7 @@ import { decodeStored, readParquet, widen } from "../src/datasets/parquet.ts";
 import { partFacts } from "../src/core/parse.ts";
 import type { ColumnType } from "../src/datasets/parquet.ts";
 import { DatasetRef } from "../src/core/ref.ts";
+import type { Gap } from "../src/search/answer.ts";
 import { scenarioBytes } from "./replay.ts";
 
 const SCENARIOS = new URL("../../contract/scenarios/", import.meta.url);
@@ -49,14 +50,14 @@ describe("every scenario Parquet body decodes", async () => {
     test(name, async () => {
       const dataset = new Dataset([member(await scenarioBytes(name))], { layout: "long" });
       const rows = await dataset.toRows();
-      assert.equal(rows.length, dataset.rows);
-      assert.ok(dataset.rows > 0);
+      assert.equal(rows.length, dataset.rowCount);
+      assert.ok(dataset.rowCount > 0);
       assert.deepEqual(Object.keys(rows[0]!), dataset.columns);
       // INT64 columns arrive as numbers, so the rows serialise as JSON: a bigint would throw.
       assert.deepEqual(JSON.parse(JSON.stringify(rows)), rows);
 
       const table = await toArrow(dataset);
-      assert.equal(table.numRows, dataset.rows);
+      assert.equal(table.numRows, dataset.rowCount);
       assert.deepEqual(
         table.schema.fields.map((field) => field.name),
         dataset.columns,
@@ -300,7 +301,7 @@ describe("a dataset of several members", async () => {
 
   test("stacks into one table with the part column first", async () => {
     const rows = await dataset.toRows();
-    assert.equal(rows.length, dataset.rows);
+    assert.equal(rows.length, dataset.rowCount);
     assert.equal(dataset.columns[0], "part");
     assert.equal(rows[0]!["part"], "health ODA; education ODA");
     // A member that answers no part is labelled with its sentence.
@@ -310,7 +311,7 @@ describe("a dataset of several members", async () => {
     assert.notEqual(rows.at(-1)!["observationAbout"], null);
 
     const table = await toArrow(dataset);
-    assert.equal(table.numRows, dataset.rows);
+    assert.equal(table.numRows, dataset.rowCount);
     assert.deepEqual(
       table.schema.fields.map((field) => field.name),
       dataset.columns,
@@ -423,7 +424,7 @@ describe("an empty member beside a member with rows", async () => {
       dataset.members.map((entry) => entry.spec.spec_id),
       [`spec_${"0".repeat(32)}`, emptySpec],
     );
-    assert.equal(dataset.rows, alone.rows);
+    assert.equal(dataset.rowCount, alone.rowCount);
     assert.deepEqual(dataset.columns, ["part", ...alone.columns]);
     const types = (columns: { name: string; type: ColumnType }[]) =>
       columns.filter(({ name }) => name !== "part");
@@ -473,6 +474,37 @@ describe("retention", () => {
     const dataset = await retained(undefined);
     assert.equal(dataset.heldUntil, null);
     assert.equal(dataset.pinned, false);
+  });
+});
+
+describe("String(dataset)", async () => {
+  const data = await scenarioBytes("fetch-ref.parquet");
+  const manifest = {
+    retention: { pinned: false, held_until: "2026-11-11T09:00:00Z" },
+    citation: { text: "WDI.", sources: [{ ref: "dc:WDI", label: "World Development Indicators" }] },
+  };
+
+  test("ends with the line that keeps the ref and fetches its newest version later", () => {
+    const dataset = new Dataset([member(data, { manifest })], { layout: "long" });
+    const lines = String(dataset).split("\n");
+    assert.deepEqual(lines, [
+      "<Dataset A sentence.",
+      "  Source: World Development Indicators",
+      `  Version: cv_${"0".repeat(32)} (exact), held until 11 November 2026, not pinned`,
+      `  Rows: ${dataset.rowCount.toLocaleString("en-GB")}`,
+      "  Keep: JSON.stringify(data.ref) · newest later: client.fetch(data.ref, { latest: true })>",
+    ]);
+  });
+
+  test("says when the data is pinned, and how many parts a partial fetch left out", () => {
+    const pinned = { ...manifest, retention: { pinned: true } };
+    const gap = { partIndex: 1, part: "GDP", kind: "not_understood", message: "", options: [] };
+    const dataset = new Dataset([member(data, { manifest: pinned })], {
+      layout: "long",
+      missing: [gap as unknown as Gap],
+    });
+    assert.match(String(dataset), /\(exact\), pinned\n/);
+    assert.match(String(dataset), /\n {2}Incomplete: 1 part\(s\) left out\n/);
   });
 });
 

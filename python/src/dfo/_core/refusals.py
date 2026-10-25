@@ -300,8 +300,6 @@ def problem_error(
         and (code or REFUSAL_WITHOUT_CODE) in _NO_ROUTE
     ):
         message = f"{message.rstrip('.')}. {route} matched no route; check base_url"
-    if code is not None:
-        message = f"{message} ({code})"
     message = redacted(message, key)
     error = error_class(code, status)(
         message,

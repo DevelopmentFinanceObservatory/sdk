@@ -327,6 +327,7 @@ def fake_build_dataset(
     missing: Any,
     stale: bool,
     cache: Any = None,
+    caller: str = "dfo",
 ) -> Built:
     return Built(list(members), layout, complete, tuple(missing), stale)
 

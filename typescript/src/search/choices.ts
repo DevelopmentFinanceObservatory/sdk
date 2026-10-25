@@ -23,6 +23,7 @@ import type { Answer, Candidate, Gap, QueryOption } from "./answer.ts";
 import { capped, clientError } from "../core/errors.ts";
 import type { InvalidRequestError } from "../core/errors.ts";
 import { isRecord } from "../core/json.ts";
+import { nearest } from "../core/nearest.ts";
 import { assumptionsReadOf, operationsOf, parsedPartOf } from "../core/parse.ts";
 import { isKnownPart, partText } from "../core/parts.ts";
 import type {
@@ -33,8 +34,8 @@ import type {
   Part,
   RequestedOperation,
   ResubmitIdentityEntry,
-  Spec,
 } from "../wire.ts";
+import type { Spec } from "../core/ref.ts";
 
 /** A part or option named by its index or its words. */
 export type ChoiceKey = number | string;
@@ -42,14 +43,18 @@ type Entry = DatasetResubmitInput["entries"][number];
 
 const refuse = (detail: string): InvalidRequestError => clientError("choice_invalid", { detail });
 
+/** The gaps of the parts that await a choice: a candidates part's, or one that offers options. */
+export const waitingGaps = (answer: Answer): Gap[] =>
+  answer.gaps.filter((gap) => gap.kind === "choice" || gap.options.length > 0);
+
 /** The gap of the only part that awaits a choice. */
 export function onlyChoice(answer: Answer): Gap {
-  const waiting = answer.gaps.filter((gap) => gap.kind === "choice" || gap.options.length > 0);
+  const waiting = waitingGaps(answer);
   if (waiting.length === 1) return waiting[0]!;
   if (waiting.length === 0) throw refuse("No part of this answer awaits a choice.");
   throw refuse(
     `${waiting.length} parts of this answer await a choice; name the part: ` +
-      "answer.choose(part, option).",
+      "answer.choose(option, { part }).",
   );
 }
 
@@ -75,10 +80,53 @@ function partIndex(answer: Answer, key: ChoiceKey): number {
   }
   if (named.length === 1) return named[0]!;
   if (named.length === 0) {
-    throw refuse(`No part is named ${JSON.stringify(key)}; name a part by its index or its words.`);
+    const waiting = waitingGaps(answer).map((gap) => ({ gap, names: namesOf(gap) }));
+    const names = waiting.flatMap((waited) => waited.names);
+    throw unmatched(
+      `No part is named ${JSON.stringify(key)}`,
+      typeof key === "string" ? nearest(key, names, labelFold) : undefined,
+      "name a part by its index or its words",
+      waiting.map(({ gap, names }) => `${gap.partIndex} = ${names.join(" / ")}`).join(", "),
+    );
   }
   throw refuse(`${named.length} parts are named ${JSON.stringify(key)}; use an index.`);
 }
+
+/** The words that name a gap's part: its variable text, then the words its options settle. */
+function namesOf(gap: Gap): string[] {
+  const text = partText(gap.part);
+  const words = [
+    ...(text === null || text === "" ? [] : [text]),
+    ...gap.options.flatMap(mentionsOf),
+  ];
+  return [...new Set(words)];
+}
+
+/** The refusal of a key that names nothing: `lead`, then the nearest match, or else `how` to
+ *  name one, and the valid choices on a line of their own. */
+function unmatched(
+  lead: string,
+  near: string | undefined,
+  how: string,
+  choices: string,
+): InvalidRequestError {
+  if (choices === "") return refuse(`${lead}; ${how}.`);
+  const advice = near === undefined ? `${how}:` : `did you mean ${JSON.stringify(near)}?`;
+  return refuse(`${lead}; ${advice}\n  ${choices}`);
+}
+
+/** A label as it compares with a caller's: trimmed and in lower case. */
+const labelFold = (label: string): string => label.trim().toLowerCase();
+
+/** A gap's options as a refusal lists them, as `0 = Congo [DRC], 1 = Congo [Republic]`. A
+ *  candidate with no label shows its `spec_id`. */
+const optionList = ({ options }: Gap): string =>
+  options
+    .map((option, index) => {
+      const shown = option.label ?? (option.kind === "candidate" ? option.spec.spec_id : "");
+      return `${index} = ${shown}`;
+    })
+    .join(", ");
 
 /** The question's words an option settles; none for a candidate. */
 export const mentionsOf = (option: Candidate | QueryOption): readonly string[] =>
@@ -94,7 +142,10 @@ export function pick(gap: Gap, key: ChoiceKey, mention?: ChoiceKey): Candidate |
   if (typeof key === "number") {
     const option = Number.isInteger(key) ? options[key] : undefined;
     if (option !== undefined) return option;
-    throw refuse(`Option ${key} is out of range; part ${gap.partIndex} offers ${options.length}.`);
+    throw refuse(
+      `Option ${key} is out of range; part ${gap.partIndex} offers ${options.length}: ` +
+        `${optionList(gap)}.`,
+    );
   }
   const scope =
     typeof mention === "string" && options.some((option) => mentionsOf(option).includes(mention))
@@ -107,9 +158,12 @@ export function pick(gap: Gap, key: ChoiceKey, mention?: ChoiceKey): Candidate |
   );
   if (found.length === 1) return found[0]!;
   if (found.length === 0) {
-    throw refuse(
-      `Part ${gap.partIndex} has no option labelled ${JSON.stringify(key)}; name it by index ` +
-        "or label.",
+    const labels = options.flatMap((option) => (option.label === null ? [] : [option.label]));
+    throw unmatched(
+      `Part ${gap.partIndex} has no option labelled ${JSON.stringify(key)}`,
+      typeof key === "string" ? nearest(key, labels, labelFold) : undefined,
+      "name it by index or label",
+      optionList(gap),
     );
   }
   throw refuse(
@@ -204,17 +258,17 @@ function identityOf(
   spec: Spec,
   assumptions: readonly Assumption[] | undefined,
 ): Pick<ResubmitIdentityEntry, "identity" | "entity_groups" | "assumptions"> {
-  const groups = spec.resolved.entity_groups;
+  const groups = spec.resolved?.entity_groups;
   return {
-    identity: spec.definition.identity,
+    // The definition is the server's JSON as it sent it, so its identity posts back unchanged.
+    identity: spec.definition["identity"] as ResubmitIdentityEntry["identity"],
     ...(isRecord(groups) && Object.keys(groups).length > 0 ? { entity_groups: groups } : {}),
     ...(assumptions === undefined ? {} : { assumptions: [...assumptions] }),
   };
 }
 
-/** The identity entry that posts `spec` as the reading of `part`, the one entry a candidate's
- *  fetch posts on its own. */
-export function identityEntry(part: Part, spec: Spec): ResubmitIdentityEntry {
+/** The identity entry that posts `spec` as the reading of `part`. */
+function identityEntry(part: Part, spec: Spec): ResubmitIdentityEntry {
   return { ...echoed(part), entry_kind: "identity", ...identityOf(spec, readingEcho(part, spec)) };
 }
 

@@ -3,10 +3,10 @@
  * message, which lists every gap and the call that settles it.
  */
 import type { Answer, Candidate, Gap } from "./answer.ts";
-import { mentionsOf } from "./choices.ts";
+import { mentionsOf, waitingGaps } from "./choices.ts";
 import { partFacts } from "../core/parse.ts";
 import { definiteParts, partSentence, partText } from "../core/parts.ts";
-import type { Warning } from "../wire.ts";
+import type { Notice } from "../wire.ts";
 
 const SHOWN_SEVERITIES = new Set(["warn", "degraded"]);
 
@@ -33,7 +33,7 @@ export function readingHints(answer: Answer, { departures }: { departures: boole
   const add = (line: string, code: string): void => {
     if (!found.has(line)) found.set(line, code);
   };
-  const addNotices = (warnings: readonly Warning[]): void => {
+  const addNotices = (warnings: readonly Notice[]): void => {
     for (const { code, severity, message } of warnings) {
       if (SHOWN_SEVERITIES.has(severity) && message) add(`Note: ${message}`, code);
     }
@@ -52,12 +52,17 @@ export function readingHints(answer: Answer, { departures }: { departures: boole
   return [...found].map(([line, code]) => ({ code, line }));
 }
 
-/** The answer as a reader sees it: the sentence and its hints, or what is missing. */
+/** The answer as a reader sees it: the sentence, its hints and the call that fetches it, or
+ *  what is missing. */
 export function answerText(answer: Answer): string {
   if (answer.kind !== "resolution") return declinedText(answer.kind, answer.reason);
   if (answer.complete) {
     const hints = readingHints(answer, { departures: false });
-    return [answer.sentence ?? "", ...hints.map((hint) => `  ${hint.line}`)].join("\n");
+    return [
+      answer.sentence ?? "",
+      ...hints.map((hint) => `  ${hint.line}`),
+      "  Fetch: answer.fetch()",
+    ].join("\n");
   }
   return gapText(answer, "Answered");
 }
@@ -103,8 +108,9 @@ function gapText(answer: Answer, lead: string): string {
       );
     }
   }
+  const several = waitingGaps(answer).length > 1;
   for (const gap of answer.gaps) {
-    const call = chooseCall(answer, gap);
+    const call = chooseCall(answer, gap, several);
     if (call !== null) lines.push(`  Choose: (await ${call}).fetch()`);
   }
   if (count > 0) {
@@ -120,16 +126,18 @@ function candidateLine(candidate: Candidate): string {
   return [label, candidate.source, candidate.unit].filter(Boolean).join(" · ");
 }
 
-/** The call that settles a gap with its first choice, or null when none can. */
-function chooseCall(answer: Answer, gap: Gap): string | null {
+/** The call that settles a gap with its first choice, or null when none can. A place option is
+ *  named by its label when no other option of the gap shares it, a reading by its index, and
+ *  the part only when several parts await a choice. */
+function chooseCall(answer: Answer, gap: Gap, several: boolean): string | null {
   const first = gap.options[0];
   if (first === undefined) return null;
-  if (first.kind === "candidate") {
-    return answer.parts.length === 1
-      ? "answer.choose(0)"
-      : `answer.choose(${partKey(answer, gap)}, 0)`;
-  }
-  return `answer.choose(${optionKey(answer, gap, first.mentions)}, ${quote(first.label)})`;
+  const shared = gap.options.filter((option) => option.label === first.label).length > 1;
+  const option = first.kind === "query" && !shared ? quote(first.label) : "0";
+  if (!several) return `answer.choose(${option})`;
+  const part =
+    first.kind === "query" ? optionKey(answer, gap, first.mentions) : partKey(answer, gap);
+  return `answer.choose(${option}, { part: ${part} })`;
 }
 
 /** The part's words when they name it alone, else its index. */

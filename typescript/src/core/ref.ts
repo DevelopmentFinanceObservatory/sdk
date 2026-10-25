@@ -5,6 +5,7 @@
 
 import { clientError } from "./errors.ts";
 import { isRecord, parseJson } from "./json.ts";
+import type { ResolvedSpec } from "../wire.ts";
 
 /** The layouts a dataset comes in: the labelled long table, or the pipeline frame. */
 export type Layout = "long" | "frame";
@@ -19,11 +20,14 @@ export type Rendering = {
   readonly without_party_totals?: true;
 };
 
-/** A spec as the client holds it: the server's id and its definition, unmodified, because the
- *  server needs the definition's `identity` back as it sent it. */
-export type SpecLike = {
+/** One reading of a question, the unit the server builds a dataset from: an answer's spec, a
+ *  ref member's, or one read back from JSON. The definition stays as the server sent it, because
+ *  the server needs its `identity` back unmodified. `resolved` is Search's reading of the spec,
+ *  which gives its sentence and entity groups; a spec from a ref or written by hand has none. */
+export type Spec = {
   readonly spec_id: string;
   readonly definition: Readonly<Record<string, unknown>>;
+  readonly resolved?: ResolvedSpec | null | undefined;
 };
 
 /** One member of a ref: the exact version of one reading. */
@@ -33,7 +37,7 @@ export type RefMember = {
   readonly parts: readonly string[];
   /** Search's sentence for the built identity. */
   readonly sentence: string;
-  readonly spec: SpecLike;
+  readonly spec: Spec;
   readonly contentVersion: string;
   readonly digest: string;
   readonly rendering: Rendering;
@@ -154,13 +158,55 @@ export function renderingMatches(rendering: Rendering, served: unknown): boolean
   );
 }
 
-/** The exact versions a dataset holds. `JSON.stringify(ref)` writes the stored format, and
- *  `DatasetRef.fromJSON` reads one written by any DFO client. */
+/** Whether two renderings are the same: format, bundle, layout and the party-totals cut. */
+export const sameRendering = (a: Rendering, b: Rendering): boolean =>
+  a.format === b.format &&
+  a.bundle === b.bundle &&
+  layoutOf(a) === layoutOf(b) &&
+  (a.without_party_totals === true) === (b.without_party_totals === true);
+
+/** The exact versions a dataset holds. `JSON.stringify(ref)` writes the stored format,
+ *  `DatasetRef.fromJSON` reads one written by any DFO client, `client.fetch(ref)` fetches those
+ *  versions, and `client.fetch(ref, { latest: true })` the newest versions of its specs. */
 export class DatasetRef {
   readonly members: readonly RefMember[];
 
   constructor(members: readonly RefMember[]) {
     this.members = Object.freeze([...members]);
+  }
+
+  /**
+   * Whether `other` is a ref to the same specs at the same versions in the same renderings, in
+   * order. Digests, sentences and part labels are left out, since a version rendered again
+   * holds the same data under another digest.
+   */
+  equals(other: unknown): boolean {
+    if (!(other instanceof DatasetRef) || other.members.length !== this.members.length) {
+      return false;
+    }
+    return this.members.every((member, index) => {
+      const theirs = other.members[index]!;
+      return (
+        member.spec.spec_id === theirs.spec.spec_id &&
+        member.contentVersion === theirs.contentVersion &&
+        sameRendering(member.rendering, theirs.rendering)
+      );
+    });
+  }
+
+  /** The specs and the exact versions the ref names, as `DatasetRef(1 member: spec_… at cv_…,
+   *  exact)`. */
+  toString(): string {
+    const count = this.members.length;
+    const versions = this.members.map(
+      (member) => `${member.spec.spec_id} at ${member.contentVersion}`,
+    );
+    return `DatasetRef(${count} member${count === 1 ? "" : "s"}: ${versions.join(", ")}, exact)`;
+  }
+
+  /** Node's `console.log` and `util.inspect` show the ref as `String(ref)` does. */
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return this.toString();
   }
 
   /** The ref in the stored format. */

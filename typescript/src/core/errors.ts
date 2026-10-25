@@ -5,7 +5,7 @@ import { CLIENT_CODE_CLASSES, CLIENT_CODE_RETRYABLE } from "../generated/client-
 import { PROXY_CODE_STATUSES } from "../generated/proxy-codes.ts";
 import type { Alternative, ProblemIssue } from "../wire.ts";
 import { isRecord, objects } from "./json.ts";
-import { printable } from "./text.ts";
+import { bracketed, printable } from "./text.ts";
 
 /** What the caller does next about a refusal, as `contract/actions.json` assigns it. */
 export type Action = (typeof ACTIONS)[number];
@@ -65,9 +65,18 @@ export type DfoErrorOptions = {
   cause?: unknown;
 };
 
+/** Each error's message without the bracket the constructor adds. */
+const TEXTS = new WeakMap<DfoError, string>();
+
+/** The labels an error's bracket names: its code, then its trace id. */
+const labelsOf = ({ code, traceId }: DfoError): string[] =>
+  traceId === null ? [code] : [code, `trace ${traceId}`];
+
 /** The base of every error the client raises. `code` tells the errors apart. Its message and
  *  `detail` drop the characters that steer a terminal or reorder text, since either can quote
- *  the server. */
+ *  the server. The message ends with one bracket naming the code and the trace id, as in
+ *  `No registry entry exists for code 'x'. [code_not_found · trace 4f2a91c0]`, on a line of its
+ *  own after a message of several lines; the trace id is left out when the error has none. */
 export class DfoError extends Error {
   readonly code: DfoErrorCode;
   readonly status: number | null;
@@ -93,10 +102,22 @@ export class DfoError extends Error {
     this.retryAfterMs = options.retryAfterMs ?? null;
     this.problem = options.problem ?? null;
     this.docsUrl = options.docsUrl ?? null;
+    TEXTS.set(this, this.message);
+    this.message = bracketed(this.message, labelsOf(this));
   }
 }
 
 Object.defineProperty(DfoError.prototype, BRAND, { value: true });
+
+/** An error's message without the bracket that names its code and trace id. */
+export const messageOf = (error: DfoError): string => TEXTS.get(error) ?? error.message;
+
+/** Gives `error` the trace id of the response it describes, and names it in the message. The
+ *  client settles it once, before it throws. */
+export function settleTraceId(error: DfoError, traceId: string | null): void {
+  (error as { traceId: string | null }).traceId = traceId;
+  error.message = bracketed(messageOf(error), labelsOf(error));
+}
 
 /** The options that build another error from `error`, with `error` as the cause. The message is
  *  left out, so it defaults to the detail. */
@@ -267,15 +288,14 @@ export function actionFor(code: string): Action | undefined {
 
 /** A server refusal's message: its detail, cut to `MESSAGE_TEXT_MAX` characters after the
  *  client's own `lead`, if any, naming the field its problem document's `pointer` names unless
- *  the pointer is empty or the detail names it already, then its code, as in
- *  `Field required at /input/definition (request_invalid)`. With `unmatched`, the request of a
- *  404 that matched no route, the message names that request before the code, as in
- *  `Not found. GET https://… matched no route; check baseUrl (not_found)`. A null code adds
- *  none. */
+ *  the pointer is empty or the detail names it already, as in
+ *  `Field required at /input/definition`. With `unmatched`, the request of a 404 that matched
+ *  no route, the message names that request, as in
+ *  `Not found. GET https://… matched no route; check baseUrl`. The error's constructor adds the
+ *  bracket that names the code. */
 export function refusalMessage(
   detail: string,
   pointer: unknown,
-  code: string | null,
   { lead, unmatched }: { lead?: string; unmatched?: string | undefined } = {},
 ): string {
   const shown = lead === undefined ? capped(detail) : `${lead}: ${capped(detail)}`;
@@ -283,11 +303,9 @@ export function refusalMessage(
     typeof pointer === "string" && pointer !== "" && !detail.includes(pointer)
       ? `${shown.replace(/\.$/, "")} at ${capped(pointer)}`
       : shown;
-  const said =
-    unmatched === undefined
-      ? at
-      : `${at.replace(/\.$/, "")}. ${unmatched} matched no route; check baseUrl`;
-  return code === null ? said : `${said} (${code})`;
+  return unmatched === undefined
+    ? at
+    : `${at.replace(/\.$/, "")}. ${unmatched} matched no route; check baseUrl`;
 }
 
 /**
@@ -314,7 +332,7 @@ export function problemAt200(body: unknown, traceId: string | null): DfoError | 
     code: serverCode(code),
     status: 200,
     detail,
-    message: refusalMessage(detail, body["pointer"], code),
+    message: refusalMessage(detail, body["pointer"]),
     traceId,
     retryable: isRetryable(200, body),
     problem: body,

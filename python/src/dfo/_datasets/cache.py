@@ -139,17 +139,17 @@ def sha256_digest(data: bytes, /) -> str:
 class Cache:
     """The cache one client reads and writes.
 
-    A disabled cache misses every read and drops every write. Its directory is
-    resolved when it is first enabled, so a disabled cache accepts any `cache_dir`
-    and `DFO_CACHE_DIR`. An entry the disk refuses is logged to the `dfo` logger and
-    skipped, so a write cannot fail a fetch.
+    A disabled cache misses every read and drops every write. It resolves no
+    directory, so it accepts any `cache_dir` and `DFO_CACHE_DIR`. An entry the
+    disk refuses is logged to the `dfo` logger and skipped, so a write cannot fail
+    a fetch.
 
     Attributes:
         max_bytes: The bound on the artifacts kept; the least recently used go
             first.
     """
 
-    __slots__ = ("_cache_dir", "_directory", "_enabled", "_env", "max_bytes")
+    __slots__ = ("_directory", "max_bytes")
 
     def __init__(
         self,
@@ -159,32 +159,18 @@ class Cache:
         max_bytes: int = DEFAULT_MAX_BYTES,
         env: Mapping[str, str] | None = None,
     ) -> None:
-        self._cache_dir = cache_dir
-        self._env = env
-        self._directory: Path | None = None
+        self._directory = cache_path(cache_dir, env=env) if enabled else None
         self.max_bytes = max_bytes
-        self.enabled = enabled
 
     @property
     def enabled(self) -> bool:
-        """Whether the cache reads and writes entries.
-
-        Raises:
-            InvalidRequestError: Enabling it resolves a directory `cache_path`
-                refuses (`invalid_argument`).
-        """
-        return self._enabled
-
-    @enabled.setter
-    def enabled(self, enabled: bool) -> None:
-        if enabled and self._directory is None:
-            self._directory = cache_path(self._cache_dir, env=self._env)
-        self._enabled = enabled
+        """Whether the cache reads and writes entries."""
+        return self._directory is not None
 
     @property
     def directory(self) -> Path | None:
-        """The cache directory, `<root>/v1/dfo/cache1`, or None while disabled."""
-        return self._directory if self._enabled else None
+        """The cache directory, `<root>/v1/dfo/cache1`, or None when disabled."""
+        return self._directory
 
     def downloading(
         self, digest: str, /, *, timeout: float | None = None

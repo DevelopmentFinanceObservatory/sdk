@@ -12,6 +12,7 @@ import type {
   DefinitePart,
   NoDataPart,
   UnsupportedPart,
+  components,
 } from "./generated/openapi.ts";
 import type { UnknownPart } from "./core/unknown-part.ts";
 
@@ -20,3 +21,8 @@ export type KnownPart = DefinitePart | CandidatesPart | NoDataPart | Unsupported
 
 /** One part of a resolution, as `Resolution["parts"]` holds it. */
 export type Part = KnownPart | UnknownPart;
+
+/** A warning the server attached to an answer, a part or a dataset: its registry code, its
+ *  severity and its message. `severity` is a `Severity` for Search; the datasets surface may send
+ *  others. */
+export type Notice = components["schemas"]["Warning"];

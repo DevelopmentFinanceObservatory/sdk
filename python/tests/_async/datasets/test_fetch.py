@@ -19,7 +19,6 @@ from dfo._core.errors import (
     ContractError,
     DataWarning,
     DfoError,
-    DfoTimeoutError,
     DfoWarning,
     InvalidRequestError,
     NetworkError,
@@ -34,7 +33,7 @@ from dfo._core.types import FormatError, Rendering, Spec
 from dfo._datasets.build import Reading
 from dfo._datasets.cache import Cache, file_entry, manifest_entry, sha256_digest
 from dfo._datasets.dataset import build_dataset
-from dfo._datasets.fetch import fetch_members, mint, operation
+from dfo._datasets.fetch import fetch_members
 from dfo._datasets.resolve import fetch
 from dfo._http.transport import AsyncTransport
 from tests._data import load
@@ -47,7 +46,6 @@ from tests._fetch_support import (
     LONG,
     NARROWED_CV,
     NARROWED_ID,
-    OP_ID,
     ORIGIN,
     POSTED_ID,
     SIGNED,
@@ -108,6 +106,11 @@ def make(handler, timeline: Timeline | None = None, **options) -> AsyncTransport
     )
 
 
+# What hints name the owner of a call: a client the user builds, or the
+# default client behind `dfo.fetch`.
+CALLERS = pytest.mark.parametrize("caller", ["client", "dfo"])
+
+
 def spec(sentence: str | None = None) -> Spec:
     return Spec(
         parse_spec(posted_spec()).spec_id, posted_spec()["definition"], sentence
@@ -135,12 +138,11 @@ def ref_member(
     [POSTED_ID, {"spec_id": POSTED_ID, "definition": {}}, None],
     ids=["spec-id", "spec-dict", "none"],
 )
-@pytest.mark.parametrize("call", [fetch, mint])
-async def test_a_target_that_is_not_a_spec_sends_nothing(call, target: object) -> None:
+async def test_a_target_that_is_not_a_spec_sends_nothing(target: object) -> None:
     server = Server()
     async with make(server) as transport:
         with pytest.raises(InvalidRequestError) as caught:
-            await call(transport, target)
+            await fetch(transport, target)
     assert caught.value.code == "invalid_argument"
     assert server.requests == []
 
@@ -152,17 +154,8 @@ async def test_a_target_that_is_not_a_spec_sends_nothing(call, target: object) -
         ("spec", {"progress": 5}),
         ("ref", {"strict": 1}),
         ("ref", {"progress": "no"}),
-        ("mint", {"progress": 0}),
-        ("operation", {"progress": "yes"}),
     ],
-    ids=[
-        "spec-strict",
-        "spec-progress",
-        "ref-strict",
-        "ref-progress",
-        "mint",
-        "resume",
-    ],
+    ids=["spec-strict", "spec-progress", "ref-strict", "ref-progress"],
 )
 async def test_a_switch_that_is_not_a_bool_sends_nothing(
     target: str, options: dict
@@ -172,12 +165,8 @@ async def test_a_switch_that_is_not_a_bool_sends_nothing(
         with pytest.raises(InvalidRequestError) as caught:
             if target == "spec":
                 await fetch(transport, spec(SENTENCE), **options)
-            elif target == "ref":
-                await fetch(transport, DatasetRef((ref_member(),)), **options)
-            elif target == "mint":
-                await mint(transport, spec(SENTENCE), **options)
             else:
-                await operation(transport, OP_ID, **options)
+                await fetch(transport, DatasetRef((ref_member(),)), **options)
     assert caught.value.code == "invalid_argument"
     assert server.requests == []
 
@@ -266,6 +255,10 @@ async def test_a_narrowed_spec_stores_the_built_identity_and_asks_search_its_sen
     [
         (
             {"origin": ["country/FRA"]},
+            {"destination": ["country/NGA"], "origin": ["country/FRA"]},
+        ),
+        (
+            {"origin": [" country/FRA\n"]},
             {"destination": ["country/NGA"], "origin": ["country/FRA"]},
         ),
         ({"origin": None}, {"destination": ["country/NGA"]}),
@@ -424,7 +417,7 @@ async def test_a_manifest_warning_has_the_clients_key_redacted() -> None:
     async with make(server) as transport:
         with pytest.raises(DataWarning) as caught:
             await fetch(transport, spec(SENTENCE), strict=True)
-    assert str(caught.value) == "echo [redacted]"
+    assert str(caught.value) == "echo [redacted] [coverage_below_scope]"
 
 
 async def test_info_warnings_stay_quiet() -> None:
@@ -515,6 +508,81 @@ async def test_member_not_resolvable_says_to_search_again() -> None:
         ) as caught:
             await fetch(transport, spec(SENTENCE))
     assert caught.value.code == "member_not_resolvable"
+
+
+def role_ref_refused(**problem: object) -> httpx2.Response:
+    return json_response(
+        422,
+        {
+            "code": "invalid_role_ref",
+            "status": 422,
+            "trace_id": "trace",
+            "pointer": "/input/scope/entities/origin",
+            **problem,
+        },
+    )
+
+
+@pytest.mark.parametrize("stage", ["build", "resubmit"])
+@pytest.mark.parametrize(
+    ("origin", "refusal", "message"),
+    [
+        (
+            "Germany",
+            {"detail": "posted entity reference(s) not found in the graph: Germany"},
+            "posted entity reference(s) not found in the graph: Germany at "
+            "/input/scope/entities/origin. Entities take dcids; "
+            '{caller}.lookup.resolve("Germany") finds one.',
+        ),
+        (
+            "country/XXX",
+            {"detail": "not found"},
+            "not found at /input/scope/entities/origin",
+        ),
+        (
+            "country/DEX",
+            {
+                "detail": "not found.",
+                "alternatives": [
+                    {"ref": "country/FRA", "label": "France"},
+                    {"ref": "country/DEU", "label": "Germany"},
+                ],
+            },
+            'not found at /input/scope/entities/origin. Did you mean "country/DEU"? '
+            "The server offers country/FRA (France), country/DEU (Germany).",
+        ),
+        (
+            "country/DEX",
+            {
+                "detail": "not found",
+                "issues": [
+                    {"alternatives": [{"ref": "country/DEU", "label": "Germany"}]}
+                ],
+            },
+            'not found at /input/scope/entities/origin. Did you mean "country/DEU"? '
+            "The server offers country/DEU (Germany).",
+        ),
+    ],
+    ids=["place-name", "unknown-dcid", "alternatives", "issue-alternatives"],
+)
+@CALLERS
+async def test_a_refused_entity_names_the_fix_and_keeps_the_refusal(
+    stage: str, origin: str, refusal: dict, message: str, caller: str
+) -> None:
+    refused = role_ref_refused(**refusal)
+    served = (
+        [refused] if stage == "build" else [json_response(200, manifest()), refused]
+    )
+    server = Server(*served)
+    async with make(server, caller=caller) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await fetch(transport, spec(), entities={"origin": [origin]})
+    error = caught.value
+    message = message.format(caller=caller)
+    assert str(error) == f"{message} [invalid_role_ref · trace trace]"
+    assert error.alternatives == tuple(refusal.get("alternatives", ()))
+    assert error.problem is not None
+    assert error.problem["pointer"] == "/input/scope/entities/origin"
 
 
 async def test_a_signed_download_that_fails_asks_the_files_route_again() -> None:
@@ -633,9 +701,10 @@ async def test_a_files_route_answering_another_2xx_or_3xx_is_unexpected(
         (httpx2.Response(403), ServerError, "download_failed"),
         (httpx2.Response(204), ServerError, "download_failed"),
         (httpx2.ConnectError("reset"), NetworkError, "network_error"),
-        (httpx2.ReadTimeout("slow"), DfoTimeoutError, "deadline_exceeded"),
+        # A read that waits `DOWNLOAD_STALL_S` with no byte is a stall.
+        (httpx2.ReadTimeout("stalled"), NetworkError, "network_error"),
     ],
-    ids=["refused", "no-content", "network", "timeout"],
+    ids=["refused", "no-content", "network", "stall"],
 )
 async def test_a_signed_fetch_that_fails_twice_raises_its_own_failure(
     failure: httpx2.Response | Exception, error: type[Exception], code: str
@@ -1097,7 +1166,7 @@ def versions_page(versions: list, next_cursor: object = None) -> httpx2.Response
 
 
 async def versions_lookup(
-    *pages: httpx2.Response, rendering: Rendering = LONG
+    *pages: httpx2.Response, rendering: Rendering = LONG, caller: str = "client"
 ) -> tuple[Server, Exception]:
     """A ref whose build is refused, so the lookup reads the versions `pages`."""
     member = ref_member(rendering=rendering)
@@ -1110,7 +1179,7 @@ async def versions_lookup(
         problem(422, "definition_not_reproducible"),
         *pages,
     )
-    async with make(server) as transport:
+    async with make(server, caller=caller) as transport:
         with pytest.raises(DfoError) as caught:
             await fetch(transport, DatasetRef((member,)))
     return server, caught.value
@@ -1177,20 +1246,20 @@ async def test_a_spec_that_cannot_rebuild_names_the_newest_stored_version(
 
 
 @pytest.mark.parametrize(
-    ("listed", "ending"),
-    [
-        (NARROWED_CV, "; the server lists it as the newest version."),
-        (NEWER, f"; the newest version is {NEWER}, which fetching the spec returns."),
-    ],
-    ids=["the-ref-version", "another-version"],
+    ("listed", "names_latest"),
+    [(NARROWED_CV, False), (NEWER, True), (None, True)],
+    ids=["the-ref-version", "another-version", "none-listed"],
 )
-async def test_the_unavailable_error_says_what_the_newest_version_is(
-    listed: str, ending: str
+@CALLERS
+async def test_the_unavailable_error_names_the_latest_fetch_unless_it_is_newest(
+    listed: str | None, caller: str, *, names_latest: bool
 ) -> None:
-    _, error = await versions_lookup(versions_page([plain(listed)]))
+    page = versions_page([plain(listed)] if listed is not None else [])
+    _, error = await versions_lookup(page, caller=caller)
     assert isinstance(error, VersionUnavailableError)
     assert error.newest_version == listed
-    assert str(error).endswith(ending)
+    assert (f"{caller}.fetch(ref, latest=True)" in str(error)) is names_latest
+    assert listed is None or listed in str(error)
 
 
 @pytest.mark.parametrize(
@@ -1548,12 +1617,113 @@ async def test_incomplete_metadata_artifact_stays_eligible_offline(
     assert restored.members[0].data == DATA
 
 
-async def test_a_ref_takes_no_narrowing_and_keeps_its_layout() -> None:
+@pytest.mark.parametrize(
+    ("target", "options", "names"),
+    [
+        ("ref", {"window": "latest"}, "for the newest version use latest=True."),
+        (
+            "ref",
+            {"window": "latest", "latest": True},
+            '{caller}.fetch(ref.members[0].spec, window="latest").',
+        ),
+        (
+            "ref",
+            {"window": (2015, 2020)},
+            "{caller}.fetch(ref.members[0].spec, window=(2015, 2020)).",
+        ),
+        (
+            "ref",
+            {"window": (2015, 2020), "latest": True},
+            "{caller}.fetch(ref.members[0].spec, window=(2015, 2020)).",
+        ),
+        (
+            "ref",
+            {"entities": {"recipient": None}},
+            "{caller}.fetch(ref.members[0].spec, entities=...)",
+        ),
+        ("ref", {"facets": {"unit": "USD"}}, "{caller}.fetch(ref.members[0].spec"),
+        ("ref", {"latest": 1}, "not 1"),
+        ("spec", {"latest": True}, "{caller}.fetch(spec)"),
+        ("spec", {"latest": "yes"}, "not 'yes'"),
+    ],
+    ids=[
+        "ref-window",
+        "latest-ref-window",
+        "ref-years",
+        "latest-ref-years",
+        "ref-entities",
+        "ref-facets",
+        "latest-not-a-bool",
+        "latest-spec",
+        "latest-spec-not-a-bool",
+    ],
+)
+@CALLERS
+async def test_a_refused_latest_or_ref_narrowing_names_the_call_to_run(
+    target: str, options: dict, names: str, caller: str
+) -> None:
+    server = Server()
+    fetched = DatasetRef((ref_member(),)) if target == "ref" else spec(SENTENCE)
+    async with make(server, caller=caller) as transport:
+        with pytest.raises(InvalidRequestError) as raised:
+            await fetch(transport, fetched, **options)
+    assert raised.value.code == "invalid_argument"
+    assert names.format(caller=caller) in str(raised.value)
+    assert server.requests == []
+
+
+@pytest.mark.parametrize("rendering", [LONG, CUT], ids=["long", "cut"])
+async def test_a_latest_ref_fetch_builds_each_spec_in_the_refs_rendering(
+    rendering: Rendering,
+) -> None:
+    held = ref_member(rendering=rendering)
+    body = with_cut(manifest(content_version=NEWER))
+    server = Server(
+        json_response(200, body),
+        redirect(),
+        parquet(CUT_DATA if rendering == CUT else DATA),
+    )
+    async with make(server) as transport:
+        built = await fetch(transport, DatasetRef((held,)), latest=True)
+    assert server.calls()[0] == f"POST {BASE}/datasets"
+    options = server.body(0)["options"]
+    assert options.get("without_party_totals", False) is rendering.without_party_totals
+    (member,) = built.members
+    assert (member.parts, member.content_version) == (held.parts, NEWER)
+    assert (member.spec.spec_id, member.rendering) == (NARROWED_ID, rendering)
+    assert built.complete
+
+
+@CALLERS
+async def test_a_latest_fetch_refuses_a_ref_of_mixed_renderings(caller: str) -> None:
+    other = Spec(POSTED_ID, posted_spec()["definition"], SENTENCE)
+    mixed = DatasetRef(
+        (
+            ref_member(),
+            RefMember(
+                parts=("another part",),
+                sentence=SENTENCE,
+                spec=other,
+                content_version=NARROWED_CV,
+                digest=sha256_digest(CUT_DATA),
+                rendering=CUT,
+            ),
+        )
+    )
+    server = Server()
+    async with make(server, caller=caller) as transport:
+        with pytest.raises(InvalidRequestError) as raised:
+            await fetch(transport, mixed, latest=True)
+    assert raised.value.code == "invalid_argument"
+    assert f"{caller}.fetch(ref.members[1].spec" in str(raised.value)
+    assert "without_party_totals=True" in str(raised.value)
+    assert server.requests == []
+
+
+async def test_a_ref_keeps_its_layout() -> None:
     ref = DatasetRef((ref_member(),))
     server = Server()
     async with make(server) as transport:
-        with pytest.raises(InvalidRequestError, match="no narrowing"):
-            await fetch(transport, ref, window="latest")
         with pytest.raises(InvalidRequestError, match="long layout"):
             await fetch(transport, ref, layout="frame")
         with pytest.raises(InvalidRequestError, match="without_party_totals=False"):

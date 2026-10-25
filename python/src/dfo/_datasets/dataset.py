@@ -3,7 +3,7 @@
 A dataset holds its table and its provenance and carries no client, so its
 conversions run offline. Several members stack into one long table with a leading
 `part` column naming each row's member. `save` writes one Parquet file whose
-key-value metadata carries the provenance and the ref, which `open_bundle` reads
+key-value metadata carries the provenance and the ref, which `dfo.load` reads
 back. That file is the durable form. A dataset also pickles, for transfer between
 processes that run the same client version, as `multiprocessing` does. Another
 version may fail to load the pickle or load it wrong.
@@ -20,15 +20,14 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from os import PathLike
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Never
 
 from dfo._core.codes import CONTRACT_VIOLATION, UNEXPECTED_RESPONSE
-from dfo._core.errors import ContractError, client_error
+from dfo._core.errors import ContractError, client_error, message_of
 from dfo._core.parse import parse_citation, parse_notices, parse_part
 from dfo._core.refs import DatasetRef, Member
 from dfo._core.types import (
     Assumption,
-    AsyncCandidate,
     Candidate,
     CandidatesPart,
     Citation,
@@ -48,7 +47,6 @@ from dfo._core.types import (
     is_gap_kind,
     is_integer,
     object_at,
-    unbound_gap,
 )
 from dfo._datasets.build import (
     Cache,
@@ -62,6 +60,16 @@ if TYPE_CHECKING:
     import pandas
     import polars
     import pyarrow as pa
+
+# The table's type. An alias's value is evaluated only when read, so
+# `typing.get_type_hints(Dataset)` resolves `_table` without importing pyarrow.
+type _ArrowTable = pa.Table
+
+# What iterating or indexing a dataset raises, which `pd.DataFrame(data)` shows.
+_NOT_A_FRAME = (
+    "A Dataset is a table with its provenance. Use data.to_pandas(), "
+    "data.to_polars(), or pd.DataFrame.from_arrow(data)."
+)
 
 # The column that names each row's member in a dataset of several members.
 PART_COLUMN = "part"
@@ -123,7 +131,7 @@ class FetchedMember:
     manifest: Mapping[str, Any] = field(repr=False)
     digest: str
     data: bytes = field(repr=False)
-    answer_parts: tuple[Part[object], ...] = field(default=(), repr=False)
+    answer_parts: tuple[Part, ...] = field(default=(), repr=False)
     rendering: Rendering | None = None
 
 
@@ -144,7 +152,10 @@ class Dataset:
         assumptions: What Search assumed to read the question, from the answer
             parts the members answer. Empty for a spec or ref fetched outside an
             answer.
-        complete: Whether every part of the question has a member.
+        complete: Whether every part of the question has a member. A fetch of a
+            `DatasetRef` is complete for the members it names, since a ref
+            carries no gaps, so a dataset saved from a partial fetch loses its
+            gaps on the next ref fetch: save from a fetch without `partial`.
         missing: The parts left out of a partial fetch. Their candidates belong
             to no answer; fetch one with `dfo.fetch(candidate.spec)`.
         held_until: The earliest date any member's version can still be fetched
@@ -164,13 +175,16 @@ class Dataset:
     departures: tuple[Departure, ...]
     requested_operations: tuple[RequestedOperation, ...]
     complete: bool
-    missing: tuple[Gap[Candidate], ...]
+    missing: tuple[Gap, ...]
     held_until: date | None
     pinned: bool
     stale: bool
     layout_version: str
-    _table: pa.Table = field(repr=False)
+    _table: _ArrowTable = field(repr=False)
     assumptions: tuple[Assumption, ...] = ()
+    # The owner of the call the repr's newest-versions line names: the fetching
+    # client's `client` or `dfo`, and `dfo` for a dataset `dfo.load` read.
+    _caller: str = field(default="dfo", repr=False)
 
     @property
     def ref(self) -> DatasetRef:
@@ -191,11 +205,6 @@ class Dataset:
         return DatasetRef.of(self.members) if self.members else None
 
     @property
-    def rows(self) -> int:
-        """The number of rows in the table."""
-        return self._table.num_rows
-
-    @property
     def sources(self) -> tuple[str, ...]:
         """The names of the sources the data comes from."""
         return tuple(source.label for source in self.citation.sources)
@@ -212,7 +221,16 @@ class Dataset:
         )
 
     def __len__(self) -> int:
-        return self.rows
+        """The number of rows in the table."""
+        return self._table.num_rows
+
+    def __iter__(self) -> Never:
+        """Refuse, naming the conversions: a dataset holds no Python rows."""
+        raise TypeError(_NOT_A_FRAME)
+
+    def __getitem__(self, key: object, /) -> Never:
+        """Refuse, naming the conversions: a dataset holds no Python columns."""
+        raise TypeError(_NOT_A_FRAME)
 
     def to_arrow(self) -> pa.Table:
         """The table as a `pyarrow.Table`, with the provenance in its schema metadata."""
@@ -224,6 +242,10 @@ class Dataset:
 
     def to_pandas(self) -> pandas.DataFrame:
         """The table as a pandas DataFrame, with the provenance in `attrs`.
+
+        `attrs` holds `sentence`, `citation`, `sources`, `licence`, `ref` as
+        JSON, `complete`, and `missing`, a list of `{kind, message}` per part a
+        partial fetch left out.
 
         A merge or a concat drops `attrs`. The provenance stays on the dataset.
 
@@ -259,7 +281,7 @@ class Dataset:
     def save(self, path: str | PathLike[str], /) -> None:
         """Write the table to one Parquet file that carries the provenance and the ref.
 
-        `dfo.open_bundle(path)` reads it back into a dataset with the same table,
+        `dfo.load(path)` reads it back into a dataset with the same table,
         provenance and ref.
         """
         import pyarrow.parquet as pq  # noqa: PLC0415 - pyarrow loads on first use
@@ -279,32 +301,40 @@ class Dataset:
         )
 
     def _summary(self) -> list[str]:
+        """The repr's lines after the sentence, ending with the line that keeps
+        the data and the one that later fetches its newest versions."""
         lines: list[str] = []
         if self.sources:
             lines.append("Source: " + "; ".join(self.sources))
         versions = [member.content_version for member in self.members]
+        retention = self._retention()
         if versions:
             label = "Version" if len(versions) == 1 else "Versions"
-            lines.append(f"{label}: " + ", ".join(versions))
-        lines.append(f"Rows: {self.rows:,}")
-        if retention := self._retention():
-            lines.append(retention)
+            held = f", {retention}" if retention else ""
+            lines.append(f"{label}: {', '.join(versions)} (exact){held}")
+        elif retention:
+            lines.append(retention[0].upper() + retention[1:])
+        lines.append(f"Rows: {len(self):,}")
         if not self.complete:
             lines.append(f"Incomplete: {len(self.missing)} part(s) left out")
         if self.stale:
             lines.append(
                 "Stale: read from the cache without asking for a newer version"
             )
+        keep = "Keep: data.save(path)"
+        if versions:
+            keep += f" · newest later: {self._caller}.fetch(data.ref, latest=True)"
+        lines.append(keep)
         return lines
 
     def _retention(self) -> str | None:
         if self.pinned:
-            return "Pinned"
+            return "pinned"
         if self.held_until is None:
             return None
         held = self.held_until
         return (
-            f"Held until {held.day} {_MONTHS[held.month - 1]} {held.year}, not pinned"
+            f"held until {held.day} {_MONTHS[held.month - 1]} {held.year}, not pinned"
         )
 
     def _attrs(self) -> dict[str, Any]:
@@ -315,6 +345,10 @@ class Dataset:
             "sources": list(self.sources),
             "licence": self.licence,
             "ref": ref.to_json() if ref is not None else None,
+            "complete": self.complete,
+            "missing": [
+                {"kind": gap.kind, "message": gap.message} for gap in self.missing
+            ],
         }
 
     def _metadata(self) -> dict[bytes, bytes]:
@@ -358,9 +392,10 @@ def build_dataset(
     *,
     layout: Layout,
     complete: bool,
-    missing: Sequence[Gap[Candidate | AsyncCandidate]],
+    missing: Sequence[Gap],
     stale: bool,
     cache: Cache | None = None,
+    caller: str = "dfo",
 ) -> Dataset:
     """Make one dataset from the members a fetch built and downloaded.
 
@@ -384,6 +419,8 @@ def build_dataset(
         missing: The parts a partial fetch left out.
         stale: Whether the members came from the cache without asking the server.
         cache: The cache the members' bytes were read from or stored in, or None.
+        caller: The fetching client's hint name, `client` or `dfo`, which the
+            repr's newest-versions line names.
 
     Raises:
         ValueError: No members, or several members in the frame layout.
@@ -457,12 +494,13 @@ def build_dataset(
             _unique(item for part in answer_parts for item in part.assumptions)
         ),
         complete=complete,
-        missing=tuple(unbound_gap(gap) for gap in missing),
+        missing=tuple(missing),
         held_until=held_until,
         pinned=pinned,
         stale=stale,
         layout_version="; ".join(_unique(layouts)),
         _table=table.replace_schema_metadata(None),
+        _caller=caller,
     )
 
 
@@ -820,7 +858,7 @@ def _load_citation(value: object, pointer: str) -> Citation:
     )
 
 
-def _gap_object(gap: Gap[object]) -> dict[str, Any]:
+def _gap_object(gap: Gap) -> dict[str, Any]:
     return {
         "part_index": gap.part_index,
         "part": dict(gap.part.raw) or {"status": gap.part.status},
@@ -838,7 +876,7 @@ def _gap_object(gap: Gap[object]) -> dict[str, Any]:
     }
 
 
-def _load_gap(value: object, pointer: str) -> Gap[Candidate]:
+def _load_gap(value: object, pointer: str) -> Gap:
     """A saved gap. A candidates part's options are its candidates, as in an answer."""
     obj = object_at(value, pointer)
     check_keys(
@@ -853,7 +891,9 @@ def _load_gap(value: object, pointer: str) -> Gap[Candidate]:
     try:
         part = parse_part(obj["part"], f"{pointer}/part")
     except ContractError as error:
-        raise FormatError("format_invalid", f"{pointer}/part", str(error)) from error
+        raise FormatError(
+            "format_invalid", f"{pointer}/part", message_of(error)
+        ) from error
     options: tuple[Candidate | Option, ...] = (
         part.candidates
         if isinstance(part, CandidatesPart)

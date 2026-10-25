@@ -123,7 +123,7 @@ test("a transport failure keeps the platform's error as the cause", () => {
   const cause = new TypeError("fetch failed");
   const error = new DfoError({ code: "network_error", cause });
   assert.equal(error.cause, cause);
-  assert.equal(error.message, "network_error");
+  assert.equal(error.message, "network_error [network_error]");
 });
 
 test("an error the client raises takes a code from ClientErrorCode", () => {
@@ -141,9 +141,9 @@ test("warnOnce forgets what it has seen once it holds 1,024 keys", () => {
   };
   once("cap:first");
   once("cap:first");
-  assert.deepEqual(shown, ["cap:first"]);
+  assert.deepEqual(shown, ["cap:first [ref_digest_changed]"]);
   for (let index = 0; index < 1024; index += 1) once(`cap:${index}`);
   once("cap:first");
   assert.equal(shown.length, 1026);
-  assert.equal(shown.at(-1), "cap:first");
+  assert.equal(shown.at(-1), "cap:first [ref_digest_changed]");
 });

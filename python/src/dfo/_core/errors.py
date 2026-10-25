@@ -11,19 +11,22 @@ characters that steer a terminal or reorder text, since both can quote the
 server.
 """
 
+import copy
 import os
 import sys
 import warnings
 from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any, override
 
 from dfo._core.text import printable
+from dfo._core.types import Gap
+from dfo._generated.error_map import ClientErrorCode
+from dfo._generated.wire import Alternative, ProblemIssue
 
-if TYPE_CHECKING:
-    # `dfo._core.types` raises through this module, so the import is for types only.
-    from dfo._core.types import Candidate, Gap
-    from dfo._generated.wire import Alternative, ProblemIssue
+# An error's code: one the client raises itself, or any refusal code a server
+# sends, including one this client does not list.
+type ErrorCode = ClientErrorCode | str
 
 # Every warning skips the frames under the `dfo` package directory, so it names the
 # caller's line.
@@ -32,6 +35,11 @@ _PACKAGE_PREFIX = os.path.dirname(os.path.dirname(__file__)) + os.sep
 
 class DfoError(Exception):
     """The base of every error a DFO client raises.
+
+    `str` and `repr` end the message with one bracket naming the code and the
+    trace id, as in `No registry entry exists for code 'x'. [code_not_found ·
+    trace 4f2a91c0]`, on a line of its own after a message of several lines.
+    Either is left out when the error has none.
 
     Attributes:
         code: The refusal's code from the server, or the client's own code from
@@ -51,7 +59,7 @@ class DfoError(Exception):
         message: str,
         /,
         *,
-        code: str | None = None,
+        code: ErrorCode | None = None,
         status: int | None = None,
         detail: str | None = None,
         trace_id: str | None = None,
@@ -61,7 +69,7 @@ class DfoError(Exception):
         retry_after: float | None = None,
     ) -> None:
         super().__init__(printable(message))
-        self.code = code
+        self.code: ErrorCode | None = code
         self.status = status
         self.detail: str | None = None if detail is None else printable(detail)
         self.trace_id = trace_id
@@ -69,6 +77,30 @@ class DfoError(Exception):
         self.problem = problem
         self.docs_url = docs_url
         self.retry_after = retry_after
+
+    @override
+    def __str__(self) -> str:
+        labels = [self.code] if self.code else []
+        if self.trace_id:
+            labels.append(f"trace {self.trace_id}")
+        return _with_suffix(message_of(self), labels)
+
+    @override
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({str(self)!r})"
+
+
+def message_of(error: BaseException, /) -> str:
+    """The message without the bracket `str` adds."""
+    return error.args[0] if error.args else ""
+
+
+def _with_suffix(message: str, labels: list[str]) -> str:
+    """`message` with the bracket of `labels` after it: on its last line, or on a
+    line of its own when the message has several."""
+    if not labels:
+        return message
+    return f"{message}{'\n' if '\n' in message else ' '}[{' · '.join(labels)}]"
 
 
 class InvalidRequestError(DfoError):
@@ -84,8 +116,8 @@ class InvalidRequestError(DfoError):
             server sent none.
     """
 
-    issues: "tuple[ProblemIssue, ...]" = ()
-    alternatives: "tuple[Alternative, ...]" = ()
+    issues: tuple[ProblemIssue, ...] = ()
+    alternatives: tuple[Alternative, ...] = ()
 
 
 class NotFoundError(DfoError):
@@ -98,12 +130,12 @@ class IncompleteAnswerError(DfoError):
     Attributes:
         answer: The answer whose fetch raised it, or None for a server refusal.
         gaps: The parts with no reading, each with its kind, message and options.
-            Their candidates belong to no answer. Choose through `answer`, or
-            fetch one with `dfo.fetch(candidate.spec)`.
+            Choose through `answer`, or fetch a candidate alone with
+            `dfo.fetch(candidate.spec)`.
     """
 
     answer: Any = None
-    gaps: "tuple[Gap[Candidate], ...]" = ()
+    gaps: tuple[Gap, ...] = ()
 
 
 class DeclinedError(DfoError):
@@ -163,6 +195,11 @@ class DfoTimeoutError(DfoError, TimeoutError):
 class DfoWarning(UserWarning):
     """The base of every warning a DFO client issues.
 
+    `str` ends the message with its code in brackets, as in `The materialised
+    frame holds zero observations. [empty_result]`, on a line of its own after a
+    message of several lines. The trace id stays out, so the `warnings` module
+    shows one text once however many responses carry it.
+
     Attributes:
         code: The client's own code from the contract's `warning-codes.json`, or
             the server's code for a `DataWarning` or `SearchWarning`.
@@ -177,6 +214,14 @@ class DfoWarning(UserWarning):
         super().__init__(printable(message))
         self.code = code
         self.trace_id = trace_id
+
+    @override
+    def __str__(self) -> str:
+        return _with_suffix(message_of(self), [self.code] if self.code else [])
+
+    @override
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({str(self)!r})"
 
 
 class DataWarning(DfoWarning):
@@ -314,7 +359,19 @@ def recast[E: DfoError](
         "docs_url": error.docs_url,
         "retry_after": error.retry_after,
     }
-    return cls(str(error) if message is None else message, **fields | overrides)
+    return cls(message_of(error) if message is None else message, **fields | overrides)
+
+
+def with_hint[E: DfoError](error: E, /, *hints: str) -> E:
+    """A copy of `error` whose message ends with `hints`, each a sentence.
+
+    The copy keeps the class and every attribute, such as the code, the trace id,
+    a `ContractError`'s pointer and an `InvalidRequestError`'s issues and
+    alternatives.
+    """
+    hinted = copy.copy(error)
+    hinted.args = (printable(f"{message_of(error).rstrip('. \n')}. {' '.join(hints)}"),)
+    return hinted
 
 
 def client_warning[W: DfoWarning](code: WarningCode[W], message: str, /) -> W:

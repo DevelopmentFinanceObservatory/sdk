@@ -16,29 +16,39 @@
  * fetch returns the empty dataset under that part's sentence, beside the manifest's warnings.
  * Every download asks a files route on the API's origin, fetches the URL it redirects to, bare
  * on the storage host and as an API request on the API's origin, and is checked against its
- * digest before the fetch returns. Members build one after another, under one deadline: each
- * request attempt, the files route ask included, waits the client's timeout within it, and a
- * download reads until the deadline.
+ * digest before the fetch returns. Members build one after another, with no deadline unless
+ * the caller gives a `timeout`, which bounds them all: each request attempt, the files route
+ * ask included, waits the client's timeout within it, and a download reads until the deadline
+ * while bytes keep arriving.
  */
 
 import type { Gap } from "../search/answer.ts";
 import { Dataset } from "./dataset.ts";
 import type { FetchedMember } from "./dataset.ts";
-import { capped, clientError, DfoError, InvalidRequestError, optionsOf } from "../core/errors.ts";
+import {
+  capped,
+  clientError,
+  DfoError,
+  InvalidRequestError,
+  messageOf,
+  optionsOf,
+} from "../core/errors.ts";
 import type { ClientErrorCode, DfoErrorOptions } from "../core/errors.ts";
-import { build, deadlineOf, downloadBuilt, resumeOperation, startOperation } from "./operation.ts";
-import type { Built, Manifest, Operation, ProgressHandler, Wait } from "./operation.ts";
+import { build, downloadBuilt, waitFor } from "./operation.ts";
+import type { Built, Manifest, ProgressHandler, Wait } from "./operation.ts";
 import { manifestWarningsOf, partFacts } from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
 import { mintOptions, renderingFor, renderingMatches } from "../core/ref.ts";
-import type { Layout, Rendering, SpecLike } from "../core/ref.ts";
+import type { Layout, Rendering, Spec } from "../core/ref.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
 import { DEFAULT_MAX_BYTES, passedDeadline } from "../http/transport.ts";
 import type { Target, Transport } from "../http/transport.ts";
-import type { EntityGroup, Part, ResolvedSpec } from "../wire.ts";
+import type { EntityGroup, Part } from "../wire.ts";
 import { DataWarning } from "../core/warnings.ts";
 import { isRecord } from "../core/json.ts";
+import { nearest } from "../core/nearest.ts";
+import { declareOptions } from "../core/options.ts";
 import { readParquet } from "./parquet.ts";
 import type { ColumnType, ParquetFile } from "./parquet.ts";
 
@@ -51,30 +61,26 @@ export type Window = "all" | "latest" | readonly [startYear: number, endYear: nu
 
 /** How a fetch narrows a spec. The server builds a narrowed spec with its own `spec_id`. */
 export type Narrowing = {
-  window?: Window;
-  /** Roles to rebind, as `{ origin: ["country/FRA"] }`. null unbinds a role. Every role
-   *  the spec binds and this leaves out keeps its dcids, so `{}` narrows nothing. */
-  entities?: Readonly<Record<string, readonly string[] | null>>;
+  /** The years, from 1000 to 2200. Null or undefined reads as unset, which is `"all"`. */
+  window?: Window | null | undefined;
+  /** Roles to rebind, as `{ origin: ["country/FRA"] }`, each dcid read without surrounding
+   *  white space. null unbinds a role. Every role the spec binds and this leaves out keeps its
+   *  dcids, so `{}` narrows nothing, as do null and undefined. */
+  entities?: Readonly<Record<string, readonly string[] | null>> | null | undefined;
   /** Facet axes (`provenance`, `measurementMethod`, `unit`) bound to a reference. null binds
-   *  the facets that declare no value on the axis. `{}` narrows nothing. */
-  facets?: Readonly<Record<string, string | null>>;
+   *  the facets that declare no value on the axis. `{}` narrows nothing, as do null and
+   *  undefined. */
+  facets?: Readonly<Record<string, string | null>> | null | undefined;
 };
 
 /** How Search resolved each role's group of places, keyed by role: a spec's
  *  `resolved.entity_groups`. */
 export type EntityGroups = Readonly<Record<string, EntityGroup>>;
 
-/** A spec to fetch, in the wire `Spec`'s shape: `candidate.spec`, a definite part's spec, or one
- *  read back from JSON. Its `resolved` gives Search's sentence and the entity groups; a spec
- *  written by hand with only `spec_id` and `definition` has neither. */
-export type SpecInput = SpecLike & {
-  readonly resolved?: Pick<ResolvedSpec, "rendered_sentence" | "entity_groups"> | null | undefined;
-};
-
 /** One reading to build: the answer parts it answers, its spec, and its sentence if known. */
 export type MemberRequest = {
   readonly parts: readonly string[];
-  readonly spec: SpecLike;
+  readonly spec: Spec;
   readonly sentence?: string | null | undefined;
   /** The spec's entity groups, when the caller holds them. */
   readonly entityGroups?: EntityGroups | null | undefined;
@@ -83,9 +89,13 @@ export type MemberRequest = {
 };
 
 export type CallOptions = {
+  /** Aborts the fetch, rejecting with `signal.reason`. A build the server has started keeps
+   *  running, and the same fetch joins it. */
   signal?: AbortSignal;
-  /** The longest the whole fetch takes, builds and downloads included, in milliseconds;
-   *  `Infinity` for no limit. Defaults to 30 minutes. */
+  /** The longest the whole fetch takes, builds and downloads included, in milliseconds. None by
+   *  default: the fetch waits as long as the build takes, which the server bounds. Past it the
+   *  fetch raises `DfoTimeoutError` (`deadline_exceeded`) and the build carries on; the same
+   *  fetch joins it. */
   timeout?: number;
   onProgress?: ProgressHandler;
   /** Raises the first dataset warning, a `DataWarning`, instead of passing it to the warning
@@ -98,43 +108,58 @@ export type CallOptions = {
   withoutPartyTotals?: boolean;
 };
 
-export type FetchOptions = CallOptions & Narrowing;
+export type FetchOptions = CallOptions &
+  Narrowing & {
+    /** For a ref, build the newest version of each member's spec in the ref's rendering, in
+     *  place of the exact versions it names. A spec always fetches its newest version. */
+    latest?: boolean;
+  };
 
-export type FetchMembersOptions<TMissing extends Gap> = CallOptions & {
+/** The keys `client.fetch` takes. */
+export const FETCH_OPTIONS = declareOptions<FetchOptions>("client.fetch", {
+  signal: true,
+  timeout: true,
+  onProgress: true,
+  strict: true,
+  layout: true,
+  withoutPartyTotals: true,
+  window: true,
+  entities: true,
+  facets: true,
+  latest: true,
+});
+
+export type FetchMembersOptions = CallOptions & {
   /** The parts a partial fetch leaves out. The dataset is complete when there are none. */
-  missing?: readonly TMissing[];
+  missing?: readonly Gap[];
   /** The build request's `scope`, applied to every member. */
   narrowing?: Narrowing;
 };
-
-/** How a mint builds a spec. A mint builds the spec as it stands. Fetch it to narrow it. */
-export type MintOptions = {
-  layout?: Layout;
-  /** Leave out the rows of parties the code index declares totals, as a fetch does. */
-  withoutPartyTotals?: boolean;
-  signal?: AbortSignal;
-  onProgress?: ProgressHandler;
-};
-
-export type ResumeOptions = MintOptions;
 
 /** The variable text an identity resubmit sends for a spec no answer part names. Search
  *  echoes it onto the part, and it does not change the sentence. */
 const UNNAMED_PART = "dataset";
 
 export const DIGEST_MISMATCH = "digest_mismatch" satisfies ClientErrorCode;
+
+/** The longest a download goes with no byte before it fails as a retryable `network_error`. */
+export const DOWNLOAD_STALL_MS = 30_000;
 const UNEXPECTED_RESPONSE = "unexpected_response" satisfies ClientErrorCode;
 
 const SEARCH_AGAIN =
-  " The server can no longer build this reading; search the question again for a current one.";
+  "The server can no longer build this reading; search the question again for a current one.";
 
 export const invalid = (detail: string): InvalidRequestError =>
   clientError("invalid_argument", { detail });
 
+/** The years a window may name. The server takes any safe integer, and a year outside these
+ *  builds an identity Search cannot resolve back. */
+const FIRST_YEAR = 1000;
+const LAST_YEAR = 2200;
+
 /**
- * @throws {InvalidRequestError} The window is not "all", "latest" or two safe integers, the
- *   bound of the served schema's `IdentityWindowRange`, the first no later than the second
- *   (`invalid_argument`).
+ * @throws {InvalidRequestError} The window is not "all", "latest" or two integers from
+ *   `FIRST_YEAR` to `LAST_YEAR`, the first no later than the second (`invalid_argument`).
  */
 function windowScope(window: unknown): Record<string, unknown> {
   if (window === "all" || window === "latest") return { kind: window };
@@ -142,31 +167,54 @@ function windowScope(window: unknown): Record<string, unknown> {
     const [start, end] = window as unknown[];
     if (Number.isSafeInteger(start) && Number.isSafeInteger(end)) {
       const [first, last] = [start as number, end as number];
+      if (first < FIRST_YEAR || last > LAST_YEAR) {
+        throw invalid(
+          `window years run from ${FIRST_YEAR} to ${LAST_YEAR}, not ${JSON.stringify(window)}.`,
+        );
+      }
       if (first <= last) return { kind: "range", start_year: first, end_year: last };
       throw invalid(
         `window is [startYear, endYear], startYear first, not ${JSON.stringify(window)}.`,
       );
     }
   }
+  const year = oneYear(window);
   throw invalid(
-    `window is "all", "latest" or [startYear, endYear], not ${JSON.stringify(window)}.`,
+    `window is "all", "latest" or [startYear, endYear], not ${JSON.stringify(window)}` +
+      (year === undefined ? "." : `; for one year use [${year}, ${year}].`),
   );
 }
 
+/** The year a window names on its own: an integer, a string of digits, or a list of one. */
+function oneYear(window: unknown): number | undefined {
+  const [only] = Array.isArray(window) && window.length === 1 ? (window as unknown[]) : [window];
+  if (Number.isSafeInteger(only)) return only as number;
+  return typeof only === "string" && /^\d{1,4}$/.test(only) ? Number(only) : undefined;
+}
+
 /**
- * The spec a fetch or a mint builds, once it is an object with a `spec_id` and a `definition`
+ * The spec a fetch builds, once it is an object with a `spec_id` and a `definition`
  * object, as an answer's specs and a ref's members hold it.
  *
  * @throws {InvalidRequestError} It is not, such as a spec id on its own (`invalid_argument`).
  */
-export function checkedSpec(spec: unknown): SpecInput {
+export function checkedSpec(spec: unknown): Spec {
   if (isRecord(spec) && isText(spec["spec_id"]) && isRecord(spec["definition"])) {
-    return spec as SpecInput;
+    return spec as Spec;
   }
   throw invalid(
-    "A spec is an object with a spec_id and its definition, such as answer.specs[0]; a spec id " +
-      "alone does not build.",
+    `A fetch takes a spec or a DatasetRef, not ${described(spec)}. Fetch an answer with ` +
+      "answer.fetch(), or one of its readings with client.fetch(answer.specs[0]).",
   );
+}
+
+/** What a fetch target is, for a refusal: `undefined`, a string, or an object. */
+function described(value: unknown): string {
+  if (value === undefined || value === null) return String(value);
+  if (typeof value === "string") return `the string ${JSON.stringify(capped(value))}`;
+  if (Array.isArray(value)) return "an array";
+  if (typeof value === "object") return "an object with no spec_id and definition";
+  return typeof value;
 }
 
 const isText = (value: unknown): value is string => typeof value === "string" && value !== "";
@@ -190,7 +238,7 @@ function boundRoles(definition: Readonly<Record<string, unknown>>): Map<string, 
  *   bound to neither a non-empty list of dcids nor null (`invalid_argument`).
  */
 function entityScope(
-  spec: SpecLike,
+  spec: Spec,
   entities: Readonly<Record<string, unknown>>,
 ): Record<string, readonly string[]> {
   if (!isRecord(spec.definition["identity"])) {
@@ -199,23 +247,30 @@ function entityScope(
     );
   }
   const bound = boundRoles(spec.definition);
-  for (const [role, dcids] of Object.entries(entities)) {
-    if (dcids === null) {
+  for (const [role, given] of Object.entries(entities)) {
+    if (given === null) {
       bound.delete(role);
-    } else if (isDcids(dcids)) {
-      bound.set(role, dcids);
-    } else {
+      continue;
+    }
+    const dcids = dcidsOf(given);
+    if (dcids === undefined) {
       throw invalid(
         `entities.${role} is not a list of dcids; bind the role to a list such as ` +
           '["country/FRA"], or to null to unbind it.',
       );
     }
+    bound.set(role, dcids);
   }
   return Object.fromEntries(bound);
 }
 
-const isDcids = (value: unknown): value is readonly string[] =>
-  Array.isArray(value) && value.length > 0 && value.every(isText);
+/** A role's dcids, each without surrounding white space, which no dcid holds; undefined unless
+ *  the value is a non-empty list of strings that are not empty once trimmed. */
+function dcidsOf(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const dcids = value.map((dcid: unknown) => (typeof dcid === "string" ? dcid.trim() : ""));
+  return dcids.every(isText) ? dcids : undefined;
+}
 
 /** The facets' `scope`, each axis bound to its reference.
  *
@@ -238,7 +293,7 @@ function facetScope(facets: Readonly<Record<string, unknown>>): Record<string, u
  *
  * @throws {InvalidRequestError} A narrowing argument breaks its rule (`invalid_argument`).
  */
-function scopeOf(spec: SpecLike, narrowing: Narrowing): Record<string, unknown> | undefined {
+function scopeOf(spec: Spec, narrowing: Narrowing): Record<string, unknown> | undefined {
   // Read as unknown: a JavaScript caller's arguments need not hold the declared types.
   const { window, entities, facets }: { readonly [K in keyof Narrowing]?: unknown } = narrowing;
   const scope: Record<string, unknown> = {};
@@ -263,7 +318,7 @@ export const narrows = ({ window, entities, facets }: Narrowing): boolean =>
 
 /** The `POST /datasets` body that builds a spec's latest version. It always carries the
  *  spec's unmodified definition, so a spec the server has not registered still builds. */
-export function buildBody(spec: SpecLike, rendering: Rendering, scope?: Record<string, unknown>) {
+export function buildBody(spec: Spec, rendering: Rendering, scope?: Record<string, unknown>) {
   return {
     schema_version: 1,
     input: {
@@ -338,7 +393,8 @@ function artifactFault({ columns, rows }: ParquetFile, counted: number): string 
  * Downloads a file through the route that redirects to it, checked against its digest. The
  * route ask is an API request, which retries as one and waits the client's timeout per attempt;
  * its failure raises. The URL it names is fetched once, bare on the storage host and with the
- * client's headers on the API's origin, reading until the fetch's deadline; in a browser that
+ * client's headers on the API's origin, reading until the fetch's deadline, if any, while a byte
+ * arrives at least every `DOWNLOAD_STALL_MS`; in a browser that
  * hid the redirect, that one fetch asks the route again with the key alone and the browser
  * follows the redirect. A retryable failure of that fetch, or bytes that do not hash to the
  * digest, ask the route again and fetch once more, with no wait of their own, and a second
@@ -369,6 +425,7 @@ export async function download(
         data = await transport.fetchSigned(located.signed, {
           ...ask,
           timeout: wait.timeout ?? Infinity,
+          stall: DOWNLOAD_STALL_MS,
           follow: located.follow,
         });
       } catch (error) {
@@ -457,7 +514,7 @@ function keptEntityGroups(
 
 /**
  * Search's sentence for a built identity, from resubmitting it with the held spec's groups that
- * `keptEntityGroups` keeps, which are none for a resumed operation. Search answers one definite
+ * `keptEntityGroups` keeps, which are none for a build read by its operation id. Search answers one definite
  * part of the same `spec_id`, or one `no_data` part for a build whose manifest counts no rows,
  * such as a window before the data starts; that part's sentence labels the empty dataset.
  *
@@ -527,13 +584,13 @@ async function sentenceFor(
 
 /** The spec a build posted, with the entity groups the caller holds for it. */
 type Held = {
-  readonly spec: SpecLike;
+  readonly spec: Spec;
   readonly entityGroups?: EntityGroups | null | undefined;
 };
 
-type Finishing = {
+export type Finishing = {
   readonly parts: readonly string[];
-  /** The spec the build posted, or undefined for a resumed operation. */
+  /** The spec the build posted, or undefined for a build read by its operation id. */
   readonly posted: Held | undefined;
   readonly sentence: string | null | undefined;
   readonly rendering: Rendering;
@@ -585,10 +642,57 @@ export async function finish(
   };
 }
 
-/** The same refusal with a hint added to its detail. */
-function withHint(error: DfoError, hint: string): DfoError {
+/** The same refusal with hints, each a sentence, added to its detail and its message, which
+ *  keeps the field the refusal's pointer names and the bracket with its code and trace id. */
+function withHint(error: DfoError, ...hints: readonly string[]): DfoError {
   const ErrorClass = error.constructor as new (options: DfoErrorOptions) => DfoError;
-  return new ErrorClass({ ...optionsOf(error), detail: `${error.detail}${hint}` });
+  const hinted = (text: string) => `${text.replace(/[.\s]*$/, ".")} ${hints.join(" ")}`;
+  return new ErrorClass({
+    ...optionsOf(error),
+    detail: hinted(error.detail),
+    message: hinted(messageOf(error)),
+  });
+}
+
+/** The code of a refusal of a role's entities the graph does not hold. */
+const INVALID_ROLE_REF = "invalid_role_ref";
+
+/**
+ * A build's refusal with what helps the caller fix the narrowing: the alternatives the server
+ * offers and the nearest of them to what the caller posted, and, for a role's entity the graph
+ * does not hold, the lookup that turns a name into a dcid. A value with no `/` reads as a name,
+ * since a place's dcid names its namespace, as `country/DEU` does. Any other error stays as it
+ * is.
+ */
+function narrowingRefusal(error: unknown, narrowing: Narrowing): unknown {
+  if (!(error instanceof InvalidRequestError)) return error;
+  const posted = Object.values(narrowing.entities ?? {}).flatMap((dcids) =>
+    Array.isArray(dcids) ? dcids.filter(isText).map((dcid) => dcid.trim()) : [],
+  );
+  const hints: string[] = [];
+  const offered = [error.alternatives, ...error.issues.map((issue) => issue.alternatives ?? [])]
+    .flat()
+    .filter((item) => isRecord(item) && isText(item.ref) && typeof item.label === "string");
+  if (offered.length > 0) {
+    const asked = [
+      ...posted,
+      ...Object.entries(narrowing.facets ?? {})
+        .flat()
+        .filter(isText),
+    ];
+    const refs = offered.map((item) => item.ref);
+    const near = asked.map((word) => nearest(word, refs)).find((ref) => ref !== undefined);
+    if (near !== undefined) hints.push(`Did you mean ${JSON.stringify(near)}?`);
+    hints.push(
+      `The server offers ${offered.map(({ ref, label }) => `${ref} (${label})`).join(", ")}.`,
+    );
+  }
+  const name =
+    error.code === INVALID_ROLE_REF ? posted.find((dcid) => !dcid.includes("/")) : undefined;
+  if (name !== undefined) {
+    hints.push(`Entities take dcids; client.lookup.resolve(${JSON.stringify(name)}) finds one.`);
+  }
+  return hints.length === 0 ? error : withHint(error, ...hints);
 }
 
 /** One entry per `spec_id`, in first-seen order, with the parts merged. */
@@ -621,11 +725,11 @@ function distinct(members: readonly MemberRequest[]): MemberRequest[] {
  * @throws {DfoTimeoutError} The deadline passed.
  * @throws {DfoError} The server refused a request.
  */
-export async function fetchMembers<TMissing extends Gap = never>(
+export async function fetchMembers(
   transport: Transport,
   members: readonly MemberRequest[],
-  options: FetchMembersOptions<TMissing> = {},
-): Promise<Dataset<TMissing>> {
+  options: FetchMembersOptions = {},
+): Promise<Dataset> {
   const layout = options.layout ?? "long";
   const rendering = renderingFor(layout, options.withoutPartyTotals);
   const wants = distinct(members);
@@ -634,12 +738,13 @@ export async function fetchMembers<TMissing extends Gap = never>(
     throw invalid('layout "frame" holds one reading; fetch each spec on its own for its frame.');
   }
   const narrowing = options.narrowing ?? {};
-  const wait = { deadline: deadlineOf(transport, options.timeout), signal: options.signal };
+  const wait = waitFor(transport, options);
   const fetched: FetchedMember[] = [];
   for (const { parts, spec, sentence, entityGroups, answerParts } of wants) {
+    const scope = scopeOf(spec, narrowing);
     let built: Built;
     try {
-      built = await build(transport, buildBody(spec, rendering, scopeOf(spec, narrowing)), {
+      built = await build(transport, buildBody(spec, rendering, scope), {
         ...wait,
         onProgress: options.onProgress,
       });
@@ -647,85 +752,25 @@ export async function fetchMembers<TMissing extends Gap = never>(
       if (error instanceof DfoError && error.code === "member_not_resolvable") {
         throw withHint(error, SEARCH_AGAIN);
       }
-      throw error;
+      throw narrowingRefusal(error, narrowing);
     }
-    fetched.push(
-      await finish(
-        transport,
-        built,
-        {
-          parts,
-          posted: { spec, entityGroups },
-          sentence,
-          rendering,
-          strict: options.strict ?? false,
-          ...(answerParts === undefined ? {} : { answerFacts: answerParts.map(partFacts) }),
-        },
-        wait,
-      ),
-    );
+    const finishing = {
+      parts,
+      posted: { spec, entityGroups },
+      sentence,
+      rendering,
+      strict: options.strict ?? false,
+      ...(answerParts === undefined ? {} : { answerFacts: answerParts.map(partFacts) }),
+    };
+    try {
+      fetched.push(await finish(transport, built, finishing, wait));
+    } catch (error) {
+      // Search refuses an entity of the built identity when it resubmits it for its sentence.
+      throw narrowingRefusal(error, narrowing);
+    }
   }
-  return new Dataset<TMissing>(fetched, {
+  return new Dataset(fetched, {
     layout,
     ...(options.missing === undefined ? {} : { missing: options.missing }),
   });
-}
-
-/**
- * Starts a spec's build and returns it as an operation, done or running.
- *
- * @throws {InvalidRequestError} The spec is not one `checkedSpec` accepts.
- * @throws {DfoError} The server refused the build.
- */
-export async function mint(
-  transport: Transport,
-  spec: SpecInput,
-  options: MintOptions = {},
-): Promise<Operation> {
-  checkedSpec(spec);
-  const { layout = "long", withoutPartyTotals, signal, onProgress } = options;
-  const rendering = renderingFor(layout, withoutPartyTotals);
-  const finishing = {
-    parts: [],
-    posted: { spec, entityGroups: spec.resolved?.entity_groups },
-    sentence: spec.resolved?.rendered_sentence,
-    rendering,
-    strict: false,
-  };
-  // The POST reads for up to the build's own limit. `result` sets the wait's deadline.
-  return startOperation(
-    transport,
-    buildBody(spec, rendering),
-    datasetFinisher(transport, finishing, layout),
-    { deadline: Infinity, signal, onProgress },
-  );
-}
-
-/**
- * Resumes a build another process started, by its operation id. The build's rendering is in
- * its id, so `layout` and `withoutPartyTotals` must be the ones it was started with.
- *
- * @throws {NotFoundError} The server holds no operation with that id.
- * @throws {DfoError} The operation failed.
- */
-export function resume(
-  transport: Transport,
-  operationId: string,
-  options: ResumeOptions = {},
-): Promise<Operation> {
-  const { layout = "long", withoutPartyTotals, signal, onProgress } = options;
-  const rendering = renderingFor(layout, withoutPartyTotals);
-  const finishing = { parts: [], posted: undefined, sentence: undefined, rendering, strict: false };
-  return resumeOperation(
-    transport,
-    operationId,
-    rendering,
-    datasetFinisher(transport, finishing, layout),
-    { deadline: Infinity, signal, onProgress },
-  );
-}
-
-function datasetFinisher(transport: Transport, finishing: Finishing, layout: Layout) {
-  return async (built: Built, wait: Wait): Promise<Dataset<never>> =>
-    new Dataset<never>([await finish(transport, built, finishing, wait)], { layout });
 }

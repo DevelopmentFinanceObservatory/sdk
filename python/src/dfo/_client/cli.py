@@ -1,6 +1,8 @@
 """The `dfo` command: `dfo auth login`, `dfo auth status` and `dfo cache clear`.
 
-`login()` is the notebook form of `dfo auth login`.
+`login()` is the notebook form of `dfo auth login`. `dfo auth status` names the
+key a client built with no options sends, and the base URL it sends it to when
+`DFO_BASE_URL` sets one.
 """
 
 import argparse
@@ -15,6 +17,7 @@ from dfo._config.keys import check_key_format, mask, resolve_key
 from dfo._config.paths import credentials_path
 from dfo._core.errors import DfoError
 from dfo._datasets.cache import cache_path
+from dfo._http.transport import resolve_base_url
 
 _PROMPT = "Paste your DFO API key: "
 
@@ -64,18 +67,36 @@ def _auth_login(args: argparse.Namespace) -> None:
 
 
 def _auth_status(_: argparse.Namespace) -> None:
+    """Print the key a default client sends and the base URL its requests go
+    to, naming `DFO_BASE_URL` when it sets one.
+
+    Raises:
+        InvalidRequestError: `DFO_BASE_URL` is not a valid base URL
+            (`base_url_invalid`).
+    """
+    base_url = resolve_base_url(None)
     resolved = resolve_key()
     if resolved.key is None:
         print("No key: requests are anonymous.")
         print(f"Run `dfo auth login` to store one in {credentials_path()}.")
-        return
-    where = {
-        "argument": "the api_key argument",
-        "environment": "the DFO_API_KEY environment variable",
-        "credentials_file": f"{resolved.path}, profile {resolved.profile!r}",
-        "colab": "the Colab secret DFO_API_KEY",
-    }[resolved.source]
-    print(f"Key {mask(resolved.key.reveal())} from {where}.")
+    else:
+        where = {
+            "argument": "the api_key argument",
+            "environment": "the DFO_API_KEY environment variable",
+            "credentials_file": f"{resolved.path}, profile {resolved.profile!r}",
+            "colab": "the Colab secret DFO_API_KEY",
+        }[resolved.source]
+        print(f"Key {mask(resolved.key.reveal())} from {where}.")
+    if base_url.source == "environment":
+        print(
+            f"Requests go to {base_url.url}, from the DFO_BASE_URL environment "
+            "variable."
+        )
+    else:
+        print(
+            f"Requests go to {base_url.url}, the public API, the default while "
+            "DFO_BASE_URL is unset."
+        )
 
 
 def _cache_clear(_: argparse.Namespace) -> None:

@@ -26,9 +26,10 @@ from dfo._core.errors import (
     RateLimitError,
     SearchWarning,
     ServerError,
+    message_of,
 )
 from dfo._core.parse import parse_assumptions
-from dfo._core.types import Candidate, CandidatesPart, DefinitePart, Gap
+from dfo._core.types import CandidatesPart, DefinitePart
 from dfo._datasets.build import Reading
 from dfo._datasets.dataset import build_dataset
 from dfo._datasets.fetch import Session
@@ -440,7 +441,7 @@ async def test_a_candidate_choice_beside_a_definite_part_posts_dataset_resubmit(
         load("search-two-parts-candidates.json"),
         load("probe-resubmit-candidate-chosen.json"),
     )
-    chosen = await answer.choose("gross national income", 0)
+    chosen = await answer.choose(0, part="gross national income")
     recorded = load("probe-resubmit-candidate-chosen.request.json")
     del recorded["input"]["raw_query"]  # echo only; the client posts none
     assert server.posted[1] == recorded
@@ -454,54 +455,6 @@ async def test_a_candidate_choice_beside_a_definite_part_posts_dataset_resubmit(
     assert chosen.specs[1] == answer.parts[1].candidates[0].spec
 
 
-async def test_a_candidate_fetches_as_the_answer_that_chooses_it(
-    fetched: list[tuple[Any, Any, Any]],
-) -> None:
-    wire = load("search-2.json")
-    part = wire["parts"][0]
-    answer, server = await ask(
-        "GNI of Germany from 2015 to 2022", wire, picked(part, 1), picked(part, 1)
-    )
-    (candidates,) = answer.parts
-    assert isinstance(candidates, CandidatesPart)
-    chosen = await answer.choose(1)
-    for reading in (candidates.candidates[1], chosen):
-        assert (
-            await reading.fetch(layout="long", without_party_totals=True, timeout=10.0)
-            == "dataset"
-        )
-    assert server.posted[1] == server.posted[2]
-    (_, by_candidate, options), (_, by_choice, chosen_options) = fetched
-    assert by_candidate == by_choice
-    assert options == chosen_options
-    assert options["without_party_totals"] is True
-    assert [(m.spec, m.sentence) for m in by_candidate] == [
-        (candidates.candidates[1].spec, picked(part, 1)["rendered_sentence"])
-    ]
-
-
-async def test_a_candidate_beside_a_definite_part_fetches_only_its_reading(
-    fetched: list[tuple[Any, Any, Any]],
-) -> None:
-    wire = load("search-two-parts-candidates.json")
-    part = wire["parts"][1]
-    answer, server = await ask(TWO_PARTS, wire, picked(part, 0))
-    candidates = answer.parts[1]
-    assert isinstance(candidates, CandidatesPart)
-    candidate = candidates.candidates[0]
-    assert await candidate.fetch(layout="frame") == "dataset"
-    assert server.posted[1]["input"] == {
-        "kind": "dataset_resubmit",
-        "entries": [identity_entry(part, 0)],
-    }
-    ((_, members, options),) = fetched
-    assert [(m.parts, m.spec) for m in members] == [
-        (("gross national income",), candidate.spec)
-    ]
-    assert (options["layout"], options["missing"]) == ("frame", ())
-    assert answer.gaps[0].part.candidates == candidates.candidates
-
-
 async def test_a_place_choice_in_a_one_part_answer_posts_the_option_unchanged() -> None:
     wire = load("search-3.json")
     wire["parts"][0] = with_options(wire["parts"][0])
@@ -511,7 +464,7 @@ async def test_a_place_choice_in_a_one_part_answer_posts_the_option_unchanged() 
         load("probe-option-posted.json"),
     )
     assert summary(answer)["gaps"] == [(0, "choice", 2)]
-    chosen = await answer.choose("Congo", "Congo [DRC]")
+    chosen = await answer.choose("Congo [DRC]", part="Congo")
     assert server.posted[1] == load("probe-option-posted.request.json")
     assert summary(chosen)["status"] == "definite"
     assert chosen.complete
@@ -542,7 +495,7 @@ async def test_a_place_choice_beside_a_definite_part_posts_its_parsed_part() -> 
     wire["parts"].append(with_options(load("search-3.json")["parts"][0]))
     wire["status"] = "mixed"
     answer, server = await ask("ODA", wire, load("probe-resubmit-option-chosen.json"))
-    chosen = await answer.choose("Congo", 0)
+    chosen = await answer.choose(0, part="Congo")
     assert server.posted[1] == load("probe-resubmit-option-chosen.request.json")
     assert summary(chosen) == {
         "kind": "resolution",
@@ -557,7 +510,7 @@ async def test_parts_left_alone_post_their_restatement_or_a_placeholder() -> Non
     wire = load("search-4.json")
     wire["parts"][0] = with_options(load("search-3.json")["parts"][0])
     answer, server = await ask("debt", wire, load("search-3.json"))
-    await answer.choose(0, "Congo [Republic]")
+    await answer.choose("Congo [Republic]", part=0)
     entries = server.posted[1]["input"]["entries"]
     assert entries[0]["entry_kind"] == "parsed"
     assert entries[0]["part"]["entities"][1]["dcid"] == "country/COG"
@@ -571,7 +524,7 @@ async def test_parts_left_alone_post_their_restatement_or_a_placeholder() -> Non
     places = load("search-two-places.json")
     places["parts"][1] = with_options(places["parts"][1])
     answer, server = await ask("places", places, load("search-3.json"))
-    await answer.choose(1, 0)
+    await answer.choose(0, part=1)
     first = server.posted[1]["input"]["entries"][0]
     assert first == {"entry_kind": "parsed", "part": places["parts"][0]["restatement"]}
 
@@ -611,23 +564,22 @@ def options_sharing_a_label() -> dict[str, Any]:
 @pytest.mark.parametrize(
     ("body", "call"),
     [
-        (lambda: load("search-1.json"), (0,)),
-        (lambda: load("search-two-places.json"), (0,)),
-        (lambda: load("search-3.json"), (0,)),
-        (lambda: load("search-2.json"), (3,)),
-        (lambda: load("search-2.json"), (True,)),
-        (lambda: load("search-2.json"), ("GNI", "nope")),
+        (lambda: load("search-1.json"), (0, None)),
+        (lambda: load("search-two-places.json"), (0, None)),
+        (lambda: load("search-3.json"), (0, None)),
+        (lambda: load("search-2.json"), (3, None)),
+        (lambda: load("search-2.json"), (True, None)),
+        (lambda: load("search-2.json"), ("nope", "GNI")),
         (lambda: load("search-4.json"), (0, 0)),
-        (lambda: load("search-4.json"), ("tea", 0)),
-        (lambda: load("search-4.json"), (5, 0)),
-        (second_place_with_options, (True, 0)),
+        (lambda: load("search-4.json"), (0, "tea")),
+        (lambda: load("search-4.json"), (0, 5)),
+        (second_place_with_options, (0, True)),
         (without_variable_text, (0, 0)),
         (unknown_without_restatement, (0, 0)),
-        (options_sharing_a_label, (0, "Congo [DRC]")),
-        (options_sharing_a_label, (0, False)),
-        (lambda: load("search-2.json"), (0, None)),
-        (lambda: load("search-2.json"), ()),
-        (lambda: load("search-2.json"), (0, 0, 0)),
+        (options_sharing_a_label, ("Congo [DRC]", 0)),
+        (options_sharing_a_label, (False, 0)),
+        (lambda: load("search-2.json"), (None, 0)),
+        (lambda: load("search-2.json"), (None, None)),
     ],
     ids=[
         "no-gap",
@@ -645,19 +597,112 @@ def options_sharing_a_label() -> dict[str, Any]:
         "options-share-a-label",
         "option-key-a-boolean",
         "option-key-none",
-        "no-keys",
-        "three-keys",
+        "option-key-none-unnamed-part",
     ],
 )
 async def test_a_choice_that_cannot_be_made_raises_invalid_request(
-    body: Callable[[], dict[str, Any]], call: tuple[Any, ...]
+    body: Callable[[], dict[str, Any]], call: tuple[Any, Any]
 ) -> None:
     answer, server = await ask("q", body())
+    option, part = call
     with pytest.raises(InvalidRequestError) as caught:
-        await answer.choose(*call)
+        await answer.choose(option, part=part)
     assert caught.value.code == "choice_invalid"
     # A choice the caller cannot make describes the caller's input.
     assert caught.value.trace_id is None
+    assert len(server.posted) == 1
+
+
+def one_place() -> dict[str, Any]:
+    wire = load("search-3.json")
+    wire["parts"][0] = with_options(wire["parts"][0])
+    return wire
+
+
+def two_places() -> dict[str, Any]:
+    wire = load("search-two-places.json")
+    wire["parts"] = [with_options(part) for part in wire["parts"]]
+    return wire
+
+
+@pytest.mark.parametrize(
+    ("body", "call", "message"),
+    [
+        (
+            one_place,
+            ("congo [drc]", None),
+            'Part 0 has no option labelled "congo [drc]"; did you mean "Congo [DRC]"?'
+            "\n  0 = Congo [DRC], 1 = Congo [Republic]",
+        ),
+        (
+            one_place,
+            ("Kinshasa", None),
+            'Part 0 has no option labelled "Kinshasa"; name it by index or label:'
+            "\n  0 = Congo [DRC], 1 = Congo [Republic]",
+        ),
+        (
+            one_place,
+            (5, None),
+            "Option 5 is out of range; part 0 offers 2: 0 = Congo [DRC], "
+            "1 = Congo [Republic].",
+        ),
+        (
+            two_places,
+            (0, "Cong"),
+            'No part is named "Cong"; did you mean "Congo"?'
+            "\n  0 = GDP / Congo, 1 = ODA disbursements / Congo",
+        ),
+        (
+            two_places,
+            (0, "Kinshasa"),
+            'No part is named "Kinshasa"; name a part by its index or its words:'
+            "\n  0 = GDP / Congo, 1 = ODA disbursements / Congo",
+        ),
+    ],
+    ids=[
+        "label-in-lower-case",
+        "label-like-none",
+        "option-out-of-range",
+        "part-word-one-short",
+        "part-word-like-none",
+    ],
+)
+async def test_a_key_that_names_nothing_lists_the_choices_and_the_nearest(
+    body: Callable[[], dict[str, Any]], call: tuple[Any, Any], message: str
+) -> None:
+    answer, _ = await ask("q", body())
+    option, part = call
+    with pytest.raises(InvalidRequestError) as caught:
+        await answer.choose(option, part=part)
+    assert caught.value.code == "choice_invalid"
+    assert message_of(caught.value) == message
+
+
+async def test_several_waiting_parts_name_the_keyword_that_picks_one() -> None:
+    answer, _ = await ask("q", load("search-two-places.json"))
+    with pytest.raises(InvalidRequestError) as caught:
+        await answer.choose(0)
+    assert caught.value.code == "choice_invalid"
+    assert "answer.choose(option, part=part)" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("old", "named"),
+    [
+        ((0, 1), "answer.choose(1, part=0)"),
+        (("Congo", "Congo [DRC]"), 'answer.choose("Congo [DRC]", part="Congo")'),
+    ],
+    ids=["indices", "labels"],
+)
+async def test_choose_takes_the_part_by_keyword_only(
+    old: tuple[Any, Any], named: str
+) -> None:
+    answer, server = await ask("q", load("search-4.json"))
+    part, option = old
+    with pytest.raises(TypeError) as caught:
+        # The earlier `choose(part, option)` form, which the type checker refuses.
+        await answer.choose(part, option)  # ty: ignore[invalid-argument-type]
+    assert named in str(caught.value)
     assert len(server.posted) == 1
 
 
@@ -669,7 +714,7 @@ async def test_a_resubmit_echoes_a_parts_separate_flag_and_operations() -> None:
     answer, server = await ask(
         "q", beside_a_candidates_part(definite), load("search-1.json")
     )
-    await answer.choose(0, 0)
+    await answer.choose(0, part=0)
     entry = server.posted[1]["input"]["entries"][1]
     assert (entry["entry_kind"], entry["separate"], entry["operations"]) == (
         "identity",
@@ -686,7 +731,7 @@ async def test_a_resubmit_omits_a_candidate_sets_absent_ordering_and_truncated()
     unchosen["variable_text"] = "aid"
     del unchosen["candidates"]["ordering"], unchosen["candidates"]["truncated"]
     answer, server = await ask("q", beside_a_candidates_part(unchosen), wire)
-    await answer.choose(0, 0)
+    await answer.choose(0, part=0)
     entry = server.posted[1]["input"]["entries"][1]
     assert entry["entry_kind"] == "candidates"
     assert "ordering" not in entry
@@ -731,7 +776,7 @@ async def test_a_resubmit_reads_a_member_of_another_json_type_as_absent(
     body: Callable[[], dict[str, Any]], member: str, entry_kind: str
 ) -> None:
     answer, server = await ask("q", body(), load("search-1.json"))
-    await answer.choose(0, 0)
+    await answer.choose(0, part=0)
     entry = server.posted[1]["input"]["entries"][1]
     assert entry["entry_kind"] == entry_kind
     assert member not in entry
@@ -814,12 +859,13 @@ async def test_fetch_of_an_incomplete_answer_raises_before_any_build(
             "    [2] Germany's gross national income based on purchasing power "
             "parity per capita in international dollars, 2015 to 2022 · World "
             "Development Indicators",
-            '  Choose: answer.choose("gross national income", 0).fetch()',
+            "  Choose: answer.choose(0).fetch()",
             "  Or take the answered part: answer.fetch(partial=True)",
+            f"[answer_incomplete · trace {TRACE}]",
         ]
     )
     assert caught.value.answer is answer
-    assert_unbound(caught.value.gaps, answer.gaps)
+    assert caught.value.gaps == answer.gaps
     assert caught.value.code == "answer_incomplete"
     assert fetched == []
 
@@ -839,36 +885,6 @@ async def test_a_partial_fetch_builds_the_answered_parts_and_names_the_gaps(
     with pytest.raises(IncompleteAnswerError):
         await nothing.fetch(partial=True)
     assert len(fetched) == 1
-
-
-def assert_unbound(
-    held: tuple[Gap[Candidate], ...], gaps: tuple[Gap[Any], ...]
-) -> None:
-    """`held` is `gaps` with every candidate bound to no answer."""
-    assert [(g.part_index, g.kind, g.message) for g in held] == [
-        (g.part_index, g.kind, g.message) for g in gaps
-    ]
-    candidates = [
-        (candidate, original)
-        for gap, source in zip(held, gaps, strict=True)
-        if isinstance(gap.part, CandidatesPart)
-        and isinstance(source.part, CandidatesPart)
-        for candidate, original in zip(
-            gap.part.candidates, source.part.candidates, strict=True
-        )
-    ]
-    for gap in held:
-        if isinstance(gap.part, CandidatesPart):
-            assert all(
-                a is b for a, b in zip(gap.options, gap.part.candidates, strict=True)
-            )
-    assert candidates
-    for candidate, original in candidates:
-        assert type(candidate) is Candidate
-        assert candidate.spec == original.spec
-        with pytest.raises(InvalidRequestError) as caught:
-            candidate.fetch()
-        assert caught.value.code == "invalid_argument"
 
 
 def client_references(value: object) -> list[str]:
@@ -919,7 +935,7 @@ async def test_a_partial_fetch_holds_no_client_in_its_dataset(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", SearchWarning)
         data = await answer.fetch(partial=True)
-    assert_unbound(data.missing, answer.gaps)
+    assert data.missing == answer.gaps
     assert client_references(data) == []
 
 
@@ -932,7 +948,7 @@ async def test_fetch_of_a_declined_or_catalogue_answer_raises_declined(
         await answer.fetch()
     assert caught.value.detail == load(body).get("reason", "catalogue")
     assert caught.value.code == "answer_declined"
-    assert str(caught.value) == repr(answer)
+    assert str(caught.value) == f"{answer!r} [answer_declined · trace {TRACE}]"
     assert answer.sentence is None
     assert fetched == []
 

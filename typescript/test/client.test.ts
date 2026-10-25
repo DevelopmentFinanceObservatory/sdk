@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { inspect } from "node:util";
 
 import { Client, clientOver } from "../src/client.ts";
 import type { ClientOptions } from "../src/client.ts";
@@ -20,9 +21,9 @@ function client(fetch: typeof globalThis.fetch, options: ClientOptions = {}): Cl
 }
 
 describe("lookups", () => {
-  test("graph.resolve posts the names and options under the base URL", async () => {
+  test("lookup.resolve posts the names and options under the base URL", async () => {
     const { fetch, seen } = mockFetch(json({ results: [] }));
-    await client(fetch).graph.resolve(["Nigeria", "Sahel"], {
+    await client(fetch).lookup.resolve(["Nigeria", "Sahel"], {
       kinds: ["country", "group"],
       codeSystem: "CRSPurposeCodeEnum",
       expandMembers: true,
@@ -37,24 +38,24 @@ describe("lookups", () => {
     });
   });
 
-  test("graph.node keeps the dcid's slashes and sends as_of only when given", async () => {
+  test("lookup.node keeps the dcid's slashes and sends as_of only when given", async () => {
     const { fetch, seen } = mockFetch(json(NODE), json(NODE));
-    const graph = client(fetch).graph;
-    await graph.node("country/NGA");
-    await graph.node("dc/g/A B", { asOf: "2024-01-01" });
+    const lookup = client(fetch).lookup;
+    await lookup.node("country/NGA");
+    await lookup.node("dc/g/A B", { asOf: "2024-01-01" });
     assert.equal(seen[0]!.url, `${BASE}/graph/node/country/NGA`);
     assert.equal(seen[1]!.url, `${BASE}/graph/node/dc/g/A%20B?as_of=2024-01-01`);
   });
 
-  test("codes.get reads the registry at the origin root, and raises for an unknown code", async () => {
+  test("lookup.code reads the registry at the origin root, and raises for an unknown code", async () => {
     const { fetch, seen } = mockFetch(
       json(ENTRY),
       problem({ code: "code_not_found", status: 404 }),
     );
-    const codes = client(fetch).codes;
-    assert.deepEqual(await codes.get("spec_not_found"), ENTRY);
+    const lookup = client(fetch).lookup;
+    assert.deepEqual(await lookup.code("spec_not_found"), ENTRY);
     assert.equal(seen[0]!.url, "https://api.example.org/codes/spec_not_found");
-    await assert.rejects(codes.get("nothing"), NotFoundError);
+    await assert.rejects(lookup.code("nothing"), NotFoundError);
   });
 
   for (const dcid of [
@@ -69,9 +70,9 @@ describe("lookups", () => {
     "a#b",
     "a\u0000b",
   ]) {
-    test(`graph.node refuses the dcid ${JSON.stringify(dcid)} before any request`, async () => {
+    test(`lookup.node refuses the dcid ${JSON.stringify(dcid)} before any request`, async () => {
       const { fetch, seen } = mockFetch();
-      await assert.rejects(client(fetch).graph.node(dcid), {
+      await assert.rejects(client(fetch).lookup.node(dcid), {
         name: "InvalidRequestError",
         code: "invalid_argument",
       });
@@ -80,39 +81,18 @@ describe("lookups", () => {
   }
 
   for (const code of ["..", "../datasets", "Spec_not_found", ""]) {
-    test(`codes.get refuses the code ${JSON.stringify(code)} before any request`, async () => {
+    test(`lookup.code refuses the code ${JSON.stringify(code)} before any request`, async () => {
       const { fetch, seen } = mockFetch();
-      await assert.rejects(client(fetch).codes.get(code), { code: "invalid_argument" });
+      await assert.rejects(client(fetch).lookup.code(code), { code: "invalid_argument" });
       assert.equal(seen.length, 0);
     });
   }
 
-  for (const id of [
-    "",
-    "op_abc",
-    `op_${"A".repeat(64)}`,
-    "../x",
-    "op_a/../../b",
-    "op_a?x=1",
-    "op_a b",
-    "%2e%2e",
-    "\u0000",
-  ]) {
-    test(`operation refuses the id ${JSON.stringify(id)} before any request`, async () => {
-      const { fetch, seen } = mockFetch();
-      await assert.rejects(client(fetch).operation(id), {
-        name: "InvalidRequestError",
-        code: "invalid_argument",
-      });
-      assert.equal(seen.length, 0);
-    });
-  }
-
-  test("catalogue scopes to a place when given one", async () => {
+  test("lookup.catalogue scopes to a place when given one", async () => {
     const { fetch, seen } = mockFetch(json(CATALOGUE), json(CATALOGUE));
     const dfo = client(fetch);
-    await dfo.catalogue();
-    await dfo.catalogue({ place: "country/NGA" });
+    await dfo.lookup.catalogue();
+    await dfo.lookup.catalogue({ place: "country/NGA" });
     assert.equal(seen[0]!.url, `${BASE}/search/catalogue`);
     assert.equal(seen[1]!.url, `${BASE}/search/catalogue?place=country%2FNGA`);
   });
@@ -120,10 +100,10 @@ describe("lookups", () => {
   const problem200 = { type: "about:blank", code: "internal_error", status: 500, detail: "down" };
   const unknown200 = { ...problem200, code: "code_from_a_newer_server" };
   const lookups = [
-    ["catalogue", (dfo: Client) => dfo.catalogue()],
-    ["codes.get", (dfo: Client) => dfo.codes.get("spec_not_found")],
-    ["graph.node", (dfo: Client) => dfo.graph.node("country/NGA")],
-    ["graph.resolve", (dfo: Client) => dfo.graph.resolve("Kenya")],
+    ["lookup.catalogue", (dfo: Client) => dfo.lookup.catalogue()],
+    ["lookup.code", (dfo: Client) => dfo.lookup.code("spec_not_found")],
+    ["lookup.node", (dfo: Client) => dfo.lookup.node("country/NGA")],
+    ["lookup.resolve", (dfo: Client) => dfo.lookup.resolve("Kenya")],
   ] as const;
   for (const [name, call] of lookups) {
     for (const [code, errorName] of [
@@ -146,12 +126,12 @@ describe("lookups", () => {
   }
 
   for (const [name, call, body, pointer] of [
-    ["catalogue", (dfo: Client) => dfo.catalogue(), unknown200, "/code"],
-    ["codes.get", (dfo: Client) => dfo.codes.get("spec_not_found"), null, ""],
-    ["codes.get", (dfo: Client) => dfo.codes.get("spec_not_found"), unknown200, "/code"],
-    ["graph.node", (dfo: Client) => dfo.graph.node("country/NGA"), { code: "x" }, "/code"],
-    ["graph.node", (dfo: Client) => dfo.graph.node("country/NGA"), { kind: 1 }, "/kind"],
-    ["graph.resolve", (dfo: Client) => dfo.graph.resolve("Kenya"), [], ""],
+    ["lookup.catalogue", (dfo: Client) => dfo.lookup.catalogue(), unknown200, "/code"],
+    ["lookup.code", (dfo: Client) => dfo.lookup.code("spec_not_found"), null, ""],
+    ["lookup.code", (dfo: Client) => dfo.lookup.code("spec_not_found"), unknown200, "/code"],
+    ["lookup.node", (dfo: Client) => dfo.lookup.node("country/NGA"), { code: "x" }, "/code"],
+    ["lookup.node", (dfo: Client) => dfo.lookup.node("country/NGA"), { kind: 1 }, "/kind"],
+    ["lookup.resolve", (dfo: Client) => dfo.lookup.resolve("Kenya"), [], ""],
   ] as const) {
     test(`${name} refuses a 200 body ${JSON.stringify(body).slice(0, 20)} its schema does not fit`, async () => {
       const { fetch } = mockFetch(json(body, 200, { "x-dfo-trace-id": "trace-200" }));
@@ -288,7 +268,10 @@ describe("request", () => {
     assert.equal(raw.code, "method_not_allowed");
     assert.equal(raw.status, 405);
     assert.equal(raw.traceId, "trace-405");
-    await assert.rejects(dfo.catalogue(), { name: "ContractError", code: "method_not_allowed" });
+    await assert.rejects(dfo.lookup.catalogue(), {
+      name: "ContractError",
+      code: "method_not_allowed",
+    });
   });
 });
 
@@ -371,9 +354,9 @@ describe("withOptions", () => {
       headerProvider: () => ({ "x-token": "t" }),
     });
     const original = clientOver(transport);
-    await original.catalogue();
+    await original.lookup.catalogue();
     const copy = original.withOptions({ maxRetries: 1 });
-    await assert.rejects(copy.catalogue());
+    await assert.rejects(copy.lookup.catalogue());
     assert.equal(lookups, 1);
     assert.equal(seen.length, 3);
     assert.equal(waits.length, 1);
@@ -382,5 +365,75 @@ describe("withOptions", () => {
       assert.equal(request.headers.get("x-token"), "t");
     }
     assert.equal(copy.baseUrl, original.baseUrl);
+  });
+});
+
+describe("DFO_BASE_URL", () => {
+  const ENV_BASE = "https://env.example.org/api";
+  const over = (options: ConstructorParameters<typeof Transport>[0]) =>
+    clientOver(new Transport({ apiKey: false, ...options }));
+
+  test("sets the base URL when baseUrl is left out, and String(client) names it", async () => {
+    const { fetch, seen } = mockFetch(json(CATALOGUE));
+    const dfo = over({ fetch, env: envFrom({ DFO_BASE_URL: ENV_BASE }) });
+    await dfo.lookup.catalogue();
+    assert.equal(seen[0]!.url, `${ENV_BASE}/search/catalogue`);
+    assert.equal(String(dfo), `<Client ${ENV_BASE} (from DFO_BASE_URL)>`);
+    assert.equal(inspect(dfo), String(dfo));
+  });
+
+  test("yields to the baseUrl argument", () => {
+    const dfo = over({ baseUrl: BASE, env: envFrom({ DFO_BASE_URL: ENV_BASE }) });
+    assert.equal(dfo.baseUrl, BASE);
+    assert.equal(String(dfo), `<Client ${BASE}>`);
+  });
+
+  test("leaves the public API, which String(client) names, when unset", () => {
+    const dfo = over({ env: envFrom({}) });
+    assert.equal(dfo.baseUrl, "https://developmentfinance.org/api/v1");
+    assert.equal(String(dfo), "<Client https://developmentfinance.org/api/v1>");
+  });
+
+  test("is read from process.env by default", () => {
+    const before = process.env["DFO_BASE_URL"];
+    process.env["DFO_BASE_URL"] = ENV_BASE;
+    try {
+      assert.equal(new Client({ apiKey: false }).baseUrl, ENV_BASE);
+    } finally {
+      if (before === undefined) delete process.env["DFO_BASE_URL"];
+      else process.env["DFO_BASE_URL"] = before;
+    }
+  });
+
+  for (const value of ["ftp://env.example.org/api", "env.example.org/api", " "]) {
+    test(`refuses ${JSON.stringify(value)} with base_url_invalid naming the variable`, () => {
+      assert.throws(
+        () => over({ env: envFrom({ DFO_BASE_URL: value }) }),
+        (error: unknown) =>
+          error instanceof InvalidRequestError &&
+          error.code === "base_url_invalid" &&
+          error.message.includes("DFO_BASE_URL"),
+      );
+    });
+  }
+
+  test("refuses a key over plain http to a host that is not loopback", () => {
+    assert.throws(
+      () =>
+        over({
+          apiKey: "dfo_k_test",
+          env: envFrom({ DFO_BASE_URL: "http://env.example.org/api" }),
+        }),
+      { name: "InvalidRequestError", code: "insecure_transport" },
+    );
+  });
+
+  test("is read once: a withOptions copy keeps the base URL and where it came from", () => {
+    let value = ENV_BASE;
+    const dfo = over({ env: (name) => (name === "DFO_BASE_URL" ? value : undefined) });
+    value = "https://other.example.org/api";
+    const copy = dfo.withOptions({ maxRetries: 0 });
+    assert.equal(copy.baseUrl, ENV_BASE);
+    assert.equal(String(copy), String(dfo));
   });
 });

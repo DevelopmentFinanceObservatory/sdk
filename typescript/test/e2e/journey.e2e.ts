@@ -27,7 +27,7 @@ import {
   InvalidRequestError,
   NotFoundError,
 } from "../../src/index.ts";
-import type { Answer, Dataset, Operation, Row, SpecInput } from "../../src/index.ts";
+import type { Answer, Dataset, Row, Spec } from "../../src/index.ts";
 
 const baseUrl = process.env["DFO_BASE_URL"];
 if (baseUrl === undefined || baseUrl === "") {
@@ -76,10 +76,10 @@ const recording: typeof fetch = async (input, init) => {
 
 const client = new Client({ baseUrl, fetch: recording });
 
-type LongBuild = { day_parity: number; language: string; target: string; spec: SpecInput };
+type LongBuild = { day_parity: number; language: string; target: string; spec: Spec };
 
 /** The spec `LONG_BUILDS` assigns to this run's UTC day, language and target. */
-async function longBuild(): Promise<SpecInput> {
+async function longBuild(): Promise<Spec> {
   const target = process.env["DFO_E2E_TARGET"];
   assert.ok(target, "DFO_E2E_TARGET is unset; step 6 picks its spec by target");
   const parity = Math.floor(Date.now() / 86_400_000) % 2;
@@ -93,7 +93,7 @@ async function longBuild(): Promise<SpecInput> {
 }
 
 /** The rows Search says a build of `spec` downloads, from resubmitting its identity. */
-async function downloadRows(spec: SpecInput): Promise<number> {
+async function downloadRows(spec: Spec): Promise<number> {
   const response = await client.request("POST", "/search/resolve", {
     json: {
       schema_version: 1,
@@ -124,8 +124,8 @@ async function downloadRows(spec: SpecInput): Promise<number> {
 
 /** Why the build answered 200, with the age of the version it served. The server publishes no
  *  head age, so this is the age of the served version's `prepared_at`, at least the head's. */
-async function servedInline(spec: SpecInput, operation: Operation): Promise<string> {
-  const [member] = (await operation.result()).members;
+async function servedInline(spec: Spec, dataset: Dataset): Promise<string> {
+  const [member] = dataset.members;
   assert.ok(member);
   const snapshot = await client.request(
     "GET",
@@ -148,6 +148,22 @@ async function exchangesOf<T>(run: () => Promise<T>): Promise<{ value: T; exchan
 }
 
 const isResolve = (exchange: Exchange) => exchange.url.endsWith("/search/resolve");
+
+const isBuild = (exchange: Exchange) =>
+  exchange.method === "POST" && new URL(exchange.url).pathname.endsWith("/datasets");
+
+/** The first build POST recorded from `start` on, once the server has answered it. */
+async function postedFrom(start: number): Promise<Exchange> {
+  for (;;) {
+    const posted = wire.slice(start).find(isBuild);
+    if (posted !== undefined) return posted;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+/** The operation id an operation resource names. */
+const operationIdOf = (json: unknown): string | undefined =>
+  (json as { operation?: { operation_id?: string } } | null)?.operation?.operation_id;
 
 const sha256 = (bytes: Uint8Array): string =>
   `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -202,7 +218,7 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
       assert.ok(health, "step 1 gave an answer");
       const dataset = await health.fetch();
       healthData = dataset;
-      assert.ok(dataset.rows > 0);
+      assert.ok(dataset.rowCount > 0);
       assert.deepEqual(dataset.columns, await recordedColumns());
       const [member] = dataset.members;
       assert.ok(member);
@@ -226,7 +242,7 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
       assert.equal(fetched.contentVersion, member.contentVersion);
       assert.equal(fetched.digest, member.digest);
       assert.equal(sha256(again.memberBytes(0)), member.digest);
-      t.diagnostic(`${dataset.rows} rows, ${member.contentVersion}`);
+      t.diagnostic(`${dataset.rowCount} rows, ${member.contentVersion}`);
     },
   );
 
@@ -235,7 +251,7 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
   });
 
   test(
-    "3. several readings, and the first fetched by choice and by candidate",
+    "3. several readings, and the first fetched by choice and by its spec",
     { timeout: STEP_TIMEOUT },
     async () => {
       // The step needs a question Search reads several ways.
@@ -252,12 +268,11 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
       );
 
       const chosen = await (await answer.choose(0)).fetch();
-      assert.ok(chosen.rows > 0);
+      assert.ok(chosen.rowCount > 0);
       const candidate = answer.gaps[0]?.options[0];
       assert.ok(candidate?.kind === "candidate");
-      const direct = await candidate.fetch();
+      const direct = await client.fetch(candidate.spec);
       assert.equal(direct.members[0]?.contentVersion, chosen.members[0]?.contentVersion);
-      assert.equal(direct.rows, chosen.rows);
     },
   );
 
@@ -272,7 +287,7 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
       assert.equal(dataset.members.length, 1);
       assert.equal(dataset.complete, false);
       assert.equal(dataset.missing.length, 1);
-      assert.ok(dataset.rows > 0);
+      assert.ok(dataset.rowCount > 0);
     },
   );
 
@@ -292,14 +307,14 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
       );
       assert.equal(dataset.columns[0], "part");
       const rows = await dataset.toRows();
-      assert.equal(rows.length, dataset.rows);
+      assert.equal(rows.length, dataset.rowCount);
       const partValues = new Set(rows.map((row) => row["part"]));
       assert.equal(partValues.size, dataset.members.length);
     },
   );
 
   test(
-    "6. a long build answers 202, polls at the server's pacing, and resumes elsewhere",
+    "6. a long build answers 202, polls at the server's pacing, and a second fetch joins it",
     { timeout: 900_000 },
     async (t) => {
       const spec = await longBuild();
@@ -316,29 +331,30 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
         `${spec.spec_id} downloads ${estimate} rows, within the ${caps.sync_budget_rows} budget`,
       );
 
-      const { value: operation, exchanges } = await exchangesOf(() => client.mint(spec));
-      const [posted] = exchanges.filter((exchange) => exchange.method === "POST");
-      assert.ok(posted, "the mint posted a build");
+      const start = wire.length;
+      const fetching = exchangesOf(() => client.fetch(spec));
+      const posted = await postedFrom(start);
       if (posted.status === 200) {
-        const reason = await servedInline(spec, operation);
+        const reason = await servedInline(spec, (await fetching).value);
         if (process.env["DFO_E2E_SCHEDULED"] === "true") assert.fail(reason);
         t.skip(reason);
         return;
       }
       assert.equal(posted.status, 202);
-      const { operationId } = operation;
+      const operationId = operationIdOf(posted.json);
       assert.ok(operationId?.startsWith("op_") === true, `operation id ${String(operationId)}`);
 
-      const resumed = resumeElsewhere(operationId);
-      const { value: dataset, exchanges: polls } = await exchangesOf(() => operation.result());
+      // The same build posted from another process joins the running operation.
+      const joined = fetchElsewhere(spec);
+      const { value: dataset, exchanges } = await fetching;
       const [built] = dataset.members;
       assert.ok(built);
       assert.equal(built.spec.spec_id, spec.spec_id);
-      assert.ok(dataset.rows > caps.sync_budget_rows, `${dataset.rows} rows`);
+      assert.ok(dataset.rowCount > caps.sync_budget_rows, `${dataset.rowCount} rows`);
 
       const opPolls = [
         posted,
-        ...polls.filter((exchange) => exchange.url.includes("/datasets/operations/")),
+        ...exchanges.filter((exchange) => exchange.url.includes("/datasets/operations/")),
       ];
       for (const [index, poll] of opPolls.entries()) {
         if (index === 0) continue;
@@ -351,14 +367,15 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
           `poll ${index} came ${Math.round(waited)} ms after a ${floor} ms wait was due`,
         );
       }
-      const other = await resumed;
+      const other = await joined;
+      assert.equal(other.operation_id, operationId);
       assert.equal(other.spec_id, spec.spec_id);
       assert.equal(other.content_version, built.contentVersion);
-      assert.equal(other.rows, dataset.rows);
+      assert.equal(other.rows, dataset.rowCount);
       const hinted = opPolls.filter((poll) => poll.retryAfterMs !== null).length;
       t.diagnostic(
         `${operationId}: ${opPolls.length - 1} polls, ${hinted} of ${opPolls.length} ` +
-          `answers paced by the server, ${dataset.rows} rows`,
+          `answers paced by the server, ${dataset.rowCount} rows`,
       );
     },
   );
@@ -370,7 +387,7 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
       t.skip(`the server offers no place options: the ${gap.kind} gap says "${gap.message}"`);
       return;
     }
-    const chosen = await answer.choose("Congo", "Congo [DRC]");
+    const chosen = await answer.choose("Congo [DRC]", { part: "Congo" });
     assert.equal(chosen.status, "definite");
   });
 
@@ -444,20 +461,33 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
   );
 });
 
-/** Resumes an operation from a second Node process and returns what its result holds. */
-async function resumeElsewhere(
-  operationId: string,
-): Promise<{ spec_id: string; content_version: string; rows: number }> {
+/** Fetches `spec` from a second Node process and returns the operation id its build POST
+ *  answered with and what its dataset holds. */
+async function fetchElsewhere(spec: Spec): Promise<{
+  operation_id: string | undefined;
+  spec_id: string;
+  content_version: string;
+  rows: number;
+}> {
   const entry = new URL("../../src/index.ts", import.meta.url).href;
   const code = `
     const { Client } = await import(${JSON.stringify(entry)});
-    const client = new Client({ baseUrl: ${JSON.stringify(baseUrl)} });
-    const operation = await client.operation(${JSON.stringify(operationId)});
-    const dataset = await operation.result();
+    let operationId;
+    const recording = async (input, init) => {
+      const response = await fetch(input, init);
+      const url = new URL(input instanceof Request ? input.url : input);
+      if (init?.method === "POST" && url.pathname.endsWith("/datasets") && operationId === undefined) {
+        operationId = (await response.clone().json())?.operation?.operation_id ?? null;
+      }
+      return response;
+    };
+    const client = new Client({ baseUrl: ${JSON.stringify(baseUrl)}, fetch: recording });
+    const dataset = await client.fetch(${JSON.stringify(spec)});
     process.stdout.write(JSON.stringify({
+      operation_id: operationId ?? undefined,
       spec_id: dataset.members[0].spec.spec_id,
       content_version: dataset.members[0].contentVersion,
-      rows: dataset.rows,
+      rows: dataset.rowCount,
     }));
   `;
   const { stdout } = await promisify(execFile)(
@@ -465,5 +495,10 @@ async function resumeElsewhere(
     ["--input-type=module", "--eval", code],
     { maxBuffer: 1 << 20, timeout: 900_000 },
   );
-  return JSON.parse(stdout) as { spec_id: string; content_version: string; rows: number };
+  return JSON.parse(stdout) as {
+    operation_id: string | undefined;
+    spec_id: string;
+    content_version: string;
+    rows: number;
+  };
 }

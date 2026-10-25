@@ -13,7 +13,6 @@ from contextlib import contextmanager
 from typing import Any, Protocol
 
 from dfo._core.types import (
-    AsyncCandidate,
     Candidate,
     DefinitePart,
     Gap,
@@ -35,6 +34,7 @@ _DECLINED_REASONS = {
         "to show."
     ),
 }
+_FETCH_LINE = "  Fetch: answer.fetch()"
 _CATALOGUE = (
     "Search answered with the catalogue: the question asks what DFO holds and names "
     "no indicator."
@@ -51,9 +51,9 @@ class AnswerView(Protocol):
     @property
     def reason(self) -> str | None: ...
     @property
-    def parts(self) -> tuple[Part[Candidate | AsyncCandidate], ...]: ...
+    def parts(self) -> tuple[Part, ...]: ...
     @property
-    def gaps(self) -> tuple[Gap[Candidate | AsyncCandidate], ...]: ...
+    def gaps(self) -> tuple[Gap, ...]: ...
     @property
     def complete(self) -> bool: ...
     @property
@@ -91,7 +91,9 @@ def answer_text(answer: AnswerView, /) -> str:
         return declined_text(answer.kind, answer.reason)
     if answer.complete:
         lines = [line for _, line in hints(answer, departures=False)]
-        return "\n".join([answer.sentence or "", *(f"  {line}" for line in lines)])
+        return "\n".join(
+            [answer.sentence or "", *(f"  {line}" for line in lines), _FETCH_LINE]
+        )
     return _incomplete(answer, lead="Answered")
 
 
@@ -177,10 +179,11 @@ def _incomplete(answer: AnswerView, *, lead: str) -> str:
             f"    [{number}] {_choice_line(choice)}"
             for number, choice in enumerate(gap.options)
         )
+    several = len(waiting(answer.gaps)) > 1
     lines.extend(
         f"  Choose: {call}.fetch()"
         for gap in answer.gaps
-        if (call := _choose_call(answer, gap)) is not None
+        if (call := _choose_call(answer, gap, several=several)) is not None
     )
     if answered:
         noun = "part" if answered == 1 else "parts"
@@ -188,37 +191,45 @@ def _incomplete(answer: AnswerView, *, lead: str) -> str:
     return "\n".join(lines)
 
 
-def _choice_line(choice: Candidate | AsyncCandidate | Option) -> str:
+def _choice_line(choice: Candidate | Option) -> str:
     if isinstance(choice, Option):
         return choice.label
     label = (choice.label or choice.sentence or "").rstrip(".")
     return " · ".join(text for text in (label, choice.source, choice.unit) if text)
 
 
-def _choose_call(
-    answer: AnswerView, gap: Gap[Candidate | AsyncCandidate]
-) -> str | None:
-    """The call that settles a gap with its first choice, or None when none can."""
+def waiting(gaps: Sequence[Gap], /) -> list[Gap]:
+    """The gaps that await a choice, which `choose` without `part` picks among."""
+    return [gap for gap in gaps if gap.kind == "choice" or gap.options]
+
+
+def _choose_call(answer: AnswerView, gap: Gap, *, several: bool) -> str | None:
+    """The call that settles a gap with its first choice, or None when none can.
+
+    The call names the part only when `several` gaps await a choice.
+    """
     if not gap.options:
         return None
     first = gap.options[0]
-    if not isinstance(first, Option):
-        if len(answer.parts) == 1:
-            return "answer.choose(0)"
-        return f"answer.choose({_part_key(answer, gap)}, 0)"
-    return f"answer.choose({_option_key(answer, first, gap)}, {_quote(first.label)})"
+    if isinstance(first, Option):
+        option = _quote(first.label)
+        part = _option_key(answer, first, gap)
+    else:
+        option = "0"
+        part = _part_key(answer, gap)
+    if not several:
+        return f"answer.choose({option})"
+    return f"answer.choose({option}, part={part})"
 
 
-def _part_key(answer: AnswerView, gap: Gap[Candidate | AsyncCandidate]) -> str:
+def _part_key(answer: AnswerView, gap: Gap) -> str:
     """The part's words when they name it alone, else its index."""
     text = gap.part.variable_text
     named = [part for part in answer.parts if part.variable_text == text]
     return _quote(text) if text and len(named) == 1 else str(gap.part_index)
 
 
-def _option_key(
-    answer: AnswerView, option: Option, gap: Gap[Candidate | AsyncCandidate]
-) -> str:
+def _option_key(answer: AnswerView, option: Option, gap: Gap) -> str:
     """The word `option` settles when it names the part alone, else the part's
     key."""
     mentions = option.mentions

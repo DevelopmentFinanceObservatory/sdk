@@ -129,7 +129,7 @@ def test_a_body_without_json_uses_the_reason_phrase() -> None:
     error = problem_error(503, None, reason="Service Unavailable", origin=ORIGIN)
     assert (type(error), str(error), error.retryable) == (
         ServerError,
-        "HTTP 503 with no refusal code.",
+        "HTTP 503 with no refusal code. [refusal_without_code]",
         True,
     )
     assert (error.code, error.problem, error.docs_url) == (
@@ -296,6 +296,43 @@ def test_a_client_error_takes_its_rows_class_and_flag(
     )
 
 
+@pytest.mark.parametrize("code", _CLIENT_CODES.values(), ids=lambda code: code.code)
+def test_a_client_error_prints_its_code(code: ClientCode[DfoError]) -> None:
+    error = _errors.client_error(code, "Bad input.")
+    assert str(error) == f"Bad input. [{code.code}]"
+    assert repr(error) == f"{code.error_class.__name__}('Bad input. [{code.code}]')"
+
+
+# One code per action, so every error class a refusal maps to is covered.
+_ACTION_CODES = {row["action"]: row["code"] for row in reversed(_ROWS)}
+
+
+@pytest.mark.parametrize("action", sorted(_ACTION_CODES))
+def test_a_refusal_prints_its_code_and_trace_id(action: str) -> None:
+    code = _ACTION_CODES[action]
+    body = {"code": code, "detail": "Refused.", "trace_id": "4f2a91c0"}
+    error = problem_error(400, body, reason="Bad Request", origin=ORIGIN)
+    assert type(error) is ACTION_CLASSES[action]
+    assert str(error) == f"Refused. [{code} · trace 4f2a91c0]"
+
+
+@pytest.mark.parametrize(
+    ("message", "fields", "shown"),
+    [
+        ("Gone.", {}, "Gone."),
+        ("Gone.", {"trace_id": "t1"}, "Gone. [trace t1]"),
+        ("Gone.\n  Try again.", {"code": "x_gone"}, "Gone.\n  Try again.\n[x_gone]"),
+    ],
+    ids=["neither", "trace-only", "several-lines"],
+)
+def test_an_error_prints_what_it_has(
+    message: str, fields: dict[str, str], shown: str
+) -> None:
+    error = DfoError(message, **fields)
+    assert str(error) == shown
+    assert str(_errors.recast(error, ServerError)) == shown
+
+
 _WARNING_ROWS = json.loads(
     (CONTRACT / "warning-codes.json").read_text(encoding="utf-8")
 )["codes"]
@@ -350,7 +387,7 @@ def test_a_client_warning_takes_its_rows_class() -> None:
     assert (type(warning), warning.code, str(warning)) == (
         DfoDeprecationWarning,
         "route_deprecated",
-        "going",
+        "going [route_deprecated]",
     )
 
 

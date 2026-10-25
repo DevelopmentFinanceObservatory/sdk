@@ -3,11 +3,12 @@ import { readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 
 import { envFrom } from "../src/config/env.ts";
-import type { EntityGroups, Narrowing, SpecInput } from "../src/datasets/fetch.ts";
+import type { EntityGroups, Narrowing } from "../src/datasets/fetch.ts";
 import type { LongBuild } from "../src/datasets/operation.ts";
-import type { Layout, SpecLike } from "../src/core/ref.ts";
+import type { Layout, Spec } from "../src/core/ref.ts";
 import { Transport } from "../src/http/transport.ts";
 import type { TransportOptions } from "../src/http/transport.ts";
+import type { ResolvedSpec } from "../src/wire.ts";
 
 /** The base URL a replay serves its scenario at when its options name none. */
 export const REPLAY_BASE_URL = "https://api.replay.test/api";
@@ -44,7 +45,7 @@ export type FetchStep = Narrowing & {
   partial?: boolean;
   strict?: boolean;
   layout?: Layout;
-  spec?: SpecInput;
+  spec?: Spec;
   ref?: unknown;
 };
 
@@ -52,8 +53,8 @@ export type Step =
   | { op: "search"; question: string }
   | { op: "choose"; part?: number | string; option: number | string }
   | FetchStep
-  | { op: "newest_version"; spec: SpecInput }
-  | { op: "mint"; spec: SpecInput; layout?: Layout }
+  | { op: "newest_version"; spec: Spec }
+  | { op: "mint"; spec: Spec; layout?: Layout }
   | { op: "operation"; operation_id: string; layout?: Layout }
   | { op: "result" };
 
@@ -120,18 +121,19 @@ const scenarioUrl = (file: string): URL =>
 
 /** A step's spec as the scenario format holds it, with the sentence and the entity groups at
  *  the top level. */
-type ScenarioSpec = SpecLike & { sentence?: string; entity_groups?: EntityGroups };
+type ScenarioSpec = Spec & { sentence?: string; entity_groups?: EntityGroups };
 
 /** A scenario spec in the wire `Spec`'s shape, the one `client.fetch` and `client.mint` take:
  *  the sentence and the groups move under `resolved`. */
-function wireSpec({ sentence, entity_groups, ...spec }: ScenarioSpec): SpecInput {
+function wireSpec({ sentence, entity_groups, ...spec }: ScenarioSpec): Spec {
   if (sentence === undefined && entity_groups === undefined) return spec;
   return {
     ...spec,
+    // The fetch reads only these two members of Search's reading.
     resolved: {
       ...(sentence === undefined ? {} : { rendered_sentence: sentence }),
       ...(entity_groups === undefined ? {} : { entity_groups }),
-    },
+    } as ResolvedSpec,
   };
 }
 

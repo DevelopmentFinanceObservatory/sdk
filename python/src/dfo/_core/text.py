@@ -9,6 +9,7 @@ client message quotes at most `MESSAGE_TEXT_MAX` characters of it.
 """
 
 import ipaddress
+import json
 import re
 import unicodedata
 from typing import Any
@@ -137,6 +138,15 @@ def capped(text: str, /) -> str:
     if len(text) <= MESSAGE_TEXT_MAX:
         return text
     return text[:MESSAGE_TEXT_MAX] + "…"
+
+
+def cited(value: object, /) -> str:
+    """How a message quotes a caller's value: a string in double quotes, as JSON
+    writes it, so `"congo [drc]"` reads the same in both clients; anything else as
+    Python writes it, such as `(0, 3000)`."""
+    return (
+        json.dumps(value, ensure_ascii=False) if isinstance(value, str) else repr(value)
+    )
 
 
 def redacted_json(value: Any, key: str | None, /) -> Any:

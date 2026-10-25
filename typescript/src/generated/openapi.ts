@@ -1095,7 +1095,7 @@ export interface components {
        * Kind
        * @description what the engine filled. 'declared_default' is a slot the request left open that its code system's or shape's declared default fixed. 'open_role' is a flow role no request word asked for, read across every entity on it with data, as one series per member where the role scope default filled it and the shape declares the role, else as the total over them. 'place_scope' is a request that named no place, read across every place with data
        */
-      kind: ("declared_default" | "open_role" | "place_scope") | (string & {});
+      kind: AssumptionKind | (string & {});
       /**
        * Binding Ref
        * @description the identity binding whose edit replaces this assumption: 'how:<property dcid>' for a declared default, 'origin:' or 'where:' for a role or the place scope, as on the sentence's own tokens
@@ -2956,7 +2956,7 @@ export interface components {
        * Reason
        * @description why search declined: 'out_of_scope' when no part of the question asks for a published statistic about a place, a population or a financial flow; 'requires_analysis' when the subject is in scope but the question asks for an argument and names no data to show
        */
-      reason: ("out_of_scope" | "requires_analysis") | (string & {});
+      reason: DeclinedReason | (string & {});
       /** @description the place the question named, when it named a country */
       scope: components["schemas"]["Scope-Output"];
     };
@@ -3110,23 +3110,7 @@ export interface components {
        * Code
        * @description what kind of departure this is. 'closest_match': the answer shows the nearest measure the graph holds, not the one asked; a client draws a muted 'Closest match:' lead before the heading, and on a candidates part, whose readings stand in for a measure with no data, once before the first reading. 'measure_not_applied': a named measure qualifier was not applied. 'operation_not_applied': an operation the request named (a share, a ranking) was not run, so the amounts behind it are shown. 'breakdown_not_applied': a breakdown the request named was not applied, so the total is shown. 'entity_unavailable': an entity the request named holds no values in the series the answer reads, one departure per role; for a role the request named as a group, asked is the request's words for the group and the text counts the members without values; the text names any source holding values there that Search does not read. 'year_unavailable': a named year or range falls outside the years served. 'modelled_values': the served values are modelled or estimated. 'group_read_as_members': a named group was read as its member entities; on a flow role the text names the amounts the group's published total counts that no member holds, and, for a group whose published total is not its members' sum, says the source publishes its own figure for the group. 'whole_total_read': a flow side is read as its whole population, the total its source publishes for every party of that side (official donors (DAC) for 'official donors' or a donor side the request named nothing on or summed over; official and private donors (DAC) for 'all donors'); the text says what the total holds and how to list the side's members: in the question's words ('by donor') on the raw_text door, with open_roles on the others. 'whole_total_unpublished': the request named a whole population ('all donors', 'all recipients') on a side whose dataset publishes no total of it and holds no party outside it, so the side is left unnamed and the answer covers every party the dataset holds there; asked is the request's words, and the text names the dataset. 'direction_discarded': a flow direction the request's own words named was not applied. 'direction_inferred': a place the request named without a direction is read on the one direction that holds data, which over names. 'scope_limited': a no_data answer's check covered only values the engine chose, which the request did not name; its text names only what the check covered ('This check covered only ODA.')
        */
-      code:
-        | (
-            | "closest_match"
-            | "measure_not_applied"
-            | "operation_not_applied"
-            | "breakdown_not_applied"
-            | "entity_unavailable"
-            | "year_unavailable"
-            | "modelled_values"
-            | "group_read_as_members"
-            | "whole_total_read"
-            | "whole_total_unpublished"
-            | "direction_discarded"
-            | "direction_inferred"
-            | "scope_limited"
-          )
-        | (string & {});
+      code: DepartureCode | (string & {});
       /**
        * Binding Ref
        * @description the identity binding whose edit clears this departure ('when:' for a year, 'how:<property dcid>' for a measure value, 'where:' or 'origin:' for a role's entities, 'unit:' for the price basis); null for a departure no binding edit clears, such as an operation the engine does not run. A client links the departure to the sentence token carrying the same binding_ref when the plan has one; a candidates or no_data plan, and a how slot the heading leaves silent, may carry no such token
@@ -4960,32 +4944,7 @@ export interface components {
        * Reason
        * @description why nothing could be returned, in contract resolution order. "entity_not_resolved" means a named entity could not be resolved to a graph node; "entity_ambiguous" means a named entity matched more than one graph candidate and none could be preferred over the others, distinct from "entity_not_resolved", where no node matched at all; "entity_role_not_admitted" means a named entity resolved to exactly one graph node, but no role any candidate shape declares admits that node's graph type -- the entity is real, just not the kind of thing this query's data is reported for; "entity_set_too_large" means every named entity resolved, but the places the request names, counting the members of each group or region among them and summed over the roles they sit on, exceed what the engine binds in one request -- distinct from every other entity_* reason, where one entity, not the size of the set, is what failed; "variable_not_resolved" means no StatVar matched the variable text (e.g. an absent posted stat_var_dcid or entity, or no measure match at all); "role_not_resolved" means the query names a role the engine could not resolve; "unit_not_resolved" means the unit binder could not classify a token in the requested unit phrase against its lexicons; "no_matching_slice" means the measure matched fine, but the requested combination has no corresponding data series -- the constructed/derived variable does not exist in the graph at all. Covers an identity resubmit refine edit with no confirmable sibling StatVar for the edited slice, and a dev-finance scheme x purpose x recipient combination that was never published as a series, on raw-text and resubmit alike; "binding_mismatch" means the variable resolved and graph-confirmed StatVars exist, but none satisfies the requested slot bindings, either because a resolved value on a bound property mismatched or because the StatVar's value on a bound property is present but could not be read (an unresolvable dcid); distinct from "no_matching_slice" (the combination was never published at all) and "variable_not_resolved" (no StatVar matched at all); "denominator_not_available" means the query asks for a normalised form (per person, per area, a rate or a share) or names a denominator, and the matched series is not in that form or divides by another base; "no_observations" means a StatVar WAS confirmed to exist but has no observation at the resolved entity (it exists, but not data here); "facet_not_available" means observations exist at the entity, none under the requested facet values; "role_incompatible" means the role is real, and the StatVar does not declare it; "role_signature_incompatible" means the resolved StatVars carry incompatible role signatures and no partition into candidates was possible; "source_code_not_held" means no variable held under the part's source_code by a source search serves can answer the part: no served source holds the code, the part's sources exclude every source that does, or the code's variables cannot answer the part as asked; "source_code_ambiguous" means two of the part's sources hold its source_code; "source_code_shares_variable" means the source_code's variables answer other codes of its source too, so search cannot serve the code alone; "qualifier_not_bound" means the variable resolved to a series family, but a narrowing term the request's text named bound no constraint slot: no code system in the packaged index carries it, or its registered rows landed in no binding; "timed_out" means the request reached its time limit before this part was answered (diagnostics.timed_out is true); the question may hold data, so asking it again, alone or narrower, can answer it
        */
-      reason:
-        | (
-            | "source_not_resolved"
-            | "source_ambiguous"
-            | "source_code_not_held"
-            | "source_code_ambiguous"
-            | "source_code_shares_variable"
-            | "entity_not_resolved"
-            | "entity_ambiguous"
-            | "entity_set_too_large"
-            | "entity_role_not_admitted"
-            | "variable_not_resolved"
-            | "role_not_resolved"
-            | "unit_not_resolved"
-            | "rate_coverage_gap"
-            | "no_matching_slice"
-            | "binding_mismatch"
-            | "denominator_not_available"
-            | "no_observations"
-            | "facet_not_available"
-            | "role_incompatible"
-            | "role_signature_incompatible"
-            | "qualifier_not_bound"
-            | "timed_out"
-          )
-        | (string & {});
+      reason: NoDataReason | (string & {});
       /** @description why this refusal fired, present only for reason=rate_coverage_gap (the structured door's same-named ProblemDetails extension); omitted on every other reason */
       cause?: components["schemas"]["Cause"] | null;
       /**
@@ -9477,7 +9436,7 @@ export interface components {
        * Severity
        * @description the severity level
        */
-      severity: ("info" | "warn" | "degraded") | (string & {});
+      severity: Severity | (string & {});
       /**
        * Message
        * @description human-readable explanation of the warning
@@ -9997,21 +9956,7 @@ export interface components {
        *       "group"
        *     ]
        */
-      kinds?: (
-        | (
-            | "country"
-            | "continent"
-            | "subregion"
-            | "continental_union"
-            | "organisation"
-            | "aggregate"
-            | "place_other"
-            | "group"
-            | "code"
-            | "other"
-          )
-        | (string & {})
-      )[];
+      kinds?: (ResolveKind | (string & {}))[];
       /** Code System */
       code_system?: string | null;
       /**
@@ -12871,3 +12816,66 @@ export type SearchModelsRequestResolveRequest =
 export type ProblemDetails = components["schemas"]["ProblemDetails"];
 export type Alternative = components["schemas"]["Alternative"];
 export type ProblemIssue = components["schemas"]["ProblemIssue"];
+
+/** How much a Search warning matters. The values of `Warning.severity` in the served document. */
+export type Severity = "info" | "warn" | "degraded";
+
+/** What Search filled in that the question left open. The values of `Assumption.kind` in the served document. */
+export type AssumptionKind = "declared_default" | "open_role" | "place_scope";
+
+/** How a reading differs from what the question asked. The values of `Departure.code` in the served document. */
+export type DepartureCode =
+  | "closest_match"
+  | "measure_not_applied"
+  | "operation_not_applied"
+  | "breakdown_not_applied"
+  | "entity_unavailable"
+  | "year_unavailable"
+  | "modelled_values"
+  | "group_read_as_members"
+  | "whole_total_read"
+  | "whole_total_unpublished"
+  | "direction_discarded"
+  | "direction_inferred"
+  | "scope_limited";
+
+/** Why a part has no data. The values of `NoData.reason` in the served document. */
+export type NoDataReason =
+  | "source_not_resolved"
+  | "source_ambiguous"
+  | "source_code_not_held"
+  | "source_code_ambiguous"
+  | "source_code_shares_variable"
+  | "entity_not_resolved"
+  | "entity_ambiguous"
+  | "entity_set_too_large"
+  | "entity_role_not_admitted"
+  | "variable_not_resolved"
+  | "role_not_resolved"
+  | "unit_not_resolved"
+  | "rate_coverage_gap"
+  | "no_matching_slice"
+  | "binding_mismatch"
+  | "denominator_not_available"
+  | "no_observations"
+  | "facet_not_available"
+  | "role_incompatible"
+  | "role_signature_incompatible"
+  | "qualifier_not_bound"
+  | "timed_out";
+
+/** Why Search declined a question. The values of `DeclinedAnswer.reason` in the served document. */
+export type DeclinedReason = "out_of_scope" | "requires_analysis";
+
+/** A kind of graph node a name can resolve to. The values of `graph_api__resolve_models__ResolveRequest.kinds.items` in the served document. */
+export type ResolveKind =
+  | "country"
+  | "continent"
+  | "subregion"
+  | "continental_union"
+  | "organisation"
+  | "aggregate"
+  | "place_other"
+  | "group"
+  | "code"
+  | "other";

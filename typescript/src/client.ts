@@ -1,26 +1,27 @@
 /** The client: one connection to the DFO API, with its key, and every call made through it. */
 
+import { registerClient } from "./search/answer.ts";
 import type { Answer, AnswerContext, SearchOptions } from "./search/answer.ts";
 import type { Dataset } from "./datasets/dataset.ts";
-import { clientError, DfoError, InvalidRequestError, optionsOf } from "./core/errors.ts";
+import { clientError, DfoError, InvalidRequestError, messageOf, optionsOf } from "./core/errors.ts";
 import { present } from "./core/json.ts";
-import { mint, resume } from "./datasets/fetch.ts";
+import { checkOptions, declareOptions } from "./core/options.ts";
 import { fetchDataset } from "./datasets/resolve.ts";
-import type { FetchOptions, MintOptions, ResumeOptions, SpecInput } from "./datasets/fetch.ts";
+import type { FetchOptions } from "./datasets/fetch.ts";
 import type { ApiKeyOption } from "./config/keys.ts";
-import { catalogue, Codes, Graph } from "./search/lookups.ts";
-import type { CatalogueOptions, LookupOptions } from "./search/lookups.ts";
-import type { Operation } from "./datasets/operation.ts";
-import type { DatasetRef } from "./core/ref.ts";
+import { Lookup } from "./search/lookups.ts";
+import type { LookupOptions } from "./search/lookups.ts";
+import type { DatasetRef, Spec } from "./core/ref.ts";
 import { search } from "./search/search.ts";
 import { Transport } from "./http/transport.ts";
 import type { HeaderProvider, RawResponse } from "./http/transport.ts";
 import type { WarningHandler } from "./core/warnings.ts";
-import type { CatalogueResponse } from "./wire.ts";
 
 export type ClientOptions = {
-  /** The API's base URL, `https://developmentfinance.org/api/v1` by default; a relative one,
-   *  such as `/api/v1`, resolves against the page. */
+  /** The API's base URL; a relative one, such as `/api/v1`, resolves against the page. Without
+   *  one the client reads `DFO_BASE_URL` where the platform has a process environment, then uses
+   *  the public API, `https://developmentfinance.org/api/v1`. `String(client)` shows a base URL
+   *  other than the public API's, and names `DFO_BASE_URL` when it came from there. */
   baseUrl?: string;
   /** The key: a string, an `ApiKey`, or a function returning one; `false` for anonymous use.
    *  Without one the client reads `DFO_API_KEY`, then the credentials file. */
@@ -28,8 +29,10 @@ export type ClientOptions = {
   /** The platform's `fetch`, or one that stands in for it. */
   fetch?: typeof globalThis.fetch;
   /** The longest one request attempt waits, in milliseconds, a finite number above 0. 30
-   *  seconds by default. A failed attempt is retried as `maxRetries` allows. `search` (60 s)
-   *  and `fetch` (30 min) also bound the whole call, and a build's POST reads for up to 150 s. */
+   *  seconds by default. A failed attempt is retried as `maxRetries` allows. `search` also
+   *  bounds the whole call (60 s), a build's POST reads for up to 150 s, and a download fails
+   *  after 30 s with no byte. `fetch` waits as long as its build takes unless given a
+   *  `timeout`. */
   timeout?: number;
   /** Further attempts after a failure the server says can clear, an integer from 0 to 10; 2 by
    *  default. */
@@ -57,6 +60,30 @@ export type RawRequestOptions = LookupOptions & {
   readonly json?: unknown;
 };
 
+const CLIENT_OPTIONS = declareOptions<ClientOptions>("new Client", {
+  baseUrl: true,
+  apiKey: true,
+  fetch: true,
+  timeout: true,
+  maxRetries: true,
+  headers: true,
+  headerProvider: true,
+  onWarning: true,
+  dangerouslyAllowBrowser: true,
+});
+
+const LIMITS = declareOptions<Pick<ClientOptions, "timeout" | "maxRetries">>("client.withOptions", {
+  timeout: true,
+  maxRetries: true,
+});
+
+const REQUEST_OPTIONS = declareOptions<RawRequestOptions>("client.request", {
+  signal: true,
+  timeout: true,
+  params: true,
+  json: true,
+});
+
 /** The transport `clientOver` hands the next constructor call. */
 let adopting: Transport | undefined;
 
@@ -65,10 +92,9 @@ let adopting: Transport | undefined;
  * `withOptions` copies share.
  */
 export class Client {
-  /** Names to graph nodes, and a node by its dcid. */
-  readonly graph: Graph;
-  /** The code registry, which says what each error code means. */
-  readonly codes: Codes;
+  /** Names to graph nodes, a node by its dcid, a code's registry entry, and what Search holds
+   *  data on. */
+  readonly lookup: Lookup;
   readonly #transport: Transport;
   readonly #answers: AnswerContext;
 
@@ -78,16 +104,18 @@ export class Client {
    * @throws {AuthenticationError} The key is empty or holds a character outside visible ASCII
    *   (`key_empty`, `key_invalid`), or the credentials file cannot be read, is invalid, or lacks
    *   the profile or the key the lookup chose.
-   * @throws {InvalidRequestError} The base URL is empty, not an absolute http or https URL, or
-   *   carries userinfo, a query or a fragment (`base_url_invalid`); a key would go over plain
+   * @throws {InvalidRequestError} The base URL, from `baseUrl` or else `DFO_BASE_URL`, is empty,
+   *   not an absolute http or https URL, or carries userinfo, a query or a fragment
+   *   (`base_url_invalid`); a key would go over plain
    *   http to a host that is not loopback (`insecure_transport`); a header value holds a control
    *   character (`header_invalid`); `timeout` is not a finite number above 0, or `maxRetries` not
-   *   an integer from 0 to 10 (`invalid_argument`).
+   *   an integer from 0 to 10, or `options` holds a key outside `ClientOptions`
+   *   (`invalid_argument`).
    * @throws {TypeError} A secret key is given in a browser page or worker without
    *   `dangerouslyAllowBrowser`.
    */
   constructor(options: ClientOptions = {}) {
-    const { headers, ...rest } = options;
+    const { headers, ...rest } = checkOptions(CLIENT_OPTIONS, options);
     this.#transport =
       adopting ??
       new Transport({ ...rest, ...(headers === undefined ? {} : { defaultHeaders: headers }) });
@@ -97,8 +125,8 @@ export class Client {
         this.#transport.warn(warning);
       },
     };
-    this.graph = new Graph(this.#transport);
-    this.codes = new Codes(this.#transport);
+    registerClient(this, this.#answers);
+    this.lookup = new Lookup(this.#transport);
   }
 
   /** The API's base URL. */
@@ -106,17 +134,30 @@ export class Client {
     return this.#transport.baseUrl.href;
   }
 
+  /** The client as `<Client https://…>`, naming its base URL, with `(from DFO_BASE_URL)` when
+   *  that variable set it. */
+  toString(): string {
+    const { baseUrl, baseUrlSource } = this.#transport;
+    const from = baseUrlSource === "DFO_BASE_URL" ? " (from DFO_BASE_URL)" : "";
+    return `<Client ${baseUrl.href}${from}>`;
+  }
+
+  /** Node's `console.log` and `util.inspect` show the client as `String(client)` does. */
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return this.toString();
+  }
+
   /** A copy with other limits that shares this client's transport: its fetch, headers, warning
    *  handler and key. */
   withOptions(options: Pick<ClientOptions, "timeout" | "maxRetries">): Client {
-    return clientOver(this.#transport.withOptions(options));
+    return clientOver(this.#transport.withOptions(checkOptions(LIMITS, options)));
   }
 
   /**
    * Asks Search what a question means, part by part.
    *
    * @throws {InvalidRequestError} The question is empty or only whitespace, or holds a lone
-   *   surrogate (`invalid_argument`).
+   *   surrogate, or `options` holds a key outside `SearchOptions` (`invalid_argument`).
    * @throws {ContractError} The answer lacks a member the client acts on.
    */
   search(question: string, options: SearchOptions = {}): Promise<Answer> {
@@ -125,45 +166,22 @@ export class Client {
 
   /**
    * Fetches a spec's latest version, narrowed by `window`, `entities` and `facets`, or the exact
-   * versions a ref names.
+   * versions a ref names, or with `latest: true` the newest versions of a ref's specs in the
+   * ref's rendering. It waits as long as a build takes, reporting a long build's progress
+   * to `onProgress`. A `timeout` or an aborted `signal` stops the wait and leaves the build
+   * running on the server, and the same fetch joins it.
    *
-   * @throws {InvalidRequestError} The target is neither a ref nor a spec with its `spec_id` and
-   *   `definition`, or a ref is narrowed or given another layout or `withoutPartyTotals`.
+   * @throws {InvalidRequestError} `options` holds a key outside `FetchOptions`, a window year
+   *   falls outside 1000 to 2200, the target is neither a ref nor a spec with its `spec_id` and
+   *   `definition`, a ref is narrowed or given another layout or `withoutPartyTotals`, or
+   *   `latest` is given a spec or a ref whose members differ in rendering.
    * @throws {VersionUnavailableError} A ref's version can no longer be fetched.
    * @throws {DataWarning} `strict` is true and a manifest carries a warning above `info`.
-   * @throws {DfoTimeoutError} The deadline passed; a long build's message names the call that
-   *   resumes it.
+   * @throws {DfoTimeoutError} The `timeout` passed (`deadline_exceeded`); the build carries on.
    * @throws {DfoError} The server refused a request.
    */
-  fetch(target: SpecInput | DatasetRef, options: FetchOptions = {}): Promise<Dataset<never>> {
+  fetch(target: Spec | DatasetRef, options: FetchOptions = {}): Promise<Dataset> {
     return fetchDataset(this.#transport, target, options);
-  }
-
-  /**
-   * Starts a spec's build and returns it as an operation, done or running. The POST reads for up
-   * to 150 seconds; `operation.result()` waits for the rest.
-   *
-   * @throws {InvalidRequestError} The spec lacks its `spec_id` or `definition`.
-   * @throws {DfoError} The server refused the build.
-   */
-  mint(spec: SpecInput, options: MintOptions = {}): Promise<Operation> {
-    return mint(this.#transport, spec, options);
-  }
-
-  /**
-   * Resumes a build started elsewhere, by its id (`op_...`). `layout` and `withoutPartyTotals`
-   * must be the ones the build was started with.
-   *
-   * @throws {NotFoundError} The server holds no operation with that id.
-   * @throws {DfoError} The operation failed.
-   */
-  operation(operationId: string, options: ResumeOptions = {}): Promise<Operation> {
-    return resume(this.#transport, operationId, options);
-  }
-
-  /** What Search holds data on: counts and example questions, for one country with `place`. */
-  catalogue(options: CatalogueOptions = {}): Promise<CatalogueResponse> {
-    return catalogue(this.#transport, options);
   }
 
   /**
@@ -173,7 +191,8 @@ export class Client {
    *
    * @throws {InvalidRequestError} `path` does not start with one `/`, holds a control
    *   character, or leaves the base URL's path once dot segments resolve; `method` is not one the
-   *   API serves; `json` is not JSON or goes with a GET or HEAD (`invalid_argument`); or the
+   *   API serves; `json` is not JSON or goes with a GET or HEAD; `options` holds a key outside
+   *   `RawRequestOptions` (`invalid_argument`); or the
    *   server refused the method (`method_not_allowed`), which on a route the client wraps is a
    *   `ContractError`.
    * @throws {ServerError} The decoded body passed `JSON_BODY_MAX_BYTES` (`response_too_large`).
@@ -185,6 +204,7 @@ export class Client {
     options: RawRequestOptions = {},
   ): Promise<RawResponse> {
     const transport = this.#transport;
+    const { params, json, signal, timeout } = checkOptions(REQUEST_OPTIONS, options);
     if (!path.startsWith("/") || path.startsWith("//")) {
       throw clientError("invalid_argument", {
         detail: `${JSON.stringify(path)} is not a path on the API at ${transport.baseUrl.href}.`,
@@ -192,7 +212,6 @@ export class Client {
     }
     // Refuses a path that leaves the base URL's path before any request.
     transport.url({ path });
-    const { params, json, signal, timeout } = options;
     try {
       return await transport.requestRaw({
         method: method.toUpperCase(),
@@ -220,7 +239,7 @@ function callerRefusal(error: unknown): unknown {
   ) {
     return error;
   }
-  return new InvalidRequestError({ ...optionsOf(error), message: error.message });
+  return new InvalidRequestError({ ...optionsOf(error), message: messageOf(error) });
 }
 
 /** A client over an existing transport, for tests and replays. */

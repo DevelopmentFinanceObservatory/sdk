@@ -85,3 +85,35 @@ def test_an_inconsistent_contract_is_refused(
 ) -> None:
     with pytest.raises(SystemExit):
         gen_wire.strict_fields(SCHEMAS, fields(required, enums))
+
+
+def test_each_named_enum_is_a_literal_alias_of_the_served_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        gen_wire,
+        "NAMED_ENUMS",
+        {"OpStatus": (("Op", "properties", "status"), "Where an op stands.")},
+    )
+    source = gen_wire.named_enums(SCHEMAS, "class Op(TypedDict):\n    id: str\n")
+    assert source.startswith('type OpStatus = Literal["pending", "done"]\n')
+
+
+@pytest.mark.parametrize(
+    ("path", "declared"),
+    [
+        (("Op", "properties", "note"), ""),
+        (("Level", "properties", "rank"), ""),
+        (("Op", "properties", "missing"), ""),
+        (("Op", "properties", "status"), "\nclass OpStatus(TypedDict):\n"),
+        (("Op", "properties", "status"), "\ntype OpStatus = str\n"),
+    ],
+    ids=["no-enum", "not-a-string", "unknown-member", "class-name", "alias-name"],
+)
+def test_a_named_enum_without_a_string_enum_or_with_a_taken_name_is_refused(
+    monkeypatch: pytest.MonkeyPatch, path: tuple[str, ...], declared: str
+) -> None:
+    monkeypatch.setattr(gen_wire, "NAMED_ENUMS", {"OpStatus": (path, "Doc.")})
+    schemas = {**SCHEMAS, "Level": {"properties": {"rank": {"enum": [1, 2]}}}}
+    with pytest.raises(SystemExit):
+        gen_wire.named_enums(schemas, declared)

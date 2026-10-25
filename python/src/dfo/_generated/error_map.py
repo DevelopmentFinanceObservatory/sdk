@@ -50,6 +50,9 @@ type ClientCodeName = Literal[
     "unexpected_response",
     "version_unavailable",
 ]
+# Every code the client raises itself, the one whose class follows the status
+# among them.
+type ClientErrorCode = ClientCodeName | Literal["refusal_without_code"]
 type WarningCodeName = Literal[
     "key_checksum_mismatch",
     "key_not_base62",
