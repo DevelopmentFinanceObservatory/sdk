@@ -10,6 +10,7 @@ import type { Platform } from "../src/config/credentials.ts";
 import { envFrom } from "../src/config/env.ts";
 import { isDfoError } from "../src/core/errors.ts";
 import { checkKeyFormat, resolveApiKey } from "../src/config/keys.ts";
+import { clientOver } from "../src/client.ts";
 import { Transport } from "../src/http/transport.ts";
 import {
   CLIENT_HEADER,
@@ -32,6 +33,34 @@ async function vectors<T>(rule: string): Promise<(T & { name: string })[]> {
   assert.ok(suite.vectors.length > 0, `contract/rules/${rule}.json holds no vectors`);
   return suite.vectors;
 }
+
+describe("base-url", async () => {
+  type Vector = {
+    base_url?: string;
+    env: Record<string, string>;
+    source?: "argument" | "environment" | "default";
+    url?: string;
+    error?: { reason: string };
+  };
+  const sources = { argument: "argument", environment: "DFO_BASE_URL", default: "default" };
+  for (const vector of await vectors<Vector>("base-url")) {
+    test(vector.name, () => {
+      const build = () =>
+        new Transport({
+          apiKey: false,
+          env: envFrom(vector.env),
+          ...(vector.base_url === undefined ? {} : { baseUrl: vector.base_url }),
+        });
+      if (vector.error !== undefined) {
+        assert.throws(build, (error) => isDfoError(error) && error.code === vector.error?.reason);
+        return;
+      }
+      const transport = build();
+      assert.equal(transport.baseUrlSource, sources[vector.source!]);
+      assert.equal(clientOver(transport).baseUrl, vector.url);
+    });
+  }
+});
 
 describe("key-format", async () => {
   for (const vector of await vectors<{ key: string; verdict: string; reason?: string }>(

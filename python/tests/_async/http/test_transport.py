@@ -11,6 +11,7 @@ import ssl
 import time
 import warnings
 from collections.abc import Callable
+from typing import Any
 
 import httpcore2
 import httpx2
@@ -39,11 +40,14 @@ from dfo._http.transport import (
     JSON_BODY_MAX_BYTES,
     USER_AGENT,
     AsyncTransport,
+    BaseUrl,
     _DeadlineBackend,
     _keep_to_deadlines,
     attempt_deadline,
+    resolve_base_url,
 )
 from tests._fetch_support import Body, silent_server, stalling_server
+from tests.rule_vectors import ids, vectors
 
 pytestmark = pytest.mark.anyio
 
@@ -1078,6 +1082,20 @@ async def test_the_base_url_is_the_argument_then_dfo_base_url_then_the_public_ap
         monkeypatch.setenv("DFO_BASE_URL", env)
     async with make(Recorder(), base_url=argument) as transport:
         assert (transport.base_url, transport.base_url_source) == (url, source)
+
+
+@pytest.mark.parametrize("vector", vectors("base-url"), ids=ids("base-url"))
+def test_the_base_url_vectors(vector: dict[str, Any]) -> None:
+    def resolve() -> BaseUrl:
+        return resolve_base_url(vector.get("base_url"), env=vector["env"])
+
+    if "error" in vector:
+        with pytest.raises(InvalidRequestError) as caught:
+            resolve()
+        assert caught.value.code == vector["error"]["reason"]
+        return
+    resolved = resolve()
+    assert (resolved.source, resolved.url) == (vector["source"], vector["url"])
 
 
 @pytest.mark.parametrize(

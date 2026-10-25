@@ -130,17 +130,16 @@ export class Client {
     this.lookup = new Lookup(this.#transport);
   }
 
-  /** The API's base URL. */
+  /** The API's base URL, less any trailing slashes. */
   get baseUrl(): string {
-    return this.#transport.baseUrl.href;
+    return this.#transport.baseUrl.href.replace(/\/+$/, "");
   }
 
   /** The client as `<Client https://…>`, naming its base URL, with `(from DFO_BASE_URL)` when
    *  that variable set it. */
   toString(): string {
-    const { baseUrl, baseUrlSource } = this.#transport;
-    const from = baseUrlSource === "DFO_BASE_URL" ? " (from DFO_BASE_URL)" : "";
-    return `<Client ${baseUrl.href}${from}>`;
+    const from = this.#transport.baseUrlSource === "DFO_BASE_URL" ? " (from DFO_BASE_URL)" : "";
+    return `<Client ${this.baseUrl}${from}>`;
   }
 
   /** Node's `console.log` and `util.inspect` show the client as `String(client)` does. */
@@ -208,7 +207,7 @@ export class Client {
     const { params, json, signal, timeout } = checkOptions(REQUEST_OPTIONS, options);
     if (!path.startsWith("/") || path.startsWith("//")) {
       throw clientError("invalid_argument", {
-        detail: `${JSON.stringify(path)} is not a path on the API at ${transport.baseUrl.href}.`,
+        detail: `${JSON.stringify(path)} is not a path on the API at ${this.baseUrl}.`,
       });
     }
     // Refuses a path that leaves the base URL's path before any request.
