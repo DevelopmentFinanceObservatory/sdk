@@ -129,6 +129,30 @@ The async modules are the source of both clients, and `scripts/gen_sync.py` deri
 - Code that does no I/O, such as the cache, Parquet and Arrow code, is plain sync code in a module both clients call.
 - An async test uses `pytestmark = pytest.mark.anyio` and a sync `def` handler for `httpx2.MockTransport`, which serves both clients.
 
+## Docs examples
+
+`scripts/check_docs_examples.py` runs every `python` block in `README.md`, `python/README.md`, and `python/docs/*.md`, and every `ts` or `typescript` block in `typescript/README.md` and `typescript/docs/*.md`, against the API `DFO_BASE_URL` names. It needs the network and spends Search calls, so CI leaves it out. Run it against dev after a docs change:
+
+```bash
+cd python
+DFO_BASE_URL=https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app/api \
+  uv run python ../scripts/check_docs_examples.py --report docs-check.md
+```
+
+It prints a line per block, with `file:line`, `pass`, `fail` or `skip`, and the error or the reason, then the counts. A failure names the docs line the error came from. The script exits 1 when a block fails, a process fails after its last block, or none ran. Name files, such as `python/docs/errors.md`, to check only those; a name that matches no file stops the script with exit 2, and pass `--language python` or `--language typescript` to check one client. `--list` prints each block and how it will run, offline. `--timeout` bounds each Python file and each TypeScript program, 1,800 seconds by default. `python/tests/test_check_docs_examples.py` tests the parsing and planning offline.
+
+The Python blocks of a file run in order in one process and one namespace, as a notebook runs them, so a block can use the names an earlier block set. The TypeScript blocks of a file form programs. A block that holds an `import` statement starts a program, and each block after it without one continues it. The script joins a program's blocks into one module, so a later block sees what the earlier ones declared. Imports of `@developmentfinance/client` load the TypeScript source, so no build is needed, but Node 22.18 or later and `pnpm --dir typescript install` are.
+
+Each file runs in its own scratch directory, with an empty cache and no API key. A client built without a base URL uses `DFO_BASE_URL`, and each process checks that before its first block. The script exits 2 when `DFO_BASE_URL` names developmentfinance.org, the public API, or a subdomain, unless `--allow-production` is passed. A block's request to the public API fails, checked on the request's URL as the SDK sends it, so a proxy does not hide it.
+
+To skip a block that cannot run there, such as one that needs a key or reads a file no earlier block writes, put a marker on the last line before its fence that is not blank:
+
+```markdown
+<!-- docs-check: skip: needs a key -->
+```
+
+The reason after `skip:` is optional. A skipped TypeScript block that starts a program skips the blocks that continue it. Any other `docs-check:` directive, a marker that does not sit before a Python or TypeScript block, or a Python or TypeScript fence that is indented or sits in a list or quote, stops the script with exit 2. Put such a block at the start of a line, between list items if need be.
+
 ## Releases
 
 A release is a tag on `main`:

@@ -42,7 +42,7 @@ const saved = JSON.stringify(dataset.ref);
 const again = await client.fetch(DatasetRef.fromJSON(JSON.parse(saved)));
 ```
 
-`client.fetch(spec, { window: [2020, 2023] })` narrows a spec, and `client.mint(spec)` starts a long build that `client.operation(id)` resumes from another process. A spec is an object with its `spec_id` and `definition`, such as `answer.specs[0]`. `fetch` and `mint` reject anything else, a spec id included, with `InvalidRequestError` and the code `invalid_argument`, before any request. `mint` is async, so a refused spec rejects its promise.
+`client.fetch(spec, { window: [2020, 2023] })` narrows a spec, and `client.mint(spec)` starts a long build that `client.operation(id)` resumes from another process. A spec is an object with its `spec_id` and `definition`, such as `answer.specs[0]`. `answer.specs` holds only the parts that have a reading. It is short when a part awaits a choice, has no data, or was left unresolved at Search's time limit, and empty when no part has a reading. Check `answer.complete` before using `specs[0]`, and test the spec for `undefined` under `noUncheckedIndexedAccess`. `fetch` and `mint` reject anything else, a spec id included, with `InvalidRequestError` and the code `invalid_argument`, before any request. `mint` is async, so a refused spec rejects its promise.
 
 A narrowing can leave no data. The fetch then returns a `Dataset` with no rows and the usual columns, and its sentence is Search's no-data sentence for the narrowed reading. The server's `empty_result` warning arrives as a `DataWarning`:
 
@@ -58,9 +58,11 @@ import { Client } from "@developmentfinance/client";
 const client = new Client({
   onWarning: (warning) => console.log(warning.name, (warning as any).code),
 });
-const spec = (
-  await client.search("ODA disbursements from Germany to Nigeria for basic health care")
-).specs[0]!;
+const answer = await client.search(
+  "ODA disbursements from Germany to Nigeria for basic health care",
+);
+const [spec] = answer.specs;
+if (spec === undefined) throw new Error(`Search gave no spec to fetch:\n${answer}`);
 
 const empty = await client.fetch(spec, { window: [1900, 1901] });
 console.log(empty.sentence);
@@ -241,7 +243,9 @@ origin [ { ref: 'observationAbout', label: 'observationAbout' } ]
 import { Client, InvalidRequestError } from "@developmentfinance/client";
 
 const client = new Client({ onWarning: () => {} });
-const spec = (await client.search("GDP of Kenya")).specs[0]!;
+const answer = await client.search("GDP of Kenya");
+const [spec] = answer.specs;
+if (spec === undefined) throw new Error(`Search gave no spec to fetch:\n${answer}`);
 try {
   await client.fetch(spec, { entities: { origin: ["country/DEU"] } });
 } catch (error) {
