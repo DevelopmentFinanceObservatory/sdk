@@ -1,120 +1,144 @@
-# Long builds and operations
+# Wait for a large build
 
-Most tables build while `fetch` waits on one request. A large table builds in the background on the server, as an operation, and `fetch` polls it until it is done. You need this page when a build outlasts your process, or when a pipeline should start builds and collect them later.
+A table above the server's synchronous budget, 100,000 rows, builds in the background on the server, and `fetch` waits for it. It shows progress while it waits and has no deadline unless you set one. Ctrl-C, a deadline, or a cancelled task leaves the build running, and the same fetch run again joins it.
 
-Each example on this page runs on its own.
+Each example on this page runs on its own. The first run of a large build on the server takes minutes. Once it is built, the same fetch returns in seconds.
 
-## What fetch does while it waits
+## Fetch a large table
 
-The server answers a build with the finished manifest when it fits the server's synchronous budget, 100,000 rows by default, or when it has built that version before, whatever its size. Any other build becomes an operation with an `op_` id, which `fetch` polls at the pace the server asks for, clamped to between 1 and 60 seconds, and backing off from 1 to 8 seconds when it names none. A build above 2,000,000 rows is refused with `over_ceiling`, an `InvalidRequestError`. Narrow the spec with `window` or `entities`.
-
-While it waits, `fetch` shows progress: a bar in a terminal, a live display in a notebook, and log records on the `dfo` logger anywhere else, naming the operation id, the trace id and the rows written. `progress=False` silences it for one call, and `DFO_PROGRESS=0` for the process.
-
-```python
-import logging
-
-import dfo
-
-logging.basicConfig(level=logging.INFO)
-
-answer = dfo.search(
-    "ODA disbursements from every donor to every African country for basic education, 2010 to 2023"
-)
-data = answer.fetch(timeout=600, progress=False)
-print(data.rows)
-```
-
-## Deadlines
-
-`timeout` bounds the whole fetch, polls and downloads included, in seconds. It defaults to 1,800 (30 minutes), and None waits without limit. In the synchronous client, blocking platform name resolution can run past this bound; the asynchronous client can cancel name resolution. Once resolution returns, the deadline still bounds the connection, TLS handshake, reads and writes. When the deadline passes on a running operation, `fetch` raises `DfoTimeoutError` with the code `deadline_exceeded`, and the message names the call that resumes the build:
+A fetch of every donor's spending on social infrastructure since 1995 builds about a million rows. In a terminal the progress line redraws in place until the build is done:
 
 ```text
-dfo.DfoTimeoutError: The build is still running at the deadline. Resume it with client.operation("op_...").result()
+Building op_72daea81df3f067b98662314f0b9d29d48750c6afd5592aeecc058a7f68bcc9c: [####################] 100% 978,349 of about 978,349 rows
+<Dataset Gross ODA disbursements to 203 recipients from 105 providers for social infrastructure and services, 1995 to 2024. Current US dollars · OECD Creditor Reporting System (CRS).
+  Source: OECD Creditor Reporting System (CRS)
+  Version: cv_20544079b69c43123a2be8d45a26747f (exact), held until 24 November 2026, not pinned
+  Rows: 978,349
+  Keep: data.save(path) · newest later: dfo.fetch(data.ref, latest=True)>
 ```
-
-A deadline that passes before the server has made an operation has no `op_` id to name. `fetch` then raises `DfoTimeoutError` with the code `deadline_exceeded` and a message such as `POST .../datasets timed out`, with no resuming line. Call `fetch` again, with a larger `timeout` if the build is big. The server deduplicates builds, so the second call joins or reuses the first.
-
-A poll wait that would pass the deadline is cut to end at it, and the client polls once more, giving that poll one attempt of the client's `timeout`. The error comes only when that last poll still reads the build running. When it reads the build done, the files route and the signed download each get one attempt of the client's `timeout`, and the call returns the data, so a call can run past its own timeout by one client timeout for the poll and one for each of those requests. A download request that times out there, or a download that runs out of time before the deadline, raises `deadline_exceeded` from `result` and `fetch` with the same resuming line. The build keeps running on the server. Resuming it costs nothing extra, because the server deduplicates builds and fetching the same spec again joins the running operation.
-
-## Start a build and collect it later
-
-`client.mint(spec)` starts a build and returns an `Operation` without waiting for it:
 
 ```python
 import dfo
 
-with dfo.Client() as client:
-    spec = client.search(
-        "CRS commitments from France to every recipient for agriculture"
-    ).specs[0]
-    operation = client.mint(spec, progress=False)
-
-    print(operation.status)  # pending, running, done or failed
-    print(operation.operation_id)  # op_..., or None when the server built it at once
-    data = operation.result(timeout=900)
-    print(data.rows)
+answer = dfo.search(
+    "ODA disbursements from every donor to every recipient for social infrastructure and services, 1995 to 2024"
+)
+data = answer.fetch()
+print(data)
 ```
 
-An `Operation` has:
+The progress goes to a bar on stderr in a terminal, to one live display in a notebook, and to INFO records on the `dfo` logger anywhere else, each naming the operation id, the trace id and the rows written. `progress=False` silences it for one call, and `DFO_PROGRESS=0` for the process.
 
-- `operation_id`: the `op_` id to resume it by, or None for a build the server finished inline.
-- `status`: `pending`, `running`, `done` or `failed`, as last read.
-- `progress`: a `Progress` with `rows_written` and `estimate_rows`, or None before the server reports any.
-- `done()`: polls once when the build was not done, and returns whether it is now.
-- `result(timeout=1800.0)`: waits for the build and returns its dataset.
+`fetch` polls at the pace the server asks for, held between 1 and 60 seconds, and backs off from 1 to 8 seconds when the server names none. With no `timeout` it waits until the server ends the build, which the server always does: each build has a deadline on the server, and a build whose worker stops is marked failed, which `fetch` raises.
 
-`mint` takes a `Spec`, and a spec id alone raises `invalid_argument`. It takes `layout="long"` or `layout="frame"` and `without_party_totals`. It builds the spec as given. To narrow a spec, use `fetch`.
+## Set a deadline
 
-### Resume from another process
+`timeout=` bounds the whole fetch in seconds, downloads included. When it passes, `fetch` raises `DfoTimeoutError` with the code `deadline_exceeded`, and the build carries on:
 
-Store the operation id, and `client.operation(op_id)` picks the build up in any process. Pass the `layout` and `without_party_totals` the build was started with:
+```text
+Building op_72daea81df3f067b98662314f0b9d29d48750c6afd5592aeecc058a7f68bcc9c: [--------------------] 0% 0 of about 978,349 rows
+The build is still running on the server after 10 s. The same fetch joins it if one started. [deadline_exceeded]
+Building op_72daea81df3f067b98662314f0b9d29d48750c6afd5592aeecc058a7f68bcc9c: [####################] 100% 978,349 of about 978,349 rows
+<Dataset Gross ODA disbursements to 203 recipients from 105 providers for social infrastructure and services, 1995 to 2024. Current US dollars · OECD Creditor Reporting System (CRS).
+  Source: OECD Creditor Reporting System (CRS)
+  Version: cv_20544079b69c43123a2be8d45a26747f (exact), held until 24 November 2026, not pinned
+  Rows: 978,349
+  Keep: data.save(path) · newest later: dfo.fetch(data.ref, latest=True)>
+```
 
 ```python
 import dfo
+from dfo.errors import DfoTimeoutError
 
-with dfo.Client() as client:
-    spec = client.search(
-        "CRS commitments from France to every recipient for agriculture"
-    ).specs[0]
-    operation = client.mint(spec, progress=False)
-    op_id = operation.operation_id
-
-    if op_id is None:
-        data = operation.result()
-    else:
-        # In another process, a later job, or after a DfoTimeoutError:
-        data = client.operation(op_id, layout="long").result(timeout=1800)
-    print(data.sentence)
+answer = dfo.search(
+    "ODA disbursements from every donor to every recipient for social infrastructure and services, 1995 to 2024"
+)
+try:
+    data = answer.fetch(timeout=10)
+except DfoTimeoutError as error:
+    print(error)
+    data = answer.fetch()  # joins the build the first call started
+print(data)
 ```
 
-`client.operation` raises `NotFoundError` with the code `operation_not_found` when the server holds no operation with that id. A build that failed raises the error its failure maps to, read as a refusal is: its code, its text capped in the message, the key redacted. The 202 answer to a build, every poll and `client.operation` raise `ContractError` with `contract_violation` when the operation's status is not `pending`, `running`, `done` or `failed` (pointer `/operation/status`), when the answer is for another operation id (`/operation/operation_id`), or when a failed operation gives its error a `status` that is not an integer from 400 to 599 (`/error/status`).
+The server names a build by a hash of its request, so a second identical fetch, from this process or another, joins the running build and waits for the rest of it. A build that finished returns at once.
 
-## Retries the client makes
+A fetch can run past its `timeout` by a little. When the last poll before the deadline reads the build done, the poll and each request that collects the file get one attempt of the client's own timeout, so the call returns the data. In the synchronous client, platform name resolution can also run past the bound. The asynchronous client can cancel it.
 
-The client retries a failure that can clear, twice by default (`max_retries`), and waits for the response's `Retry-After` when it gives one and the wait is at most 60 seconds and fits the deadline. A longer wait raises the refusal at once with `retry_after` set. One layer owns build retries. Every refusal of a build shares the same retries, a build the server cut off with a 504 is posted once more only, whatever that post answers, and an operation that failed retryably is resubmitted once, unless the poll at the deadline read the failure, which then raises as it is. A refused poll waits for its `Retry-After`, held to between 1 and 60 seconds, so `Retry-After: 0` cannot make the client poll without pause. A 429 during a poll waits inside the deadline without spending a retry, and so does a poll the deadline cuts off, which the poll at the deadline follows. You see an error only after these run out.
+## Stop with Ctrl-C
 
-## Async
+Ctrl-C stops the wait and leaves the build running. The `KeyboardInterrupt` carries a note saying so:
 
-`dfo.AsyncClient` has the same calls as coroutines. `await client.mint(spec)` returns a `dfo.AsyncOperation`, whose `done()` and `result()` are awaited:
+```text
+  File ".../dfo/_sync/_http/transport.py", line 875, in sleep
+    self._sleep(seconds)
+    ~~~~~~~~~~~^^^^^^^^^^
+KeyboardInterrupt
+The build keeps running on the server. Run the same fetch again to join it.
+```
+
+Run the same fetch again, in the same session or a new one, and it picks up the build where it is.
+
+## Cancel in async code
+
+In `dfo.AsyncClient`, a cancelled fetch leaves the build running too, so `asyncio.wait_for`, `asyncio.timeout` and a task group's cancellation are safe to use around it:
+
+```text
+Cancelled; the build keeps running.
+201465
+```
 
 ```python
 import asyncio
 
 import dfo
 
+QUESTION = "ODA disbursements from every donor to every recipient for economic infrastructure and services, 1995 to 2024"
+
 
 async def main() -> None:
     async with dfo.AsyncClient() as client:
-        answer = await client.search("Kenya's external debt service")
-        operation = await client.mint(answer.specs[0], progress=False)
-        data = await operation.result(timeout=900)
-        print(data.rows)
+        answer = await client.search(QUESTION)
+        try:
+            data = await asyncio.wait_for(answer.fetch(progress=False), timeout=10)
+        except TimeoutError:
+            print("Cancelled; the build keeps running.")
+            data = await answer.fetch(progress=False)
+        print(len(data))
 
 
 asyncio.run(main())
 ```
 
+## Limits
+
+The server sets the limits a build runs under, and lists them at `GET /datasets/capabilities`:
+
+```text
+100000 2000000
+```
+
+```python
+import json
+
+import dfo
+
+with dfo.Client() as client:
+    response = client.request("GET", "/datasets/capabilities")
+caps = json.loads(response.content)["caps"]
+print(caps["sync_budget_rows"], caps["async_max_rows"])
+```
+
+A build up to `sync_budget_rows` returns within its request. A larger one runs in the background, up to `async_max_rows`, and a build above that is refused with the code `over_ceiling`. Narrow the fetch with `window` or `entities`, as [Fetch and keep a dataset](datasets.md) shows.
+
+The client's own timeouts sit underneath:
+
+- `Client(timeout=30.0)` bounds one request attempt, and `max_retries=2` sets the further attempts after a failure that can clear.
+- A build request reads for up to 150 seconds within the fetch's deadline.
+- `fetch(timeout=None)`, the default, waits for the whole build, and a number of seconds bounds it.
+- `search(timeout=60.0)` bounds a search, retries included.
+
 ## Next
 
-- [Errors](errors.md): `DfoTimeoutError` and the other classes a build can raise.
-- [Datasets and versions](datasets.md): narrowing a spec so it builds within the synchronous limits.
+- [The cache](cache.md): a built table downloads once, and later fetches read it from disk.
+- [Errors](errors.md): `DfoTimeoutError` and the other errors a build can raise.

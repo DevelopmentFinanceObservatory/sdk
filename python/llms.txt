@@ -1,32 +1,33 @@
 # development-finance
 
-> Python client for the Development Finance Observatory (DFO) APIs. `dfo.search(question)` returns an `Answer` that says, in one sentence per reading, what DFO understood a plain-language question about development finance (ODA, debt, GDP and similar indicators) to mean, and `answer.fetch()` builds and downloads a versioned table as a `Dataset`. Install with `pip install development-finance`; import as `dfo`. Python 3.12 or later.
+> Python client for the Development Finance Observatory (DFO) APIs. `dfo.search(question)` returns an `Answer` that says, in Search's sentence, what DFO understood a plain-language question about development finance (ODA, debt, GDP and similar indicators) to mean; `print(answer)` shows the sentence and the next line to type. `answer.fetch()` builds and downloads a versioned table as a `Dataset`. Install with `pip install development-finance`; import as `dfo`. Python 3.12 or later.
 
-The answer holds readings and no data. `answer.fetch()` raises `dfo.IncompleteAnswerError` before any build when a part of the question has no reading, and the error message gives the line that settles it. Store `data.ref.to_json()`, and `dfo.fetch(dfo.DatasetRef.from_json(text))` returns the same versions later. A reading's index can change between searches. A digest names one rendering, so a ref whose file the server rendered again fetches with a `ref_digest_changed` warning. Every error derives from `dfo.DfoError` and carries a `code`. Subclasses group codes by the caller's next step. A request that breaks a rule the client checks fails before it is sent, with `invalid_argument` or a code such as `key_invalid`, `header_invalid`, `base_url_invalid` or `insecure_transport`.
+An answer holds readings and no data. When a part of the question has several readings, `print(answer)` and the `dfo.errors.IncompleteAnswerError` that `fetch` raises end with a `Choose:` line such as `answer.choose(0).fetch()`. The order of readings can change between searches, so a script keeps `data.ref` and leaves the index out. A table of flows leaves out group and total rows by default, so a sum counts each party once; `party_totals=True` keeps them. Columns come in reading order: year, parties, value, unit, then codes, with `stat_var` last. Every error derives from `dfo.errors.DfoError`, carries a `code`, and ends its message with `[code · trace id]`.
 
 Main calls:
 
 - `dfo.search(question, *, timeout=60.0) -> Answer`; `answer.sentence`, `answer.parts`, `answer.specs`, `answer.complete`, `answer.gaps`
-- `answer.choose(option)` or `answer.choose(part, option) -> Answer`: settle a part with several readings, or a place that matches several (the part's `options`), by index or label. It makes one Search request, and the new answer and its sentence are Search's
-- `candidate.fetch(...) -> Dataset`: one Search request for that reading alone, then the build. `part.assumptions` and `candidate.assumptions` hold what Search assumed, as `dfo.Assumption`
-- `answer.fetch(*, partial=False, strict=False, layout="long", without_party_totals=False, timeout=1800.0, progress=None) -> Dataset`
-- `dfo.fetch(spec_or_ref, *, window=None, entities=None, facets=None, layout=None, without_party_totals=None, strict=False, timeout=1800.0, progress=None) -> Dataset`
-- `Dataset`: `to_arrow()`, `to_pandas()`, `to_polars()`, `save(path)`, `ref`, `members`, `sentence`, `citation`, `complete`, `missing`, `stale`
-- `dfo.DatasetRef.from_json(text)`, `ref.to_json()`, `dfo.Spec.from_json(text)`, `spec.to_json()`
-- `dfo.open_bundle(path) -> Dataset`: a file `save` wrote, or a website bundle
-- `dfo.Client(api_key=None, base_url=None, timeout=30.0, max_retries=2, cache_dir=None, cache=True)`, a context manager with `search`, `fetch`, `mint`, `operation`, `catalogue`, `request`. `dfo.AsyncClient` mirrors it, and `dfo.configure(...)` replaces the default client
-- `client.mint(spec, *, layout="long", without_party_totals=False) -> Operation` and `client.operation("op_...", *, layout="long", without_party_totals=False) -> Operation`: `operation_id`, `status`, `progress`, `done()`, `result(timeout=1800.0)`
-- CLI: `dfo auth login [--with-token]`, `dfo auth status`, `dfo cache clear`; `dfo.login()` in a notebook
-- Environment: `DFO_API_KEY`, `DFO_PROFILE`, `DFO_CREDENTIALS_FILE`, `DFO_CACHE_DIR`, `DFO_OFFLINE=1`, `DFO_PROGRESS=0`
+- `answer.choose(option, *, part=None) -> Answer`: settle a part with several readings, or a place that matches several, by index or label. One Search request
+- `answer.fetch(*, partial=False, strict=False, layout="long", party_totals=False, timeout=None, progress=None) -> Dataset`. No deadline unless `timeout=`; Ctrl-C leaves the build running and the same fetch joins it
+- `dfo.fetch(spec_or_ref, *, window=None, entities=None, facets=None, layout=None, party_totals=None, latest=False, strict=False, timeout=None, progress=None) -> Dataset`. `window` is `(start, end)`, `"latest"` or `"all"`; `entities` maps a spec's roles, listed in `spec.definition["identity"]["entities"]`, to place codes
+- `Dataset`: `to_pandas()`, `to_polars()`, `to_arrow()`, `pyarrow.table(data)`, `len(data)`, `save(path)`, `ref`, `members`, `sentence`, `citation`, `complete`, `missing`, `stale`
+- `dfo.load(path) -> Dataset`: a file `data.save` wrote, or a website bundle
+- `dfo.fetch(data.ref)` returns the same versions; `dfo.fetch(data.ref, latest=True)` the newest, and `new.ref != old.ref` tells whether the data changed
+- `answer.to_json()` and `dfo.Answer.from_json(text, client=None)`: keep or share an answer and choose later
+- `dfo.lookup.resolve(*names)`, `dfo.lookup.node(dcid)`, `dfo.lookup.code(code)`, `dfo.lookup.catalogue(place=None)`; `client.lookup` on a client
+- `dfo.Client(*, api_key=None, base_url=None, timeout=30.0, max_retries=2, cache_dir=None, cache=True, headers=None, header_provider=None)`, a context manager with `search`, `fetch` and `lookup`. `dfo.AsyncClient` mirrors it, and `dfo.configure(...)` replaces the default client
+- Modules: `dfo.errors` (errors and warnings), `dfo.types` (parts, candidates, gaps, members), `dfo.lookup`, `dfo.auth`
+- CLI: `dfo auth login [--with-token]`, `dfo auth status`, `dfo cache clear`
+- Environment: `DFO_BASE_URL`, `DFO_API_KEY`, `DFO_PROFILE`, `DFO_CREDENTIALS_FILE`, `DFO_CACHE_DIR`, `DFO_OFFLINE=1`, `DFO_PROGRESS=0`
 
 ## Docs
 
-- [README and quickstart](README.md): install, search, fetch, choose, and the ref round trip
-- [Answers and choices](docs/answers.md): parts, candidates, `choose`, `partial=True`, gap kinds, `SearchWarning`, declined answers
-- [Datasets and versions](docs/datasets.md): narrowing with `window`, `entities` and `facets`, layouts, `without_party_totals`, conversions, refs, retention, `save` and `open_bundle`
-- [Long builds and operations](docs/long-builds.md): progress, deadlines, `client.mint`, resuming with `client.operation`
-- [Errors](docs/errors.md): every error class, the server code mapping, the client codes, and warnings
-- [Keys and credentials](docs/keys.md): key lookup order, `dfo auth login`, the credentials file, `ApiKey`
+- [README](README.md): install, the first five lines, and a recipe per task: choose, other years or places, totals, save and load, refresh, share, place codes
+- [Answers and choices](docs/answers.md): parts, `choose`, `partial=True`, `SearchWarning` and `strict`, `to_json`, declined answers, gap kinds
+- [Datasets and versions](docs/datasets.md): `window`, `entities`, `facets`, layouts, `party_totals`, conversions, refs, retention, `save` and `load`
+- [Long builds](docs/long-builds.md): progress, deadlines, Ctrl-C
+- [Errors](docs/errors.md): every error class and code, and warnings
+- [Keys and credentials](docs/keys.md): key lookup order, `dfo auth login`, the credentials file
 - [The cache](docs/cache.md): layout, `DFO_CACHE_DIR`, `DFO_OFFLINE`, stale reads
 
 ## Optional

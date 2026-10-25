@@ -1,32 +1,27 @@
-# Datasets and versions
+# Fetch and keep a dataset
 
-`fetch` returns a `Dataset`, a table with its provenance that holds one exact version of each reading. DFO data changes as sources publish, so `fetch` settles "latest" to one version when it builds, and the dataset keeps that version. `data.ref` records it, and fetching the ref later returns the same rows.
+`dfo.fetch` builds a table and returns a `Dataset`: the rows, Search's sentence for them, the citation, and a ref that names the exact version you received. This page covers what comes after the search: narrowing a fetch, summing a column, moving the table into pandas, polars or Arrow, and keeping it so that a later run can tell whether the data changed.
 
 Each example on this page runs on its own.
 
-## Fetch a spec
+## Fetch a spec, narrowed
 
-`answer.fetch()` builds every reading in an answer. `dfo.fetch(spec)` builds one spec's latest version, and takes the spec from an answer, a candidate, or a file `Spec.to_json` wrote:
+`answer.fetch()` builds every reading in an answer. `dfo.fetch(spec)` builds one of them, and narrows it on the server first, so a fetch of three years waits for three years of rows:
 
-```python
-import dfo
-
-answer = dfo.search("ODA to Ethiopia from each donor, 2015 to 2022")
-spec = answer.specs[0]
-
-data = dfo.fetch(spec)
-print(data.rows)
+```text
+<Dataset Gross disbursements to Ethiopia from Germany and France for official development assistance, 2020 to 2022. Current US dollars · OECD DAC2a.
+  Source: OECD DAC2A
+  Version: cv_10b015cf283096956338e98b97024857 (exact), held until 19 November 2026, not pinned
+  Rows: 6
+  Keep: data.save(path) · newest later: dfo.fetch(data.ref, latest=True)>
+   time_period financingProvider_label        value
+0         2020                 Germany  447440917.0
+1         2021                 Germany  175013360.0
+2         2022                 Germany  252521505.0
+3         2020                  France   83268048.0
+4         2021                  France   55879173.0
+5         2022                  France  103160459.0
 ```
-
-`fetch` downloads the file through a signed URL and checks it against the digest its manifest names before it returns. A download stops at the artifact's size in the manifest or at 2 GiB, whichever is smaller. It then decodes the Parquet file. Bytes that do not decode as Parquet raise `ContractError` with `unexpected_response`. A file that decodes but lacks a `time_period` or numeric `value` column, repeats a column name, or holds no rows where the manifest counts some raises `contract_violation`. In both cases the cache drops the file. A spec id alone does not build: `fetch` takes a `Spec` or a `DatasetRef`, and anything else raises `InvalidRequestError` with `invalid_argument` before any request. A `Dataset` holds no client, and its conversions run offline. It pickles for transfer between processes that run the same version of `development-finance`, as `multiprocessing` does. Keep data with `save`, since another version may fail to load a pickle or load it wrong.
-
-### Narrow before the build
-
-Three arguments narrow a spec on the server, so a fetch of four years waits for four years of rows:
-
-- `window`: `"all"`, `"latest"`, or a `(start_year, end_year)` pair.
-- `entities`: roles rebound to place dcids, as `{"origin": ["country/DEU"]}`. The roles you name change and the spec's other roles keep their places; a role bound to None drops out.
-- `facets`: the `provenance`, `measurementMethod` or `unit` axis bound to a ref; None binds the facets that declare no value on that axis.
 
 ```python
 import dfo
@@ -39,319 +34,180 @@ data = dfo.fetch(
     window=(2020, 2022),
     entities={"origin": ["country/DEU", "country/FRA"]},
 )
-print(data.sentence)
-# Gross disbursements to Ethiopia from Germany and France for official development assistance, 2020 to 2022. ...
+print(data)
+print(data.to_pandas()[["time_period", "financingProvider_label", "value"]])
 ```
 
-Rebinding `origin` keeps Ethiopia as the recipient, since the client posts the spec's own roles with `origin` replaced. The roles a spec binds are under `spec.definition["identity"]["entities"]`.
+Three arguments narrow a spec:
 
-A narrowed spec is a new reading with its own `spec_id`, which `data.members[0].spec` holds.
+- `window` takes `"all"`, `"latest"`, or a `(start_year, end_year)` pair.
+- `entities` binds roles to place dcids. The roles you name change, the spec's other roles keep their places, and a role set to None drops out. `spec.definition["identity"]["entities"]` lists the roles a spec binds. This spec binds only `destination`, so `origin` adds the two donors and Ethiopia stays the recipient.
+- `facets` binds the `provenance`, `measurementMethod` or `unit` axis to a ref. None picks the facets that declare no value on that axis.
 
-A narrowing can leave no data. The fetch then returns a `Dataset` with no rows and the usual columns, and its sentence is Search's no-data sentence for the narrowed reading. The server's `empty_result` warning arrives as a `DataWarning`:
+A narrowed fetch is a reading of its own, with its own `spec_id` in `data.members[0].spec`. A narrowing that leaves no rows returns a dataset with zero rows and the usual columns, and issues a `DataWarning` with the code `empty_result`.
+
+## Sum a column
+
+A provider or recipient column in DFO data can hold group totals beside their members: "DAC countries" sits in the same column as Germany. `fetch` leaves those rows out, so a sum over `value` counts each donor once. `party_totals=True` keeps them, for when you want the published group figures:
 
 ```text
-<Dataset No data for official development assistance gross disbursements for basic health care (standard grant, core support to non-governmental organisations, other private bodies, public-private partnerships, and research institutes). Try a different place, time period, or indicator. The data covers only 1995 to 2024.
-  Source: OECD Creditor Reporting System (CRS)
-  Version: cv_b1a6fed0a63c26c17d344a2cca33e448
-  Rows: 0
-  Held until 11 November 2026, not pinned>
+95 rows, 5.55 billion dollars
+110 rows, 23.84 billion dollars
+   financingProvider_label         value
+14   official donors (DAC)  5.231667e+09
+9            DAC countries  2.756195e+09
+12     multilaterals (DAC)  2.272375e+09
 ```
 
 ```python
 import dfo
 
-spec = dfo.search(
-    "ODA disbursements from Germany to Nigeria for basic health care"
-).specs[0]
+spec = dfo.search("ODA to Ethiopia from each donor in 2022").specs[0]
 
-empty = dfo.fetch(spec, window=(1900, 1901))
-print(empty)
-print(empty.rows, empty.to_arrow().schema.names[:4])
+donors = dfo.fetch(spec).to_pandas()
+with_totals = dfo.fetch(spec, party_totals=True).to_pandas()
+
+print(f"{len(donors)} rows, {donors['value'].sum() / 1e9:.2f} billion dollars")
+print(f"{len(with_totals)} rows, {with_totals['value'].sum() / 1e9:.2f} billion dollars")
+
+totals = with_totals[~with_totals["financingProvider"].isin(donors["financingProvider"])]
+print(totals.nlargest(3, "value")[["financingProvider_label", "value"]])
 ```
 
-An empty member stacks beside the members that have rows and adds none.
+The 15 extra rows are group totals worth 18.3 billion dollars, and each one counts donors that the other 95 rows already hold. The cut applies to the party roles a spec leaves open, and a role the spec binds keeps what it binds. `answer.fetch(party_totals=True)` keeps the totals for every reading in an answer.
 
-### The two layouts
+## Read the columns
 
-The default `layout="long"` gives the labelled long table, with one row per observation, each code beside its label (`financingProvider` and `financingProvider_label`), then `time_period`, `value` and the unit. `layout="frame"` gives the pipeline frame, with codes only:
+Every table leads with the columns a reader looks at, in this order, then the codes and the rest, with `stat_var` last:
 
-```python
-import dfo
+1. `time_period`
+1. the provider, as `financingProvider_label`
+1. the recipient, as `financingRecipient_label`
+1. the place a measure is about, as `observationAbout_label`
+1. the CRS purpose, as `crsPurpose_label`
+1. `value`
+1. the unit, as `unit_label`
+1. the flow or aid type, as `crsTypeOfFlow_label` or `dac2aAidType_label`
+1. the source, as `provenance_label`
 
-spec = dfo.search(
-    "ODA disbursements from Germany to Nigeria for basic health care"
-).specs[0]
-
-frame = dfo.fetch(spec, layout="frame")
-print(frame.layout_version)  # frame
-print(frame.to_arrow().schema.names[:5])
-```
-
-The frame holds one reading. `layout="frame"` on an answer with several readings raises `InvalidRequestError`, so fetch each spec on its own.
-
-### Leave out party totals
-
-A provider or recipient column can hold a total beside its members. "DAC countries" sits in the same column as Germany, so summing `value` counts a donor more than once. For Ethiopia in 2022 the table has 110 rows that sum to 23.8 billion dollars, and 95 rows that sum to 5.55 billion without the totals.
-
-`without_party_totals=True` builds the dataset without the rows of parties the code index declares totals, on each party role the spec leaves open. It takes the same place as `layout` on `answer.fetch`, `dfo.fetch`, `client.mint` and `client.operation`:
+A table without a column skips its slot. Where a table has no label column, the code column takes its place. A dataset of several readings adds a `part` column first, naming the part of the question each row answers.
 
 ```text
-110 95
-23838279487.0 5553373816.0
-['official', 'private']
+['time_period', 'financingProvider_label', 'financingRecipient_label', 'value', 'unit_label', 'dac2aAidType_label', 'provenance_label', 'financingProvider', 'financingProvider_kind', 'financingRecipient', 'financingRecipient_kind', 'dac2aAidType', 'unit', 'currency', 'price_basis', 'base_year', 'measurementMethod', 'measurementMethod_label', 'provenance', 'stat_var']
 ```
 
 ```python
-import warnings
-
 import dfo
 
-warnings.simplefilter("ignore", dfo.SearchWarning)
-answer = dfo.search("top 5 donors to Ethiopia in 2022")
-
-whole = answer.fetch()
-cut = answer.fetch(without_party_totals=True)
-
-print(whole.rows, cut.rows)
-print(whole.to_pandas()["value"].sum(), cut.to_pandas()["value"].sum())
-print(sorted(cut.to_pandas()["financingProvider_kind"].unique()))
+data = dfo.search("ODA to Ethiopia from each donor in 2022").fetch()
+print(data.to_arrow().schema.names)
 ```
 
-The cut has three limits:
-
-- A party the spec's identity binds stays on its role. Asking for the DAC total by name returns it.
-- A role where every row is a total keeps all its rows, so an answer that is a single total reads the same with or without the flag.
-- A row the code index does not mark as a total stays. Some rows repeat another party's figures without carrying that mark, such as the IMF's trust funds in the tables that list them as parties. The remaining rows are not promised to sum to the published total.
-
-A ref records the cut. `data.ref` of a cut dataset carries `without_party_totals` in each member's rendering, a plain ref is unchanged, and `dfo.fetch(ref)` returns the cut. Naming the other value raises `InvalidRequestError`, as a different `layout` does.
-
-## Use the data
-
-```python
-import duckdb
-
-import dfo
-
-data = dfo.search(
-    "ODA disbursements from Germany to Nigeria for basic health care"
-).fetch()
-
-arrow_table = data.to_arrow()  # pyarrow.Table, provenance in the schema metadata
-df = data.to_pandas()  # needs the pandas extra; provenance in df.attrs
-pl = data.to_polars()  # needs the polars extra
-
-print(
-    duckdb.sql(
-        "select time_period, value from arrow_table order by time_period desc limit 3"
-    )
-)
-```
-
-`to_pandas()` copies the sentence, citation, sources, licence and ref into `df.attrs`. A merge or a concat drops `attrs`, and the provenance stays on the dataset. The dataset also implements the Arrow PyCapsule stream, so any library that reads `__arrow_c_stream__` takes it directly, such as `polars.DataFrame(data)`. The DuckDB query above needs `pip install duckdb`.
-
-A missing extra raises `ImportError` with the install line, such as `pip install 'development-finance[pandas]'`.
-
-### What a dataset carries
-
-| Attribute                                           | Holds                                                                                          |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `sentence`                                          | What the data shows, in Search's words                                                         |
-| `members`                                           | One `Member` per reading: `spec`, `content_version`, `sentence`, `citation`, `digest`, `parts` |
-| `ref`                                               | The `DatasetRef` to fetch these versions again                                                 |
-| `citation`, `sources`, `licence`                    | How to cite the data, and the sources behind it                                                |
-| `rows`                                              | The row count; `len(data)` gives the same                                                      |
-| `warnings`                                          | The datasets surface's warnings about the data, as `Notice` objects                            |
-| `departures`, `requested_operations`, `assumptions` | How the readings differ from the question, and what Search assumed for them                    |
-| `complete`, `missing`                               | Whether every part has a member, and the gaps a partial fetch left out                         |
-| `held_until`, `pinned`                              | How long the server keeps the versions                                                         |
-| `stale`                                             | Whether the data came from the cache without asking the server                                 |
-| `layout_version`                                    | The table's column set: the long layout's version, or `frame`                                  |
-
-A dataset of several readings stacks them into one long table with a leading `part` column, holding the question's words for each row's reading. Columns one reading lacks are null in its rows.
-
-Warnings the server attaches to the data arrive as `DataWarning`, with a `code` and `severity`. `strict=True` raises the first one instead. A warning belongs to the version, so it is issued on every fetch of that version, a read from the cache included. The message says that coverage fell short and may not name the place that has no data. Compare the places in the table with the ones you asked for, and silence a warning you have read with `warnings.filterwarnings("ignore", category=dfo.DataWarning)`.
-
-### Line up flows with indicators
-
-A flow set names its places by role: `financingProvider` and `financingRecipient`, each beside `_label` and `_kind` columns. A World Development Indicators set names its place `observationAbout`. To put a flow beside an indicator, match the role column against `observationAbout` and `time_period`:
+## Convert to pandas, polars or Arrow
 
 ```text
-   time_period  value_oda     value_gdp
-0         2015   111870.0  4.930267e+11
-1         2016    70773.0  4.046491e+11
-2         2020    41880.0  5.985868e+11
+OECD Creditor Reporting System (CRS)
+30 30
 ```
 
 ```python
-import dfo
-
-oda = dfo.search(
-    "ODA disbursements from Germany to Nigeria for basic health care"
-).fetch()
-gdp = dfo.search("GDP of Nigeria").fetch()
-
-merged = oda.to_pandas().merge(
-    gdp.to_pandas(),
-    left_on=["financingRecipient", "time_period"],
-    right_on=["observationAbout", "time_period"],
-    suffixes=("_oda", "_gdp"),
-)
-print(merged[["time_period", "value_oda", "value_gdp"]].head())
-```
-
-A column that is null in every row, such as `base_year` on a series in current prices, marks a dimension that does not apply to the data. Read the `unit_label` of each side before you divide one by the other.
-
-## Keep a result
-
-`data.ref` is a short JSON record of each reading's spec, version and file digest. Save it beside your analysis:
-
-```python
-from pathlib import Path
+import pyarrow as pa
 
 import dfo
 
-data = dfo.search(
-    "ODA disbursements from Germany to Nigeria for basic health care"
-).fetch()
-Path("health.ref.json").write_text(data.ref.to_json())
+data = dfo.search("ODA disbursements from Germany to Nigeria for basic health care").fetch()
+
+frame = data.to_pandas()  # needs development-finance[pandas]
+print(frame.attrs["citation"])
+
+lazy = data.to_polars().lazy()  # needs development-finance[polars]
+table = pa.table(data)  # any library that reads the Arrow C stream
+print(len(data), table.num_rows)
 ```
 
-Months later, the ref returns the same rows:
+`to_pandas()` puts the provenance in `frame.attrs`: `sentence`, `citation`, `sources`, `licence`, `ref` as JSON, `complete`, and `missing`. A merge or a concat drops `attrs`, and the dataset keeps them. `to_arrow()` returns a `pyarrow.Table` with the provenance in its schema metadata. `pa.table(data)`, `polars.from_arrow(data)` and DuckDB read the dataset through `__arrow_c_stream__`. `len(data)` is the row count. A dataset holds no Python rows, so `for row in data` and `data["value"]` raise `TypeError` naming the conversions.
 
-```python
-from pathlib import Path
+## Keep it, and check later for new data
 
-import dfo
-
-ref = dfo.DatasetRef.from_json(Path("health.ref.json").read_text())
-data = dfo.fetch(ref)
-print(data.members[0].content_version)
-```
-
-A ref fetch takes no narrowing and returns the layout and rendering the ref holds. `window`, `entities`, `facets`, another `layout` or another `without_party_totals` raise `InvalidRequestError`. The format is the same in every DFO client, so a ref saved from Python loads in TypeScript. `DatasetRef.from_json` raises `FormatError`, a `ValueError`, when the JSON breaks the format, with a `reason` and a JSON Pointer to the bad value.
-
-A `Spec` has the same pair, for keeping a reading without a version: `spec.to_json()` and `dfo.Spec.from_json(text)`. Fetching a stored spec builds its latest version.
-
-### Where a stored version comes from
-
-`fetch(ref)` looks for each version in this order:
-
-1. the local cache, by digest;
-1. the version's stored file on the server;
-1. the server's re-render of the version from its stored frame;
-1. a fresh build, accepted when it returns the same version;
-1. otherwise `VersionUnavailableError`.
-
-A digest names one rendering of a version. The server can render a version's rows again to a file with another digest, and steps 1 to 3 then find no file with the ref's digest. When step 4 returns the ref's version, `fetch` returns the data with a `DfoWarning` coded `ref_digest_changed`, which names both digests, and `data.ref` carries the rebuilt file's digest. Save that ref to stop the warning. `strict=True` leaves it a warning, because the data is the version the ref names. When the stored version lists the ref's digest only under another rendering, the ref and its file disagree, and `fetch` raises `FormatError` with `format_invalid` at `/members/<i>/artifact/rendering` before it downloads anything.
-
-The next example changes the digest in a saved ref to show the warning:
+`data.save(path)` writes one Parquet file that carries the provenance and the ref. `dfo.load(path)` reads it back without the network. `dfo.fetch(saved.ref, latest=True)` builds the newest version of the same readings, and comparing the two refs tells you whether anything changed:
 
 ```text
-DfoWarning ref_digest_changed
-spec_774d6c001a6250aa67ca676ab067895e at cv_b92d94774702c7f05f2075d0b03dd756 was rebuilt as sha256:421efacc2dc010af38112a087b0b49ff5539f61d2afd12a88272b27e99b5f5db, not the ref's sha256:0000000000000000000000000000000000000000000000000000000000000000; the version is the same, and dataset.ref names the rebuilt file
+True
+DatasetRef(1 member: spec_7778beed72f8433bb7fde4293acfd175 at cv_c17d6a131cb4556543b91556e46814e9, exact)
 ```
 
 ```python
-import json
-import warnings
-
 import dfo
 
-data = dfo.search(
-    "ODA disbursements from Germany to Nigeria for basic health care"
-).fetch()
+data = dfo.search("ODA to Ethiopia from each donor in 2022").fetch()
+data.save("ethiopia.parquet")
 
-saved = json.loads(data.ref.to_json())
-saved["members"][0]["artifact"]["digest"] = "sha256:" + "0" * 64
+saved = dfo.load("ethiopia.parquet")
+print(saved.ref == data.ref)
 
-with warnings.catch_warnings(record=True) as caught:
-    warnings.simplefilter("always")
-    again = dfo.fetch(dfo.DatasetRef.from_json(json.dumps(saved)))
-
-for item in caught:
-    print(item.category.__name__, item.message.code)
-    print(item.message)
+newest = dfo.fetch(saved.ref, latest=True)
+if newest.ref != saved.ref:
+    newest.save("ethiopia.parquet")
+print(newest.ref)
 ```
 
-The error of step 5 names the newest version in its message and in `newest_version`: the version the fresh build returned, or else the newest version in the ref's rendering that the server lists, or None when it lists none. That version can be the ref's own, when the server lists it as the newest. The lookup reads the server's version list newest first, 100 to a page, for at most 20 pages. It considers only versions in the ref's own rendering, plain for a plain ref and party-totals cut for a cut ref, so a groupby collapse is ignored. A page cursor the walk has seen before raises `ContractError` with `contract_violation`. Any refusal of that lookup other than `NotFoundError` raises in its place. Fetch the spec for it, and save the new ref:
+Two refs are equal when they name the same specs at the same versions in the same form, so `newest.ref == saved.ref` means the server holds no newer data. `dfo.fetch(saved.ref)` without `latest` returns the exact versions the ref names, from the cache when it holds them. A ref also travels on its own as JSON, through `data.ref.to_json()` and `dfo.DatasetRef.from_json(text)`, in a format the TypeScript client reads too.
+
+Compare refs, and leave the version strings alone. A table with party totals left out is a cut of the server's plain build, and the cut has a version id of its own. The same data therefore carries two ids:
+
+```text
+cv_c17d6a131cb4556543b91556e46814e9
+cv_534dd4c2bf9bdafc837d51a3ba4bcf3e
+```
 
 ```python
-from pathlib import Path
-
 import dfo
 
-ref = dfo.DatasetRef.from_json(Path("health.ref.json").read_text())
+answer = dfo.search("ODA to Ethiopia from each donor in 2022")
+cut = answer.fetch()
+plain = answer.fetch(party_totals=True)
+print(cut.members[0].content_version)
+print(plain.members[0].content_version)
+```
+
+`VersionUnavailableError.newest_version` names the newest plain build. A ref whose member is a cut therefore names a version that differs from `newest_version` even when no new data exists.
+
+### When a version is gone
+
+The server keeps a version's file for 30 days, then rebuilds it from stored data where it can. `data.held_until` gives the earliest date any member can still be fetched without being pinned, and `data.pinned` is True when every member is kept without a limit. The client's cache keeps its own copy, so a version you fetched once loads from disk. When neither can supply a version, `dfo.fetch(ref)` raises `VersionUnavailableError`. Fetch the newest version and keep that:
+
+```text
+95
+```
+
+```python
+import dfo
+from dfo.errors import VersionUnavailableError
+
+saved = dfo.load("ethiopia.parquet")
 try:
-    data = dfo.fetch(ref)
-except dfo.VersionUnavailableError as error:
-    print(error.newest_version)
-    data = dfo.fetch(ref.members[0].spec)
-    Path("health.ref.json").write_text(data.ref.to_json())
+    data = dfo.fetch(saved.ref)
+except VersionUnavailableError:
+    data = dfo.fetch(saved.ref, latest=True)
+    data.save("ethiopia.parquet")
+print(len(data))
 ```
 
-A version the server never built raises `NotFoundError` at once, with the code `snapshot_not_found`.
+## What a dataset holds
 
-### Retention
+- `sentence`: what the data shows, in Search's words.
+- `members`: one per reading, each with its `spec`, `content_version` and `citation`.
+- `ref`: the exact versions, to fetch the same rows again.
+- `citation`, `sources` and `licence`: how to cite the data and under which terms.
+- `warnings`, `departures`, `requested_operations` and `assumptions`: how the data differs from the question and what Search assumed.
+- `complete` and `missing`: whether every part of the question has a member, and the parts a partial fetch left out.
+- `held_until` and `pinned`: how long the server keeps the versions.
+- `stale`: True when the rows came from the cache under `DFO_OFFLINE=1`.
+- `layout_version`: the column set, or `frame` for the pipeline frame that `layout="frame"` returns for one reading.
 
-The server keeps a version's file for 30 days, and after that rebuilds it from stored data where it can. `held_until` is the earliest date any member can still be fetched without being pinned, and None when the server does not say. `pinned` is True when every member is kept without a time limit. The display shows both, as "Held until 18 November 2026, not pinned". The client's own cache holds a copy too, so a version you fetched once loads without the server.
-
-## Save and open a file
-
-`data.save(path)` writes one Parquet file whose metadata carries the provenance and the ref. `dfo.open_bundle(path)` reads it back into a dataset with the same table, provenance and ref, without the network:
-
-```python
-import dfo
-
-data = dfo.search(
-    "ODA disbursements from Germany to Nigeria for basic health care"
-).fetch()
-data.save("health.parquet")
-
-opened = dfo.open_bundle("health.parquet")
-print(opened.sentence == data.sentence, opened.ref == data.ref)  # True True
-```
-
-`open_bundle` also reads a bundle downloaded from the website: the ZIP, the folder it extracts to, or its `datapackage.json` or data file. It types the CSV or XLSX columns from `datapackage.json` and checks each file's hash before it reads the data. Every resource that names a file needs a `hash` written as `sha256:` and 64 lower-case hex digits. The data table is the resource whose `name` equals the descriptor's own `name`, so a descriptor written by hand names its one table like the package. An XLSX bundle needs the `xlsx` extra, and a cell holding `inf` or `nan` reads as null, because openpyxl writes no value for it.
-
-## `open_bundle` limits
-
-`dfo.open_bundle(path, *, limits=dfo.BundleLimits())` streams the ZIP and its resources. `BundleLimits` is immutable and keyword-only:
-
-<!-- docs-check: skip: opens a website bundle no example writes -->
-```python
-limits = dfo.BundleLimits(
-    max_descriptor_bytes=1 * 1024**2,
-    max_zip_entries=256,
-    max_resources=128,
-    max_archive_bytes=512 * 1024**2,
-    max_resource_bytes=256 * 1024**2,
-    max_total_bytes=512 * 1024**2,
-    max_xlsx_entries=128,
-    max_xlsx_expanded_bytes=32 * 1024**2,
-    max_xlsx_rows=100_000,
-    max_xlsx_cells=1_000_000,
-)
-opened = dfo.open_bundle("health.zip", limits=limits)
-```
-
-The descriptor, every resource, and the aggregate are checked against bytes actually read. ZIP entry count is checked after Python reads the ZIP central directory. Services that accept untrusted uploads should use a much smaller `max_archive_bytes` and an isolated worker with CPU and memory limits.
-
-For an XLSX resource, `max_xlsx_entries` and `max_xlsx_expanded_bytes` check the inner ZIP's public entry metadata before `openpyxl` opens the workbook. The expanded-byte value is the ZIP entries' declared uncompressed size. `max_xlsx_rows` limits data rows, and `max_xlsx_cells` limits header and data cells that the reader visits before it retains another row. These limits reduce the workbook work, but do not provide hard memory or CPU guarantees for CSV conversion or XLSX parsing.
-
-It raises `BundleError`, a `ValueError`, with a `reason`:
-
-- `not_a_bundle`: a Parquet file without a saved dataset's provenance.
-- `no_descriptor`: a CSV or XLSX with no `datapackage.json` beside it. Download the whole bundle, or fetch the dataset with `dfo.fetch`.
-- `no_data_resource`: a descriptor with no resource named like the package.
-- `missing_file`: a file the descriptor lists and the bundle lacks.
-- `hash_mismatch`: a file whose bytes differ from its hash. Download the bundle again.
-- `resource_limit`: a bundle exceeded a `BundleLimits` bound.
-
-`open_bundle` raises `FormatError` for a descriptor that is not a JSON object, lists a file outside the bundle by an absolute path or one that climbs out with `..`, or lists a file without a `sha256:` hash. Those checks run before any file is read. It raises the same error for data that does not fit the columns the descriptor types, and for a saved dataset whose provenance is damaged.
-
-A website bundle opened from a folder has no members, because the folder names no stored file, and reading its `ref` raises `ValueError`. Open the ZIP to keep them.
+`dfo.load` also opens a bundle downloaded from the website: the ZIP, the folder it extracts to, or its `datapackage.json`. It checks each file against its hash before it reads the data, and raises `dfo.errors.BundleError` when a file is missing or its bytes differ.
 
 ## Next
 
-- [Long builds and operations](long-builds.md): what `fetch` does while a large table builds.
-- [The cache](cache.md): where downloads go, and reading refs offline.
+- [Wait for a large build](long-builds.md): progress, deadlines and Ctrl-C while a big table builds.
+- [The cache](cache.md): what the client keeps on disk, and working offline.
