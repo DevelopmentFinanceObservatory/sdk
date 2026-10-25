@@ -19,7 +19,7 @@ from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 from typing import Any, override
 
-from dfo._core.text import printable
+from dfo._core.text import printable, single_line
 from dfo._core.types import Gap
 from dfo._generated.error_map import ClientErrorCode
 from dfo._generated.wire import Alternative, ProblemIssue
@@ -97,10 +97,12 @@ def message_of(error: BaseException, /) -> str:
 
 def _with_suffix(message: str, labels: list[str]) -> str:
     """`message` with the bracket of `labels` after it: on its last line, or on a
-    line of its own when the message has several."""
+    line of its own when the message has several. Each label is shown on one line
+    without control characters, since a code or trace id can be server text."""
     if not labels:
         return message
-    return f"{message}{'\n' if '\n' in message else ' '}[{' · '.join(labels)}]"
+    shown = " · ".join(single_line(label) for label in labels)
+    return f"{message}{'\n' if '\n' in message else ' '}[{shown}]"
 
 
 class InvalidRequestError(DfoError):

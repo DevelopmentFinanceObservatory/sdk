@@ -8,7 +8,7 @@ import { describing } from "../src/core/trace.ts";
 import { DataWarning, DfoWarning } from "../src/core/warnings.ts";
 import { Dataset } from "../src/datasets/dataset.ts";
 import { RawResponse, Transport } from "../src/http/transport.ts";
-import { answerFromBody, SearchWarning } from "../src/search/answer.ts";
+import { Answer, answerFromBody, SearchWarning } from "../src/search/answer.ts";
 import { NO_EXCHANGES, replay, scenarioBytes, scenarios } from "./replay.ts";
 
 const SPEC_ID = `spec_${"3f1a".repeat(8)}`;
@@ -145,3 +145,104 @@ for (const [name, build, message] of [
     assert.equal(String(value), `${value.name}: ${message}`);
   });
 }
+
+// Server text that would steer a terminal or start a line of its own: an ESC sequence that
+// clears the screen, the one-byte C1 control sequence introducer and a line break.
+const TAINT = "x\u001b[2J\u009by\nz";
+// A control that may not reach a display: any C0 control but the display's own line feed,
+// DEL and the C1 controls.
+// eslint-disable-next-line no-control-regex -- the pattern names the controls it matches
+const STEERING = /[\x00-\x09\x0b-\x1f\x7f-\x9f]/;
+
+// The members of a Search response whose text an answer shows.
+const SHOWN_MEMBERS = new Set(["rendered_sentence", "text", "label", "message", "reason"]);
+
+/** `body` with `taint` appended to each string an answer shows. */
+function tainted(body: unknown, taint: string): unknown {
+  if (Array.isArray(body)) return body.map((item) => tainted(item, taint));
+  if (body === null || typeof body !== "object") return body;
+  return Object.fromEntries(
+    Object.entries(body).map(([key, value]) => [
+      key,
+      typeof value === "string" && SHOWN_MEMBERS.has(key)
+        ? `${value}${taint}`
+        : tainted(value, taint),
+    ]),
+  );
+}
+
+const SCENARIOS = await scenarios();
+const answerClient = clientOver(replay(NO_EXCHANGES).transport);
+
+/** The answer a recorded scenario's first response gives, with `taint` in its shown text. */
+const answerOf = (name: string) => (taint: string) =>
+  answerFromBody(
+    tainted(SCENARIOS.find((record) => record.name === name)!.exchanges[0]!.response.json, taint),
+    { transport: replay(NO_EXCHANGES).transport },
+    null,
+  );
+
+const DATASET_BYTES = await scenarioBytes("answer-definite-fetch.parquet");
+
+/** A dataset with `taint` in its sentence, source, spec id and version. */
+const datasetOf = (taint: string) =>
+  new Dataset(
+    [
+      {
+        parts: [],
+        spec: { spec_id: `${SPEC_ID}${taint}`, definition: {} },
+        sentence: `Germany's gross ODA disbursements to Nigeria.${taint}`,
+        contentVersion: `${VERSION}${taint}`,
+        manifest: { citation: { text: "", sources: [{ ref: "oecd", label: `OECD${taint}` }] } },
+        digest: "sha256:offline",
+        rendering: { format: "parquet", bundle: false },
+        data: DATASET_BYTES,
+      },
+    ],
+    { layout: "long" },
+  );
+
+// Each row builds an object whose display shows server text with `taint` in it. The empty
+// taint builds the clean twin, whose lines the tainted display must keep.
+const TAINTED_ROWS: [string, (taint: string) => { toString(): string }][] = [
+  ["a definite answer", answerOf("answer-definite-fetch")],
+  [
+    "a revived definite answer",
+    (taint) => Answer.fromJSON(answerOf("answer-definite-fetch")(taint).toJSON(), answerClient),
+  ],
+  ["an answer awaiting a choice", answerOf("answer-candidates-choose-fetch")],
+  ["a partly answered answer", answerOf("answer-mixed-fetch-partial")],
+  ["a declined answer", answerOf("answer-declined")],
+  ["a dataset", datasetOf],
+  ["a dataset ref", (taint) => datasetOf(taint).ref],
+  [
+    "a raw response",
+    // A header value holds no line break, so the response's taint stops at the controls.
+    (taint) =>
+      new RawResponse(
+        200,
+        new Headers({ "content-type": `application/json${taint.replace("\n", " ")}` }),
+        new Uint8Array([123, 125]),
+      ),
+  ],
+];
+
+for (const [name, build] of TAINTED_ROWS) {
+  test(`${name} shows server text without terminal controls or line breaks of its own`, () => {
+    const lines = String(build("")).split("\n").length;
+    const value = build(TAINT);
+    for (const text of [String(value), inspect(value)]) {
+      assert.doesNotMatch(text, STEERING);
+      // What the display leaves of the taint: the controls dropped, the line break a space.
+      assert.ok(text.includes("x[2Jy z"), text);
+      assert.equal(text.split("\n").length, lines, text);
+    }
+  });
+}
+
+test("an answer and a dataset keep the server text their display cleans", () => {
+  assert.ok(answerOf("answer-definite-fetch")(TAINT).sentence?.endsWith(TAINT));
+  const data = datasetOf(TAINT);
+  assert.ok(data.sentence.endsWith(TAINT));
+  assert.ok(data.ref.members[0]!.contentVersion.endsWith(TAINT));
+});

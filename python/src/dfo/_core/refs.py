@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Self, override
 
+from dfo._core.text import single_line
 from dfo._core.types import (
     CONTENT_VERSION,
     DIGEST,
@@ -53,7 +54,7 @@ class RefMember:
 
     @override
     def __repr__(self) -> str:
-        return f"RefMember({self.spec.spec_id} at {self.content_version})"
+        return single_line(f"RefMember({self.spec.spec_id} at {self.content_version})")
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +84,7 @@ class Member:
     def __repr__(self) -> str:
         version = f"{self.spec.spec_id} at {self.content_version}"
         sources = "; ".join(source.label for source in self.citation.sources)
-        return (
+        return single_line(
             f"Member({version}, {clipped(sources)})"
             if sources
             else f"Member({version})"
@@ -143,7 +144,7 @@ class DatasetRef:
             for member in self.members
         )
         noun = "member" if count == 1 else "members"
-        return f"DatasetRef({count} {noun}: {versions}, exact)"
+        return single_line(f"DatasetRef({count} {noun}: {versions}, exact)")
 
     @classmethod
     def of(cls, members: Iterable[Member], /) -> Self:

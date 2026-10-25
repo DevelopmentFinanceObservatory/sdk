@@ -7,6 +7,7 @@ import { manifestWarningsOf } from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
 import type { Assumption, CitationSource, Departure, Notice, RequestedOperation } from "../wire.ts";
 import { isRecord, list, objects, text } from "../core/json.ts";
+import { inline } from "../core/text.ts";
 
 /** The version of the provenance a file from `bytes()` carries under `dfo.*` keys, the one
  *  Python's `Dataset.save` writes. */
@@ -233,7 +234,8 @@ export class Dataset {
 
   /**
    * What the data shows, where it comes from, its versions and rows, and the line that keeps it:
-   * the ref as JSON, whose specs `client.fetch(ref, { latest: true })` later builds anew.
+   * the ref as JSON, whose specs `client.fetch(ref, { latest: true })` later builds anew. Each
+   * line passes through `inline`, so the server's text keeps to its line.
    */
   toString(): string {
     const lines = [this.sentence];
@@ -247,7 +249,7 @@ export class Dataset {
     lines.push(
       "Keep: JSON.stringify(data.ref) · newest later: client.fetch(data.ref, { latest: true })",
     );
-    return `<Dataset ${lines.join("\n  ")}>`;
+    return `<Dataset ${lines.map(inline).join("\n  ")}>`;
   }
 
   /** Node's `console.log` and `util.inspect` show the dataset as `String(data)` does. */

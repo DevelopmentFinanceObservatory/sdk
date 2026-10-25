@@ -42,7 +42,7 @@ from dfo._http.transport import (
     _keep_to_deadlines,
     attempt_deadline,
 )
-from tests._fetch_support import Body, stalling_server
+from tests._fetch_support import Body, silent_server, stalling_server
 
 pytestmark = pytest.mark.anyio
 
@@ -316,7 +316,7 @@ async def test_a_server_url_resolves_on_the_base_urls_origin(
 @pytest.mark.parametrize(
     ("seconds", "read"), [(None, 30.0), (1800.0, 30.0), (5.0, 5.0)]
 )
-async def test_a_download_reads_until_the_deadline_waiting_30_s_at_most_per_read(
+async def test_a_download_waits_30_s_at_most_per_phase_or_until_the_deadline(
     seconds: float | None, read: float
 ) -> None:
     timeline = Timeline()
@@ -324,7 +324,7 @@ async def test_a_download_reads_until_the_deadline_waiting_30_s_at_most_per_read
     async with make(recorder, timeline, timeout=30.0) as transport:
         await transport.download(SIGNED, deadline=transport.deadline(seconds))
     timeouts = recorder.requests[0].extensions["timeout"]
-    assert (timeouts["connect"], timeouts["read"]) == (seconds, read)
+    assert timeouts == {"connect": read, "read": read, "write": read, "pool": read}
 
 
 async def test_a_download_that_stalls_fails_retryably_as_a_network_fault(
@@ -344,6 +344,25 @@ async def test_a_download_that_stalls_fails_retryably_as_a_network_fault(
     assert (caught.value.code, caught.value.retryable) == ("network_error", True)
     # The first chunk resets the bound, so the stall ends 0.4 s after it.
     assert 0.45 < elapsed < 0.8
+
+
+async def test_a_download_whose_tls_handshake_never_answers_fails_at_the_stall_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real sockets: the server takes the TCP connection and never answers the
+    # client's hello. It closes after 3 s, so an unbounded handshake fails late.
+    monkeypatch.setenv("NO_PROXY", "*")
+    monkeypatch.setattr(transport_module, "DOWNLOAD_STALL_S", 0.4)
+    with silent_server(close_after=3.0) as origin:
+        async with AsyncTransport(
+            api_key=False, base_url=origin, max_retries=0
+        ) as transport:
+            start = time.monotonic()
+            with pytest.raises(NetworkError) as caught:
+                await transport.download(f"{origin}/files/a")
+            elapsed = time.monotonic() - start
+    assert (caught.value.code, caught.value.retryable) == ("network_error", True)
+    assert 0.35 < elapsed < 1.0
 
 
 async def test_a_body_that_stalls_after_its_first_chunk_raises_at_the_attempt_end(
@@ -1191,8 +1210,11 @@ async def test_a_header_value_may_hold_spaces_and_tabs() -> None:
 @pytest.mark.parametrize(
     ("failure", "error", "code"),
     [
-        # With no deadline, a read timeout is the stall bound.
+        # With no deadline, every phase's timeout is the stall bound.
         (httpx2.ReadTimeout("slow"), NetworkError, "network_error"),
+        (httpx2.ConnectTimeout("slow"), NetworkError, "network_error"),
+        (httpx2.PoolTimeout("slow"), NetworkError, "network_error"),
+        (httpx2.WriteTimeout("slow"), NetworkError, "network_error"),
         (httpx2.ConnectError("x"), NetworkError, "network_error"),
     ],
 )

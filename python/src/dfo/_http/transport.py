@@ -124,8 +124,9 @@ RETRY_AFTER_MAX_S = 60.0
 # The decoded bytes a downloaded file may hold when its manifest names no size.
 DOWNLOAD_MAX_BYTES = 2 * 2**30
 
-# The longest a signed download waits for its next byte, in seconds. A download
-# that receives none for this long fails retryably (`network_error`).
+# The longest a signed download waits for its connection, TLS handshake
+# included, or for its next byte, in seconds. A download that waits this long
+# fails retryably (`network_error`).
 DOWNLOAD_STALL_S = 30.0
 
 # The decoded bytes an API response's body may hold, the larger of 16 MiB and ten
@@ -982,10 +983,11 @@ class AsyncTransport:
     ) -> httpx2.Response:
         """Send `request` and read its body by `deadline`, after name resolution.
 
-        `stall` is the read timeout `request` carries as a bound on the wait for
-        each byte, or None when its read timeout is the attempt's own. A read
-        that waits that long before `deadline` is a stall, which fails
-        retryably as a network fault.
+        `stall` is the timeout `request` carries on every phase: the connect,
+        TLS handshake included, the wait for a pooled connection, each write,
+        and the wait for each byte read. It is None when the request carries
+        the attempt's own timeout. A phase that waits that long before
+        `deadline` is a stall, which fails retryably as a network fault.
 
         The body is read as it decodes, and reading stops at the first piece
         that takes a 2xx body past `limit` bytes, or any other body past
@@ -996,7 +998,7 @@ class AsyncTransport:
         Raises:
             DfoTimeoutError: The attempt timed out, or `deadline` passed while
                 the body was read (`deadline_exceeded`, retryable).
-            NetworkError: The connection failed, the read stalled for `stall`
+            NetworkError: The connection failed, a phase stalled for `stall`
                 seconds, or the client was closed while the request was in
                 flight (`network_error`, retryable).
             ServerError: A 2xx response's decoded body passed `limit`
@@ -1015,15 +1017,15 @@ class AsyncTransport:
                 finally:
                     await response.aclose()
         except httpx2.TimeoutException as exc:
-            if (
-                stall is not None
-                and isinstance(exc, httpx2.ReadTimeout)
-                and (deadline is None or self._clock() < deadline)
-            ):
+            if stall is not None and (deadline is None or self._clock() < deadline):
+                waited = (
+                    "sent no byte"
+                    if isinstance(exc, httpx2.ReadTimeout)
+                    else "did not connect or take the request"
+                )
                 raise client_error(
                     NETWORK_ERROR,
-                    f"The download from {request.url.host} sent no byte for "
-                    f"{stall:g} s.",
+                    f"The download from {request.url.host} {waited} for {stall:g} s.",
                 ) from exc
             raise client_error(DEADLINE_EXCEEDED, f"{what} timed out") from exc
         except httpx2.TransportError as exc:
@@ -1334,7 +1336,8 @@ class AsyncTransport:
         does. A signed URL on the storage host gets a bare request, with no
         client header, no key and nothing from the header provider. The fetch
         reads until the deadline after platform name resolution, or without limit
-        when there is none, but waits at most `DOWNLOAD_STALL_S` for each byte.
+        when there is none, but waits at most `DOWNLOAD_STALL_S` for the
+        connection, its TLS handshake, the request's write and each byte.
         A `single_attempt` copy reads for one attempt of the timeout. The generated synchronous transport cannot interrupt
         blocking platform name resolution. A failed fetch is not retried. A
         signed URL can expire, so the caller asks the files route for a fresh one.
@@ -1347,8 +1350,8 @@ class AsyncTransport:
             ServerError: The host answered anything but 200 (`download_failed`),
                 a refusal past `JSON_BODY_MAX_BYTES` included, or a file past
                 `max_bytes` (`response_too_large`).
-            NetworkError: The connection failed, no byte arrived for
-                `DOWNLOAD_STALL_S` (`network_error`, retryable), or
+            NetworkError: The connection failed, the connection or a byte took
+                longer than `DOWNLOAD_STALL_S` (`network_error`, retryable), or
                 `DFO_OFFLINE=1` is set (`offline`).
             DfoTimeoutError: The fetch timed out or the deadline passed.
             InvalidRequestError: The transport is closed (`invalid_argument`).
@@ -1369,7 +1372,7 @@ class AsyncTransport:
             "GET",
             url,
             headers=await self._headers(None, limit) if on_api else None,
-            timeout=httpx2.Timeout(limit, read=stall),
+            timeout=httpx2.Timeout(stall),
         )
         response = await self._send(
             request, attempt_end, "the signed download", max_bytes, stall=stall

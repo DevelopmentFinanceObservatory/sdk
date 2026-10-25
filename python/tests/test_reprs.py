@@ -1,12 +1,15 @@
 """Every public value object prints one or two short lines that name it."""
 
+import json
+import unicodedata
 from collections.abc import Callable
 
 import pytest
 
 import dfo
-from dfo._core.errors import DataWarning, NotFoundError, SearchWarning
+from dfo._core.errors import DataWarning, DfoWarning, NotFoundError, SearchWarning
 from dfo._core.parse import parse_parts
+from dfo._core.refs import DatasetRef, Member, RefMember
 from dfo._core.types import (
     Assumption,
     CandidatesPart,
@@ -19,6 +22,7 @@ from dfo._core.types import (
     Notice,
     Option,
     RawResponse,
+    Rendering,
     RequestedOperation,
     Spec,
     UnknownPart,
@@ -27,6 +31,7 @@ from dfo._core.types import (
 from dfo._datasets.bundle import BundleLimits
 from dfo._datasets.dataset import Dataset, build_dataset
 from dfo._search.lookups import AsyncLookup
+from dfo._sync._search.answer import Answer
 from tests._data import load
 from tests._datasets import recorded_member
 
@@ -244,3 +249,118 @@ def test_a_value_object_prints_a_short_summary(
         assert text == expected
     else:
         assert expected in text
+
+
+# Server text that would clear a terminal (ESC [2J), open a C1 control sequence
+# (CSI) and break the line.
+HOSTILE = "a\u001b[2Jb\u009bc\nd"
+_RENDERING = Rendering("parquet", bundle=False)
+
+
+def _hostile_ref_member() -> RefMember:
+    return RefMember(
+        (), HOSTILE, Spec(SPEC_ID, {}), HOSTILE, "sha256:" + "0" * 64, _RENDERING
+    )
+
+
+def _hostile_member() -> Member:
+    citation = Citation(HOSTILE, (CitationSource("x", HOSTILE),))
+    return Member(
+        (),
+        Spec(SPEC_ID, {}),
+        HOSTILE,
+        HOSTILE,
+        citation,
+        "sha256:" + "0" * 64,
+        _RENDERING,
+    )
+
+
+def _hostile_dataset() -> Dataset:
+    member = recorded_member(sentence=HOSTILE, content_version=HOSTILE)
+    return build_dataset(
+        [member], layout="long", complete=True, missing=(), stale=False
+    )
+
+
+def _revived_answer() -> Answer:
+    body = {**load("search-1.json"), "rendered_sentence": HOSTILE}
+    text = json.dumps({"format_version": 1, "question": None, "answer": body})
+    with dfo.Client(base_url="https://api.example.org", api_key=False) as client:
+        answer = Answer.from_json(text, client=client)
+    assert answer.sentence == HOSTILE
+    return answer
+
+
+_HOSTILE_PART = NoDataPart(status="no_data", variable_text=HOSTILE, reason=HOSTILE)
+
+# Each row shows server text through one display path. The multi-line rows show
+# several lines by design, so only the server's own line break must go.
+HOSTILE_ROWS: list[tuple[str, Callable[[], str], bool]] = [
+    ("spec", lambda: repr(Spec(SPEC_ID, {}, HOSTILE)), False),
+    ("part", lambda: repr(_HOSTILE_PART), False),
+    ("unknown-part", lambda: repr(UnknownPart(status=HOSTILE)), False),
+    ("notice", lambda: repr(Notice(HOSTILE, HOSTILE, HOSTILE)), False),
+    ("departure", lambda: repr(Departure(HOSTILE, HOSTILE)), False),
+    (
+        "requested-operation",
+        lambda: repr(RequestedOperation(HOSTILE, HOSTILE, over=HOSTILE)),
+        False,
+    ),
+    ("assumption", lambda: repr(Assumption(HOSTILE, HOSTILE, HOSTILE)), False),
+    ("option", lambda: repr(Option(HOSTILE, (), {})), False),
+    (
+        "gap",
+        lambda: repr(
+            Gap(0, _HOSTILE_PART, "choice", HOSTILE, (Option(HOSTILE, (), {}),))
+        ),
+        False,
+    ),
+    ("gap-no-options", lambda: repr(Gap(0, _HOSTILE_PART, "choice", HOSTILE)), False),
+    ("citation", lambda: repr(Citation(HOSTILE)), False),
+    (
+        "citation-source",
+        lambda: repr(CitationSource("x", HOSTILE, licence=HOSTILE)),
+        False,
+    ),
+    (
+        "raw-response",
+        lambda: repr(RawResponse(200, {"content-type": HOSTILE}, b"")),
+        False,
+    ),
+    ("member", lambda: repr(_hostile_member()), False),
+    ("ref-member", lambda: repr(_hostile_ref_member()), False),
+    ("dataset-ref", lambda: repr(DatasetRef((_hostile_ref_member(),))), False),
+    ("dataset", lambda: repr(_hostile_dataset()), True),
+    ("dataset-html", lambda: _hostile_dataset()._repr_html_(), False),
+    ("answer", lambda: repr(_revived_answer()), True),
+    ("error-code", lambda: str(NotFoundError("No entry.", code=HOSTILE)), False),
+    ("error-trace", lambda: str(NotFoundError("No entry.", trace_id=HOSTILE)), False),
+    ("warning-code", lambda: str(DfoWarning("No rows.", code=HOSTILE)), False),
+    (
+        "data-warning",
+        lambda: str(DataWarning("No rows.", code=HOSTILE, severity="warn")),
+        False,
+    ),
+    ("search-warning", lambda: str(SearchWarning("Shows 2022.", code=HOSTILE)), False),
+]
+
+
+@pytest.mark.parametrize(
+    ("show", "lines"),
+    [row[1:] for row in HOSTILE_ROWS],
+    ids=[row[0] for row in HOSTILE_ROWS],
+)
+def test_server_text_reaches_a_display_without_control_characters(
+    show: Callable[[], str], lines: bool
+) -> None:
+    text = show()
+    allowed = {"\n"} if lines else set()
+    controls = {
+        char
+        for char in text
+        if unicodedata.category(char) == "Cc" and char not in allowed
+    }
+    assert controls == set()
+    # The server's text shows, its line break a space.
+    assert "a[2Jbc d" in text

@@ -26,6 +26,7 @@ from dfo._core.codes import CONTRACT_VIOLATION, UNEXPECTED_RESPONSE
 from dfo._core.errors import ContractError, client_error, message_of
 from dfo._core.parse import parse_citation, parse_notices, parse_part
 from dfo._core.refs import DatasetRef, Member
+from dfo._core.text import single_line
 from dfo._core.types import (
     Assumption,
     Candidate,
@@ -290,13 +291,13 @@ class Dataset:
 
     def __repr__(self) -> str:
         lines = [self.sentence, *(f"  {line}" for line in self._summary())]
-        return "<Dataset " + "\n".join(lines) + ">"
+        return "<Dataset " + "\n".join(single_line(line) for line in lines) + ">"
 
     def _repr_html_(self) -> str:
-        items = "".join(f"<li>{html.escape(line)}</li>" for line in self._summary())
+        items = "".join(f"<li>{_shown_html(line)}</li>" for line in self._summary())
         return (
             '<div class="dfo-dataset">'
-            f"<p><strong>{html.escape(self.sentence)}</strong></p>"
+            f"<p><strong>{_shown_html(self.sentence)}</strong></p>"
             f"<ul>{items}</ul>{_preview_html(self._table)}</div>"
         )
 
@@ -925,13 +926,18 @@ def _load_option(value: object, pointer: str) -> Option:
     )
 
 
+def _shown_html(text: str) -> str:
+    """`text` escaped for HTML, on one line without control characters."""
+    return html.escape(single_line(text))
+
+
 def _preview_html(table: pa.Table) -> str:
     preview = table.slice(0, _PREVIEW_ROWS).to_pylist()
-    head = "".join(f"<th>{html.escape(name)}</th>" for name in table.column_names)
+    head = "".join(f"<th>{_shown_html(name)}</th>" for name in table.column_names)
     body = "".join(
         "<tr>"
         + "".join(
-            f"<td>{html.escape('' if value is None else str(value))}</td>"
+            f"<td>{_shown_html('' if value is None else str(value))}</td>"
             for value in row.values()
         )
         + "</tr>"

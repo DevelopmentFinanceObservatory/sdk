@@ -19,6 +19,7 @@ from typing import (
 )
 
 from dfo._core.json_text import loads
+from dfo._core.text import single_line
 from dfo._generated.error_map import GapKind as SearchGapKind
 from dfo._generated.wire import (
     AggregateNode,
@@ -94,8 +95,11 @@ def _quoted(text: str | None) -> str | None:
 
 
 def _joined(name: str, *items: str | None) -> str:
-    """`Name(a, b)` from the items that are not None."""
-    return f"{name}({', '.join(item for item in items if item is not None)})"
+    """`Name(a, b)` from the items that are not None, on one line without
+    control characters."""
+    return single_line(
+        f"{name}({', '.join(item for item in items if item is not None)})"
+    )
 
 
 type FormatErrorReason = Literal[
@@ -176,7 +180,9 @@ class Notice:
 
     @override
     def __repr__(self) -> str:
-        return f"Notice({self.code}, {self.severity}: {clipped(self.message)})"
+        return single_line(
+            f"Notice({self.code}, {self.severity}: {clipped(self.message)})"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,7 +206,7 @@ class Departure:
 
     @override
     def __repr__(self) -> str:
-        return f"Departure({self.code}: {clipped(self.text)})"
+        return single_line(f"Departure({self.code}: {clipped(self.text)})")
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,7 +230,9 @@ class RequestedOperation:
     def __repr__(self) -> str:
         over = f" over {self.over}" if self.over is not None else ""
         year = f" to {self.target_year}" if self.target_year is not None else ""
-        return f'RequestedOperation({self.verb} "{clipped(self.phrase)}"{over}{year})'
+        return single_line(
+            f'RequestedOperation({self.verb} "{clipped(self.phrase)}"{over}{year})'
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,7 +259,9 @@ class Assumption:
 
     @override
     def __repr__(self) -> str:
-        return f'Assumption({self.kind} {self.binding_ref}: "{clipped(self.text)}")'
+        return single_line(
+            f'Assumption({self.kind} {self.binding_ref}: "{clipped(self.text)}")'
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,7 +287,7 @@ class Option:
 
     @override
     def __repr__(self) -> str:
-        return f'Option("{clipped(self.label)}")'
+        return single_line(f'Option("{clipped(self.label)}")')
 
 
 @dataclass(frozen=True, slots=True)
@@ -465,7 +475,7 @@ class Gap:
         if self.part.variable_text is not None:
             part += f' "{clipped(self.part.variable_text, REPR_GAP_LABEL_MAX)}"'
         if not self.options:
-            return f"Gap({part}, {self.kind})"
+            return single_line(f"Gap({part}, {self.kind})")
         shown = [
             clipped(option_label(option), REPR_OPTION_LABEL_MAX)
             for option in self.options[:REPR_OPTIONS_MAX]
@@ -473,7 +483,7 @@ class Gap:
         if (rest := len(self.options) - REPR_OPTIONS_MAX) > 0:
             shown.append(f"+{rest} more")
         options = counted(len(self.options), "option")
-        return f"Gap({part}, {self.kind}, {options}: {' | '.join(shown)})"
+        return single_line(f"Gap({part}, {self.kind}, {options}: {' | '.join(shown)})")
 
 
 @dataclass(frozen=True, slots=True)
@@ -509,7 +519,7 @@ class Citation:
     @override
     def __repr__(self) -> str:
         sources = counted(len(self.sources), "source")
-        return f"Citation({_quoted(self.text)}, {sources})"
+        return single_line(f"Citation({_quoted(self.text)}, {sources})")
 
 
 # The members of a manifest artifact's `rendering` object that `Rendering.matches`

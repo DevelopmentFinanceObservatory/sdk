@@ -1,7 +1,9 @@
 """How an answer reads: its text, its notebook HTML and its incomplete-answer message.
 
 The functions read an answer's public members, so the async and sync answers share
-them. Every server string in the HTML is escaped.
+them. Each line of the text is shown without control characters, so server text
+cannot break a line or steer a terminal, and every server string in the HTML is
+escaped.
 """
 
 import html
@@ -12,6 +14,7 @@ from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from typing import Any, Protocol
 
+from dfo._core.text import single_line
 from dfo._core.types import (
     Candidate,
     DefinitePart,
@@ -91,7 +94,7 @@ def answer_text(answer: AnswerView, /) -> str:
         return declined_text(answer.kind, answer.reason)
     if answer.complete:
         lines = [line for _, line in hints(answer, departures=False)]
-        return "\n".join(
+        return _text_lines(
             [answer.sentence or "", *(f"  {line}" for line in lines), _FETCH_LINE]
         )
     return _incomplete(answer, lead="Answered")
@@ -111,9 +114,11 @@ def declined_text(kind: str, reason: str | None, /) -> str:
     if kind == "declined":
         return _DECLINED_REASONS.get(
             reason or "",
-            f"Search declined the question ({reason or 'no reason given'}).",
+            single_line(
+                f"Search declined the question ({reason or 'no reason given'})."
+            ),
         )
-    return f"Search answered with kind {kind!r}, which holds no readings."
+    return single_line(f"Search answered with kind {kind!r}, which holds no readings.")
 
 
 def incomplete_message(answer: AnswerView, /) -> str:
@@ -188,7 +193,12 @@ def _incomplete(answer: AnswerView, *, lead: str) -> str:
     if answered:
         noun = "part" if answered == 1 else "parts"
         lines.append(f"  Or take the answered {noun}: answer.fetch(partial=True)")
-    return "\n".join(lines)
+    return _text_lines(lines)
+
+
+def _text_lines(lines: Sequence[str]) -> str:
+    """`lines` joined, each on one line without control characters."""
+    return "\n".join(single_line(line) for line in lines)
 
 
 def _choice_line(choice: Candidate | Option) -> str:

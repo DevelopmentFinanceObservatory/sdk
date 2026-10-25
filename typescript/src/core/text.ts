@@ -33,6 +33,13 @@ const DOT_SEGMENT = /^(?:\.|%2e){1,2}$/i;
 /** Text without the characters that steer a terminal or hide in text. */
 export const printable = (text: string): string => text.replace(UNPRINTABLE, "");
 
+/** A line break, or the Unicode line and paragraph separators. */
+const LINE_BREAK = /[\n\u2028\u2029]/g;
+
+/** `text` as one display line: `printable`, with each line break turned into a space, so text
+ *  from the server can neither steer a terminal nor start a line that reads as the client's. */
+export const inline = (text: string): string => printable(text).replace(LINE_BREAK, " ");
+
 /** A pattern that matches `secret` with any run of the characters `printable` strips between
  *  its characters, so text whose every match is replaced holds no `secret` once `printable`
  *  has run on it either. Tab and line feed are visible whitespace that `printable` keeps, so a

@@ -21,7 +21,14 @@ import { VERSION } from "../version.ts";
 import { clientWarning, emitWarning, warnOnce } from "../core/warnings.ts";
 import type { DfoWarning, WarningHandler } from "../core/warnings.ts";
 import { isRecord, parseJson } from "../core/json.ts";
-import { controlFault, hasDotSegment, headerFault, keyFault, secretPattern } from "../core/text.ts";
+import {
+  controlFault,
+  hasDotSegment,
+  headerFault,
+  inline,
+  keyFault,
+  secretPattern,
+} from "../core/text.ts";
 
 /** The public API's base URL. */
 export const DEFAULT_BASE_URL = "https://developmentfinance.org/api/v1";
@@ -462,11 +469,13 @@ export class RawResponse {
   }
 
   /** The status, the content type when the response names one, and the body's size, as
-   *  `RawResponse(200, application/json, 2 bytes)`. */
+   *  `RawResponse(200, application/json, 2 bytes)`, on one line through `inline`. */
   toString(): string {
     const type = this.headers.get("content-type");
     const size = `${this.body.length} byte${this.body.length === 1 ? "" : "s"}`;
-    return `RawResponse(${[String(this.status), ...(type === null ? [] : [type]), size].join(", ")})`;
+    return inline(
+      `RawResponse(${[String(this.status), ...(type === null ? [] : [type]), size].join(", ")})`,
+    );
   }
 
   /** Node's `console.log` and `util.inspect` show the response as `String(response)` does. */

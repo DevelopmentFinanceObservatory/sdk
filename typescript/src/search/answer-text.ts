@@ -6,6 +6,7 @@ import type { Answer, Candidate, Gap } from "./answer.ts";
 import { mentionsOf, waitingGaps } from "./choices.ts";
 import { partFacts } from "../core/parse.ts";
 import { definiteParts, partSentence, partText } from "../core/parts.ts";
+import { inline } from "../core/text.ts";
 import type { Notice } from "../wire.ts";
 
 const SHOWN_SEVERITIES = new Set(["warn", "degraded"]);
@@ -26,12 +27,13 @@ export type Hint = { readonly code: string; readonly line: string };
  * How the answered parts differ from the question: each computation Search did not run, each
  * `warn` and `degraded` warning of the answer and its answered parts and, with `departures`, each
  * departure. Search's sentence already closes with the departures, so the display leaves them
- * out. `info` warnings stay hidden.
+ * out. `info` warnings stay hidden. Each line passes through `inline`.
  */
 export function readingHints(answer: Answer, { departures }: { departures: boolean }): Hint[] {
   const found = new Map<string, string>();
   const add = (line: string, code: string): void => {
-    if (!found.has(line)) found.set(line, code);
+    const shown = inline(line);
+    if (!found.has(shown)) found.set(shown, code);
   };
   const addNotices = (warnings: readonly Notice[]): void => {
     for (const { code, severity, message } of warnings) {
@@ -53,7 +55,7 @@ export function readingHints(answer: Answer, { departures }: { departures: boole
 }
 
 /** The answer as a reader sees it: the sentence, its hints and the call that fetches it, or
- *  what is missing. */
+ *  what is missing. Each line passes through `inline`, so the server's text keeps to its line. */
 export function answerText(answer: Answer): string {
   if (answer.kind !== "resolution") return declinedText(answer.kind, answer.reason);
   if (answer.complete) {
@@ -62,21 +64,23 @@ export function answerText(answer: Answer): string {
       answer.sentence ?? "",
       ...hints.map((hint) => `  ${hint.line}`),
       "  Fetch: answer.fetch()",
-    ].join("\n");
+    ]
+      .map(inline)
+      .join("\n");
   }
   return gapText(answer, "Answered");
 }
 
-/** Why Search gave a declined or catalogue answer, which holds no readings. */
+/** Why Search gave a declined or catalogue answer, which holds no readings, on one line. */
 export function declinedText(kind: string, reason: string | null): string {
   if (kind === "catalogue") return CATALOGUE;
   if (kind === "declined") {
     return (
       DECLINED_REASONS[reason ?? ""] ??
-      `Search declined the question (${reason ?? "no reason given"}).`
+      inline(`Search declined the question (${reason ?? "no reason given"}).`)
     );
   }
-  return `Search answered with kind ${JSON.stringify(kind)}, which holds no readings.`;
+  return inline(`Search answered with kind ${JSON.stringify(kind)}, which holds no readings.`);
 }
 
 /** The `IncompleteAnswerError` message: every gap and the call that settles it. */
@@ -89,7 +93,7 @@ const quote = (value: string | null | undefined): string => JSON.stringify(value
 const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
 /** An incomplete answer's text: how many parts it answered, each part with its gap and
- *  options, and the calls that settle the gaps. */
+ *  options, and the calls that settle the gaps. Each line passes through `inline`. */
 function gapText(answer: Answer, lead: string): string {
   const count = definiteParts(answer.parts).length;
   const gaps = new Map(answer.gaps.map((gap) => [gap.partIndex, gap]));
@@ -118,7 +122,7 @@ function gapText(answer: Answer, lead: string): string {
       `  Or take the answered ${count === 1 ? "part" : "parts"}: answer.fetch({ partial: true })`,
     );
   }
-  return lines.join("\n");
+  return lines.map(inline).join("\n");
 }
 
 function candidateLine(candidate: Candidate): string {

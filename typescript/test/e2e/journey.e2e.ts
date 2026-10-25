@@ -28,6 +28,7 @@ import {
   NotFoundError,
 } from "../../src/index.ts";
 import type { Answer, Dataset, Row, Spec } from "../../src/index.ts";
+import { firstLogged } from "../support.ts";
 
 const baseUrl = process.env["DFO_BASE_URL"];
 if (baseUrl === undefined || baseUrl === "") {
@@ -152,14 +153,13 @@ const isResolve = (exchange: Exchange) => exchange.url.endsWith("/search/resolve
 const isBuild = (exchange: Exchange) =>
   exchange.method === "POST" && new URL(exchange.url).pathname.endsWith("/datasets");
 
-/** The first build POST recorded from `start` on, once the server has answered it. */
-async function postedFrom(start: number): Promise<Exchange> {
-  for (;;) {
-    const posted = wire.slice(start).find(isBuild);
-    if (posted !== undefined) return posted;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-}
+/** The first build POST recorded from `start` on, once the server has answered it. It
+ *  rejects when `call` fails or `signal` aborts first. */
+const postedFrom = (
+  start: number,
+  call: Promise<unknown>,
+  signal: AbortSignal,
+): Promise<Exchange> => firstLogged(wire, start, isBuild, call, signal);
 
 /** The operation id an operation resource names. */
 const operationIdOf = (json: unknown): string | undefined =>
@@ -333,7 +333,7 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
 
       const start = wire.length;
       const fetching = exchangesOf(() => client.fetch(spec));
-      const posted = await postedFrom(start);
+      const posted = await postedFrom(start, fetching, t.signal);
       if (posted.status === 200) {
         const reason = await servedInline(spec, (await fetching).value);
         if (process.env["DFO_E2E_SCHEDULED"] === "true") assert.fail(reason);

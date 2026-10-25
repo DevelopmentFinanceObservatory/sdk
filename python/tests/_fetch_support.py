@@ -418,3 +418,28 @@ def stalling_server(*, first_chunk_after: float) -> Iterator[str]:
         done.set()
         thread.join(timeout=5)
         listener.close()
+
+
+@contextmanager
+def silent_server(*, close_after: float) -> Iterator[str]:
+    """Accept one connection, send nothing on it, and close it after
+    `close_after` seconds, so a client that waits on the TLS handshake fails
+    then rather than hanging.
+
+    Yields:
+        The server's `https://127.0.0.1:<port>`.
+    """
+    listener = socket.create_server(("127.0.0.1", 0))
+
+    def serve() -> None:
+        connection, _ = listener.accept()
+        with connection:
+            time.sleep(close_after)
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield f"https://127.0.0.1:{listener.getsockname()[1]}"
+    finally:
+        thread.join(timeout=close_after + 5)
+        listener.close()

@@ -5,6 +5,7 @@
 
 import { clientError } from "./errors.ts";
 import { isRecord, parseJson } from "./json.ts";
+import { inline } from "./text.ts";
 import type { ResolvedSpec } from "../wire.ts";
 
 /** The layouts a dataset comes in: the labelled long table, or the pipeline frame. */
@@ -195,13 +196,15 @@ export class DatasetRef {
   }
 
   /** The specs and the exact versions the ref names, as `DatasetRef(1 member: spec_… at cv_…,
-   *  exact)`. */
+   *  exact)`, on one line through `inline`. */
   toString(): string {
     const count = this.members.length;
     const versions = this.members.map(
       (member) => `${member.spec.spec_id} at ${member.contentVersion}`,
     );
-    return `DatasetRef(${count} member${count === 1 ? "" : "s"}: ${versions.join(", ")}, exact)`;
+    return inline(
+      `DatasetRef(${count} member${count === 1 ? "" : "s"}: ${versions.join(", ")}, exact)`,
+    );
   }
 
   /** Node's `console.log` and `util.inspect` show the ref as `String(ref)` does. */
