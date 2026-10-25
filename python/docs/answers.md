@@ -1,8 +1,8 @@
 # Answers and choices
 
-`dfo.search(question)` returns an `Answer`, which says what Search understood the question to ask, part by part. An answer holds readings and no data. Print it to see Search's sentence and the line to type next. `answer.fetch()` builds the data when every part has a reading, and stops before any build when one does not.
+`dfo.search(question)` returns an `Answer`, which holds Search's reading of each part of the question. Print it to see Search's sentence and the line to type next. `answer.fetch()` builds the data when every part has a reading, and raises `IncompleteAnswerError` before any build when one does not.
 
-The blocks on this page run in order, as cells of one notebook.
+The code blocks on this page run in order, as cells of one notebook.
 
 ## Read an answer
 
@@ -24,18 +24,18 @@ print(len(answer.specs))  # 2: one spec per distinct reading
 
 `answer.fetch()` builds each reading once and stacks them into one long table, with a `part` column that names the part each row answers.
 
-| Attribute   | Holds                                                                           |
-| ----------- | ------------------------------------------------------------------------------- |
-| `sentence`  | Search's sentence for the whole answer; None for a declined or catalogue answer |
-| `parts`     | One part per variable asked, in the question's order                            |
-| `specs`     | The readings, one per distinct spec                                             |
-| `complete`  | Whether every part has a reading                                                |
-| `gaps`      | The parts that stop a complete dataset, each a `Gap`                            |
-| `kind`      | `resolution`, `catalogue` or `declined`                                         |
-| `reason`    | Why Search declined, for a declined answer                                      |
-| `warnings`  | Search's warnings for the whole answer                                          |
-| `timed_out` | Whether Search stopped at its time limit                                        |
-| `trace_id`  | The Search response's trace id; quote it when you report a reading              |
+| Attribute   | Holds                                                                              |
+| ----------- | ---------------------------------------------------------------------------------- |
+| `sentence`  | Search's sentence for the whole answer (`None` for a declined or catalogue answer) |
+| `parts`     | One part per variable asked, in the question's order                               |
+| `specs`     | The readings, one per distinct spec                                                |
+| `complete`  | Whether every part has a reading                                                   |
+| `gaps`      | The parts that stop a complete dataset, each a `Gap`                               |
+| `kind`      | `resolution`, `catalogue` or `declined`                                            |
+| `reason`    | Why Search declined, for a declined answer                                         |
+| `warnings`  | Search's warnings for the whole answer                                             |
+| `timed_out` | Whether Search stopped at its time limit                                           |
+| `trace_id`  | The Search response's trace id. Quote it when you report a reading                 |
 
 In a notebook the answer renders as HTML with the same content.
 
@@ -257,7 +257,7 @@ PPG external debt service of Kenya
 
 ## Gap kinds
 
-`answer.gaps` and `IncompleteAnswerError.gaps` hold one `Gap` per part without a reading, with its `part_index`, `part`, `kind`, `message` and `options`. A part with several readings offers its candidates as options, and a place that matches several offers one `Option` per place.
+`answer.gaps` and `IncompleteAnswerError.gaps` hold one `Gap` per part without a reading, with its `part_index`, `part`, `kind`, `message`, and `options`. A part with several readings offers its candidates as options, and a place that matches several offers one `Option` per place.
 
 | `kind`           | What it means                                                     | What to do                              |
 | ---------------- | ----------------------------------------------------------------- | --------------------------------------- |
@@ -291,14 +291,14 @@ for part in answer.parts:
 ```
 
 - `DefinitePart(spec)` has one reading.
-- `CandidatesPart(candidates)` has several, in the server's order. Each `Candidate` has a `spec`, `sentence`, `label`, `source`, `unit` and `assumptions`. `truncated` is True when the server left readings out.
+- `CandidatesPart(candidates)` has several, in the server's order. Each `Candidate` has a `spec`, `sentence`, `label`, `source`, `unit`, and `assumptions`. `truncated` is True when the server left readings out.
 - `NoDataPart(reason)` has no reading. `reason` is a code such as `variable_not_resolved` or `entity_ambiguous`, `message` is the server's explanation, and `options` holds the places or sources that would settle it.
 - `UnsupportedPart(reason)` was understood and is outside what DFO answers.
 - `UnknownPart(status, raw)` has a status newer than this client. Upgrade `development-finance` to read it.
 
-Every part also carries `variable_text` (the question's words for it), `sentence`, `departures`, `operations`, `assumptions` and `warnings`. Each `Assumption` is a choice Search made that the question left open, such as the aid type, with its `kind`, `binding_ref`, `text` and `refs`. The sentence states them in its "Assumed: ..." clause.
+Every part also carries `variable_text` (the question's words for it), `sentence`, `departures`, `operations`, `assumptions`, and `warnings`. Each `Assumption` is a choice Search made that the question left open, such as the aid type, with its `kind`, `binding_ref`, `text`, and `refs`. The sentence states them in its "Assumed: ..." clause.
 
 ## Next
 
-- [Datasets and versions](datasets.md): what `fetch` returns, and how to get the same rows back later.
-- [Errors](errors.md): `IncompleteAnswerError`, `DeclinedError` and the rest, by what you do next.
+- [Datasets and versions](datasets.md) covers what `fetch` returns and how to get the same rows back later.
+- [Errors](errors.md) lists `IncompleteAnswerError`, `DeclinedError`, and the rest by what you do next.

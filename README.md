@@ -1,6 +1,6 @@
 # DFO SDK
 
-Client libraries for the Development Finance Observatory APIs at [developmentfinance.org](https://developmentfinance.org). Ask a question about aid, debt or development indicators in your own words, check what DFO understood, and get a versioned table back.
+Client libraries for the Development Finance Observatory APIs at [developmentfinance.org](https://developmentfinance.org). Ask a question about aid, debt, or development indicators in your own words, check what DFO understood, and get a versioned table back.
 
 ```bash
 pip install "development-finance[pandas]"
@@ -36,7 +36,7 @@ The Python package imports as `dfo`. Its [README](python/README.md) has a recipe
 npm install @developmentfinance/client
 ```
 
-The client has the search, choose, fetch, ref and lookup calls under TypeScript names, and no CLI or disk cache. It runs in Node, Bun, Deno, Workers and browsers. The API's CORS admits only the origins it lists, so a page on another origin calls your own server route, or a same-origin proxy of the API with `baseUrl: "/api/v1"`. Its [README](typescript/README.md) covers the quickstart and a web-app route.
+The client has the search, choose, fetch, ref, and lookup calls under TypeScript names, and no CLI or disk cache. It runs in Node, Bun, Deno, Workers, and browsers. The API's CORS admits only the origins it lists, so a page on another origin calls your own server route, or a same-origin proxy of the API with `baseUrl: "/api/v1"`. Its [README](typescript/README.md) covers the quickstart and a web-app route.
 
 ## The contract
 

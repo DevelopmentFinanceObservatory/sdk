@@ -1,6 +1,6 @@
 # Use it in a web app
 
-A page asks a question, your server asks the API, and the page draws the table. This page builds that server route: it searches, lets the reader choose a reading, streams build progress as NDJSON, stops before the platform's time limit, and joins the same build when the page posts again. The key stays on the server.
+A page asks a question, your server asks the API, and the page draws the table. The server route searches, lets the reader choose a reading, streams build progress as NDJSON, stops before the platform's time limit, and joins the same build when the page posts again. The key stays on the server.
 
 The route is one function from a web `Request` to a `Response`. Next.js App Router runs it as `app/api/data/route.ts`, and `Bun.serve` and `Deno.serve` take the same function. Every example on this page runs in Node as written, apart from the one line that needs a page.
 
@@ -124,12 +124,12 @@ function readAsk(body: unknown): Ask | null {
 }
 ```
 
-A few choices in that route matter:
+In that route:
 
 - One `Client` serves every request. It holds no per-request state, and it resolves the key when it is built.
-- The work runs inside the stream, so the page gets the response headers at once and each progress line as the server reports it. A build the server has made before sends no progress, only `data`.
+- The work runs inside the stream, so the page gets the response headers at once and each progress line as the server reports it. A build the server has made before sends only `data`.
 - `AbortSignal.any` stops the search and the fetch when the request aborts or when `BUDGET_MS` passes. Keep the budget about ten seconds under the platform's limit, so the route still has time to send `retry` and close the stream. A budget that passes during the search sends `retry` with no answer id, and the page posts the question again.
-- An error the client raises goes to the page as its `code` and `message`. The message ends with the code, and with the trace id when there is one, `[code · trace id]`, which is what the reader quotes to you, and the client has already replaced its own key in any server text with `[redacted]`.
+- An error the client raises goes to the page as its `code` and `message`. The message ends with the code, and with the trace id when there is one, `[code · trace id]`, which is what the reader quotes to you. The client replaces its own key in any server text with `[redacted]`.
 
 ## Read the stream in the page
 
@@ -211,7 +211,7 @@ The route sends `choose` for a part that awaits a pick among readings or places,
 
 ## Join a build that outlived the request
 
-A large build can run longer than one request. When `BUDGET_MS` passes, the fetch stops waiting and the build keeps running on the server. The route sends `retry` with the id it stored the answer under, and the page posts `{ answerId }`. The route revives the answer with `Answer.fromJSON` and calls `fetch` on it, which joins the running build without asking Search again. `ask` does that on its own.
+A large build can run longer than one request. When `BUDGET_MS` passes, the fetch stops waiting and the build keeps running on the server. The route sends `retry` with the id it stored the answer under, and the page posts `{ answerId }`. The route revives the answer with `Answer.fromJSON` and calls `fetch` on it, which joins the running build without a second Search call. `ask` handles the retry.
 
 With `BUDGET_MS` at 20 seconds, `ask(callRoute, { question: "CRS commitments from every donor to every recipient for agriculture, 2017 to 2024" }, show)` took two posts for a build of 57,287 rows:
 
@@ -226,7 +226,7 @@ With `BUDGET_MS` at 20 seconds, `ask(callRoute, { question: "CRS commitments fro
 data: 57287 rows · Commitments to 171 recipients from 126 providers for agriculture, 2017 to 2024. Current US dollars · OECD Creditor Reporting System (CRS).
 ```
 
-The first post searched once and started the build, `op_ab6a4c80…`. The second posted the answer id, made no Search call, and polled the same operation until it returned the table.
+The first post searched once and started the build, `op_ab6a4c80…`. The second posted the answer id and polled the same operation until it returned the table.
 
 ## Share an answer between requests
 
@@ -236,7 +236,7 @@ You can send the answer's JSON to the page and take it back, which needs no stor
 
 ## Keep the key on the server
 
-The route's `new Client()` reads `DFO_API_KEY` from the server's environment. Set it as a server-side variable on your host, and never under a prefix the framework copies into the page bundle, such as Next.js's `NEXT_PUBLIC_`. Anything in the bundle, every visitor can read.
+The route's `new Client()` reads `DFO_API_KEY` from the server's environment. Set it as a server-side variable on your host. Do not put it under a prefix the framework copies into the page bundle, such as Next.js's `NEXT_PUBLIC_`, because every visitor can read the bundle.
 
 The API's CORS admits only the origins it lists. A page on another origin calls your own server route, such as the one above, or a proxy of the API on the page's origin with `new Client({ baseUrl: "/api/v1" })`.
 
@@ -244,4 +244,4 @@ A page that calls the API itself uses a publishable `dfo_p_` key. In a browser p
 
 ## Next
 
-- [The README](../README.md) covers choosing readings, narrowing a fetch, refs and errors, the calls this route builds on.
+- [The README](../README.md) covers the calls this route builds on: choosing readings, narrowing a fetch, refs, and errors.

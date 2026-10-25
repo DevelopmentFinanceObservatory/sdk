@@ -6,7 +6,7 @@ Ask the Development Finance Observatory a question in words and get the data tha
 npm install @developmentfinance/client
 ```
 
-The package is ESM only. Everything imports from the package root except `toArrow`, which comes from `@developmentfinance/client/arrow`, and the generated wire types in `@developmentfinance/client/wire`. It runs on Node 22.18 and later, Bun, Deno, Workers and browsers. The API's CORS admits only the origins it lists, so a page on another origin calls your own server route, or a same-origin proxy of the API with `baseUrl: "/api/v1"`. `toArrow` needs the optional `apache-arrow` package (`npm install apache-arrow`).
+The package is ESM only. Everything imports from the package root except `toArrow`, which comes from `@developmentfinance/client/arrow`, and the generated wire types in `@developmentfinance/client/wire`. It runs on Node 22.18 and later, Bun, Deno, Workers, and browsers. [Use it in a web app](#use-it-in-a-web-app) covers the browser limits. `toArrow` needs the optional `apache-arrow` package (`npm install apache-arrow`).
 
 ## Ask a question and get the data
 
@@ -33,7 +33,7 @@ const table = await toArrow(data);
 console.log(table.numRows);
 ```
 
-`String(answer)` is Search's sentence and the next call to make. `answer.fetch()` builds the table and returns a `Dataset`: `rowCount`, `columns`, `toRows()` for plain objects, `toArrow(data)` for an Arrow table, and `bytes()` for one Parquet file that the Python client's `dfo.load` reads. Every table comes in reading order. The columns start with the year, the provider, the recipient, the subject, the purpose, the value, the unit, the flow type and the source, as the table holds them, then the columns whose values tell the rows apart, then those that hold one value throughout, with `stat_var` last and `part` first when several readings stack. The rows sort by those columns, with each series' years together. Without a key the client calls the API anonymously. [Keys and base URL](#keys-and-base-url) covers the rest.
+`String(answer)` is Search's sentence and the next call to make. `answer.fetch()` builds the table and returns a `Dataset`: `rowCount`, `columns`, `toRows()` for plain objects, `toArrow(data)` for an Arrow table, and `bytes()` for one Parquet file that the Python client's `dfo.load` reads. Every table comes in reading order. The columns start with the year, the provider, the recipient, the subject, the purpose, the value, the unit, the flow type, and the source, as the table holds them, then the columns whose values tell the rows apart, then those that hold one value throughout. `stat_var` comes last, and `part` comes first when several readings stack. The rows sort by those columns, with each series' years together. Without a key the client calls the API anonymously. See [Keys and base URL](#keys-and-base-url) for keys and configuration.
 
 ## Choose a reading
 
@@ -62,7 +62,7 @@ const data = await chosen.fetch();
 console.log(data.sentence);
 ```
 
-`choose` takes the option's index, its label, or its line as `String(answer)` prints it, such as `"Kenya's percent of nominal GDP spent on education, 1971 to 2024 · World Development Indicators"`, and returns Search's answer for that reading. When several parts await a choice, name the part: `answer.choose(0, { part: "education spending" })`. A label or part that names nothing raises `InvalidRequestError` with the code `choice_invalid`, the nearest match and the valid choices. `answer.gaps` holds the same choices as data, for a page that draws its own buttons: each gap's `options` carry a `label`.
+`choose` takes the option's index, its label, or its line as `String(answer)` prints it, such as `"Kenya's percent of nominal GDP spent on education, 1971 to 2024 · World Development Indicators"`, and returns Search's answer for that reading. When several parts await a choice, name the part: `answer.choose(0, { part: "education spending" })`. A label or part that names nothing raises `InvalidRequestError` with the code `choice_invalid`, the nearest match and the valid choices. `answer.gaps` holds the same choices as data, for a page that draws its own buttons. Each gap's `options` carry a `label`.
 
 ## Narrow a fetch
 
@@ -95,12 +95,12 @@ console.log(ghana.sentence);
 console.log(ghana.rowCount);
 ```
 
-- `window` is `"all"`, `"latest"` or `[startYear, endYear]`, with years from 1000 to 2200. One year is `[2020, 2020]`.
+- `window` is `"all"`, `"latest"`, or `[startYear, endYear]`, with years from 1000 to 2200. One year is `[2020, 2020]`.
 - `entities` rebinds a role by the key the spec uses, here `origin` and `destination`. `specRoles(spec)` lists the keys, each with the dcids it binds, or `null` for a flow direction it binds none of. A role you leave out keeps its places, and `null` unbinds one. A key the spec does not take, such as the column name `financingRecipient`, raises `InvalidRequestError` with `invalid_argument` and the spec's roles, before any request.
 - `facets` binds an axis, such as `{ provenance: "provenance/OECDCreditorReportingSystem" }`.
 - `partyTotals: true` keeps the rows of totals such as "DAC countries" beside their members. They are left out by default, so a sum over `value` counts each flow once.
 
-`layout: "frame"` returns the table the pipeline wrote for one reading, with code columns and no label columns; on an answer with several readings it raises `invalid_argument`. `data.memberBytes(index)` returns one member's Parquet file as the server wrote it.
+`layout: "frame"` returns the table the pipeline wrote for one reading, with code columns and no label columns. On an answer with several readings it raises `invalid_argument`. `data.memberBytes(index)` returns one member's Parquet file as the server wrote it.
 
 `answer.fetch` takes the same `window`, `entities` and `facets` and narrows every reading, as `answer.fetch({ window: [2015, 2020] })`. A role that one reading does not take is refused before any request, with each reading's roles.
 
@@ -243,7 +243,7 @@ const data = await (await revived.choose(0)).fetch();
 console.log(data.sentence);
 ```
 
-`fromJSON` checks that the JSON is well formed. It cannot tell whether it came from Search. `choose` and `fetch` post what the answer holds, so a forged answer can send any spec or parsed question to the API under your key. With a public-tier key that costs quota, as a question route does, so rate-limit both per visitor. With a key scoped beyond the public tier, keep the answer on the server under a random id and send the page the id. [Use it in a web app](docs/web-apps.md) does that.
+`fromJSON` checks that the JSON is well formed. It cannot tell whether it came from Search. `choose` and `fetch` post what the answer holds, so a forged answer can send any spec or parsed question to the API under your key. With a public-tier key that costs quota, as a question route does, so rate-limit both per visitor. With a key scoped beyond the public tier, keep the answer on the server under a random id and send the page the id. See [Use it in a web app](docs/web-apps.md) for the server-side version.
 
 ## Look up names and codes
 
@@ -273,7 +273,10 @@ console.log(germny?.status, germny?.nearMatches[0]?.dcid);
 
 const nigeria = await client.lookup.node("country/NGA");
 const regions = nigeria.raw.kind === "country" ? nigeria.raw.country.contained_in : [];
-console.log(`${nigeria}`, regions.map((region) => region.label));
+console.log(
+  `${nigeria}`,
+  regions.map((region) => region.label),
+);
 
 console.log(`${await client.lookup.code("role_incompatible")}`);
 
@@ -282,11 +285,11 @@ console.log(`${catalogue}`);
 console.log(catalogue.examples[0]);
 ```
 
-`resolve` returns one `Match` per name, in order. A match holds the name as asked in `text`, its `status` (`resolved`, `ambiguous`, `not_found` or `not_held`), the node it resolved to in `entity`, the nodes an ambiguous name may mean in `candidates`, and names close to one in `nearMatches`. Each node is an `Entity` with a `dcid`, a `name` and a `kind`. `node` returns a `Node` with `dcid`, `name`, `kind` and `types`, `code` a `Code` with `code` and `definition`, and `catalogue` a `Catalogue` with its `version`, `counts` and example questions in `examples`. Every result keeps what the server sent for it in `raw`, which holds the country's regions above.
+`resolve` returns one `Match` per name, in order. A match holds the name as asked in `text`, its `status` (`resolved`, `ambiguous`, `not_found`, or `not_held`), the node it resolved to in `entity`, the nodes an ambiguous name may mean in `candidates`, and names close to one in `nearMatches`. Each node is an `Entity` with a `dcid`, a `name`, and a `kind`. `node` returns a `Node` with `dcid`, `name`, `kind`, and `types`, `code` a `Code` with `code` and `definition`, and `catalogue` a `Catalogue` with its `version`, `counts`, and example questions in `examples`. Every result keeps the server's payload in `raw`, which holds the country's regions in the example above.
 
 ## Errors
 
-A refusal, a failed connection, a passed deadline or a response the client cannot read raises a `DfoError`. Its message ends with the code, and with the trace id when there is one, `[code · trace id]`. Quote both when you report a fault:
+A refusal, a failed connection, a passed deadline, or a response the client cannot read raises a `DfoError`. Its message ends with the code, and with the trace id when there is one, `[code · trace id]`. Quote both when you report a fault:
 
 ```text
 NotFoundError code_not_found
@@ -308,23 +311,23 @@ try {
 
 Branch on the class, or on `error.code` for one case. Each error also carries `status`, `detail`, `traceId`, `retryable` and `retryAfterMs`. `isDfoError(error)` recognises one from any copy of the package.
 
-| Class                     | Raised when                                                                   |
-| ------------------------- | ----------------------------------------------------------------------------- |
-| `InvalidRequestError`     | An argument breaks a rule; `issues` and `alternatives` name the valid values  |
-| `IncompleteAnswerError`   | You fetch an answer with a part that has no reading; `gaps` lists them        |
-| `DeclinedError`           | You fetch an answer Search declined or answered with the catalogue; `answer.reason` says why a decline happened |
-| `NotFoundError`           | A spec, place, code or version is unknown                                     |
-| `VersionUnavailableError` | A ref's version can no longer be built; `newestVersion` names the current one |
-| `AuthenticationError`     | The key is malformed, unknown, revoked or expired, or the credentials file is broken |
-| `PermissionDeniedError`   | The key lacks a scope                                                         |
-| `RateLimitError`          | Too many requests; `retryAfterMs` says how long to wait                       |
-| `QuotaExceededError`      | The key's quota is spent                                                      |
-| `DfoTimeoutError`         | A `timeout` passed (`deadline_exceeded`)                                      |
-| `NetworkError`            | The connection failed                                                         |
-| `ServerError`             | The server failed or a download did not verify; a retryable failure is retried before you see it |
-| `ContractError`           | A response the client cannot act on; upgrade the package                      |
+| Class                     | Raised when                                                                                                     |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `InvalidRequestError`     | An argument breaks a rule. `issues` and `alternatives` name the valid values                                    |
+| `IncompleteAnswerError`   | You fetch an answer with a part that has no reading. `gaps` lists them                                          |
+| `DeclinedError`           | You fetch an answer Search declined or answered with the catalogue. `answer.reason` says why a decline happened |
+| `NotFoundError`           | A spec, place, code, or version is unknown                                                                      |
+| `VersionUnavailableError` | A ref's version can no longer be built. `newestVersion` names the current one                                   |
+| `AuthenticationError`     | The key is malformed, unknown, revoked, or expired, or the credentials file is broken                           |
+| `PermissionDeniedError`   | The key lacks a scope                                                                                           |
+| `RateLimitError`          | Too many requests. `retryAfterMs` says how long to wait                                                         |
+| `QuotaExceededError`      | The key's quota is spent                                                                                        |
+| `DfoTimeoutError`         | A `timeout` passed (`deadline_exceeded`)                                                                        |
+| `NetworkError`            | The connection failed                                                                                           |
+| `ServerError`             | The server failed or a download did not verify. A retryable failure is retried before you see it                |
+| `ContractError`           | A response the client cannot act on. Upgrade the package                                                        |
 
-`client.lookup.code(code)` explains a code the server sends. The client raises these itself: `answer_declined`, `answer_incomplete`, `base_url_invalid`, `choice_invalid`, `contract_violation`, `credentials_file_invalid`, `credentials_file_unreadable`, `deadline_exceeded`, `digest_mismatch`, `download_failed`, `header_invalid`, `insecure_transport`, `invalid_argument`, `key_empty`, `key_invalid`, `network_error`, `offline`, `profile_not_found`, `profile_without_key`, `refusal_without_code`, `response_too_large`, `unexpected_response` and `version_unavailable`.
+`client.lookup.code(code)` explains a code the server sends. The client raises these itself: `answer_declined`, `answer_incomplete`, `base_url_invalid`, `choice_invalid`, `contract_violation`, `credentials_file_invalid`, `credentials_file_unreadable`, `deadline_exceeded`, `digest_mismatch`, `download_failed`, `header_invalid`, `insecure_transport`, `invalid_argument`, `key_empty`, `key_invalid`, `network_error`, `offline`, `profile_not_found`, `profile_without_key`, `refusal_without_code`, `response_too_large`, `unexpected_response`, and `version_unavailable`.
 
 Some faults raise other errors. An aborted call rejects with its signal's `reason`. A `strict` fetch throws its first `SearchWarning` or `DataWarning` in place of passing it to `onWarning`. `DatasetRef.fromJSON` and `Answer.fromJSON` throw a `FormatError` for JSON in the wrong format, and in a browser `new Client()` throws a `TypeError` for a secret key from `apiKey`, as the first request does for one in `headers` or from `headerProvider`.
 
@@ -336,9 +339,9 @@ A page on an origin the API's CORS lists can call the API itself with a publisha
 
 ## Keys and base URL
 
-`new Client()` takes the API from the `baseUrl` option, else `DFO_BASE_URL`, else uses `https://developmentfinance.org/api/v1`. In a page, a relative `baseUrl` such as `/api/v1` resolves against the page. It takes the first key it finds: the `apiKey` option, the `DFO_API_KEY` environment variable, then the credentials file that the Python client's `dfo auth login` writes, read on Node only. The file is the one `DFO_CREDENTIALS_FILE` names, else `$XDG_CONFIG_HOME/dfo/credentials.toml` or `~/.config/dfo/credentials.toml`, and on Windows `%APPDATA%\dfo\credentials.toml`. `DFO_PROFILE` picks a profile in it, `default` when unset. Without a key the client calls the API anonymously.
+`new Client()` reads the base URL from the `baseUrl` option, then `DFO_BASE_URL`, and defaults to `https://developmentfinance.org/api/v1`. In a page, a relative `baseUrl` such as `/api/v1` resolves against the page. It takes the first key it finds: the `apiKey` option, the `DFO_API_KEY` environment variable, then the credentials file that the Python client's `dfo auth login` writes, read on Node only. The file is the one `DFO_CREDENTIALS_FILE` names. When that is unset, it is `$XDG_CONFIG_HOME/dfo/credentials.toml` or `~/.config/dfo/credentials.toml`, and on Windows `%APPDATA%\dfo\credentials.toml`. `DFO_PROFILE` picks a profile in it, `default` when unset.
 
-Warnings go to `onWarning`, which by default passes each `SearchWarning` and `DataWarning` to `process.emitWarning`, else `console.warn`. The examples here pass `onWarning: () => {}` to keep their output short, which also hides the notes on how the data differs from the question.
+Warnings go to `onWarning`, which by default passes each `SearchWarning` and `DataWarning` to `process.emitWarning`, or to `console.warn` where the platform has no `process.emitWarning`. The examples here pass `onWarning: () => {}` to keep their output short, which also hides the notes on how the data differs from the question.
 
 ```ts
 import { Client } from "@developmentfinance/client";
@@ -350,7 +353,7 @@ const client = new Client({
 console.log(String(client));
 ```
 
-Every request to the API carries `X-DFO-Client`, except a browser's download request, whose redirect to the storage host the browser follows and which carries the key alone. The header names the client and its runtime, such as `dfo-ts/0.1.0 (Node 22.18)` or `dfo-ts/0.1.0 (browser)`. A header of that name in `headers` or from `headerProvider`, in any letter case, raises `InvalidRequestError` with `header_invalid`. A download from the storage host carries none of the client's headers.
+Every request to the API carries `X-DFO-Client`, which names the client and its runtime, such as `dfo-ts/0.1.0 (Node 22.18)` or `dfo-ts/0.1.0 (browser)`. A browser's dataset download is the one exception. It is a request to the API's files route, which the browser redirects to the storage host, and it carries the key alone. A request straight to a signed storage URL carries none of the client's headers. A header named `X-DFO-Client` in `headers` or from `headerProvider`, in any letter case, raises `InvalidRequestError` with `header_invalid`.
 
 The constructor also takes `fetch`, `timeout` (one request attempt, 30 seconds by default), `maxRetries` (2 by default), `headerProvider`, `onWarning` and `dangerouslyAllowBrowser`. A key travels only over https, or plain http to a loopback host. `client.withOptions({ timeout, maxRetries })` returns a copy with other limits, and `client.request(method, path, options)` reaches a route the client does not wrap, with the client's key and retries.
 

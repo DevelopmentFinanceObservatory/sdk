@@ -37,7 +37,7 @@ data = answer.choose("Congo [DRC]").fetch()
 
 ## In a script
 
-A script that runs a list of questions settles two failures itself: a question with a part Search could not read, and a question Search declined. Everything else stops the script.
+A script that runs a list of questions settles two failures itself, a question with a part Search could not read and a question Search declined. Everything else stops the script.
 
 ```text
 'GDP of Kenya': 66 rows
@@ -125,7 +125,7 @@ asyncio.run(main())
 
 ## Retrying
 
-The client retries a failure that can clear before it raises: a dropped connection, a 408, 429, 500, 502, 503 or 504, and any refusal whose body says it is retryable. It makes `max_retries` further attempts, 2 by default, and waits for the response's `Retry-After`, else 0.5 seconds doubling to 8. A `Retry-After` past 60 seconds, or one that would pass the call's deadline, raises at once with `retry_after` set. To retry more on every call, build the client with more attempts:
+The client retries a failure that can clear before it raises: a dropped connection, a 408, 429, 500, 502, 503, or 504, and any refusal whose body says it is retryable. It makes `max_retries` further attempts, 2 by default, and waits for the response's `Retry-After`, else 0.5 seconds doubling to 8. A `Retry-After` past 60 seconds, or one that would pass the call's deadline, raises at once with `retry_after` set. To retry more on every call, build the client with more attempts:
 
 ```python
 import dfo
@@ -184,21 +184,21 @@ An error the client raises before any request, such as `invalid_argument`, has a
 
 ## What each refusal tells you
 
-| Class                     | Means                                                                                    | What you do                                                              |
-| ------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `IncompleteAnswerError`   | A part of the question has no reading, or awaits a choice                                | `answer.choose(...)`, `answer.fetch(partial=True)`, or reword the part   |
-| `DeclinedError`           | Search declined the question or answered with the catalogue                              | Ask for a published statistic about a place, a population or a flow      |
-| `InvalidRequestError`     | The arguments break a rule, on the client or the server                                  | Fix the member the message names; `issues` and `alternatives` list fixes |
-| `NotFoundError`           | A spec, version, node, code or other id is unknown                                       | Check the id                                                             |
-| `VersionUnavailableError` | A stored version can no longer be fetched                                                | `dfo.fetch(ref, latest=True)`; `newest_version` names the newest         |
-| `AuthenticationError`     | A key is missing, unknown, revoked, expired or malformed, or the credentials file is bad | Run `dfo auth login`, or fix the file the message names                  |
-| `PermissionDeniedError`   | The key lacks a scope the call needs                                                     | Ask for the scope                                                        |
-| `RateLimitError`          | Over the rate limit after the client's retries                                           | Wait `retry_after` seconds                                               |
-| `QuotaExceededError`      | Over the build quota; no server code in this release raises it                           | Wait for the quota to reset                                              |
-| `ServerError`             | The server failed after the client's retries, or a download failed its check             | Report the trace id                                                      |
-| `ContractError`           | A response lacks a member the client acts on, or has a form it does not know             | Upgrade `development-finance`; report it if the newest release fails too |
-| `NetworkError`            | The connection failed, or `DFO_OFFLINE=1` blocks a call that needs the server            | Retry later, or read from the cache                                      |
-| `DfoTimeoutError`         | The call's `timeout` passed                                                              | Call again to join the build, or raise `timeout`                         |
+| Class                     | Means                                                                                     | What you do                                                              |
+| ------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `IncompleteAnswerError`   | A part of the question has no reading, or awaits a choice                                 | `answer.choose(...)`, `answer.fetch(partial=True)`, or reword the part   |
+| `DeclinedError`           | Search declined the question or answered with the catalogue                               | Ask for a published statistic about a place, a population, or a flow     |
+| `InvalidRequestError`     | The arguments break a rule, on the client or the server                                   | Fix the member the message names. `issues` and `alternatives` list fixes |
+| `NotFoundError`           | A spec, version, node, code, or other id is unknown                                       | Check the id                                                             |
+| `VersionUnavailableError` | A stored version can no longer be fetched                                                 | Call `dfo.fetch(ref, latest=True)`. `newest_version` names the newest    |
+| `AuthenticationError`     | A key is missing, unknown, revoked, expired, or malformed, or the credentials file is bad | Run `dfo auth login`, or fix the file the message names                  |
+| `PermissionDeniedError`   | The key lacks a scope the call needs                                                      | Ask for the scope                                                        |
+| `RateLimitError`          | Over the rate limit after the client's retries                                            | Wait `retry_after` seconds                                               |
+| `QuotaExceededError`      | Over the build quota (no server code in this release raises it)                           | Wait for the quota to reset                                              |
+| `ServerError`             | The server failed after the client's retries, or a download failed its check              | Report the trace id                                                      |
+| `ContractError`           | A response lacks a member the client acts on, or has a form it does not know              | Upgrade `development-finance`, and report it if the newest release fails |
+| `NetworkError`            | The connection failed, or `DFO_OFFLINE=1` blocks a call that needs the server             | Retry later, or read from the cache                                      |
+| `DfoTimeoutError`         | The call's `timeout` passed                                                               | Call again to join the build, or raise `timeout`                         |
 
 `NetworkError` is also a `ConnectionError`, and `DfoTimeoutError` a `TimeoutError`, so code that catches those keeps working.
 
@@ -224,7 +224,7 @@ except InvalidRequestError as error:
         print(issue["pointer"], issue.get("alternatives"))
 ```
 
-The client refuses a role the spec does not declare before any request, as `invalid_argument` with no issues: `entities names "origin", a role the spec does not declare; its roles are observationAbout. [invalid_argument]`.
+The client refuses a role the spec does not declare before any request, as `invalid_argument` with no issues, for example `entities names "origin", a role the spec does not declare; its roles are observationAbout. [invalid_argument]`.
 
 ## Reference
 
@@ -269,31 +269,31 @@ A code outside this table raises by its HTTP status: 401 `AuthenticationError`, 
 
 The client raises these codes itself, for a fault it finds before a request or in a response. Every DFO client raises the same codes.
 
-| Code                          | Class                     | Retryable | Raised when                                                                                                                        |
-| ----------------------------- | ------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `answer_declined`             | `DeclinedError`           | no        | Fetching an answer Search declined or answered with the catalogue                                                                  |
-| `answer_incomplete`           | `IncompleteAnswerError`   | no        | Fetching an answer with a part that has no reading, when the fetch is not partial or no part has a reading                         |
-| `base_url_invalid`            | `InvalidRequestError`     | no        | A base URL is empty, is not an absolute http or https URL, or carries userinfo, a query, a fragment or a dot segment               |
-| `choice_invalid`              | `InvalidRequestError`     | no        | A choice whose part or option names no gap, several gaps or no option, or a choice that cannot post back a part                    |
-| `contract_violation`          | `ContractError`           | no        | A response lacks a member the client acts on, or holds one that contradicts the request                                            |
-| `credentials_file_invalid`    | `AuthenticationError`     | no        | The credentials file breaks the format; the message names the line                                                                 |
-| `credentials_file_unreadable` | `AuthenticationError`     | no        | The credentials file exists but cannot be read                                                                                     |
-| `deadline_exceeded`           | `DfoTimeoutError`         | yes       | The call's deadline passed before it finished                                                                                      |
-| `digest_mismatch`             | `ServerError`             | no        | A downloaded file does not hash to the digest its manifest names, after the files route was asked once more                        |
-| `download_failed`             | `ServerError`             | yes       | The signed URL a files route names refused, or its fetch failed, after the route was asked once more                               |
-| `header_invalid`              | `InvalidRequestError`     | no        | A header's name is not an HTTP token, its value holds a character outside visible ASCII, spaces and tabs, or it frames the message |
-| `insecure_transport`          | `InvalidRequestError`     | no        | A key would travel over plain http to a host that is not loopback                                                                  |
-| `invalid_argument`            | `InvalidRequestError`     | no        | A call's arguments break a rule the client checks before any request                                                               |
-| `key_empty`                   | `AuthenticationError`     | no        | The `api_key` argument, or what its callable returns, is an empty string                                                           |
-| `key_invalid`                 | `AuthenticationError`     | no        | The key holds a character outside visible ASCII, or `api_key` is neither a string nor an `ApiKey`                                  |
-| `network_error`               | `NetworkError`            | yes       | The connection failed before a response arrived                                                                                    |
-| `offline`                     | `NetworkError`            | no        | `DFO_OFFLINE=1` is set, and the call needs the server                                                                              |
-| `profile_not_found`           | `AuthenticationError`     | no        | `DFO_PROFILE` names a profile the credentials file lacks                                                                           |
-| `profile_without_key`         | `AuthenticationError`     | no        | The chosen profile in the credentials file has no key                                                                              |
-| `refusal_without_code`        | by status                 | by status | A refusal whose body carries no code: no problem document, or one without a code                                                   |
-| `response_too_large`          | `ServerError`             | no        | A decoded response body passes its size cap                                                                                        |
-| `unexpected_response`         | `ContractError`           | no        | A response the call does not act on: a redirect it does not follow, a body that is not JSON, or a status the route does not answer |
-| `version_unavailable`         | `VersionUnavailableError` | no        | A stored version can no longer be fetched, and no refusal names why                                                                |
+| Code                          | Class                     | Retryable | Raised when                                                                                                                                |
+| ----------------------------- | ------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `answer_declined`             | `DeclinedError`           | no        | Fetching an answer Search declined or answered with the catalogue                                                                          |
+| `answer_incomplete`           | `IncompleteAnswerError`   | no        | Fetching an answer with a part that has no reading, when the fetch is not partial or no part has a reading                                 |
+| `base_url_invalid`            | `InvalidRequestError`     | no        | A base URL is empty, is not an absolute http or https URL, or carries userinfo, a query, a fragment, or a dot segment                      |
+| `choice_invalid`              | `InvalidRequestError`     | no        | A choice whose part or option names no gap, several gaps, or no option, or a choice that cannot post back a part                           |
+| `contract_violation`          | `ContractError`           | no        | A response lacks a member the client acts on, or holds one that contradicts the request                                                    |
+| `credentials_file_invalid`    | `AuthenticationError`     | no        | The credentials file breaks the format (the message names the line)                                                                        |
+| `credentials_file_unreadable` | `AuthenticationError`     | no        | The credentials file exists but cannot be read                                                                                             |
+| `deadline_exceeded`           | `DfoTimeoutError`         | yes       | The call's deadline passed before it finished                                                                                              |
+| `digest_mismatch`             | `ServerError`             | no        | A downloaded file does not hash to the digest its manifest names, after the files route was asked once more                                |
+| `download_failed`             | `ServerError`             | yes       | The signed URL a files route names refused, or its fetch failed, after the route was asked once more                                       |
+| `header_invalid`              | `InvalidRequestError`     | no        | A header's name is not an HTTP token, its value holds a character outside visible ASCII, spaces, and tabs, or it frames the message        |
+| `insecure_transport`          | `InvalidRequestError`     | no        | A key would travel over plain http to a host that is not loopback                                                                          |
+| `invalid_argument`            | `InvalidRequestError`     | no        | A call's arguments break a rule the client checks before any request                                                                       |
+| `key_empty`                   | `AuthenticationError`     | no        | The `api_key` argument, or what its callable returns, is an empty string                                                                   |
+| `key_invalid`                 | `AuthenticationError`     | no        | The key holds a character outside visible ASCII, or `api_key` is neither a string nor an `ApiKey`                                          |
+| `network_error`               | `NetworkError`            | yes       | The connection failed before a response arrived                                                                                            |
+| `offline`                     | `NetworkError`            | no        | `DFO_OFFLINE=1` is set, and the call needs the server                                                                                      |
+| `profile_not_found`           | `AuthenticationError`     | no        | `DFO_PROFILE` names a profile the credentials file lacks                                                                                   |
+| `profile_without_key`         | `AuthenticationError`     | no        | The chosen profile in the credentials file has no key                                                                                      |
+| `refusal_without_code`        | by status                 | by status | A refusal whose body has no problem document, or a problem document without a code                                                         |
+| `response_too_large`          | `ServerError`             | no        | A decoded response body passes its size cap                                                                                                |
+| `unexpected_response`         | `ContractError`           | no        | A response the call does not act on, such as a redirect it does not follow, a body that is not JSON, or a status the route does not answer |
+| `version_unavailable`         | `VersionUnavailableError` | no        | A stored version can no longer be fetched, and no refusal names why                                                                        |
 
 ### Errors outside DfoError
 
@@ -315,14 +315,14 @@ Warnings derive from `dfo.errors.DfoWarning`, a `UserWarning`, and point at the 
 
 The client issues these warnings itself:
 
-| Code                    | Class                   | Issued when                                                                                                       |
-| ----------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `key_checksum_mismatch` | `DfoWarning`            | The key's body is empty or its checksum differs; the client sends it anyway                                       |
-| `key_not_base62`        | `DfoWarning`            | A character of the key after its prefix is outside base62; the client sends it anyway                             |
-| `key_unknown_prefix`    | `DfoWarning`            | The key starts with neither `dfo_k_` nor `dfo_p_`; the client sends it anyway                                     |
-| `ref_digest_changed`    | `DfoWarning`            | A ref's version served a file whose digest differs, because the server rendered the same data again; the client returns the data |
-| `route_deprecated`      | `DfoDeprecationWarning` | A response carries a `Deprecation` or `Sunset` header, once per process for each pair of values                   |
-| `server_warning`        | `DfoWarning`            | A response carries an `x-dfo-warning` header, once per process per message                                        |
+| Code                    | Class                   | Issued when                                                                                                                       |
+| ----------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `key_checksum_mismatch` | `DfoWarning`            | The key's body is empty or its checksum differs (the client sends it anyway)                                                      |
+| `key_not_base62`        | `DfoWarning`            | A character of the key after its prefix is outside base62 (the client sends it anyway)                                            |
+| `key_unknown_prefix`    | `DfoWarning`            | The key starts with neither `dfo_k_` nor `dfo_p_` (the client sends it anyway)                                                    |
+| `ref_digest_changed`    | `DfoWarning`            | A ref's version served a file whose digest differs, because the server rendered the same data again (the client returns the data) |
+| `route_deprecated`      | `DfoDeprecationWarning` | A response carries a `Deprecation` or `Sunset` header, once per process for each pair of values                                   |
+| `server_warning`        | `DfoWarning`            | A response carries an `x-dfo-warning` header, once per process per message                                                        |
 
 To turn every DFO warning into an error for a test run:
 
@@ -336,5 +336,5 @@ warnings.simplefilter("error", DfoWarning)
 
 ## Next
 
-- [Answers and choices](answers.md): settling the gaps an `IncompleteAnswerError` lists.
-- [Keys and credentials](keys.md): fixing an `AuthenticationError`.
+- [Answers and choices](answers.md) covers settling the gaps an `IncompleteAnswerError` lists.
+- [Keys and credentials](keys.md) covers fixing an `AuthenticationError`.

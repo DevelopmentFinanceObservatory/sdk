@@ -27,9 +27,9 @@ data = answer.fetch()
 print(data)
 ```
 
-The progress goes to a bar on stderr in a terminal, to one live display in a notebook, and to INFO records on the `dfo` logger anywhere else, each naming the operation id, the trace id and the rows written. `progress=False` silences it for one call, and `DFO_PROGRESS=0` for the process.
+The progress goes to a bar on stderr in a terminal, to one live display in a notebook, and to INFO records on the `dfo` logger anywhere else, each naming the operation id, the trace id, and the rows written. `progress=False` silences it for one call, and `DFO_PROGRESS=0` for the process.
 
-`fetch` polls at the pace the server asks for, held between 1 and 60 seconds, and backs off from 1 to 8 seconds when the server names none. With no `timeout` it waits until the server ends the build, which the server always does: each build has a deadline on the server, and a build whose worker stops is marked failed, which `fetch` raises.
+`fetch` polls at the pace the server asks for, held between 1 and 60 seconds, and backs off from 1 to 8 seconds when the server names none. With no `timeout` it waits until the server ends the build, which the server always does. Each build has a deadline on the server, and a build whose worker stops is marked failed, which `fetch` raises.
 
 ## Set a deadline
 
@@ -81,7 +81,7 @@ Run the same fetch again, in the same session or a new one, and it picks up the 
 
 ## Cancel in async code
 
-In `dfo.AsyncClient`, a cancelled fetch leaves the build running too, so `asyncio.wait_for`, `asyncio.timeout` and a task group's cancellation are safe to use around it:
+In `dfo.AsyncClient`, a cancelled fetch leaves the build running too, so `asyncio.wait_for`, `asyncio.timeout`, and a task group's cancellation are safe to use around it:
 
 ```text
 Cancelled; the build keeps running.
@@ -140,5 +140,5 @@ The client's own timeouts sit underneath:
 
 ## Next
 
-- [The cache](cache.md): a built table downloads once, and later fetches read it from disk.
-- [Errors](errors.md): `DfoTimeoutError` and the other errors a build can raise.
+- [The cache](cache.md) shows how a built table downloads once and later fetches read it from disk.
+- [Errors](errors.md) covers `DfoTimeoutError` and the other errors a build can raise.

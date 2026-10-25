@@ -1,10 +1,10 @@
 # Use the cache and work offline
 
-The client keeps every file it downloads on disk, keyed by its SHA-256 digest, beside the manifest that describes it. A fetch of a ref reads the versions it names from disk and sends no request. A fetch of a spec asks the server for the newest version, and reads the file from disk when that version is already there. With `DFO_OFFLINE=1` the client works from the cache alone.
+The client keeps every file it downloads on disk, keyed by its SHA-256 digest, beside the manifest that describes it. A fetch of a ref reads the versions it names from disk when the cache holds them, without a request. A fetch of a spec asks the server for the newest version, and reads the file from disk when that version is already there. With `DFO_OFFLINE=1` the client works from the cache alone.
 
 ## Work offline
 
-Fetch once with the network, then set `DFO_OFFLINE=1`. A ref loads the exact versions it names, and a spec loads the newest version the cache holds. Both datasets report `stale` as True, because the client did not ask the server whether anything changed:
+Fetch once with the network, then set `DFO_OFFLINE=1`. A ref loads the exact versions it names, and a spec loads the newest version the cache holds. Both datasets report `stale` as True, because the client read from the cache alone:
 
 ```text
 <Dataset Germany's gross ODA disbursements to Nigeria for basic health care, 1995 to 2024. Current US dollars · OECD Creditor Reporting System (CRS).
@@ -43,15 +43,15 @@ finally:
     del os.environ["DFO_OFFLINE"]
 ```
 
-Under `DFO_OFFLINE=1` every request raises `NetworkError` with the code `offline` before it is sent, so `dfo.search`, `answer.choose` and the lookups raise it. A fetch raises it when the cache holds no version of a spec, when a ref names a version the cache lacks, when the cache is off, and when a spec is narrowed with `window`, `entities` or `facets`, since only the server knows which version a narrowing builds. The client reads the variable on each call, so set it before the call runs.
+Under `DFO_OFFLINE=1` every request raises `NetworkError` with the code `offline` before it is sent, so `dfo.search`, `answer.choose`, and the lookups raise it. A fetch raises it when the cache holds no version of a spec, when a ref names a version the cache lacks, when the cache is off, and when a spec is narrowed with `window`, `entities`, or `facets`, since only the server knows which version a narrowing builds. The client reads the variable on each call, so set it before the call runs.
 
-`stale` travels into the file `save` writes. Fetch again with the network to clear it.
+`stale` is True only under `DFO_OFFLINE=1`, and it travels into the file `save` writes. Fetch again with the network to clear it.
 
 ## Where the cache lives
 
 The cache root is the first of these that is set:
 
-1. `cache_dir=` on `dfo.Client`, `dfo.AsyncClient` or `dfo.configure`
+1. `cache_dir=` on `dfo.Client`, `dfo.AsyncClient`, or `dfo.configure`
 1. `DFO_CACHE_DIR`
 1. `BBLOCKS_CACHE_DIR`, shared with the bblocks packages
 1. the platform's cache directory: `~/.cache/readerkit` on Linux (or `$XDG_CACHE_HOME/readerkit`), `~/Library/Caches/readerkit` on macOS, and `%LOCALAPPDATA%\readerkit\Cache` on Windows.
@@ -73,7 +73,7 @@ v1/dfo/cache1/
 
 A read hashes the file again, and a file whose bytes differ from its digest counts as missing and downloads afresh. Each entry is written to a temporary name and renamed into place, so a reader sees whole files only, and several processes can share one cache. A relative `cache_dir` resolves against the working directory when the client is built.
 
-## Clear it, move it, or turn it off
+## Clear, move, or disable the cache
 
 The cache keeps up to 2 GiB of files and removes the least recently read first. `dfo cache clear` empties the cache directory, keeps the directory, and prints its path:
 
@@ -81,7 +81,7 @@ The cache keeps up to 2 GiB of files and removes the least recently read first. 
 dfo cache clear
 ```
 
-To give one client its own cache, or fetch with no cache at all:
+Pass `cache_dir` to give a client its own cache, or `cache=False` to fetch without one:
 
 ```python
 import dfo
@@ -106,5 +106,5 @@ print(len(data))
 
 ## Next
 
-- [Fetch and keep a dataset](datasets.md): refs, `latest=True`, and what happens when a version is gone from the server and the cache.
-- [Errors](errors.md): `NetworkError` and the `offline` code.
+- [Fetch and keep a dataset](datasets.md) covers refs, `latest=True`, and what happens when a version is gone from the server and the cache.
+- [Errors](errors.md) covers `NetworkError` and the `offline` code.
