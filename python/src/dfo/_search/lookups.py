@@ -165,7 +165,7 @@ class AsyncLookup:
             self._transport,
             response,
             "GraphNode",
-            (("kind", "string"), ("ref", "string")),
+            (("kind", "string"), ("ref", "string"), ("types", "array")),
             read_node,
         )
 

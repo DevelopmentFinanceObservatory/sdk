@@ -5,6 +5,7 @@ import { inspect } from "node:util";
 import { parquetMetadata } from "hyparquet";
 
 import { Answer, answerFromBody, SearchWarning } from "../src/search/answer.ts";
+import { optionLine } from "../src/search/choices.ts";
 import type { AnswerContext, Candidate, Gap, QueryOption } from "../src/search/answer.ts";
 import {
   ContractError,
@@ -451,6 +452,36 @@ describe("choose by the printed label", () => {
     });
   }
 });
+
+describe("choose by a printed line that ends in a full stop", () => {
+  test("a candidate whose source ends in a full stop is chosen by its printed line", async () => {
+    const wire = body("answer-candidates-choose-fetch");
+    const parts = wire["parts"] as { candidates?: { specs: WireSpecShape[] } | null }[];
+    const resolved = parts.find((part) => part.candidates)!.candidates!.specs[1]!.resolved;
+    resolved.facets.provenance.label += ".";
+    const printed = "Kenya's number of deaths, 2018 to 2022 · Kenya Census.";
+    const answer = answerFromBody(structuredClone(wire), offline(), null);
+    assert.ok(String(answer).includes(`[1] ${printed}`), String(answer));
+    const option = answer.gaps[0]!.options[1] as Candidate;
+    const { fetch, seen } = mockFetch(json(body("answer-definite-fetch")));
+    await answerFromBody(wire, offline(fetch), null).choose(printed);
+    const posted = JSON.parse(seen[0]!.body!) as { input: { entries: { identity: unknown }[] } };
+    assert.deepEqual(posted.input.entries[0]!.identity, option.spec.definition["identity"]);
+  });
+});
+
+describe("optionLine", () => {
+  // Python's `option_line` reads `label or sentence`, so an empty label prints the sentence.
+  test("a candidate with an empty label prints its sentence, then its source", () => {
+    const candidate = answerOf("answer-candidates-choose-fetch").gaps[0]!.options[1] as Candidate;
+    assert.equal(
+      optionLine({ ...candidate, label: "", sentence: "Kenya's deaths." }),
+      "Kenya's deaths · Kenya Census",
+    );
+  });
+});
+
+type WireSpecShape = { resolved: { facets: { provenance: { label: string } } } };
 
 /** Every value reachable from `root` through own properties, `root` included. */
 function reachable(root: unknown): unknown[] {

@@ -182,7 +182,11 @@ def test_the_lookup_functions_ask_the_default_client(
 ) -> None:
     bodies = {
         "/api/graph/resolve": {"results": []},
-        "/api/graph/node/country/NGA": {"kind": "country", "ref": "country/NGA"},
+        "/api/graph/node/country/NGA": {
+            "kind": "country",
+            "ref": "country/NGA",
+            "types": [],
+        },
         "/codes/spec_not_found": {"code": "spec_not_found", "mappings": []},
         "/api/search/catalogue": {
             "catalogue_version": "v1",

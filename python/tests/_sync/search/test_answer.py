@@ -487,10 +487,16 @@ def test_a_label_matches_as_search_gives_it_and_as_the_answer_prints_it(
     assert server.posted[1]["input"] == option["data_query"]
 
 
-@pytest.mark.parametrize("form", ["label", "line", "line with full stop"])
+@pytest.mark.parametrize(
+    "form", ["label", "line", "line with full stop", "line ending in its source's stop"]
+)
 def test_a_candidate_matches_by_its_label_or_its_printed_line(form: str) -> None:
     wire = load("search-2.json")
     part = wire["parts"][0]
+    if form == "line ending in its source's stop":
+        resolved = part["candidates"]["specs"][1]["resolved"]
+        resolved["facets"]["provenance"]["label"] += "."
+        form = "line"
     answer, server = ask("GNI of Germany", wire, picked(part, 1))
     candidate = answer.parts[0].candidates[1]
     line = next(

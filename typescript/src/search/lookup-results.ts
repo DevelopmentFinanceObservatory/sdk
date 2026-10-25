@@ -7,6 +7,7 @@
  * `util.inspect`, with the server's text passed through `inline`.
  */
 
+import { isRecord, strings } from "../core/json.ts";
 import { inline } from "../core/text.ts";
 import type {
   CatalogueResponse,
@@ -44,8 +45,9 @@ function clipped(text: string, width: number): string {
 
 const line = (text: string): string => clipped(inline(text), LINE_MAX);
 
-const counted = (count: number, noun: string): string =>
-  `${count} ${noun}${count === 1 ? "" : "s"}`;
+/** `1 near match`, `2 near matches`: `plural` spells a plural that is not the noun and `s`. */
+const counted = (count: number, noun: string, plural = `${noun}s`): string =>
+  `${count} ${count === 1 ? noun : plural}`;
 
 /** `Kenya  country/KEN`, the name cut to `width`, or the dcid alone when there is no name. */
 const named = (dcid: string, name: string | null, width = NAME_MAX): string =>
@@ -89,12 +91,16 @@ export class Entity {
   }
 }
 
+/** The entities a result lists; a list held as another JSON type reads as none. */
+const isList = (refs: readonly EntityRef[] | null): refs is readonly EntityRef[] =>
+  Array.isArray(refs);
 const entities = (refs: readonly EntityRef[] | null): readonly Entity[] =>
-  Object.freeze((refs ?? []).map((ref) => new Entity(ref)));
+  Object.freeze((isList(refs) ? refs : []).map((ref) => new Entity(ref)));
 
-/** What one name resolved to. `entity` is set when `status` is `resolved` or `not_held`;
- *  `candidates` holds the nodes an `ambiguous` name may mean, and `nearMatches` the names close
- *  to one, as hints for a person. */
+/** What one name resolved to. `entity` is set when `status` is `resolved` or `not_held`; a
+ *  `not_held` entity names an id the resolver knows and the graph does not hold, so it does not
+ *  open on the node route. `candidates` holds the nodes an `ambiguous` name may mean, and
+ *  `nearMatches` the names close to one, as hints for a person. */
 export class Match {
   /** The name as asked. */
   readonly text: ResolveResult["input"];
@@ -109,7 +115,8 @@ export class Match {
   constructor(result: ResolveResult) {
     this.text = result.input;
     this.status = result.status;
-    this.entity = result.entity == null ? null : new Entity(result.entity);
+    // An entity held as another JSON type than an object reads as none.
+    this.entity = isRecord(result.entity) ? new Entity(result.entity) : null;
     this.candidates = entities(result.candidates);
     this.nearMatches = entities(result.near_matches);
     this.raw = result;
@@ -117,17 +124,18 @@ export class Match {
   }
 
   /** The name and what it resolved to: `Kenya -> Kenya  country/KEN  (country)`, then
-   *  `+N near matches` when there are some; `Congo -> ambiguous: ` and the candidates; or
-   *  `Germny -> not found; nearest: ` and the near matches. */
+   *  `+N near matches` when there are some; `Atlantis -> not held: ` and the entity named;
+   *  `Congo -> ambiguous: ` and the candidates; or `Germny -> not found; nearest: ` and the near
+   *  matches. */
   toString(): string {
     const text = clipped(this.text, TEXT_MAX);
-    if (this.entity !== null) {
+    if (this.status === "resolved" && this.entity !== null) {
       const near = this.nearMatches.length;
-      return line(
-        `${text} -> ${this.entity.toString()}${near > 0 ? `  +${counted(near, "near match")}` : ""}`,
-      );
+      const nearLine = near > 0 ? `  +${counted(near, "near match", "near matches")}` : "";
+      return line(`${text} -> ${this.entity.toString()}${nearLine}`);
     }
     const status = this.status.replaceAll("_", " ");
+    if (this.entity !== null) return line(`${text} -> ${status}: ${this.entity.toString()}`);
     if (this.candidates.length > 0) return line(`${text} -> ${status}: ${listed(this.candidates)}`);
     if (this.nearMatches.length > 0) {
       return line(`${text} -> ${status}; nearest: ${listed(this.nearMatches)}`);
@@ -158,7 +166,8 @@ export class Node {
     this.dcid = node.ref;
     this.name = node.label ?? null;
     this.kind = node.kind;
-    this.types = Object.freeze([...node.types]);
+    // A type that is not a string is left out, as Python's client leaves it.
+    this.types = Object.freeze(strings(node.types));
     this.raw = node;
     Object.freeze(this);
   }

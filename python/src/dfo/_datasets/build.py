@@ -194,7 +194,7 @@ def scope(
 
     Args:
         window: `"all"`, `"latest"` or `(start_year, end_year)`.
-        entities: Role names bound to dcids, such as `{"recipient": ["country/NGA"]}`.
+        entities: Role names bound to dcids, such as `{"destination": ["country/NGA"]}`.
         facets: Facet axes (`provenance`, `measurementMethod`, `unit`) bound to a
             ref; None binds the facets that declare no value on the axis. An
             empty map names no axis.

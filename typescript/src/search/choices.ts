@@ -129,20 +129,23 @@ const shownText = (text: string): string => inline(text).trim().replace(/\.+$/, 
  *  in for a missing label, or a place option's label. */
 export function optionLine(option: Candidate | QueryOption): string {
   if (option.kind === "query") return shownText(option.label);
-  const label = shownText(option.label ?? option.sentence ?? "");
+  // An empty label falls through to the sentence, as Python's `or` does.
+  const label = shownText(option.label || option.sentence || "");
   return [label, option.source, option.unit]
     .filter((piece): piece is string => Boolean(piece))
     .map(inline)
     .join(" · ");
 }
 
-/** Whether `key` names an option: its label or its printed line, each read by `shownText`. A
- *  candidate with no label matches only by its line. */
+/** Whether `key` names an option: its label or its printed line, each read by `shownText`, so a
+ *  line whose source or unit ends in a full stop pastes back. A candidate with no label matches
+ *  only by its line. */
 function labels(option: Candidate | QueryOption, key: unknown): boolean {
   const asked = typeof key === "string" ? shownText(key) : "";
   if (asked === "") return false;
   return (
-    (option.label !== null && shownText(option.label) === asked) || optionLine(option) === asked
+    (option.label !== null && shownText(option.label) === asked) ||
+    shownText(optionLine(option)) === asked
   );
 }
 

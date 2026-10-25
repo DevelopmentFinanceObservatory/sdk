@@ -8,7 +8,14 @@ import pytest
 
 import dfo
 from dfo._core.errors import DataWarning, DfoWarning, NotFoundError, SearchWarning
-from dfo._core.lookup_results import Catalogue, Code, Entity, Match, Node
+from dfo._core.lookup_results import (
+    Catalogue,
+    Code,
+    Entity,
+    Match,
+    Node,
+    read_matches,
+)
 from dfo._core.parse import parse_parts
 from dfo._core.refs import DatasetRef, Member, RefMember
 from dfo._core.types import (
@@ -250,6 +257,17 @@ ROWS: list[tuple[str, Callable[[], object], str, bool]] = [
         True,
     ),
     (
+        "match-resolved-near-matches",
+        lambda: _match(
+            "Georgia",
+            "resolved",
+            Entity("country/GEO", "Georgia", "country"),
+            near_matches=(_GERMANY, _CONGO),
+        ),
+        "Match(Georgia -> Georgia  country/GEO  (country)  +2 near matches)",
+        True,
+    ),
+    (
         "match-ambiguous",
         lambda: _match("Congo", "ambiguous", candidates=(_CONGO,) * 4),
         "Match(Congo -> ambiguous: Congo [DRC]  country/COD | Congo [DRC]  "
@@ -264,8 +282,20 @@ ROWS: list[tuple[str, Callable[[], object], str, bool]] = [
     ),
     (
         "match-not-held",
-        lambda: _match("Sahel", "not_held"),
-        "Match(Sahel -> not held)",
+        lambda: read_matches(
+            {
+                "results": [
+                    {
+                        "input": "Atlantis",
+                        "status": "not_held",
+                        "entity": {"ref": "dc/x", "label": "Atlantis", "kind": None},
+                        "candidates": None,
+                        "near_matches": None,
+                    }
+                ]
+            }
+        )[0],
+        "Match(Atlantis -> not held: Atlantis  dc/x)",
         True,
     ),
     (

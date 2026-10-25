@@ -636,7 +636,7 @@ def _pick(gap: Gap, key: int | str, *, mention: int | str | None) -> Candidate |
         if asked
         and (
             (choice.label is not None and shown_text(choice.label) == asked)
-            or option_line(choice) == asked
+            or shown_text(option_line(choice)) == asked
         )
         and (
             scope is None or not isinstance(choice, Option) or scope in choice.mentions

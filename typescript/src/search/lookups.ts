@@ -113,26 +113,19 @@ function checkEach(
   }
 }
 
-/** What a `Match` reads of a resolver result, and of each node it names. */
+/** What a `Match` reads of a resolver result, and of each node it names: the members the wire
+ *  schema requires and admits no null for. */
 const RESOLVE_RESULT = { input: "string", status: "string" } as const;
-const NULLABLE_RESULT = { entity: "object", candidates: "array", near_matches: "array" } as const;
 const ENTITY_REF = { ref: "string", label: "string" } as const;
 
-/** Checks each resolver result and the nodes it names; `results` is an array by then. A
- *  nullable member is checked only when the result holds it. */
+/** Checks each resolver result and the nodes it names; `results` is an array by then. The
+ *  nullable `entity`, `candidates` and `near_matches` are checked only when held as an object or
+ *  an array, and read as absent when held as another JSON type. */
 function checkResults({ results }: Readonly<Record<string, unknown>>): void {
   for (const [index, item] of (results as readonly unknown[]).entries()) {
     const at = `/results/${index}`;
-    const held = Object.entries(NULLABLE_RESULT).filter(
-      ([member]) => isRecord(item) && item[member] != null,
-    );
-    const result = checkRequired(
-      "ResolveResult",
-      { ...RESOLVE_RESULT, ...Object.fromEntries(held) },
-      item,
-      at,
-    );
-    if (result.entity != null) {
+    const result = checkRequired("ResolveResult", RESOLVE_RESULT, item, at);
+    if (isRecord(result.entity)) {
       checkRequired("EntityRef", ENTITY_REF, result.entity, `${at}/entity`);
     }
     for (const member of ["candidates", "near_matches"] as const) {

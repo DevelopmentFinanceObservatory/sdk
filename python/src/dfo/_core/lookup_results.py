@@ -93,8 +93,9 @@ class Match:
         text: The name as asked.
         status: `resolved`, `ambiguous`, `not_found` or `not_held`. A status this
             client does not list passes through.
-        entity: The node the name resolved to; None unless `status` is
-            `resolved`.
+        entity: The node the name resolved to, set for `resolved` and
+            `not_held`. A `not_held` entity names an id the resolver knows and
+            the graph does not hold, so it does not open on the node route.
         candidates: The nodes an ambiguous name could mean, in the server's
             order.
         near_matches: Nodes with a similar name: the nearest spellings of a name
@@ -112,14 +113,16 @@ class Match:
     @override
     def __str__(self) -> str:
         text = clipped(self.text, _TEXT_MAX)
-        if self.entity is not None:
+        if self.status == "resolved" and self.entity is not None:
             near = (
-                f"  +{counted(len(self.near_matches), 'near match')}"
+                f"  +{counted(len(self.near_matches), 'near match', 'near matches')}"
                 if self.near_matches
                 else ""
             )
             return _line(f"{text} -> {self.entity}{near}")
         status = self.status.replace("_", " ")
+        if self.entity is not None:
+            return _line(f"{text} -> {status}: {self.entity}")
         if self.candidates:
             return _line(f"{text} -> {status}: {_listed(self.candidates)}")
         if self.near_matches:
@@ -226,7 +229,10 @@ class Catalogue:
 
 def _entity(value: object, pointer: str) -> Entity:
     ref = cast(
-        EntityRef, require_members(value, "EntityRef", (("ref", "string"),), pointer)
+        EntityRef,
+        require_members(
+            value, "EntityRef", (("ref", "string"), ("label", "string")), pointer
+        ),
     )
     return Entity(ref["ref"], _text(ref.get("label")), _text(ref.get("kind")))
 
@@ -242,9 +248,12 @@ def _entities(value: object, pointer: str) -> tuple[Entity, ...]:
 def read_matches(body: ResolveResponse) -> list[Match]:
     """One match per name in a resolve response, in the order asked.
 
+    A result's `entity`, `candidates` or `near_matches` held as another JSON
+    type reads as absent.
+
     Raises:
         ContractError: A result lacks its `input` or `status` string, or an
-            entity, candidate or near match lacks its `ref` string
+            entity, candidate or near match lacks its `ref` or `label` string
             (`contract_violation`).
     """
     found = []
@@ -264,7 +273,9 @@ def read_matches(body: ResolveResponse) -> list[Match]:
             Match(
                 result["input"],
                 result["status"],
-                None if entity is None else _entity(entity, f"{pointer}/entity"),
+                _entity(entity, f"{pointer}/entity")
+                if isinstance(entity, Mapping)
+                else None,
                 _entities(result.get("candidates"), f"{pointer}/candidates"),
                 _entities(result.get("near_matches"), f"{pointer}/near_matches"),
                 result,
@@ -274,15 +285,13 @@ def read_matches(body: ResolveResponse) -> list[Match]:
 
 
 def read_node(body: GraphNode) -> Node:
-    """The node a node response holds."""
-    types = body.get("types")
+    """The node a node response holds, once it holds its `ref`, `kind` and
+    `types`. A type that is not a string is left out."""
     return Node(
         body["ref"],
         _text(body.get("label")),
         body["kind"],
-        tuple(item for item in types if isinstance(item, str))
-        if isinstance(types, list)
-        else (),
+        tuple(item for item in body["types"] if isinstance(item, str)),
         body,
     )
 
@@ -293,11 +302,18 @@ def read_code(body: CodeRegistryEntry) -> Code:
 
 
 def read_catalogue(body: CatalogueResponse) -> Catalogue:
-    """The catalogue a catalogue response holds. An example without its `text`
-    string is left out."""
+    """The catalogue a catalogue response holds.
+
+    Raises:
+        ContractError: An example lacks its `text` string (`contract_violation`).
+    """
     examples = tuple(
-        text
-        for example in body["examples"]
-        if isinstance(example, Mapping) and (text := _text(example.get("text")))
+        require_members(
+            example,
+            "CatalogueExampleSentence",
+            (("text", "string"),),
+            f"/examples/{index}",
+        )["text"]
+        for index, example in enumerate(body["examples"])
     )
     return Catalogue(body["catalogue_version"], body["counts"], examples, body)

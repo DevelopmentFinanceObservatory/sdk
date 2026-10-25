@@ -139,6 +139,7 @@ def test_the_reading_columns_render_as_a_tuple_of_slots() -> None:
         _column_rule([["a"], ["b", "a"]]),
         _column_rule([["a", "a"]]),
         _column_rule([["a"], ["stat_var"]]),
+        _column_rule([["a"], ["part_label", "part"]]),
     ],
     ids=[
         "format",
@@ -149,6 +150,7 @@ def test_the_reading_columns_render_as_a_tuple_of_slots() -> None:
         "repeated",
         "repeated-in-slot",
         "stat-var",
+        "part",
     ],
 )
 def test_a_reading_order_rule_that_breaks_the_format_is_refused(

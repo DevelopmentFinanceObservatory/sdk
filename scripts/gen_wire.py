@@ -20,10 +20,10 @@ pointer's values must all be in the property's enum. The generator refuses a
 contract that breaks any of these rules.
 
 `python/src/dfo/_generated/reading_order.py` holds the `reading_columns` slots of
-`contract/rules/reading-order.json`, which `dfo._datasets.reading` orders every
+`contract/rules/reading-order.json`, which `dfo._datasets.dataset` orders every
 table by. The generator refuses a file that is not format version 1 of the
 `reading-order` rule, a slot that is empty or holds other than strings, a name
-listed twice, and `stat_var` in a slot.
+listed twice, and `stat_var` or `part` in a slot.
 
 `wire.py` also declares a closed `Literal` alias for each enum in `NAMED_ENUMS`,
 which the public classes read as `Name | str` and the client's options take as
@@ -324,8 +324,8 @@ def render_reading_order(rule: Mapping[str, Any]) -> str:
             raise SystemExit(f"{where}: the slot {slot!r} is not a list of names")
         if seen.intersection(slot) or len(set(slot)) != len(slot):
             raise SystemExit(f"{where}: the slot {slot!r} lists a name twice")
-        if "stat_var" in slot:
-            raise SystemExit(f"{where}: the slot {slot!r} names stat_var")
+        if "stat_var" in slot or "part" in slot:
+            raise SystemExit(f"{where}: the slot {slot!r} names stat_var or part")
         seen.update(slot)
     return READING_ORDER_TEMPLATE.format(
         slots="\n".join(f"    {tuple(slot)!r}," for slot in slots)

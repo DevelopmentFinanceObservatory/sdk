@@ -112,6 +112,13 @@ const ROWS: [string, () => { toString(): string }, string, boolean][] = [
     true,
   ],
   [
+    "match-resolved-near-matches",
+    () =>
+      new Match(result("Georgia", { entity: georgias[0]!, near_matches: georgias.slice(1, 3) })),
+    "Georgia -> Georgia  country/GEO  (country)  +2 near matches",
+    true,
+  ],
+  [
     "match-ambiguous",
     () => new Match(result("Georgia", { status: "ambiguous", candidates: georgias })),
     "Georgia -> ambiguous: Georgia  country/GEO | Georgia  geoId/13 | Georgia  geoId/13a | +1 more",
@@ -138,7 +145,7 @@ const ROWS: [string, () => { toString(): string }, string, boolean][] = [
           entity: { ref: "dc/x", label: "Atlantis", kind: null },
         }),
       ),
-    "Atlantis -> Atlantis  dc/x",
+    "Atlantis -> not held: Atlantis  dc/x",
     true,
   ],
   [

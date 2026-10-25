@@ -88,9 +88,10 @@ def clipped(text: str, width: int = REPR_TEXT_MAX) -> str:
     return text if len(text) <= width else text[: width - 1].rstrip() + "…"
 
 
-def counted(count: int, noun: str) -> str:
-    """`1 warning`, `2 warnings`: the count with the noun in its number."""
-    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+def counted(count: int, noun: str, plural: str | None = None) -> str:
+    """`1 warning`, `2 warnings`: the count with the noun in its number. `plural`
+    spells a plural that is not the noun and `s`, such as `near matches`."""
+    return f"{count} {noun}" if count == 1 else f"{count} {plural or noun + 's'}"
 
 
 def _quoted(text: str | None) -> str | None:

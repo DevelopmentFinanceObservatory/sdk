@@ -179,19 +179,31 @@ describe("lookups", () => {
     }
   }
 
+  // The rows after the problem-document ones are those of
+  // `test_a_lookup_refuses_a_body_its_schema_does_not_fit` in Python's test_client.py: each
+  // member the wire schema requires and admits no null for, missing or of another type.
   for (const [name, call, body, pointer] of [
     ["lookup.catalogue", (dfo: Client) => dfo.lookup.catalogue(), unknown200, "/code"],
     ["lookup.code", (dfo: Client) => dfo.lookup.code("spec_not_found"), null, ""],
     ["lookup.code", (dfo: Client) => dfo.lookup.code("spec_not_found"), unknown200, "/code"],
     ["lookup.node", (dfo: Client) => dfo.lookup.node("country/NGA"), { code: "x" }, "/code"],
-    ["lookup.node", (dfo: Client) => dfo.lookup.node("country/NGA"), { kind: 1 }, "/kind"],
+    ["lookup.node", (dfo: Client) => dfo.lookup.node("country/NGA"), { ...NODE, kind: 1 }, "/kind"],
+    ["lookup.node", (dfo: Client) => dfo.lookup.node("country/NGA"), { kind: "country" }, "/ref"],
     [
       "lookup.node",
       (dfo: Client) => dfo.lookup.node("country/NGA"),
       { ...NODE, types: null },
       "/types",
     ],
+    ["lookup.code", (dfo: Client) => dfo.lookup.code("spec_not_found"), { mappings: [] }, "/code"],
     ["lookup.resolve", (dfo: Client) => dfo.lookup.resolve("Kenya"), [], ""],
+    ["lookup.resolve", (dfo: Client) => dfo.lookup.resolve("Kenya"), { results: {} }, "/results"],
+    [
+      "lookup.resolve",
+      (dfo: Client) => dfo.lookup.resolve("Kenya"),
+      { results: [{ status: "resolved" }] },
+      "/results/0/input",
+    ],
     [
       "lookup.resolve",
       (dfo: Client) => dfo.lookup.resolve("Kenya"),
@@ -201,20 +213,56 @@ describe("lookups", () => {
     [
       "lookup.resolve",
       (dfo: Client) => dfo.lookup.resolve("Kenya"),
-      { results: [{ ...KENYA, entity: { label: "Kenya" } }] },
+      { results: [{ ...KENYA, entity: {} }] },
       "/results/0/entity/ref",
     ],
     [
       "lookup.resolve",
       (dfo: Client) => dfo.lookup.resolve("Kenya"),
-      { results: [{ ...KENYA, candidates: "x" }] },
-      "/results/0/candidates",
+      { results: [{ ...KENYA, entity: { ref: "country/KEN" } }] },
+      "/results/0/entity/label",
+    ],
+    [
+      "lookup.resolve",
+      (dfo: Client) => dfo.lookup.resolve("Kenya"),
+      { results: [{ ...KENYA, candidates: [{ label: "Kenya" }] }] },
+      "/results/0/candidates/0/ref",
+    ],
+    [
+      "lookup.resolve",
+      (dfo: Client) => dfo.lookup.resolve("Kenya"),
+      { results: [{ ...KENYA, near_matches: [1] }] },
+      "/results/0/near_matches/0",
     ],
     [
       "lookup.resolve",
       (dfo: Client) => dfo.lookup.resolve("Kenya"),
       { results: [{ ...KENYA, near_matches: [{ ref: "x" }] }] },
       "/results/0/near_matches/0/label",
+    ],
+    [
+      "lookup.catalogue",
+      (dfo: Client) => dfo.lookup.catalogue(),
+      { counts: {}, examples: [] },
+      "/catalogue_version",
+    ],
+    [
+      "lookup.catalogue",
+      (dfo: Client) => dfo.lookup.catalogue(),
+      { ...CATALOGUE, counts: [] },
+      "/counts",
+    ],
+    [
+      "lookup.catalogue",
+      (dfo: Client) => dfo.lookup.catalogue(),
+      { ...CATALOGUE, examples: null },
+      "/examples",
+    ],
+    [
+      "lookup.catalogue",
+      (dfo: Client) => dfo.lookup.catalogue(),
+      { ...CATALOGUE, examples: [1] },
+      "/examples/0",
     ],
     [
       "lookup.catalogue",
@@ -233,6 +281,34 @@ describe("lookups", () => {
       });
     });
   }
+});
+
+describe("lookups read tolerantly", () => {
+  // The same body as `test_a_lookup_reads_a_nullable_member_of_another_type_as_absent` in
+  // Python's test_client.py.
+  test("lookups read a nullable member of another type as absent", async () => {
+    const unclassified = { ref: "country/KEN", label: "Kenya" };
+    const malformed = { entity: "x", candidates: "x", near_matches: {} };
+    const { fetch } = mockFetch(
+      json({
+        results: [
+          { ...KENYA, ...malformed },
+          { ...KENYA, entity: unclassified },
+        ],
+      }),
+      json({ ...NODE, types: ["Country", 1] }),
+    );
+    const dfo = client(fetch);
+    const [malformedMatch, unclassifiedMatch] = await dfo.lookup.resolve("Kenya");
+    const node = await dfo.lookup.node("country/NGA");
+    assert.deepEqual(
+      [malformedMatch!.entity, malformedMatch!.candidates, malformedMatch!.nearMatches],
+      [null, [], []],
+    );
+    assert.equal(String(unclassifiedMatch!.entity), "Kenya  country/KEN");
+    assert.equal(unclassifiedMatch!.entity!.kind, null);
+    assert.deepEqual(node.types, ["Country"]);
+  });
 });
 
 describe("request", () => {

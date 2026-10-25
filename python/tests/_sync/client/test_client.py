@@ -311,30 +311,56 @@ def test_a_lookup_answering_a_problem_document_raises_its_error(
 
 
 CATALOGUE = {"catalogue_version": "v1", "counts": {}, "examples": []}
+NODE_REQUIRED = {"kind": "country", "ref": "country/NGA", "types": []}
+KENYA = {
+    "input": "Kenya",
+    "status": "resolved",
+    "entity": {"ref": "country/KEN", "label": "Kenya", "kind": "country"},
+    "candidates": None,
+    "near_matches": None,
+}
 
 
+# The same rows as `lookup refuses a 200 body` in typescript/test/client.test.ts: each
+# member the wire schema requires and admits no null for, missing or of another type.
 @pytest.mark.parametrize(
     ("lookup", "body", "pointer"),
     [
         ("resolve", [], ""),
         ("resolve", {"results": {}}, "/results"),
         ("resolve", {"results": [{"status": "resolved"}]}, "/results/0/input"),
+        ("resolve", {"results": [{"input": "Kenya"}]}, "/results/0/status"),
+        ("resolve", {"results": [{**KENYA, "entity": {}}]}, "/results/0/entity/ref"),
         (
             "resolve",
-            {"results": [{"input": "Nigeria", "status": "resolved", "entity": {}}]},
-            "/results/0/entity/ref",
+            {"results": [{**KENYA, "entity": {"ref": "country/KEN"}}]},
+            "/results/0/entity/label",
         ),
         (
             "resolve",
-            {"results": [{"input": "x", "status": "not_found", "near_matches": [1]}]},
+            {"results": [{**KENYA, "candidates": [{"label": "Kenya"}]}]},
+            "/results/0/candidates/0/ref",
+        ),
+        (
+            "resolve",
+            {"results": [{**KENYA, "near_matches": [1]}]},
             "/results/0/near_matches/0",
         ),
-        ("node", {"kind": 1, "ref": "country/NGA"}, "/kind"),
+        (
+            "resolve",
+            {"results": [{**KENYA, "near_matches": [{"ref": "x"}]}]},
+            "/results/0/near_matches/0/label",
+        ),
+        ("node", {**NODE_REQUIRED, "kind": 1}, "/kind"),
         ("node", {"kind": "country"}, "/ref"),
+        ("node", {**NODE_REQUIRED, "types": None}, "/types"),
         ("code", None, ""),
+        ("code", {"mappings": []}, "/code"),
         ("catalogue", {"counts": {}, "examples": []}, "/catalogue_version"),
         ("catalogue", {**CATALOGUE, "counts": []}, "/counts"),
         ("catalogue", {**CATALOGUE, "examples": None}, "/examples"),
+        ("catalogue", {**CATALOGUE, "examples": [1]}, "/examples/0"),
+        ("catalogue", {**CATALOGUE, "examples": [{}]}, "/examples/0/text"),
     ],
 )
 def test_a_lookup_refuses_a_body_its_schema_does_not_fit(
@@ -349,6 +375,30 @@ def test_a_lookup_refuses_a_body_its_schema_does_not_fit(
         pointer,
         "t-1",
     )
+
+
+# The same body as `lookups read a nullable member of another type as absent` in
+# typescript/test/client.test.ts.
+def test_a_lookup_reads_a_nullable_member_of_another_type_as_absent() -> None:
+    unclassified = {"ref": "country/KEN", "label": "Kenya"}
+    malformed = {"entity": "x", "candidates": "x", "near_matches": {}}
+    server = Server(
+        json_response(
+            200,
+            {"results": [{**KENYA, **malformed}, {**KENYA, "entity": unclassified}]},
+        ),
+        json_response(200, {**NODE_REQUIRED, "types": ["Country", 1]}),
+    )
+    with client_over(server) as client:
+        malformed_match, unclassified_match = client.lookup.resolve("Kenya")
+        node = client.lookup.node("country/NGA")
+    assert (
+        malformed_match.entity,
+        malformed_match.candidates,
+        malformed_match.near_matches,
+    ) == (None, (), ())
+    assert unclassified_match.entity == Entity("country/KEN", "Kenya", None)
+    assert node.types == ("Country",)
 
 
 NIGERIA = {"ref": "country/NGA", "label": "Nigeria", "kind": "country"}
@@ -374,7 +424,7 @@ ENTRY = {"code": "spec_not_found", "definition": "No such spec.", "mappings": []
 PLACE_CATALOGUE = {
     "catalogue_version": "v1",
     "counts": {"publishers": 7, "variables": 13847, "aid": {}},
-    "examples": [{"text": "ODA to Nigeria since 2015"}, {"template": "x"}],
+    "examples": [{"text": "ODA to Nigeria since 2015"}],
 }
 
 
@@ -400,7 +450,6 @@ def test_lookups_reach_the_graph_the_registry_and_the_catalogue() -> None:
     assert [match.raw for match in resolved] == RESOLVED["results"]
     assert node == Node("country/NGA", "Nigeria", "country", ("Country",), NODE)
     assert entry == Code("spec_not_found", "No such spec.", ENTRY)
-    # An example without its text is left out.
     assert catalogue == Catalogue(
         "v1", PLACE_CATALOGUE["counts"], ("ODA to Nigeria since 2015",), PLACE_CATALOGUE
     )
