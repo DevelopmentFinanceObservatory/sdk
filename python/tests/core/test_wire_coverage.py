@@ -73,7 +73,12 @@ COVERAGE: list[tuple[type, type, dict[str, str | None]]] = [
     (
         _types.Option,
         _wire.NoDataOption,
-        {"label": "label", "mentions": "mentions", "data_query": "data_query"},
+        {
+            "label": "label",
+            "mentions": "mentions",
+            "data_query": "data_query",
+            "entity_choice": "entity_choice",
+        },
     ),
     (
         _types.UnsupportedPart,
@@ -122,6 +127,12 @@ COVERAGE: list[tuple[type, type, dict[str, str | None]]] = [
             "contributing_member_count": None,
             "stat_var_ref": None,
             "stat_var_label": None,
+            "member_count": None,
+            "off_cadence_members": None,
+            "out_of_window_members": None,
+            "unserved_entities": None,
+            "omitted_entities": None,
+            "omitted_entity_years": None,
         },
     ),
     (

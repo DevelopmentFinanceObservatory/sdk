@@ -209,6 +209,21 @@ describe("gaps", () => {
     assert.deepEqual(answerFromBody(bare, offline(), null).diagnostics, {});
   });
 
+  test("a place option carries the index of the wording it settles, or null", () => {
+    const edited = body("search-place-ambiguous");
+    const [part] = edited["parts"] as { no_data: { options: Record<string, unknown>[] } }[];
+    const [option] = part!.no_data.options;
+    part!.no_data.options = [0, 1, undefined, -1, 1.5, "0", true].map((choice) => ({
+      ...option,
+      entity_choice: choice,
+    }));
+    const options = answerFromBody(edited, offline(), null).gaps[0]!.options as QueryOption[];
+    assert.deepEqual(
+      options.map((each) => each.entityChoice),
+      [0, 1, null, null, null, null, null],
+    );
+  });
+
   test("a no_data reason with no contract row is a no_data gap", () => {
     const edited = body("search-place-ambiguous");
     const [part] = edited["parts"] as { no_data: { reason: string } }[];

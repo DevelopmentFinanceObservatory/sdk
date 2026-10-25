@@ -144,7 +144,7 @@ for gap in answer.gaps:
 print(answer)
 ```
 
-Whether Search asks or picks a country for you depends on the wording, so a script handles both answers, as the example does. Each `Option` has a `label` such as "Congo [DRC]" and `mentions`, the words of the question it settles. A word from `mentions` also names the part: `answer.choose("Congo", "Congo [DRC]")`.
+Whether Search asks or picks a country for you depends on the wording, so a script handles both answers, as the example does. Each `Option` has a `label` such as "Congo [DRC]" and `mentions`, the words of the question it settles. A word from `mentions` also names the part: `answer.choose("Congo", "Congo [DRC]")`. A question can repeat a wording, as "aid from Congo to Congo" does, so `entity_choice` numbers the wording each place option settles, and a menu groups options by it. Two options with one label are chosen by index.
 
 ## Take the answered parts
 

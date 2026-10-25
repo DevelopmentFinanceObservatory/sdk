@@ -141,6 +141,10 @@ export type QueryOption = {
    *  otherwise. Null when the server sent none or sent one that is not a parsed input, and a choice of the
    *  option then refuses as a `ContractError`. */
   readonly dataQuery: ParsedInput | null;
+  /** For a choice of place, the index of the ambiguous wording this option settles, shared by that
+   *  wording's options and its sentence slot. Two wordings can share one text, as "Congo" does in
+   *  "aid from Congo to Congo", so a menu groups options by this index. Null for any other option. */
+  readonly entityChoice: number | null;
 };
 
 /** A part that stops an answer from building a complete dataset. */
@@ -592,7 +596,13 @@ function queryOptions(noData: NoData): QueryOption[] {
     label: text(option["label"]) ?? "",
     mentions: strings(option["mentions"]),
     dataQuery: parsedInputOf(option["data_query"]),
+    entityChoice: indexOf(option["entity_choice"]),
   }));
+}
+
+/** A non-negative JSON integer, or null for any other value. */
+function indexOf(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
 }
 
 /** A candidate from its full spec and what Search assumed for it. The label is the sentence's

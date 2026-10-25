@@ -460,12 +460,24 @@ describe("a stored version's lookup order", () => {
   };
   const expired = problem({ code: "artifact_expired", status: 410 });
 
+  /** The manifest's first plain artifact, which carries no `without_party_totals`, and every
+   *  other artifact in manifest order. The recorded version lists a party-totals cut that leaves
+   *  nothing out ahead of each plain file, with the plain file's digest. */
+  const plainOf = (manifest: Record<string, unknown>) => {
+    const artifacts = manifest["artifacts"] as Record<string, unknown>[];
+    const index = artifacts.findIndex(
+      (artifact) => !(artifact["rendering"] as Record<string, unknown>)["without_party_totals"],
+    );
+    assert.ok(index >= 0);
+    return { artifact: artifacts[index]!, rest: artifacts.toSpliced(index, 1) };
+  };
+
   /** The manifest with the member's artifact listed second, in the member's rendering, after a
    *  decoy in the other one, as the server lists a party-totals cut that leaves nothing out
    *  beside the plain file under one version. */
   const withDecoy = (manifest: Record<string, unknown>, isCut: boolean) => {
-    const [artifact, ...rest] = manifest["artifacts"] as Record<string, unknown>[];
-    const rendering = artifact!["rendering"] as Record<string, unknown>;
+    const { artifact, rest } = plainOf(manifest);
+    const rendering = artifact["rendering"] as Record<string, unknown>;
     const asCut = (cut: boolean) =>
       cut ? { ...rendering, without_party_totals: true } : rendering;
     const decoy = `sha256:${"f".repeat(64)}`;
@@ -476,7 +488,7 @@ describe("a stored version's lookup order", () => {
           ...artifact,
           artifact_digest: decoy,
           rendering: asCut(!isCut),
-          url: String(artifact!["url"]).replace(String(artifact!["artifact_digest"]), decoy),
+          url: String(artifact["url"]).replace(String(artifact["artifact_digest"]), decoy),
         },
         { ...artifact, rendering: asCut(isCut) },
         ...rest,
@@ -534,14 +546,14 @@ describe("a stored version's lookup order", () => {
     assert.ok(at > 0);
     rebuilt[at + stamp.length - 1] = "1".charCodeAt(0);
     const digest = `sha256:${createHash("sha256").update(rebuilt).digest("hex")}`;
-    const [artifact, ...rest] = manifest["artifacts"] as Record<string, unknown>[];
+    const { artifact, rest } = plainOf(manifest);
     const rebuiltManifest = {
       ...manifest,
       artifacts: [
         {
           ...artifact,
           artifact_digest: digest,
-          url: String(artifact!["url"]).replace(member.digest, digest),
+          url: String(artifact["url"]).replace(member.digest, digest),
         },
         ...rest,
       ],
@@ -575,9 +587,7 @@ describe("a stored version's lookup order", () => {
       const saved = ref.toJSON();
       const held = `sha256:${"0".repeat(64)}`;
       saved.members[0]!.artifact.digest = held;
-      const served = String(
-        (manifest["artifacts"] as Record<string, unknown>[])[0]!["artifact_digest"],
-      );
+      const served = String(plainOf(manifest).artifact["artifact_digest"]);
       const { fetch } = mockFetch(expired, json(manifest), ...download(parquet));
       const { transport, warnings } = client(fetch);
       const dataset = await fetchDataset(transport, DatasetRef.fromJSON(saved), { strict });

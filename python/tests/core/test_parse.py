@@ -141,6 +141,31 @@ def test_place_options_keep_their_data_query_untouched() -> None:
     assert option.data_query is data_query
 
 
+def test_place_options_carry_the_wording_they_settle() -> None:
+    answer = load("search-3.json")
+    no_data = answer["parts"][0]["no_data"]
+    data_query = no_data.pop("data_query")
+    no_data["options"] = [
+        {
+            "mentions": ["Congo"],
+            "label": label,
+            "data_query": data_query,
+            "entity_choice": choice,
+        }
+        for choice in (0, 1)
+        for label in ("Congo [DRC]", "Congo [Republic]")
+    ] + [
+        {"mentions": ["Congo"], "label": "unread", "data_query": data_query}
+        | ({} if choice is None else {"entity_choice": choice})
+        for choice in (None, -1, True, "0", 1.5)
+    ]
+    (part,) = parse_parts(answer)
+    assert isinstance(part, NoDataPart)
+    assert [option.entity_choice for option in part.options] == [0, 0, 1, 1] + [
+        None
+    ] * 5
+
+
 def test_mixed_answer_keeps_query_order() -> None:
     parts = parse_parts(load("search-4.json"))
     assert [type(part) for part in parts] == [DefinitePart, NoDataPart]
