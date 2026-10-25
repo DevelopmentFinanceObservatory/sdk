@@ -832,7 +832,7 @@ export async function fetchMembers(
       throw narrowingRefusal(error, narrowing);
     }
   }
-  return new Dataset(fetched, {
+  return Dataset.create(fetched, {
     layout,
     ...(options.missing === undefined ? {} : { missing: options.missing }),
   });

@@ -132,7 +132,7 @@ with dfo.Client(
     print(client.search("GDP of Kenya"))
 ```
 
-A provider's header replaces one of the same name in `headers`, and the key's `Authorization` header replaces one from either. A header value holds visible ASCII, spaces and tabs; any other character raises `InvalidRequestError` with `header_invalid`, naming the header and leaving the value out. The synchronous client calls the provider on your thread with no time limit, so give a provider that can block its own timeout. The asynchronous client bounds it by the time left on the request.
+A provider's header replaces one of the same name in `headers`, and the key's `Authorization` header replaces one from either. Every API request carries `X-DFO-Client`, naming the client, its version and the Python runtime, such as `dfo-python/0.1.0 (CPython 3.14)`. A header of that name, in any letter case, raises `InvalidRequestError` with `header_invalid` before any request; name your application in `User-Agent` instead, which replaces the client's `dfo-python/0.1.0`. Requests to the storage host that serves downloads carry none of these headers. A header value holds visible ASCII, spaces and tabs; any other character raises `InvalidRequestError` with `header_invalid`, naming the header and leaving the value out. The synchronous client calls the provider on your thread with no time limit, so give a provider that can block its own timeout. The asynchronous client bounds it by the time left on the request.
 
 ## Keep the key out of logs
 

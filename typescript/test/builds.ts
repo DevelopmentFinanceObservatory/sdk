@@ -75,7 +75,7 @@ function started(
   return {
     poller,
     result: async () =>
-      new Dataset(
+      await Dataset.create(
         [await finish(transport, await poller.wait(NO_DEADLINE), finishing, NO_DEADLINE)],
         { layout },
       ),

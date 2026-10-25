@@ -35,6 +35,7 @@ from dfo._core.errors import (
 from dfo._core.json_text import JSON_MAX_DEPTH
 from dfo._core.refusals import trace_id_of
 from dfo._sync._http.transport import (
+    CLIENT_IDENTITY,
     DEFAULT_BASE_URL,
     JSON_BODY_MAX_BYTES,
     USER_AGENT,
@@ -130,7 +131,7 @@ def test_paths_resolve_under_the_base_url_and_server_urls_under_its_origin() -> 
     assert json.loads(recorder.requests[0].content) == {"q": 1}
 
 
-def test_api_requests_carry_the_user_agent_key_and_first_party_headers() -> None:
+def test_api_requests_carry_the_client_key_and_first_party_headers() -> None:
     calls = []
 
     def provider() -> dict[str, str]:
@@ -148,6 +149,7 @@ def test_api_requests_carry_the_user_agent_key_and_first_party_headers() -> None
     headers = recorder.requests[0].headers
     assert headers["user-agent"] == USER_AGENT
     assert USER_AGENT.startswith("dfo-python/")
+    assert headers["x-dfo-client"] == CLIENT_IDENTITY
     assert headers["authorization"] == f"Bearer {KEY}"
     assert headers["x-dfo-caller"] == "data-mcp"
     assert headers["x-serverless-authorization"] == "Bearer id-token"
@@ -223,6 +225,7 @@ def test_download_is_bare_only_on_the_storage_host(url: str, bare: bool) -> None
         "x-serverless-authorization": headers.get("x-serverless-authorization"),
         "x-dfo-principal": headers.get("x-dfo-principal"),
         "user-agent": headers.get("user-agent") == USER_AGENT,
+        "x-dfo-client": headers.get("x-dfo-client"),
     }
     if bare:
         assert client_headers == dict.fromkeys(client_headers) | {"user-agent": False}
@@ -233,6 +236,7 @@ def test_download_is_bare_only_on_the_storage_host(url: str, bare: bool) -> None
             "x-serverless-authorization": "Bearer id-token",
             "x-dfo-principal": "someone",
             "user-agent": True,
+            "x-dfo-client": CLIENT_IDENTITY,
         }
         assert calls == [1]
 

@@ -17,7 +17,7 @@ import { NO_EXCHANGES, replay, scenarioBytes, scenarios } from "./replay.ts";
 const SPEC_ID = `spec_${"3f1a".repeat(8)}`;
 const VERSION = `cv_${"b92d".repeat(8)}`;
 
-const dataset = new Dataset(
+const dataset = await Dataset.create(
   [
     {
       parts: [],
@@ -323,7 +323,7 @@ const DATASET_BYTES = await scenarioBytes("answer-definite-fetch.parquet");
 
 /** A dataset with `taint` in its sentence, source, spec id and version. */
 const datasetOf = (taint: string) =>
-  new Dataset(
+  Dataset.create(
     [
       {
         parts: [],
@@ -341,6 +341,13 @@ const datasetOf = (taint: string) =>
 
 // Each row builds an object whose display shows server text with `taint` in it. The empty
 // taint builds the clean twin, whose lines the tainted display must keep.
+/** `datasetOf`'s datasets, built before the rows below read them synchronously, with no
+ *  taint and with `TAINT`. */
+const DATASETS = new Map([
+  ["", await datasetOf("")],
+  [TAINT, await datasetOf(TAINT)],
+]);
+
 const TAINTED_ROWS: [string, (taint: string) => { toString(): string }][] = [
   ["a definite answer", answerOf("answer-definite-fetch")],
   [
@@ -350,7 +357,7 @@ const TAINTED_ROWS: [string, (taint: string) => { toString(): string }][] = [
   ["an answer awaiting a choice", answerOf("answer-candidates-choose-fetch")],
   ["a partly answered answer", answerOf("answer-mixed-fetch-partial")],
   ["a declined answer", answerOf("answer-declined")],
-  ["a dataset", datasetOf],
+  ["a dataset", (taint) => DATASETS.get(taint)!],
   [
     "a match",
     (taint) =>
@@ -376,7 +383,7 @@ const TAINTED_ROWS: [string, (taint: string) => { toString(): string }][] = [
       }),
   ],
   ["a catalogue", (taint) => new Catalogue(catalogueOf("cat_1", `GDP${taint}`))],
-  ["a dataset ref", (taint) => datasetOf(taint).ref],
+  ["a dataset ref", (taint) => DATASETS.get(taint)!.ref],
   [
     "a raw response",
     // A header value holds no line break, so the response's taint stops at the controls.
@@ -404,7 +411,7 @@ for (const [name, build] of TAINTED_ROWS) {
 
 test("an answer and a dataset keep the server text their display cleans", () => {
   assert.ok(answerOf("answer-definite-fetch")(TAINT).sentence?.endsWith(TAINT));
-  const data = datasetOf(TAINT);
+  const data = DATASETS.get(TAINT)!;
   assert.ok(data.sentence.endsWith(TAINT));
   assert.ok(data.ref.members[0]!.contentVersion.endsWith(TAINT));
 });

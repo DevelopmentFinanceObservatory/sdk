@@ -54,7 +54,7 @@ df = data.to_pandas()
 print(df.iloc[:, :4].tail())
 ```
 
-The reading columns come first: the year, the parties, the value and its unit, each with a `_label` column of names beside the codes. The `stat_var` column comes last. `len(data)` is the row count, `data.to_polars()` gives a polars frame, and `pyarrow.table(data)` gives an Arrow table. While a build runs on the server, `fetch` shows its progress in a terminal or notebook. [Long builds](docs/long-builds.md) covers waiting, timeouts and Ctrl-C.
+The reading columns come first: the year, the parties, the value and its unit, each with a `_label` column of names beside the codes. The columns that tell the rows apart follow, then the ones that hold one value throughout, with `stat_var` last, and the years of each series read in order. `len(data)` is the row count, `data.to_polars()` gives a polars frame, and `pyarrow.table(data)` gives an Arrow table. While a build runs on the server, `fetch` shows its progress in a terminal or notebook. [Long builds](docs/long-builds.md) covers waiting, timeouts and Ctrl-C.
 
 ## Choose a reading
 

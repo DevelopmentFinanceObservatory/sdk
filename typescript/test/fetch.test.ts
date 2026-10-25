@@ -1003,11 +1003,10 @@ describe("a download", async () => {
     });
   });
 
-  test("raises ContractError unexpected_response on reading pages that do not decode", async () => {
+  test("raises ContractError unexpected_response on pages that do not decode", async () => {
+    // The fetch decodes every page to read the reading order, so it raises before it returns.
     const { fetched } = fetchServing(await flipped());
-    const dataset = await fetched;
-    await assert.rejects(dataset.toRows(), { name: "ContractError", code: "unexpected_response" });
-    await assert.rejects(dataset.bytes(), { name: "ContractError", code: "unexpected_response" });
+    await assert.rejects(fetched, { name: "ContractError", code: "unexpected_response" });
   });
 });
 

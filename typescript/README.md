@@ -33,7 +33,7 @@ const table = await toArrow(data);
 console.log(table.numRows);
 ```
 
-`String(answer)` is Search's sentence and the next call to make. `answer.fetch()` builds the table and returns a `Dataset`: `rowCount`, `columns` (the reading's columns first, `stat_var` last), `toRows()` for plain objects, `toArrow(data)` for an Arrow table, and `bytes()` for one Parquet file that the Python client's `dfo.load` reads. Without a key the client calls the API anonymously. [Keys and base URL](#keys-and-base-url) covers the rest.
+`String(answer)` is Search's sentence and the next call to make. `answer.fetch()` builds the table and returns a `Dataset`: `rowCount`, `columns`, `toRows()` for plain objects, `toArrow(data)` for an Arrow table, and `bytes()` for one Parquet file that the Python client's `dfo.load` reads. Every table comes in reading order. The columns start with the year, the provider, the recipient, the subject, the purpose, the value, the unit, the flow type and the source, as the table holds them, then the columns whose values tell the rows apart, then those that hold one value throughout, with `stat_var` last and `part` first when several readings stack. The rows sort by those columns, with each series' years together. Without a key the client calls the API anonymously. [Keys and base URL](#keys-and-base-url) covers the rest.
 
 ## Choose a reading
 
@@ -345,6 +345,8 @@ const client = new Client({
 });
 console.log(String(client));
 ```
+
+Every request to the API carries `X-DFO-Client`, which names the client and its runtime, such as `dfo-ts/0.1.0 (Node 22.18)` or `dfo-ts/0.1.0 (browser)`. A header of that name in `headers` or from `headerProvider`, in any letter case, raises `InvalidRequestError` with `header_invalid`. A download from the storage host carries none of the client's headers.
 
 The constructor also takes `fetch`, `timeout` (one request attempt, 30 seconds by default), `maxRetries` (2 by default), `headerProvider`, `onWarning` and `dangerouslyAllowBrowser`. A key travels only over https, or plain http to a loopback host. `client.withOptions({ timeout, maxRetries })` returns a copy with other limits, and `client.request(method, path, options)` reaches a route the client does not wrap, with the client's key and retries.
 

@@ -120,11 +120,11 @@ def test_a_named_enum_without_a_string_enum_or_with_a_taken_name_is_refused(
 
 
 def _column_rule(slots: object) -> dict[str, Any]:
-    return {"format_version": 1, "rule": "column-order", "reading_columns": slots}
+    return {"format_version": 1, "rule": "reading-order", "reading_columns": slots}
 
 
 def test_the_reading_columns_render_as_a_tuple_of_slots() -> None:
-    source = gen_wire.render_columns(_column_rule([["a"], ["b_label", "b"]]))
+    source = gen_wire.render_reading_order(_column_rule([["a"], ["b_label", "b"]]))
     assert "    ('a',),\n    ('b_label', 'b'),\n" in source
 
 
@@ -151,8 +151,8 @@ def test_the_reading_columns_render_as_a_tuple_of_slots() -> None:
         "stat-var",
     ],
 )
-def test_a_column_order_rule_that_breaks_the_format_is_refused(
+def test_a_reading_order_rule_that_breaks_the_format_is_refused(
     rule: dict[str, Any],
 ) -> None:
     with pytest.raises(SystemExit):
-        gen_wire.render_columns(rule)
+        gen_wire.render_reading_order(rule)

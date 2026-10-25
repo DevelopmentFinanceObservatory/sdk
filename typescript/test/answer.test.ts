@@ -37,7 +37,7 @@ type Context = AnswerContext & {
 };
 
 /** What the recording builder returns for every fetch: one member of recorded Parquet. */
-const builtDataset = new Dataset(
+const builtDataset = await Dataset.create(
   [
     {
       parts: [],
@@ -570,7 +570,7 @@ describe("fetch", () => {
     );
 
     const saved = await dataset.bytes();
-    const reopened = new Dataset([{ ...dataset.members[0]!, manifest: {}, data: saved }], {
+    const reopened = await Dataset.create([{ ...dataset.members[0]!, manifest: {}, data: saved }], {
       layout: "long",
     });
     assert.deepEqual(await reopened.toRows(), rows);

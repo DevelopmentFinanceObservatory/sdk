@@ -3,9 +3,9 @@
 A dataset holds its table and its provenance and carries no client, so its
 conversions run offline. Several members stack into one long table with a leading
 `part` column naming each row's member. Every table a dataset holds presents its
-columns in the contract's reading order, `READING_COLUMNS` first and `stat_var`
-last, after the member's file was hashed, so the digest and the ref name the
-server's file. `save` writes one Parquet file whose
+columns and rows in the contract's reading order, `READING_COLUMNS` first and
+`stat_var` last, after the member's file was hashed, so the digest and the ref name
+the server's file. `save` writes one Parquet file whose
 key-value metadata carries the provenance and the ref, which `dfo.load` reads
 back. That file is the durable form. A dataset also pickles, for transfer between
 processes that run the same client version, as `multiprocessing` does. Another
@@ -59,7 +59,7 @@ from dfo._datasets.build import (
     read_held_until,
     rendering_for,
 )
-from dfo._generated.columns import READING_COLUMNS
+from dfo._generated.reading_order import READING_COLUMNS
 
 if TYPE_CHECKING:
     import pandas
@@ -79,8 +79,12 @@ _NOT_A_FRAME = (
 # The column that names each row's member in a dataset of several members.
 PART_COLUMN = "part"
 
-# The column the column-order rule puts after every other.
+# The column the reading order puts after every other.
 _LAST_COLUMN = "stat_var"
+
+# The reading columns the rows do not sort by among the slots: a measure, and the
+# time period, which sorts after every other key.
+_NOT_SLOT_KEYS = ("value", "time_period")
 
 # The columns every artifact a dataset reads holds, in both layouts.
 REQUIRED_COLUMNS = ("time_period", "value")
@@ -195,15 +199,12 @@ class Dataset:
     _caller: str = field(default="dfo", repr=False)
 
     def __post_init__(self) -> None:
-        # Every way a dataset is made presents the same column order. A stacked
-        # table keeps its `part` column first.
-        names = self._table.column_names
-        if len(self.members) > 1:
-            order = [PART_COLUMN, *reading_order(names[1:])]
-        else:
-            order = reading_order(names)
-        if order != names:
-            object.__setattr__(self, "_table", self._table.select(order))
+        # Every way a dataset is made presents the same reading order.
+        object.__setattr__(
+            self,
+            "_table",
+            in_reading_order(self._table, stacked=len(self.members) > 1),
+        )
 
     @property
     def ref(self) -> DatasetRef:
@@ -406,22 +407,94 @@ class Dataset:
         return {key.encode(): value.encode() for key, value in metadata.items()}
 
 
-def reading_order(names: Sequence[str]) -> list[str]:
-    """`names` in the column-order rule's reading order.
+def in_reading_order(table: pa.Table, *, stacked: bool) -> pa.Table:
+    """`table` with its columns and rows in the reading-order rule's order.
 
-    The first name of each `READING_COLUMNS` slot that `names` holds comes first,
-    in slot order, then every other name in its given order, `stat_var` last. A
-    slot whose names `names` holds none of stays empty.
+    The columns are `part` first when `stacked`, then the first name of each
+    `READING_COLUMNS` slot the table holds, in slot order, then the other columns
+    whose values differ between rows, then those holding one value in every row,
+    null included, each group in the table's order, and `stat_var` last. Varying is
+    judged over the whole table, so a stacked one's members are judged together.
+
+    The rows of each member, a run of one `part` value in a stacked table, sort by
+    the filled slots other than `value` and `time_period`, then by the varying
+    columns, then by `stat_var` when it varies, then by `time_period`: ascending,
+    nulls last, ties in the table's order. The members keep their order. Applied
+    to its own result, the order changes nothing.
+
+    Raises:
+        ContractError: A column holds a type the order cannot compare, such as a
+            list (`contract_violation`).
     """
-    held = set(names)
-    leading = [
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+
+    try:
+        return _ordered(table, stacked=stacked)
+    except (pa.ArrowNotImplementedError, pa.ArrowInvalid) as error:
+        raise client_error(
+            CONTRACT_VIOLATION, f"The dataset's table cannot be ordered: {error}"
+        ) from error
+
+
+def _ordered(table: pa.Table, *, stacked: bool) -> pa.Table:
+    """The body of `in_reading_order`, raising pyarrow's errors."""
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+
+    names = table.column_names
+    lead = names[:1] if stacked else []
+    held = set(names[len(lead) :])
+    filled = [
         found
         for slot in READING_COLUMNS
         if (found := next((name for name in slot if name in held), None))
     ]
-    placed = {*leading, _LAST_COLUMN}
-    rest = [name for name in names if name not in placed]
-    return [*leading, *rest, *([_LAST_COLUMN] if _LAST_COLUMN in held else [])]
+    placed = {*lead, *filled, _LAST_COLUMN}
+    others = [name for name in names if name not in placed]
+    varying = [name for name in others if _varies(table[name])]
+    last = [_LAST_COLUMN] if _LAST_COLUMN in held else []
+    presented = [
+        *lead,
+        *filled,
+        *varying,
+        *(name for name in others if name not in varying),
+        *last,
+    ]
+    if presented != names:
+        table = table.select(presented)
+
+    keys = [
+        *(name for name in filled if name not in _NOT_SLOT_KEYS),
+        *varying,
+        *(name for name in last if _varies(table[name])),
+        *(["time_period"] if "time_period" in held else []),
+    ]
+    if table.num_rows < 2 or not keys:
+        return table
+    sorting = [(name, "ascending") for name in keys]
+    # Arrow's sort is stable and puts nulls last by default.
+    runs = [run.sort_by(sorting) for run in _member_runs(table, stacked=stacked)]
+    return runs[0] if len(runs) == 1 else pa.concat_tables(runs)
+
+
+def _varies(column: pa.ChunkedArray) -> bool:
+    """Whether `column` holds more than one value, null counting as one."""
+    return len(column.unique()) > 1
+
+
+def _member_runs(table: pa.Table, *, stacked: bool) -> list[pa.Table]:
+    """`table` split into its members' rows: the runs of one `part` value when
+    `stacked`, else the whole table."""
+    if not stacked:
+        return [table]
+    import pyarrow.compute as pc  # noqa: PLC0415 - pyarrow loads on first use
+
+    part = table[PART_COLUMN].combine_chunks()
+    # pyarrow.compute declares its kernels when imported, out of the type checker's sight.
+    ends = pc.run_end_encode(part).run_ends.to_pylist()  # ty: ignore[unresolved-attribute]
+    return [
+        table.slice(start, end - start)
+        for start, end in zip([0, *ends], ends, strict=False)
+    ]
 
 
 def build_dataset(
@@ -448,8 +521,8 @@ def build_dataset(
     (its sentence when it answers no part), then the members' columns gathered in
     member order, each once. Columns one member lacks are null in its rows, and a
     column whose types differ in width widens, as an int32 with an int64 to int64
-    and an integer with a double to double. The dataset orders the columns by
-    `reading_order`.
+    and an integer with a double to double. The dataset presents the columns
+    and rows by `in_reading_order`.
 
     Args:
         members: The members, in query order, each with a distinct spec.

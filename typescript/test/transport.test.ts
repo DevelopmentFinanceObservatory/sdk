@@ -19,6 +19,7 @@ import {
 import { PROXY_CODE_STATUSES } from "../src/generated/proxy-codes.ts";
 import { ApiKey } from "../src/config/keys.ts";
 import { JSON_BODY_MAX_BYTES, Transport } from "../src/http/transport.ts";
+import { ownIdentity } from "../src/http/client-identity.ts";
 import type { TransportOptions } from "../src/http/transport.ts";
 import { VERSION } from "../src/version.ts";
 import type { DfoWarning } from "../src/core/warnings.ts";
@@ -31,7 +32,7 @@ const transport = (options: TransportOptions): Transport =>
   new Transport({ env: envFrom({}), readCredentialsFile: () => null, ...options });
 
 describe("requests to the API", () => {
-  test("go under the base URL's path and carry the key and User-Agent", async () => {
+  test("go under the base URL's path and carry the key, User-Agent and X-DFO-Client", async () => {
     const { fetch, seen } = mockFetch(json({ ok: true }));
     const client = transport({ baseUrl: "https://api.example/api/v1", apiKey: KEY, fetch });
     const response = await client.request({ path: "/search/resolve", json: { q: 1 } });
@@ -43,6 +44,7 @@ describe("requests to the API", () => {
     assert.equal(request.body, '{"q":1}');
     assert.equal(request.headers.get("authorization"), `Bearer ${KEY}`);
     assert.equal(request.headers.get("user-agent"), `dfo-ts/${VERSION}`);
+    assert.equal(request.headers.get("x-dfo-client"), ownIdentity());
     assert.equal(request.headers.get("content-type"), "application/json");
   });
 
@@ -1157,6 +1159,7 @@ describe("downloads", () => {
       assert.deepEqual(waits, []);
       assert.deepEqual(warnings, []);
       assert.equal(seen[0]?.headers.get("x-identity"), "token");
+      assert.equal(seen[0].headers.get("x-dfo-client"), ownIdentity());
       assert.deepEqual([...(seen[1]?.headers ?? [])], [["authorization", `Bearer ${KEY}`]]);
     });
   }

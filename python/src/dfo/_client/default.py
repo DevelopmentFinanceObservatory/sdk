@@ -95,8 +95,8 @@ def configure(
     Raises:
         InvalidRequestError: The base URL, passed or read from `DFO_BASE_URL`,
             is invalid (`base_url_invalid`), a
-            header's name is not an HTTP token or its value not a string
-            of visible ASCII, spaces and tabs (`header_invalid`), the key would
+            header's name is not an HTTP token or names `X-DFO-Client`, or its
+            value not a string of visible ASCII, spaces and tabs (`header_invalid`), the key would
             travel over plain http to a host that is not loopback
             (`insecure_transport`), the timeout is not a finite number above 0,
             the retry count not an integer from 0 to 10, or, with `cache` on,

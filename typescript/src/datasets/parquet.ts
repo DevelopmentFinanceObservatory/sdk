@@ -1,10 +1,10 @@
 /**
  * Reading the bare Parquet files a dataset holds with hyparquet, and writing a stacked dataset
  * as one Parquet file with hyparquet-writer. Several files stack into one table: a `part`
- * column first, then every file's columns, gathered in file order and put in reading order,
- * with a column one file lacks null in that file's rows. A single file's table is in reading
- * order too. A column whose type differs between files widens as pyarrow's permissive
- * promotion widens it, so a table either client stacks has the same types. A DECIMAL column
+ * column first, then every file's columns, gathered in file order, with a column one file
+ * lacks null in that file's rows. Every table the client returns presents the stacked table's
+ * columns and rows in reading order, which `presentedOrder` reads from its values. A column
+ * whose type differs between files widens as pyarrow's permissive promotion widens it, so a table either client stacks has the same types. A DECIMAL column
  * keeps its precision and scale. Its values are read as the unscaled integers the file stores,
  * so `bytes()` writes them exact, and `toRows()` and `toArrow()` give each the nearest 64-bit
  * float.
@@ -14,7 +14,8 @@ import { parquetMetadata, parquetRead } from "hyparquet";
 import type { FileMetaData, KeyValue, ParquetParsers, SchemaElement } from "hyparquet";
 import { parquetWriteBuffer } from "hyparquet-writer";
 
-import { readingOrder } from "./column-order.ts";
+import { readingOrder, runLengths } from "./reading-order.ts";
+import type { ReadingOrder } from "./reading-order.ts";
 import { capped, clientError } from "../core/errors.ts";
 import type { ContractError } from "../core/errors.ts";
 
@@ -25,7 +26,7 @@ import type { ContractError } from "../core/errors.ts";
  */
 export type Value = string | number | boolean | Date | Uint8Array | null;
 
-/** One row of `toRows()`, keyed by column name in column order. */
+/** One row of `toRows()`, keyed by column name in reading order. */
 export type Row = Record<string, Value>;
 
 /** A column's type, read from the Parquet schema, independent of any table library. */
@@ -57,6 +58,9 @@ export type ParquetFile = {
 
 /** A file in a stacked table, with the label its `part` column holds when there are several. */
 export type TablePart = { readonly file: ParquetFile; readonly label: string };
+
+/** A stacked table's files and the reading order it presents them in. */
+export type Table = { readonly parts: readonly TablePart[]; readonly order: ReadingOrder };
 
 const PART_COLUMN = "part";
 
@@ -272,7 +276,7 @@ function widenDecimal(left: ColumnType, right: ColumnType): ColumnType | undefin
 }
 
 /** The stacked table's columns: `part` first when there are several files, then every
- *  file's columns, gathered in file order with each once and put in `readingOrder`, each of the
+ *  file's columns, gathered in file order with each once, each of the
  *  type `widen` gives its files' types. A file with no
  *  rows adds no columns unless every file is empty, when the first file gives them. The server
  *  writes every column of an empty file as a string, which would not widen to a number.
@@ -304,9 +308,7 @@ export function stackedColumns(parts: readonly TablePart[]): Column[] {
       types.set(name, stacked);
     }
   }
-  const gathered = [...types.keys()].filter((name) => !(several && name === PART_COLUMN));
-  const names = [...(several ? [PART_COLUMN] : []), ...readingOrder(gathered)];
-  return names.map((name) => ({ name, type: types.get(name)! }));
+  return [...types].map(([name, type]) => ({ name, type }));
 }
 
 const encoder = new TextEncoder();
@@ -351,11 +353,46 @@ function physicalDecimals(metadata: FileMetaData): FileMetaData {
  *  column. */
 export type StoredColumn = Column & { readonly values: unknown[] };
 
-/** Every column of the stacked table with its stored values, in row order.
+/**
+ * The reading order of the stacked table: `part` first when the table has one, then the reading
+ * order of the other columns over the stacked rows. A single file that holds `part`, such as one
+ * `bytes()` wrote, reads each run of one `part` value as a member, as Python does, so a saved
+ * stacked table reads back in the order it was written. The order needs every value, since
+ * which columns vary and how the rows sort depend on them, so it decodes every member.
+ *
+ * @throws {ContractError} The members do not stack (`contract_violation`), or a file's pages
+ *   cannot be decoded (`unexpected_response`).
+ */
+export async function presentedOrder(parts: readonly TablePart[]): Promise<ReadingOrder> {
+  const stacked = await decodeStacked(parts);
+  const part = stacked.find(({ name }) => name === PART_COLUMN);
+  const members =
+    parts.length > 1 || part === undefined
+      ? parts.map(({ file }) => file.rows)
+      : runLengths(part.values);
+  const { columns, rows } = readingOrder(
+    stacked.filter((column) => column !== part),
+    members,
+  );
+  return { columns: Object.freeze(part ? [PART_COLUMN, ...columns] : [...columns]), rows };
+}
+
+/** Every column of the table with its stored values, columns and rows in reading order.
  *
  * @throws {ContractError} A file's pages cannot be decoded (`unexpected_response`).
  */
-export async function decodeStored(parts: readonly TablePart[]): Promise<StoredColumn[]> {
+export async function decodeStored({ parts, order }: Table): Promise<StoredColumn[]> {
+  const stacked = new Map((await decodeStacked(parts)).map((column) => [column.name, column]));
+  return order.columns.map((name) => {
+    const column = stacked.get(name)!;
+    const values = Array.from(order.rows, (row) => column.values[row]);
+    return { ...column, values };
+  });
+}
+
+/** Every column of the stacked table with its stored values, in the order `stackedColumns`
+ *  gives, the members' rows one after another. */
+async function decodeStacked(parts: readonly TablePart[]): Promise<StoredColumn[]> {
   const decoded = await Promise.all(parts.map(({ file }) => storedRows(file)));
   return stackedColumns(parts).map(({ name, type }) => {
     const isPart = parts.length > 1 && name === PART_COLUMN;
@@ -440,10 +477,10 @@ function rowValue(value: unknown, column: Column): Value {
   return value as Value;
 }
 
-/** Every row of the stacked table. */
-export async function decodeRows(parts: readonly TablePart[]): Promise<Row[]> {
-  const columns = await decodeStored(parts);
-  const count = parts.reduce((total, { file }) => total + file.rows, 0);
+/** Every row of the table, in reading order. */
+export async function decodeRows(table: Table): Promise<Row[]> {
+  const columns = await decodeStored(table);
+  const count = table.order.rows.length;
   const rows: Row[] = [];
   for (let index = 0; index < count; index += 1) {
     // fromEntries defines each column as an own property, `__proto__` included.
@@ -513,12 +550,13 @@ function schemaElement({ name, type }: Column): SchemaElement {
   }
 }
 
-/** The stacked table as one snappy Parquet file, with `metadata` as its key-value metadata. */
+/** The table in reading order as one snappy Parquet file, with `metadata` as its key-value
+ *  metadata. */
 export async function encodeStacked(
-  parts: readonly TablePart[],
+  table: Table,
   metadata: Readonly<Record<string, string>>,
 ): Promise<Uint8Array> {
-  const columns = await decodeStored(parts);
+  const columns = await decodeStored(table);
   const schema: SchemaElement[] = [
     { name: "root", num_children: columns.length },
     ...columns.map(schemaElement),

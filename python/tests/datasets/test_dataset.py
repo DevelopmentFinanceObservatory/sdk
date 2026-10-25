@@ -30,7 +30,7 @@ from dfo._core.types import (
 )
 from dfo._datasets.bundle import load as load_saved
 from dfo._datasets.cache import sha256_digest
-from dfo._datasets.dataset import Dataset, FetchedMember, build_dataset, reading_order
+from dfo._datasets.dataset import Dataset, FetchedMember, build_dataset
 from tests._data import load
 from tests._datasets import PARQUET, manifest, other_member, recorded_member, scenario
 from tests._fetch_support import FakeCache
@@ -193,23 +193,43 @@ def test_several_members_stack_with_a_part_column() -> None:
     assert [member.parts for member in data.members] == [first.parts, ("GDP",)]
 
 
-def _vector_table(columns: list[str]) -> pa.Table:
-    """A one-row table holding `columns` in the given order."""
-    kinds = {"time_period": pa.array([2022]), "value": pa.array([1.5])}
-    return pa.table({name: kinds.get(name, pa.array(["x"])) for name in columns})
-
-
-@pytest.mark.parametrize("vector", vectors("column-order"), ids=ids("column-order"))
-def test_the_column_order_vectors(vector: dict[str, Any]) -> None:
-    if "columns" in vector:
-        assert reading_order(vector["columns"]) == vector["ordered"]
-        return
-    first, second = vector["members"]
-    data = built(
-        with_table(recorded_member(), _vector_table(first)),
-        with_table(other_member(), _vector_table(second)),
+def _vector_member(base: FetchedMember, served: dict[str, Any]) -> FetchedMember:
+    """`base` holding a vector member's table as the server wrote it, under its part."""
+    columns, rows = served["columns"], served["rows"]
+    # The server writes every column of an empty file as text.
+    table = pa.table(
+        {
+            name: pa.array([row[index] for row in rows], None if rows else pa.string())
+            for index, name in enumerate(columns)
+        }
     )
-    assert data.to_arrow().column_names == vector["ordered"]
+    member = with_table(base, table)
+    member.manifest["coverage"]["rows"] = len(rows)
+    return replace(member, parts=(served["part"],) if "part" in served else ())
+
+
+@pytest.mark.parametrize("vector", vectors("reading-order"), ids=ids("reading-order"))
+def test_the_reading_order_vectors(vector: dict[str, Any]) -> None:
+    bases = [recorded_member(), other_member()]
+    data = built(
+        *(
+            _vector_member(base, served)
+            for base, served in zip(bases, vector["members"], strict=False)
+        )
+    )
+    table = data.to_arrow()
+    assert table.column_names == vector["columns"]
+    assert [list(row.values()) for row in table.to_pylist()] == vector["rows"]
+
+
+def test_a_table_the_reading_order_cannot_compare_is_refused() -> None:
+    table = pq.read_table(PARQUET).replace_schema_metadata(None)
+    table = table.append_column(
+        "nested", pa.array([[index] for index in range(table.num_rows)])
+    )
+    with pytest.raises(ContractError) as caught:
+        built(with_table(recorded_member(), table))
+    assert caught.value.code == "contract_violation"
 
 
 def test_the_preview_and_the_digest_keep_their_order() -> None:

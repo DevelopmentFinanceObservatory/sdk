@@ -5,7 +5,7 @@
 //   src/generated/client-codes.ts  from client-codes.json
 //   src/generated/warning-codes.ts from warning-codes.json
 //   src/generated/proxy-codes.ts   from proxy-codes.json, checked against actions.json
-//   src/generated/column-order.ts  from rules/column-order.json
+//   src/generated/reading-order.ts from rules/reading-order.json
 //
 //   node scripts/generate-contract.ts           rewrite every file
 //   node scripts/generate-contract.ts --check   exit 1 when a committed file differs
@@ -260,15 +260,15 @@ export function renderProxyCodes(codesText: string, actionsText: string): Record
   return { PROXY_CODE_STATUSES: Object.fromEntries(statuses) };
 }
 
-/** The reading slots of the column-order rule, each the names that fill it in order. */
-export function renderColumnOrder(ruleText: string): Record<string, unknown> {
+/** The reading slots of the reading-order rule, each the names that fill it in order. */
+export function renderReadingOrder(ruleText: string): Record<string, unknown> {
   const rule = JSON.parse(ruleText) as {
     format_version?: unknown;
     rule?: unknown;
     reading_columns?: unknown;
   };
-  if (rule.format_version !== 1 || rule.rule !== "column-order") {
-    throw new Error("rules/column-order.json is not format version 1 of the column-order rule");
+  if (rule.format_version !== 1 || rule.rule !== "reading-order") {
+    throw new Error("rules/reading-order.json is not format version 1 of the reading-order rule");
   }
   const slots = rule.reading_columns;
   const isSlot = (slot: unknown): slot is string[] =>
@@ -276,11 +276,17 @@ export function renderColumnOrder(ruleText: string): Record<string, unknown> {
     slot.length > 0 &&
     slot.every((name) => typeof name === "string" && name !== "");
   if (!Array.isArray(slots) || slots.length === 0 || !slots.every(isSlot)) {
-    throw new Error("rules/column-order.json lists no reading_columns slots of names");
+    throw new Error("rules/reading-order.json lists no reading_columns slots of names");
   }
   const names = slots.flat();
-  if (new Set(names).size !== names.length || names.includes("stat_var")) {
-    throw new Error("rules/column-order.json names a column twice, or names stat_var in a slot");
+  if (
+    new Set(names).size !== names.length ||
+    names.includes("stat_var") ||
+    names.includes("part")
+  ) {
+    throw new Error(
+      "rules/reading-order.json names a column twice, or names stat_var or part in a slot",
+    );
   }
   return { READING_COLUMNS: slots };
 }
@@ -341,11 +347,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       ),
     ],
     [
-      output("column-order.ts"),
+      output("reading-order.ts"),
       await module(
-        "contract/rules/column-order.json",
-        renderColumnOrder(await read("rules/column-order.json")),
-        output("column-order.ts"),
+        "contract/rules/reading-order.json",
+        renderReadingOrder(await read("rules/reading-order.json")),
+        output("reading-order.ts"),
       ),
     ],
   ];

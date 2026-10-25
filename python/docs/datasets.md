@@ -84,7 +84,7 @@ The 15 extra rows are group totals worth 18.3 billion dollars, and each one coun
 
 ## Read the columns
 
-Every table leads with the columns a reader looks at, in this order, then the codes and the rest, with `stat_var` last:
+Every table leads with the columns a reader looks at, in this order:
 
 1. `time_period`
 1. the provider, as `financingProvider_label`
@@ -96,7 +96,9 @@ Every table leads with the columns a reader looks at, in this order, then the co
 1. the flow or aid type, as `crsTypeOfFlow_label` or `dac2aAidType_label`
 1. the source, as `provenance_label`
 
-A table without a column skips its slot. Where a table has no label column, the code column takes its place. A dataset of several readings adds a `part` column first, naming the part of the question each row answers.
+A table without a column skips its slot. Where a table has no label column, the code column takes its place. The columns whose values differ between rows come next, so you see what tells the rows apart, then the columns that hold one value in every row, with `stat_var` last. A dataset of several readings adds a `part` column first, naming the part of the question each row answers, and judges which columns vary over all its rows.
+
+The rows sort by the leading columns other than `value` and `time_period`, then by the columns that vary, then by `time_period`, so the years of each series read together. Each reading of a dataset keeps its own rows, in the order of its readings. Text sorts by Unicode code point and an empty cell sorts last. The ref and the digest name the file the server wrote, before the client reordered it.
 
 ```text
 ['time_period', 'financingProvider_label', 'financingRecipient_label', 'value', 'unit_label', 'dac2aAidType_label', 'provenance_label', 'financingProvider', 'financingProvider_kind', 'financingRecipient', 'financingRecipient_kind', 'dac2aAidType', 'unit', 'currency', 'price_basis', 'base_year', 'measurementMethod', 'measurementMethod_label', 'provenance', 'stat_var']

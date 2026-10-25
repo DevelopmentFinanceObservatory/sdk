@@ -17,6 +17,7 @@ import { checkKeyFormat, inBrowser, lookUpApiKey, refuseSecretInBrowser } from "
 import type { ApiKeyOption, ResolvedKey } from "../config/keys.ts";
 import type { LongBuild } from "../datasets/operation.ts";
 import { traceIdFrom, traceIdOf } from "../core/trace.ts";
+import { CLIENT_HEADER, ownIdentity } from "./client-identity.ts";
 import { VERSION } from "../version.ts";
 import { clientWarning, emitWarning, warnOnce } from "../core/warnings.ts";
 import type { DfoWarning, WarningHandler } from "../core/warnings.ts";
@@ -300,10 +301,18 @@ const headerPairs = (init: HeadersInit): Iterable<[string, unknown]> =>
  * since it may be a token.
  *
  * @throws {InvalidRequestError} A value is not a string or holds another character, or a name is
- *   one HTTP cannot carry or one of `RESERVED_HEADERS` (`header_invalid`).
+ *   one HTTP cannot carry, one of `RESERVED_HEADERS` or `X-DFO-Client` in any letter case
+ *   (`header_invalid`).
  */
 function setHeaders(headers: Headers, pairs: Iterable<[string, unknown]>, source: string): void {
   for (const [name, value] of pairs) {
+    if (name.toLowerCase() === CLIENT_HEADER.toLowerCase()) {
+      throw clientError("header_invalid", {
+        detail:
+          `The ${name} header from ${source} names the client and its runtime, which the ` +
+          "client sets itself; leave it out.",
+      });
+    }
     if (RESERVED_HEADERS.has(name.toLowerCase())) {
       throw clientError("header_invalid", {
         detail:
@@ -1221,6 +1230,7 @@ export class Transport {
     headers.set("accept", "application/json");
     if (options.json !== undefined) headers.set("content-type", "application/json");
     setHeaders(headers, Object.entries(options.headers ?? {}), "the call's headers");
+    headers.set(CLIENT_HEADER, ownIdentity());
     return this.#keyHeader(url, options, headers);
   }
 

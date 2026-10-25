@@ -40,7 +40,8 @@ export type ClientOptions = {
   /** Headers sent with every request to the API, never to a signed storage URL. A `User-Agent` here
    *  replaces the client's own. While the client has a key, `Authorization` carries it and
    *  replaces one from here or from `headerProvider`. With `apiKey: false` the `Authorization`
-   *  given here is sent. */
+   *  given here is sent. `X-DFO-Client`, which the client sets to name itself and its runtime,
+   *  raises `InvalidRequestError` (`header_invalid`) here or from `headerProvider`. */
   headers?: Record<string, string>;
   /** Called before every request to the API for more headers, such as an identity token. Its
    *  headers replace those of `headers`, and the key's `Authorization` replaces any it returns. An
@@ -108,7 +109,7 @@ export class Client {
    *   not an absolute http or https URL, or carries userinfo, a query or a fragment
    *   (`base_url_invalid`); a key would go over plain
    *   http to a host that is not loopback (`insecure_transport`); a header value holds a control
-   *   character (`header_invalid`); `timeout` is not a finite number above 0, or `maxRetries` not
+   *   character, or a header is named `X-DFO-Client` (`header_invalid`); `timeout` is not a finite number above 0, or `maxRetries` not
    *   an integer from 0 to 10, or `options` holds a key outside `ClientOptions`
    *   (`invalid_argument`).
    * @throws {TypeError} A secret key is given in a browser page or worker without

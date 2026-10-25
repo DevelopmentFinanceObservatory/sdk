@@ -54,7 +54,12 @@ from dfo._datasets import resolve as _resolve
 from dfo._datasets.build import Reading, build_body, layout_of, rendering_for
 from dfo._datasets.dataset import Dataset, build_dataset
 from dfo._datasets.fetch import Session as AsyncSession
-from dfo._http.transport import USER_AGENT, AsyncTransport
+from dfo._http.transport import (
+    CLIENT_HEADER,
+    CLIENT_IDENTITY,
+    USER_AGENT,
+    AsyncTransport,
+)
 from dfo._search.answer import AsyncAnswer
 from dfo._sync._client.client import Client
 from dfo._sync._datasets import fetch as _sync_fetch
@@ -67,7 +72,8 @@ from tests._data import CONTRACT
 
 SCENARIOS_DIR = CONTRACT / "scenarios"
 KEY = "dfo_k_4f8Kq2ZtR7mWx1NcB9vLp3YhD6sGa0Ue2wanxe"
-CLIENT_HEADER = "x-dfo-replay"
+# A header the replay's client sets, which only API requests may carry.
+REPLAY_HEADER = "x-dfo-replay"
 
 # The base-URL forms each scenario replays under. The replay names its own base
 # URL and never reads a record's `origin.base_url`.
@@ -181,11 +187,13 @@ class Exchanges:
         assert seen == f"{expected['method']} {self._target(expected)}"
         if "url" in expected:
             assert "authorization" not in request.headers, seen
+            assert REPLAY_HEADER not in request.headers, seen
             assert CLIENT_HEADER not in request.headers, seen
             assert request.headers.get("user-agent") != USER_AGENT, seen
         else:
             assert request.headers.get("authorization") == f"Bearer {KEY}", seen
-            assert request.headers.get(CLIENT_HEADER) == "1", seen
+            assert request.headers.get(REPLAY_HEADER) == "1", seen
+            assert request.headers.get(CLIENT_HEADER) == CLIENT_IDENTITY, seen
         if "json" in expected:
             body = json.loads(request.content)
             for key, value in expected["json"].items():
@@ -227,7 +235,7 @@ def _client(
         transport = AsyncTransport(
             base_url=base_url,
             api_key=KEY,
-            headers={CLIENT_HEADER: "1"},
+            headers={REPLAY_HEADER: "1"},
             http_transport=httpx2.MockTransport(handler),
             sleep=clock.async_sleep,
             clock=clock.read,
@@ -236,7 +244,7 @@ def _client(
     sync = Transport(
         base_url=base_url,
         api_key=KEY,
-        headers={CLIENT_HEADER: "1"},
+        headers={REPLAY_HEADER: "1"},
         http_transport=httpx2.MockTransport(handler),
         sleep=clock.sleep,
         clock=clock.read,

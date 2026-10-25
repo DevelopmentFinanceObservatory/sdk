@@ -226,7 +226,7 @@ async function fetchRef(
   for (const [index, member] of ref.members.entries()) {
     fetched.push(await fetchVersion(transport, member, `/members/${index}`, options, wait));
   }
-  return new Dataset(fetched, { layout });
+  return Dataset.create(fetched, { layout });
 }
 
 const stored = (member: RefMember, manifest: Manifest, data: Uint8Array): FetchedMember => ({
