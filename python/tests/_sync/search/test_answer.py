@@ -983,7 +983,7 @@ def test_fetch_narrows_every_reading_and_refuses_a_role_one_lacks() -> None:
         'entities names "origin", a role "gross national income" does not '
         "declare. Each part's roles:\n"
         '  "official development assistance": origin, destination\n'
-        '  "gross national income": observationAbout\n[invalid_argument]'
+        '  "gross national income": place\n[invalid_argument]'
     )
     # The refusal comes before any build: only the search was posted.
     assert len(server.posted) == 1

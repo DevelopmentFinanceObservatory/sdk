@@ -5,8 +5,9 @@
  * `facets`. A narrowing gives the build its own `spec_id`, so the member keeps the spec, the
  * version and the definition the server answered with. The server replaces the spec's whole
  * entity binding with the posted `entities`, so the client posts the spec's own bound roles
- * with the caller's roles replaced. A role key outside a member's `specRoles` is refused before
- * any build. An answer's fetch narrows every member the same way.
+ * with the caller's roles replaced, each caller key as its wire role, `place` as
+ * `observationAbout`. A role key outside a member's `specRoles` is refused before any build, as
+ * is a wire role typed in place of its caller key. An answer's fetch narrows every member the same way.
  *
  * Each member's sentence is Search's: the one the caller holds when the built `spec_id` equals
  * the posted one, else the sentence Search gives the built identity when it is resubmitted,
@@ -50,7 +51,7 @@ import { DataWarning } from "../core/warnings.ts";
 import { isRecord, present } from "../core/json.ts";
 import { nearest } from "../core/nearest.ts";
 import { declareOptions } from "../core/options.ts";
-import { specRoles } from "../core/roles.ts";
+import { callerKey, specRoles, wireRole } from "../core/roles.ts";
 import { readParquet } from "./parquet.ts";
 import type { ColumnType, ParquetFile } from "./parquet.ts";
 
@@ -65,9 +66,10 @@ export type Window = "all" | "latest" | readonly [startYear: number, endYear: nu
 export type Narrowing = {
   /** The years, from 1000 to 2200. Null or undefined reads as unset, which is `"all"`. */
   window?: Window | null | undefined;
-  /** Roles to rebind, as `{ origin: ["country/FRA"] }`, each dcid read without surrounding
-   *  white space. null unbinds a role. Every role the spec binds and this leaves out keeps its
-   *  dcids, so `{}` narrows nothing, as do null and undefined. */
+  /** Roles to rebind under their `specRoles` keys, as `{ place: ["country/KEN"] }` or
+   *  `{ origin: ["country/FRA"] }`, each dcid read without surrounding white space. null
+   *  unbinds a role. Every role the spec binds and this leaves out keeps its dcids, so `{}`
+   *  narrows nothing, as do null and undefined. */
   entities?: Readonly<Record<string, readonly string[] | null>> | null | undefined;
   /** Facet axes (`provenance`, `measurementMethod`, `unit`) bound to a reference. null binds
    *  the facets that declare no value on the axis. `{}` narrows nothing, as do null and
@@ -235,7 +237,8 @@ function boundRoles(definition: Readonly<Record<string, unknown>>): Map<string, 
 
 /**
  * The spec's whole entity binding with the caller's roles replaced and its null roles dropped,
- * since the server's `scope.entities` replaces the binding outright.
+ * since the server's `scope.entities` replaces the binding outright. Each caller key posts as
+ * its wire role.
  *
  * @throws {InvalidRequestError} The spec's definition holds no `identity` object, or a role is
  *   bound to neither a non-empty list of dcids nor null (`invalid_argument`).
@@ -252,7 +255,7 @@ function entityScope(
   const bound = boundRoles(spec.definition);
   for (const [role, given] of Object.entries(entities)) {
     if (given === null) {
-      bound.delete(role);
+      bound.delete(wireRole(role));
       continue;
     }
     const dcids = dcidsOf(given);
@@ -262,7 +265,7 @@ function entityScope(
           '["country/FRA"], or to null to unbind it.',
       );
     }
-    bound.set(role, dcids);
+    bound.set(wireRole(role), dcids);
   }
   return Object.fromEntries(bound);
 }
@@ -337,18 +340,32 @@ const roleKeys = ({ spec }: MemberRequest): string =>
 /**
  * Refuses an `entities` key that a reading does not declare, before any request, naming each
  * reading's role keys as `specRoles` gives them. A reading whose definition names no role is
- * left to the server, since the client cannot tell which roles it takes.
+ * left to the server, since the client cannot tell which roles it takes, except that a wire role
+ * whose caller key differs, `observationAbout`, is refused on every reading, naming its caller
+ * key where every refusing reading would take that key.
  *
  * @throws {InvalidRequestError} A key is not one of a reading's roles (`invalid_argument`).
  */
 function checkRoles(wants: readonly MemberRequest[], entities: unknown): void {
   if (!isRecord(entities)) return;
   for (const role of Object.keys(entities)) {
+    const key = callerKey(role);
     const lacking = wants.filter(({ spec }) => {
       const roles = Object.keys(specRoles(spec));
-      return roles.length > 0 && !roles.includes(role);
+      return roles.length > 0 ? !roles.includes(role) : key !== role;
     });
     if (lacking.length === 0) continue;
+    // A wire role is refused naming its caller key where every refusing reading would take it.
+    const takesKey = lacking.every(({ spec }) => {
+      const roles = Object.keys(specRoles(spec));
+      return roles.length === 0 || roles.includes(key);
+    });
+    if (key !== role && takesKey) {
+      throw invalid(
+        `entities names ${JSON.stringify(role)}, the wire name of ${JSON.stringify(key)}; ` +
+          `key it as ${JSON.stringify(key)}.`,
+      );
+    }
     const named = `entities names ${JSON.stringify(role)}, a role`;
     if (wants.length === 1) {
       throw invalid(

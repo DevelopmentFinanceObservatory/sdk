@@ -12,7 +12,7 @@ The first release of `development-finance`, the Python client for the Developmen
 
 - `dfo.search(question)` returns an `Answer` that prints what Search understood and the line to type next. `answer.choose(option, part=...)` settles a part that awaits a choice, by index or label.
 - `answer.fetch()` and `dfo.fetch(spec)` return a `Dataset`. A long build shows progress and waits as long as the build takes unless `timeout=` is set. A fetch that is interrupted or times out leaves the build running, and the same fetch joins it.
-- `dfo.fetch(spec)` narrows a reading on the server with `window`, `entities` and `facets`, and `answer.fetch` narrows every reading of an answer with them. `layout="frame"` returns one reading's pipeline frame.
+- `dfo.fetch(spec)` narrows a reading on the server with `window`, `entities` and `facets`, `entities` keyed by role as `place`, `origin` or `destination`, and `answer.fetch` narrows every reading of an answer with them. `layout="frame"` returns one reading's pipeline frame.
 - Datasets leave out party totals, such as the DAC total beside its members, unless `party_totals=True`, and put the reading columns first, then the columns that vary between rows, then the constant ones, with `stat_var` last. Rows sort so that each series reads in time order.
 - `data.to_pandas()`, `data.to_polars()` and `data.to_arrow()` convert a dataset, with pandas and polars as optional extras. `data.save(path)` writes a Parquet file that `dfo.load(path)` reads back.
 - `data.ref` names the exact versions a dataset holds. `dfo.fetch(data.ref)` reads them again, and `dfo.fetch(data.ref, latest=True)` builds the newest. `ref.to_json()` and `DatasetRef.from_json(text)` carry a ref as JSON that the TypeScript client also reads.

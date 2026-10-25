@@ -1,5 +1,8 @@
 """Tests for the build request bodies, the scope mapping and operation reading."""
 
+import re
+from typing import Any
+
 import pytest
 
 from dfo._core.errors import ContractError, InvalidRequestError
@@ -13,6 +16,7 @@ from dfo._datasets.build import (
     scope,
 )
 from tests._fetch_support import OP_ID, operation
+from tests.rule_vectors import ids, vectors
 
 
 @pytest.mark.parametrize(
@@ -122,23 +126,29 @@ FLOW = _spec(1, entities={"destination": ["country/NGA"]})
 PLACE = _spec(2, entities={"observationAbout": ["country/KEN"]})
 
 
-@pytest.mark.parametrize(
-    ("spec", "roles"),
-    [
-        # A flow spec takes both flow axes, the one it leaves open as None.
-        (FLOW, {"destination": ("country/NGA",), "origin": None}),
-        (
-            _spec(3, entities={"origin": ["country/DEU"]}, open_roles=["destination"]),
-            {"origin": ("country/DEU",), "destination": None},
-        ),
-        (PLACE, {"observationAbout": ("country/KEN",)}),
-        (_spec(4, entities={}), {}),
-        (Spec("spec_" + "5" * 32, {"spec_id": "spec_" + "5" * 32}), {}),
-    ],
-    ids=["flow", "flow-open-role", "place", "no-role", "no-identity"],
-)
-def test_a_spec_lists_the_role_keys_entities_takes(spec, roles) -> None:
-    assert spec.roles == roles
+@pytest.mark.parametrize("vector", vectors("role-keys"), ids=ids("role-keys"))
+def test_the_role_keys_vectors(vector: dict[str, Any]) -> None:
+    spec = _spec(7, **vector["identity"])
+    assert list(spec.roles.items()) == [
+        (key, None if dcids is None else tuple(dcids))
+        for key, dcids in vector["roles"].items()
+    ]
+    if "entities" not in vector:
+        return
+    if "posted" in vector:
+        scopes = narrowings([Reading((), spec)], entities=vector["entities"])
+        assert scopes == [{"entities": vector["posted"]}]
+        return
+    with pytest.raises(InvalidRequestError) as caught:
+        narrowings([Reading((), spec)], entities=vector["entities"])
+    assert caught.value.code == vector["error"]["reason"]
+    # The message names each key in the vector's order, the typed key first.
+    names = "".join(f".*\\b{re.escape(name)}\\b" for name in vector["error"]["names"])
+    assert re.match(names, str(caught.value), re.DOTALL)
+
+
+def test_a_spec_without_an_identity_takes_no_role() -> None:
+    assert Spec("spec_" + "5" * 32, {"spec_id": "spec_" + "5" * 32}).roles == {}
 
 
 def test_one_narrowing_rebinds_each_reading_on_its_own_binding() -> None:
@@ -172,7 +182,7 @@ def test_one_narrowing_rebinds_each_reading_on_its_own_binding() -> None:
             [Reading(("ODA",), FLOW), Reading(("GDP",), PLACE)],
             'entities names "financingRecipient", a role "ODA" and "GDP" do not '
             'declare. Each part\'s roles:\n  "ODA": destination, origin\n  '
-            '"GDP": observationAbout\n[invalid_argument]',
+            '"GDP": place\n[invalid_argument]',
         ),
     ],
     ids=["spec", "answer"],
@@ -183,6 +193,29 @@ def test_a_role_a_reading_does_not_declare_is_refused_naming_its_roles(
     with pytest.raises(InvalidRequestError) as caught:
         narrowings(readings, entities={"financingRecipient": ["country/KEN"]})
     assert caught.value.code == "invalid_argument"
+    assert str(caught.value) == message
+
+
+@pytest.mark.parametrize(
+    ("spec", "message"),
+    [
+        (
+            PLACE,
+            'entities names "observationAbout", the wire name of "place"; key it '
+            'as "place". [invalid_argument]',
+        ),
+        (
+            FLOW,
+            'entities names "observationAbout", a role the spec does not declare; '
+            "its roles are destination, origin. [invalid_argument]",
+        ),
+    ],
+    ids=["takes-place", "lacks-place"],
+)
+def test_a_wire_role_names_its_key_only_where_the_spec_takes_it(spec, message) -> None:
+    # Both clients print these words, so they are pinned here and in TypeScript.
+    with pytest.raises(InvalidRequestError) as caught:
+        narrowings([Reading((), spec)], entities={"observationAbout": ["country/X"]})
     assert str(caught.value) == message
 
 

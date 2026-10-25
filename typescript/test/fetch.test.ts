@@ -398,6 +398,23 @@ describe("a fetch's roles", () => {
     );
   });
 
+  for (const [name, identity] of [
+    ["a place spec", { entities: { observationAbout: ["country/KEN"] } }],
+    ["a spec that names no role", {}],
+  ] as const) {
+    test(`refuses the wire name of place on ${name}, naming place`, async () => {
+      const spec = { spec_id: "spec_1", definition: { spec_id: "spec_1", identity } };
+      const error = await rejection(
+        fetchDataset(transport, spec, { entities: { observationAbout: ["country/NGA"] } }),
+      );
+      assert.ok(error instanceof InvalidRequestError);
+      assert.equal(
+        error.detail,
+        'entities names "observationAbout", the wire name of "place"; key it as "place".',
+      );
+    });
+  }
+
   test("specRoles gives each role's dcids, a flow direction it binds none of as null", async () => {
     const spec = await top5;
     assert.deepEqual(specRoles(spec), { destination: ["country/ETH"], origin: null });
@@ -408,7 +425,7 @@ describe("a fetch's roles", () => {
     };
     delete place["open_roles"];
     assert.deepEqual(specRoles({ ...spec, definition: { ...spec.definition, identity: place } }), {
-      observationAbout: ["country/KEN"],
+      place: ["country/KEN"],
     });
     assert.deepEqual(specRoles({ spec_id: "spec_1", definition: {} }), {});
     assert.throws(() => specRoles("spec_1" as unknown as Spec), {

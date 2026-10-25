@@ -21,6 +21,7 @@ from typing import (
 from dfo._core.json_text import loads
 from dfo._core.text import single_line
 from dfo._generated.error_map import GapKind as SearchGapKind
+from dfo._generated.role_keys import FLOW_KEYS, ROLE_KEYS
 from dfo._generated.wire import (
     AggregateNode,
     AssumptionKind,
@@ -37,7 +38,6 @@ from dfo._generated.wire import (
     OtherNode,
     PlaceOtherNode,
     ProvenanceNode,
-    RoleAxis,
     Severity,
     SourceNode,
     StatVarNode,
@@ -69,8 +69,8 @@ _GAP_KINDS: frozenset[str] = frozenset(
     get_args(SearchGapKind.__value__) + get_args(_ClientGapKind.__value__)
 )
 
-# The flow axes, origin and destination: a spec that names one can bind both.
-_FLOW_AXES: tuple[str, ...] = get_args(RoleAxis.__value__)
+# Each wire role with the caller key `entities=` takes for it.
+_CALLER_KEYS: dict[str, str] = {wire: key for key, wire in ROLE_KEYS.items()}
 
 # The most characters of one text, such as a label or a message, a repr quotes.
 REPR_TEXT_MAX = 60
@@ -170,18 +170,20 @@ class Spec:
         definition binds it to, or None when it binds none.
 
         The roles are those `definition.identity` binds in `entities` or lists
-        in `open_roles`. A flow spec, one that names `origin` or `destination`,
-        takes both. Empty when the definition names no role.
+        in `open_roles`, each under its caller key: `place` for the place a
+        measure is about, `origin` and `destination` for a flow's directions. A
+        flow spec, one that names `origin` or `destination`, takes both. Empty
+        when the definition names no role.
         """
         identity = self.definition.get("identity")
         identity = identity if isinstance(identity, Mapping) else {}
         bound = identity.get("entities")
         bound = bound if isinstance(bound, Mapping) else {}
         named = [*bound, *(identity.get("open_roles") or ())]
-        if any(role in _FLOW_AXES for role in named):
-            named.extend(_FLOW_AXES)
+        if any(role in FLOW_KEYS for role in named):
+            named.extend(FLOW_KEYS)
         return {
-            role: tuple(bound[role]) if role in bound else None
+            _CALLER_KEYS.get(role, role): tuple(bound[role]) if role in bound else None
             for role in dict.fromkeys(named)
         }
 

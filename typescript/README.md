@@ -96,7 +96,7 @@ console.log(ghana.rowCount);
 ```
 
 - `window` is `"all"`, `"latest"`, or `[startYear, endYear]`, with years from 1000 to 2200. One year is `[2020, 2020]`.
-- `entities` rebinds a role by the key the spec uses, here `origin` and `destination`. `specRoles(spec)` lists the keys, each with the dcids it binds, or `null` for a flow direction it binds none of. A role you leave out keeps its places, and `null` unbinds one. A key the spec does not take, such as the column name `financingRecipient`, raises `InvalidRequestError` with `invalid_argument` and the spec's roles, before any request.
+- `entities` rebinds a role by its key: `place` for the place a measure is about, `origin` and `destination` for a flow, as here. A GDP reading narrows to two countries with `{ entities: { place: ["country/NGA", "country/GHA"] } }`, which the client posts as the API's role `observationAbout`; typing `observationAbout` itself is refused. `specRoles(spec)` lists the keys, each with the dcids it binds, or `null` for a flow direction it binds none of. A role you leave out keeps its places, and `null` unbinds one. A key the spec does not take, such as the column name `financingRecipient`, raises `InvalidRequestError` with `invalid_argument` and the spec's roles, before any request.
 - `facets` binds an axis, such as `{ provenance: "provenance/OECDCreditorReportingSystem" }`.
 - `partyTotals: true` keeps the rows of totals such as "DAC countries" beside their members. They are left out by default, so a sum over `value` counts each flow once.
 

@@ -224,7 +224,7 @@ except InvalidRequestError as error:
         print(issue["pointer"], issue.get("alternatives"))
 ```
 
-The client refuses a role the spec does not declare before any request, as `invalid_argument` with no issues, for example `entities names "origin", a role the spec does not declare; its roles are observationAbout. [invalid_argument]`.
+The client refuses a role the spec does not declare before any request, as `invalid_argument` with no issues, for example `entities names "origin", a role the spec does not declare; its roles are place. [invalid_argument]`. The wire name `observationAbout` is refused naming the key to type: `entities names "observationAbout", the wire name of "place"; key it as "place". [invalid_argument]`.
 
 ## Reference
 

@@ -1,5 +1,5 @@
-// Replays the contract's rule vectors for keys, credentials, the reading order and the client's
-// identity. The cache rules have no TypeScript counterpart: this client keeps no cache on disk.
+// Replays the contract's rule vectors for keys, credentials, the reading order, role keys and the
+// client's identity. The cache rules have no TypeScript counterpart: this client keeps no cache on disk.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
@@ -23,7 +23,10 @@ import { VERSION } from "../src/version.ts";
 import { Dataset } from "../src/datasets/dataset.ts";
 import type { FetchedMember } from "../src/datasets/dataset.ts";
 import { readingOrder } from "../src/datasets/reading-order.ts";
-import { contractJson, json, mockFetch } from "./support.ts";
+import { fetchDataset } from "../src/datasets/resolve.ts";
+import { specRoles } from "../src/core/roles.ts";
+import { FLOW_KEYS, ROLE_KEYS } from "../src/generated/role-keys.ts";
+import { contractJson, json, mockFetch, problem } from "./support.ts";
 
 type Suite<T> = { rule: string; vectors: (T & { name: string })[] };
 
@@ -243,6 +246,68 @@ test("reading-order sorts strings by code point and NaN after every number", () 
   );
   assert.deepEqual(order.columns, ["label", "share"]);
   assert.deepEqual([...order.rows], [1, 4, 0, 3, 2]);
+});
+
+describe("role-keys", async () => {
+  type Roles = Record<string, string[] | null>;
+  type Vector = {
+    identity: Record<string, unknown>;
+    roles: Roles;
+    entities?: Roles;
+    posted?: Record<string, string[]>;
+    error?: { reason: string; names: string[] };
+  };
+  const rule = await contractJson<{ keys: unknown; flow_keys: unknown }>("rules/role-keys.json");
+
+  test("the generated key map is the rule's", () => {
+    assert.deepEqual(ROLE_KEYS, rule.keys);
+    assert.deepEqual(FLOW_KEYS, rule.flow_keys);
+  });
+
+  for (const vector of await vectors<Vector>("role-keys")) {
+    test(vector.name, async () => {
+      const spec = {
+        spec_id: "spec_1",
+        definition: { spec_id: "spec_1", identity: vector.identity },
+      };
+      assert.deepEqual(specRoles(spec), vector.roles);
+      if (vector.entities === undefined) return;
+      // The build is refused, so the request the client posted is the one to read.
+      const { fetch, seen } = mockFetch(problem({ code: "request_invalid", status: 400 }));
+      const transport = new Transport({
+        baseUrl: "https://api.example/api",
+        apiKey: false,
+        env: envFrom({}),
+        readCredentialsFile: () => null,
+        fetch,
+        onWarning: () => undefined,
+      });
+      const fetching = fetchDataset(transport, spec, { entities: vector.entities });
+      if (vector.error !== undefined) {
+        const { reason, names } = vector.error;
+        let detail = "";
+        await assert.rejects(fetching, (error) => {
+          assert.ok(isDfoError(error) && error.code === reason);
+          detail = error.detail;
+          return true;
+        });
+        assert.equal(seen.length, 0);
+        const at = names.map((name) => detail.indexOf(name));
+        assert.ok(
+          at.every((index) => index >= 0),
+          `${detail} names each of ${names.join(", ")}`,
+        );
+        assert.ok(
+          at.slice(1).every((index) => index > at[0]!),
+          `${detail} names ${names[0]} first`,
+        );
+        return;
+      }
+      await assert.rejects(fetching, { code: "request_invalid" });
+      const body = JSON.parse(seen[0]!.body!) as { input: { scope: { entities: unknown } } };
+      assert.deepEqual(body.input.scope.entities, vector.posted);
+    });
+  }
 });
 
 describe("client-identity", async () => {

@@ -92,7 +92,7 @@ answer = dfo.search("ODA from Germany to Kenya and Ghana, 2015 to 2022")
 print(answer)
 ```
 
-To vary a reading you already have without a new search, pass its spec to `dfo.fetch` with `window` and `entities`. `window` takes `(start_year, end_year)` with years from 1000 to 2200, `"latest"`, or `"all"`. `entities` maps each role the spec names to place codes, and `spec.roles` lists those roles with the places each binds, or None for a role left open. `answer.fetch` takes the same arguments and narrows every reading in the answer:
+To vary a reading you already have without a new search, pass its spec to `dfo.fetch` with `window` and `entities`. `window` takes `(start_year, end_year)` with years from 1000 to 2200, `"latest"`, or `"all"`. `entities` maps each role the spec names to place codes, keyed `place` for the place a measure is about and `origin` and `destination` for a flow, and `spec.roles` lists those roles with the places each binds, or None for a role left open. `answer.fetch` takes the same arguments and narrows every reading in the answer:
 
 ```text
 <Dataset Germany's gross disbursements to Ghana and Kenya for official development assistance, 2015 to 2022. Current US dollars · OECD DAC2a.

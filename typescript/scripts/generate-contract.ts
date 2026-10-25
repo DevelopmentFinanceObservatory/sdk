@@ -6,6 +6,7 @@
 //   src/generated/warning-codes.ts from warning-codes.json
 //   src/generated/proxy-codes.ts   from proxy-codes.json, checked against actions.json
 //   src/generated/reading-order.ts from rules/reading-order.json
+//   src/generated/role-keys.ts     from rules/role-keys.json
 //
 //   node scripts/generate-contract.ts           rewrite every file
 //   node scripts/generate-contract.ts --check   exit 1 when a committed file differs
@@ -291,6 +292,45 @@ export function renderReadingOrder(ruleText: string): Record<string, unknown> {
   return { READING_COLUMNS: slots };
 }
 
+/** The caller key of each entity role, to the wire role a client posts it as, and the flow
+ *  keys among them. */
+export function renderRoleKeys(ruleText: string): Record<string, unknown> {
+  const rule = JSON.parse(ruleText) as {
+    format_version?: unknown;
+    rule?: unknown;
+    keys?: unknown;
+    flow_keys?: unknown;
+  };
+  if (rule.format_version !== 1 || rule.rule !== "role-keys") {
+    throw new Error("rules/role-keys.json is not format version 1 of the role-keys rule");
+  }
+  const { keys, flow_keys: flowKeys } = rule;
+  const isName = (name: unknown): name is string => typeof name === "string" && name !== "";
+  if (
+    !isRecord(keys) ||
+    Object.keys(keys).length === 0 ||
+    !Object.entries(keys).every(([key, wire]) => isName(key) && isName(wire))
+  ) {
+    throw new Error("rules/role-keys.json maps no caller keys to wire roles");
+  }
+  const wires = Object.values(keys);
+  if (new Set(wires).size !== wires.length) {
+    throw new Error("rules/role-keys.json maps two caller keys to one wire role");
+  }
+  if (
+    !Array.isArray(flowKeys) ||
+    flowKeys.length === 0 ||
+    new Set(flowKeys).size !== flowKeys.length ||
+    !flowKeys.every((key) => isName(key) && keys[key] === key)
+  ) {
+    throw new Error(
+      "rules/role-keys.json lists no flow_keys, lists one twice, or lists one that is not a " +
+        "caller key posted as itself",
+    );
+  }
+  return { ROLE_KEYS: keys, FLOW_KEYS: flowKeys };
+}
+
 async function module(
   source: string,
   tables: Record<string, unknown>,
@@ -352,6 +392,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         "contract/rules/reading-order.json",
         renderReadingOrder(await read("rules/reading-order.json")),
         output("reading-order.ts"),
+      ),
+    ],
+    [
+      output("role-keys.ts"),
+      await module(
+        "contract/rules/role-keys.json",
+        renderRoleKeys(await read("rules/role-keys.json")),
+        output("role-keys.ts"),
       ),
     ],
   ];

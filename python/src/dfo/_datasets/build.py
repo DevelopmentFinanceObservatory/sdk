@@ -34,6 +34,7 @@ from dfo._core.types import (
     Wire,
     matches,
 )
+from dfo._generated.role_keys import ROLE_KEYS
 from dfo._http.hooks import Hold
 
 # The longest the client reads a synchronous build. The server cuts off at 120 s.
@@ -49,6 +50,9 @@ _LAYOUTS = ("long", "frame")
 # exactly, and a year outside these builds an identity Search cannot resolve back.
 WINDOW_FIRST_YEAR = 1000
 WINDOW_LAST_YEAR = 2200
+
+# Each wire role a caller key renames, such as observationAbout, with that key.
+_WIRE_SPELLINGS = {wire: key for key, wire in ROLE_KEYS.items() if wire != key}
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,7 +226,8 @@ def scope(
 
 
 type Entities = Mapping[str, list[str] | tuple[str, ...] | None]
-"""A fetch's `entities`: role keys bound to dcids, or to None to drop the role."""
+"""A fetch's `entities`: caller role keys, such as `place`, bound to dcids, or to
+None to drop the role."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,7 +265,8 @@ def rebind(spec: Spec, entities: Entities) -> dict[str, Sequence[str]]:
 
     The server replaces a spec's entire binding with the posted one, so the
     client starts from the roles the spec's definition binds and changes only
-    the roles `entities` names. A role bound to None is dropped.
+    the roles `entities` names, each caller key posted as its wire role, so
+    `place` as `observationAbout`. A role bound to None is dropped.
 
     Raises:
         InvalidRequestError: `entities` is not a map of role names, or the
@@ -276,7 +282,8 @@ def rebind(spec: Spec, entities: Entities) -> dict[str, Sequence[str]]:
             "data.members[0].spec",
         )
     bound: dict[str, Sequence[str]] = dict(identity.get("entities", {}))
-    for role, dcids in entities.items():
+    for key, dcids in entities.items():
+        role = ROLE_KEYS.get(key, key)
         if dcids is None:
             bound.pop(role, None)
         else:
@@ -316,7 +323,18 @@ def narrowings(
 def _check_role(role: str, readings: Sequence[Reading]) -> None:
     """Refuse a role key one of `readings` does not declare, naming each
     reading's role keys. A reading whose definition names no role is left to
-    the server, since the client cannot tell which roles it takes."""
+    the server, since the client cannot tell which roles it takes. A wire role
+    a caller key renames, such as `observationAbout`, is refused naming that
+    key when every reading takes it or names no role."""
+    key = _WIRE_SPELLINGS.get(role)
+    if key is not None and all(
+        not (roles := reading.spec.roles) or key in roles for reading in readings
+    ):
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"entities names {cited(role)}, the wire name of {cited(key)}; "
+            f"key it as {cited(key)}.",
+        )
     lacking = [
         reading
         for reading in readings

@@ -715,7 +715,7 @@ describe("fetch", () => {
     assert.equal(
       error.detail,
       `entities names "destination", a role ${gdp} does not declare. Each part's roles:\n` +
-        `  ${health} / ${education}: destination, origin\n  ${gdp}: observationAbout`,
+        `  ${health} / ${education}: destination, origin\n  ${gdp}: place`,
     );
   });
 
