@@ -149,7 +149,7 @@ def fetch(
     entities: Mapping[str, list[str] | tuple[str, ...] | None] | None = None,
     facets: Mapping[str, str | None] | None = None,
     layout: Layout | None = None,
-    without_party_totals: bool | None = None,
+    party_totals: bool | None = None,
     latest: bool = False,
     strict: bool = False,
     timeout: float | None = None,
@@ -165,7 +165,7 @@ def fetch(
     Raises:
         InvalidRequestError: The target is neither a `Spec` nor a `DatasetRef`,
             such as a spec id, and no request is sent; a ref is narrowed or
-            given another layout or `without_party_totals`; `latest` is not a
+            given another layout or `party_totals`; `latest` is not a
             bool, is given a spec, or is given a ref whose members differ in
             rendering; `window`,
             `entities`, `facets` or `layout` is malformed; or `timeout` is not
@@ -184,7 +184,7 @@ def fetch(
         entities=entities,
         facets=facets,
         layout=layout,
-        without_party_totals=without_party_totals,
+        party_totals=party_totals,
         latest=latest,
         strict=strict,
         timeout=timeout,

@@ -124,7 +124,8 @@ describe("Parquet types", () => {
       }),
     );
     const dataset = new Dataset([member(data)], { layout: "long" });
-    assert.deepEqual(dataset.columns, [name, "value"]);
+    // The column-order rule puts the reading column `value` first.
+    assert.deepEqual(dataset.columns, ["value", name]);
     const rows = await dataset.toRows();
     assert.deepEqual(
       rows.map((row) => [
@@ -134,20 +135,20 @@ describe("Parquet types", () => {
         row["value"],
       ]),
       [
-        [true, [name, "value"], "a", 1],
-        [true, [name, "value"], "b", 2],
+        [true, ["value", name], "a", 1],
+        [true, ["value", name], "b", 2],
       ],
     );
     const table = await toArrow(dataset);
     assert.deepEqual(
       table.schema.fields.map((field) => field.name),
-      [name, "value"],
+      ["value", name],
     );
     assert.equal(table.getChild(name)?.get(1), "b");
     const saved = parquetMetadata((await dataset.bytes()).buffer as ArrayBuffer);
     assert.deepEqual(
       saved.schema.slice(1).map((element) => element.name),
-      [name, "value"],
+      ["value", name],
     );
   });
 
@@ -331,8 +332,16 @@ describe("a dataset of several members", async () => {
 
   test("bytes() writes one Parquet file of the stacked table, with the provenance", async () => {
     const stacked = await dataset.bytes();
+    // The file holds the stacked table's columns in its order, `part` first. Read back as one
+    // member, the `part` column is one more column, so it moves behind the reading columns.
+    assert.deepEqual(
+      parquetMetadata(stacked.slice().buffer)
+        .schema.slice(1)
+        .map((element) => element.name),
+      dataset.columns,
+    );
     const reread = new Dataset([member(stacked)], { layout: "long" });
-    assert.deepEqual(reread.columns, dataset.columns);
+    assert.deepEqual(reread.columns.toSorted(), dataset.columns.toSorted());
     assert.deepEqual(await reread.toRows(), await dataset.toRows());
 
     const metadata = Object.fromEntries(
@@ -633,10 +642,12 @@ describe("members whose column types differ", () => {
     const reread = new Dataset([member(await dataset.bytes())], { layout: "long" });
     assert.deepEqual(await reread.toRows(), await dataset.toRows());
     const stored = await decodeStored(tableParts(reread));
-    assert.deepEqual(
-      stored.map(({ name, type }) => ({ name, type })),
-      (await decodeStored(tableParts(dataset))).map(({ name, type }) => ({ name, type })),
-    );
+    // Read back as one member, `part` is one more column and moves behind `value`.
+    const typed = (columns: readonly { name: string; type: unknown }[]) =>
+      columns
+        .map(({ name, type }) => ({ name, type }))
+        .toSorted((a, b) => (a.name < b.name ? -1 : 1));
+    assert.deepEqual(typed(stored), typed(await decodeStored(tableParts(dataset))));
     assert.deepEqual(stored.find((column) => column.name === "at")?.values, [
       1_000_000n,
       2_000_000n,

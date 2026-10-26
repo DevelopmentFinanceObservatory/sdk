@@ -6,7 +6,8 @@ answer's fetch stacks them. Otherwise a `DatasetRef` returns the versions it nam
 by digest; the snapshot route and the files route at the stored digest; the file
 selector, which renders the version again from its stored frame; a fresh build,
 which must return the same version; and otherwise `VersionUnavailableError`,
-naming the newest version in the member's rendering. A rebuilt file whose digest
+whose `newest_version` names the version the build answered, else the newest
+plain build. A rebuilt file whose digest
 differs from the ref's issues a `DfoWarning` (`ref_digest_changed`) naming both,
 and the fetch returns its data, since the ref pins the version and the digest
 names one rendering of it. A snapshot or build that answers another spec raises
@@ -51,7 +52,6 @@ from dfo._core.types import (
     SPEC_ID,
     FormatError,
     Layout,
-    Rendering,
     Spec,
     Window,
     Wire,
@@ -112,7 +112,7 @@ async def fetch(
     entities: Mapping[str, list[str] | tuple[str, ...] | None] | None = None,
     facets: Mapping[str, str | None] | None = None,
     layout: Layout | None = None,
-    without_party_totals: bool | None = None,
+    party_totals: bool | None = None,
     latest: bool = False,
     strict: bool = False,
     timeout: float | None = None,
@@ -132,9 +132,10 @@ async def fetch(
         facets: Bind a spec's provenance, measurement method or unit.
         layout: `long` (the default for a spec) or `frame`. A ref holds its own
             layout; naming another raises.
-        without_party_totals: Leave out the rows of parties the code index
-            declares totals, on each party role a spec leaves open; None is
-            False for a spec. A ref holds its own choice; naming another raises.
+        party_totals: Keep the rows of parties the code index declares totals,
+            on each party role a spec leaves open; None is False for a spec,
+            which leaves them out. A ref holds its own choice; naming another
+            raises.
         latest: Build the newest version of each of a ref's specs, in the
             rendering the ref holds, in place of the exact versions it names.
             A spec always fetches its newest version and refuses it.
@@ -147,7 +148,7 @@ async def fetch(
     Raises:
         InvalidRequestError: The target is neither a `Spec` nor a `DatasetRef`,
             such as a spec id; a ref is narrowed or given another layout or
-            `without_party_totals`; `latest` is not a bool, is given a spec, or
+            `party_totals`; `latest` is not a bool, is given a spec, or
             is given a ref whose members differ in rendering; `window`,
             `entities`, `facets`, `layout`, `strict` or `progress` is malformed;
             or `entities` rebinds a spec whose definition holds no identity.
@@ -177,9 +178,7 @@ async def fetch(
                 "A ref fetch takes no entities or facets; narrow a member's spec "
                 f"instead, as {caller}.fetch(ref.members[0].spec, entities=...).",
             )
-        layout = _checked_ref_layout(
-            target, layout=layout, without_party_totals=without_party_totals
-        )
+        layout = _checked_ref_layout(target, layout=layout, party_totals=party_totals)
         if latest:
             return await _fetch_newest(
                 transport,
@@ -215,9 +214,7 @@ async def fetch(
         transport,
         [Reading((), target, target.sentence)],
         layout="long" if layout is None else layout,
-        without_party_totals=False
-        if without_party_totals is None
-        else without_party_totals,
+        party_totals=False if party_totals is None else party_totals,
         strict=strict,
         timeout=timeout,
         progress=progress,
@@ -244,14 +241,14 @@ def _ref_window_refusal(window: object, latest: bool, caller: str) -> str:
 
 
 def _checked_ref_layout(
-    ref: DatasetRef, *, layout: Layout | None, without_party_totals: bool | None
+    ref: DatasetRef, *, layout: Layout | None, party_totals: bool | None
 ) -> Layout:
-    """The layout a ref holds, once the call's `layout` and `without_party_totals`,
-    when given, are the ref's own.
+    """The layout a ref holds, once the call's `layout` and `party_totals`, when
+    given, are the ref's own.
 
     Raises:
         InvalidRequestError: The ref holds a rendering this client does not read,
-            or the call names another layout or `without_party_totals`
+            or the call names another layout or `party_totals`
             (`invalid_argument`).
     """
     ref_layout = _ref_layout(ref)
@@ -262,12 +259,12 @@ def _checked_ref_layout(
             "fetch its specs for another layout",
         )
     for member in ref.members:
-        held = member.rendering.without_party_totals
-        if without_party_totals is not None and without_party_totals is not held:
+        held = not member.rendering.without_party_totals
+        if party_totals is not None and party_totals is not held:
             raise client_error(
                 INVALID_ARGUMENT,
                 f"The DatasetRef holds {member.spec.spec_id} with "
-                f"without_party_totals={held}, not {without_party_totals!r}; "
+                f"party_totals {held}, not {party_totals!r}; "
                 "fetch its specs for the other rendering",
             )
     return ref_layout
@@ -299,14 +296,14 @@ async def _fetch_newest(
                 f"{other.spec.spec_id} in different renderings, and a latest "
                 "fetch builds one; fetch each spec on its own, as "
                 f'{transport.caller}.fetch(ref.members[{index}].spec, layout="'
-                f'{layout_of(other.rendering)}", without_party_totals='
-                f"{other.rendering.without_party_totals}).",
+                f'{layout_of(other.rendering)}", party_totals='
+                f"{not other.rendering.without_party_totals}).",
             )
     return await fetch_members(
         transport,
         [Reading(member.parts, member.spec, member.sentence) for member in ref.members],
         layout=layout,
-        without_party_totals=first.rendering.without_party_totals,
+        party_totals=not first.rendering.without_party_totals,
         strict=strict,
         timeout=timeout,
         progress=progress,
@@ -443,7 +440,7 @@ async def _fetch_version(
         )
     except (InvalidRequestError, NotFoundError, VersionUnavailableError) as error:
         refusal = refusal or error
-        newest = await _newest(transport, spec_id, member.rendering, deadline=deadline)
+        newest = await _newest(transport, spec_id, deadline=deadline)
     else:
         with describing(built.trace_id):
             check_built(built.manifest, spec_id)
@@ -623,19 +620,18 @@ async def _stored_file(
 async def _newest(
     transport: AsyncTransport,
     spec_id: str,
-    rendering: Rendering,
     *,
     deadline: float | None,
 ) -> str | None:
-    """The newest stored version of a spec in `rendering`, or None.
+    """The newest plain build of a spec, or None.
 
     The versions route lists versions newest first, `_VERSIONS_PAGE` to a page,
-    and each page's `next_cursor` names the next. Each version names the
-    rendering it is: `plain`, `without_party_totals` for a party-totals cut,
-    `groupby` or `not_recorded`. The newest version is the first listed in the
-    rendering a ref member holds, `plain` or `without_party_totals`. A list
-    that ends without one, `NotFoundError`, or `VERSIONS_PAGE_BUDGET` pages
-    read without one, reads as no version. Any other refusal raises.
+    and each page's `next_cursor` names the next. A version derived from a plain
+    build, a groupby collapse or a party-totals cut, names that build as its
+    `base_content_version`; the newest plain build is the first version listed
+    with none. A list that ends without one, `NotFoundError`, or
+    `VERSIONS_PAGE_BUDGET` pages read without one, reads as no version. Any
+    other refusal raises.
 
     Raises:
         ContractError: A page is not a versions page this client can read, or
@@ -644,7 +640,6 @@ async def _newest(
     """
     target = f"/datasets/{spec_id}/versions"
     route = f"GET {target}"
-    wanted = "without_party_totals" if rendering.without_party_totals else "plain"
     params: dict[str, str | int] = {"limit": _VERSIONS_PAGE}
     seen: set[str] = set()
     for _ in range(VERSIONS_PAGE_BUDGET):
@@ -656,7 +651,7 @@ async def _newest(
             return None
         body = response_json(response)
         trace_id = trace_id_of(response, body)
-        newest, cursor = _newest_on_page(body, wanted, route, trace_id)
+        newest, cursor = _newest_on_page(body, route, trace_id)
         if newest is not None or cursor is None:
             return newest
         if cursor in seen:
@@ -667,16 +662,16 @@ async def _newest(
 
 
 def _newest_on_page(
-    body: object, wanted: str, route: str, trace_id: str | None
+    body: object, route: str, trace_id: str | None
 ) -> tuple[str | None, str | None]:
-    """The first version a versions page lists in the `wanted` rendering, or None,
-    and the page's `next_cursor`.
+    """The first plain build a versions page lists, or None, and the page's
+    `next_cursor`.
 
     Raises:
         ContractError: The page has no `versions` list, a listed version's
-            `content_version` is not `cv_` and 32 lowercase hex digits or it has
-            no `rendering` string, or `next_cursor` is neither a string nor null
-            (`contract_violation`).
+            `content_version` is not `cv_` and 32 lowercase hex digits or its
+            `base_content_version` is neither a string nor null, or
+            `next_cursor` is neither a string nor null (`contract_violation`).
     """
     versions = body.get("versions") if isinstance(body, Mapping) else None
     if not isinstance(body, Mapping) or not isinstance(versions, list):
@@ -687,9 +682,11 @@ def _newest_on_page(
         content_version = entry.get("content_version")
         if not matches(CONTENT_VERSION, content_version):
             raise _violation(route, f"/versions/{index}/content_version", trace_id)
-        if not isinstance(listed := entry.get("rendering"), str):
-            raise _violation(route, f"/versions/{index}/rendering", trace_id)
-        if listed == wanted and newest is None:
+        if "base_content_version" not in entry or not isinstance(
+            base := entry["base_content_version"], str | None
+        ):
+            raise _violation(route, f"/versions/{index}/base_content_version", trace_id)
+        if base is None and newest is None:
             newest = content_version
     cursor = body.get("next_cursor")
     if not isinstance(cursor, str | None):
@@ -724,13 +721,12 @@ def _unavailable(
     member: RefMember, newest: str | None, refusal: DfoError | None, *, caller: str
 ) -> VersionUnavailableError:
     lost = f"{member.spec.spec_id} at {member.content_version} can no longer be fetched"
+    # The message names no other version: the newest plain build is not
+    # comparable with the version of a party-totals cut.
     if newest == member.content_version:
         message = f"{lost}, though the server lists it as the newest version."
     else:
-        newer = (
-            "For the newest version" if newest is None else f"The newest is {newest}"
-        )
-        message = f"{lost}. {newer}: {caller}.fetch(ref, latest=True)"
+        message = f"{lost}. For the newest version: {caller}.fetch(ref, latest=True)"
     if refusal is None:
         error = client_error(VERSION_UNAVAILABLE, message)
     else:

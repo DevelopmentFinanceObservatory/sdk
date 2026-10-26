@@ -6,7 +6,8 @@
  * holds to the type: a key the type adds and the literal lacks, or a key the literal names and
  * the type lacks, fails the build. A key outside the set raises `InvalidRequestError`
  * (`invalid_argument`) naming the nearest key, compared in lower case with `_` and `-` dropped,
- * so the Python spelling `without_party_totals` finds `withoutPartyTotals`.
+ * so the Python spelling `party_totals` finds `partyTotals`. An option's old spelling names the
+ * option that replaced it, with what that option's default does.
  */
 import { capped, clientError } from "./errors.ts";
 import { isRecord } from "./json.ts";
@@ -32,6 +33,19 @@ export function declareOptions<T>(call: string, keys: OptionKeys<T>): DeclaredOp
 /** A key as it compares with another: lower case, with `_` and `-` dropped. */
 const keyFold = (key: string): string => key.toLowerCase().replace(/[_-]/g, "");
 
+/** Options that replaced another, keyed by the old one's folded spelling, with the sentence
+ *  that says what the new one's default does. `withoutPartyTotals: true` was the old way to
+ *  ask for what `partyTotals` now does by default, so the hint says so. */
+const RENAMED: ReadonlyMap<string, { readonly key: string; readonly note: string }> = new Map([
+  [
+    keyFold("withoutPartyTotals"),
+    {
+      key: "partyTotals",
+      note: "It is false by default, which leaves party totals out; true keeps them.",
+    },
+  ],
+]);
+
 /**
  * The options a call reads, `{}` for null or undefined.
  *
@@ -51,8 +65,14 @@ export function checkOptions<T extends object>(
   }
   const unknown = Object.keys(options).find((key) => !taken.has(key));
   if (unknown === undefined) return options;
-  const near = nearest(unknown, keys, keyFold);
   const named = `${call} has no option ${JSON.stringify(capped(unknown))}`;
+  const renamed = RENAMED.get(keyFold(unknown));
+  if (renamed !== undefined && taken.has(renamed.key)) {
+    throw clientError("invalid_argument", {
+      detail: `${named}; did you mean ${JSON.stringify(renamed.key)}? ${renamed.note}`,
+    });
+  }
+  const near = nearest(unknown, keys, keyFold);
   throw clientError("invalid_argument", {
     detail:
       near === undefined

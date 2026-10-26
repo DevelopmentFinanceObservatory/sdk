@@ -173,7 +173,7 @@ export class Client {
    *
    * @throws {InvalidRequestError} `options` holds a key outside `FetchOptions`, a window year
    *   falls outside 1000 to 2200, the target is neither a ref nor a spec with its `spec_id` and
-   *   `definition`, a ref is narrowed or given another layout or `withoutPartyTotals`, or
+   *   `definition`, a ref is narrowed or given another layout or `partyTotals`, or
    *   `latest` is given a spec or a ref whose members differ in rendering.
    * @throws {VersionUnavailableError} A ref's version can no longer be fetched.
    * @throws {DataWarning} `strict` is true and a manifest carries a warning above `info`.

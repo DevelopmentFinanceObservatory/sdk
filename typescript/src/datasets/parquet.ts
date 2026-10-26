@@ -1,8 +1,9 @@
 /**
  * Reading the bare Parquet files a dataset holds with hyparquet, and writing a stacked dataset
  * as one Parquet file with hyparquet-writer. Several files stack into one table: a `part`
- * column first, then every file's columns in file order, with a column one file lacks null in
- * that file's rows. A column whose type differs between files widens as pyarrow's permissive
+ * column first, then every file's columns, gathered in file order and put in reading order,
+ * with a column one file lacks null in that file's rows. A single file's table is in reading
+ * order too. A column whose type differs between files widens as pyarrow's permissive
  * promotion widens it, so a table either client stacks has the same types. A DECIMAL column
  * keeps its precision and scale. Its values are read as the unscaled integers the file stores,
  * so `bytes()` writes them exact, and `toRows()` and `toArrow()` give each the nearest 64-bit
@@ -13,6 +14,7 @@ import { parquetMetadata, parquetRead } from "hyparquet";
 import type { FileMetaData, KeyValue, ParquetParsers, SchemaElement } from "hyparquet";
 import { parquetWriteBuffer } from "hyparquet-writer";
 
+import { readingOrder } from "./column-order.ts";
 import { capped, clientError } from "../core/errors.ts";
 import type { ContractError } from "../core/errors.ts";
 
@@ -270,7 +272,8 @@ function widenDecimal(left: ColumnType, right: ColumnType): ColumnType | undefin
 }
 
 /** The stacked table's columns: `part` first when there are several files, then every
- *  file's columns in file order, each of the type `widen` gives its files' types. A file with no
+ *  file's columns, gathered in file order with each once and put in `readingOrder`, each of the
+ *  type `widen` gives its files' types. A file with no
  *  rows adds no columns unless every file is empty, when the first file gives them. The server
  *  writes every column of an empty file as a string, which would not widen to a number.
  *
@@ -301,7 +304,9 @@ export function stackedColumns(parts: readonly TablePart[]): Column[] {
       types.set(name, stacked);
     }
   }
-  return [...types].map(([name, type]) => ({ name, type }));
+  const gathered = [...types.keys()].filter((name) => !(several && name === PART_COLUMN));
+  const names = [...(several ? [PART_COLUMN] : []), ...readingOrder(gathered)];
+  return names.map((name) => ({ name, type: types.get(name)! }));
 }
 
 const encoder = new TextEncoder();

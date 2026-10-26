@@ -81,8 +81,17 @@ BASE_URLS = {
 STEP_KEYS = {
     "search": {"op", "question"},
     "choose": {"op", "part", "option"},
-    "fetch-answer": {"op", "layout", "partial", "strict"},
-    "fetch-spec": {"op", "spec", "layout", "strict", "window", "entities", "facets"},
+    "fetch-answer": {"op", "layout", "partial", "strict", "party_totals"},
+    "fetch-spec": {
+        "op",
+        "spec",
+        "layout",
+        "strict",
+        "window",
+        "entities",
+        "facets",
+        "party_totals",
+    },
     "fetch-ref": {"op", "ref"},
     "newest_version": {"op", "spec"},
     "mint": {"op", "spec", "layout"},
@@ -266,8 +275,8 @@ def _options(step: Mapping[str, Any], *names: str) -> dict[str, Any]:
 
 
 def _latest_ref(step: Mapping[str, Any]) -> DatasetRef:
-    """A ref to some version of a fetch-spec step's spec, in the step's layout,
-    whose latest fetch builds what the step builds."""
+    """A ref to some version of a fetch-spec step's spec, in the rendering the
+    step posts, whose latest fetch builds what the step builds."""
     spec = _spec(step["spec"])
     return DatasetRef(
         (
@@ -277,7 +286,10 @@ def _latest_ref(step: Mapping[str, Any]) -> DatasetRef:
                 spec=spec,
                 content_version="cv_" + "0" * 32,
                 digest="sha256:" + "0" * 64,
-                rendering=rendering_for(step.get("layout", "long")),
+                rendering=rendering_for(
+                    step.get("layout", "long"),
+                    party_totals=step.get("party_totals", False),
+                ),
             ),
         )
     )
@@ -304,13 +316,15 @@ def _run(
         case "choose":
             started = answer.choose(step["option"], **_options(step, "part"))
         case "fetch-answer":
-            options = _options(step, "layout", "partial", "strict")
+            options = _options(step, "layout", "partial", "strict", "party_totals")
             started = answer.fetch(**options)
         case "fetch-spec" if latest:
             options = _options(step, "strict")
             started = client.fetch(_latest_ref(step), latest=True, **options)
         case "fetch-spec":
-            options = _options(step, "layout", "strict", "window", "entities", "facets")
+            options = _options(
+                step, "layout", "strict", "window", "entities", "facets", "party_totals"
+            )
             started = client.fetch(_spec(step["spec"]), **options)
         case "fetch-ref":
             started = client.fetch(DatasetRef.from_json(json.dumps(step["ref"])))
@@ -325,7 +339,6 @@ def _run(
             started = lookup(
                 client._session.transport,
                 step["spec"]["spec_id"],
-                rendering_for("long"),
                 deadline=None,
             )
         case "mint":
@@ -377,7 +390,8 @@ def _quiet(*_: object) -> None:
 async def _mint(client: AsyncClient | Client, spec: Spec, layout: str) -> LongBuild:
     operation, _ = _engine(client)
     transport = client._session.transport
-    rendering = rendering_for(layout)
+    # A mint posts the plain rendering.
+    rendering = rendering_for(layout, party_totals=True)
     body = build_body(spec, rendering)
     reply = await _settle(operation.post_build(transport, body, deadline=None))
     poller = operation.Poller(transport, reply, body=body, on_progress=_quiet)
@@ -391,7 +405,7 @@ async def _resume(
     poller = await _settle(
         operation.resume(client._session.transport, operation_id, on_progress=_quiet)
     )
-    return LongBuild(poller, None, rendering_for(layout))
+    return LongBuild(poller, None, rendering_for(layout, party_totals=True))
 
 
 async def _result(client: AsyncClient | Client, build: LongBuild) -> Dataset:

@@ -51,11 +51,8 @@ const SEARCH_TIMEOUT_MS = 60_000;
 
 const NO_ASSUMPTIONS: readonly Assumption[] = Object.freeze([]);
 
-const TIMED_OUT =
-  "Search reached its time limit before this part resolved; search again, or ask for less at once.";
-
 /** What a gap needs to settle it: the contract's gap kinds, or one the client derives. */
-export type GapKind = (typeof GAP_KINDS)[number] | "timed_out" | "unknown";
+export type GapKind = (typeof GAP_KINDS)[number] | "unknown";
 
 /** What Search answered with: readings, the catalogue, or a refusal of the question. */
 export type AnswerKind = "resolution" | "catalogue" | "declined";
@@ -175,7 +172,7 @@ const ANSWER_FETCH_OPTIONS = declareOptions<AnswerFetchOptions>("answer.fetch", 
   onProgress: true,
   strict: true,
   layout: true,
-  withoutPartyTotals: true,
+  partyTotals: true,
   partial: true,
 });
 
@@ -260,7 +257,7 @@ export class Answer {
     this.raw = init.raw;
     this.#context = init.context;
     this.gaps = this.parts.flatMap((part, index) => {
-      const gap = gapFor(index, part, this.timedOut);
+      const gap = gapFor(index, part);
       return gap === null ? [] : [gap];
     });
     this.complete = this.kind === "resolution" && this.gaps.length === 0;
@@ -569,7 +566,7 @@ function membersOf(parts: readonly Part[]): (MemberRequest & { readonly spec: Wi
 }
 
 /** The gap a part leaves, or null when it has a reading. */
-function gapFor(partIndex: number, part: Part, timedOut: boolean): Gap | null {
+function gapFor(partIndex: number, part: Part): Gap | null {
   const gap = (kind: GapKind, message: string, options: Gap["options"] = []): Gap => ({
     partIndex,
     part,
@@ -595,7 +592,6 @@ function gapFor(partIndex: number, part: Part, timedOut: boolean): Gap | null {
       return gap("choice", `${candidates.length} readings`, candidates);
     }
     case "no_data": {
-      if (timedOut) return gap("timed_out", TIMED_OUT);
       const { reason } = part.no_data;
       const kind: GapKind = Object.hasOwn(CODE_GAP_KINDS, reason)
         ? CODE_GAP_KINDS[reason as keyof typeof CODE_GAP_KINDS]

@@ -262,11 +262,13 @@ def test_specs_hold_one_spec_per_distinct_spec_id() -> None:
     ]
 
 
-def test_a_timed_out_answer_makes_every_no_data_part_a_timed_out_gap() -> None:
+def test_a_timed_out_answer_keeps_each_no_data_parts_gap_kind() -> None:
     wire = load("search-4.json")
     wire["diagnostics"]["timed_out"] = True
     answer, _ = ask("debt", wire)
-    assert [(gap.part_index, gap.kind) for gap in answer.gaps] == [(1, "timed_out")]
+    assert [(gap.part_index, gap.kind) for gap in answer.gaps] == [
+        (1, "not_understood")
+    ]
     assert answer.timed_out
 
 
@@ -786,10 +788,7 @@ def test_fetch_builds_one_member_per_distinct_spec(
     unnamed["variable_text"] = ""
     wire["parts"].append(unnamed)
     answer, _ = ask(TWO_PARTS, wire)
-    assert (
-        answer.fetch(layout="long", without_party_totals=True, timeout=10.0)
-        == "dataset"
-    )
+    assert answer.fetch(layout="long", party_totals=True, timeout=10.0) == "dataset"
     ((transport_used, members, options),) = fetched
     oda, gni = wire["parts"][0]["spec"], wire["parts"][1]["spec"]
     assert [(m.parts, m.spec.spec_id, m.sentence) for m in members] == [
@@ -807,7 +806,7 @@ def test_fetch_builds_one_member_per_distinct_spec(
     ]
     assert options == {
         "layout": "long",
-        "without_party_totals": True,
+        "party_totals": True,
         "strict": False,
         "timeout": 10.0,
         "progress": None,

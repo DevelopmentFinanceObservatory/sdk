@@ -32,7 +32,12 @@ from typing import Any
 import pytest
 
 from dfo import Answer, Client, Dataset, DatasetRef, Spec
-from dfo._datasets.build import build_body, rendering_for, resubmit_body
+from dfo._datasets.build import (
+    build_body,
+    pick_artifact,
+    rendering_for,
+    resubmit_body,
+)
 from dfo.errors import IncompleteAnswerError, InvalidRequestError, NotFoundError
 from dfo.types import Member
 
@@ -97,9 +102,27 @@ def _snapshot(client: Client, member: Member) -> dict[str, Any]:
 
 
 def _artifact(manifest: Mapping[str, Any], digest: str) -> Mapping[str, Any]:
-    found = [a for a in manifest["artifacts"] if a["artifact_digest"] == digest]
-    assert len(found) == 1, f"the manifest lists {digest} {len(found)} times"
-    return found[0]
+    """The artifact a default long-layout fetch picks, checked against the contract.
+
+    It matches the Parquet rendering on format, bundle and layout, and its digest is
+    the downloaded file's. A cut that leaves no row out lists the one file twice,
+    under the plain rendering and with `without_party_totals: true`, so any other
+    artifact of that digest may differ in that flag alone.
+    """
+    rendering = rendering_for("long", party_totals=False)
+    picked = pick_artifact(manifest, rendering)
+    assert picked is not None, "the manifest lists no artifact of the fetch's rendering"
+    assert picked["artifact_digest"] == digest
+
+    def kind(artifact: Mapping[str, Any]) -> dict[str, Any]:
+        selectors = dict(artifact["rendering"])
+        selectors.pop("without_party_totals", None)
+        return selectors
+
+    for other in manifest["artifacts"]:
+        if other["artifact_digest"] == digest:
+            assert kind(other) == kind(picked), f"{digest} is listed in two renderings"
+    return picked
 
 
 def _wire_parts(answer: Answer) -> list[Mapping[str, Any]]:
@@ -258,8 +281,9 @@ def _served_inline(client: Client, spec: Spec, manifest: Mapping[str, Any]) -> s
 
 
 def _post_build(client: Client, spec: Spec) -> tuple[int, dict[str, Any]]:
-    """The status and body `POST /datasets` answers for `spec`'s long build."""
-    body = build_body(spec, rendering_for("long"))
+    """The status and body `POST /datasets` answers for `spec`'s long build, in
+    the rendering a default fetch posts, so the fetch joins it."""
+    body = build_body(spec, rendering_for("long", party_totals=False))
     # A build answers within 150 s; the client's default attempt is 30 s.
     response = client.with_options(timeout=160.0).request(
         "POST", "/datasets", json=body

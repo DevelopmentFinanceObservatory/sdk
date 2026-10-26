@@ -170,7 +170,7 @@ class AsyncClient:
         entities: Mapping[str, list[str] | tuple[str, ...] | None] | None = None,
         facets: Mapping[str, str | None] | None = None,
         layout: Layout | None = None,
-        without_party_totals: bool | None = None,
+        party_totals: bool | None = None,
         latest: bool = False,
         strict: bool = False,
         timeout: float | None = None,
@@ -195,10 +195,12 @@ class AsyncClient:
                 empty map narrows nothing.
             layout: `long` or `frame`; None builds a spec in `long` and reads a
                 ref in the layout it holds.
-            without_party_totals: Leave out the rows of parties the code index
-                declares totals, such as the DAC total beside its members, on
-                each party role the spec leaves open. None builds a spec with
-                every row and reads a ref as it was fetched.
+            party_totals: Keep the rows of parties the code index declares
+                totals, such as the DAC total beside its members, on each party
+                role the spec leaves open. None, the default, leaves them out of
+                a spec, so a sum over the table counts each party once, and
+                reads a ref as it was fetched. A role the spec binds keeps what
+                it binds.
             latest: Build the newest version of each of a ref's specs, in the
                 rendering the ref holds, in place of the exact versions it
                 names, as `fetch(old.ref, latest=True)`. A spec always fetches
@@ -215,7 +217,7 @@ class AsyncClient:
         Raises:
             InvalidRequestError: The target is neither a `Spec` nor a
                 `DatasetRef`, such as a spec id, and no request is sent; a ref
-                is narrowed or given another layout or `without_party_totals`;
+                is narrowed or given another layout or `party_totals`;
                 `latest` is not a bool, is given a spec, or is given a ref
                 whose members differ in rendering; `window`, `entities`,
                 `facets` or `layout` is malformed; or
@@ -236,7 +238,7 @@ class AsyncClient:
             entities=entities,
             facets=facets,
             layout=layout,
-            without_party_totals=without_party_totals,
+            party_totals=party_totals,
             latest=latest,
             strict=strict,
             timeout=timeout,

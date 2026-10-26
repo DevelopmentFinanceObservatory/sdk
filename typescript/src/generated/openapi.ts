@@ -1093,24 +1093,29 @@ export interface components {
     Assumption: {
       /**
        * Kind
-       * @description what the engine filled. 'declared_default' is a slot the request left open that its code system's or shape's declared default fixed. 'open_role' is a flow role no request word asked for, read across every entity on it with data, as one series per member where the role scope default filled it and the shape declares the role, else as the total over them. 'place_scope' is a request that named no place, read across every place with data
+       * @description what the engine filled. 'name_corrected' is an entity the request typed in words that are no listed name or alias of it, such as a misspelling, read as that entity. 'declared_default' is a slot the request left open that its code system's or shape's declared default fixed. 'open_role' is a flow role no request word asked for, read across every entity on it with data, as one series per member where the role scope default filled it and the shape declares the role, else as the total over them. 'place_scope' is a request that named no place, read across every place with data
        */
       kind: AssumptionKind | (string & {});
       /**
        * Binding Ref
-       * @description the identity binding whose edit replaces this assumption: 'how:<property dcid>' for a declared default, 'origin:' or 'where:' for a role or the place scope, as on the sentence's own tokens
+       * @description the identity binding whose edit replaces this assumption: 'how:<property dcid>' for a declared default, 'origin:' or 'where:' for a role, the place scope or the role a corrected name binds, as on the sentence's own tokens
        */
       binding_ref: string;
       /**
        * Text
-       * @description the words the sentence's assumptions clause states for this fill: the bound code's full label for a declared default ('official development assistance' for CRSTypeOfFlow10, whose short name is 'ODA'), 'every' and the role's noun in the answer's flow family for an open role ('every provider', 'every creditor'), and 'every country', 'every place' or 'the world as a whole' for the place scope, as its members are typed
+       * @description the words the sentence's assumptions clause states for this fill: the typed words in quotes and the entity's label for a corrected name ('"Germny" read as Germany'), the bound code's full label for a declared default ('official development assistance' for CRSTypeOfFlow10, whose short name is 'ODA'), 'every' and the role's noun in the answer's flow family for an open role ('every provider', 'every creditor'), and 'every country', 'every place' or 'the world as a whole' for the place scope, as its members are typed
        */
       text: string;
       /**
        * Refs
-       * @description the value dcid a declared default bound its slot to, as the slot's trace.slot_filters[].refs list it (['CRSTypeOfFlow10'] for official development assistance). An open role and the place scope carry []. A dataset_resubmit echo matches a declared default to its slot by these values
+       * @description the value dcid a declared default bound its slot to, as the slot's trace.slot_filters[].refs list it (['CRSTypeOfFlow10'] for official development assistance), or the entity dcid a corrected name reads (['country/DEU']). An open role and the place scope carry []. A dataset_resubmit echo matches a declared default to its slot, and a corrected name to its role's entity, by these values
        */
       refs?: string[];
+      /**
+       * Asked
+       * @description the words the request typed for a corrected name ('Germny'), which `text` quotes; absent on every other kind. A dataset_resubmit echo restates a corrected name with these words, and drops one that carries none
+       */
+      asked?: string | null;
     };
     /**
      * GraphMembershipAuthority
@@ -6798,8 +6803,15 @@ export interface components {
      *     - `resolved`: `entity`, `matched` and `reading`. A group or region adds `projection`,
      *       `member_count` and `members`: the list route's link, or the members inline (at most
      *       256) when the request expanded them. The three are `null` for a region the membership
-     *       policy does not hold.
-     *     - `ambiguous`: `candidates`, in the resolver's order.
+     *       policy does not hold. `near_matches` lists up to 3 other places or organisations of the
+     *       requested kinds that share the name ("Georgia" resolves to the country, with the US
+     *       state `geoId/13` here), else `null`. When `kinds` removed the first match, a node of a
+     *       requested kind sharing the name resolves in its place and `near_matches` lists the
+     *       removed match ("Georgia" with `kinds: ["place_other"]` resolves to `geoId/13`, with
+     *       the country here).
+     *     - `ambiguous`: `candidates`, in the resolver's order. When `kinds` removed the first
+     *       match and up to 3 nodes of a requested kind share the name, `near_matches` lists the
+     *       removed match, else `null`.
      *     - `not_found`: `near_matches`, hints for a person; a program should pick none by id.
      *     - `not_held`: `entity`, the id the resolver named, which does not open on the node route.
      *
@@ -7555,7 +7567,7 @@ export interface components {
       role: components["schemas"]["RoleAxis"];
       /**
        * Member Count
-       * @description how many entities this axis' open scope resolves to. None when the count could not be established without a read this response chose not to make (e.g. a discovered opposite axis whose own role index was omitted after a cap trip); the fact still publishes in that case, naming the axis as open with an explicit unknown rather than staying silent about it
+       * @description how many entities this axis' open scope resolves to, leaving out the group totals the code index declares beside their members (party_kind total), as the default download leaves them out; a scope of totals alone counts them all. None when the count could not be established without a read this response chose not to make (e.g. a discovered opposite axis whose own role index was omitted after a cap trip); the fact still publishes in that case, naming the axis as open with an explicit unknown rather than staying silent about it
        */
       member_count: number | null;
       /**
@@ -9459,7 +9471,8 @@ export interface components {
      * WarningModel
      * @description One manifest warning. Only `stat_vars_summed` sets its three structured fields, a
      *     group's `coverage_below_scope` its three member fields, `coverage_below_scope`
-     *     `unserved_entities`, `currency_unmapped_omitted` `omitted_entities`, and
+     *     `unserved_entities`, `requested_years` and `served_years`, `currency_unmapped_omitted`
+     *     `omitted_entities`, and
      *     `deflator_missing_omitted` `omitted_entity_years`. A `None` field is left out of every dump, so other codes' warnings, on
      *     the wire and in stored version bodies, stay exactly `{code, severity, message}`.
      */
@@ -9496,6 +9509,10 @@ export interface components {
       out_of_window_members?: components["schemas"]["CountedRefsModel"] | null;
       /** @description coverage_below_scope only: the entities the request binds that served no observation, sorted; absent when there are none */
       unserved_entities?: components["schemas"]["CountedRefsModel"] | null;
+      /** @description coverage_below_scope only: the year range the request asked for, when the data covers fewer of its years; absent otherwise */
+      requested_years?: components["schemas"]["YearRangeModel"] | null;
+      /** @description coverage_below_scope only: the years the data covers, both bounds set, beside requested_years; absent otherwise */
+      served_years?: components["schemas"]["YearRangeModel"] | null;
       /** @description currency_unmapped_omitted only: the entities whose rows the conversion left out, sorted */
       omitted_entities?: components["schemas"]["CountedRefsModel"] | null;
       /** @description deflator_missing_omitted only: the entities whose rows the conversion left out for a missing deflator, sorted, each with the years of those rows */
@@ -9616,6 +9633,22 @@ export interface components {
       first: number;
       /** Last */
       last: number;
+    };
+    /**
+     * YearRangeModel
+     * @description A run of years, both bounds included (`materialise.codes.YearRange`).
+     */
+    YearRangeModel: {
+      /**
+       * Start
+       * @description the first year; absent when the request left it open
+       */
+      start?: number | null;
+      /**
+       * End
+       * @description the last year; absent when the request left it open
+       */
+      end?: number | null;
     };
     /**
      * Capabilities
@@ -12785,6 +12818,7 @@ export type WindowRange = components["schemas"]["WindowRange"];
 export type WriteReplyResponse = components["schemas"]["WriteReplyResponse"];
 export type YearCoverage = components["schemas"]["YearCoverage"];
 export type YearRange = components["schemas"]["YearRange"];
+export type YearRangeModel = components["schemas"]["YearRangeModel"];
 export type DatasetsApiCapabilitiesCapabilities =
   components["schemas"]["datasets_api__capabilities__Capabilities"];
 export type DatasetsApiCapabilitiesCapabilityCaps =
@@ -12821,7 +12855,7 @@ export type ProblemIssue = components["schemas"]["ProblemIssue"];
 export type Severity = "info" | "warn" | "degraded";
 
 /** What Search filled in that the question left open. The values of `Assumption.kind` in the served document. */
-export type AssumptionKind = "declared_default" | "open_role" | "place_scope";
+export type AssumptionKind = "name_corrected" | "declared_default" | "open_role" | "place_scope";
 
 /** How a reading differs from what the question asked. The values of `Departure.code` in the served document. */
 export type DepartureCode =

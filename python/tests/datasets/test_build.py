@@ -112,11 +112,17 @@ def test_rebinding_a_spec_without_an_identity_is_refused() -> None:
 
 
 def test_each_layout_builds_bare_parquet() -> None:
-    assert rendering_for("long") == Rendering("parquet", False)
-    assert rendering_for("frame") == Rendering("parquet", False, "frame")
-    with pytest.raises(InvalidRequestError, match="layout") as caught:
-        rendering_for("wide")
-    assert caught.value.code == "invalid_argument"
+    assert rendering_for("long", party_totals=True) == Rendering("parquet", False)
+    assert rendering_for("frame", party_totals=True) == Rendering(
+        "parquet", False, "frame"
+    )
+    assert rendering_for("long", party_totals=False) == Rendering(
+        "parquet", False, without_party_totals=True
+    )
+    for layout, party_totals in (("wide", True), ("long", 1)):
+        with pytest.raises(InvalidRequestError) as caught:
+            rendering_for(layout, party_totals=party_totals)  # ty: ignore[invalid-argument-type]
+        assert caught.value.code == "invalid_argument"
 
 
 def test_an_operation_reads_its_pacing_and_progress() -> None:

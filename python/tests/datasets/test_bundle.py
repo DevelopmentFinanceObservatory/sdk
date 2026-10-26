@@ -11,6 +11,7 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Any
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
@@ -19,6 +20,7 @@ from dfo._core.refs import DatasetRef
 from dfo._core.types import FormatError, Rendering
 from dfo._datasets.bundle import BundleError, BundleLimits, load
 from dfo._datasets.cache import sha256_digest
+from dfo._datasets.dataset import reading_order
 from tests._data import DATA
 
 # Website bundles of one version, downloaded from dev, and that version's bare
@@ -26,6 +28,14 @@ from tests._data import DATA
 CSV_BUNDLE = DATA / "bundle-csv.zip"
 XLSX_BUNDLE = DATA / "bundle-xlsx.zip"
 PARQUET = DATA / "bundle-bare.parquet"
+
+
+def bare_table() -> pa.Table:
+    """The bare Parquet file's table, its columns in reading order."""
+    table = pq.read_table(PARQUET)
+    return table.select(reading_order(table.column_names))
+
+
 DATA_FILE = "data/oecd-creditor-reporting-system.csv"
 XLSX_DATA_FILE = "data/oecd-creditor-reporting-system.xlsx"
 SPEC_ID = "spec_cb5baa4161de718f18583060674dbca6"
@@ -112,7 +122,7 @@ def test_a_bundle_types_its_columns_like_the_bare_parquet(bundle: Path) -> None:
     if bundle is XLSX_BUNDLE:
         pytest.importorskip("openpyxl")
     table = load(bundle).to_arrow()
-    assert table.equals(pq.read_table(PARQUET))
+    assert table.equals(bare_table())
 
 
 def test_a_zip_bundle_names_its_exact_version() -> None:
@@ -139,7 +149,7 @@ def test_a_bundle_carries_its_sources_and_licence() -> None:
 def test_a_folder_or_a_file_in_it_opens(tmp_path: Path, entry: str) -> None:
     folder = extracted(CSV_BUNDLE, tmp_path / "bundle")
     data = load(folder / entry)
-    assert data.to_arrow().equals(pq.read_table(PARQUET))
+    assert data.to_arrow().equals(bare_table())
     assert data.members == ()
     with pytest.raises(ValueError, match="names no version"):
         _ = data.ref
@@ -535,7 +545,7 @@ def test_an_xlsx_without_declared_dimensions_streams_with_limits(
     resource["hash"] = sha256_digest(path.read_bytes())
     descriptor.write_text(json.dumps(package))
 
-    assert load(folder).to_arrow().equals(pq.read_table(PARQUET))
+    assert load(folder).to_arrow().equals(bare_table())
     with pytest.raises(BundleError) as caught:
         load(folder, limits=BundleLimits(max_xlsx_rows=1))
     assert caught.value.reason == "resource_limit"

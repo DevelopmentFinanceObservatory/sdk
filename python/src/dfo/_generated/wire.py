@@ -52,10 +52,11 @@ type Ref = str
 
 
 class Assumption(TypedDict):
-    kind: Literal["declared_default", "open_role", "place_scope"]
+    kind: Literal["name_corrected", "declared_default", "open_role", "place_scope"]
     binding_ref: str
     text: str
     refs: NotRequired[list[Ref]]
+    asked: NotRequired[str | None]
 
 
 class Authority(TypedDict):
@@ -1289,6 +1290,11 @@ class YearRange(TypedDict):
     last: int
 
 
+class YearRangeModel(TypedDict):
+    start: NotRequired[int | None]
+    end: NotRequired[int | None]
+
+
 class DatasetsApiCapabilitiesCapabilityCaps(TypedDict):
     definition_candidate_cap: int
     definition_subject_ceiling: int
@@ -2189,6 +2195,8 @@ class WarningModel(TypedDict):
     off_cadence_members: NotRequired[CountedRefsModel | None]
     out_of_window_members: NotRequired[CountedRefsModel | None]
     unserved_entities: NotRequired[CountedRefsModel | None]
+    requested_years: NotRequired[YearRangeModel | None]
+    served_years: NotRequired[YearRangeModel | None]
     omitted_entities: NotRequired[CountedRefsModel | None]
     omitted_entity_years: NotRequired[CountedEntityYearsModel | None]
 
@@ -3128,7 +3136,9 @@ The values of `Warning.severity` in the served document.
 """
 
 
-type AssumptionKind = Literal["declared_default", "open_role", "place_scope"]
+type AssumptionKind = Literal[
+    "name_corrected", "declared_default", "open_role", "place_scope"
+]
 """What Search filled in that the question left open.
 
 The values of `Assumption.kind` in the served document.

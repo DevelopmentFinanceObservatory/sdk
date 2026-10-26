@@ -43,7 +43,6 @@ from tests._fetch_support import (
     posted_spec,
     problem,
     redirect,
-    with_cut,
 )
 from tests._fetch_support import (
     operation as resource,
@@ -614,9 +613,7 @@ def test_a_download_failing_after_the_deadline_says_the_build_is_done() -> None:
     assert len(server.requests) == 3
 
 
-@pytest.mark.parametrize(
-    "options", [{}, {"layout": "frame"}, {"without_party_totals": True}]
-)
+@pytest.mark.parametrize("options", [{}, {"layout": "frame"}, {"party_totals": True}])
 def test_the_deadline_says_the_same_fetch_joins_the_build(options: dict) -> None:
     timeline = Timeline()
     running = json_response(200, resource("running", retry_after_ms=8000))
@@ -672,12 +669,12 @@ def test_a_long_builds_progress_is_logged(
 def test_a_long_build_selects_the_party_totals_cut() -> None:
     server = Server(
         accepted(),
-        done(with_cut(manifest(POSTED_ID))),
+        done(manifest(POSTED_ID, data=CUT_DATA)),
         redirect(),
         parquet(CUT_DATA),
     )
     with make(server) as transport:
-        built = fetch(transport, spec(), without_party_totals=True)
+        built = fetch(transport, spec())
     assert server.body(0)["options"] == {
         "format": "parquet",
         "bundle": False,

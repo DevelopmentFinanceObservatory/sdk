@@ -14,7 +14,7 @@ import { Dataset } from "../src/datasets/dataset.ts";
 import { newestVersion } from "../src/datasets/resolve.ts";
 import type { FetchOptions, Narrowing } from "../src/datasets/fetch.ts";
 import type { LongBuild } from "../src/datasets/operation.ts";
-import { DatasetRef, renderingFor } from "../src/core/ref.ts";
+import { DatasetRef } from "../src/core/ref.ts";
 import type { Transport } from "../src/http/transport.ts";
 import { DfoError, isDfoError, VersionUnavailableError } from "../src/core/errors.ts";
 import { CLIENT_CODE_CLASSES } from "../src/generated/client-codes.ts";
@@ -36,11 +36,22 @@ const isStartedBuild = (reached: Reached | undefined): reached is StartedBuild =
 
 const WARNING_CLASSES = new Set(["SearchWarning", "DataWarning"]);
 
-/** The narrowing, layout and strictness members a step sets, as call options. */
+/** The step members a fetch reads, each with the call option it stands for. */
+const CALL_OPTIONS = {
+  window: "window",
+  entities: "entities",
+  facets: "facets",
+  layout: "layout",
+  strict: "strict",
+  partial: "partial",
+  party_totals: "partyTotals",
+} as const;
+
+/** The narrowing, layout, strictness and party-totals members a step sets, as call options. */
 function callOptions(step: Narrowing & { layout?: unknown; strict?: unknown }) {
   const options: Record<string, unknown> = {};
-  for (const key of ["window", "entities", "facets", "layout", "strict", "partial"]) {
-    const value = (step as Record<string, unknown>)[key];
+  for (const [member, key] of Object.entries(CALL_OPTIONS)) {
+    const value = (step as Record<string, unknown>)[member];
     if (value !== undefined) options[key] = value;
   }
   return options;
@@ -79,11 +90,8 @@ async function run(
       return previous.fetch(options);
     }
     case "newest_version":
-      // The step names a spec alone, so it asks for the newest plain version.
       return {
-        newestVersion: await newestVersion(transport, step.spec.spec_id, renderingFor("long"), {
-          deadline: Infinity,
-        }),
+        newestVersion: await newestVersion(transport, step.spec.spec_id, { deadline: Infinity }),
       };
     // The client has no mint or operation call: a fetch waits. These steps drive the poller
     // under it, as `newest_version` drives the version lookup.

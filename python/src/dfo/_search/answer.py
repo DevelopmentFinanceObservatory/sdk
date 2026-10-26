@@ -92,10 +92,6 @@ SCHEMA_VERSION = 1
 # Longer than Search's 45-second soft deadline, so a slow answer arrives whole.
 SEARCH_TIMEOUT = 60.0
 
-_TIMED_OUT = (
-    "Search reached its time limit before this part resolved; search again, or ask "
-    "for less at once."
-)
 _DATA_METHODS = frozenset(
     {"to_pandas", "to_polars", "to_arrow", "to_rows", "save", "__arrow_c_stream__"}
 )
@@ -274,7 +270,7 @@ class AsyncAnswer:
         partial: bool = False,
         strict: bool = False,
         layout: Layout = "long",
-        without_party_totals: bool = False,
+        party_totals: bool = False,
         timeout: float | None = None,
         progress: bool | None = None,
     ) -> Dataset:
@@ -290,9 +286,11 @@ class AsyncAnswer:
             strict: Raise the `SearchWarning`, and the datasets surface's
                 warnings, instead of issuing them.
             layout: `long`, or `frame` for one reading's pipeline frame.
-            without_party_totals: Leave out the rows of parties the code index
-                declares totals, such as the DAC total beside its members, on
-                each party role a reading leaves open.
+            party_totals: Keep the rows of parties the code index declares
+                totals, such as the DAC total beside its members, on each party
+                role a reading leaves open. False, the default, leaves them out,
+                so a sum over the table counts each party once; a role a reading
+                binds keeps what it binds.
             timeout: The longest the whole build waits, in seconds. None, the
                 default, waits as long as the build takes, which the server
                 always ends. In the synchronous client, platform name
@@ -338,7 +336,7 @@ class AsyncAnswer:
             session.transport,
             members,
             layout=layout,
-            without_party_totals=without_party_totals,
+            party_totals=party_totals,
             strict=strict,
             timeout=timeout,
             progress=progress,
@@ -482,7 +480,7 @@ def answer_from_body(
     gaps = tuple(
         gap
         for index, part in enumerate(parts)
-        if (gap := _gap(index, part, timed_out=timed_out)) is not None
+        if (gap := _gap(index, part)) is not None
     )
     return AsyncAnswer(
         kind=kind,
@@ -508,15 +506,13 @@ def _status(parts: Sequence[Part]) -> str:
     return statuses.pop() if len(statuses) == 1 else "mixed"
 
 
-def _gap(index: int, part: Part, *, timed_out: bool) -> Gap | None:
+def _gap(index: int, part: Part) -> Gap | None:
     """The gap a part leaves, or None when it has a reading."""
     match part:
         case DefinitePart():
             return None
         case CandidatesPart(candidates):
             return Gap(index, part, "choice", f"{len(candidates)} readings", candidates)
-        case NoDataPart() if timed_out:
-            return Gap(index, part, "timed_out", _TIMED_OUT)
         case NoDataPart(reason):
             return Gap(
                 index,

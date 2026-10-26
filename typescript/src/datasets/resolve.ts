@@ -5,8 +5,8 @@
  *
  * A ref returns the versions it names, found in this order: the snapshot route, then the files
  * route at the stored digest; the file selector, which renders the version again from its
- * stored frame; a fresh build, which must return the same version; otherwise
- * `VersionUnavailableError`, naming the newest version in the member's rendering. A rebuilt
+ * stored frame; a fresh build in the ref's rendering, which must return the same version;
+ * otherwise `VersionUnavailableError`, naming the newest plain build. A rebuilt
  * file whose digest differs from the ref's issues a `DfoWarning` (`ref_digest_changed`) naming
  * both, since the ref pins the version and the digest names one rendering of it. The steps
  * after the snapshot run only for a version whose file has expired. A version the server never
@@ -33,6 +33,7 @@ import {
 import {
   buildBody,
   checkArtifact,
+  checkedPartyTotals,
   checkedSpec,
   contentVersionOf,
   DIGEST_MISMATCH,
@@ -52,7 +53,6 @@ import type { Built, Manifest, Wait } from "./operation.ts";
 import {
   CONTENT_VERSION,
   DatasetRef,
-  fileParams,
   FormatError,
   layoutOf,
   mintOptions,
@@ -77,7 +77,7 @@ const FILE_GONE = new Set([FILE_EXPIRED, "artifact_not_found", "not_found"]);
  * versions of a ref's specs.
  *
  * @throws {InvalidRequestError} The target is neither a ref nor a spec `checkedSpec` accepts, a
- *   ref is narrowed or given another layout or `withoutPartyTotals`, `latest` is given a spec or
+ *   ref is narrowed or given another layout or `partyTotals`, `latest` is given a spec or
  *   a ref whose members differ in rendering, or `latest` is not a boolean.
  * @throws {VersionUnavailableError} A ref's version can no longer be fetched.
  * @throws {DfoError} The server refused a request.
@@ -155,11 +155,11 @@ function refLayout(ref: DatasetRef): Layout {
 }
 
 /**
- * The layout a ref holds, once the call's `layout` and `withoutPartyTotals`, when given, are the
- * ref's own.
+ * The layout a ref holds, once the call's `layout` and `partyTotals`, when given, are the ref's
+ * own. A member keeps party totals when its rendering holds no `without_party_totals`.
  *
  * @throws {InvalidRequestError} The ref holds a rendering this client does not read, or the
- *   call names another layout or `withoutPartyTotals` (`invalid_argument`).
+ *   call names another layout or `partyTotals` (`invalid_argument`).
  */
 function checkedRefLayout(ref: DatasetRef, options: CallOptions): Layout {
   const layout = refLayout(ref);
@@ -169,18 +169,21 @@ function checkedRefLayout(ref: DatasetRef, options: CallOptions): Layout {
         "another layout.",
     );
   }
-  const { withoutPartyTotals } = options;
+  if (options.partyTotals === undefined) return layout;
+  const asked = checkedPartyTotals(options.partyTotals);
   for (const member of ref.members) {
-    const held = member.rendering.without_party_totals === true;
-    if (withoutPartyTotals !== undefined && withoutPartyTotals !== held) {
+    const held = keepsPartyTotals(member.rendering);
+    if (asked !== held) {
       throw invalid(
-        `The DatasetRef holds ${member.spec.spec_id} with withoutPartyTotals ${held}, not ` +
-          `${JSON.stringify(withoutPartyTotals)}; fetch its specs for the other rendering.`,
+        `The DatasetRef holds ${member.spec.spec_id} with partyTotals ${held}, not ${asked}; ` +
+          "fetch its specs for the other rendering.",
       );
     }
   }
   return layout;
 }
+
+const keepsPartyTotals = (rendering: Rendering): boolean => rendering.without_party_totals !== true;
 
 /**
  * Builds the newest version of each member's spec in the ref's rendering, stacked under the
@@ -201,19 +204,18 @@ async function fetchNewest(
   const index = others.findIndex((member) => !sameRendering(member.rendering, rendering));
   if (index !== -1) {
     const other = others[index]!;
-    const cut = other.rendering.without_party_totals === true;
     throw invalid(
       `The DatasetRef holds ${first!.spec.spec_id} and ${other.spec.spec_id} in different ` +
         "renderings, and a latest fetch builds one; fetch each spec on its own, as " +
         `client.fetch(ref.members[${index + 1}].spec, { layout: "${layoutOf(other.rendering)}", ` +
-        `withoutPartyTotals: ${cut} }).`,
+        `partyTotals: ${keepsPartyTotals(other.rendering)} }).`,
     );
   }
   const members = ref.members.map(({ parts, spec, sentence }) => ({ parts, spec, sentence }));
   return fetchMembers(transport, members, {
     ...options,
     layout,
-    withoutPartyTotals: rendering.without_party_totals === true,
+    partyTotals: keepsPartyTotals(rendering),
   });
 }
 
@@ -307,7 +309,7 @@ async function fetchVersion(
       throw error;
     }
     refusal ??= error;
-    newest = await newestVersion(transport, member.spec.spec_id, member.rendering, wait);
+    newest = await newestVersion(transport, member.spec.spec_id, wait);
   }
   throw unavailable(member, newest, refusal);
 }
@@ -394,7 +396,7 @@ async function storedFile(
     }
   }
   const query = new URLSearchParams(
-    Object.entries(fileParams(member.rendering)).map(([name, value]) => [name, String(value)]),
+    Object.entries(mintOptions(member.rendering)).map(([name, value]) => [name, String(value)]),
   );
   const selector = `/datasets/${member.spec.spec_id}/${member.contentVersion}/file?${query}`;
   // The selector's rendering can outgrow the stored artifact, so its cap is the default one.
@@ -424,26 +426,26 @@ const VERSIONS_PAGE = 100;
 export const VERSIONS_PAGE_BUDGET = 20;
 
 /**
- * @internal The newest stored version of a spec in a rendering, or null. The versions route
- * lists versions newest first, `VERSIONS_PAGE` to a page, and each page's `next_cursor` names
- * the next. Each version names the rendering it is: `plain`, `without_party_totals` for a
- * party-totals cut, `groupby` or `not_recorded`. The newest version is the first listed in the
- * rendering a ref member holds, `plain` or `without_party_totals`. A list that ends without
- * one, a `NotFoundError`, or `VERSIONS_PAGE_BUDGET` pages read without one, reads as none. A
- * ref's lookup reads it, and the contract replay runs its `newest_version` step through it.
+ * @internal The newest plain build of a spec, or null. The versions route lists versions newest
+ * first, `VERSIONS_PAGE` to a page, and each page's `next_cursor` names the next. A version with
+ * a `base_content_version` is derived from a plain build, by a groupby collapse or a
+ * party-totals cut, and is skipped, so the newest version is the first listed with a null
+ * `base_content_version`. A list that ends without one, a `NotFoundError`, or
+ * `VERSIONS_PAGE_BUDGET` pages read without one, reads as none. A fetch that leaves party totals
+ * out answers this build only when the cut leaves no row out, so the version is not comparable
+ * with a cut ref's. A ref's lookup reads it, and the contract replay runs its `newest_version`
+ * step through it.
  *
  * @throws {ContractError} A page is not a `DatasetVersionsPage` this client can read: no
- *   `versions` list, a listed version whose `content_version` is not a version id or that has no
- *   `rendering` string, or a `next_cursor` that is neither a string nor null, or names a page
- *   already read.
+ *   `versions` list, a listed version whose `content_version` is not a version id or whose
+ *   `base_content_version` is neither a string nor null, or a `next_cursor` that is neither a
+ *   string nor null, or names a page already read.
  */
 export async function newestVersion(
   transport: Transport,
   specId: string,
-  rendering: Rendering,
   { deadline, signal }: Wait,
 ): Promise<string | null> {
-  const wanted = rendering.without_party_totals === true ? "without_party_totals" : "plain";
   const seen = new Set<string>();
   let cursor: string | null = null;
   for (let read = 0; read < VERSIONS_PAGE_BUDGET; read += 1) {
@@ -461,7 +463,7 @@ export async function newestVersion(
       if (error instanceof NotFoundError) return null;
       throw error;
     }
-    const page = readVersionsPage(body, specId, wanted, traceId);
+    const page = readVersionsPage(body, specId, traceId);
     if (page.newest !== null || page.nextCursor === null) return page.newest;
     if (seen.has(page.nextCursor)) throw unreadable(specId, "/next_cursor", traceId);
     seen.add(page.nextCursor);
@@ -470,12 +472,10 @@ export async function newestVersion(
   return null;
 }
 
-/** The first version a versions page lists in the wanted rendering, or null, and the page's
- *  `next_cursor`. */
+/** The first plain build a versions page lists, or null, and the page's `next_cursor`. */
 function readVersionsPage(
   body: unknown,
   specId: string,
-  wanted: string,
   traceId: string | null,
 ): { newest: string | null; nextCursor: string | null } {
   const versions = isRecord(body) ? body["versions"] : undefined;
@@ -487,11 +487,11 @@ function readVersionsPage(
     if (typeof contentVersion !== "string" || !CONTENT_VERSION.test(contentVersion)) {
       throw unreadable(specId, `/versions/${index}/content_version`, traceId);
     }
-    const listed = entry["rendering"];
-    if (typeof listed !== "string") {
-      throw unreadable(specId, `/versions/${index}/rendering`, traceId);
+    const base = entry["base_content_version"];
+    if (base !== null && typeof base !== "string") {
+      throw unreadable(specId, `/versions/${index}/base_content_version`, traceId);
     }
-    if (listed === wanted) newest ??= contentVersion;
+    if (base === null) newest ??= contentVersion;
   }
   const nextCursor = body["next_cursor"] ?? null;
   if (nextCursor !== null && typeof nextCursor !== "string") {
@@ -514,11 +514,12 @@ function unavailable(
   refusal: DfoError | undefined,
 ): VersionUnavailableError {
   const lost = `${member.spec.spec_id} at ${member.contentVersion} can no longer be fetched`;
+  // The newest version names a plain build, which a cut ref's version need not equal even when
+  // no newer data exists, so only an equal id says something.
   const detail =
     newest === member.contentVersion
       ? `${lost}, though the server lists it as the newest version.`
-      : `${lost}. ${newest === null ? "For the newest version" : `The newest is ${newest}`}: ` +
-        LATEST_CALL;
+      : `${lost}. For the newest version: ${LATEST_CALL}`;
   if (refusal === undefined) {
     return clientError("version_unavailable", { detail, newestVersion: newest });
   }

@@ -30,10 +30,11 @@ from dfo._core.types import (
 )
 from dfo._datasets.bundle import load as load_saved
 from dfo._datasets.cache import sha256_digest
-from dfo._datasets.dataset import Dataset, FetchedMember, build_dataset
+from dfo._datasets.dataset import Dataset, FetchedMember, build_dataset, reading_order
 from tests._data import load
 from tests._datasets import PARQUET, manifest, other_member, recorded_member, scenario
 from tests._fetch_support import FakeCache
+from tests.rule_vectors import ids, vectors
 
 EXPECTED = scenario()["expect"][0]["dataset"]
 AID_TYPE = Assumption(
@@ -171,9 +172,12 @@ def test_several_members_stack_with_a_part_column() -> None:
     second = other_member()
     data = built(first, second)
     table = data.to_arrow()
-    assert table.column_names[0] == "part"
-    assert table.column_names[1:-1] == EXPECTED["columns"]
-    assert table.column_names[-1] == "observationAbout"
+    # The second member's `observationAbout` fills the subject slot, after the
+    # recipient; the rest keep the recorded order.
+    subject = EXPECTED["columns"].index("financingRecipient_label") + 1
+    columns = list(EXPECTED["columns"])
+    columns.insert(subject, "observationAbout")
+    assert table.column_names == ["part", *columns]
     assert (
         table.column("part").to_pylist()
         == ["ODA disbursements; health ODA"] * 4 + ["GDP"] * 4
@@ -187,6 +191,43 @@ def test_several_members_stack_with_a_part_column() -> None:
     )
     assert data.licence == "OECD Terms and Conditions; CC BY 4.0"
     assert [member.parts for member in data.members] == [first.parts, ("GDP",)]
+
+
+def _vector_table(columns: list[str]) -> pa.Table:
+    """A one-row table holding `columns` in the given order."""
+    kinds = {"time_period": pa.array([2022]), "value": pa.array([1.5])}
+    return pa.table({name: kinds.get(name, pa.array(["x"])) for name in columns})
+
+
+@pytest.mark.parametrize("vector", vectors("column-order"), ids=ids("column-order"))
+def test_the_column_order_vectors(vector: dict[str, Any]) -> None:
+    if "columns" in vector:
+        assert reading_order(vector["columns"]) == vector["ordered"]
+        return
+    first, second = vector["members"]
+    data = built(
+        with_table(recorded_member(), _vector_table(first)),
+        with_table(other_member(), _vector_table(second)),
+    )
+    assert data.to_arrow().column_names == vector["ordered"]
+
+
+def test_the_preview_and_the_digest_keep_their_order() -> None:
+    """The notebook preview leads with the reading columns, and the member's
+    digest is the server file's, hashed before the columns moved."""
+    member = recorded_member()
+    data = built(member)
+    markup = data._repr_html_()
+    headers = markup.split("<thead>")[1].split("</thead>")[0]
+    assert (
+        headers
+        == "<tr>"
+        + "".join(f"<th>{name}</th>" for name in EXPECTED["columns"])
+        + "</tr>"
+    )
+    server_order = pq.read_table(pa.BufferReader(member.data)).column_names
+    assert server_order != EXPECTED["columns"]
+    assert data.members[0].digest == sha256_digest(PARQUET.read_bytes())
 
 
 def with_column(

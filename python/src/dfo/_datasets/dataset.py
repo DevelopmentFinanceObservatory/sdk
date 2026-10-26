@@ -2,7 +2,10 @@
 
 A dataset holds its table and its provenance and carries no client, so its
 conversions run offline. Several members stack into one long table with a leading
-`part` column naming each row's member. `save` writes one Parquet file whose
+`part` column naming each row's member. Every table a dataset holds presents its
+columns in the contract's reading order, `READING_COLUMNS` first and `stat_var`
+last, after the member's file was hashed, so the digest and the ref name the
+server's file. `save` writes one Parquet file whose
 key-value metadata carries the provenance and the ref, which `dfo.load` reads
 back. That file is the durable form. A dataset also pickles, for transfer between
 processes that run the same client version, as `multiprocessing` does. Another
@@ -56,6 +59,7 @@ from dfo._datasets.build import (
     read_held_until,
     rendering_for,
 )
+from dfo._generated.columns import READING_COLUMNS
 
 if TYPE_CHECKING:
     import pandas
@@ -74,6 +78,9 @@ _NOT_A_FRAME = (
 
 # The column that names each row's member in a dataset of several members.
 PART_COLUMN = "part"
+
+# The column the column-order rule puts after every other.
+_LAST_COLUMN = "stat_var"
 
 # The columns every artifact a dataset reads holds, in both layouts.
 REQUIRED_COLUMNS = ("time_period", "value")
@@ -186,6 +193,17 @@ class Dataset:
     # The owner of the call the repr's newest-versions line names: the fetching
     # client's `client` or `dfo`, and `dfo` for a dataset `dfo.load` read.
     _caller: str = field(default="dfo", repr=False)
+
+    def __post_init__(self) -> None:
+        # Every way a dataset is made presents the same column order. A stacked
+        # table keeps its `part` column first.
+        names = self._table.column_names
+        if len(self.members) > 1:
+            order = [PART_COLUMN, *reading_order(names[1:])]
+        else:
+            order = reading_order(names)
+        if order != names:
+            object.__setattr__(self, "_table", self._table.select(order))
 
     @property
     def ref(self) -> DatasetRef:
@@ -388,6 +406,24 @@ class Dataset:
         return {key.encode(): value.encode() for key, value in metadata.items()}
 
 
+def reading_order(names: Sequence[str]) -> list[str]:
+    """`names` in the column-order rule's reading order.
+
+    The first name of each `READING_COLUMNS` slot that `names` holds comes first,
+    in slot order, then every other name in its given order, `stat_var` last. A
+    slot whose names `names` holds none of stays empty.
+    """
+    held = set(names)
+    leading = [
+        found
+        for slot in READING_COLUMNS
+        if (found := next((name for name in slot if name in held), None))
+    ]
+    placed = {*leading, _LAST_COLUMN}
+    rest = [name for name in names if name not in placed]
+    return [*leading, *rest, *([_LAST_COLUMN] if _LAST_COLUMN in held else [])]
+
+
 def build_dataset(
     members: Sequence[FetchedMember],
     *,
@@ -409,9 +445,11 @@ def build_dataset(
     Each member's layout comes from the manifest's artifact for its digest, else
     from the member's rendering. Several members stack into one long table, a
     `part` column first, holding each member's parts joined by "; "
-    (its sentence when it answers no part). Columns one member lacks are null in
-    its rows, and a column whose types differ in width widens, as an int32 with an
-    int64 to int64 and an integer with a double to double.
+    (its sentence when it answers no part), then the members' columns gathered in
+    member order, each once. Columns one member lacks are null in its rows, and a
+    column whose types differ in width widens, as an int32 with an int64 to int64
+    and an integer with a double to double. The dataset orders the columns by
+    `reading_order`.
 
     Args:
         members: The members, in query order, each with a distinct spec.
@@ -437,7 +475,8 @@ def build_dataset(
         raise ValueError("a dataset needs at least one member")
     if layout == "frame" and len(members) > 1:
         raise ValueError("the frame layout holds one member")
-    plain = rendering_for(layout)
+    # A mint or resumed operation builds the plain rendering.
+    plain = rendering_for(layout, party_totals=True)
 
     tables: list[pa.Table] = []
     built: list[Member] = []

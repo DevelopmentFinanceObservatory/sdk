@@ -1,7 +1,9 @@
-// Replays the contract's rule vectors for keys and credentials. The cache rules have no
-// TypeScript counterpart: this client keeps no cache on disk.
+// Replays the contract's rule vectors for keys, credentials and the column order. The cache
+// rules have no TypeScript counterpart: this client keeps no cache on disk.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+
+import { parquetWriteBuffer } from "hyparquet-writer";
 
 import { credentialsPath, parseCredentialsFile } from "../src/config/credentials.ts";
 import type { Platform } from "../src/config/credentials.ts";
@@ -9,6 +11,7 @@ import { envFrom } from "../src/config/env.ts";
 import { isDfoError } from "../src/core/errors.ts";
 import { checkKeyFormat, resolveApiKey } from "../src/config/keys.ts";
 import { Transport } from "../src/http/transport.ts";
+import { readParquet, stackedColumns } from "../src/datasets/parquet.ts";
 import { contractJson } from "./support.ts";
 
 type Suite<T> = { rule: string; vectors: (T & { name: string })[] };
@@ -146,4 +149,25 @@ test("a profile named __proto__ is a profile like any other", () => {
   assert.ok(parsed.ok);
   assert.equal(Object.getPrototypeOf(parsed.profiles), null);
   assert.equal(parsed.profiles["__proto__"]?.["key"], "dfo_k_x");
+});
+
+describe("column-order", async () => {
+  type Vector = { columns?: string[]; members?: string[][]; ordered: string[] };
+  /** A one-row file holding the columns in the order given, as the server writes them. */
+  const file = (columns: readonly string[]) =>
+    readParquet(
+      new Uint8Array(
+        parquetWriteBuffer({ columnData: columns.map((name) => ({ name, data: ["x"] })) }),
+      ),
+    );
+  for (const vector of await vectors<Vector>("column-order")) {
+    test(vector.name, () => {
+      const members = vector.members ?? [vector.columns ?? []];
+      const parts = members.map((columns, index) => ({ file: file(columns), label: `${index}` }));
+      assert.deepEqual(
+        stackedColumns(parts).map((column) => column.name),
+        vector.ordered,
+      );
+    });
+  }
 });
