@@ -114,7 +114,7 @@ print(chosen)
 
 ```text
 Democratic Republic of the Congo's GDP, 1960 to 2025. Current US dollars · World Development Indicators.
-  Note: no time_text was given; the answer was resolved across every period with data.
+  Note: No years were given, so the answer covers every year with data.
   Fetch: answer.fetch()
 ```
 
@@ -151,10 +151,10 @@ Leave `partial` off in a scheduled job. A question that resolved in full this mo
 Search fetches published figures and computes nothing on top. "top 5 donors to Ethiopia in 2022" returns the amounts for every donor, and the answer lists what it did not do under its sentence:
 
 ```text
-Gross disbursements to Ethiopia from 110 providers for official development assistance in 2022. Current US dollars · OECD DAC2a. You asked for a ranking. This shows the amounts behind it, because Search does not compute rankings. Assumed: official development assistance.
+Gross disbursements to Ethiopia from 95 providers for official development assistance in 2022. Current US dollars · OECD DAC2a. You asked for a ranking. This shows the amounts behind it, because Search does not compute rankings. Assumed: official development assistance.
   Not done: rank ("top 5 donors")
   Note: The answer covers official development assistance of every aid type.
-  Note: no provider was named; the answer was resolved across every provider with data.
+  Note: No provider was named, so the answer covers every provider with data.
   Fetch: answer.fetch()
 ```
 

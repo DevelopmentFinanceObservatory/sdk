@@ -106,7 +106,7 @@ console.log(ghana.rowCount);
 
 A narrowing that holds no data returns an empty `Dataset` under Search's no-data sentence, with an `empty_result` warning. An option the call does not take raises `InvalidRequestError` with `invalid_argument` and names the nearest one, so `party_totals` points you to `partyTotals`.
 
-Party totals change the sum. For Ethiopia in 2022, 110 providers report, and 15 of them are totals:
+Party totals change the sum. For Ethiopia in 2022, 95 providers report, and the party totals add 15 rows to make 110:
 
 ```text
 95 110

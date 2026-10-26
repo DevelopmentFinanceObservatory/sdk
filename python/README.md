@@ -66,6 +66,7 @@ Answered 0 of 1 part of your question.
     [0] Kenya's percent of total government expenditure on education, 1980 to 2025 · World Development Indicators
     [1] Kenya's percent of nominal GDP spent on education, 1971 to 2024 · World Development Indicators
   Choose: answer.choose(0).fetch()
+Kenya's percent of total government expenditure on education, 1980 to 2025. World Development Indicators.
 ```
 
 ```python

@@ -15,12 +15,12 @@ The blocks on this page run in order, as cells of one notebook.
   Rows: 6
   Keep: data.save(path) · newest later: dfo.fetch(data.ref, latest=True)>
    time_period financingProvider_label        value
-0         2020                 Germany  447440917.0
-1         2021                 Germany  175013360.0
-2         2022                 Germany  252521505.0
-3         2020                  France   83268048.0
-4         2021                  France   55879173.0
-5         2022                  France  103160459.0
+0         2020                  France   83268048.0
+1         2021                  France   55879173.0
+2         2022                  France  103160459.0
+3         2020                 Germany  447440917.0
+4         2021                 Germany  175013360.0
+5         2022                 Germany  252521505.0
 ```
 
 ```python
@@ -55,10 +55,10 @@ A provider or recipient column in DFO data can hold group totals beside their me
 ```text
 95 rows, 5.55 billion dollars
 110 rows, 23.84 billion dollars
-   financingProvider_label         value
-14   official donors (DAC)  5.231667e+09
-9            DAC countries  2.756195e+09
-12     multilaterals (DAC)  2.272375e+09
+    financingProvider_label         value
+106   official donors (DAC)  5.231667e+09
+17            DAC countries  2.756195e+09
+104     multilaterals (DAC)  2.272375e+09
 ```
 
 ```python
