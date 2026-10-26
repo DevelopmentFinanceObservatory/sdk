@@ -47,6 +47,7 @@ A Colab secret that is missing or cannot be read moves on to anonymous use.
 
 `api_key=` takes a string, a `dfo.ApiKey`, or a callable that returns either, which suits a secret manager. `api_key=False` forces anonymous use whatever the environment holds. The second client below reads its key from a `TEAM_DFO_KEY` variable your secret manager sets:
 
+<!-- docs-check: skip: reads a key from TEAM_DFO_KEY -->
 ```python
 import os
 

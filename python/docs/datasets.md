@@ -317,6 +317,7 @@ print(opened.sentence == data.sentence, opened.ref == data.ref)  # True True
 
 `dfo.open_bundle(path, *, limits=dfo.BundleLimits())` streams the ZIP and its resources. `BundleLimits` is immutable and keyword-only:
 
+<!-- docs-check: skip: opens a website bundle no example writes -->
 ```python
 limits = dfo.BundleLimits(
     max_descriptor_bytes=1 * 1024**2,

@@ -32,6 +32,8 @@ print(data.rows)
 dfo.DfoTimeoutError: The build is still running at the deadline. Resume it with client.operation("op_...").result()
 ```
 
+A deadline that passes before the server has made an operation has no `op_` id to name. `fetch` then raises `DfoTimeoutError` with the code `deadline_exceeded` and a message such as `POST .../datasets timed out`, with no resuming line. Call `fetch` again, with a larger `timeout` if the build is big. The server deduplicates builds, so the second call joins or reuses the first.
+
 A poll wait that would pass the deadline is cut to end at it, and the client polls once more, giving that poll one attempt of the client's `timeout`. The error comes only when that last poll still reads the build running. When it reads the build done, the files route and the signed download each get one attempt of the client's `timeout`, and the call returns the data, so a call can run past its own timeout by one client timeout for the poll and one for each of those requests. A download request that times out there, or a download that runs out of time before the deadline, raises `deadline_exceeded` from `result` and `fetch` with the same resuming line. The build keeps running on the server. Resuming it costs nothing extra, because the server deduplicates builds and fetching the same spec again joins the running operation.
 
 ## Start a build and collect it later

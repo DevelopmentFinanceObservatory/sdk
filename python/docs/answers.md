@@ -161,7 +161,7 @@ for gap in data.missing:
     print(gap.kind, gap.message)
 ```
 
-The dataset's display leads with the parts it left out, and the gaps travel with it into `to_pandas().attrs` and the file `save` writes. `fetch(partial=True)` raises `IncompleteAnswerError` when no part has a reading.
+The dataset's display shows an `Incomplete: 1 part(s) left out` line after its `Rows` line, and `data.missing` holds the gaps. The file `save` writes carries them, and `open_bundle` reads them back. `to_pandas().attrs` holds the sentence, citation, sources, licence and ref, and no gaps, so keep `data.missing` if a later step needs them. `fetch(partial=True)` raises `IncompleteAnswerError` when no part has a reading.
 
 A scheduled job should leave `partial` off. A question that resolved in full this month can come back half-answered next month, and the job then stops with a message instead of publishing half the data.
 
@@ -180,10 +180,10 @@ A scheduled job should leave `partial` off. A question that resolved in full thi
 
 ## When the reading differs from the question
 
-A reading can differ from what was asked. "Top 5 donors to Ethiopia in 2022" returns the amounts for every provider, because Search does not rank. The answer lists what was not done and what was assumed under its sentence:
+A reading can differ from what was asked. "Top 5 donors to Ethiopia in 2022" returns the amounts for every provider, because Search does not rank. The answer lists what was not done and what was assumed under its sentence. The provider count is from one run and moves as the data does:
 
 ```text
-Gross disbursements to Ethiopia from 137 providers for official development assistance in 2022. Current US dollars · OECD DAC2a. You asked for a ranking. This shows the amounts behind it, because Search does not compute rankings. Assumed: official development assistance.
+Gross disbursements to Ethiopia from 110 providers for official development assistance in 2022. Current US dollars · OECD DAC2a. You asked for a ranking. This shows the amounts behind it, because Search does not compute rankings. Assumed: official development assistance.
   Not done: rank ("top 5 donors")
   Note: The answer covers official development assistance of every aid type.
   Note: no provider was named; the answer was resolved across every provider with data.
