@@ -790,12 +790,14 @@ describe("a stored version's lookup order", () => {
 
     test(`refuses a ref whose digest the snapshot lists under the other rendering${isCut ? ", a cut" : ""}`, async () => {
       const { ref, manifest } = await stored(isCut);
-      // The member's digest sits under the rendering the ref does not hold.
-      const [artifact, ...rest] = manifest["artifacts"] as Record<string, unknown>[];
-      const rendering = artifact!["rendering"] as Record<string, unknown>;
+      // The member's digest sits only under the rendering the ref does not hold.
+      const { artifact, rest } = plainOf(manifest);
+      const rendering = artifact["rendering"] as Record<string, unknown>;
       const other = isCut ? rendering : { ...rendering, without_party_totals: true };
+      const digest = artifact["artifact_digest"];
+      const others = rest.filter((listed) => listed["artifact_digest"] !== digest);
       const { fetch, seen } = mockFetch(
-        json({ ...manifest, artifacts: [{ ...artifact, rendering: other }, ...rest] }),
+        json({ ...manifest, artifacts: [{ ...artifact, rendering: other }, ...others] }),
       );
       await assert.rejects(fetchDataset(client(fetch).transport, ref), {
         name: "FormatError",
