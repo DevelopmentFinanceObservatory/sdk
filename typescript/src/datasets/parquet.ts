@@ -14,7 +14,7 @@ import { parquetMetadata, parquetRead } from "hyparquet";
 import type { FileMetaData, KeyValue, ParquetParsers, SchemaElement } from "hyparquet";
 import { parquetWriteBuffer } from "hyparquet-writer";
 
-import { readingOrder, runLengths } from "./reading-order.ts";
+import { readingOrder } from "./reading-order.ts";
 import type { ReadingOrder } from "./reading-order.ts";
 import { capped, clientError } from "../core/errors.ts";
 import type { ContractError } from "../core/errors.ts";
@@ -354,28 +354,28 @@ function physicalDecimals(metadata: FileMetaData): FileMetaData {
 export type StoredColumn = Column & { readonly values: unknown[] };
 
 /**
- * The reading order of the stacked table: `part` first when the table has one, then the reading
- * order of the other columns over the stacked rows. A single file that holds `part`, such as one
- * `bytes()` wrote, reads each run of one `part` value as a member, as Python does, so a saved
- * stacked table reads back in the order it was written. The order needs every value, since
- * which columns vary and how the rows sort depend on them, so it decodes every member.
+ * The reading order of the stacked table: `part` first when several files stack, then the
+ * reading order of the other columns over the stacked rows, each file's rows sorted as one
+ * member. A single file's own `part` column is data, ordered as any other column. The order
+ * needs every value, since which columns vary and how the rows sort depend on them, so it
+ * decodes every member.
  *
  * @throws {ContractError} The members do not stack (`contract_violation`), or a file's pages
  *   cannot be decoded (`unexpected_response`).
  */
 export async function presentedOrder(parts: readonly TablePart[]): Promise<ReadingOrder> {
   const stacked = await decodeStacked(parts);
-  const part = stacked.find(({ name }) => name === PART_COLUMN);
-  const members =
-    parts.length > 1 || part === undefined
-      ? parts.map(({ file }) => file.rows)
-      : runLengths(part.values);
+  const part = parts.length > 1 ? stacked.find(({ name }) => name === PART_COLUMN) : undefined;
   const { columns, rows } = readingOrder(
     stacked.filter((column) => column !== part),
-    members,
+    memberRows(parts),
   );
   return { columns: Object.freeze(part ? [PART_COLUMN, ...columns] : [...columns]), rows };
 }
+
+/** Each member's row count, in member order: one member per file. */
+export const memberRows = (parts: readonly TablePart[]): number[] =>
+  parts.map(({ file }) => file.rows);
 
 /** Every column of the table with its stored values, columns and rows in reading order.
  *

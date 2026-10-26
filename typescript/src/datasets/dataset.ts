@@ -2,6 +2,7 @@ import type { Gap } from "../search/answer.ts";
 import {
   decodeRows,
   encodeStacked,
+  memberRows,
   presentedOrder,
   readParquet,
   stackedColumns,
@@ -147,7 +148,8 @@ export class Dataset {
   /** The artifact layout each member's manifest names, distinct ones joined by "; ". */
   readonly layoutVersion: string;
   readonly #data: readonly Uint8Array[];
-  /** Each member's file, labelled as its `part` column holds it, in reading order. */
+  /** Each member's file, one per member in member order, labelled as its `part` column holds
+   *  it when several stack, in reading order. */
   readonly #table: Table;
 
   static {
@@ -245,8 +247,11 @@ export class Dataset {
 
   /**
    * The dataset as one Parquet file whose key-value metadata carries the provenance and the ref
-   * under `dfo.*` keys, as Python's `Dataset.save` writes it, so `dfo.load` reads it back. Several members stack into the file, `part` first. `memberBytes` gives the file the
-   * server built. It decodes every member and encodes the whole table in memory.
+   * under `dfo.*` keys, as Python's `Dataset.save` writes it, so `dfo.load` reads it back.
+   * Several members stack into the file, `part` first. `member_rows` in `dfo.dataset` holds each
+   * member's row count in member order, which marks where one member's rows end and the next
+   * begin. `memberBytes` gives the file the server built. It decodes every member and encodes
+   * the whole table in memory.
    */
   async bytes(): Promise<Uint8Array> {
     return encodeStacked(this.#table, this.#metadata());
@@ -333,6 +338,7 @@ export class Dataset {
         pinned: this.pinned,
         stale: false,
         layout_version: this.layoutVersion,
+        member_rows: memberRows(this.#table.parts),
       }),
       "dfo.ref": JSON.stringify(this.ref),
     };

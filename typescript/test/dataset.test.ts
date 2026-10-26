@@ -9,9 +9,9 @@ import { parquetWriteBuffer } from "hyparquet-writer";
 import { toArrow } from "../src/datasets/arrow.ts";
 import { Dataset, datasetTable } from "../src/datasets/dataset.ts";
 import type { FetchedMember } from "../src/datasets/dataset.ts";
-import { decodeStored, readParquet, widen } from "../src/datasets/parquet.ts";
+import { decodeRows, decodeStored, readParquet, widen } from "../src/datasets/parquet.ts";
 import { partFacts } from "../src/core/parse.ts";
-import type { ColumnType } from "../src/datasets/parquet.ts";
+import type { ColumnType, Row, StoredColumn, Table } from "../src/datasets/parquet.ts";
 import { DatasetRef } from "../src/core/ref.ts";
 import type { Gap } from "../src/search/answer.ts";
 import { scenarioBytes } from "./replay.ts";
@@ -37,6 +37,26 @@ function member(
     data,
     ...overrides,
   };
+}
+
+/** A file `bytes()` wrote, read as it stands: its columns and rows in file order, and the
+ *  member row counts its `dfo.dataset` records, which Python's `dfo.load` splits it by. */
+function readSaved(bytes: Uint8Array): {
+  rows: () => Promise<Row[]>;
+  stored: () => Promise<StoredColumn[]>;
+  memberRows: unknown;
+} {
+  const file = readParquet(bytes);
+  const table: Table = {
+    parts: [{ file, label: "" }],
+    order: {
+      columns: file.columns.map(({ name }) => name),
+      rows: Uint32Array.from({ length: file.rows }, (_, index) => index),
+    },
+  };
+  const saved = file.metadata.key_value_metadata?.find(({ key }) => key === "dfo.dataset");
+  const memberRows = (JSON.parse(saved?.value ?? "{}") as Record<string, unknown>)["member_rows"];
+  return { rows: () => decodeRows(table), stored: () => decodeStored(table), memberRows };
 }
 
 const parquetFiles = async (): Promise<string[]> => {
@@ -243,9 +263,13 @@ describe("DECIMAL values", async () => {
       narrow: [...unscaled.narrow, 700n],
     };
     assert.deepEqual(await valuesOf(dataset), expected);
-    const written = await Dataset.create([member(await dataset.bytes())], { layout: "long" });
-    assert.deepEqual(await valuesOf(written), expected);
-    assert.deepEqual((await written.toRows()).at(-1), {
+    const written = readSaved(await dataset.bytes());
+    assert.deepEqual(
+      Object.fromEntries((await written.stored()).map(({ name, values }) => [name, values])),
+      expected,
+    );
+    assert.deepEqual(written.memberRows, [3, 1]);
+    assert.deepEqual((await written.rows()).at(-1), {
       part: "two",
       wide: 1.5,
       mid: null,
@@ -340,9 +364,9 @@ describe("a dataset of several members", async () => {
         .map((element) => element.name),
       dataset.columns,
     );
-    const reread = await Dataset.create([member(stacked)], { layout: "long" });
-    assert.deepEqual(reread.columns, dataset.columns);
-    assert.deepEqual(await reread.toRows(), await dataset.toRows());
+    const reread = readSaved(stacked);
+    assert.deepEqual(await reread.rows(), await dataset.toRows());
+    assert.deepEqual(reread.memberRows, [readParquet(health).rows, readParquet(gdp).rows]);
 
     const metadata = Object.fromEntries(
       (parquetMetadata(stacked.slice().buffer).key_value_metadata ?? []).map(({ key, value }) => [
@@ -371,6 +395,7 @@ describe("a dataset of several members", async () => {
       "held_until",
       "layout_version",
       "member_citations",
+      "member_rows",
       "missing",
       "pinned",
       "requested_operations",
@@ -393,12 +418,10 @@ test("a stacked file keeps every column type the members store", async () => {
     { layout: "long" },
   );
   const stacked = await dataset.bytes();
-  const reread = await Dataset.create([member(stacked)], { layout: "long" });
-  const [original, written] = await Promise.all(
-    [dataset, reread].map((table) => decodeStored(datasetTable(table))),
-  );
+  const original = await decodeStored(datasetTable(dataset));
+  const written = await readSaved(stacked).stored();
   assert.deepEqual(written, original);
-  assert.equal(written!.find((column) => column.name === "big")?.values[2], 2n ** 60n);
+  assert.equal(written.find((column) => column.name === "big")?.values[2], 2n ** 60n);
   // hyparquet-writer writes the INTEGER logical type in a form pyarrow cannot read, so
   // integers carry the legacy converted type alone.
   const schema = parquetMetadata(stacked.slice().buffer).schema;
@@ -693,8 +716,19 @@ describe("members whose column types differ", () => {
         }),
       { name: "ContractError", code: "contract_violation" },
     );
-    // One member is not stacked, so its own part column is its data.
+    // One member is not stacked, so its own part column is its data, ordered as any column.
     assert.deepEqual((await Dataset.create([member(own)], { layout: "long" })).columns, ["part"]);
+    const labelled = file({
+      year: { type: "INT32", data: [2022, 2020, 2021] },
+      part: { type: "BYTE_ARRAY", logical: { type: "STRING" }, data: ["b", "a", "b"] },
+    });
+    const alone = await Dataset.create([member(labelled)], { layout: "long" });
+    assert.deepEqual(alone.columns, ["year", "part"]);
+    assert.deepEqual(await alone.toRows(), [
+      { year: 2020, part: "a" },
+      { year: 2021, part: "b" },
+      { year: 2022, part: "b" },
+    ]);
   });
 
   test("stacks UINT32 with INT64, converts it to INT64, and saves the widened table", async () => {
@@ -712,32 +746,26 @@ describe("members whose column types differ", () => {
       (await dataset.toRows()).map(({ count }) => count),
       [2 ** 32 - 1, -1],
     );
-    const saved = await Dataset.create([member(await dataset.bytes())], { layout: "long" });
-    assert.deepEqual(await saved.toRows(), await dataset.toRows());
+    const saved = readSaved(await dataset.bytes());
+    assert.deepEqual(await saved.rows(), await dataset.toRows());
   });
 
-  test("a saved stack reads back with its members in order, each run of a part as one", async () => {
-    // The members' labels and years both sort against member order, so reading the saved file
-    // as one sorted table, or by part, would move rows.
-    const later = file({ year: { type: "INT32", data: [2021, 2020] } });
-    const earlier = file({ year: { type: "INT32", data: [2019, 2018] } });
+  test("members that share a label keep their own rows, also in the saved file", async () => {
+    // Sorting across the two members, as reading them by label would, moves 2021 first.
+    const first = file({ year: { type: "INT32", data: [2024, 2022] } });
+    const second = file({ year: { type: "INT32", data: [2023, 2021] } });
     const dataset = await Dataset.create(
       [
-        member(later, { parts: ["b"] }),
-        member(earlier, { parts: ["a"], spec: { spec_id: "s2", definition: {} } }),
+        member(first, { parts: ["aid"] }),
+        member(second, { parts: ["aid"], spec: { spec_id: "s2", definition: {} } }),
       ],
       { layout: "long" },
     );
-    const rows = [
-      { part: "b", year: 2020 },
-      { part: "b", year: 2021 },
-      { part: "a", year: 2018 },
-      { part: "a", year: 2019 },
-    ];
+    const rows = [2022, 2024, 2021, 2023].map((year) => ({ part: "aid", year }));
     assert.deepEqual(await dataset.toRows(), rows);
-    const saved = await Dataset.create([member(await dataset.bytes())], { layout: "long" });
-    assert.deepEqual(saved.columns, dataset.columns);
-    assert.deepEqual(await saved.toRows(), rows);
+    const saved = readSaved(await dataset.bytes());
+    assert.deepEqual(await saved.rows(), rows);
+    assert.deepEqual(saved.memberRows, [2, 2]);
   });
 
   test("refuses UINT64 with a signed member while accepting UINT64 alone", async () => {

@@ -792,9 +792,23 @@ function distinct(members: readonly MemberRequest[]): MemberRequest[] {
   return [...merged.values()];
 }
 
+/** A built member that also answers `parts` and `answerFacts`, each part once, in query order. */
+function joined(
+  member: FetchedMember,
+  parts: readonly string[],
+  answerFacts: readonly PartFacts[] | undefined,
+): FetchedMember {
+  return {
+    ...member,
+    parts: [...member.parts, ...parts.filter((part) => !member.parts.includes(part))],
+    answerFacts: [...(member.answerFacts ?? []), ...(answerFacts ?? [])],
+  };
+}
+
 /**
  * Builds the latest version of each spec and assembles one dataset. A spec listed twice builds
- * once, answering both parts.
+ * once, answering both parts. Two specs whose narrowed builds are one spec, which the build's
+ * manifest names, make one member answering both, downloaded once.
  *
  * @throws {InvalidRequestError} `layout: "frame"` with several members, a narrowing that breaks
  *   its rule for any member or names a role a member does not take, all before any request, or
@@ -820,6 +834,8 @@ export async function fetchMembers(
   checkRoles(wants, narrowing.entities);
   const wait = waitFor(transport, options);
   const fetched: FetchedMember[] = [];
+  /** Where each built spec sits in `fetched`. */
+  const builtAt = new Map<string, number>();
   for (const [at, { parts, spec, sentence, entityGroups, answerParts }] of wants.entries()) {
     const scope = scopes[at];
     let built: Built;
@@ -834,13 +850,21 @@ export async function fetchMembers(
       }
       throw narrowingRefusal(error, narrowing);
     }
+    const answerFacts = answerParts?.map(partFacts);
+    const builtId = specIdOf(built.manifest);
+    const seen = builtAt.get(builtId);
+    if (seen !== undefined) {
+      fetched[seen] = joined(fetched[seen]!, parts, answerFacts);
+      continue;
+    }
+    builtAt.set(builtId, fetched.length);
     const finishing = {
       parts,
       posted: { spec, entityGroups },
       sentence,
       rendering,
       strict: options.strict ?? false,
-      ...(answerParts === undefined ? {} : { answerFacts: answerParts.map(partFacts) }),
+      ...(answerFacts === undefined ? {} : { answerFacts }),
     };
     try {
       fetched.push(await finish(transport, built, finishing, wait));

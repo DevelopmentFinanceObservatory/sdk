@@ -15,7 +15,7 @@ import { specRoles } from "../src/core/roles.ts";
 import type { DatasetRefJson, Spec } from "../src/core/ref.ts";
 import { DEFAULT_MAX_BYTES, Transport } from "../src/http/transport.ts";
 import { DataWarning } from "../src/core/warnings.ts";
-import type { Spec as WireSpec } from "../src/wire.ts";
+import type { Part, Spec as WireSpec } from "../src/wire.ts";
 import type { DfoWarning } from "../src/core/warnings.ts";
 import { InvalidRequestError, ServerError } from "../src/core/errors.ts";
 import {
@@ -51,6 +51,56 @@ describe("a fetched spec's ref", () => {
     const dataset = await fetchDataset(replay(record).transport, spec);
     const { ref } = await contractJson<{ ref: unknown }>("refs/ref-without-party-totals.json");
     assert.deepEqual(JSON.parse(JSON.stringify(dataset.ref)), ref);
+  });
+});
+
+describe("two specs whose narrowed builds are one spec", () => {
+  test("make one member answering both parts, built twice and downloaded once", async () => {
+    const record = structuredClone(await scenario("fetch-spec-narrowed"));
+    const { spec, window } = stepOf(record, 0, "fetch");
+    assert.ok(spec);
+    const otherId = `spec_${"9".repeat(32)}`;
+    const other: Spec = {
+      ...spec,
+      spec_id: otherId,
+      definition: { ...spec.definition, spec_id: otherId },
+    };
+    const [built, resubmit, ...download] = record.exchanges;
+    const entries = (resubmit!.request.json as { input: { entries: Record<string, unknown>[] } })
+      .input.entries;
+    entries[0]!["variable_text"] = "health ODA";
+    // The second build posts the other spec, and the server answers the same built spec.
+    const rebuild = structuredClone(built!);
+    const input = (rebuild.request.json as { input: Record<string, unknown> }).input;
+    input["spec_id"] = otherId;
+    input["definition"] = other.definition;
+    const closest = { code: "closest_match", text: "The closest reading." };
+    const asked = { status: "definite", spec: other, departures: [closest] } as unknown as Part;
+    const { transport, remaining } = replay({
+      ...record,
+      origin: { kind: "synthetic", derived_from: record.name },
+      exchanges: [built!, resubmit!, ...download, rebuild],
+    });
+    const dataset = await fetchMembers(
+      transport,
+      [
+        { parts: ["health ODA"], spec },
+        { parts: ["basic health"], spec: other, answerParts: [asked] },
+      ],
+      { narrowing: { window } },
+    );
+    assert.deepEqual(remaining(), []);
+    assert.deepEqual(
+      dataset.members.map((member) => member.parts),
+      [["health ODA", "basic health"]],
+    );
+    const expected = record.expect[0]!;
+    assert.ok("dataset" in expected);
+    assert.equal(dataset.rowCount, expected.dataset.rows);
+    assert.ok(!dataset.columns.includes("part"));
+    assert.deepEqual(dataset.departures, [closest]);
+    const ref = DatasetRef.fromJSON(JSON.parse(JSON.stringify(dataset.ref)));
+    assert.ok(ref.equals(dataset.ref));
   });
 });
 

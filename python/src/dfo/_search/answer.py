@@ -284,7 +284,8 @@ class AsyncAnswer:
     ) -> Dataset:
         """Build the dataset for the answer's readings.
 
-        Each distinct spec builds once; several readings stack into one long table
+        Each distinct spec builds once, and readings whose narrowed builds name
+        one spec become one member; several members stack into one long table
         with a `part` column. Departures, skipped computations and Search's `warn`
         and `degraded` warnings arrive as one `SearchWarning`. `window`,
         `entities` and `facets` narrow every reading as `fetch` narrows one spec.

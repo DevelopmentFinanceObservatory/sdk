@@ -87,16 +87,6 @@ function same(left: unknown, right: unknown): boolean {
   return Number.isNaN(left) && Number.isNaN(right);
 }
 
-/** The length of each run of one value in `values`, in order. */
-export function runLengths(values: readonly unknown[]): number[] {
-  const runs: number[] = [];
-  for (const [index, value] of values.entries()) {
-    if (index > 0 && same(value, values[index - 1])) runs[runs.length - 1]! += 1;
-    else runs.push(1);
-  }
-  return runs;
-}
-
 /** Whether a column holds more than one value. */
 function varies(values: readonly unknown[]): boolean {
   const first = values[0];

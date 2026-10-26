@@ -61,7 +61,7 @@ def test_restoring_a_plain_ref_from_a_multi_render_snapshot_works_offline(
             ),
         )
     )
-    ordered = in_reading_order(table, stacked=False)
+    ordered = in_reading_order(table, member_rows=(table.num_rows,))
     with Client._over(Session(transport, cache)) as client:
         assert client.fetch(ref, progress=False).to_arrow().equals(ordered)
     monkeypatch.setenv("DFO_OFFLINE", "1")

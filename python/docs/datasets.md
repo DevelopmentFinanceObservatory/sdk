@@ -96,9 +96,9 @@ Every table leads with the columns a reader looks at, in this order:
 1. the flow or aid type, as `crsTypeOfFlow_label` or `dac2aAidType_label`
 1. the source, as `provenance_label`
 
-A table without a column skips its slot. Where a table has no label column, the code column takes its place. The columns whose values differ between rows come next, so you see what tells the rows apart, then the columns that hold one value in every row, with `stat_var` last. A dataset of several readings adds a `part` column first, naming the part of the question each row answers, and judges which columns vary over all its rows.
+A table without a column skips its slot. Where a table has no label column, the code column takes its place. The columns whose values differ between rows come next, so you see what tells the rows apart, then the columns that hold one value in every row, with `stat_var` last. A dataset of several members adds a `part` column first, naming the part of the question each row answers, and judges which columns vary over all its rows.
 
-The rows sort by the leading columns other than `value` and `time_period`, then by the columns that vary, then by `time_period`, so the years of each series read together. Each reading of a dataset keeps its own rows, in the order of its readings. Text sorts by Unicode code point and an empty cell sorts last. The ref and the digest name the file the server wrote, before the client reordered it.
+The rows sort by the leading columns other than `value` and `time_period`, then by the columns that vary, then by `time_period`, so the years of each series read together. Each member of a dataset keeps its own rows, in the order of its members. Text sorts by Unicode code point and an empty cell sorts last. The ref and the digest name the file the server wrote, before the client reordered it.
 
 ```text
 ['time_period', 'financingProvider_label', 'financingRecipient_label', 'value', 'unit_label', 'dac2aAidType_label', 'provenance_label', 'financingProvider', 'financingProvider_kind', 'financingRecipient', 'financingRecipient_kind', 'dac2aAidType', 'unit', 'currency', 'price_basis', 'base_year', 'measurementMethod', 'measurementMethod_label', 'provenance', 'stat_var']
@@ -226,7 +226,7 @@ print(len(data))
 ## What a dataset holds
 
 - `sentence`: what the data shows, in Search's words.
-- `members`: one per reading, each with its `spec`, `content_version` and `citation`.
+- `members`: one per built spec (readings that narrow to one spec share a member), each with its `spec`, `content_version` and `citation`.
 - `ref`: the exact versions, to fetch the same rows again.
 - `citation`, `sources` and `licence`: how to cite the data and under which terms.
 - `warnings`, `departures`, `requested_operations`, and `assumptions`: how the data differs from the question and what Search assumed.

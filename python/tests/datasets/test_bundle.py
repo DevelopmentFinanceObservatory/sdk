@@ -33,7 +33,7 @@ PARQUET = DATA / "bundle-bare.parquet"
 def bare_table() -> pa.Table:
     """The bare Parquet file's table, its columns and rows in reading order."""
     table = pq.read_table(PARQUET)
-    return in_reading_order(table, stacked=False)
+    return in_reading_order(table, member_rows=(table.num_rows,))
 
 
 DATA_FILE = "data/oecd-creditor-reporting-system.csv"

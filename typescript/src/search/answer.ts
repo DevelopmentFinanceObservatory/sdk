@@ -311,9 +311,10 @@ export class Answer {
   }
 
   /**
-   * Builds the dataset for the answer's readings. Each distinct spec builds once; several
-   * readings stack into one long table with a `part` column. `window`, `entities` and `facets`
-   * narrow every reading as `client.fetch` narrows one spec.
+   * Builds the dataset for the answer's readings. Each distinct spec builds once; readings
+   * that narrow to one spec share a member, and several members stack into one long table with a
+   * `part` column. `window`, `entities` and `facets` narrow every reading as `client.fetch`
+   * narrows one spec.
    *
    * @throws {InvalidRequestError} `options` holds a key outside `AnswerFetchOptions`, or a
    *   narrowing breaks its rule or names a role a reading does not take, which names each

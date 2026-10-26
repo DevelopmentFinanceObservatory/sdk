@@ -2,7 +2,9 @@
 
 A dataset holds its table and its provenance and carries no client, so its
 conversions run offline. Several members stack into one long table with a leading
-`part` column naming each row's member. Every table a dataset holds presents its
+`part` column labelling each row's member, and the dataset holds each member's row
+count, in member order, so a member's rows are known without reading the labels,
+which two members may share. Every table a dataset holds presents its
 columns and rows in the contract's reading order, `READING_COLUMNS` first and
 `stat_var` last, after the member's file was hashed, so the digest and the ref name
 the server's file. `save` writes one Parquet file whose
@@ -22,6 +24,7 @@ import json
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import date
+from itertools import accumulate
 from os import PathLike
 from typing import TYPE_CHECKING, Any, Never
 
@@ -76,7 +79,7 @@ _NOT_A_FRAME = (
     "data.to_polars(), or pd.DataFrame.from_arrow(data)."
 )
 
-# The column that names each row's member in a dataset of several members.
+# The column that labels each row's member in a dataset of several members.
 PART_COLUMN = "part"
 
 # The column the reading order puts after every other.
@@ -154,7 +157,8 @@ class Dataset:
     Attributes:
         sentence: What the data shows, in Search's words, or the members' sentences
             in order when there are several.
-        members: One member per reading, each an exact version. Empty for a
+        members: One member per built spec, each an exact version; readings
+            that narrow to one spec share a member. Empty for a
             website bundle opened from a folder, which names no artifact.
         citation: How to cite the data, every member's sources together.
         warnings: The datasets surface's warnings about the members' data.
@@ -193,17 +197,26 @@ class Dataset:
     stale: bool
     layout_version: str
     _table: _ArrowTable = field(repr=False)
+    # Each member's row count, in member order, summing to the table's rows; empty
+    # for a dataset of no members, whose table is one unit.
+    _member_rows: tuple[int, ...] = field(repr=False)
     assumptions: tuple[Assumption, ...] = ()
     # The owner of the call the repr's newest-versions line names: the fetching
     # client's `client` or `dfo`, and `dfo` for a dataset `dfo.load` read.
     _caller: str = field(default="dfo", repr=False)
 
     def __post_init__(self) -> None:
+        rows = self._member_rows
+        if len(rows) != len(self.members) or (
+            rows and sum(rows) != self._table.num_rows
+        ):
+            raise ValueError(
+                f"{len(self.members)} members cannot hold the row counts {rows} "
+                f"of a table of {self._table.num_rows} rows"
+            )
         # Every way a dataset is made presents the same reading order.
         object.__setattr__(
-            self,
-            "_table",
-            in_reading_order(self._table, stacked=len(self.members) > 1),
+            self, "_table", in_reading_order(self._table, member_rows=rows)
         )
 
     @property
@@ -399,6 +412,7 @@ class Dataset:
                     "pinned": self.pinned,
                     "stale": self.stale,
                     "layout_version": self.layout_version,
+                    "member_rows": list(self._member_rows),
                 }
             ),
         }
@@ -407,16 +421,20 @@ class Dataset:
         return {key.encode(): value.encode() for key, value in metadata.items()}
 
 
-def in_reading_order(table: pa.Table, *, stacked: bool) -> pa.Table:
+def in_reading_order(table: pa.Table, *, member_rows: Sequence[int]) -> pa.Table:
     """`table` with its columns and rows in the reading-order rule's order.
 
-    The columns are `part` first when `stacked`, then the first name of each
+    `member_rows` holds each member's row count, in member order. The table is
+    stacked, its first column `part`, when it counts more than one member; in a
+    table of one member, or of none, `part` is an ordinary column.
+
+    The columns are `part` first when stacked, then the first name of each
     `READING_COLUMNS` slot the table holds, in slot order, then the other columns
     whose values differ between rows, then those holding one value in every row,
     null included, each group in the table's order, and `stat_var` last. Varying is
     judged over the whole table, so a stacked one's members are judged together.
 
-    The rows of each member, a run of one `part` value in a stacked table, sort by
+    The rows of each member, its `member_rows` count of consecutive rows, sort by
     the filled slots other than `value` and `time_period`, then by the varying
     columns, then by `stat_var` when it varies, then by `time_period`: ascending,
     nulls last, ties in the table's order. The members keep their order. Applied
@@ -429,19 +447,19 @@ def in_reading_order(table: pa.Table, *, stacked: bool) -> pa.Table:
     import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
 
     try:
-        return _ordered(table, stacked=stacked)
+        return _ordered(table, member_rows=member_rows)
     except (pa.ArrowNotImplementedError, pa.ArrowInvalid) as error:
         raise client_error(
             CONTRACT_VIOLATION, f"The dataset's table cannot be ordered: {error}"
         ) from error
 
 
-def _ordered(table: pa.Table, *, stacked: bool) -> pa.Table:
+def _ordered(table: pa.Table, *, member_rows: Sequence[int]) -> pa.Table:
     """The body of `in_reading_order`, raising pyarrow's errors."""
     import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
 
     names = table.column_names
-    lead = names[:1] if stacked else []
+    lead = names[:1] if len(member_rows) > 1 else []
     held = set(names[len(lead) :])
     filled = [
         found
@@ -472,7 +490,7 @@ def _ordered(table: pa.Table, *, stacked: bool) -> pa.Table:
         return table
     sorting = [(name, "ascending") for name in keys]
     # Arrow's sort is stable and puts nulls last by default.
-    runs = [run.sort_by(sorting) for run in _member_runs(table, stacked=stacked)]
+    runs = [run.sort_by(sorting) for run in _member_runs(table, member_rows)]
     return runs[0] if len(runs) == 1 else pa.concat_tables(runs)
 
 
@@ -481,19 +499,15 @@ def _varies(column: pa.ChunkedArray) -> bool:
     return len(column.unique()) > 1
 
 
-def _member_runs(table: pa.Table, *, stacked: bool) -> list[pa.Table]:
-    """`table` split into its members' rows: the runs of one `part` value when
-    `stacked`, else the whole table."""
-    if not stacked:
+def _member_runs(table: pa.Table, member_rows: Sequence[int]) -> list[pa.Table]:
+    """`table` split into its members' rows by their counts, or whole for one member
+    or none."""
+    if len(member_rows) < 2:
         return [table]
-    import pyarrow.compute as pc  # noqa: PLC0415 - pyarrow loads on first use
-
-    part = table[PART_COLUMN].combine_chunks()
-    # pyarrow.compute declares its kernels when imported, out of the type checker's sight.
-    ends = pc.run_end_encode(part).run_ends.to_pylist()  # ty: ignore[unresolved-attribute]
+    starts = [0, *accumulate(member_rows)]
     return [
-        table.slice(start, end - start)
-        for start, end in zip([0, *ends], ends, strict=False)
+        table.slice(start, count)
+        for start, count in zip(starts, member_rows, strict=False)
     ]
 
 
@@ -516,16 +530,17 @@ def build_dataset(
     no rows to a stacked table.
 
     Each member's layout comes from the manifest's artifact for its digest, else
-    from the member's rendering. Several members stack into one long table, a
-    `part` column first, holding each member's parts joined by "; "
-    (its sentence when it answers no part), then the members' columns gathered in
+    from the member's rendering. Several members stack into one long table in
+    member order, each member's rows together, a `part` column first, holding
+    each member's parts joined by "; " (its sentence when it answers no part),
+    then the members' columns gathered in
     member order, each once. Columns one member lacks are null in its rows, and a
     column whose types differ in width widens, as an int32 with an int64 to int64
     and an integer with a double to double. The dataset presents the columns
     and rows by `in_reading_order`.
 
     Args:
-        members: The members, in query order, each with a distinct spec.
+        members: The members, in query order, each with a distinct spec id.
         layout: The layout the artifacts were rendered in.
         complete: Whether every part of the question has a member.
         missing: The parts a partial fetch left out.
@@ -573,6 +588,7 @@ def build_dataset(
         retentions.append(retention if isinstance(retention, Mapping) else None)
         warnings.extend(parse_notices(fetched.manifest.get("warnings")))
         tables.append(_read_artifact(fetched, cache))
+    member_rows = tuple(table.num_rows for table in tables)
 
     if len(tables) > 1:
         tables = [
@@ -613,6 +629,7 @@ def build_dataset(
         stale=stale,
         layout_version="; ".join(_unique(layouts)),
         _table=table.replace_schema_metadata(None),
+        _member_rows=member_rows,
         _caller=caller,
     )
 
@@ -713,6 +730,9 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
             zip(ref_members, citations, strict=True)
         )
     )
+    member_rows = _load_member_rows(
+        rest["member_rows"], members=len(members), rows=table.num_rows
+    )
     return Dataset(
         sentence=_saved_value(values, "dfo.sentence"),
         members=members,
@@ -751,6 +771,7 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
         stale=_flag(rest, "stale"),
         layout_version=_string(rest["layout_version"], "/dfo.dataset/layout_version"),
         _table=table.replace_schema_metadata(None),
+        _member_rows=member_rows,
     )
 
 
@@ -767,6 +788,7 @@ _SAVED_DATASET_KEYS = (
     "pinned",
     "stale",
     "layout_version",
+    "member_rows",
 )
 
 
@@ -829,6 +851,29 @@ def _strings(
         if not (item is None and key in optional):
             _string(item, f"{pointer}/{key}")
     return dict(obj)
+
+
+def _load_member_rows(value: object, *, members: int, rows: int) -> tuple[int, ...]:
+    """A saved file's row count per member: one non-negative integer per member
+    of `dfo.ref`, summing to the file's `rows` when there are members."""
+    pointer = "/dfo.dataset/member_rows"
+    counts = _array(value, pointer)
+    if not all(is_integer(count) and count >= 0 for count in counts):
+        raise FormatError("format_invalid", pointer, "not non-negative integers")
+    member_rows = tuple(int(count) for count in counts)
+    if len(member_rows) != members:
+        raise FormatError(
+            "format_invalid",
+            pointer,
+            f"holds {len(member_rows)} counts for the {members} members dfo.ref names",
+        )
+    if member_rows and sum(member_rows) != rows:
+        raise FormatError(
+            "format_invalid",
+            pointer,
+            f"counts {sum(member_rows)} rows in a file of {rows}",
+        )
+    return member_rows
 
 
 def _load_held_until(value: object) -> date | None:

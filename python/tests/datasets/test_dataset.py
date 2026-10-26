@@ -222,6 +222,49 @@ def test_the_reading_order_vectors(vector: dict[str, Any]) -> None:
     assert [list(row.values()) for row in table.to_pylist()] == vector["rows"]
 
 
+def _years(*years: int, part: list[str] | None = None) -> pa.Table:
+    """A member's table of `years`, with a `part` data column when given."""
+    columns = {
+        "time_period": [str(year) for year in years],
+        "value": [1.0] * len(years),
+    }
+    return pa.table({"part": part, **columns} if part else columns)
+
+
+@pytest.mark.parametrize(
+    ("tables", "rows"),
+    [
+        (
+            [_years(2022, 2024), _years(2021, 2023)],
+            [
+                ["ODA", "2022", 1.0],
+                ["ODA", "2024", 1.0],
+                ["ODA", "2021", 1.0],
+                ["ODA", "2023", 1.0],
+            ],
+        ),
+        (
+            [_years(2022, 2020, 2021, part=["b", "a", "b"])],
+            [["2020", 1.0, "a"], ["2021", 1.0, "b"], ["2022", 1.0, "b"]],
+        ),
+    ],
+    ids=["members-sharing-a-label", "one-member-with-a-part-column"],
+)
+def test_member_boundaries_come_from_the_members_not_the_part_label(
+    tmp_path: Path, tables: list[pa.Table], rows: list[list[object]]
+) -> None:
+    """Members whose label is one keep their own rows apart, and a lone member's
+    `part` column sorts as any varying column, before and after a save."""
+    bases = [recorded_member(parts=("ODA",)), other_member(parts=("ODA",))]
+    data = built(
+        *(with_table(base, table) for base, table in zip(bases, tables, strict=False))
+    )
+    path = tmp_path / "saved.parquet"
+    data.save(path)
+    for shown in (data, load_saved(path)):
+        assert [list(row.values()) for row in shown.to_arrow().to_pylist()] == rows
+
+
 def test_a_table_the_reading_order_cannot_compare_is_refused() -> None:
     table = pq.read_table(PARQUET).replace_schema_metadata(None)
     table = table.append_column(
@@ -647,6 +690,19 @@ def _dataset_edit(
             _dataset_edit(lambda d: d["assumptions"][0].update(refs="x")),
             "/dfo.dataset/assumptions/0/refs",
         ),
+        (_dataset_edit(lambda d: d.pop("member_rows")), "/dfo.dataset/member_rows"),
+        (
+            _dataset_edit(lambda d: d.update(member_rows=[4, 3])),
+            "/dfo.dataset/member_rows",
+        ),
+        (
+            _dataset_edit(lambda d: d.update(member_rows=[8])),
+            "/dfo.dataset/member_rows",
+        ),
+        (
+            _dataset_edit(lambda d: d.update(member_rows=[9, -1])),
+            "/dfo.dataset/member_rows",
+        ),
     ],
     ids=[
         "citation-removed",
@@ -664,6 +720,10 @@ def _dataset_edit(
         "departure-without-code",
         "operation-over-not-text",
         "assumption-refs-not-array",
+        "member-rows-removed",
+        "member-rows-not-summing-to-the-rows",
+        "member-rows-not-one-per-member",
+        "member-rows-negative",
     ],
 )
 def test_a_damaged_saved_file_raises_format_error(

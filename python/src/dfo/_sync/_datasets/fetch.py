@@ -7,7 +7,9 @@ member keeps the spec, the version and the definition the server answered with.
 
 Each member's sentence is Search's. It is the one the caller holds when the built
 `spec_id` equals the posted one, else the sentence Search gives the built identity
-when it is resubmitted, checked on `spec_id`. A narrowing that holds no data
+when it is resubmitted, checked on `spec_id`. Readings whose narrowed builds
+name one `spec_id` become one member, which downloads once and answers each
+reading's parts. A narrowing that holds no data
 builds an empty version, and Search answers its identity with one `no_data` part,
 whose sentence labels the empty member. Every download asks the files route
 and fetches the URL its `Location` names: bare on the storage host, with the
@@ -22,7 +24,7 @@ fetches of one artifact download it once, through `Cache.downloading`.
 
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 from urllib.parse import urljoin
 
@@ -140,7 +142,9 @@ def fetch_members(
     Args:
         transport: The transport requests go through.
         readings: The readings to build, in query order. A spec listed twice
-            builds once, answering both readings' parts.
+            builds once, answering both readings' parts, and readings whose
+            narrowed builds name one spec become one member, downloaded once,
+            in the first one's place.
         layout: `long`, or `frame` for one reading.
         party_totals: Keep the rows of parties the code index declares totals
             on each party role a reading leaves open. False, the default, builds
@@ -192,7 +196,7 @@ def fetch_members(
             "the server; fetch it without window, entities or facets",
         )
     deadline = transport.deadline(timeout)
-    fetched = []
+    fetched: dict[str, FetchedMember] = {}
     with ProgressRenderer(enabled=progress) as renderer:
         on_progress = progress_hook(renderer)
         for want, narrowing in zip(wants, scopes, strict=True):
@@ -211,6 +215,15 @@ def fetch_members(
                     on_progress=on_progress,
                 )
                 cached_data = None
+            spec_id = built.manifest["definition"]["spec_id"]
+            if (seen := fetched.get(spec_id)) is not None:
+                # Two specs can narrow to one built spec, which a dataset holds once.
+                fetched[spec_id] = replace(
+                    seen,
+                    parts=_joined(seen.parts, want.parts),
+                    answer_parts=seen.answer_parts + want.answer_parts,
+                )
+                continue
             with finishing(transport, built, deadline, timeout=timeout) as (
                 finisher,
                 bound,
@@ -234,10 +247,10 @@ def fetch_members(
                     if hinted is error:
                         raise
                     raise hinted from error
-                fetched.append(member)
+                fetched[spec_id] = member
     return sync_offload(
         build_dataset,
-        fetched,
+        list(fetched.values()),
         layout=layout,
         complete=not missing,
         missing=missing,
@@ -399,13 +412,17 @@ def _distinct(readings: Sequence[Reading]) -> list[Reading]:
             merged[reading.spec.spec_id] = reading
             continue
         merged[reading.spec.spec_id] = Reading(
-            seen.parts
-            + tuple(part for part in reading.parts if part not in seen.parts),
+            _joined(seen.parts, reading.parts),
             seen.spec,
             seen.sentence or reading.sentence,
             seen.answer_parts + reading.answer_parts,
         )
     return list(merged.values())
+
+
+def _joined(first: tuple[str, ...], second: tuple[str, ...]) -> tuple[str, ...]:
+    """`first`, then the parts of `second` it does not hold."""
+    return first + tuple(part for part in second if part not in first)
 
 
 def build_version(

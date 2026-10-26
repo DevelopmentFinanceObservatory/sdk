@@ -115,7 +115,7 @@ class DatasetRef:
     version rendered again (`ref_digest_changed`) holds the same data.
 
     Attributes:
-        members: One member per reading, each with a distinct spec.
+        members: One member per distinct built spec.
     """
 
     members: tuple[RefMember, ...]

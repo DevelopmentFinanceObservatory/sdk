@@ -22,7 +22,7 @@ print(answer.complete)  # True: every part has a reading
 print(len(answer.specs))  # 2: one spec per distinct reading
 ```
 
-`answer.fetch()` builds each reading once and stacks them into one long table, with a `part` column that names the part each row answers.
+`answer.fetch()` builds each reading once and stacks the members into one long table, with a `part` column that names the part each row answers. Readings that narrow to one built spec share a member, and a single member has no `part` column.
 
 | Attribute   | Holds                                                                              |
 | ----------- | ---------------------------------------------------------------------------------- |
