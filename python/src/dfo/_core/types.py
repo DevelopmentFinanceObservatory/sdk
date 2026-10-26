@@ -58,9 +58,8 @@ type Layout = Literal["long", "frame"]
 # The periods a fetch asks for: every period, the latest, or (start_year, end_year).
 type Window = Literal["all", "latest"] | tuple[int, int]
 
-# The gap kinds the client adds to Search's: a part that timed out, and a status
-# this client does not know.
-type _ClientGapKind = Literal["timed_out", "unknown"]
+# The gap kind the client adds to Search's: a status this client does not know.
+type _ClientGapKind = Literal["unknown"]
 
 # Why a part leaves a gap in an answer.
 type GapKind = SearchGapKind | _ClientGapKind

@@ -220,14 +220,14 @@ describe("gaps", () => {
     assert.equal(answerFromBody(edited, offline(), null).gaps[0]?.message, part.no_data!.reason);
   });
 
-  test("Search's time limit makes every no_data part a timed_out gap", () => {
+  test("Search's time limit leaves each no_data part its reason's gap kind", () => {
     const edited = body("answer-mixed-fetch-raises");
     (edited["diagnostics"] as Record<string, unknown>)["timed_out"] = true;
     const answer = answerFromBody(edited, offline(), null);
     assert.equal(answer.timedOut, true);
     assert.deepEqual(
       answer.gaps.map((gap) => [gap.partIndex, gap.kind, gap.options.length]),
-      [[1, "timed_out", 0]],
+      [[1, "not_understood", 0]],
     );
   });
 

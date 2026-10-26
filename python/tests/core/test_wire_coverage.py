@@ -131,6 +131,8 @@ COVERAGE: list[tuple[type, type, dict[str, str | None]]] = [
             "off_cadence_members": None,
             "out_of_window_members": None,
             "unserved_entities": None,
+            "requested_years": None,
+            "served_years": None,
             "omitted_entities": None,
             "omitted_entity_years": None,
         },
@@ -149,7 +151,13 @@ COVERAGE: list[tuple[type, type, dict[str, str | None]]] = [
     (
         _types.Assumption,
         _wire.Assumption,
-        {"kind": "kind", "binding_ref": "binding_ref", "text": "text", "refs": "refs"},
+        {
+            "kind": "kind",
+            "binding_ref": "binding_ref",
+            "text": "text",
+            "refs": "refs",
+            "asked": None,
+        },
     ),
     (
         _types.RequestedOperation,

@@ -93,10 +93,6 @@ SCHEMA_VERSION = 1
 # Longer than Search's 45-second soft deadline, so a slow answer arrives whole.
 SEARCH_TIMEOUT = 60.0
 
-_TIMED_OUT = (
-    "Search reached its time limit before this part resolved; search again, or ask "
-    "for less at once."
-)
 _DATA_METHODS = frozenset(
     {"to_pandas", "to_polars", "to_arrow", "to_rows", "save", "__arrow_c_stream__"}
 )
@@ -485,7 +481,7 @@ def answer_from_body(
     gaps = tuple(
         gap
         for index, part in enumerate(parts)
-        if (gap := _gap(index, part, timed_out=timed_out)) is not None
+        if (gap := _gap(index, part)) is not None
     )
     return Answer(
         kind=kind,
@@ -511,15 +507,13 @@ def _status(parts: Sequence[Part]) -> str:
     return statuses.pop() if len(statuses) == 1 else "mixed"
 
 
-def _gap(index: int, part: Part, *, timed_out: bool) -> Gap | None:
+def _gap(index: int, part: Part) -> Gap | None:
     """The gap a part leaves, or None when it has a reading."""
     match part:
         case DefinitePart():
             return None
         case CandidatesPart(candidates):
             return Gap(index, part, "choice", f"{len(candidates)} readings", candidates)
-        case NoDataPart() if timed_out:
-            return Gap(index, part, "timed_out", _TIMED_OUT)
         case NoDataPart(reason):
             return Gap(
                 index,
