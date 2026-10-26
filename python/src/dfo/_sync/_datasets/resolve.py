@@ -47,6 +47,7 @@ from dfo._core.refusals import describing, trace_id_of
 from dfo._core.types import (
     CONTENT_VERSION,
     SPEC_ID,
+    FormatError,
     Layout,
     Rendering,
     Spec,
@@ -60,8 +61,10 @@ from dfo._datasets.build import (
     build_body,
     check_built,
     check_served_manifest,
+    check_strict,
     file_params,
     layout_of,
+    lists_digest,
     pick_artifact,
     rebind,
     response_json,
@@ -81,6 +84,7 @@ from dfo._sync._datasets.fetch import (
 )
 from dfo._sync._datasets.operation import (
     ProgressHook,
+    finishing,
     progress_hook,
 )
 from dfo._sync._http.transport import Transport, offline
@@ -135,10 +139,13 @@ def fetch(
     Raises:
         InvalidRequestError: The target is neither a `Spec` nor a `DatasetRef`,
             such as a spec id; a ref is narrowed or given another layout or
-            `without_party_totals`; `window`, `entities`, `facets` or `layout`
-            is malformed; or `entities` rebinds a spec whose definition holds
-            no identity. No request is sent.
+            `without_party_totals`; `window`, `entities`, `facets`, `layout`,
+            `strict` or `progress` is malformed; or `entities` rebinds a spec
+            whose definition holds no identity. No request is sent.
         VersionUnavailableError: A ref's version can no longer be fetched.
+        FormatError: A ref's stored version lists the member's digest under
+            another rendering than the member's (`format_invalid` at
+            `/members/{i}/artifact/rendering`); its file is not downloaded.
         ContractError: An artifact is not Parquet (`unexpected_response`), or
             lacks a `time_period` or numeric `value` column
             (`contract_violation`); the cache drops it.
@@ -198,6 +205,7 @@ def _fetch_ref(
     cache: Cache | None,
 ) -> Dataset:
     ref_layout = _ref_layout(ref)
+    check_strict(strict)
     if layout is not None and layout != ref_layout:
         raise client_error(
             INVALID_ARGUMENT,
@@ -221,13 +229,14 @@ def _fetch_ref(
             _fetch_version(
                 transport,
                 member,
+                pointer=f"/members/{index}",
                 strict=strict,
                 on_progress=on_progress,
                 cache=cache,
                 cache_only=stale,
                 deadline=deadline,
             )
-            for member in ref.members
+            for index, member in enumerate(ref.members)
         ]
     return sync_offload(
         build_dataset,
@@ -263,13 +272,15 @@ def _fetch_version(
     transport: Transport,
     member: RefMember,
     *,
+    pointer: str,
     strict: bool,
     on_progress: ProgressHook,
     cache: Cache | None,
     cache_only: bool,
     deadline: float | None,
 ) -> FetchedMember:
-    """One stored version, through the lookup order.
+    """One stored version, through the lookup order. `pointer` locates the
+    member in the ref.
 
     Raises:
         InvalidRequestError: The member's spec id or version is not a server id
@@ -302,7 +313,7 @@ def _fetch_version(
         else:
             note_warnings(manifest, strict=strict, trace_id=trace_id)
             data, refusal = _stored_file(
-                transport, member, manifest, trace_id, deadline=deadline
+                transport, member, pointer, manifest, trace_id, deadline=deadline
             )
             if data is not None:
                 sync_offload(
@@ -316,7 +327,7 @@ def _fetch_version(
                 return _stored(member, manifest, data)
 
     try:
-        manifest, trace_id = build_version(
+        built = build_version(
             transport,
             build_body(member.spec, member.rendering),
             rendering=member.rendering,
@@ -327,23 +338,24 @@ def _fetch_version(
         refusal = refusal or error
         newest = _newest(transport, spec_id, member.rendering, deadline=deadline)
     else:
-        with describing(trace_id):
-            check_built(manifest, spec_id)
-        if manifest["content_version"] == version:
-            fetched = finish_member(
-                transport,
-                manifest,
-                trace_id,
-                want=Reading(member.parts, member.spec, member.sentence),
-                rendering=member.rendering,
-                strict=strict,
-                cache=cache,
-                deadline=deadline,
-            )
+        with describing(built.trace_id):
+            check_built(built.manifest, spec_id)
+        if built.manifest["content_version"] == version:
+            with finishing(transport, built, deadline) as (finisher, bound):
+                fetched = finish_member(
+                    finisher,
+                    built.manifest,
+                    built.trace_id,
+                    want=Reading(member.parts, member.spec, member.sentence),
+                    rendering=member.rendering,
+                    strict=strict,
+                    cache=cache,
+                    deadline=bound,
+                )
             if fetched.digest != member.digest:
                 warn(_digest_changed(member, fetched.digest))
             return fetched
-        newest = manifest["content_version"]
+        newest = built.manifest["content_version"]
     raise _unavailable(member, newest, refusal)
 
 
@@ -437,6 +449,7 @@ def _snapshot(
 def _stored_file(
     transport: Transport,
     member: RefMember,
+    pointer: str,
     manifest: Wire,
     trace_id: str | None,
     *,
@@ -444,12 +457,25 @@ def _stored_file(
 ) -> tuple[bytes | None, DfoError | None]:
     """The stored artifact's bytes, from the files route or else the file selector.
 
-    `trace_id` is the trace id of the response that carried the manifest.
-    Returns the bytes, or None when neither route serves bytes with the stored
-    digest, and the files route's refusal when it refused.
+    `pointer` locates the member in the ref, and `trace_id` is the trace id of
+    the response that carried the manifest. Returns the bytes, or None when
+    neither route serves bytes with the stored digest, and the files route's
+    refusal when it refused.
+
+    Raises:
+        FormatError: The manifest lists the member's digest only under another
+            rendering, so the ref's rendering and its file disagree
+            (`format_invalid`).
     """
     refusal = None
     artifact = pick_artifact(manifest, member.rendering, digest=member.digest)
+    if artifact is None and lists_digest(manifest, member.digest):
+        raise FormatError(
+            "format_invalid",
+            f"{pointer}/artifact/rendering",
+            f"{member.rendering.to_object()} is not the rendering the server "
+            f"lists for {member.digest}",
+        )
     if artifact is not None:
         with describing(trace_id):
             route = transport.origin_url(artifact["url"])

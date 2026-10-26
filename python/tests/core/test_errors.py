@@ -129,7 +129,7 @@ def test_a_body_without_json_uses_the_reason_phrase() -> None:
     error = problem_error(503, None, reason="Service Unavailable", origin=ORIGIN)
     assert (type(error), str(error), error.retryable) == (
         ServerError,
-        "Service Unavailable",
+        "HTTP 503 with no refusal code.",
         True,
     )
     assert (error.code, error.problem, error.docs_url) == (
@@ -178,14 +178,21 @@ def test_warn_once_shows_a_key_once(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_warn_once_keeps_a_bounded_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The `warnings` registry counts too: under the default filter it records
+    # every text shown, which it would keep in this module for good.
     monkeypatch.setattr(_errors, "_warned", set())
+    monkeypatch.setattr(_errors, "_registry", {})
     monkeypatch.setattr(_errors, "_WARNED_MAX", 4)
+    monkeypatch.delitem(globals(), "__warningregistry__", raising=False)
     with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
+        warnings.simplefilter("default")
         for index in range(10):
-            warn_once(("x-dfo-warning", "x" * 5000 + str(index)), DfoWarning("w"))
+            text = "x" * 5000 + str(index)
+            warn_once(("x-dfo-warning", text), DfoWarning(text))
     assert len(caught) == 10
     assert len(_errors._warned) <= 4
+    assert len(_errors._registry) <= 4
+    assert len(globals().get("__warningregistry__", {})) <= 1  # its version
 
 
 _CLIENT_ROWS = json.loads((CONTRACT / "client-codes.json").read_text(encoding="utf-8"))[

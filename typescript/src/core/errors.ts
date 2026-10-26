@@ -21,8 +21,22 @@ declare const SERVER_CODE: unique symbol;
  *  client raises itself takes a `ClientErrorCode`. */
 export type ServerErrorCode = string & { readonly [SERVER_CODE]: true };
 
-/** A refusal code's shape: lower-case snake case, such as `spec_not_found`. */
-export const REFUSAL_CODE = /^[a-z][a-z0-9_]*$/;
+/** A refusal code's shape: lower-case snake case, such as `spec_not_found`, of at most 64
+ *  characters. The longest code the registry holds has 40. */
+export const REFUSAL_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+
+/** The most characters of server text a refusal's message quotes; the error's `detail` and
+ *  `problem` keep the whole text. The longest server detail recorded under contract/scenarios
+ *  has 695 characters. */
+export const MESSAGE_TEXT_MAX = 1000;
+
+/** Server text cut to `MESSAGE_TEXT_MAX` characters, with `…` marking the cut. */
+export function capped(text: string): string {
+  if (text.length <= MESSAGE_TEXT_MAX) return text;
+  // A cut between a surrogate pair would leave half a character.
+  const cut = text.slice(0, MESSAGE_TEXT_MAX).replace(/[\ud800-\udbff]$/, "");
+  return `${cut}…`;
+}
 
 /** Marks a code read from a server response. */
 export const serverCode = (code: string): ServerErrorCode => code as ServerErrorCode;
@@ -251,8 +265,9 @@ export function actionFor(code: string): Action | undefined {
   return lookUp(CODE_ACTIONS, code);
 }
 
-/** A server refusal's message: its detail, naming the field its problem document's `pointer`
- *  names unless the pointer is empty or the detail names it already, then its code, as in
+/** A server refusal's message: its detail, cut to `MESSAGE_TEXT_MAX` characters after the
+ *  client's own `lead`, if any, naming the field its problem document's `pointer` names unless
+ *  the pointer is empty or the detail names it already, then its code, as in
  *  `Field required at /input/definition (request_invalid)`. With `unmatched`, the request of a
  *  404 that matched no route, the message names that request before the code, as in
  *  `Not found. GET https://… matched no route; check baseUrl (not_found)`. A null code adds
@@ -261,12 +276,13 @@ export function refusalMessage(
   detail: string,
   pointer: unknown,
   code: string | null,
-  unmatched?: string,
+  { lead, unmatched }: { lead?: string; unmatched?: string | undefined } = {},
 ): string {
+  const shown = lead === undefined ? capped(detail) : `${lead}: ${capped(detail)}`;
   const at =
     typeof pointer === "string" && pointer !== "" && !detail.includes(pointer)
-      ? `${detail.replace(/\.$/, "")} at ${pointer}`
-      : detail;
+      ? `${shown.replace(/\.$/, "")} at ${capped(pointer)}`
+      : shown;
   const said =
     unmatched === undefined
       ? at
@@ -286,7 +302,7 @@ export function problemAt200(body: unknown, traceId: string | null): DfoError | 
   if (actionFor(code) === undefined && proxyStatusFor(code) === undefined) {
     return clientError("contract_violation", {
       detail:
-        `The response is a problem document with the code ${JSON.stringify(code)}, which this ` +
+        `The response is a problem document with the code ${capped(JSON.stringify(code))}, which this ` +
         "client does not know, under HTTP 200. Upgrade the client, or report the trace id.",
       pointer: "/code",
       traceId,

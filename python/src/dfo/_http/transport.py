@@ -17,8 +17,9 @@ travels over plain http to a host that is not loopback (`insecure_transport`).
 Loopback is `localhost`, a name under `.localhost`, an address in 127.0.0.0/8 or
 `[::1]`, compared lower case without one trailing dot. A key, header name or
 header value with a character the header cannot hold is refused before any
-request (`key_invalid`, `header_invalid`), and a path with a dot segment is
-refused (`invalid_argument`).
+request (`key_invalid`, `header_invalid`), and so is a header that frames the
+message or names a hop, such as `Content-Length` or `Connection`, which httpx2
+sets itself. A path with a dot segment is refused (`invalid_argument`).
 
 A forked child keeps its parent's transports and settings. The first request in a
 new process builds a fresh connection pool over the proxies the parent read, and
@@ -30,7 +31,9 @@ deadline bounds the whole call. The asynchronous transport can cancel platform
 name resolution at those limits. Its generated synchronous form cannot: blocking
 platform name resolution may run past a timeout or deadline. After name
 resolution, both forms clamp the connect, TLS handshake, and each read and write
-to the time left on the attempt. The key resolves when the transport is built,
+to the time left on the attempt. A header provider gets the time left on the
+attempt too, except in the generated synchronous form, which calls it on the
+caller's thread without a bound. The key resolves when the transport is built,
 and again after a 401.
 """
 
@@ -47,7 +50,7 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, NoReturn, Self
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlsplit
 
 import httpcore2
 import httpx2
@@ -71,25 +74,30 @@ from dfo._core.codes import (
 )
 from dfo._core.errors import DfoError, client_error, client_warning, warn_once
 from dfo._core.refusals import (
-    TRACE_HEADER,
     json_body,
     maps_to_class,
     problem_error,
+    trace_header,
     trace_id_of,
 )
 from dfo._core.text import (
     control_fault,
     has_dot_segment,
     header_fault,
+    is_token,
     key_fault,
     origin_of,
+    quoted,
     redacted,
+    same_origin_url,
 )
 from dfo._http.hooks import (
     AsyncHeaderProvider,
     AsyncSleep,
     Clock,
+    OverranError,
     async_sleep,
+    async_within,
     event_loop,
     monotonic,
 )
@@ -125,9 +133,21 @@ _RETRIES_MAX = 10
 # parser reads as an IPv4 address, such as `127.1`, `0x7f.1` or `2130706433`.
 _NUMERIC_HOST = re.compile(r"(?:[^:]*\.)?(?:0x[0-9a-f]*|[0-9]+)")
 
-# A header name: an HTTP token, which the TypeScript client's `Headers` also
-# requires.
-_TOKEN = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
+# The headers that frame a message or concern one hop, lower case. httpx2 and
+# h11 set the framing and the host themselves, and a caller's value would
+# contradict the body sent or the connection used.
+_TRANSPORT_HEADERS = frozenset(
+    {
+        "content-length",
+        "transfer-encoding",
+        "host",
+        "connection",
+        "keep-alive",
+        "te",
+        "trailer",
+        "upgrade",
+    }
+)
 
 # The methods a request may use.
 _METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
@@ -162,9 +182,10 @@ def _split_base_url(base_url: str) -> tuple[str, str]:
     """The base URL as its origin and path with no trailing slash, and the origin.
 
     Raises:
-        InvalidRequestError: `base_url` is empty, holds a character outside
-            visible ASCII, is not an absolute http or https URL, or carries
-            userinfo, a query, a fragment or a dot segment (`base_url_invalid`).
+        InvalidRequestError: `base_url` is not a string, is empty, holds a
+            character outside visible ASCII, is not an absolute http or https
+            URL, or carries userinfo, a query, a fragment or a dot segment
+            (`base_url_invalid`).
     """
 
     def refuse(problem: str) -> NoReturn:
@@ -174,6 +195,8 @@ def _split_base_url(base_url: str) -> tuple[str, str]:
             f"{DEFAULT_BASE_URL}, or None for the public API.",
         )
 
+    if not isinstance(base_url, str):
+        refuse(f"is a {type(base_url).__name__}, not a string")
     if not base_url:
         refuse("is empty")
     if fault := key_fault(base_url):
@@ -234,12 +257,15 @@ def _sends_in_clear(url: str) -> bool:
 
 
 def _checked_headers(headers: Mapping[str, str], source: str) -> Mapping[str, str]:
-    """Return `headers` once every name is an HTTP token and every value is a
-    string of visible ASCII, space and tab.
+    """Return `headers` once every name is an HTTP token that is not a framing or
+    hop-by-hop header, and every value is a string of visible ASCII, space and
+    tab.
 
     Raises:
         InvalidRequestError: A value is not a string, or holds a control or
-            non-ASCII character, or a name is not a token (`header_invalid`).
+            non-ASCII character, or a name is not a token, or is one of
+            `Content-Length`, `Transfer-Encoding`, `Host`, `Connection`,
+            `Keep-Alive`, `TE`, `Trailer` and `Upgrade` (`header_invalid`).
             The message names the header and the value's faulty character's
             position, and omits the value.
     """
@@ -257,11 +283,17 @@ def _checked_headers(headers: Mapping[str, str], source: str) -> Mapping[str, st
                 "holds visible ASCII, spaces and tabs only. Strip the line break "
                 "a command's output ends with.",
             )
-        if not isinstance(name, str) or not _TOKEN.fullmatch(name):
+        if not isinstance(name, str) or not is_token(name):
             raise client_error(
                 HEADER_INVALID,
                 f"The header {name!r} from {source} has a name HTTP cannot carry; "
                 "a header name holds ASCII letters, digits and !#$%&'*+-.^_`|~ only.",
+            )
+        if name.lower() in _TRANSPORT_HEADERS:
+            raise client_error(
+                HEADER_INVALID,
+                f"The {name} header from {source} frames the message or the "
+                "connection, which the client sets itself; drop it.",
             )
     return headers
 
@@ -381,29 +413,25 @@ def _time_left(timeout: float | None, expired: type[Exception]) -> float | None:
     return left if timeout is None else min(timeout, left)
 
 
-async def _read_within(response: httpx2.Response, limit: int, what: str) -> None:
-    """Read `response`'s body as it decodes, stopping once it passes `limit`
-    bytes.
+async def _read_within(response: httpx2.Response, limit: int) -> bool:
+    """Read `response`'s body as it decodes, and return whether it fit in `limit`
+    bytes. Reading stops once the body passes `limit`, and the response keeps an
+    empty body.
 
     httpx2 decodes a compressed body in pieces of at most 1 MiB, so at most one
     piece past `limit` is held before reading stops.
-
-    Raises:
-        ServerError: The decoded body passed `limit` bytes (`response_too_large`).
     """
     pieces = []
     size = 0
     async for piece in response.aiter_bytes():
         size += len(piece)
         if size > limit:
-            raise client_error(
-                RESPONSE_TOO_LARGE,
-                f"{what} answered a body past its limit of {limit:,} bytes",
-                status=response.status_code,
-            )
+            response._content = b""
+            return False
         pieces.append(piece)
     # As `Response.aread` keeps the body it reads.
     response._content = b"".join(pieces)
+    return True
 
 
 class _DeadlineStream(httpcore2.AsyncNetworkStream):
@@ -542,7 +570,7 @@ async def _check_location(response: httpx2.Response) -> None:
             f"{request.method} {request.url} answered a redirect whose Location "
             "is not a URL",
             status=response.status_code,
-            trace_id=response.headers.get(TRACE_HEADER),
+            trace_id=trace_header(response),
         ) from None
 
 
@@ -611,6 +639,11 @@ class _Pool:
         self._loop = loop
         return self._client
 
+    @property
+    def closed(self) -> bool:
+        """Whether the pool is closed."""
+        return self._closed
+
     async def aclose(self) -> None:
         """Close the client, unless it belongs to the process this one forked from
         or to another event loop, whose connections this loop cannot close."""
@@ -675,6 +708,9 @@ class AsyncTransport:
         self._authorization()
         self._timeout = timeout
         self._max_retries = max_retries
+        # A signed download's attempt runs until the deadline unless a
+        # `single_attempt` copy bounds it by the timeout.
+        self._download_timeout = math.inf
         self._default_headers = dict(
             _checked_headers(default_headers or {}, "default_headers")
         )
@@ -726,6 +762,13 @@ class AsyncTransport:
             clone._max_retries = _checked_retries(max_retries)
         return clone
 
+    def single_attempt(self) -> Self:
+        """Return a copy that sends each request once, for one attempt of the
+        timeout, the signed download included."""
+        clone = self.with_options(max_retries=0)
+        clone._download_timeout = clone._timeout
+        return clone
+
     def now(self) -> float:
         """Return the transport's clock reading, in seconds."""
         return self._clock()
@@ -770,17 +813,27 @@ class AsyncTransport:
         return wait
 
     def origin_url(self, reference: str) -> str:
-        """Resolve a URL the server returned against the base URL's origin.
+        """Resolve a URL the server returned on the base URL's origin, by the
+        rule `same_origin_url` gives.
 
         Raises:
-            ContractError: The URL names another origin (`contract_violation`).
+            ContractError: The URL holds a control character, is neither a path
+                starting with one `/` nor an http or https URL on the API's
+                origin with no userinfo, `%` or `\\` in its authority, or its
+                path holds a dot segment, raw, percent-encoded or between
+                backslashes (`contract_violation`).
         """
-        url = urljoin(self._origin + "/", reference)
-        if origin_of(url) != self._origin:
+        if fault := control_fault(reference):
             raise client_error(
                 CONTRACT_VIOLATION,
-                f"The server named {reference}, which is outside the API at "
-                f"{self._origin}",
+                f"The server named a URL that holds {fault}",
+            )
+        url = same_origin_url(reference, self._origin)
+        if url is None:
+            raise client_error(
+                CONTRACT_VIOLATION,
+                f"The server named {quoted(reference, self._secret())}, which is "
+                f"not a path on the API at {self._origin} with no . or .. segment",
             )
         return url
 
@@ -840,12 +893,15 @@ class AsyncTransport:
         The body is read as it decodes, and reading stops at the first piece
         that takes a 2xx body past `limit` bytes, or any other body past
         `JSON_BODY_MAX_BYTES`, so a redirect or a refusal reads as on any route.
+        A redirect or refusal past its limit keeps an empty body, so a refusal
+        raises the class of its status.
 
         Raises:
             DfoTimeoutError: The attempt timed out, or `deadline` passed while
                 the body was read (`deadline_exceeded`, retryable).
-            NetworkError: The connection failed (`network_error`, retryable).
-            ServerError: The decoded body passed its limit
+            NetworkError: The connection failed, or the client was closed while
+                the request was in flight (`network_error`, retryable).
+            ServerError: A 2xx response's decoded body passed `limit`
                 (`response_too_large`).
             ContractError: The body does not decode as its `Content-Encoding`
                 says, or a redirect's `Location` is not a URL
@@ -857,13 +913,21 @@ class AsyncTransport:
                 try:
                     if not response.is_success:
                         limit = JSON_BODY_MAX_BYTES
-                    await _read_within(response, limit, what)
+                    fits = await _read_within(response, limit)
                 finally:
                     await response.aclose()
         except httpx2.TimeoutException as exc:
             raise client_error(DEADLINE_EXCEEDED, f"{what} timed out") from exc
         except httpx2.TransportError as exc:
-            raise client_error(NETWORK_ERROR, f"{what} failed: {exc}") from exc
+            if self._pool.closed:
+                raise client_error(
+                    NETWORK_ERROR,
+                    f"{what} failed: the client was closed while the request "
+                    "was in flight",
+                ) from exc
+            raise client_error(
+                NETWORK_ERROR, f"{what} failed: {exc or type(exc).__name__}"
+            ) from exc
         except httpx2.DecodingError as exc:
             raise client_error(
                 UNEXPECTED_RESPONSE,
@@ -875,6 +939,12 @@ class AsyncTransport:
                 UNEXPECTED_RESPONSE,
                 f"{what} answered a redirect whose Location is not a URL",
             ) from exc
+        if not fits and response.is_success:
+            raise client_error(
+                RESPONSE_TOO_LARGE,
+                f"{what} answered a body past its limit of {limit:,} bytes",
+                status=response.status_code,
+            )
         return response
 
     def success_problem(
@@ -900,7 +970,7 @@ class AsyncTransport:
                 body,
                 reason=response.reason_phrase,
                 origin=self._origin,
-                trace_id=response.headers.get(TRACE_HEADER),
+                trace_id=trace_header(response),
                 key=self._secret(),
             )
         request = response.request
@@ -932,15 +1002,33 @@ class AsyncTransport:
             )
         return f"Bearer {key.reveal()}"
 
-    async def _headers(self, extra: Mapping[str, str] | None) -> httpx2.Headers:
+    async def _headers(
+        self, extra: Mapping[str, str] | None, limit: float | None
+    ) -> httpx2.Headers:
+        """The headers of one API request, with the header provider bounded by
+        `limit` seconds, or without limit for None, through `async_within`.
+
+        Raises:
+            DfoTimeoutError: The header provider gave nothing within `limit`
+                (`deadline_exceeded`).
+            InvalidRequestError: A header is invalid (`header_invalid`), or the
+                key would travel over plain http (`insecure_transport`).
+        """
         headers = httpx2.Headers(
             {"User-Agent": USER_AGENT, "Accept": "application/json"}
         )
         headers.update(self._default_headers)
-        if self._header_provider is not None and (
-            provided := await self._header_provider()
-        ):
-            headers.update(_checked_headers(provided, "header_provider"))
+        if self._header_provider is not None:
+            try:
+                provided = await async_within(limit, self._header_provider)
+            except OverranError as exc:
+                raise client_error(
+                    DEADLINE_EXCEEDED,
+                    f"The header_provider gave no headers within {limit:g} s, "
+                    "the time left on the attempt",
+                ) from exc
+            if provided:
+                headers.update(_checked_headers(provided, "header_provider"))
         if extra:
             headers.update(_checked_headers(extra, "the request"))
         if (authorization := self._authorization()) is not None:
@@ -1017,9 +1105,11 @@ class AsyncTransport:
         changed, sends once more. When that lookup fails, the 401 raises with the
         failure as its cause. A 404 that matched no route names the request,
         since the base URL is the likely fault. A refusal's body is read as a
-        problem document when its media type is `application/problem+json` or
-        `application/json`, and its trace id falls back to the `x-dfo-trace-id`
-        header.
+        problem document when it parses as a JSON object, whatever its media
+        type, and its trace id falls back to the `x-dfo-trace-id` header. A
+        refusal whose body passes `JSON_BODY_MAX_BYTES` raises the class of its
+        status, retryable by its status, with no code of its own
+        (`refusal_without_code`).
 
         Args:
             method: The HTTP method, in any case.
@@ -1045,15 +1135,17 @@ class AsyncTransport:
             NetworkError: The connection failed on every attempt, or
                 `DFO_OFFLINE=1` is set (`offline`).
             DfoTimeoutError: An attempt timed out with no retry left, or the
-                deadline passed, while waiting or while a body was read.
-            InvalidRequestError: A header's name is not an HTTP token or its
-                value not visible ASCII, spaces and tabs (`header_invalid`), the
+                deadline passed, while waiting or while a body was read, or the
+                header provider gave nothing in the time left on the attempt.
+            InvalidRequestError: A header's name is not an HTTP token or names
+                a framing or hop-by-hop header, or its value is not visible
+                ASCII, spaces and tabs (`header_invalid`), the
                 key would travel over plain http (`insecure_transport`), or
                 `target` holds a dot segment or a control character, `method` is
                 not one the API serves, `json` is not JSON or goes with a GET or
                 HEAD, or the transport is closed (`invalid_argument`).
-            ServerError: A 2xx response's decoded body passed `max_bytes`, or
-                any other's `JSON_BODY_MAX_BYTES` (`response_too_large`).
+            ServerError: A 2xx response's decoded body passed `max_bytes`
+                (`response_too_large`).
             ContractError: A body does not decode as its `Content-Encoding`
                 says, or a redirect's `Location` is not a URL
                 (`unexpected_response`).
@@ -1075,7 +1167,7 @@ class AsyncTransport:
         rekeyed = False
         while True:
             limit, attempt_end = self._attempt_bounds(timeout, deadline)
-            request_headers = await self._headers(headers)
+            request_headers = await self._headers(headers, limit)
             if content is not None:
                 request_headers["Content-Type"] = "application/json"
             request = self._pool.client.build_request(
@@ -1102,7 +1194,7 @@ class AsyncTransport:
                     reason=response.reason_phrase,
                     origin=self._origin,
                     retry_after=retry_after(response),
-                    trace_id=response.headers.get(TRACE_HEADER),
+                    trace_id=trace_header(response),
                     route=f"{method} {url}",
                     key=self._secret(),
                 )
@@ -1111,7 +1203,8 @@ class AsyncTransport:
                     if self._rekeyed(error):
                         continue
             wait = None
-            if error.retryable and attempt < retries:
+            # A closed client sends nothing more, so its failure is the last.
+            if error.retryable and attempt < retries and not self._pool.closed:
                 wait = self.refusal_wait(error, attempt, deadline)
             if wait is None:
                 raise error
@@ -1132,7 +1225,8 @@ class AsyncTransport:
         does. A signed URL on the storage host gets a bare request, with no
         client header, no key and nothing from the header provider. The fetch
         reads until the deadline after platform name resolution, or without limit
-        when there is none. The generated synchronous transport cannot interrupt
+        when there is none. A `single_attempt` copy reads for one attempt of the
+        timeout. The generated synchronous transport cannot interrupt
         blocking platform name resolution. A failed fetch is not retried. A
         signed URL can expire, so the caller asks the files route for a fresh one.
         Reading stops once the decoded file passes `max_bytes`, or once any
@@ -1142,8 +1236,8 @@ class AsyncTransport:
             ContractError: The URL is on neither origin (`contract_violation`),
                 or the body does not decode (`unexpected_response`).
             ServerError: The host answered anything but 200 (`download_failed`),
-                or a file past `max_bytes`, or a body past `JSON_BODY_MAX_BYTES`
-                (`response_too_large`).
+                a refusal past `JSON_BODY_MAX_BYTES` included, or a file past
+                `max_bytes` (`response_too_large`).
             NetworkError: The connection failed, or `DFO_OFFLINE=1` is set
                 (`offline`).
             DfoTimeoutError: The fetch timed out or the deadline passed.
@@ -1153,19 +1247,22 @@ class AsyncTransport:
         if origin not in (self._origin, STORAGE_ORIGIN):
             raise client_error(
                 CONTRACT_VIOLATION,
-                f"A files route redirected to {url}, which is on neither the API "
+                f"A files route redirected to {quoted(url, self._secret())}, which "
+                "is on neither the API "
                 f"at {self._origin} nor the storage host {STORAGE_ORIGIN}",
             )
         _refuse_offline("the signed download")
         on_api = origin == self._origin
-        limit, _ = self._attempt_bounds(math.inf, deadline)
+        limit, attempt_end = self._attempt_bounds(self._download_timeout, deadline)
         request = self._pool.client.build_request(
             "GET",
             url,
-            headers=await self._headers(None) if on_api else None,
+            headers=await self._headers(None, limit) if on_api else None,
             timeout=limit,
         )
-        response = await self._send(request, deadline, "the signed download", max_bytes)
+        response = await self._send(
+            request, attempt_end, "the signed download", max_bytes
+        )
         if on_api:
             self._note_headers(response)
         if response.status_code != 200:

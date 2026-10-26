@@ -67,7 +67,7 @@ from dfo._core.types import (
     unbound_gap,
     with_candidates,
 )
-from dfo._datasets.build import Reading, response_json
+from dfo._datasets.build import Reading, check_strict, response_json
 from dfo._datasets.dataset import Dataset
 from dfo._generated import strict as _strict
 from dfo._generated.error_map import GAP_KINDS
@@ -239,7 +239,9 @@ class Answer:
                 question.
             DataWarning: `strict` is True and a manifest carries a warning
                 above `info`.
-            InvalidRequestError: `layout="frame"` with several readings.
+            InvalidRequestError: `layout="frame"` with several readings, or
+                `strict` is not a bool or `progress` neither a bool nor None
+                (`invalid_argument`).
             DfoError: The server refused a request.
         """
         if self.kind != _strict.RESOLUTION_KIND:
@@ -249,6 +251,9 @@ class Answer:
                 detail=self.reason or self.kind,
                 trace_id=self.trace_id,
             )
+        # `fetch_members` checks `strict` too. This check runs first so a bad
+        # value raises before the incomplete-answer error or the warning.
+        check_strict(strict)
         members = _members(self.parts)
         if self.gaps and (not partial or not members):
             raise self.incomplete_error()

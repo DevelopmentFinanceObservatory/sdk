@@ -12,6 +12,7 @@ server.
 """
 
 import os
+import sys
 import warnings
 from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
@@ -326,16 +327,35 @@ def client_warning[W: DfoWarning](code: WarningCode[W], message: str, /) -> W:
     return code.warning_class(message, code=code.code)
 
 
-# The hashes of the keys `warn_once` has seen. At `_WARNED_MAX` the set starts
-# again, so a server that sends a new warning with every response cannot grow it
-# without bound. A warning seen before the restart can show once more.
+# The hashes of the keys `warn_once` has seen, and the registry in which the
+# `warnings` module records each warning text it has shown, which it would
+# otherwise keep in the caller's module for good. At `_WARNED_MAX` entries each
+# starts again, so a server that sends a new warning text with every response
+# cannot grow either without bound. A warning seen before the restart can show
+# once more.
 _WARNED_MAX = 1024
 _warned: set[int] = set()
+_registry: dict[Any, Any] = {}
 
 
 def warn(warning: Warning, /) -> None:
-    """Issue `warning` against the first frame outside the client."""
-    warnings.warn(warning, skip_file_prefixes=(_PACKAGE_PREFIX,))
+    """Issue `warning` against the first frame outside the client, recorded in
+    the client's own bounded registry."""
+    frame = sys._getframe(1)
+    while frame.f_back is not None and frame.f_code.co_filename.startswith(
+        _PACKAGE_PREFIX
+    ):
+        frame = frame.f_back
+    if len(_registry) >= _WARNED_MAX:
+        _registry.clear()
+    warnings.warn_explicit(
+        warning,
+        type(warning),
+        frame.f_code.co_filename,
+        frame.f_lineno,
+        module=frame.f_globals.get("__name__", "<string>"),
+        registry=_registry,
+    )
 
 
 def warn_once(key: Hashable, warning: Warning, /) -> None:

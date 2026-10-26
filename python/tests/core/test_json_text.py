@@ -1,4 +1,5 @@
-"""The client's own bound on JSON nesting, independent of the C stack."""
+"""The client's own bound on JSON nesting, independent of the C stack, and the UTF-8
+JSON it reads."""
 
 import time
 
@@ -18,6 +19,7 @@ PAST = JSON_MAX_DEPTH + 1
         '{"a":' * (AT - 1) + "{}" + "}" * (AT - 1),
         '["' + "[" * PAST + '"]',
         '["\\"' + "{" * PAST + '"]',
+        b"\xef\xbb\xbf" + b"[" * AT + b"]" * AT,
     ],
     ids=[
         "array-at-the-bound",
@@ -25,6 +27,7 @@ PAST = JSON_MAX_DEPTH + 1
         "object-at-the-bound",
         "brackets-in-a-string",
         "brackets-after-an-escaped-quote",
+        "bytes-after-a-byte-order-mark",
     ],
 )
 def test_text_within_the_depth_bound_parses(text: str | bytes) -> None:
@@ -37,10 +40,28 @@ def test_text_within_the_depth_bound_parses(text: str | bytes) -> None:
         "[" * PAST + "]" * PAST,
         b"[" * PAST + b"]" * PAST,
         '{"a":' * AT + "{}" + "}" * AT,
+        # In UTF-16 or UTF-32 an escaped quote would hide the brackets after it
+        # from a scan of the bytes.
+        ('["\\"",' + "[" * PAST + "]" * PAST + "]").encode("utf-16-le"),
+        ('["\\"",' + "[" * PAST + "]" * PAST + "]").encode("utf-32"),
+        "[NaN]",
+        '{"a": Infinity}',
+        b"[-Infinity]",
     ],
-    ids=["array", "bytes", "object"],
+    ids=[
+        "array",
+        "bytes",
+        "object",
+        "utf-16",
+        "utf-32",
+        "nan",
+        "infinity",
+        "negative-infinity",
+    ],
 )
-def test_text_one_level_past_the_depth_bound_is_refused(text: str | bytes) -> None:
+def test_text_past_the_depth_bound_or_outside_utf8_json_is_refused(
+    text: str | bytes,
+) -> None:
     with pytest.raises(ValueError):
         loads(text)
 

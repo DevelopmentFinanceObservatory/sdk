@@ -31,11 +31,11 @@ from dfo._core.errors import (
 )
 from dfo._core.parse import parse_spec
 from dfo._core.refs import DatasetRef, RefMember
-from dfo._core.types import Rendering, Spec
+from dfo._core.types import FormatError, Rendering, Spec
 from dfo._datasets.build import Reading
 from dfo._datasets.cache import Cache, file_entry, manifest_entry, sha256_digest
 from dfo._datasets.dataset import build_dataset
-from dfo._sync._datasets.fetch import fetch_members, mint
+from dfo._sync._datasets.fetch import fetch_members, mint, operation
 from dfo._sync._datasets.resolve import fetch
 from dfo._sync._http.transport import Transport
 from tests._data import load
@@ -48,6 +48,7 @@ from tests._fetch_support import (
     LONG,
     NARROWED_CV,
     NARROWED_ID,
+    OP_ID,
     ORIGIN,
     POSTED_ID,
     SIGNED,
@@ -139,6 +140,41 @@ def test_a_target_that_is_not_a_spec_sends_nothing(call, target: object) -> None
     with make(server) as transport:
         with pytest.raises(InvalidRequestError) as caught:
             call(transport, target)
+    assert caught.value.code == "invalid_argument"
+    assert server.requests == []
+
+
+@pytest.mark.parametrize(
+    ("target", "options"),
+    [
+        ("spec", {"strict": "yes"}),
+        ("spec", {"progress": 5}),
+        ("ref", {"strict": 1}),
+        ("ref", {"progress": "no"}),
+        ("mint", {"progress": 0}),
+        ("operation", {"progress": "yes"}),
+    ],
+    ids=[
+        "spec-strict",
+        "spec-progress",
+        "ref-strict",
+        "ref-progress",
+        "mint",
+        "resume",
+    ],
+)
+def test_a_switch_that_is_not_a_bool_sends_nothing(target: str, options: dict) -> None:
+    server = Server()
+    with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            if target == "spec":
+                fetch(transport, spec(SENTENCE), **options)
+            elif target == "ref":
+                fetch(transport, DatasetRef((ref_member(),)), **options)
+            elif target == "mint":
+                mint(transport, spec(SENTENCE), **options)
+            else:
+                operation(transport, OP_ID, **options)
     assert caught.value.code == "invalid_argument"
     assert server.requests == []
 
@@ -377,6 +413,17 @@ def test_strict_raises_a_dataset_warning_before_downloading() -> None:
     assert len(server.requests) == 1
 
 
+def test_a_manifest_warning_has_the_clients_key_redacted() -> None:
+    # The success body is redacted where it is read, before a warning quotes it.
+    echoed = f"echo {KEY[:12]}\u200b{KEY[12:]}"
+    warning = {"code": "coverage_below_scope", "severity": "warn", "message": echoed}
+    server = Server(json_response(200, manifest(POSTED_ID, warnings=[warning])))
+    with make(server) as transport:
+        with pytest.raises(DataWarning) as caught:
+            fetch(transport, spec(SENTENCE), strict=True)
+    assert str(caught.value) == "echo [redacted]"
+
+
 def test_info_warnings_stay_quiet() -> None:
     info = {"code": "processing_level_undeclared", "severity": "info", "message": "x"}
     server = Server(
@@ -527,8 +574,22 @@ ELSEWHERE = "https://files.example.net/bucket/object"
 
 @pytest.mark.parametrize(
     ("off", "url"),
-    [("location", ELSEWHERE), ("artifact", ELSEWHERE), ("artifact", SIGNED)],
-    ids=["location-elsewhere", "artifact-elsewhere", "artifact-on-storage-host"],
+    [
+        ("location", ELSEWHERE),
+        ("artifact", ELSEWHERE),
+        ("artifact", SIGNED),
+        ("artifact", "/api/datasets/../../admin/x"),
+        ("artifact", "/api/%2e%2e/%2E%2E/admin/x"),
+        ("artifact", "/api\\..\\admin/x"),
+    ],
+    ids=[
+        "location-elsewhere",
+        "artifact-elsewhere",
+        "artifact-on-storage-host",
+        "artifact-dot-segments",
+        "artifact-encoded-dot-segments",
+        "artifact-backslash-dot-segment",
+    ],
 )
 def test_a_file_url_off_its_allowed_origins_raises(off: str, url: str) -> None:
     # A Location may name the storage host; an artifact url names the API only.
@@ -585,10 +646,25 @@ def test_a_signed_fetch_that_fails_twice_raises_its_own_failure(
 
 
 @pytest.mark.parametrize("signed", [False, True], ids=["files-route", "signed-url"])
-@pytest.mark.parametrize(("size", "fits"), [(len(DATA), True), (len(DATA) - 1, False)])
-def test_a_file_is_read_up_to_its_manifest_size(
-    signed: bool, size: int, fits: bool
+@pytest.mark.parametrize(
+    ("size", "cap", "fits"),
+    [
+        (len(DATA), None, True),
+        (len(DATA) - 1, None, False),
+        (10**12, len(DATA) - 1, False),
+    ],
+    ids=["fits", "past-its-size", "size-past-the-cap"],
+)
+def test_a_file_is_read_up_to_its_manifest_size_within_the_cap(
+    signed: bool,
+    size: int,
+    cap: int | None,
+    fits: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # A manifest's size can lower the download cap, never lift it.
+    if cap is not None:
+        monkeypatch.setattr(fetch_module, "DOWNLOAD_MAX_BYTES", cap)
     file = [redirect(), parquet()] if signed else [parquet()]
     server = Server(json_response(200, manifest(POSTED_ID, size=size)), *file)
     with make(server) as transport:
@@ -1020,8 +1096,10 @@ def versions_lookup(
 ) -> tuple[Server, Exception]:
     """A ref whose build is refused, so the lookup reads the versions `pages`."""
     member = ref_member(rendering=rendering)
+    body = manifest()
+    body["artifacts"][1]["rendering"].update(rendering.to_object())
     server = Server(
-        json_response(200, manifest()),
+        json_response(200, body),
         problem(410, "artifact_expired"),
         problem(404, "not_found"),
         problem(422, "definition_not_reproducible"),
@@ -1376,7 +1454,7 @@ def test_same_bytes_under_two_renderings_keep_the_plain_offline_artifact(
         spec=Spec(POSTED_ID, transformed["definition"], SENTENCE),
         content_version=NARROWED_CV,
         digest=sha256_digest(DATA),
-        rendering=LONG,
+        rendering=CUT,
     )
     cache = FakeCache()
     server = Server(
@@ -1388,16 +1466,29 @@ def test_same_bytes_under_two_renderings_keep_the_plain_offline_artifact(
     with make(server) as transport:
         fetch(transport, DatasetRef((transformed_member,)), cache=cache)
         fetch(transport, spec(SENTENCE), cache=cache)
-        stored = cache.get_manifest(POSTED_ID, NARROWED_CV, LONG)
-        assert stored is not None
-        assert stored["artifacts"] == [
-            transformed["artifacts"][1],
-            plain["artifacts"][1],
-        ]
+        for rendering, body in ((CUT, transformed), (LONG, plain)):
+            stored = cache.get_manifest(POSTED_ID, NARROWED_CV, rendering)
+            assert stored is not None
+            assert stored["artifacts"] == [body["artifacts"][1]]
 
         monkeypatch.setenv("DFO_OFFLINE", "1")
         restored = fetch(transport, spec(SENTENCE), cache=cache)
     assert restored.members[0].data == DATA
+
+
+def test_a_ref_digest_listed_under_another_rendering_raises_before_download() -> None:
+    cut_listing = manifest()
+    cut_listing["artifacts"][1]["rendering"]["without_party_totals"] = True
+    plain_member = ref_member(rendering=LONG)
+    server = Server(json_response(200, cut_listing))
+    with make(server) as transport:
+        with pytest.raises(FormatError) as caught:
+            fetch(transport, DatasetRef((plain_member,)))
+    assert (caught.value.reason, caught.value.pointer) == (
+        "format_invalid",
+        "/members/0/artifact/rendering",
+    )
+    assert len(server.requests) == 1
 
 
 def test_plain_and_cut_files_of_one_version_share_a_manifest_and_stay_apart(

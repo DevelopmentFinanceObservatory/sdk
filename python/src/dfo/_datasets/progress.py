@@ -15,6 +15,9 @@ import sys
 from collections.abc import Mapping
 from typing import Any, Literal, Self, TextIO
 
+from dfo._core.codes import INVALID_ARGUMENT
+from dfo._core.errors import client_error
+
 logger = logging.getLogger("dfo")
 
 type Mode = Literal["silent", "terminal", "notebook", "log"]
@@ -28,7 +31,16 @@ def progress_mode(
     stream: TextIO,
     env: Mapping[str, str] | None = None,
 ) -> Mode:
-    """Where progress goes. The argument wins, then `DFO_PROGRESS`, then the context."""
+    """Where progress goes. The argument wins, then `DFO_PROGRESS`, then the context.
+
+    Raises:
+        InvalidRequestError: `enabled` is not True, False or None
+            (`invalid_argument`).
+    """
+    if enabled is not None and not isinstance(enabled, bool):
+        raise client_error(
+            INVALID_ARGUMENT, f"progress is True, False or None, not {enabled!r}"
+        )
     env = os.environ if env is None else env
     if enabled is False or (enabled is None and env.get("DFO_PROGRESS") == "0"):
         return "silent"
@@ -42,13 +54,14 @@ def progress_mode(
 def progress_line(
     operation_id: str, rows_written: int | None, estimate_rows: int | None
 ) -> str:
-    """The progress of one operation as one line of text."""
+    """The progress of one operation as one line of text. An estimate below one
+    row counts as none, and the bar stays between empty and full."""
     if rows_written is None:
         return f"Building {operation_id}: waiting to start"
-    if not estimate_rows:
+    if estimate_rows is None or estimate_rows < 1:
         noun = "row" if rows_written == 1 else "rows"
         return f"Building {operation_id}: {rows_written:,} {noun}"
-    share = min(rows_written / estimate_rows, 1.0)
+    share = min(max(rows_written / estimate_rows, 0.0), 1.0)
     filled = round(share * _BAR_WIDTH)
     bar = "#" * filled + "-" * (_BAR_WIDTH - filled)
     return (

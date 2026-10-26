@@ -20,7 +20,7 @@
  * out. A reading with no list posts none, and Search reads it as a fresh request.
  */
 import type { Answer, Candidate, Gap, QueryOption } from "./answer.ts";
-import { clientError } from "../core/errors.ts";
+import { capped, clientError } from "../core/errors.ts";
 import type { InvalidRequestError } from "../core/errors.ts";
 import { isRecord } from "../core/json.ts";
 import { assumptionsReadOf, operationsOf, parsedPartOf } from "../core/parse.ts";
@@ -143,13 +143,13 @@ function onePart(option: QueryOption): { query: ParsedInput; part: ParsedPart } 
   const query = option.dataQuery;
   if (query === null) {
     throw clientError("contract_violation", {
-      detail: `The option ${JSON.stringify(option.label)} carries no data_query to post back.`,
+      detail: `The option ${capped(JSON.stringify(option.label))} carries no data_query to post back.`,
     });
   }
   const { parts } = query;
   if (parts.length !== 1) {
     throw clientError("contract_violation", {
-      detail: `The option ${JSON.stringify(option.label)} does not carry a one-part parsed input.`,
+      detail: `The option ${capped(JSON.stringify(option.label))} does not carry a one-part parsed input.`,
     });
   }
   return { query, part: parts[0]! };

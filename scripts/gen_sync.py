@@ -80,6 +80,7 @@ SUBS: tuple[tuple[str, str], ...] = (
     ("AsyncSleep", "Sleep"),
     ("async_sleep", "sync_sleep"),
     ("async_offload", "sync_offload"),
+    ("async_within", "sync_within"),
     ("aclose", "close"),
     ("aread", "read"),
     ("aiter_bytes", "iter_bytes"),

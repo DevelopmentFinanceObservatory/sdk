@@ -20,7 +20,7 @@ import dfo._sync._datasets.resolve as sync_resolve_module
 from dfo._core.errors import DfoTimeoutError
 from dfo._core.refs import DatasetRef, RefMember
 from dfo._core.types import Spec
-from dfo._datasets.cache import Cache, sha256_digest
+from dfo._datasets.cache import Cache, file_entry, manifest_entry, sha256_digest
 from dfo._datasets.resolve import fetch
 from dfo._http.hooks import KeyedLock
 from dfo._http.transport import AsyncTransport
@@ -156,3 +156,27 @@ def test_a_wait_for_another_fetch_ends_at_the_deadline() -> None:
     assert in_a_thread.value.code == in_a_task.value.code == "deadline_exceeded"
     with lock.hold("digest"):
         pass
+
+
+@pytest.mark.parametrize("entry", ["artifact", "manifest"])
+def test_a_directory_at_an_entry_path_is_a_miss_and_the_fetch_downloads_again(
+    tmp_path: Path, entry: str
+) -> None:
+    routes = Routes()
+    cache = Cache(tmp_path, env={})
+    spec = targets()["spec"]
+    with Transport(
+        base_url=BASE, api_key=False, http_transport=httpx2.MockTransport(routes)
+    ) as transport:
+        sync_fetch(transport, spec, cache=cache, progress=False)
+        assert routes.downloads == 1
+        if entry == "artifact":
+            path = cache.directory / file_entry(sha256_digest(DATA))
+        else:
+            path = cache.directory / manifest_entry(POSTED_ID, NARROWED_CV, LONG)
+        path.unlink()
+        path.mkdir()
+        sync_fetch(transport, spec, cache=cache, progress=False)
+    # A bad artifact downloads again; a bad manifest is fetched again, and the
+    # artifact it names is still cached.
+    assert routes.downloads == (2 if entry == "artifact" else 1)

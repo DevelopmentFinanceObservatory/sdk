@@ -13,7 +13,11 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Literal, NoReturn, Self
 
-from dfo._config.credentials import CredentialsFileError, read_profiles
+from dfo._config.credentials import (
+    ACCEPTED_FORMAT,
+    CredentialsFileError,
+    read_profiles,
+)
 from dfo._config.paths import credentials_path
 from dfo._core.codes import (
     CREDENTIALS_FILE_INVALID,
@@ -167,7 +171,8 @@ def _from_file(path: str, env: Mapping[str, str]) -> ResolvedKey | None:
         raise client_error(
             CREDENTIALS_FILE_INVALID,
             f"The credentials file {path} is invalid at line {error.line} "
-            f"({error.reason}). Fix it, or remove it and run `dfo auth login`.",
+            f"({error.reason}). {ACCEPTED_FORMAT} Fix it, or remove it and run "
+            "`dfo auth login`.",
         ) from error
     except OSError as error:
         raise client_error(

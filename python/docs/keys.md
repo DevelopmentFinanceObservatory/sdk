@@ -89,12 +89,12 @@ key = "dfo_k_..."
 
 The file is a strict subset of TOML: UTF-8 text with blank lines, `#` comments on their own line, `[name]` headers and `name = "value"` lines, where a name holds `A-Z`, `a-z`, `0-9`, `_` and `-`, and a value holds no `"`, `\` or control character. Anything else is a fault, though a full TOML reader would accept it: a byte order mark, a comment after a value, single quotes, an unquoted value, or a dotted table such as `[a.b]`. The message names the line and one of the reasons `outside_table`, `duplicate_table`, `duplicate_key` and `invalid_line`. Four faults raise `AuthenticationError` when the client is built:
 
-| Code                          | Cause                                                         | Fix                                                        |
-| ----------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------- |
-| `credentials_file_invalid`    | A line breaks the format; the message names it and the reason | Fix the line, or delete the file and run `dfo auth login`  |
-| `credentials_file_unreadable` | The path exists but cannot be read, such as a directory       | Make it a file you can read, or set `DFO_CREDENTIALS_FILE` |
-| `profile_not_found`           | `DFO_PROFILE` names a profile the file lacks                  | Run `dfo auth login` with that `DFO_PROFILE`               |
-| `profile_without_key`         | The chosen profile has no `key` line, or an empty one         | Run `dfo auth login` with that `DFO_PROFILE`               |
+| Code                          | Cause                                                       | Fix                                                        |
+| ----------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------- |
+| `credentials_file_invalid`    | A bad line; the message names it, the reason and the format | Fix the line, or delete the file and run `dfo auth login`  |
+| `credentials_file_unreadable` | The path exists but cannot be read, such as a directory     | Make it a file you can read, or set `DFO_CREDENTIALS_FILE` |
+| `profile_not_found`           | `DFO_PROFILE` names a profile the file lacks                | Run `dfo auth login` with that `DFO_PROFILE`               |
+| `profile_without_key`         | The chosen profile has no `key` line, or an empty one       | Run `dfo auth login` with that `DFO_PROFILE`               |
 
 A missing file, or a file without a `default` profile when `DFO_PROFILE` is unset, moves on to the next source.
 
@@ -134,7 +134,7 @@ The server writes each message. After a 401 the client resolves its key once mor
 
 ## Other headers
 
-`default_headers=` adds headers to every API request. `header_provider=` is a callable that returns more headers before each request, such as an identity token for a deployment behind a proxy. A header of the provider replaces one of the same name in `default_headers`, and a `User-Agent` in either replaces the client's own. While the client has a key, its `Authorization` header replaces one from either source. With `api_key=False`, an `Authorization` header you set is sent. Every value is a string of visible ASCII, spaces and tabs, and a value with a control or non-ASCII character raises `InvalidRequestError` with `header_invalid`, naming the header and the position and leaving the value out:
+`default_headers=` adds headers to every API request. `header_provider=` is a callable that returns more headers before each request, such as an identity token for a deployment behind a proxy. A header of the provider replaces one of the same name in `default_headers`, and a `User-Agent` in either replaces the client's own. While the client has a key, its `Authorization` header replaces one from either source. With `api_key=False`, an `Authorization` header you set is sent. Every value is a string of visible ASCII, spaces and tabs, and a value with a control or non-ASCII character raises `InvalidRequestError` with `header_invalid`, naming the header and the position and leaving the value out. The headers that frame the message or the connection, `Content-Length`, `Transfer-Encoding`, `Host`, `Connection`, `Keep-Alive`, `TE`, `Trailer` and `Upgrade`, are the client's to set, and naming one raises `header_invalid` too. The provider gets the time left on the request's attempt, and a provider that gives nothing in that time raises `DfoTimeoutError` with `deadline_exceeded`. The synchronous client calls its provider on the caller's thread with no time limit, so a provider that blocks holds the request until it returns. Give such a provider its own timeout.
 
 ```python
 import dfo

@@ -13,7 +13,7 @@ import { parquetMetadata, parquetRead } from "hyparquet";
 import type { FileMetaData, KeyValue, ParquetParsers, SchemaElement } from "hyparquet";
 import { parquetWriteBuffer } from "hyparquet-writer";
 
-import { clientError } from "../core/errors.ts";
+import { capped, clientError } from "../core/errors.ts";
 import type { ContractError } from "../core/errors.ts";
 
 /**
@@ -113,7 +113,7 @@ export function readParquet(bytes: Uint8Array): ParquetFile {
   for (const { name } of columns) {
     if (names.has(name)) {
       throw clientError("contract_violation", {
-        detail: `The Parquet file holds two columns named ${JSON.stringify(name)}.`,
+        detail: `The Parquet file holds two columns named ${capped(JSON.stringify(name))}.`,
       });
     }
     names.add(name);
@@ -132,7 +132,7 @@ function unreadable(error: unknown): ContractError {
 
 function unsupported(element: SchemaElement, what: string): ContractError {
   return clientError("contract_violation", {
-    detail: `The Parquet column ${element.name} is ${what}, which the client cannot read.`,
+    detail: `The Parquet column ${capped(element.name)} is ${what}, which the client cannot read.`,
   });
 }
 
@@ -294,7 +294,7 @@ export function stackedColumns(parts: readonly TablePart[]): Column[] {
       if (stacked === undefined) {
         throw clientError("contract_violation", {
           detail:
-            `The column ${name} is ${JSON.stringify(seen)} in one member and ` +
+            `The column ${capped(name)} is ${JSON.stringify(seen)} in one member and ` +
             `${JSON.stringify(type)} in another, so the members do not stack.`,
         });
       }

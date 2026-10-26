@@ -18,7 +18,7 @@ data = dfo.fetch(spec)
 print(data.rows)
 ```
 
-`fetch` downloads the file through a signed URL and checks it against the digest its manifest names before it returns. It then decodes the Parquet file. Bytes that do not decode as Parquet raise `ContractError` with `unexpected_response`. A file that decodes but lacks a `time_period` or numeric `value` column, repeats a column name, or holds no rows where the manifest counts some raises `contract_violation`. In both cases the cache drops the file. A spec id alone does not build: `fetch` takes a `Spec` or a `DatasetRef`, and anything else raises `InvalidRequestError` with `invalid_argument` before any request. A `Dataset` holds no client, and its conversions run offline. It pickles for transfer between processes that run the same version of `development-finance`, as `multiprocessing` does. Keep data with `save`, since another version may fail to load a pickle or load it wrong.
+`fetch` downloads the file through a signed URL and checks it against the digest its manifest names before it returns. A download stops at the artifact's size in the manifest or at 2 GiB, whichever is smaller. It then decodes the Parquet file. Bytes that do not decode as Parquet raise `ContractError` with `unexpected_response`. A file that decodes but lacks a `time_period` or numeric `value` column, repeats a column name, or holds no rows where the manifest counts some raises `contract_violation`. In both cases the cache drops the file. A spec id alone does not build: `fetch` takes a `Spec` or a `DatasetRef`, and anything else raises `InvalidRequestError` with `invalid_argument` before any request. A `Dataset` holds no client, and its conversions run offline. It pickles for transfer between processes that run the same version of `development-finance`, as `multiprocessing` does. Keep data with `save`, since another version may fail to load a pickle or load it wrong.
 
 ### Narrow before the build
 
@@ -242,7 +242,7 @@ A `Spec` has the same pair, for keeping a reading without a version: `spec.to_js
 1. a fresh build, accepted when it returns the same version;
 1. otherwise `VersionUnavailableError`.
 
-A digest names one rendering of a version. The server can render a version's rows again to a file with another digest, and steps 1 to 3 then find no file with the ref's digest. When step 4 returns the ref's version, `fetch` returns the data with a `DfoWarning` coded `ref_digest_changed`, which names both digests, and `data.ref` carries the rebuilt file's digest. Save that ref to stop the warning. `strict=True` leaves it a warning, because the data is the version the ref names.
+A digest names one rendering of a version. The server can render a version's rows again to a file with another digest, and steps 1 to 3 then find no file with the ref's digest. When step 4 returns the ref's version, `fetch` returns the data with a `DfoWarning` coded `ref_digest_changed`, which names both digests, and `data.ref` carries the rebuilt file's digest. Save that ref to stop the warning. `strict=True` leaves it a warning, because the data is the version the ref names. When the stored version lists the ref's digest only under another rendering, the ref and its file disagree, and `fetch` raises `FormatError` with `format_invalid` at `/members/<i>/artifact/rendering` before it downloads anything.
 
 The next example changes the digest in a saved ref to show the warning:
 

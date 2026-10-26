@@ -20,7 +20,8 @@ from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT, UNEXPECTED_RES
 from dfo._core.errors import client_error
 from dfo._core.json_text import loads
 from dfo._core.parse import check_manifest, check_operation, violation
-from dfo._core.refusals import trace_id_of
+from dfo._core.refusals import sent_key, trace_id_of
+from dfo._core.text import quoted, redacted_json
 from dfo._core.types import (
     CONTENT_VERSION,
     OPERATION_ID,
@@ -159,6 +160,16 @@ def rendering_for(layout: str, *, without_party_totals: bool = False) -> Renderi
         "frame" if layout == "frame" else None,
         without_party_totals=without_party_totals,
     )
+
+
+def check_strict(strict: object) -> None:
+    """Refuse a `strict` that is not a bool.
+
+    Raises:
+        InvalidRequestError: It is not (`invalid_argument`).
+    """
+    if not isinstance(strict, bool):
+        raise client_error(INVALID_ARGUMENT, f"strict is True or False, not {strict!r}")
 
 
 def layout_of(rendering: Rendering) -> Layout:
@@ -381,21 +392,31 @@ def resubmit_body(
 def pick_artifact(
     manifest: Wire, rendering: Rendering, *, digest: str | None = None
 ) -> Wire | None:
-    """The artifact a manifest lists for `rendering`, or for `digest` when given.
+    """The artifact a manifest lists for `rendering`, with `digest` when given.
 
     Artifacts match on `Rendering.matches`. A party-totals cut that leaves
     nothing out lists its file under the plain version, beside the plain file,
     so the flag tells the two apart.
     """
     for artifact in manifest["artifacts"]:
-        if digest is not None:
-            if artifact["artifact_digest"] == digest:
-                return artifact
-        elif isinstance(artifact["rendering"], Mapping) and rendering.matches(
+        if digest is not None and artifact["artifact_digest"] != digest:
+            continue
+        if isinstance(artifact["rendering"], Mapping) and rendering.matches(
             artifact["rendering"]
         ):
             return artifact
     return None
+
+
+def lists_digest(manifest: Wire, digest: str) -> bool:
+    """Whether a manifest lists an artifact with `digest`, in any rendering."""
+    return any(
+        artifact["artifact_digest"] == digest for artifact in manifest["artifacts"]
+    )
+
+
+# The statuses an operation resource holds. The contract's enum is closed.
+OPERATION_STATUSES = frozenset({"pending", "running", "done", "failed"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -404,8 +425,7 @@ class OperationState:
 
     Attributes:
         operation_id: The operation's id, `op_` and 64 hex digits.
-        status: `pending`, `running`, `done`, `failed`, or a status this client
-            does not know.
+        status: `pending`, `running`, `done` or `failed`.
         retry_after: The wait before the next poll the resource asks for, in
             seconds, or None.
         progress: The progress the resource reports, or None.
@@ -421,29 +441,53 @@ class OperationState:
     error: Wire | None
 
 
-def read_operation(resource: Wire) -> OperationState:
+def read_operation(resource: Wire, *, key: str | None = None) -> OperationState:
     """Read an operation resource.
 
+    A message that quotes the resource's text has `key`, the client's key,
+    redacted, and quotes at most `MESSAGE_TEXT_MAX` characters of it.
+
     Raises:
-        ContractError: The operation's status is missing, its id is not `op_`
-            and 64 lowercase hex digits, or a done operation holds no manifest
-            that `check_served_manifest` passes (`contract_violation`). The id
-            is checked before any poll names it in a path.
+        ContractError: The operation's status is missing or outside `pending`,
+            `running`, `done` and `failed`, its id is not `op_` and 64
+            lowercase hex digits, a done operation holds no manifest that
+            `check_served_manifest` passes, or a failed operation's error gives
+            a `status` that is not an integer from 400 to 599
+            (`contract_violation`). The id is checked before any poll names it
+            in a path.
     """
     check_operation(resource)
     operation = resource["operation"]
-    if not matches(OPERATION_ID, operation["operation_id"]):
+    operation_id = operation["operation_id"]
+    if not matches(OPERATION_ID, operation_id):
         raise violation(
             "The operation's id is not op_ and 64 lowercase hex digits",
             pointer="/operation/operation_id",
         )
     status = operation["status"]
+    if status not in OPERATION_STATUSES:
+        raise violation(
+            f"The operation {operation_id} has the status {quoted(status, key)}, not "
+            "pending, running, done or failed",
+            pointer="/operation/status",
+        )
     manifest = resource.get("manifest")
     if status == "done":
         check_served_manifest(manifest, "/manifest")
     wait = operation.get("retry_after_ms")
     progress = operation.get("progress")
     error = resource.get("error")
+    if (
+        status == "failed"
+        and isinstance(error, Mapping)
+        and "status" in error
+        and not _is_error_status(error["status"])
+    ):
+        raise violation(
+            f"The failed operation {operation_id} gives its error the status "
+            f"{quoted(error['status'], key)}, not an integer from 400 to 599",
+            pointer="/error/status",
+        )
     return OperationState(
         operation_id=operation["operation_id"],
         status=status,
@@ -454,6 +498,11 @@ def read_operation(resource: Wire) -> OperationState:
         manifest=manifest if isinstance(manifest, Mapping) else None,
         error=error if isinstance(error, Mapping) else None,
     )
+
+
+def _is_error_status(value: object) -> bool:
+    """Whether `value` is a refusal's HTTP status, an integer from 400 to 599."""
+    return type(value) is int and 400 <= value <= 599
 
 
 def _progress(progress: Wire) -> Progress:
@@ -533,13 +582,14 @@ def check_built(
 
 
 def response_json(response: httpx2.Response) -> Any:
-    """The decoded JSON body of a response the client acts on.
+    """The decoded JSON body of a response the client acts on, with the key its
+    request carried redacted in every string and member name.
 
     Raises:
         ContractError: The body is not JSON.
     """
     try:
-        return loads(response.content)
+        body = loads(response.content)
     except ValueError as error:  # not JSON, or nested past JSON_MAX_DEPTH
         raise client_error(
             UNEXPECTED_RESPONSE,
@@ -548,3 +598,4 @@ def response_json(response: httpx2.Response) -> Any:
             status=response.status_code,
             trace_id=trace_id_of(response),
         ) from error
+    return redacted_json(body, sent_key(response))

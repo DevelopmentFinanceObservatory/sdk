@@ -947,6 +947,10 @@ def test_differences_from_the_question_arrive_as_one_search_warning(
     ]
     with pytest.raises(SearchWarning):
         answer.fetch(strict=True)
+    # A strict that is not a bool is refused before the warning reads it.
+    with pytest.raises(InvalidRequestError) as refused:
+        answer.fetch(strict="no")  # ty: ignore[invalid-argument-type]
+    assert refused.value.code == "invalid_argument"
     assert len(fetched) == 1
 
 

@@ -105,7 +105,9 @@ def test_an_operation_reads_its_pacing_and_progress() -> None:
     assert state.progress is not None
     assert (state.progress.rows_written, state.progress.estimate_rows) == (3, None)
     assert read_operation(operation("pending")).retry_after is None
-    assert read_operation(operation("paused")).status == "paused"
+    with pytest.raises(ContractError) as caught:
+        read_operation(operation("paused"))
+    assert caught.value.pointer == "/operation/status"
 
 
 def test_a_done_operation_without_a_manifest_raises() -> None:
