@@ -31,20 +31,28 @@ left out.
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, NoReturn, overload, override
+from typing import TYPE_CHECKING, Any, ClassVar, Never, NoReturn, override
 
 from dfo._core.codes import (
     ANSWER_DECLINED,
     ANSWER_INCOMPLETE,
     CHOICE_INVALID,
     CONTRACT_VIOLATION,
+    INVALID_ARGUMENT,
 )
-from dfo._core.errors import IncompleteAnswerError, SearchWarning, client_error, warn
+from dfo._core.errors import (
+    IncompleteAnswerError,
+    InvalidRequestError,
+    SearchWarning,
+    client_error,
+    warn,
+)
+from dfo._core.nearest import nearest
 from dfo._core.parse import (
-    ParsedPart,
     parse_notices,
     parse_parts,
     read_assumption,
@@ -52,6 +60,7 @@ from dfo._core.parse import (
     read_requested_operation,
 )
 from dfo._core.refusals import describing, trace_id_of
+from dfo._core.text import cited
 from dfo._core.types import (
     Candidate,
     CandidatesPart,
@@ -64,15 +73,19 @@ from dfo._core.types import (
     Part,
     Spec,
     UnsupportedPart,
-    unbound_gap,
-    with_candidates,
 )
 from dfo._datasets.build import Reading, check_strict, response_json
 from dfo._datasets.dataset import Dataset
 from dfo._generated import strict as _strict
 from dfo._generated.error_map import GAP_KINDS
+from dfo._generated.wire import DeclinedReason
 from dfo._search import display as _display
+from dfo._search.answer_json import answer_json, read_answer_json
 from dfo._sync._datasets.fetch import SessionSource, fetch_members
+
+if TYPE_CHECKING:
+    # The client module reads answers, so the import is for types only.
+    from dfo._sync._client.client import Client
 
 RESOLVE_PATH = "/search/resolve"
 SCHEMA_VERSION = 1
@@ -115,17 +128,21 @@ class Answer:
     kind: str
     status: str
     sentence: str | None
-    parts: tuple[Part[Candidate], ...] = ()
+    parts: tuple[Part, ...] = ()
     specs: tuple[Spec, ...] = ()
     complete: bool = False
-    gaps: tuple[Gap[Candidate], ...] = ()
+    gaps: tuple[Gap, ...] = ()
     question: str | None = None
-    reason: str | None = None
+    reason: DeclinedReason | str | None = None
     warnings: tuple[Notice, ...] = ()
     timed_out: bool = False
     trace_id: str | None = field(default=None, compare=False)
     raw: Mapping[str, Any] = field(default_factory=dict, compare=False)
     _source: SessionSource = field(compare=False)
+    # The session `from_json` reads through when it names no client: the
+    # default client's, which `dfo._client.default` sets, since this layer
+    # cannot import the client layer.
+    _default_source: ClassVar[SessionSource | None] = None
 
     @override
     def __repr__(self) -> str:
@@ -143,60 +160,112 @@ class Answer:
             f"{type(self).__name__!r} object has no attribute {name!r}", name=name
         )
 
-    @overload
-    def choose(self, option: int | str, /) -> Answer: ...
-    @overload
-    def choose(self, part: int | str, option: int | str, /) -> Answer: ...
-    def choose(self, *choice: int | str) -> Answer:
+    def to_json(self) -> str:
+        """The answer as JSON, read back by `from_json` in this or another DFO client.
+
+        The JSON holds the question and Search's response cut to the members the
+        client reads, so a web page can hold an answer and post it back with the
+        reader's choice.
+        """
+        return json.dumps(
+            answer_json(self.question, self.raw, self.trace_id), ensure_ascii=False
+        )
+
+    @classmethod
+    def from_json(cls, text: str | bytes, /, *, client: Client | None = None) -> Answer:
+        """Read an answer that `to_json` wrote, to choose and fetch through `client`.
+
+        The answer reads as a fresh Search response does, with the same checks,
+        and holds no more than the JSON does: `choose` posts back each part's
+        spec and identity and a place option's `data_query` as the JSON gives
+        them. JSON from a web page can therefore send any spec or parsed input to
+        Search and the build route through the client's key. With a public-tier
+        key that costs quota, so rate-limit the routes per visitor; with a key
+        beyond the public tier, keep the JSON on the server, under a random id
+        the page sends back, or sign it before it leaves.
+
+        Args:
+            text: JSON that `to_json` wrote.
+            client: The client the answer's requests go through. The
+                synchronous `Answer` takes the default client when it is None.
+
+        Raises:
+            FormatError: The text is not JSON in the answer format
+                (`format_invalid`).
+            ContractError: The answer lacks a member the client acts on.
+            InvalidRequestError: `client` is None and no default client is
+                set (`invalid_argument`).
+        """
+        question, body, trace_id = read_answer_json(text)
+        if client is not None:
+            source = client._current
+        elif cls._default_source is not None:
+            source = cls._default_source
+        else:
+            raise client_error(
+                INVALID_ARGUMENT,
+                f"{cls.__name__}.from_json needs the client its requests go "
+                f"through: {cls.__name__}.from_json(text, client=client)",
+            )
+        with describing(trace_id):
+            return answer_from_body(
+                body, question=question, source=source, trace_id=trace_id
+            )
+
+    def choose(
+        self, option: int | str, /, *old_form: Never, part: int | str | None = None
+    ) -> Answer:
         """Settle a part that awaits a choice, and return Search's new answer.
 
         The choice makes one Search request. The new answer, its sentence and
         its assumptions are Search's response.
 
         `choose(option)` picks in the only part that awaits a choice;
-        `choose(part, option)` names the part. A part is named by its index, its
-        variable text, or a word of the question one of its options settles. An
-        option is named by its index or its label.
+        `choose(option, part=part)` names the part. A part is named by its
+        index, its variable text, or a word of the question one of its options
+        settles. An option is named by its index or its label.
 
         Raises:
-            InvalidRequestError: The call names neither one nor two keys; no
-                part, or more than one, awaits a choice; a key is not an index
-                or a label, or names no part or option; the part offers no
-                options; or a part cannot be posted back.
+            TypeError: A second positional argument, as the earlier
+                `choose(part, option)` took; the message names the call in
+                this form.
+            InvalidRequestError: No part, or more than one when `part` is None,
+                awaits a choice; a key is not an index or a label, or names no
+                part or option; the part offers no options; or a part cannot be
+                posted back (`choice_invalid`).
             ContractError: The chosen option's `data_query` is not a parsed
                 input of one part; it carries the answer's trace id.
         """
+        # A caller without a type checker can still pass the earlier form.
+        if old_form:  # ty: ignore[redundant-condition]
+            raise TypeError(
+                "answer.choose takes the option first and the part as a keyword: "
+                f"answer.choose({cited(old_form[0])}, part={cited(option)})."
+            )
         with describing(self.trace_id):
-            request = self._choice_input(choice)
+            request = self._choice_input(option, part)
         return resolve(
             self._source, request, question=self.question, timeout=SEARCH_TIMEOUT
         )
 
-    def _choice_input(self, choice: Sequence[object]) -> Mapping[str, Any]:
-        """The Search input a choice posts, from `choose`'s one or two keys."""
-        for key in choice:
+    def _choice_input(
+        self, option: int | str, part: int | str | None
+    ) -> Mapping[str, Any]:
+        """The Search input a choice posts, from `choose`'s option and part."""
+        for key in (option,) if part is None else (option, part):
+            # A bool is an int, and a caller without a type checker can pass anything.
             if isinstance(key, bool) or not isinstance(key, int | str):
                 raise client_error(
                     CHOICE_INVALID, f"{key!r} is not an index or a label."
                 )
-        match choice:
-            case (int() | str() as option,):
-                gap, mention = self._only_choice(), None
-            case (int() | str() as part, int() | str() as option):
-                gap, mention = self._gap_named(part), part
-            case _:
-                raise client_error(
-                    CHOICE_INVALID,
-                    f"choose takes an option, or a part and an option; it got "
-                    f"{len(choice)} keys.",
-                )
-        chosen = _pick(gap, option, mention=mention)
+        gap = self._only_choice() if part is None else self._gap_named(part)
+        chosen = _pick(gap, option, mention=part)
         if len(self.parts) == 1 and isinstance(chosen, Option):
             _option_part(chosen)
             return chosen.data_query
         entries = [
-            _entry(part, chosen if index == gap.part_index else None)
-            for index, part in enumerate(self.parts)
+            _entry(each, chosen if index == gap.part_index else None)
+            for index, each in enumerate(self.parts)
         ]
         return {"kind": "dataset_resubmit", "entries": entries}
 
@@ -207,7 +276,7 @@ class Answer:
         strict: bool = False,
         layout: Layout = "long",
         without_party_totals: bool = False,
-        timeout: float | None = 1800.0,
+        timeout: float | None = None,
         progress: bool | None = None,
     ) -> Dataset:
         """Build the dataset for the answer's readings.
@@ -225,9 +294,11 @@ class Answer:
             without_party_totals: Leave out the rows of parties the code index
                 declares totals, such as the DAC total beside its members, on
                 each party role a reading leaves open.
-            timeout: The longest the whole build waits, in seconds. In the
-                synchronous client, platform name resolution can run past this
-                bound; the asynchronous client can cancel it.
+            timeout: The longest the whole build waits, in seconds. None, the
+                default, waits as long as the build takes, which the server
+                always ends. In the synchronous client, platform name
+                resolution can run past this bound; the asynchronous client
+                can cancel it.
             progress: Show progress; None shows it in a terminal or notebook.
 
         Raises:
@@ -242,6 +313,8 @@ class Answer:
             InvalidRequestError: `layout="frame"` with several readings, or
                 `strict` is not a bool or `progress` neither a bool nor None
                 (`invalid_argument`).
+            DfoTimeoutError: `timeout` passed (`deadline_exceeded`). The build
+                keeps running on the server, and the same fetch joins it.
             DfoError: The server refused a request.
         """
         if self.kind != _strict.RESOLUTION_KIND:
@@ -256,7 +329,7 @@ class Answer:
         check_strict(strict)
         members = _members(self.parts)
         if self.gaps and (not partial or not members):
-            raise self.incomplete_error()
+            raise self._incomplete_error()
         if (hint := _search_warning(self)) is not None:
             if strict:
                 raise hint
@@ -274,19 +347,18 @@ class Answer:
             missing=self.gaps,
         )
 
-    def incomplete_error(self) -> IncompleteAnswerError:
-        """The error `fetch` raises for this answer's gaps."""
+    def _incomplete_error(self) -> IncompleteAnswerError:
         error = client_error(
             ANSWER_INCOMPLETE,
             _display.incomplete_message(self),
             trace_id=self.trace_id,
         )
         error.answer = self
-        error.gaps = tuple(unbound_gap(gap) for gap in self.gaps)
+        error.gaps = self.gaps
         return error
 
-    def _only_choice(self) -> Gap[Candidate]:
-        waiting = [gap for gap in self.gaps if gap.kind == "choice" or gap.options]
+    def _only_choice(self) -> Gap:
+        waiting = _display.waiting(self.gaps)
         if len(waiting) == 1:
             return waiting[0]
         if not waiting:
@@ -296,10 +368,10 @@ class Answer:
         raise client_error(
             CHOICE_INVALID,
             f"{len(waiting)} parts of this answer a choice; name the part: "
-            "answer.choose(part, option).",
+            "answer.choose(option, part=part).",
         )
 
-    def _gap_named(self, key: int | str) -> Gap[Candidate]:
+    def _gap_named(self, key: int | str) -> Gap:
         index = _part_index(self.parts, self.gaps, key)
         gap = next((gap for gap in self.gaps if gap.part_index == index), None)
         if gap is None:
@@ -401,13 +473,12 @@ def answer_from_body(
         )
     status = body.get("status")
     sentence = body.get("rendered_sentence")
-    parsed = parse_parts(body)
+    parts = parse_parts(body)
     sentence = (
         sentence
         if isinstance(sentence, str) and sentence
-        else " ".join(part.sentence for part in parsed if part.sentence)
+        else " ".join(part.sentence for part in parts if part.sentence)
     )
-    parts = tuple(_bind_candidates(part, question, source) for part in parsed)
     timed_out = diagnostics.get("timed_out") is True
     gaps = tuple(
         gap
@@ -433,67 +504,12 @@ def answer_from_body(
     )
 
 
-def _bind_candidates(
-    part: ParsedPart, question: str | None, source: SessionSource
-) -> Part[Candidate]:
-    """`part`, its candidates able to fetch through the answer's source.
-
-    A candidate's fetch asks Search for the reading alone, posting its identity
-    as the one entry of a `dataset_resubmit`, and builds the answer Search gives.
-    """
-    if not isinstance(part, CandidatesPart):
-        return part
-
-    def fetch(
-        candidate: Candidate,
-        /,
-        *,
-        partial: bool,
-        strict: bool,
-        layout: Layout,
-        without_party_totals: bool,
-        timeout: float | None,
-        progress: bool | None,
-    ) -> Dataset:
-        request = {
-            "kind": "dataset_resubmit",
-            "entries": [_entry(bound, candidate)],
-        }
-        answer = resolve(source, request, question=question, timeout=SEARCH_TIMEOUT)
-        return answer.fetch(
-            partial=partial,
-            strict=strict,
-            layout=layout,
-            without_party_totals=without_party_totals,
-            timeout=timeout,
-            progress=progress,
-        )
-
-    candidates = tuple(
-        Candidate(
-            candidate.spec,
-            candidate.sentence,
-            candidate.label,
-            candidate.source,
-            candidate.unit,
-            candidate.raw,
-            assumptions=candidate.assumptions,
-            _fetch=fetch,
-        )
-        for candidate in part.candidates
-    )
-    bound = with_candidates(part, candidates)
-    return bound
-
-
-def _status(parts: Sequence[Part[Candidate]]) -> str:
+def _status(parts: Sequence[Part]) -> str:
     statuses = {part.status for part in parts}
     return statuses.pop() if len(statuses) == 1 else "mixed"
 
 
-def _gap(
-    index: int, part: Part[Candidate], *, timed_out: bool
-) -> Gap[Candidate] | None:
+def _gap(index: int, part: Part, *, timed_out: bool) -> Gap | None:
     """The gap a part leaves, or None when it has a reading."""
     match part:
         case DefinitePart():
@@ -522,7 +538,7 @@ def _gap(
             )
 
 
-def _members(parts: Sequence[Part[Candidate]]) -> list[Reading]:
+def _members(parts: Sequence[Part]) -> list[Reading]:
     """One reading per distinct spec, in query order.
 
     Parts folded onto one spec share its reading, which names each of them that
@@ -544,8 +560,8 @@ def _members(parts: Sequence[Part[Candidate]]) -> list[Reading]:
 
 
 def _part_index(
-    parts: Sequence[Part[Candidate]],
-    gaps: Sequence[Gap[Candidate]],
+    parts: Sequence[Part],
+    gaps: Sequence[Gap],
     key: int | str,
 ) -> int:
     if isinstance(key, int):
@@ -565,18 +581,21 @@ def _part_index(
     if len(named) == 1:
         return named[0]
     if not named:
-        raise client_error(
-            CHOICE_INVALID,
-            f"No part is named {key!r}; name a part by its index or its words.",
+        waiting = [(gap, _names_of(gap)) for gap in _display.waiting(gaps)]
+        raise _unmatched(
+            f"No part is named {cited(key)}",
+            nearest(key, [name for _, names in waiting for name in names], _label_fold),
+            "name a part by its index or its words",
+            ", ".join(
+                f"{gap.part_index} = {' / '.join(names)}" for gap, names in waiting
+            ),
         )
     raise client_error(
         CHOICE_INVALID, f"{len(named)} parts are named {key!r}; use an index."
     )
 
 
-def _pick(
-    gap: Gap[Candidate], key: int | str, *, mention: int | str | None
-) -> Candidate | Option:
+def _pick(gap: Gap, key: int | str, *, mention: int | str | None) -> Candidate | Option:
     """The candidate or option `key` names in a gap."""
     choices = gap.options
     if not choices:
@@ -589,7 +608,7 @@ def _pick(
         raise client_error(
             CHOICE_INVALID,
             f"Option {key} is out of range; part {gap.part_index} offers "
-            f"{len(choices)}.",
+            f"{len(choices)}: {_option_list(gap)}.",
         )
     # A part named by a word its options settle offers only those options' labels.
     scope = mention if isinstance(mention, str) and mention in _mentions(gap) else None
@@ -604,10 +623,12 @@ def _pick(
     if len(found) == 1:
         return found[0]
     if not found:
-        raise client_error(
-            CHOICE_INVALID,
-            f"Part {gap.part_index} has no option labelled {key!r}; name it by "
-            "index or label.",
+        labels = [choice.label for choice in choices if choice.label is not None]
+        raise _unmatched(
+            f"Part {gap.part_index} has no option labelled {cited(key)}",
+            nearest(key, labels, _label_fold),
+            "name it by index or label",
+            _option_list(gap),
         )
     raise client_error(
         CHOICE_INVALID,
@@ -616,16 +637,56 @@ def _pick(
     )
 
 
-def _options(gap: Gap[Candidate]) -> list[Option]:
+def _names_of(gap: Gap) -> list[str]:
+    """The words that name a gap's part: its variable text, then the words its
+    options settle."""
+    text = gap.part.variable_text
+    words = ([text] if text else []) + [
+        mention for option in _options(gap) for mention in option.mentions
+    ]
+    return list(dict.fromkeys(words))
+
+
+def _unmatched(
+    lead: str, near: str | None, how: str, choices: str
+) -> InvalidRequestError:
+    """The refusal of a key that names nothing: `lead`, then the nearest match, or
+    else `how` to name one, and the valid choices on a line of their own."""
+    if not choices:
+        return client_error(CHOICE_INVALID, f"{lead}; {how}.")
+    advice = f"{how}:" if near is None else f"did you mean {cited(near)}?"
+    return client_error(CHOICE_INVALID, f"{lead}; {advice}\n  {choices}")
+
+
+def _label_fold(label: str) -> str:
+    """A label as it compares with a caller's: trimmed and in lower case."""
+    return label.strip().lower()
+
+
+def _option_list(gap: Gap) -> str:
+    """A gap's options as a refusal lists them, as `0 = Congo [DRC], 1 = Congo
+    [Republic]`. A candidate with no label shows its spec id."""
+    return ", ".join(
+        f"{index} = {_shown_label(option)}" for index, option in enumerate(gap.options)
+    )
+
+
+def _shown_label(option: Candidate | Option) -> str:
+    if option.label is not None:
+        return option.label
+    return option.spec.spec_id if isinstance(option, Candidate) else ""
+
+
+def _options(gap: Gap) -> list[Option]:
     """A gap's options of place or source, without its candidates."""
     return [option for option in gap.options if isinstance(option, Option)]
 
 
-def _mentions(gap: Gap[Candidate]) -> set[str]:
+def _mentions(gap: Gap) -> set[str]:
     return {mention for option in _options(gap) for mention in option.mentions}
 
 
-def _entry(part: Part[Candidate], chosen: Candidate | Option | None) -> dict[str, Any]:
+def _entry(part: Part, chosen: Candidate | Option | None) -> dict[str, Any]:
     """The `dataset_resubmit` entry for one part, settled by `chosen` when given."""
     if isinstance(chosen, Candidate):
         return _identity_entry(part, chosen.raw)
@@ -639,7 +700,7 @@ def _entry(part: Part[Candidate], chosen: Candidate | Option | None) -> dict[str
     return _restated_entry(part)
 
 
-def _restated_entry(part: Part[Candidate]) -> dict[str, Any]:
+def _restated_entry(part: Part) -> dict[str, Any]:
     """A part with no reading, resolved again from its restatement when it has one.
 
     A placeholder loses the server's message and the part's choices, so it
@@ -664,7 +725,7 @@ def _restated_entry(part: Part[Candidate]) -> dict[str, Any]:
     )
 
 
-def _echo(part: Part[Candidate], **members: Any) -> dict[str, Any]:
+def _echo(part: Part, **members: Any) -> dict[str, Any]:
     """An entry with the members every non-parsed entry echoes from its part:
     `variable_text`, `separate` when true, and `operations` in their read forms
     when any item reads."""
@@ -681,7 +742,7 @@ def _echo(part: Part[Candidate], **members: Any) -> dict[str, Any]:
     return entry
 
 
-def _identity(part: Part[Candidate], spec: Mapping[str, Any]) -> dict[str, Any]:
+def _identity(part: Part, spec: Mapping[str, Any]) -> dict[str, Any]:
     """A reading of `part` as Search takes it back: the spec's identity, its
     entity groups when it has any, and the reading's assumptions when the part
     carries them."""
@@ -694,9 +755,7 @@ def _identity(part: Part[Candidate], spec: Mapping[str, Any]) -> dict[str, Any]:
     return item
 
 
-def _reading_assumptions(
-    part: Part[Candidate], spec: Mapping[str, Any]
-) -> list[Any] | None:
+def _reading_assumptions(part: Part, spec: Mapping[str, Any]) -> list[Any] | None:
     """The assumptions one reading of `part` echoes, or None when the part holds
     no list for it. The list is a candidates part's `reading_assumptions` entry
     under the spec's id, or any other part's `assumptions`, each item in its read
@@ -710,11 +769,11 @@ def _reading_assumptions(
     return read_items(listed, read_assumption) if isinstance(listed, list) else None
 
 
-def _identity_entry(part: Part[Candidate], spec: Mapping[str, Any]) -> dict[str, Any]:
+def _identity_entry(part: Part, spec: Mapping[str, Any]) -> dict[str, Any]:
     return _echo(part, entry_kind="identity", **_identity(part, spec))
 
 
-def _candidates_entry(part: CandidatesPart[Candidate]) -> dict[str, Any]:
+def _candidates_entry(part: CandidatesPart) -> dict[str, Any]:
     """The part's candidate set posted back, its `ordering` and `truncated` as
     the server sent them, each left out when the set lacks it."""
     candidate_set = part.raw["candidates"]

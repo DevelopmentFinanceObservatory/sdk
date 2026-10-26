@@ -7,7 +7,7 @@
  * `SearchWarning` or `DataWarning`. An error about the caller's input, or about a storage-host
  * fetch, carries null.
  */
-import { DfoError } from "./errors.ts";
+import { DfoError, settleTraceId } from "./errors.ts";
 import { isRecord } from "./json.ts";
 
 const TRACE_HEADER = "x-dfo-trace-id";
@@ -42,8 +42,7 @@ export function describing<T>(traceId: string | null, read: () => T): T {
     return read();
   } catch (error) {
     if (error instanceof DfoError && RESPONSE_CODES.has(error.code) && error.traceId === null) {
-      // `traceId` is read-only to callers. The client settles it here, once, before it throws.
-      (error as { traceId: string | null }).traceId = traceId;
+      settleTraceId(error, traceId);
     }
     throw error;
   }

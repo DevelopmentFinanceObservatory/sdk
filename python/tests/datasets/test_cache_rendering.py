@@ -8,10 +8,11 @@ import httpx2
 import pyarrow.parquet as pq
 import pytest
 
-from dfo import Client, DatasetRef, RefMember, Rendering
+from dfo import Client, DatasetRef
 from dfo._datasets.cache import Cache, sha256_digest
 from dfo._sync._datasets.fetch import Session
 from dfo._sync._http.transport import Transport
+from dfo.types import RefMember, Rendering
 from tests._datasets import PARQUET, recorded_member
 
 

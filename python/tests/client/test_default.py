@@ -24,10 +24,12 @@ import pytest
 
 import dfo
 from dfo._client import default as _default
+from dfo._core.errors import InvalidRequestError
 from dfo._datasets.cache import Cache
 from dfo._sync._client.client import Client
 from dfo._sync._datasets.fetch import Session
 from dfo._sync._http.transport import Transport
+from dfo._sync._search.lookups import Lookup
 from tests._fetch_support import Replay
 
 DEFAULT_URL = "https://default.example.org/api"
@@ -57,6 +59,10 @@ def parameters(function: Callable[..., Any]) -> list[inspect.Parameter]:
         (dfo.fetch, Client.fetch),
         (dfo.search, Client.search),
         (dfo.configure, Client.__init__),
+        (dfo.lookup.resolve, Lookup.resolve),
+        (dfo.lookup.node, Lookup.node),
+        (dfo.lookup.code, Lookup.code),
+        (dfo.lookup.catalogue, Lookup.catalogue),
     ],
 )
 def test_a_module_function_takes_its_client_methods_arguments(
@@ -79,6 +85,7 @@ def mock_clients(
 ) -> list[Client]:
     """Make the default client serve each base URL from its handler, over `cache`."""
     built: list[Client] = []
+    default = _default._DefaultClient
 
     def client(**options: Any) -> Client:
         base_url = options.get("base_url") or DEFAULT_URL
@@ -86,11 +93,12 @@ def mock_clients(
             base_url=base_url,
             api_key=False,
             http_transport=httpx2.MockTransport(servers.get(base_url, unexpected)),
+            caller=default._caller,
         )
-        built.append(Client._over(Session(transport, cache)))
+        built.append(default._over(Session(transport, cache)))
         return built[-1]
 
-    monkeypatch.setattr(_default, "Client", client)
+    monkeypatch.setattr(_default, "_DefaultClient", client)
     return built
 
 
@@ -111,7 +119,7 @@ def test_an_answer_stays_usable_after_configure(
         warnings.simplefilter("ignore")
         data = answer.fetch()
 
-    assert data.rows == built.record["expect"][1]["dataset"]["rows"]
+    assert len(data) == built.record["expect"][1]["dataset"]["rows"]
     assert (asked.exchanges, built.exchanges) == ([], [])
     assert [len(asked.requests), len(built.requests)] == [1, 3]
     # The replaced client stays open while referenced, and closes once collected.
@@ -169,6 +177,43 @@ def test_an_in_flight_search_keeps_the_replaced_default_client_open(
     assert transport._pool._client.is_closed
 
 
+def test_the_lookup_functions_ask_the_default_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bodies = {
+        "/api/graph/resolve": {"results": []},
+        "/api/graph/node/country/NGA": {"kind": "country", "ref": "country/NGA"},
+        "/codes/spec_not_found": {"code": "spec_not_found", "mappings": []},
+        "/api/search/catalogue": {
+            "catalogue_version": "v1",
+            "counts": {},
+            "examples": [],
+        },
+    }
+    seen: list[str] = []
+
+    def serve(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request.url.path)
+        return httpx2.Response(200, json=bodies[request.url.path])
+
+    mock_clients(monkeypatch, {DEFAULT_URL: serve})
+    dfo.lookup.resolve("Nigeria")
+    dfo.lookup.node("country/NGA")
+    dfo.lookup.code("spec_not_found")
+    dfo.lookup.catalogue()
+    assert seen == list(bodies)
+
+
+@pytest.mark.parametrize("configured", [False, True], ids=["built", "configured"])
+def test_the_module_functions_hints_name_dfo(*, configured: bool) -> None:
+    if configured:
+        dfo.configure(base_url=DEFAULT_URL, api_key=False, cache=False)
+    spec = dfo.Spec("spec_x", {})
+    with pytest.raises(InvalidRequestError) as caught:
+        dfo.fetch(spec, latest=True)
+    assert "drop it: dfo.fetch(spec)." in str(caught.value)
+
+
 def test_the_default_client_is_built_once_on_first_use(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -177,82 +222,6 @@ def test_the_default_client_is_built_once_on_first_use(
     first = _default.default_client()
     assert _default.default_client() is first
     assert clients == [first]
-
-
-def fetch_answer() -> None:
-    """Ask the default client the recorded question and fetch the answer."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        dfo.search(QUESTION).fetch()
-
-
-def cached_files(root: Path) -> list[Path]:
-    """The files under a cache root, read from disk whether the cache is on or off."""
-    return [path for path in root.rglob("*") if path.is_file()]
-
-
-def replay_over_cache(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, passes: list[int]
-) -> tuple[Replay, Cache]:
-    """A default client over a fresh cache, served `passes` of the recorded fetch.
-
-    Each entry of `passes` is how many of the recording's exchanges the pass
-    makes: all four to search, build and download, or the first two to search and
-    build with the download read from the cache.
-    """
-    replay = Replay("answer-definite-fetch", DEFAULT_URL)
-    exchanges = replay.exchanges
-    replay.exchanges = [e for count in passes for e in exchanges[:count]]
-    cache = Cache(tmp_path / "cache", env={})
-    mock_clients(monkeypatch, {DEFAULT_URL: replay}, cache)
-    return replay, cache
-
-
-def test_a_fetch_after_disable_cache_reads_nothing_from_the_cache(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    replay, _ = replay_over_cache(monkeypatch, tmp_path, [4, 4])
-    fetch_answer()
-    assert cached_files(tmp_path)
-
-    dfo.disable_cache()
-    fetch_answer()
-
-    # The second pass downloads again, so it takes all four exchanges.
-    assert (replay.exchanges, len(replay.requests)) == ([], 8)
-
-
-def test_disable_cache_stops_writes_and_enable_cache_restores_both(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    replay, _ = replay_over_cache(monkeypatch, tmp_path, [4, 4, 2])
-
-    dfo.disable_cache()
-    fetch_answer()
-    assert cached_files(tmp_path) == []
-
-    dfo.enable_cache()
-    fetch_answer()
-    assert cached_files(tmp_path)
-    fetch_answer()
-    # The third pass reads the download from the cache, so it takes two exchanges.
-    assert (replay.exchanges, len(replay.requests)) == ([], 10)
-
-
-def test_disable_and_enable_cache_keep_the_configured_client(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    base_url = "https://configured.example.org/api"
-    cache = Cache(tmp_path / "cache", env={})
-    clients = mock_clients(monkeypatch, {}, cache)
-    dfo.configure(base_url=base_url, timeout=7.0, max_retries=5)
-    configured = _default.default_client()
-
-    dfo.disable_cache()
-    assert (_default.default_client(), cache.enabled) == (configured, False)
-    dfo.enable_cache()
-    assert (_default.default_client(), cache.enabled) == (configured, True)
-    assert clients == [configured]
 
 
 FORK = textwrap.dedent(

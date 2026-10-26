@@ -28,7 +28,7 @@ from dfo._core.types import (
     Rendering,
     RequestedOperation,
 )
-from dfo._datasets.bundle import open_bundle
+from dfo._datasets.bundle import load as load_saved
 from dfo._datasets.cache import sha256_digest
 from dfo._datasets.dataset import Dataset, FetchedMember, build_dataset
 from tests._data import load
@@ -79,7 +79,7 @@ def with_table(member: FetchedMember, table: pa.Table) -> FetchedMember:
 
 def test_one_member_matches_the_recorded_expectation() -> None:
     data = built()
-    assert data.rows == len(data) == EXPECTED["rows"]
+    assert len(data) == EXPECTED["rows"]
     assert data.to_arrow().column_names == EXPECTED["columns"]
     assert data.complete is EXPECTED["complete"]
     assert data.missing == ()
@@ -151,7 +151,7 @@ def test_held_until_is_the_earliest_member_date() -> None:
     data = built(first, second)
     assert data.held_until == date(2026, 11, 18)
     assert data.pinned is False
-    assert "Held until 18 November 2026, not pinned" in repr(data)
+    assert "held until 18 November 2026, not pinned" in repr(data)
 
 
 def test_pinned_when_every_member_is_pinned() -> None:
@@ -161,7 +161,7 @@ def test_pinned_when_every_member_is_pinned() -> None:
     )
     both = built(pinned, with_retention(other_member(), {"pinned": True}))
     assert (both.pinned, both.held_until) == (True, None)
-    assert "Pinned" in repr(both)
+    assert "(exact), pinned" in repr(both)
     mixed = built(pinned, held)
     assert (mixed.pinned, mixed.held_until) == (False, date(2026, 11, 18))
 
@@ -311,10 +311,10 @@ def test_an_empty_artifact_whose_manifest_counts_no_rows_is_empty_and_stacks() -
         rendering=Rendering("parquet", False),
         manifest=body,
     )
-    assert built(empty).rows == 0
+    assert len(built(empty)) == 0
     beside = other_member()
     stacked = built(empty, beside)
-    assert stacked.rows == pq.read_table(pa.BufferReader(beside.data)).num_rows
+    assert len(stacked) == pq.read_table(pa.BufferReader(beside.data)).num_rows
     assert len(stacked.members) == 2
 
 
@@ -399,6 +399,24 @@ def test_pandas_gets_the_provenance_in_attrs() -> None:
     assert len(frame) == 4
     assert frame.attrs["sentence"] == EXPECTED["members"][0]["sentence"]
     assert frame.attrs["sources"] == ["OECD Creditor Reporting System (CRS)"]
+    assert (frame.attrs["complete"], frame.attrs["missing"]) == (True, [])
+
+
+def test_pandas_attrs_carry_the_parts_a_partial_fetch_left_out() -> None:
+    pytest.importorskip("pandas")
+    gaps = _gaps()
+    data = build_dataset(
+        [recorded_member()],
+        layout="long",
+        complete=False,
+        missing=gaps,
+        stale=False,
+    )
+    attrs = data.to_pandas().attrs
+    assert attrs["complete"] is False
+    assert attrs["missing"] == [
+        {"kind": gap.kind, "message": gap.message} for gap in gaps
+    ]
 
 
 def test_polars_gets_the_table() -> None:
@@ -437,6 +455,22 @@ def test_pandas_reads_the_arrow_stream() -> None:
     assert len(frame) == 4
 
 
+@pytest.mark.parametrize(
+    "read",
+    [
+        list,
+        lambda data: data["value"],
+        lambda data: pytest.importorskip("pandas").DataFrame(data),
+    ],
+    ids=["iter", "index", "pandas-constructor"],
+)
+def test_reading_a_dataset_as_rows_or_columns_names_the_conversions(
+    read: Callable[[Dataset], object],
+) -> None:
+    with pytest.raises(TypeError, match=r"data\.to_pandas\(\)"):
+        read(built())
+
+
 def test_polars_reads_the_arrow_stream() -> None:
     polars = pytest.importorskip("polars")
     frame = polars.DataFrame(built())
@@ -462,7 +496,7 @@ def test_a_dataset_pickles() -> None:
     _assert_same(loaded, data)
 
 
-def test_save_then_open_bundle_returns_an_equal_dataset(tmp_path: Path) -> None:
+def test_save_then_load_returns_an_equal_dataset(tmp_path: Path) -> None:
     data = _saved()
     path = tmp_path / "saved.parquet"
     data.save(path)
@@ -471,7 +505,7 @@ def test_save_then_open_bundle_returns_an_equal_dataset(tmp_path: Path) -> None:
     assert stored[b"dfo.sentence"].decode() == data.sentence
     assert data.ref is not None
     assert stored[b"dfo.ref"].decode() == data.ref.to_json()
-    _assert_same(open_bundle(path), data)
+    _assert_same(load_saved(path), data)
 
 
 def _saved() -> Dataset:
@@ -581,7 +615,7 @@ def test_a_damaged_saved_file_raises_format_error(
     edit(metadata)
     pq.write_table(table.replace_schema_metadata(metadata), path)
     with pytest.raises(FormatError) as caught:
-        open_bundle(path)
+        load_saved(path)
     assert (caught.value.reason, caught.value.pointer) == ("format_invalid", pointer)
 
 
@@ -591,6 +625,31 @@ def test_repr_leads_with_the_sentence() -> None:
     assert "Source: OECD Creditor Reporting System (CRS)" in text
     assert "Version: cv_bf242138f8d0a892c97da9373d1626f4" in text
     assert "Rows: 4" in text
+    assert "(exact)" in text
+    assert text.splitlines()[-1].startswith("  Keep: data.save(")
+
+
+@pytest.mark.parametrize(
+    ("caller", "loaded", "names"),
+    [("client", False, "client"), ("dfo", False, "dfo"), ("client", True, "dfo")],
+    ids=["client", "default-client", "loaded"],
+)
+def test_the_repr_names_the_newest_fetch_on_the_client_that_fetched_it(
+    tmp_path: Path, caller: str, *, loaded: bool, names: str
+) -> None:
+    data = build_dataset(
+        [recorded_member()],
+        layout="long",
+        complete=True,
+        missing=(),
+        stale=False,
+        caller=caller,
+    )
+    if loaded:
+        data.save(tmp_path / "saved.parquet")
+        data = load_saved(tmp_path / "saved.parquet")
+    keep = repr(data).splitlines()[-1]
+    assert keep.endswith(f"newest later: {names}.fetch(data.ref, latest=True)>")
 
 
 def test_the_html_display_escapes_every_server_string() -> None:
@@ -648,12 +707,12 @@ def _assert_same(loaded: Dataset, data: Dataset) -> None:
         "pinned",
         "stale",
         "layout_version",
-        "rows",
         "sources",
         "licence",
         "ref",
     ):
         assert getattr(loaded, name) == getattr(data, name), name
+    assert len(loaded) == len(data)
     assert [gap.part.raw for gap in loaded.missing] == [
         gap.part.raw for gap in data.missing
     ]

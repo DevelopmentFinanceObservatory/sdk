@@ -1,13 +1,15 @@
 /** Search: a question in, an answer of what DFO understood out. */
-import { resolveAnswer } from "./answer.ts";
+import { resolveAnswer, SEARCH_OPTIONS } from "./answer.ts";
 import type { Answer, AnswerContext, SearchOptions } from "./answer.ts";
 import { clientError } from "../core/errors.ts";
+import { checkOptions } from "../core/options.ts";
 
 /**
  * Asks Search a question and returns what it understood, part by part.
  *
  * @throws {InvalidRequestError} The question is not a string, is empty or only whitespace, or
- *   holds a lone surrogate, which UTF-8 cannot encode (`invalid_argument`), before any request.
+ *   holds a lone surrogate, which UTF-8 cannot encode, or `options` holds a key it does not
+ *   take (`invalid_argument`), before any request.
  * @throws {ContractError} The answer lacks a member the client acts on.
  */
 export async function search(
@@ -26,5 +28,6 @@ export async function search(
       detail: `The question holds a lone surrogate at position ${surrogate}, which UTF-8 cannot encode.`,
     });
   }
-  return resolveAnswer(context, { kind: "raw_text", query: question }, { ...options, question });
+  const call = checkOptions(SEARCH_OPTIONS, options);
+  return resolveAnswer(context, { kind: "raw_text", query: question }, { ...call, question });
 }

@@ -3,14 +3,14 @@ import { createHash } from "node:crypto";
 import { describe, test } from "node:test";
 
 import { envFrom } from "../src/config/env.ts";
-import { ContractError, VersionUnavailableError } from "../src/core/errors.ts";
-import { mint, resume } from "../src/datasets/fetch.ts";
+import { ContractError, DfoTimeoutError, VersionUnavailableError } from "../src/core/errors.ts";
 import { fetchDataset, VERSIONS_PAGE_BUDGET } from "../src/datasets/resolve.ts";
 import type { ProgressEvent } from "../src/datasets/operation.ts";
 import { DatasetRef } from "../src/core/ref.ts";
 import { DfoWarning } from "../src/core/warnings.ts";
 import type { DatasetRefJson } from "../src/core/ref.ts";
 import { Transport } from "../src/http/transport.ts";
+import { mint, resume } from "./builds.ts";
 import { scenario, scenarioBytes, stepOf } from "./replay.ts";
 import { json, mockFetch, problem } from "./support.ts";
 
@@ -98,13 +98,12 @@ describe("a long build", () => {
     );
     const { transport, waits } = client(fetch);
     const events: ProgressEvent[] = [];
-    const op = await mint(transport, spec);
-    assert.equal(op.operationId, OP);
-    assert.equal(op.status, "pending");
-    const dataset = await op.result({ onProgress: (event) => events.push(event) });
+    const dataset = await fetchDataset(transport, spec, {
+      onProgress: (event) => events.push(event),
+    });
 
     assert.deepEqual(waits, [1500, 2500]);
-    assert.equal(dataset.rows, 4);
+    assert.equal(dataset.rowCount, 4);
     assert.equal(dataset.members[0]!.sentence, spec.resolved?.rendered_sentence);
     assert.deepEqual(events, [
       { operationId: OP, progress: { rowsWritten: 10, estimateRows: 100 }, traceId: null },
@@ -130,7 +129,7 @@ describe("a long build", () => {
       ...download(parquet),
     );
     const { transport, waits } = client(fetch);
-    await (await mint(transport, spec)).result();
+    await fetchDataset(transport, spec);
     assert.deepEqual(waits, [3000, 1000, 2000, 4000, 8000, 8000]);
   });
 
@@ -148,7 +147,7 @@ describe("a long build", () => {
         ...download(parquet),
       );
       const { transport, waits } = client(fetch);
-      await (await mint(transport, spec)).result();
+      await fetchDataset(transport, spec);
       assert.deepEqual(waits, [wait]);
     });
   }
@@ -160,7 +159,7 @@ describe("a long build", () => {
       problem({ code: "build_capacity", status: 503, retryable: true }, { "retry-after": "61" }),
     );
     const { transport, waits } = client(fetch);
-    await assert.rejects((await mint(transport, spec)).result(), {
+    await assert.rejects(fetchDataset(transport, spec), {
       name: "ServerError",
       code: "build_capacity",
       retryAfterMs: 61_000,
@@ -176,7 +175,7 @@ describe("a long build", () => {
         problem({ code: "rate_limited", status: 429, retryable: true }, { "retry-after": header }),
       );
       const { transport, waits } = client(fetch);
-      await assert.rejects(mint(transport, spec), { name: "RateLimitError" });
+      await assert.rejects(fetchDataset(transport, spec), { name: "RateLimitError" });
       assert.deepEqual(waits, []);
       assert.equal(seen.length, 1);
     });
@@ -200,8 +199,8 @@ describe("a long build", () => {
       ...download(parquet),
     );
     const { transport, waits } = client(fetch);
-    const dataset = await (await mint(transport, spec)).result();
-    assert.equal(dataset.rows, 4);
+    const dataset = await fetchDataset(transport, spec);
+    assert.equal(dataset.rowCount, 4);
     // A 429 with no Retry-After falls back to the operation's own pacing, and one with
     // Retry-After: 0 waits the poll interval's floor.
     assert.deepEqual(waits, [1000, 5000, 7000, 1000, 1000]);
@@ -213,8 +212,10 @@ describe("a long build", () => {
       json(operation("pending", { retry_after_ms: 10 }), 202),
       json(operation("running", { operation_id: "../../../admin/x?y=1" })),
     );
-    const op = await mint(client(fetch).transport, spec);
-    await assert.rejects(op.result(), { name: "ContractError", code: "contract_violation" });
+    await assert.rejects(fetchDataset(client(fetch).transport, spec), {
+      name: "ContractError",
+      code: "contract_violation",
+    });
     assert.deepEqual(
       seen.map((request) => new URL(request.url).pathname),
       ["/api/datasets", `/api/datasets/operations/${OP}`],
@@ -227,8 +228,10 @@ describe("a long build", () => {
       json(operation("pending", { retry_after_ms: 1000 }), 202),
       problem({ code: "quota_exceeded", status: 429, retryable: false }, { "retry-after": "5" }),
     );
-    const op = await mint(client(fetch).transport, spec);
-    await assert.rejects(op.result(), { name: "RateLimitError", code: "quota_exceeded" });
+    await assert.rejects(fetchDataset(client(fetch).transport, spec), {
+      name: "RateLimitError",
+      code: "quota_exceeded",
+    });
     assert.equal(seen.length, 2);
   });
 
@@ -247,7 +250,7 @@ describe("a long build", () => {
         ...download(parquet),
       );
       const { transport, waits } = client(fetch);
-      await (await mint(transport, spec)).result();
+      await fetchDataset(transport, spec);
       assert.deepEqual(waits, expected);
     });
   }
@@ -257,8 +260,9 @@ describe("a long build", () => {
     const { fetch } = mockFetch(
       answerAfter(60, json(operation("pending", { retry_after_ms: 1000 }), 202)),
     );
-    const op = await mint(client(fetch, 20).transport, spec);
-    assert.equal(op.operationId, OP);
+    const { poller } = await mint(client(fetch, 20).transport, spec);
+    assert.equal(poller.operationId, OP);
+    assert.equal(poller.status, "pending");
   });
 
   test("spends a retry on a poll attempt that runs past the client's timeout", async () => {
@@ -269,8 +273,8 @@ describe("a long build", () => {
       json({ ...operation("done"), manifest }),
       ...download(parquet),
     );
-    const dataset = await (await mint(client(fetch, 20).transport, spec)).result();
-    assert.equal(dataset.rows, 4);
+    const dataset = await fetchDataset(client(fetch, 20).transport, spec);
+    assert.equal(dataset.rowCount, 4);
     assert.equal(seen.length, 5);
   });
 
@@ -294,26 +298,26 @@ describe("a long build", () => {
   // Each row gives a failed operation's error, which raises operation_failed with the trace id
   // of the response's header and the error's text, as a refusal with no code shows it.
   for (const [name, error, message] of [
-    ["no error", undefined, "The build failed. (operation_failed)"],
+    ["no error", undefined, "The build failed. [operation_failed · trace trace-op]"],
     [
       "an error whose trace_id is not an HTTP token",
       { status: 500, trace_id: "trace op" },
-      "The build failed. (operation_failed)",
+      "The build failed. [operation_failed · trace trace-op]",
     ],
     [
       "an error whose code is not a refusal code",
       { code: "Build Failed", status: 500 },
-      "Build Failed (operation_failed)",
+      "Build Failed [operation_failed · trace trace-op]",
     ],
     [
       "an error with a title and no code",
       { status: 500, title: "Out of memory", error: "oom" },
-      "Out of memory (operation_failed)",
+      "Out of memory [operation_failed · trace trace-op]",
     ],
     [
       "an error with a legacy error and no code",
       { status: 500, error: "oom" },
-      "oom (operation_failed)",
+      "oom [operation_failed · trace trace-op]",
     ],
   ] as const) {
     test(`raises operation_failed for a failed operation with ${name}, with the header's trace id`, async () => {
@@ -349,8 +353,7 @@ describe("a long build", () => {
         json(operation("pending", { retry_after_ms: 1000 }), 202),
         json(answer, 200, { "x-dfo-trace-id": "trace-poll" }),
       );
-      const op = await mint(client(fetch).transport, spec);
-      await assert.rejects(op.result(), {
+      await assert.rejects(fetchDataset(client(fetch).transport, spec), {
         name: "ContractError",
         code: "contract_violation",
         traceId: "trace-poll",
@@ -366,7 +369,7 @@ describe("a long build", () => {
       json(operation("running", { retry_after_ms: 60_000 })),
     );
     const { transport, waits } = client(fetch);
-    await assert.rejects((await mint(transport, spec)).result({ timeout: 4000 }), {
+    await assert.rejects(fetchDataset(transport, spec, { timeout: 4000 }), {
       name: "DfoTimeoutError",
       code: "deadline_exceeded",
     });
@@ -383,10 +386,10 @@ describe("a long build", () => {
       json(operation("running")),
     );
     const { transport, waits } = client(fetch);
-    await assert.rejects((await mint(transport, spec)).result({ timeout: 1100 }), (error) => {
+    await assert.rejects(fetchDataset(transport, spec, { timeout: 1100 }), (error) => {
       assert.ok(error instanceof Error);
       assert.equal(error.name, "DfoTimeoutError");
-      assert.ok(error.message.includes(`client.operation("${OP}").`), error.message);
+      assert.ok(error.message.includes("The same fetch joins it"), error.message);
       return true;
     });
     // The clock stands still while the cut poll runs, so the last wait is the 100 ms left.
@@ -415,14 +418,10 @@ describe("a long build", () => {
     assert.equal(seen.length, 2);
   });
 
-  // Each row starts the build through one call: `mint` then `result`, or a fetch.
-  const calls = {
-    result: async (transport: Transport, spec: Spec) =>
-      (await mint(transport, spec)).result({ timeout: 4000 }),
-    fetch: (transport: Transport, spec: Spec) => fetchDataset(transport, spec, { timeout: 4000 }),
-  };
-  for (const [call, start] of Object.entries(calls)) {
-    test(`${call} returns the data of a build the deadline poll reads done`, async () => {
+  const start = (transport: Transport, spec: Spec) =>
+    fetchDataset(transport, spec, { timeout: 4000 });
+  {
+    test("returns the data of a build the deadline poll reads done", async () => {
       const { spec, manifest, parquet } = await built();
       const { fetch, seen } = mockFetch(
         json(operation("pending", { retry_after_ms: 60_000 }), 202),
@@ -430,7 +429,7 @@ describe("a long build", () => {
         ...download(parquet),
       );
       const dataset = await start(client(fetch).transport, spec);
-      assert.equal(dataset.rows, 4);
+      assert.equal(dataset.rowCount, 4);
       assert.equal(seen.length, 4);
     });
 
@@ -442,7 +441,7 @@ describe("a long build", () => {
       ["files route", [answerAfter(1_000, route)]],
       ["signed URL", [route, answerAfter(1_000, slow), route, answerAfter(1_000, slow)]],
     ] as const) {
-      test(`${call} names the call that resumes a build the deadline poll reads done when one attempt at its ${hangs} runs out of time`, async () => {
+      test(`says a build the deadline poll reads done is done when one attempt at its ${hangs} runs out of time`, async () => {
         const { spec, manifest } = await built();
         const { fetch, seen } = mockFetch(
           json(operation("pending", { retry_after_ms: 60_000 }), 202),
@@ -452,11 +451,7 @@ describe("a long build", () => {
         await assert.rejects(start(client(fetch, 20).transport, spec), (error) => {
           assert.ok(error instanceof Error);
           assert.equal(error.name, "DfoTimeoutError");
-          assert.ok(error.message.includes(`client.operation("${OP}").`), error.message);
-          assert.ok(
-            error.message.startsWith("The build is done, but its download ran out of time."),
-            error.message,
-          );
+          assert.ok(error.message.includes("The same fetch downloads it again."), error.message);
           return true;
         });
         // Each request gets one attempt, with no retry.
@@ -465,8 +460,8 @@ describe("a long build", () => {
     }
   }
 
-  for (const [call, start] of Object.entries(calls)) {
-    test(`${call} names the call that resumes a build done before the deadline whose download attempts all run out of time`, async () => {
+  {
+    test("raises the attempt timeout of a download done before the deadline as it is", async () => {
       const { spec, manifest } = await built();
       const route = () => new Response(null, { status: 302, headers: { location: SIGNED } });
       const { fetch } = mockFetch(
@@ -474,38 +469,17 @@ describe("a long build", () => {
         json({ ...operation("done"), manifest }),
         ...Array.from({ length: 11 }, () => answerAfter(1_000, route)),
       );
+      // The caller's timeout has not passed, so the error is the attempts' own.
       await assert.rejects(start(client(fetch, 20).transport, spec), (error) => {
-        assert.ok(error instanceof Error);
-        assert.equal(error.name, "DfoTimeoutError");
-        assert.ok(error.message.includes(`client.operation("${OP}").`), error.message);
+        assert.ok(error instanceof DfoTimeoutError);
+        assert.equal(error.code, "deadline_exceeded");
+        assert.equal(error.retryable, true);
+        assert.match(error.message, /^One attempt at .* waited/);
+        assert.ok(!error.message.includes("The same fetch"), error.message);
         return true;
       });
     });
   }
-
-  test("gives a later result its own deadline after the deadline poll's download fails", async () => {
-    const { spec, manifest, parquet } = await built();
-    let tick: (ms: number) => void = () => undefined;
-    const { fetch, seen } = mockFetch(
-      json(operation("pending", { retry_after_ms: 60_000 }), 202),
-      json({ ...operation("done"), manifest }),
-      problem({ code: "build_capacity", status: 503, retryable: true }),
-      // The second call's files route answers once its 50 ms have passed.
-      () => {
-        tick(60);
-        return new Response(null, { status: 302, headers: { location: SIGNED } });
-      },
-      () => new Response(parquet.slice(), { status: 200 }),
-    );
-    const made = client(fetch);
-    tick = made.tick;
-    const started = await mint(made.transport, spec);
-    await assert.rejects(started.result({ timeout: 4000 }), { code: "build_capacity" });
-    // The second call polls nothing, so the first call's one-attempt grace does not carry over.
-    await assert.rejects(started.result({ timeout: 50 }), { code: "deadline_exceeded" });
-    // The signed URL, past the second call's deadline, is never requested.
-    assert.equal(seen.length, 4);
-  });
 
   test("strips controls from a failed operation's detail and links its code's page", async () => {
     const { fetch } = mockFetch(
@@ -522,7 +496,7 @@ describe("a long build", () => {
     const op = await resume(client(fetch).transport, OP);
     await assert.rejects(op.result(), {
       code: "build_failed",
-      message: "[31mfailed\nhere (build_failed)",
+      message: "[31mfailed\nhere\n[build_failed]",
       docsUrl: "https://api.example/codes/build_failed",
     });
   });
@@ -537,85 +511,107 @@ describe("a long build", () => {
     );
     const { transport, waits } = client(fetch);
     const dataset = await fetchDataset(transport, spec);
-    assert.equal(dataset.rows, 4);
+    assert.equal(dataset.rowCount, 4);
     assert.deepEqual(waits, [7000, 1000]);
     assert.equal(seen[1]!.body, seen[0]!.body);
   });
 
-  // Each row gives a mint's or a resume's options, the options a mint's build posts, and the
-  // arguments of the call the timeout names to resume it.
-  for (const started of ["mint", "resume"] as const) {
-    for (const [options, posted, call] of [
-      [{}, {}, `"${OP}"`],
-      [{ layout: "frame" }, { layout: "frame" }, `"${OP}", { layout: "frame" }`],
-      [
-        { withoutPartyTotals: true },
-        { without_party_totals: true },
-        `"${OP}", { withoutPartyTotals: true }`,
-      ],
-    ] as const) {
-      test(`names the call that resumes it at the deadline, after a ${started}: ${call}`, async () => {
-        const { spec } = await built();
-        const running = json(operation("running", { retry_after_ms: 1000 }));
-        const { fetch, seen } = mockFetch(
-          json(operation("pending", { retry_after_ms: 1000 }), started === "mint" ? 202 : 200),
-          running,
-          running,
-          running,
-        );
-        const { transport, waits } = client(fetch);
-        const op =
-          started === "mint"
-            ? await mint(transport, spec, options)
-            : await resume(transport, OP, options);
-        if (started === "mint") {
-          const body = JSON.parse(seen[0]!.body!) as { options: Record<string, unknown> };
-          assert.deepEqual(body.options, { format: "parquet", bundle: false, ...posted });
-        }
-        await assert.rejects(op.result({ timeout: 2500 }), (error: unknown) => {
-          assert.ok(error instanceof Error);
-          assert.equal(error.name, "DfoTimeoutError");
-          assert.ok(error.message.includes(`client.operation(${call}).`), error.message);
-          return true;
-        });
-        // The last wait ends at the deadline, and the poll at the deadline reads it running.
-        assert.deepEqual(waits, [1000, 1000, 500]);
-        assert.equal(seen.length, 4);
-      });
-    }
-  }
-
-  for (const isCut of [false, true]) {
-    test(`resumes by id in another process, taking the sentence from Search${isCut ? ", a cut" : ""}`, async () => {
-      const { manifest, parquet, resolved } = await built();
-      // A cut build's manifest lists its files as cuts, so only the cut's options read them.
-      const artifacts = (manifest["artifacts"] as Record<string, unknown>[]).map((artifact) =>
-        isCut
-          ? {
-              ...artifact,
-              rendering: {
-                ...(artifact["rendering"] as Record<string, unknown>),
-                without_party_totals: true,
-              },
-            }
-          : artifact,
-      );
-      const { fetch, seen } = mockFetch(
-        json(operation("running", { retry_after_ms: 2000 })),
-        json({ ...operation("done"), manifest: { ...manifest, artifacts } }),
-        json(resolved),
-        ...download(parquet),
-      );
-      const { transport, waits } = client(fetch);
-      const op = await resume(transport, OP, isCut ? { withoutPartyTotals: true } : {});
-      assert.equal(op.status, "running");
-      const dataset = await op.result();
-      assert.deepEqual(waits, [2000]);
-      assert.match(dataset.sentence, /2020 to 2023/);
-      assert.equal(seen[2]!.url, `${BASE}/search/resolve`);
-      assert.equal(dataset.ref.members[0]!.rendering.without_party_totals, isCut || undefined);
+  test("says at the deadline the build carries on and the same fetch joins it", async () => {
+    const { spec } = await built();
+    const running = json(operation("running", { retry_after_ms: 1000 }));
+    const { fetch, seen } = mockFetch(
+      json(operation("pending", { retry_after_ms: 1000 }), 202),
+      running,
+      running,
+      running,
+    );
+    const { transport, waits } = client(fetch);
+    await assert.rejects(fetchDataset(transport, spec, { timeout: 2500 }), (error: unknown) => {
+      assert.ok(error instanceof DfoTimeoutError);
+      assert.equal(error.code, "deadline_exceeded");
+      assert.equal(error.retryable, true);
+      assert.ok(error.message.includes("after 2.5 s"), error.message);
+      assert.ok(error.message.includes("The same fetch joins it if one started."), error.message);
+      return true;
     });
-  }
+    // The last wait ends at the deadline, and the poll at the deadline reads it running.
+    assert.deepEqual(waits, [1000, 1000, 500]);
+    assert.equal(seen.length, 4);
+  });
+
+  test("says the same fetch joins the build when the timeout cuts its POST off", async () => {
+    const { spec } = await built();
+    const { fetch, seen } = mockFetch(answerAfter(1_000, json(operation("pending"), 202)));
+    const transport = new Transport({
+      baseUrl: BASE,
+      apiKey: false,
+      env: envFrom({}),
+      readCredentialsFile: () => null,
+      fetch,
+    });
+    await assert.rejects(fetchDataset(transport, spec, { timeout: 20 }), (error: unknown) => {
+      assert.ok(error instanceof DfoTimeoutError);
+      assert.equal(error.code, "deadline_exceeded");
+      assert.ok(error.message.includes("The same fetch joins it if one started."), error.message);
+      return true;
+    });
+    assert.equal(seen.length, 1);
+  });
+
+  test("waits with no deadline of its own past 1,800 s", async () => {
+    const { spec, manifest, parquet } = await built();
+    const running = json(operation("running", { retry_after_ms: 60_000 }));
+    const { fetch } = mockFetch(
+      json(operation("pending", { retry_after_ms: 60_000 }), 202),
+      ...Array.from({ length: 35 }, () => running),
+      json({ ...operation("done"), manifest }),
+      ...download(parquet),
+    );
+    const { transport, waits } = client(fetch);
+    const dataset = await fetchDataset(transport, spec);
+    assert.equal(dataset.rowCount, 4);
+    assert.equal(
+      waits.reduce((sum, ms) => sum + ms, 0),
+      36 * 60_000,
+    );
+  });
+
+  test("rejects with the signal's reason when aborted mid-build, sending nothing more", async () => {
+    const { spec } = await built();
+    const controller = new AbortController();
+    const reason = new Error("the caller left");
+    const { fetch, seen } = mockFetch(
+      json(operation("pending", { retry_after_ms: 1000 }), 202),
+      () => {
+        controller.abort(reason);
+        return json(operation("running", { retry_after_ms: 1000 }))();
+      },
+      json(operation("running")),
+    );
+    const { transport } = client(fetch);
+    await assert.rejects(
+      fetchDataset(transport, spec, { signal: controller.signal }),
+      (error) => error === reason,
+    );
+    assert.equal(seen.length, 2);
+  });
+
+  test("reads a build by its operation id, taking the sentence from Search", async () => {
+    const { manifest, parquet, resolved } = await built();
+    const { fetch, seen } = mockFetch(
+      json(operation("running", { retry_after_ms: 2000 })),
+      json({ ...operation("done"), manifest }),
+      json(resolved),
+      ...download(parquet),
+    );
+    const { transport, waits } = client(fetch);
+    const op = await resume(transport, OP);
+    assert.equal(op.poller.status, "running");
+    const dataset = await op.result();
+    assert.deepEqual(waits, [2000]);
+    assert.match(dataset.sentence, /2020 to 2023/);
+    assert.equal(seen[2]!.url, `${BASE}/search/resolve`);
+  });
 
   test("resubmits a build whose operation failed retryably, once", async () => {
     const { spec, manifest, parquet } = await built();
@@ -627,8 +623,8 @@ describe("a long build", () => {
       ...download(parquet),
     );
     const { transport } = client(fetch);
-    const dataset = await (await mint(transport, spec)).result();
-    assert.equal(dataset.rows, 4);
+    const dataset = await fetchDataset(transport, spec);
+    assert.equal(dataset.rowCount, 4);
     assert.equal(seen[2]!.method, "POST");
     assert.equal(seen[2]!.body, seen[0]!.body);
   });
@@ -654,7 +650,7 @@ describe("a long build", () => {
         failure,
       );
       const { transport } = client(fetch);
-      await assert.rejects((await mint(transport, spec)).result({ timeout: 1000 }), {
+      await assert.rejects(fetchDataset(transport, spec, { timeout: 1000 }), {
         name: "ServerError",
         code,
         retryable: true,
@@ -673,8 +669,8 @@ describe("a long build", () => {
       ...download(parquet),
     );
     const { transport } = client(fetch);
-    const dataset = await (await mint(transport, spec)).result();
-    assert.equal(dataset.rows, 4);
+    const dataset = await fetchDataset(transport, spec);
+    assert.equal(dataset.rowCount, 4);
     assert.equal(seen[2]!.method, "POST");
   });
 
@@ -685,7 +681,7 @@ describe("a long build", () => {
       problem({ code: "operation_failed", status: 500 }),
     );
     const { transport } = client(fetch);
-    await assert.rejects((await mint(transport, spec)).result(), {
+    await assert.rejects(fetchDataset(transport, spec), {
       name: "ServerError",
       code: "operation_failed",
     });
@@ -785,7 +781,7 @@ describe("a stored version's lookup order", () => {
       const dataset = await fetchDataset(client(fetch).transport, ref);
       // The selector renders the version with the options it was minted with.
       assert.equal(seen[2]!.url, `${version}/file?format=parquet&bundle=false`);
-      assert.equal(dataset.rows, 30);
+      assert.equal(dataset.rowCount, 30);
     });
 
     test(`refuses a ref whose digest the snapshot lists under the other rendering${isCut ? ", a cut" : ""}`, async () => {
@@ -847,7 +843,7 @@ describe("a stored version's lookup order", () => {
     const dataset = await fetchDataset(transport, ref);
     assert.equal(seen[6]!.method, "POST");
     assert.equal(dataset.ref.members[0]!.digest, digest);
-    assert.equal(dataset.rows, 30);
+    assert.equal(dataset.rowCount, 30);
     assert.deepEqual(
       warnings.map((warning) => warning.code),
       ["ref_digest_changed"],
@@ -881,7 +877,8 @@ describe("a stored version's lookup order", () => {
     await assert.rejects(fetchDataset(client(fetch).transport, ref), (error: unknown) => {
       assert.ok(error instanceof Error);
       assert.equal(error.name, "VersionUnavailableError");
-      assert.match(error.message, new RegExp(`newest version is cv_${"1".repeat(32)}`));
+      assert.equal((error as VersionUnavailableError).newestVersion, `cv_${"1".repeat(32)}`);
+      assert.ok(error.message.includes("client.fetch(ref, { latest: true }) ["), error.message);
       return true;
     });
     assert.equal(seen[2]!.url, `${version}/file?format=parquet&bundle=false`);
@@ -1088,7 +1085,7 @@ describe("a stored version's lookup order", () => {
       assert.equal(error.name, "VersionUnavailableError");
       assert.equal(error.code, "artifact_expired");
       assert.equal((error as VersionUnavailableError).newestVersion, newest);
-      assert.match(error.message, new RegExp(`newest version is ${newest}`));
+      assert.ok(error.message.includes("client.fetch(ref, { latest: true }) ["), error.message);
       return true;
     });
     assert.equal(seen[2]!.url, `${BASE}/datasets/${member.spec.spec_id}/versions?limit=100`);

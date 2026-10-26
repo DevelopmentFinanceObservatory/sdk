@@ -283,14 +283,17 @@ def test_the_python_worker_points_clients_at_the_base_url_and_refuses_production
             "import dfo\nassert dfo.Client().base_url.startswith('http://127.0.0.1:9')",
         ),
         Block(
-            "doc.md", 5, "python", f"dfo.Client(base_url={production!r}).catalogue()"
+            "doc.md",
+            5,
+            "python",
+            f"dfo.Client(base_url={production!r}).lookup.catalogue()",
         ),
         Block(
             "doc.md",
             9,
             "python",
             "import asyncio\n"
-            f"asyncio.run(dfo.AsyncClient(base_url={production!r}).catalogue())",
+            f"asyncio.run(dfo.AsyncClient(base_url={production!r}).lookup.catalogue())",
         ),
     ]
     run = check.Run(base_url="http://127.0.0.1:9/api", workdir=tmp_path, timeout=60)
@@ -312,9 +315,9 @@ def test_the_sdk_docs_parse_and_hold_blocks_of_both_languages() -> None:
 
 
 def test_the_package_subpaths_load_source_files_that_exist() -> None:
-    entries = check.package_entries("file:///shim.mjs")
+    entries = check.package_entries()
 
-    assert entries.pop("") == "file:///shim.mjs"
+    assert entries.pop("") == check.NODE_ENTRY.as_uri()
     assert sorted(entries) == ["/arrow", "/wire"]
     assert all(Path(urlsplit(url).path).is_file() for url in entries.values())
 

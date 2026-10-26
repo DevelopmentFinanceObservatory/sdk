@@ -68,3 +68,48 @@ export function recordingSleep(): { sleep: (ms: number) => Promise<void>; waits:
     },
   };
 }
+
+/**
+ * The first item of `log` from `start` on that `matches`, checked every 100 ms while `call`
+ * runs. It rejects with the call's error when the call fails first, with the abort reason when
+ * `signal` aborts first, and with an error of its own when the call ends having logged none.
+ * The timer stops on every outcome, so a failed call leaves nothing running.
+ */
+export function firstLogged<T>(
+  log: readonly T[],
+  start: number,
+  matches: (item: T) => boolean,
+  call: Promise<unknown>,
+  signal: AbortSignal,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setInterval(check, 100);
+    function stop(): void {
+      clearInterval(timer);
+      signal.removeEventListener("abort", onAbort);
+    }
+    function check(): boolean {
+      const item = log.slice(start).find(matches);
+      if (item === undefined) return false;
+      stop();
+      resolve(item);
+      return true;
+    }
+    function fail(error: unknown): void {
+      stop();
+      reject(error);
+    }
+    function onAbort(): void {
+      fail(signal.reason);
+    }
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort);
+    call.then(() => {
+      if (!check()) fail(new Error("the call ended having logged none"));
+    }, fail);
+    check();
+  });
+}

@@ -1,4 +1,5 @@
 import type { CredentialsFileReader } from "../config/credentials.ts";
+import { readProcessEnv } from "../config/env.ts";
 import type { EnvReader } from "../config/env.ts";
 import {
   capped,
@@ -20,10 +21,23 @@ import { VERSION } from "../version.ts";
 import { clientWarning, emitWarning, warnOnce } from "../core/warnings.ts";
 import type { DfoWarning, WarningHandler } from "../core/warnings.ts";
 import { isRecord, parseJson } from "../core/json.ts";
-import { controlFault, hasDotSegment, headerFault, keyFault, secretPattern } from "../core/text.ts";
+import {
+  controlFault,
+  hasDotSegment,
+  headerFault,
+  inline,
+  keyFault,
+  secretPattern,
+} from "../core/text.ts";
 
 /** The public API's base URL. */
-const DEFAULT_BASE_URL = "https://developmentfinance.org/api/v1";
+export const DEFAULT_BASE_URL = "https://developmentfinance.org/api/v1";
+/** The environment variable that sets the base URL when the caller passes none. */
+const BASE_URL_VARIABLE = "DFO_BASE_URL";
+
+/** Where a transport's base URL came from: the `baseUrl` option, `DFO_BASE_URL`, or the public
+ *  API's by default. */
+export type BaseUrlSource = "argument" | typeof BASE_URL_VARIABLE | "default";
 /** The longest one request attempt waits, in milliseconds, unless a call sets its own. */
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_RETRIES = 2;
@@ -55,6 +69,9 @@ const IMF_FIXDATE =
 const MAX_TIMER_MS = 2 ** 31 - 1;
 /** A timer's delay for `ms`: whole milliseconds, at least 1 and at most `MAX_TIMER_MS`. */
 const timerMs = (ms: number): number => Math.min(Math.max(1, Math.ceil(ms)), MAX_TIMER_MS);
+
+/** A span of `ms` milliseconds as a message writes it, in seconds: `25 s`, `1.5 s`. */
+export const seconds = (ms: number): string => `${ms / 1000} s`;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 /** The headers HTTP itself sets, which frame a message or govern one connection, and which a
  *  caller's header would contradict: the framing headers and RFC 9110's hop-by-hop ones. */
@@ -77,7 +94,8 @@ export type HeaderProvider = (request: {
 }) => HeadersInit | Promise<HeadersInit>;
 
 export type TransportOptions = {
-  /** The API's base URL. A relative one, such as `/api/v1`, resolves against the page. */
+  /** The API's base URL. A relative one, such as `/api/v1`, resolves against the page. Without
+   *  one, `DFO_BASE_URL` from `env`, else the public API's. */
   baseUrl?: string;
   apiKey?: ApiKeyOption;
   /** Sends a secret key from a browser page or worker, where every visitor can read it. */
@@ -98,6 +116,8 @@ export type TransportOptions = {
   /** The clock and sleep the retry waits use. */
   now?: () => number;
   sleep?: Sleep;
+  /** Reads `DFO_BASE_URL` and the key lookup's variables; the process environment, where the
+   *  platform has one, by default. */
   env?: EnvReader;
   readCredentialsFile?: CredentialsFileReader;
   /** Observes each long build as its polling starts. The contract replay reads its record. */
@@ -151,6 +171,9 @@ export type Located =
 export type SignedFetchOptions = CallOptions & {
   /** Fetches the files route and lets the browser follow its redirect, carrying the key alone. */
   follow?: boolean;
+  /** The longest the fetch may go with no byte arriving, response headers included, in
+   *  milliseconds. Past it the fetch fails with a retryable `network_error`. None by default. */
+  stall?: number;
 };
 
 /** A response with its whole body, read under the attempt's limit. */
@@ -205,21 +228,27 @@ function isLoopback(hostname: string): boolean {
 
 /**
  * The base URL as an absolute http or https URL. A relative one resolves against the page. The
- * errors leave the URL out, since it may carry a password.
+ * errors leave the URL out, since it may carry a password, and name `DFO_BASE_URL` when the URL
+ * came from it.
  *
  * @throws {InvalidRequestError} The base URL is not a string, is empty, holds a character
  *   outside visible ASCII, does not resolve to an absolute http or https URL, carries userinfo,
  *   a query, a fragment or a dot segment, or writes an IPv4 host other than as four decimal
  *   octets (`base_url_invalid`).
  */
-function resolveBaseUrl(baseUrl: unknown): URL {
+function resolveBaseUrl(baseUrl: unknown, source: BaseUrlSource): URL {
+  const fromEnv = source === BASE_URL_VARIABLE;
   const refuse = (problem: string, cause?: unknown) =>
     clientError("base_url_invalid", {
-      detail: `The base URL ${problem}. Pass an absolute https URL, such as ${DEFAULT_BASE_URL}.`,
+      detail:
+        `${fromEnv ? `The base URL in ${BASE_URL_VARIABLE}` : "The base URL"} ${problem}. ` +
+        `Pass an absolute https URL, such as ${DEFAULT_BASE_URL}.`,
       cause,
     });
   if (typeof baseUrl !== "string") throw refuse(`is ${described(baseUrl)}, not a string`);
-  if (baseUrl.trim() === "") throw refuse("is empty; leave baseUrl out for the public API");
+  if (baseUrl.trim() === "") {
+    throw refuse(`is empty; leave ${fromEnv ? "it unset" : "baseUrl out"} for the public API`);
+  }
   const fault = keyFault(baseUrl);
   if (fault !== null) throw refuse(`holds ${fault}`);
   if (/[?#]/.test(baseUrl)) throw refuse("carries a query or a fragment");
@@ -438,6 +467,21 @@ export class RawResponse {
   json(): unknown {
     return parseBody(this.body);
   }
+
+  /** The status, the content type when the response names one, and the body's size, as
+   *  `RawResponse(200, application/json, 2 bytes)`, on one line through `inline`. */
+  toString(): string {
+    const type = this.headers.get("content-type");
+    const size = `${this.body.length} byte${this.body.length === 1 ? "" : "s"}`;
+    return inline(
+      `RawResponse(${[String(this.status), ...(type === null ? [] : [type]), size].join(", ")})`,
+    );
+  }
+
+  /** Node's `console.log` and `util.inspect` show the response as `String(response)` does. */
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return this.toString();
+  }
 }
 
 /** Milliseconds a `Retry-After` header asks for: ASCII digits, a count of seconds, or an
@@ -553,6 +597,7 @@ const isRedirect = (response: Response): boolean =>
 async function readWithin(
   response: Response,
   limit: number,
+  onChunk?: () => void,
 ): Promise<Uint8Array<ArrayBuffer> | null> {
   const stream = response.body;
   if (!isRecord(stream)) {
@@ -566,6 +611,7 @@ async function readWithin(
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
+    onChunk?.();
     size += value.byteLength;
     if (size > limit) {
       await reader.cancel().catch(() => undefined);
@@ -581,6 +627,34 @@ async function readWithin(
     offset += chunk.byteLength;
   }
   return body;
+}
+
+/** A timer that aborts its signal once `ms` pass with no `touch`, bounding a stalled read. */
+class StallTimer {
+  readonly #controller = new AbortController();
+  readonly #ms: number;
+  #timer: ReturnType<typeof setTimeout> | undefined;
+
+  constructor(ms: number) {
+    this.#ms = ms;
+    this.touch();
+  }
+
+  get signal(): AbortSignal {
+    return this.#controller.signal;
+  }
+
+  /** Starts the wait again, as a byte has arrived. */
+  readonly touch = (): void => {
+    clearTimeout(this.#timer);
+    this.#timer = setTimeout(() => {
+      this.#controller.abort();
+    }, timerMs(this.#ms));
+  };
+
+  stop(): void {
+    clearTimeout(this.#timer);
+  }
 }
 
 /** The timeouts raised because a call's deadline passed, which another attempt cannot clear.
@@ -623,6 +697,8 @@ const problemText = (problem: Readonly<Record<string, unknown>> | null): string 
  */
 export class Transport {
   readonly baseUrl: URL;
+  /** Where `baseUrl` came from. */
+  readonly baseUrlSource: BaseUrlSource;
   readonly timeout: number;
   readonly maxRetries: number;
   readonly #options: TransportOptions;
@@ -633,15 +709,18 @@ export class Transport {
   /** The resolved key, shared with every copy `withOptions` makes. */
   readonly #key: { promise: Promise<ResolvedKey> };
 
-  /** The key `withOptions` hands the copy it builds, which resolves none of its own. */
-  static #sharing: { promise: Promise<ResolvedKey> } | undefined;
+  /** The base URL and key `withOptions` hands the copy it builds, which reads and resolves
+   *  none of its own. */
+  static #sharing:
+    | { baseUrl: URL; baseUrlSource: BaseUrlSource; key: { promise: Promise<ResolvedKey> } }
+    | undefined;
 
   /**
    * @throws {AuthenticationError} The key resolves to an empty argument or holds a character
    *   outside visible ASCII, or the credentials file cannot be read, is invalid or lacks the
    *   profile or the key the lookup chose.
-   * @throws {InvalidRequestError} The base URL is not an absolute http or https URL or carries
-   *   userinfo (`base_url_invalid`); a key would go over plain http to a host that is not
+   * @throws {InvalidRequestError} The base URL, from `baseUrl` or else `DFO_BASE_URL`, is not an
+   *   absolute http or https URL or carries userinfo (`base_url_invalid`); a key would go over plain http to a host that is not
    *   loopback (`insecure_transport`); a default header holds a control character
    *   (`header_invalid`); the timeout is not a finite number above 0, or the retry count not an
    *   integer from 0 to 10 (`invalid_argument`).
@@ -650,7 +729,26 @@ export class Transport {
    */
   constructor(options: TransportOptions = {}) {
     this.#options = options;
-    this.baseUrl = resolveBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
+    const sharing = Transport.#sharing;
+    if (sharing === undefined) {
+      const fromEnv =
+        options.baseUrl === undefined
+          ? (options.env ?? readProcessEnv)(BASE_URL_VARIABLE)
+          : undefined;
+      this.baseUrlSource =
+        options.baseUrl !== undefined
+          ? "argument"
+          : fromEnv !== undefined
+            ? BASE_URL_VARIABLE
+            : "default";
+      this.baseUrl = resolveBaseUrl(
+        options.baseUrl ?? fromEnv ?? DEFAULT_BASE_URL,
+        this.baseUrlSource,
+      );
+    } else {
+      this.baseUrlSource = sharing.baseUrlSource;
+      this.baseUrl = sharing.baseUrl;
+    }
     setHeaders(new Headers(), Object.entries(options.defaultHeaders ?? {}), "the headers option");
     this.timeout =
       options.timeout === undefined
@@ -662,7 +760,7 @@ export class Transport {
     this.#now = options.now ?? (() => performance.now());
     this.#sleep = options.sleep ?? defaultSleep;
     this.#onWarning = options.onWarning ?? emitWarning;
-    this.#key = Transport.#sharing ?? { promise: this.#resolveKey() };
+    this.#key = sharing?.key ?? { promise: this.#resolveKey() };
   }
 
   /** The transport's clock, in milliseconds. */
@@ -695,14 +793,18 @@ export class Transport {
   }
 
   /**
-   * A copy with other limits that shares this transport's fetch, headers, warning handler and
-   * resolved key.
+   * A copy with other limits that shares this transport's base URL, fetch, headers, warning
+   * handler and resolved key.
    *
    * @throws {InvalidRequestError} The timeout is not a finite number above 0, or the retry count
    *   not an integer from 0 to 10 (`invalid_argument`).
    */
   withOptions(options: Pick<TransportOptions, "timeout" | "maxRetries">): Transport {
-    Transport.#sharing = this.#key;
+    Transport.#sharing = {
+      baseUrl: this.baseUrl,
+      baseUrlSource: this.baseUrlSource,
+      key: this.#key,
+    };
     try {
       return new Transport({
         ...this.#options,
@@ -1222,14 +1324,20 @@ export class Transport {
    * follows. A 2xx body past `maxBytes`, or a redirect's past `JSON_BODY_MAX_BYTES`, returns
    * `response_too_large`, which no retry follows either. A refusal whose body passes
    * `JSON_BODY_MAX_BYTES` returns with a null body, so a 401 still resolves the key again.
+   * With `stall`, a fetch that goes that long with no byte returns a retryable `network_error`.
    *
    * @throws {InvalidRequestError} The `fetch` option returned something that is not a Response
    *   (`invalid_argument`).
    */
-  async #attempt(url: URL, options: CallOptions, init: RequestInit): Promise<Attempted | DfoError> {
+  async #attempt(
+    url: URL,
+    options: CallOptions & { stall?: number },
+    init: RequestInit,
+  ): Promise<Attempted | DfoError> {
     const limit = this.#limit(url, options);
     const timer = Number.isFinite(limit.ms) ? AbortSignal.timeout(timerMs(limit.ms)) : undefined;
-    const signals = [options.signal, timer].filter((signal) => signal !== undefined);
+    const stall = options.stall === undefined ? undefined : new StallTimer(options.stall);
+    const signals = [options.signal, timer, stall?.signal].filter((signal) => signal !== undefined);
     const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
     try {
       const response: unknown = await this.#fetch(url, { ...init, ...(signal ? { signal } : {}) });
@@ -1241,7 +1349,8 @@ export class Transport {
       const { status } = response;
       const ok = status >= 200 && status < 300;
       const maxBytes = ok ? (options.maxBytes ?? JSON_BODY_MAX_BYTES) : JSON_BODY_MAX_BYTES;
-      const body = await readWithin(response, maxBytes);
+      stall?.touch();
+      const body = await readWithin(response, maxBytes, stall?.touch);
       // A refusal too large to read is still a refusal, which `#refusal` raises by its status.
       if (body !== null || status >= 400) return { response, body };
       return clientError("response_too_large", {
@@ -1258,12 +1367,20 @@ export class Transport {
           cause: error,
         });
       }
+      if (stall?.signal.aborted) {
+        return clientError("network_error", {
+          detail: `The download from ${url.host} sent no byte for ${seconds(options.stall!)}.`,
+          cause: error,
+        });
+      }
       return clientError("network_error", {
         detail:
           `The request to ${url.host} failed before its whole response arrived ` +
           `(${failureReason(error)}).`,
         cause: error,
       });
+    } finally {
+      stall?.stop();
     }
   }
 
@@ -1361,9 +1478,7 @@ export class Transport {
         code: serverCode(raised),
         status,
         detail: text ?? code ?? refused.untold,
-        message: refusalMessage(text ?? refused.untold, problem?.["pointer"], raised, {
-          unmatched,
-        }),
+        message: refusalMessage(text ?? refused.untold, problem?.["pointer"], { unmatched }),
         traceId,
         retryable,
         retryAfterMs: retryAfter,
@@ -1379,8 +1494,8 @@ export class Transport {
       detail: text === undefined ? `${lead}.` : `${lead}: ${text}`,
       message:
         text === undefined
-          ? refusalMessage(`${lead}.`, undefined, null, { unmatched })
-          : refusalMessage(text, undefined, null, { lead, unmatched }),
+          ? refusalMessage(`${lead}.`, undefined, { unmatched })
+          : refusalMessage(text, undefined, { lead, unmatched }),
       traceId,
       retryable,
       retryAfterMs: retryAfter,

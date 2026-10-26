@@ -1,5 +1,8 @@
 """Lookups for names and codes in the graph, the code registry and Search's catalogue.
 
+A client carries them as `client.lookup`, and `dfo.lookup` holds the same calls on
+the default client.
+
 Each lookup returns the decoded response body, typed by the served OpenAPI
 document's schema. The body must be an object holding the members that schema
 requires, each as its JSON type, else it raises `ContractError`
@@ -22,12 +25,13 @@ from dfo._core.errors import ContractError, client_error
 from dfo._core.parse import require_members
 from dfo._core.refusals import CODE, describing, trace_id_of
 from dfo._core.text import control_fault, has_dot_segment
-from dfo._core.types import Node, ResolveKind, matches
+from dfo._core.types import Node, matches
 from dfo._datasets.build import response_json
 from dfo._generated.strict import JsonType
 from dfo._generated.wire import (
     CatalogueResponse,
     CodeRegistryEntry,
+    ResolveKind,
     ResolveResponse,
 )
 from dfo._http.transport import AsyncTransport
@@ -81,12 +85,19 @@ def _check_dcid(dcid: object) -> None:
     )
 
 
-class AsyncGraph:
-    """The graph's lookups: names to dcids, and a node by its dcid."""
+class AsyncLookup:
+    """Names to dcids, a graph node by its dcid, a code's registry entry, and
+    Search's catalogue."""
 
     def __init__(self, transport: AsyncTransport) -> None:
         """Look up through `transport`."""
         self._transport = transport
+
+    def __repr__(self) -> str:
+        return (
+            f"<{type(self).__name__}: resolve(*names), node(dcid), code(code), "
+            "catalogue()>"
+        )
 
     async def resolve(
         self,
@@ -146,16 +157,9 @@ class AsyncGraph:
             (("kind", "string"), ("ref", "string")),
         )
 
-
-class AsyncCodes:
-    """The code registry: what each refusal and warning code means."""
-
-    def __init__(self, transport: AsyncTransport) -> None:
-        """Look up through `transport`."""
-        self._transport = transport
-
-    async def get(self, code: str, /) -> CodeRegistryEntry:
-        """The registry entry for one code, such as `spec_not_found`.
+    async def code(self, code: str, /) -> CodeRegistryEntry:
+        """The registry entry for one code, such as `spec_not_found`, which says
+        what that refusal or warning means.
 
         The registry sits at the API host's root, the page an error's `docs_url`
         names.
@@ -180,22 +184,24 @@ class AsyncCodes:
             (("code", "string"), ("mappings", "array")),
         )
 
+    async def catalogue(self, *, place: str | None = None) -> CatalogueResponse:
+        """What Search holds data on: counts and example questions.
 
-async def catalogue(
-    transport: AsyncTransport, *, place: str | None = None
-) -> CatalogueResponse:
-    """The catalogue of what Search holds data on, with counts and example questions.
-
-    Args:
-        transport: The transport the request goes through.
-        place: A country dcid, such as `country/NGA`, to scope the counts and
-            examples to that country.
-    """
-    params = None if place is None else {"place": place}
-    response = await transport.request("GET", "/search/catalogue", params=params)
-    return _lookup_body(
-        transport,
-        response,
-        "CatalogueResponse",
-        (("catalogue_version", "string"), ("counts", "object"), ("examples", "array")),
-    )
+        Args:
+            place: A country dcid, such as `country/NGA`, to scope the counts
+                and examples to that country.
+        """
+        params = None if place is None else {"place": place}
+        response = await self._transport.request(
+            "GET", "/search/catalogue", params=params
+        )
+        return _lookup_body(
+            self._transport,
+            response,
+            "CatalogueResponse",
+            (
+                ("catalogue_version", "string"),
+                ("counts", "object"),
+                ("examples", "array"),
+            ),
+        )

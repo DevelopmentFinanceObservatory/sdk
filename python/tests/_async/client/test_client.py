@@ -16,7 +16,6 @@ import pytest
 from dfo._client.client import AsyncClient
 from dfo._core.errors import (
     ContractError,
-    DataWarning,
     DfoError,
     InvalidRequestError,
     NetworkError,
@@ -57,6 +56,29 @@ def online(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DFO_PROGRESS", "0")
 
 
+@pytest.mark.parametrize(
+    ("argument", "named"),
+    [(None, True), (BASE, False)],
+    ids=["environment", "argument"],
+)
+async def test_the_repr_names_dfo_base_url_when_the_base_url_came_from_it(
+    monkeypatch: pytest.MonkeyPatch, argument: str | None, named: bool
+) -> None:
+    monkeypatch.setenv("DFO_BASE_URL", "https://env.example.org/api")
+    async with AsyncClient(base_url=argument, api_key=False, cache=False) as client:
+        assert client.base_url in repr(client)
+        assert ("(from DFO_BASE_URL)" in repr(client)) is named
+
+
+async def test_a_clients_hints_name_client_and_so_do_its_copies() -> None:
+    spec = Spec("spec_x", posted_spec()["definition"])
+    async with AsyncClient(base_url=BASE, api_key=False, cache=False) as client:
+        for each in (client, client.with_options(timeout=5)):
+            with pytest.raises(InvalidRequestError) as caught:
+                await each.fetch(spec, latest=True)
+            assert "drop it: client.fetch(spec)." in str(caught.value)
+
+
 async def test_offline_search_raises_before_any_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -77,7 +99,7 @@ async def test_an_answer_fetches_through_the_clients_cache(tmp_path: Path) -> No
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             data = await answer.fetch()
-        assert (data.rows, list(data.to_arrow().column_names)) == (
+        assert (len(data), list(data.to_arrow().column_names)) == (
             expected["rows"],
             expected["columns"],
         )
@@ -87,7 +109,7 @@ async def test_an_answer_fetches_through_the_clients_cache(tmp_path: Path) -> No
         # The cache now holds the version, so the ref reads back with no request.
         ref = DatasetRef.from_json(data.ref.to_json())
         again = await client.fetch(ref)
-    assert again.rows == data.rows
+    assert len(again) == len(data)
     assert len(replay.requests) == 4
 
 
@@ -106,7 +128,7 @@ async def test_with_options_shares_the_connections_and_only_the_owner_closes() -
     calls = [
         lambda: quick.request("GET", "/datasets/capabilities"),
         lambda: client.search(QUESTION),
-        client.catalogue,
+        client.lookup.catalogue,
     ]
     for call in calls:
         with pytest.raises(InvalidRequestError, match="closed") as caught:
@@ -147,7 +169,7 @@ async def test_a_refused_method_is_the_callers_on_a_raw_request_only() -> None:
         with pytest.raises(InvalidRequestError) as raw:
             await client.request("DELETE", "/search/catalogue")
         with pytest.raises(ContractError) as wrapped:
-            await client.catalogue()
+            await client.lookup.catalogue()
     assert (raw.value.code, raw.value.status) == ("method_not_allowed", 405)
     assert raw.value.trace_id == "trace"
     assert isinstance(raw.value.__cause__, ContractError)
@@ -188,26 +210,20 @@ _FOREIGN_MEMBER = RefMember(
 @pytest.mark.parametrize(
     "call",
     [
-        lambda client: client.operation("../search/resolve"),
-        lambda client: client.operation("op_x?foo=1"),
-        lambda client: client.operation("op_" + "A" * 64),
-        lambda client: client.graph.node("../x"),
-        lambda client: client.graph.node("country/%2e%2e/admin"),
-        lambda client: client.graph.node("country/NGA?x=1"),
-        lambda client: client.graph.node("country/NGA#x"),
-        lambda client: client.graph.node("country/\tNGA"),
-        lambda client: client.graph.node(""),
+        lambda client: client.lookup.node("../x"),
+        lambda client: client.lookup.node("country/%2e%2e/admin"),
+        lambda client: client.lookup.node("country/NGA?x=1"),
+        lambda client: client.lookup.node("country/NGA#x"),
+        lambda client: client.lookup.node("country/\tNGA"),
+        lambda client: client.lookup.node(""),
         lambda client: client.fetch(DatasetRef((_FOREIGN_MEMBER,))),
-        lambda client: client.codes.get("../datasets"),
-        lambda client: client.codes.get("Spec_Not_Found"),
-        lambda client: client.codes.get("spec not found"),
-        lambda client: client.codes.get("_spec"),
-        lambda client: client.codes.get(""),
+        lambda client: client.lookup.code("../datasets"),
+        lambda client: client.lookup.code("Spec_Not_Found"),
+        lambda client: client.lookup.code("spec not found"),
+        lambda client: client.lookup.code("_spec"),
+        lambda client: client.lookup.code(""),
     ],
     ids=[
-        "operation-dots",
-        "operation-query",
-        "operation-upper-hex",
         "dcid-dots",
         "dcid-encoded-dots",
         "dcid-query",
@@ -271,10 +287,10 @@ async def test_an_argument_the_client_checks_is_refused_unsent(call) -> None:
 
 
 LOOKUPS = {
-    "resolve": lambda client: client.graph.resolve("Nigeria"),
-    "node": lambda client: client.graph.node("country/NGA"),
-    "codes": lambda client: client.codes.get("spec_not_found"),
-    "catalogue": lambda client: client.catalogue(),
+    "resolve": lambda client: client.lookup.resolve("Nigeria"),
+    "node": lambda client: client.lookup.node("country/NGA"),
+    "code": lambda client: client.lookup.code("spec_not_found"),
+    "catalogue": lambda client: client.lookup.catalogue(),
 }
 
 
@@ -308,7 +324,7 @@ CATALOGUE = {"catalogue_version": "v1", "counts": {}, "examples": []}
         ("resolve", {"results": {}}, "/results"),
         ("node", {"kind": 1, "ref": "country/NGA"}, "/kind"),
         ("node", {"kind": "country"}, "/ref"),
-        ("codes", None, ""),
+        ("code", None, ""),
         ("catalogue", {"counts": {}, "examples": []}, "/catalogue_version"),
         ("catalogue", {**CATALOGUE, "counts": []}, "/counts"),
         ("catalogue", {**CATALOGUE, "examples": None}, "/examples"),
@@ -336,12 +352,12 @@ async def test_lookups_reach_the_graph_the_registry_and_the_catalogue() -> None:
         json_response(200, CATALOGUE),
     )
     async with client_over(server) as client:
-        resolved = await client.graph.resolve(
+        resolved = await client.lookup.resolve(
             "Nigeria", "Sahel", kinds=["country", "group"], expand_members=True
         )
-        node = await client.graph.node("country/NGA", as_of=date(2026, 1, 31))
-        entry = await client.codes.get("spec_not_found")
-        catalogue = await client.catalogue(place="country/NGA")
+        node = await client.lookup.node("country/NGA", as_of=date(2026, 1, 31))
+        entry = await client.lookup.code("spec_not_found")
+        catalogue = await client.lookup.catalogue(place="country/NGA")
     assert (resolved, node["ref"], entry["code"], catalogue) == (
         {"results": []},
         "country/NGA",
@@ -359,21 +375,3 @@ async def test_lookups_reach_the_graph_the_registry_and_the_catalogue() -> None:
         "kinds": ["country", "group"],
         "expand": ["members"],
     }
-
-
-async def test_mint_and_operation_build_through_the_client() -> None:
-    replay = Replay("fetch-spec-known-sentence")
-    call = replay.record["call"][0]["spec"]
-    spec = Spec(call["spec_id"], call["definition"], call.get("sentence"))
-    async with client_over(replay) as client:
-        started = await client.mint(spec)
-        assert (started.operation_id, await started.done()) == (None, True)
-        with pytest.warns(DataWarning, match="falls short"):
-            data = await started.result()
-    assert data.rows == replay.record["expect"][0]["dataset"]["rows"]
-
-    server = Server(problem(404, "operation_not_found"))
-    async with client_over(server) as client:
-        with pytest.raises(NotFoundError):
-            await client.operation("op_" + "a" * 64)
-    assert server.calls() == [f"GET {BASE}/datasets/operations/op_{'a' * 64}"]

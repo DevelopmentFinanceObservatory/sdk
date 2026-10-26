@@ -92,17 +92,14 @@ def test_a_leading_tilde_name_is_that_users_home() -> None:
     ["", "a\0b", b"/tmp/cache", 5, "~no-such-user-dfo/cache"],
     ids=["empty", "nul", "bytes", "int", "unknown-user"],
 )
-def test_a_cache_dir_that_names_no_directory_is_refused_once_enabled(
+def test_a_cache_dir_that_names_no_directory_is_refused_unless_disabled(
     cache_dir: Any,
 ) -> None:
     with pytest.raises(InvalidRequestError) as raised:
         Cache(cache_dir, env={})
     assert raised.value.code == "invalid_argument"
     disabled = Cache(cache_dir, enabled=False, env={})
-    assert disabled.directory is None
-    with pytest.raises(InvalidRequestError) as raised:
-        disabled.enabled = True
-    assert raised.value.code == "invalid_argument"
+    assert (disabled.enabled, disabled.directory) == (False, None)
 
 
 def test_a_disabled_cache_leaves_dfo_cache_dir_unread() -> None:

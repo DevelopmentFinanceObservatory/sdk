@@ -26,6 +26,7 @@ from dfo._core.types import (
     NoDataPart,
     Notice,
     Option,
+    Part,
     RequestedOperation,
     Spec,
     UnknownPart,
@@ -35,17 +36,6 @@ from dfo._core.types import (
 )
 from dfo._generated import strict as _strict
 from dfo._generated.strict import REQUIRED, JsonType, StrictSchema
-
-# A part as read, before an answer binds its candidates. The parts other than
-# `CandidatesPart` are `Part[Never]`, so each fits an answer of either form.
-type ParsedPart = (
-    DefinitePart
-    | CandidatesPart[Candidate]
-    | NoDataPart
-    | UnsupportedPart
-    | UnknownPart
-)
-
 
 # Whether a decoded JSON value has each type.
 _IS_TYPE: Final[Mapping[JsonType, Callable[[object], bool]]] = {
@@ -114,7 +104,7 @@ def require_members(
     return obj
 
 
-def parse_parts(resolution: Wire, /) -> tuple[ParsedPart, ...]:
+def parse_parts(resolution: Wire, /) -> tuple[Part, ...]:
     """The parts of a `resolution` answer, in query order.
 
     Args:
@@ -132,7 +122,7 @@ def parse_parts(resolution: Wire, /) -> tuple[ParsedPart, ...]:
     )
 
 
-def parse_part(part: object, pointer: str = "", /) -> ParsedPart:
+def parse_part(part: object, pointer: str = "", /) -> Part:
     """One answer part, read by its `status`.
 
     Args:
@@ -395,7 +385,7 @@ def _definite(part: Wire, pointer: str) -> DefinitePart:
     return DefinitePart(spec=spec, **fields)
 
 
-def _candidates(part: Wire, pointer: str) -> CandidatesPart[Candidate]:
+def _candidates(part: Wire, pointer: str) -> CandidatesPart:
     candidate_set = require(
         require(part, "CandidatesPart", pointer)["candidates"],
         "CandidateSet",
@@ -442,7 +432,7 @@ def _unsupported(part: Wire, pointer: str) -> UnsupportedPart:
     )
 
 
-_PART_READERS: Mapping[str, Callable[[Wire, str], ParsedPart]] = {
+_PART_READERS: Mapping[str, Callable[[Wire, str], Part]] = {
     _strict.DEFINITE_PART_STATUS: _definite,
     _strict.CANDIDATES_PART_STATUS: _candidates,
     _strict.NO_DATA_PART_STATUS: _no_data,

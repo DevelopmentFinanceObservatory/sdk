@@ -1,6 +1,7 @@
 /**
  * Fetching a target: a spec through the build path in `fetch.ts`, or the exact versions a ref
- * names.
+ * names. With `latest`, a ref's specs build through that path instead, in the ref's one
+ * rendering, as their newest versions.
  *
  * A ref returns the versions it names, found in this order: the snapshot route, then the files
  * route at the stored digest; the file selector, which renders the version again from its
@@ -36,6 +37,7 @@ import {
   contentVersionOf,
   DIGEST_MISMATCH,
   download,
+  FETCH_OPTIONS,
   fetchMembers,
   finish,
   invalid,
@@ -44,8 +46,8 @@ import {
   pickArtifact,
   specIdOf,
 } from "./fetch.ts";
-import type { CallOptions, FetchOptions, Narrowing, SpecInput } from "./fetch.ts";
-import { build, deadlineOf, readManifest } from "./operation.ts";
+import type { CallOptions, FetchOptions, Narrowing } from "./fetch.ts";
+import { build, readManifest, waitFor } from "./operation.ts";
 import type { Built, Manifest, Wait } from "./operation.ts";
 import {
   CONTENT_VERSION,
@@ -54,41 +56,66 @@ import {
   FormatError,
   layoutOf,
   mintOptions,
+  sameRendering,
 } from "../core/ref.ts";
-import type { Layout, Rendering, RefMember } from "../core/ref.ts";
+import type { Layout, Rendering, RefMember, Spec } from "../core/ref.ts";
+import { checkOptions } from "../core/options.ts";
 import { describing } from "../core/trace.ts";
 import type { Transport } from "../http/transport.ts";
 import { isRecord, present } from "../core/json.ts";
 import { clientWarning } from "../core/warnings.ts";
+
+/** The call that fetches the newest versions of a ref's specs, which a lost version names. */
+const LATEST_CALL = "client.fetch(ref, { latest: true })";
 
 /** Refusals after which a stored version's lookup goes on. The version exists, but its file
  *  has expired. An unknown version (`snapshot_not_found`) ends the lookup. */
 const FILE_EXPIRED = "artifact_expired";
 const FILE_GONE = new Set([FILE_EXPIRED, "artifact_not_found", "not_found"]);
 /**
- * Fetches a spec's latest version, or the exact versions a ref names.
+ * Fetches a spec's latest version, the exact versions a ref names, or with `latest` the newest
+ * versions of a ref's specs.
  *
- * @throws {InvalidRequestError} The target is neither a ref nor a spec `checkedSpec` accepts, or a
- *   ref is narrowed or given another layout or `withoutPartyTotals`.
+ * @throws {InvalidRequestError} The target is neither a ref nor a spec `checkedSpec` accepts, a
+ *   ref is narrowed or given another layout or `withoutPartyTotals`, `latest` is given a spec or
+ *   a ref whose members differ in rendering, or `latest` is not a boolean.
  * @throws {VersionUnavailableError} A ref's version can no longer be fetched.
  * @throws {DfoError} The server refused a request.
  */
 export async function fetchDataset(
   transport: Transport,
-  target: SpecInput | DatasetRef,
+  target: Spec | DatasetRef,
   options: FetchOptions = {},
-): Promise<Dataset<never>> {
-  const { window, entities, facets, ...rest } = options;
-  const narrowing: Narrowing = present({ window, entities, facets });
+): Promise<Dataset> {
+  const { window, entities, facets, latest, ...rest } = checkOptions(FETCH_OPTIONS, options);
+  // Null reads as unset, as None does in the Python client.
+  const narrowing: Narrowing = present({
+    window: window ?? undefined,
+    entities: entities ?? undefined,
+    facets: facets ?? undefined,
+  });
+  if (latest !== undefined && typeof latest !== "boolean") {
+    throw invalid(`latest is true or false, not ${JSON.stringify(latest)}.`);
+  }
   if (target instanceof DatasetRef) {
+    if (narrowing.window !== undefined) throw invalid(refWindowRefusal(narrowing.window, latest));
     if (narrows(narrowing)) {
       throw invalid(
-        "A DatasetRef names exact versions and takes no narrowing; narrow the spec instead.",
+        "A ref fetch takes no entities or facets; narrow a member's spec instead, as " +
+          "client.fetch(ref.members[0].spec, { entities }).",
       );
     }
-    return fetchRef(transport, target, rest);
+    return latest === true
+      ? fetchNewest(transport, target, rest)
+      : fetchRef(transport, target, rest);
   }
   const spec = checkedSpec(target);
+  if (latest === true) {
+    throw invalid(
+      "A spec always fetches its newest version, so latest is for a DatasetRef; drop it: " +
+        "client.fetch(spec).",
+    );
+  }
   const member = {
     parts: [],
     spec,
@@ -96,6 +123,18 @@ export async function fetchDataset(
     entityGroups: spec.resolved?.entity_groups,
   };
   return fetchMembers(transport, [member], { ...rest, narrowing });
+}
+
+/** Why a ref fetch refuses `window`, and the call that does what it asks: `latest: true` for
+ *  the newest version, else a member's spec for a narrower window. */
+function refWindowRefusal(window: unknown, latest: boolean | undefined): string {
+  if (window === "latest" && latest !== true) {
+    return "A ref fetch takes no window; for the newest version use latest: true.";
+  }
+  return (
+    "A ref fetch takes no window; to narrow the years, fetch a member's spec: " +
+    `client.fetch(ref.members[0].spec, { window: ${capped(JSON.stringify(window))} }).`
+  );
 }
 
 function refLayout(ref: DatasetRef): Layout {
@@ -115,11 +154,14 @@ function refLayout(ref: DatasetRef): Layout {
   return layouts.has("frame") ? "frame" : "long";
 }
 
-async function fetchRef(
-  transport: Transport,
-  ref: DatasetRef,
-  options: CallOptions,
-): Promise<Dataset<never>> {
+/**
+ * The layout a ref holds, once the call's `layout` and `withoutPartyTotals`, when given, are the
+ * ref's own.
+ *
+ * @throws {InvalidRequestError} The ref holds a rendering this client does not read, or the
+ *   call names another layout or `withoutPartyTotals` (`invalid_argument`).
+ */
+function checkedRefLayout(ref: DatasetRef, options: CallOptions): Layout {
   const layout = refLayout(ref);
   if (options.layout !== undefined && options.layout !== layout) {
     throw invalid(
@@ -137,12 +179,56 @@ async function fetchRef(
       );
     }
   }
-  const wait = { deadline: deadlineOf(transport, options.timeout), signal: options.signal };
+  return layout;
+}
+
+/**
+ * Builds the newest version of each member's spec in the ref's rendering, stacked under the
+ * members' parts as an answer's fetch stacks them.
+ *
+ * @throws {InvalidRequestError} The members hold different renderings, since one fetch builds
+ *   one (`invalid_argument`).
+ */
+async function fetchNewest(
+  transport: Transport,
+  ref: DatasetRef,
+  options: CallOptions,
+): Promise<Dataset> {
+  const layout = checkedRefLayout(ref, options);
+  const [first, ...others] = ref.members;
+  // A ref holds at least one member: fromJSON refuses an empty one, and a dataset has one.
+  const rendering = first!.rendering;
+  const index = others.findIndex((member) => !sameRendering(member.rendering, rendering));
+  if (index !== -1) {
+    const other = others[index]!;
+    const cut = other.rendering.without_party_totals === true;
+    throw invalid(
+      `The DatasetRef holds ${first!.spec.spec_id} and ${other.spec.spec_id} in different ` +
+        "renderings, and a latest fetch builds one; fetch each spec on its own, as " +
+        `client.fetch(ref.members[${index + 1}].spec, { layout: "${layoutOf(other.rendering)}", ` +
+        `withoutPartyTotals: ${cut} }).`,
+    );
+  }
+  const members = ref.members.map(({ parts, spec, sentence }) => ({ parts, spec, sentence }));
+  return fetchMembers(transport, members, {
+    ...options,
+    layout,
+    withoutPartyTotals: rendering.without_party_totals === true,
+  });
+}
+
+async function fetchRef(
+  transport: Transport,
+  ref: DatasetRef,
+  options: CallOptions,
+): Promise<Dataset> {
+  const layout = checkedRefLayout(ref, options);
+  const wait = waitFor(transport, options);
   const fetched: FetchedMember[] = [];
   for (const [index, member] of ref.members.entries()) {
     fetched.push(await fetchVersion(transport, member, `/members/${index}`, options, wait));
   }
-  return new Dataset<never>(fetched, { layout });
+  return new Dataset(fetched, { layout });
 }
 
 const stored = (member: RefMember, manifest: Manifest, data: Uint8Array): FetchedMember => ({
@@ -427,13 +513,12 @@ function unavailable(
   newest: string | null,
   refusal: DfoError | undefined,
 ): VersionUnavailableError {
-  const hint =
-    newest === null
-      ? ""
-      : newest === member.contentVersion
-        ? "; the server lists it as the newest version"
-        : `; the newest version is ${newest}, which fetching the spec returns`;
-  const detail = `${member.spec.spec_id} at ${member.contentVersion} can no longer be fetched${hint}.`;
+  const lost = `${member.spec.spec_id} at ${member.contentVersion} can no longer be fetched`;
+  const detail =
+    newest === member.contentVersion
+      ? `${lost}, though the server lists it as the newest version.`
+      : `${lost}. ${newest === null ? "For the newest version" : `The newest is ${newest}`}: ` +
+        LATEST_CALL;
   if (refusal === undefined) {
     return clientError("version_unavailable", { detail, newestVersion: newest });
   }

@@ -12,7 +12,8 @@ writes the ref it fetched there as `ref-python.json` and reads back
 Step 6 builds the spec `tests/live/long-builds.json` assigns to this run by the UTC
 day's parity, the language and `DFO_E2E_TARGET`. Each spec there is posted every
 48 hours, so its stored head is past the server's 24-hour maximum age and the
-build runs again as an operation. `DFO_E2E_SCHEDULED=true` marks a scheduled
+build runs again as an operation. The step posts it twice, then fetches it in a
+fresh process, and checks all three join one operation. `DFO_E2E_SCHEDULED=true` marks a scheduled
 run, where a build served inline fails the step; any other run skips it.
 """
 
@@ -30,19 +31,10 @@ from typing import Any
 
 import pytest
 
-from dfo import (
-    Answer,
-    Client,
-    Dataset,
-    DatasetRef,
-    IncompleteAnswerError,
-    InvalidRequestError,
-    Member,
-    NotFoundError,
-    Operation,
-    Spec,
-)
-from dfo._datasets.build import resubmit_body
+from dfo import Answer, Client, Dataset, DatasetRef, Spec
+from dfo._datasets.build import build_body, rendering_for, resubmit_body
+from dfo.errors import IncompleteAnswerError, InvalidRequestError, NotFoundError
+from dfo.types import Member
 
 pytestmark = pytest.mark.live
 
@@ -60,7 +52,7 @@ LANGUAGE = "python"
 LONG_COLUMNS = {"stat_var", "time_period", "value", "unit"}
 WINDOW = (2020, 2023)
 UNKNOWN_VERSION = "cv_" + "0" * 32
-RESUME = Path(__file__).with_name("resume_operation.py")
+JOIN = Path(__file__).with_name("join_build.py")
 
 SPEC_ID = re.compile(r"spec_[0-9a-f]{32}")
 CONTENT_VERSION = re.compile(r"cv_[0-9a-f]{32}")
@@ -142,7 +134,7 @@ def test_02_fetch_reads_back_by_ref_and_offline(
     assert member.content_version == manifest["content_version"]
     assert CONTENT_VERSION.fullmatch(member.content_version)
     assert DIGEST.fullmatch(member.digest)
-    assert 0 < dataset.rows == manifest["coverage"]["rows"]
+    assert 0 < len(dataset) == manifest["coverage"]["rows"]
     assert set(dataset.to_arrow().column_names) >= LONG_COLUMNS
     assert dataset.layout_version == str(artifact["rendering"]["layout"])
     assert member.parts == (definite.parts[0].variable_text,)
@@ -157,7 +149,7 @@ def test_02_fetch_reads_back_by_ref_and_offline(
     # checked against the digest it names.
     again = client.fetch(ref, progress=False)
     assert _versions(again.members) == _versions(dataset.members)
-    assert (again.rows, again.stale) == (dataset.rows, False)
+    assert (len(again), again.stale) == (len(dataset), False)
 
     with Client(base_url=client.base_url, cache_dir=tmp_path) as cached:
         cached.fetch(ref, progress=False)
@@ -165,7 +157,7 @@ def test_02_fetch_reads_back_by_ref_and_offline(
     with Client(base_url=client.base_url, cache_dir=tmp_path) as offline:
         stored = offline.fetch(ref, progress=False)
     assert _versions(stored.members) == _versions(dataset.members)
-    assert (stored.rows, stored.stale) == (dataset.rows, True)
+    assert (len(stored), stored.stale) == (len(dataset), True)
 
 
 def test_03_candidates_raise_and_a_choice_fetches(client: Client) -> None:
@@ -182,7 +174,7 @@ def test_03_candidates_raise_and_a_choice_fetches(client: Client) -> None:
     assert numbered == [str(i) for i in range(len(specs))]
 
     data = answer.choose(0).fetch(progress=False)
-    assert data.rows > 0
+    assert len(data) > 0
     assert [m.spec.spec_id for m in data.members] == [specs[0]["spec_id"]]
 
 
@@ -203,7 +195,7 @@ def test_04_a_mixed_answer_raises_then_fetches_partial(client: Client) -> None:
     assert member.spec.spec_id == spec_id
     assert data.complete is False
     assert [gap.part_index for gap in data.missing] == [1 - answered]
-    assert data.rows > 0
+    assert len(data) > 0
 
 
 def test_05_several_readings_stack_into_one_dataset(client: Client) -> None:
@@ -221,7 +213,7 @@ def test_05_several_readings_stack_into_one_dataset(client: Client) -> None:
     counts = Counter(table.column("part").to_pylist())
     assert list(counts) == labels
     assert all(counts.values())
-    assert sum(counts.values()) == data.rows
+    assert sum(counts.values()) == len(data)
 
 
 def _long_build() -> Spec:
@@ -248,23 +240,34 @@ def _download_rows(client: Client, spec: Spec) -> int:
     return part["spec"]["resolved"]["download"]["rows"]
 
 
-def _served_inline(client: Client, spec: Spec, operation: Operation) -> str:
+def _served_inline(client: Client, spec: Spec, manifest: Mapping[str, Any]) -> str:
     """Why the build answered 200, with the age of the version it served.
 
     The server publishes no head age, so this is the age of the served version's
     `prepared_at`, at least the head's age.
     """
-    (member,) = operation.result(timeout=600.0).members
-    prepared = datetime.fromisoformat(_snapshot(client, member)["prepared_at"])
+    version = manifest["content_version"]
+    stored = client.request("GET", f"/datasets/{spec.spec_id}/{version}").json()
+    prepared = datetime.fromisoformat(stored["prepared_at"])
     hours = (datetime.now(UTC) - prepared).total_seconds() / 3600
     return (
-        f"POST /datasets served {spec.spec_id} inline (200) at "
-        f"{member.content_version}, prepared {hours:.1f} h ago; a 48-hour "
-        "rotation should find its head past the server's maximum age"
+        f"POST /datasets served {spec.spec_id} inline (200) at {version}, "
+        f"prepared {hours:.1f} h ago; a 48-hour rotation should find its head "
+        "past the server's maximum age"
     )
 
 
-def test_06_a_long_build_runs_as_an_operation_and_resumes_elsewhere(
+def _post_build(client: Client, spec: Spec) -> tuple[int, dict[str, Any]]:
+    """The status and body `POST /datasets` answers for `spec`'s long build."""
+    body = build_body(spec, rendering_for("long"))
+    # A build answers within 150 s; the client's default attempt is 30 s.
+    response = client.with_options(timeout=160.0).request(
+        "POST", "/datasets", json=body
+    )
+    return response.status_code, response.json()
+
+
+def test_06_a_long_build_runs_as_an_operation_that_a_repeated_fetch_joins(
     client: Client, base_url: str
 ) -> None:
     spec = _long_build()
@@ -278,29 +281,42 @@ def test_06_a_long_build_runs_as_an_operation_and_resumes_elsewhere(
     # it publishes no request count, so only the rows budget is checked here.
     assert _download_rows(client, spec) > budget_rows
 
-    operation = client.mint(spec, progress=False)
-    if operation.operation_id is None:
-        reason = _served_inline(client, spec, operation)
+    status, first = _post_build(client, spec)
+    if status == 200:
+        reason = _served_inline(client, spec, first)
         if os.environ.get("DFO_E2E_SCHEDULED") == "true":
             pytest.fail(reason)
         pytest.skip(reason)
-    assert OPERATION_ID.fullmatch(operation.operation_id)
-    assert operation.status in {"pending", "running"}
+    assert status == 202
+    operation_id = first["operation"]["operation_id"]
+    assert OPERATION_ID.fullmatch(operation_id)
+    assert first["operation"]["status"] in {"pending", "running"}
+    # An identical build joins the running one.
+    again_status, again = _post_build(client, spec)
+    assert again_status in {200, 202}
+    if again_status == 202:
+        assert again["operation"]["operation_id"] == operation_id
 
-    resumed = subprocess.run(
-        [sys.executable, str(RESUME), base_url, operation.operation_id],
+    joined = subprocess.run(
+        [sys.executable, str(JOIN), base_url],
+        input=json.dumps({"spec_id": spec.spec_id, "definition": spec.definition}),
         capture_output=True,
         text=True,
-        timeout=1800,
+        timeout=3600,
         check=True,
     )
-    read = json.loads(resumed.stdout.splitlines()[-1])
+    read = json.loads(joined.stdout.splitlines()[-1])
     polls, waits = read["polls"], read["waits"]
+    # The fetch's build joins the operation, whether it posts while the build
+    # runs (202) or after it is done (200, with no poll).
+    assert read["posted"] in {None, operation_id}
+    assert {poll["operation_id"] for poll in polls} <= {operation_id}
     assert [poll["http_status"] for poll in polls] == [200] * len(polls)
-    assert polls[-1]["status"] == "done"
-    assert {poll["status"] for poll in polls[:-1]} <= {"pending", "running"}
-    assert len(waits) == len(polls) - 1
-    for poll, wait in zip(polls, waits, strict=False):
+    if polls:
+        assert polls[-1]["status"] == "done"
+        assert {poll["status"] for poll in polls[:-1]} <= {"pending", "running"}
+    # Each wait after the first follows the poll before it, at its pacing.
+    for poll, wait in zip(polls, waits[1:], strict=False):
         if poll["retry_after_ms"] is not None:
             assert wait == poll["retry_after_ms"] / 1000, poll
         elif poll["retry_after"] is not None:
@@ -324,7 +340,7 @@ def test_07_a_place_choice_answers_definite(client: Client) -> None:
             f"{no_data['reason']!r}, {len(no_data.get('ambiguous_entities', []))} "
             f"ambiguous entities, and no options member"
         )
-    chosen = answer.choose("Congo", "Congo [DRC]")
+    chosen = answer.choose("Congo [DRC]", part="Congo")
     assert chosen.status == "definite"
     (part,) = _wire_parts(chosen)
     entities = part["spec"]["definition"]["identity"]["entities"]
@@ -337,7 +353,7 @@ def test_08_a_window_narrows_to_a_new_spec(client: Client, definite: Answer) -> 
     (member,) = data.members
     assert SPEC_ID.fullmatch(member.spec.spec_id)
     assert member.spec.spec_id != spec.spec_id
-    assert data.rows == _snapshot(client, member)["coverage"]["rows"] > 0
+    assert len(data) == _snapshot(client, member)["coverage"]["rows"] > 0
     years = {
         int(str(value)[:4]) for value in data.to_arrow()["time_period"].to_pylist()
     }

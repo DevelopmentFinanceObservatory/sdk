@@ -10,7 +10,9 @@ sent.
 
 The base URL is an absolute http or https URL with no userinfo, query, fragment
 or dot segment, whose host, when it reads as an IPv4 address, is four decimal
-numbers such as 127.0.0.1, not `127.1` or `2130706433` (`base_url_invalid`). Two
+numbers such as 127.0.0.1, not `127.1` or `2130706433` (`base_url_invalid`). A
+client built with no base URL reads `DFO_BASE_URL`, and with that unset or empty
+uses the public API. Two
 URLs share an origin when their scheme, host and port match after lower-casing,
 dropping the scheme's default port and a host's trailing dot. A key never
 travels over plain http to a host that is not loopback (`insecure_transport`).
@@ -27,7 +29,9 @@ keeps the inherited pool open and untouched, since its connections belong to the
 parent.
 
 The client's `timeout` bounds one whole attempt, body included, and a call's
-deadline bounds the whole call. The asynchronous transport can cancel platform
+deadline bounds the whole call. A signed download's attempt runs to the call's
+deadline, and fails retryably (`network_error`) once no byte arrives for
+`DOWNLOAD_STALL_S`. The asynchronous transport can cancel platform
 name resolution at those limits. Its generated synchronous form cannot: blocking
 platform name resolution may run past a timeout or deadline. After name
 resolution, both forms clamp the connect, TLS handshake, and each read and write
@@ -47,9 +51,10 @@ import ssl
 from collections.abc import Generator, Iterable, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import Any, NoReturn, Self
+from typing import Any, Literal, NoReturn, Self
 from urllib.parse import urlsplit
 
 import httpcore2
@@ -119,6 +124,11 @@ RETRY_AFTER_MAX_S = 60.0
 # The decoded bytes a downloaded file may hold when its manifest names no size.
 DOWNLOAD_MAX_BYTES = 2 * 2**30
 
+# The longest a signed download waits for its connection, TLS handshake
+# included, or for its next byte, in seconds. A download that waits this long
+# fails retryably (`network_error`).
+DOWNLOAD_STALL_S = 30.0
+
 # The decoded bytes an API response's body may hold, the larger of 16 MiB and ten
 # times the largest JSON body recorded, rounded. That body is `/search/schema` in
 # tests/data/search-schema.json, 267,493 bytes, above every response body in
@@ -178,7 +188,61 @@ def _refuse_offline(request: str) -> None:
         )
 
 
-def _split_base_url(base_url: str) -> tuple[str, str]:
+type BaseUrlSource = Literal["argument", "environment", "default"]
+
+
+@dataclass(frozen=True)
+class BaseUrl:
+    """A checked base URL and where it came from.
+
+    Attributes:
+        url: The base URL, its origin and path with no trailing slash.
+        origin: Its scheme, host and port.
+        source: `argument` for a `base_url` passed in, `environment` for
+            `DFO_BASE_URL`, `default` for the public API.
+        in_clear: Whether a request to it crosses the network unencrypted,
+            over plain http to a host that is not loopback.
+    """
+
+    url: str
+    origin: str
+    source: BaseUrlSource
+    in_clear: bool
+
+
+def resolve_base_url(
+    base_url: str | None, *, env: Mapping[str, str] | None = None
+) -> BaseUrl:
+    """The base URL a client uses: `base_url`, else a non-empty `DFO_BASE_URL`,
+    else the public API.
+
+    Args:
+        base_url: The client's argument; None looks the URL up.
+        env: The environment, defaulting to this process's.
+
+    Raises:
+        InvalidRequestError: The URL is not a string, is empty, holds a
+            character outside visible ASCII, is not an absolute http or https
+            URL, or carries userinfo, a query, a fragment or a dot segment
+            (`base_url_invalid`). The message names `DFO_BASE_URL` when the
+            URL came from it.
+    """
+    source: BaseUrlSource = "argument"
+    if base_url is None:
+        from_env = (os.environ if env is None else env).get("DFO_BASE_URL")
+        base_url, source = (
+            (from_env, "environment") if from_env else (DEFAULT_BASE_URL, "default")
+        )
+    url, origin = _split_base_url(base_url, source)
+    return BaseUrl(url, origin, source, _sends_in_clear(base_url))
+
+
+def _setting(source: BaseUrlSource) -> str:
+    """What a message calls the setting a base URL from `source` came from."""
+    return "DFO_BASE_URL" if source == "environment" else "base_url"
+
+
+def _split_base_url(base_url: str, source: BaseUrlSource) -> tuple[str, str]:
     """The base URL as its origin and path with no trailing slash, and the origin.
 
     Raises:
@@ -189,11 +253,17 @@ def _split_base_url(base_url: str) -> tuple[str, str]:
     """
 
     def refuse(problem: str) -> NoReturn:
-        raise client_error(
-            BASE_URL_INVALID,
-            f"base_url {problem}. Pass an absolute https URL, such as "
-            f"{DEFAULT_BASE_URL}, or None for the public API.",
-        )
+        if source == "environment":
+            fix = (
+                f"Set it to an absolute https URL, such as {DEFAULT_BASE_URL}, "
+                "or unset it for the public API"
+            )
+        else:
+            fix = (
+                f"Pass an absolute https URL, such as {DEFAULT_BASE_URL}, "
+                "or None for the public API"
+            )
+        raise client_error(BASE_URL_INVALID, f"{_setting(source)} {problem}. {fix}.")
 
     if not isinstance(base_url, str):
         refuse(f"is a {type(base_url).__name__}, not a string")
@@ -666,21 +736,23 @@ class AsyncTransport:
         api_key: ApiKeyArgument = None,
         timeout: float = 30.0,
         max_retries: int = 2,
-        default_headers: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
         header_provider: AsyncHeaderProvider | None = None,
         http_transport: httpx2.AsyncBaseTransport | None = None,
         sleep: AsyncSleep = async_sleep,
         clock: Clock = monotonic,
+        caller: str = "client",
     ) -> None:
         """Build the transport and resolve its key.
 
         Args:
-            base_url: The API's base URL; paths resolve under it.
+            base_url: The API's base URL, under which paths resolve; None
+                reads `DFO_BASE_URL`, then takes the public API.
             api_key: The key, an `ApiKey`, a callable returning one, False for
                 anonymous use, or None to look one up.
             timeout: The longest one attempt waits, in seconds.
             max_retries: Further attempts after a retryable failure.
-            default_headers: Headers sent with every API request.
+            headers: Headers sent with every API request.
             header_provider: Called before every API request for more headers,
                 such as an identity token.
             http_transport: The httpx2 transport, for tests and proxies. An
@@ -688,10 +760,13 @@ class AsyncTransport:
                 every network operation; any other transport times itself.
             sleep: Waits between attempts.
             clock: A monotonic clock, in seconds, for deadlines.
+            caller: What a hint names the owner of a call it suggests: `client`
+                for a client the user builds, as in `client.fetch(spec)`, and
+                `dfo` for the default client behind `dfo.fetch`.
 
         Raises:
             InvalidRequestError: The base URL is invalid (`base_url_invalid`), a
-                default header's name is not an HTTP token or its value not
+                header's name is not an HTTP token or its value not
                 visible ASCII, spaces and tabs (`header_invalid`), the key would
                 travel over plain http to a host that is not loopback
                 (`insecure_transport`), the timeout is not a finite number above
@@ -701,29 +776,41 @@ class AsyncTransport:
         """
         timeout = _checked_timeout(timeout)
         max_retries = _checked_retries(max_retries)
-        base_url = DEFAULT_BASE_URL if base_url is None else base_url
-        self._base_url, self._origin = _split_base_url(base_url)
-        self._in_clear = _sends_in_clear(base_url)
+        resolved = resolve_base_url(base_url)
+        self._base_url, self._origin = resolved.url, resolved.origin
+        self._base_url_source = resolved.source
+        self._in_clear = resolved.in_clear
         self._keys = KeyState(api_key)
         self._authorization()
         self._timeout = timeout
         self._max_retries = max_retries
         # A signed download's attempt runs until the deadline unless a
-        # `single_attempt` copy bounds it by the timeout.
+        # `single_attempt` copy bounds it by the timeout. Either way each read
+        # waits at most `DOWNLOAD_STALL_S`.
         self._download_timeout = math.inf
-        self._default_headers = dict(
-            _checked_headers(default_headers or {}, "default_headers")
-        )
+        self._fixed_headers = dict(_checked_headers(headers or {}, "headers"))
         self._header_provider = header_provider
         self._sleep = sleep
         self._clock = clock
         self._pool = _Pool(http_transport)
         self._owner = True
+        self._caller = caller
 
     @property
     def base_url(self) -> str:
         """The base URL, without a trailing slash."""
         return self._base_url
+
+    @property
+    def base_url_source(self) -> BaseUrlSource:
+        """Where the base URL came from: the argument, `DFO_BASE_URL`, or the
+        default."""
+        return self._base_url_source
+
+    @property
+    def caller(self) -> str:
+        """What a hint names the owner of a call it suggests, `client` or `dfo`."""
+        return self._caller
 
     @property
     def origin(self) -> str:
@@ -886,9 +973,21 @@ class AsyncTransport:
         return limit, now + limit
 
     async def _send(
-        self, request: httpx2.Request, deadline: float | None, what: str, limit: int
+        self,
+        request: httpx2.Request,
+        deadline: float | None,
+        what: str,
+        limit: int,
+        *,
+        stall: float | None = None,
     ) -> httpx2.Response:
         """Send `request` and read its body by `deadline`, after name resolution.
+
+        `stall` is the timeout `request` carries on every phase: the connect,
+        TLS handshake included, the wait for a pooled connection, each write,
+        and the wait for each byte read. It is None when the request carries
+        the attempt's own timeout. A phase that waits that long before
+        `deadline` is a stall, which fails retryably as a network fault.
 
         The body is read as it decodes, and reading stops at the first piece
         that takes a 2xx body past `limit` bytes, or any other body past
@@ -899,8 +998,9 @@ class AsyncTransport:
         Raises:
             DfoTimeoutError: The attempt timed out, or `deadline` passed while
                 the body was read (`deadline_exceeded`, retryable).
-            NetworkError: The connection failed, or the client was closed while
-                the request was in flight (`network_error`, retryable).
+            NetworkError: The connection failed, a phase stalled for `stall`
+                seconds, or the client was closed while the request was in
+                flight (`network_error`, retryable).
             ServerError: A 2xx response's decoded body passed `limit`
                 (`response_too_large`).
             ContractError: The body does not decode as its `Content-Encoding`
@@ -917,6 +1017,16 @@ class AsyncTransport:
                 finally:
                     await response.aclose()
         except httpx2.TimeoutException as exc:
+            if stall is not None and (deadline is None or self._clock() < deadline):
+                waited = (
+                    "sent no byte"
+                    if isinstance(exc, httpx2.ReadTimeout)
+                    else "did not connect or take the request"
+                )
+                raise client_error(
+                    NETWORK_ERROR,
+                    f"The download from {request.url.host} {waited} for {stall:g} s.",
+                ) from exc
             raise client_error(DEADLINE_EXCEEDED, f"{what} timed out") from exc
         except httpx2.TransportError as exc:
             if self._pool.closed:
@@ -998,7 +1108,8 @@ class AsyncTransport:
                 INSECURE_TRANSPORT,
                 f"The client would send its API key over plain http to "
                 f"{self._origin}, which is not a loopback host. Use an https "
-                "base_url, or api_key=False to call it anonymously.",
+                f"{_setting(self._base_url_source)}, or api_key=False to call "
+                "it anonymously.",
             )
         return f"Bearer {key.reveal()}"
 
@@ -1017,7 +1128,7 @@ class AsyncTransport:
         headers = httpx2.Headers(
             {"User-Agent": USER_AGENT, "Accept": "application/json"}
         )
-        headers.update(self._default_headers)
+        headers.update(self._fixed_headers)
         if self._header_provider is not None:
             try:
                 provided = await async_within(limit, self._header_provider)
@@ -1225,8 +1336,9 @@ class AsyncTransport:
         does. A signed URL on the storage host gets a bare request, with no
         client header, no key and nothing from the header provider. The fetch
         reads until the deadline after platform name resolution, or without limit
-        when there is none. A `single_attempt` copy reads for one attempt of the
-        timeout. The generated synchronous transport cannot interrupt
+        when there is none, but waits at most `DOWNLOAD_STALL_S` for the
+        connection, its TLS handshake, the request's write and each byte.
+        A `single_attempt` copy reads for one attempt of the timeout. The generated synchronous transport cannot interrupt
         blocking platform name resolution. A failed fetch is not retried. A
         signed URL can expire, so the caller asks the files route for a fresh one.
         Reading stops once the decoded file passes `max_bytes`, or once any
@@ -1238,8 +1350,9 @@ class AsyncTransport:
             ServerError: The host answered anything but 200 (`download_failed`),
                 a refusal past `JSON_BODY_MAX_BYTES` included, or a file past
                 `max_bytes` (`response_too_large`).
-            NetworkError: The connection failed, or `DFO_OFFLINE=1` is set
-                (`offline`).
+            NetworkError: The connection failed, the connection or a byte took
+                longer than `DOWNLOAD_STALL_S` (`network_error`, retryable), or
+                `DFO_OFFLINE=1` is set (`offline`).
             DfoTimeoutError: The fetch timed out or the deadline passed.
             InvalidRequestError: The transport is closed (`invalid_argument`).
         """
@@ -1254,14 +1367,15 @@ class AsyncTransport:
         _refuse_offline("the signed download")
         on_api = origin == self._origin
         limit, attempt_end = self._attempt_bounds(self._download_timeout, deadline)
+        stall = DOWNLOAD_STALL_S if limit is None else min(limit, DOWNLOAD_STALL_S)
         request = self._pool.client.build_request(
             "GET",
             url,
             headers=await self._headers(None, limit) if on_api else None,
-            timeout=limit,
+            timeout=httpx2.Timeout(stall),
         )
         response = await self._send(
-            request, attempt_end, "the signed download", max_bytes
+            request, attempt_end, "the signed download", max_bytes, stall=stall
         )
         if on_api:
             self._note_headers(response)

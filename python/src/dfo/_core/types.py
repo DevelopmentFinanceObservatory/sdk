@@ -2,51 +2,47 @@
 
 Every class is a frozen, slotted dataclass. A member holding the server's JSON
 (`Spec.definition`, each `raw`) keeps the decoded value untouched, so posting it back
-sends what the server sent, and stays out of equality, hashing and `repr`.
+sends what the server sent, and stays out of equality and hashing. Each class prints
+one line that names what it is and summarises its children, cutting long text with
+"…" at `REPR_TEXT_MAX` characters.
 """
 
-import json
 import re
-from collections.abc import Awaitable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import (
-    TYPE_CHECKING,
     Any,
     Literal,
-    Never,
-    Protocol,
-    Self,
     TypeGuard,
     get_args,
     override,
 )
 
-from dfo._core.codes import INVALID_ARGUMENT
-from dfo._core.errors import client_error
 from dfo._core.json_text import loads
+from dfo._core.text import single_line
 from dfo._generated.error_map import GapKind as SearchGapKind
 from dfo._generated.wire import (
     AggregateNode,
+    AssumptionKind,
     CodeNode,
     CodeSystemNode,
     ContinentalUnionNode,
     ContinentNode,
     CountryNode,
     DatasetNode,
+    DepartureCode,
     GroupNode,
+    NoDataReason,
     OrganisationNode,
     OtherNode,
     PlaceOtherNode,
     ProvenanceNode,
+    Severity,
     SourceNode,
     StatVarNode,
     SubregionNode,
     UnitNode,
 )
-
-if TYPE_CHECKING:
-    # `dfo._datasets.dataset` reads these classes, so the import is for types only.
-    from dfo._datasets.dataset import Dataset
 
 SPEC_ID = re.compile(r"spec_[0-9a-f]{32}")
 CONTENT_VERSION = re.compile(r"cv_[0-9a-f]{32}")
@@ -73,13 +69,46 @@ _GAP_KINDS: frozenset[str] = frozenset(
     get_args(SearchGapKind.__value__) + get_args(_ClientGapKind.__value__)
 )
 
+# The most characters of one text, such as a label or a message, a repr quotes.
+REPR_TEXT_MAX = 60
+
+# The most options a gap's repr names before it counts the rest, and the widths
+# of a gap's part label and of each option label, which keep its line within 200
+# characters.
+REPR_OPTIONS_MAX = 3
+REPR_GAP_LABEL_MAX = 40
+REPR_OPTION_LABEL_MAX = 30
+
+
+def clipped(text: str, width: int = REPR_TEXT_MAX) -> str:
+    """`text` cut to `width` characters, the last one "…", when it is longer."""
+    return text if len(text) <= width else text[: width - 1].rstrip() + "…"
+
+
+def counted(count: int, noun: str) -> str:
+    """`1 warning`, `2 warnings`: the count with the noun in its number."""
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def _quoted(text: str | None) -> str | None:
+    return None if text is None else f'"{clipped(text)}"'
+
+
+def _joined(name: str, *items: str | None) -> str:
+    """`Name(a, b)` from the items that are not None, on one line without
+    control characters."""
+    return single_line(
+        f"{name}({', '.join(item for item in items if item is not None)})"
+    )
+
+
 type FormatErrorReason = Literal[
     "format_invalid", "definition_spec_id_mismatch", "repeated_spec_id"
 ]
 
 
 class FormatError(ValueError):
-    """Stored JSON for a `Spec`, a `DatasetRef` or a bundle breaks its format.
+    """Stored JSON for a `DatasetRef`, a saved dataset or a bundle breaks its format.
 
     Attributes:
         reason: `format_invalid` when the JSON breaks the format's shape or a
@@ -95,7 +124,7 @@ class FormatError(ValueError):
         self.pointer = pointer
 
 
-@dataclass(frozen=True, slots=True, eq=False)
+@dataclass(frozen=True, slots=True, eq=False, repr=False)
 class Spec:
     """One reading of a question, the unit the server builds a dataset from.
 
@@ -113,9 +142,9 @@ class Spec:
     """
 
     spec_id: str
-    definition: Mapping[str, Any] = field(repr=False)
+    definition: Mapping[str, Any]
     sentence: str | None = None
-    entity_groups: Mapping[str, Any] | None = field(default=None, repr=False)
+    entity_groups: Mapping[str, Any] | None = None
 
     @override
     def __eq__(self, other: object) -> bool:
@@ -127,24 +156,9 @@ class Spec:
     def __hash__(self) -> int:
         return hash(self.spec_id)
 
-    def to_json(self) -> str:
-        """The spec as JSON, read back by `Spec.from_json`."""
-        return json.dumps(spec_object(self, with_sentence=True), ensure_ascii=False)
-
-    @classmethod
-    def from_json(cls, text: str | bytes, /) -> Self:
-        """Load a spec written by `Spec.to_json`.
-
-        Raises:
-            FormatError: The JSON is not a spec, or its definition names another
-                spec.
-        """
-        obj = decode(text)
-        spec = load_spec(obj, "", allowed=("sentence",))
-        sentence = obj.get("sentence")
-        if sentence is not None and not is_text(sentence):
-            raise FormatError("format_invalid", "/sentence", "not a non-empty string")
-        return cls(spec.spec_id, spec.definition, sentence)
+    @override
+    def __repr__(self) -> str:
+        return _joined("Spec", self.spec_id, _quoted(self.sentence))
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,9 +174,15 @@ class Notice:
     """
 
     code: str
-    severity: str
+    severity: Severity | str
     message: str
     spec_id: str | None = None
+
+    @override
+    def __repr__(self) -> str:
+        return single_line(
+            f"Notice({self.code}, {self.severity}: {clipped(self.message)})"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,18 +190,23 @@ class Departure:
     """A way the reading differs from what the question asked.
 
     Attributes:
-        code: The departure's code, such as `closest_match`.
+        code: The departure's code, such as `closest_match`. Other values pass
+            through.
         text: The server's sentence describing it.
         asked: What the question asked for, when the server names it.
         shown: What the reading shows instead, when the server names it.
         binding_ref: The binding the departure concerns, when there is one.
     """
 
-    code: str
+    code: DepartureCode | str
     text: str
     asked: str | None = None
     shown: str | None = None
     binding_ref: str | None = None
+
+    @override
+    def __repr__(self) -> str:
+        return single_line(f"Departure({self.code}: {clipped(self.text)})")
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +226,14 @@ class RequestedOperation:
     over: str | None = None
     target_year: int | None = None
 
+    @override
+    def __repr__(self) -> str:
+        over = f" over {self.over}" if self.over is not None else ""
+        year = f" to {self.target_year}" if self.target_year is not None else ""
+        return single_line(
+            f'RequestedOperation({self.verb} "{clipped(self.phrase)}"{over}{year})'
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class Assumption:
@@ -219,10 +252,16 @@ class Assumption:
         refs: The graph ids the assumption binds, when it binds any.
     """
 
-    kind: str
+    kind: AssumptionKind | str
     binding_ref: str
     text: str
     refs: tuple[str, ...] = ()
+
+    @override
+    def __repr__(self) -> str:
+        return single_line(
+            f'Assumption({self.kind} {self.binding_ref}: "{clipped(self.text)}")'
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,16 +282,21 @@ class Option:
 
     label: str
     mentions: tuple[str, ...]
-    data_query: Mapping[str, Any] = field(repr=False, compare=False)
+    data_query: Mapping[str, Any] = field(compare=False)
     entity_choice: int | None = None
+
+    @override
+    def __repr__(self) -> str:
+        return single_line(f'Option("{clipped(self.label)}")')
 
 
 @dataclass(frozen=True, slots=True)
-class _Reading:
-    """The members `Candidate` and `AsyncCandidate` share.
+class Candidate:
+    """One reading of a part that has several.
 
     `label`, `unit` and `source` split the sentence. The label is its heading, and
-    the unit and source come from its byline.
+    the unit and source come from its byline. Choose it with `answer.choose`, or
+    fetch its spec alone with `dfo.fetch(candidate.spec)`.
 
     Attributes:
         spec: The reading.
@@ -271,141 +315,20 @@ class _Reading:
     label: str | None
     source: str | None
     unit: str | None
-    raw: Mapping[str, Any] = field(repr=False, compare=False)
+    raw: Mapping[str, Any] = field(compare=False)
     assumptions: tuple[Assumption, ...] = field(default=(), kw_only=True)
 
-
-@dataclass(frozen=True, slots=True)
-class Candidate(_Reading):
-    """One reading of a part that has several, in an `Answer`.
-
-    A candidate read back from a saved dataset's `missing` belongs to no answer,
-    and fetches its spec with `dfo.fetch(candidate.spec)`.
-    """
-
-    _fetch: "_CandidateFetch | None" = field(
-        default=None, repr=False, compare=False, kw_only=True
-    )
-
-    def fetch(
-        self,
-        *,
-        partial: bool = False,
-        strict: bool = False,
-        layout: Layout = "long",
-        without_party_totals: bool = False,
-        timeout: float | None = 1800.0,
-        progress: bool | None = None,
-    ) -> "Dataset":
-        """Build this reading's dataset, through the `Answer` it came from.
-
-        Search answers the reading alone, from one request that posts its
-        identity and assumptions back, and the fetch builds that answer. It
-        takes `Answer.fetch`'s options.
-
-        Raises:
-            InvalidRequestError: The candidate came from no answer.
-        """
-        if self._fetch is None:
-            raise _unbound()
-        return self._fetch(
-            self,
-            partial=partial,
-            strict=strict,
-            layout=layout,
-            without_party_totals=without_party_totals,
-            timeout=timeout,
-            progress=progress,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class AsyncCandidate(_Reading):
-    """One reading of a part that has several, in an `AsyncAnswer`."""
-
-    _fetch: "_AsyncCandidateFetch | None" = field(
-        default=None, repr=False, compare=False, kw_only=True
-    )
-
-    async def fetch(
-        self,
-        *,
-        partial: bool = False,
-        strict: bool = False,
-        layout: Layout = "long",
-        without_party_totals: bool = False,
-        timeout: float | None = 1800.0,
-        progress: bool | None = None,
-    ) -> "Dataset":
-        """Build this reading's dataset, through the `AsyncAnswer` it came from.
-
-        Search answers the reading alone, from one request that posts its
-        identity and assumptions back, and the fetch builds that answer. It
-        takes `AsyncAnswer.fetch`'s options.
-
-        Raises:
-            InvalidRequestError: The candidate came from no answer.
-        """
-        if self._fetch is None:
-            raise _unbound()
-        return await self._fetch(
-            self,
-            partial=partial,
-            strict=strict,
-            layout=layout,
-            without_party_totals=without_party_totals,
-            timeout=timeout,
-            progress=progress,
-        )
-
-
-def _unbound() -> Exception:
-    return client_error(
-        INVALID_ARGUMENT,
-        "candidate.fetch() cannot build this reading: it came from no answer; "
-        "fetch its spec with dfo.fetch(candidate.spec)",
-    )
-
-
-class _CandidateFetch(Protocol):
-    def __call__(
-        self,
-        candidate: Candidate,
-        /,
-        *,
-        partial: bool,
-        strict: bool,
-        layout: Layout,
-        without_party_totals: bool,
-        timeout: float | None,
-        progress: bool | None,
-    ) -> "Dataset": ...
-
-
-class _AsyncCandidateFetch(Protocol):
-    def __call__(
-        self,
-        candidate: AsyncCandidate,
-        /,
-        *,
-        partial: bool,
-        strict: bool,
-        layout: Layout,
-        without_party_totals: bool,
-        timeout: float | None,
-        progress: bool | None,
-    ) -> Awaitable["Dataset"]: ...
+    @override
+    def __repr__(self) -> str:
+        return _joined("Candidate", _quoted(option_label(self)), self.source)
 
 
 # `match_args=False` on every part keeps the dataclass from declaring an empty
-# `__match_args__` on `Part`, which type checkers would hold each subclass to.
+# `__match_args__` on `Part`, which type checkers would hold each subclass to, and
+# `repr=False` on each subclass keeps `Part.__repr__` in place of a generated one.
 @dataclass(frozen=True, slots=True, kw_only=True, match_args=False)
-class Part[C]:
+class Part:
     """One part of an answer, the reading or lack of one for one variable asked.
-
-    Generic over the candidate type. `Answer.parts` hold `Part[Candidate]` and
-    `AsyncAnswer.parts` hold `Part[AsyncCandidate]`. Only `CandidatesPart` holds
-    candidates. The other parts are `Part[Never]`, which fits either answer.
 
     Attributes:
         status: The server's part status.
@@ -428,19 +351,34 @@ class Part[C]:
     departures: tuple[Departure, ...] = ()
     operations: tuple[RequestedOperation, ...] = ()
     assumptions: tuple[Assumption, ...] = ()
-    raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
+    raw: Mapping[str, Any] = field(default_factory=dict, compare=False)
+
+    @override
+    def __repr__(self) -> str:
+        warnings = counted(len(self.warnings), "warning") if self.warnings else None
+        return _joined(
+            type(self).__name__, _quoted(self.variable_text), *self._shown(), warnings
+        )
+
+    def _shown(self) -> tuple[str | None, ...]:
+        """What the repr shows between the variable's words and the warnings."""
+        return (self.status,)
 
 
-@dataclass(frozen=True, slots=True, kw_only=True, match_args=False)
-class DefinitePart(Part[Never]):
+@dataclass(frozen=True, slots=True, kw_only=True, match_args=False, repr=False)
+class DefinitePart(Part):
     """A part with one reading. Matches as `DefinitePart(spec)`."""
 
     __match_args__ = ("spec",)
     spec: Spec
 
+    @override
+    def _shown(self) -> tuple[str | None, ...]:
+        return (self.spec.spec_id,)
 
-@dataclass(frozen=True, slots=True, kw_only=True, match_args=False)
-class CandidatesPart[C](Part[C]):
+
+@dataclass(frozen=True, slots=True, kw_only=True, match_args=False, repr=False)
+class CandidatesPart(Part):
     """A part with several readings to choose from, in the server's order.
 
     Matches as `CandidatesPart(candidates)`. `truncated` is True when the server
@@ -448,12 +386,19 @@ class CandidatesPart[C](Part[C]):
     """
 
     __match_args__ = ("candidates",)
-    candidates: tuple[C, ...]
+    candidates: tuple[Candidate, ...]
     truncated: bool = False
 
+    @override
+    def _shown(self) -> tuple[str | None, ...]:
+        return (
+            counted(len(self.candidates), "candidate"),
+            "truncated" if self.truncated else None,
+        )
 
-@dataclass(frozen=True, slots=True, kw_only=True, match_args=False)
-class NoDataPart(Part[Never]):
+
+@dataclass(frozen=True, slots=True, kw_only=True, match_args=False, repr=False)
+class NoDataPart(Part):
     """A part with no reading. Matches as `NoDataPart(reason)`.
 
     `options` lists the choices that settle the part, when it awaits a choice of
@@ -461,13 +406,20 @@ class NoDataPart(Part[Never]):
     """
 
     __match_args__ = ("reason",)
-    reason: str
+    reason: NoDataReason | str
     message: str | None = None
     options: tuple[Option, ...] = ()
 
+    @override
+    def _shown(self) -> tuple[str | None, ...]:
+        return (
+            self.reason,
+            counted(len(self.options), "option") if self.options else None,
+        )
 
-@dataclass(frozen=True, slots=True, kw_only=True, match_args=False)
-class UnsupportedPart(Part[Never]):
+
+@dataclass(frozen=True, slots=True, kw_only=True, match_args=False, repr=False)
+class UnsupportedPart(Part):
     """A part understood but not supported. Matches as `UnsupportedPart(reason)`.
 
     `reason` is the refusal code. `message` is the server's explanation.
@@ -477,9 +429,13 @@ class UnsupportedPart(Part[Never]):
     reason: str
     message: str | None = None
 
+    @override
+    def _shown(self) -> tuple[str | None, ...]:
+        return (self.reason,)
 
-@dataclass(frozen=True, slots=True, kw_only=True, match_args=False)
-class UnknownPart(Part[Never]):
+
+@dataclass(frozen=True, slots=True, kw_only=True, match_args=False, repr=False)
+class UnknownPart(Part):
     """A part whose status this client does not know.
 
     Matches as `UnknownPart(status, raw)`.
@@ -487,12 +443,14 @@ class UnknownPart(Part[Never]):
 
     __match_args__ = ("status", "raw")
 
+    @override
+    def _shown(self) -> tuple[str | None, ...]:
+        return (f'status "{clipped(self.status)}"',)
+
 
 @dataclass(frozen=True, slots=True)
-class Gap[C]:
+class Gap:
     """A part that stops an answer from building a complete dataset.
-
-    Generic over the candidate type, as `Part` is.
 
     Attributes:
         part_index: The part's position in the answer.
@@ -506,49 +464,26 @@ class Gap[C]:
     """
 
     part_index: int
-    part: Part[C]
+    part: Part
     kind: GapKind
     message: str
-    options: tuple[C | Option, ...] = ()
+    options: tuple[Candidate | Option, ...] = ()
 
-
-def with_candidates[D](
-    part: CandidatesPart[Any], candidates: tuple[D, ...], /
-) -> CandidatesPart[D]:
-    """`part` with its candidates swapped for `candidates`, every other field kept."""
-    return replace(part, candidates=candidates)
-
-
-def unbound_gap(gap: Gap[Candidate | AsyncCandidate], /) -> Gap[Candidate]:
-    """`gap` with its candidates bound to no answer, for a dataset or an error.
-
-    A dataset and an `IncompleteAnswerError` hold no client, so their candidates
-    refuse `fetch` and point to `dfo.fetch(candidate.spec)`.
-    """
-    part = gap.part
-    match part:
-        case CandidatesPart():
-            candidates = tuple(
-                Candidate(
-                    c.spec,
-                    c.sentence,
-                    c.label,
-                    c.source,
-                    c.unit,
-                    c.raw,
-                    assumptions=c.assumptions,
-                )
-                for c in part.candidates
-            )
-            unbound = with_candidates(part, candidates)
-            return Gap(gap.part_index, unbound, gap.kind, gap.message, candidates)
-        case DefinitePart() | NoDataPart() | UnsupportedPart() | UnknownPart():
-            options = tuple(
-                option for option in gap.options if isinstance(option, Option)
-            )
-            return Gap(gap.part_index, part, gap.kind, gap.message, options)
-        case _:
-            raise TypeError(f"{type(part).__name__} is not an answer part")
+    @override
+    def __repr__(self) -> str:
+        part = f"part {self.part_index}"
+        if self.part.variable_text is not None:
+            part += f' "{clipped(self.part.variable_text, REPR_GAP_LABEL_MAX)}"'
+        if not self.options:
+            return single_line(f"Gap({part}, {self.kind})")
+        shown = [
+            clipped(option_label(option), REPR_OPTION_LABEL_MAX)
+            for option in self.options[:REPR_OPTIONS_MAX]
+        ]
+        if (rest := len(self.options) - REPR_OPTIONS_MAX) > 0:
+            shown.append(f"+{rest} more")
+        options = counted(len(self.options), "option")
+        return single_line(f"Gap({part}, {self.kind}, {options}: {' | '.join(shown)})")
 
 
 @dataclass(frozen=True, slots=True)
@@ -569,6 +504,10 @@ class CitationSource:
     licence_url: str | None = None
     url: str | None = None
 
+    @override
+    def __repr__(self) -> str:
+        return _joined("CitationSource", _quoted(self.label), self.licence)
+
 
 @dataclass(frozen=True, slots=True)
 class Citation:
@@ -576,6 +515,11 @@ class Citation:
 
     text: str
     sources: tuple[CitationSource, ...] = ()
+
+    @override
+    def __repr__(self) -> str:
+        sources = counted(len(self.sources), "source")
+        return single_line(f"Citation({_quoted(self.text)}, {sources})")
 
 
 # The members of a manifest artifact's `rendering` object that `Rendering.matches`
@@ -629,11 +573,16 @@ class Rendering:
         )
 
 
-def spec_object(spec: Spec, *, with_sentence: bool) -> dict[str, Any]:
-    obj: dict[str, Any] = {"spec_id": spec.spec_id, "definition": spec.definition}
-    if with_sentence and spec.sentence is not None:
-        obj["sentence"] = spec.sentence
-    return obj
+def option_label(option: Candidate | Option, /) -> str:
+    """How a repr names a choice: its label, else its sentence, else its spec id."""
+    if isinstance(option, Option):
+        return option.label
+    return option.label or option.sentence or option.spec.spec_id
+
+
+def spec_object(spec: Spec) -> dict[str, Any]:
+    """The spec as a ref member stores it, `{spec_id, definition}`."""
+    return {"spec_id": spec.spec_id, "definition": spec.definition}
 
 
 def is_gap_kind(value: object) -> TypeGuard[GapKind]:
@@ -696,11 +645,10 @@ def check_keys(
             raise FormatError("format_invalid", f"{pointer}/{key}", "not in the format")
 
 
-def load_spec(value: object, pointer: str, *, allowed: Sequence[str] = ()) -> Spec:
-    """The spec a stored `{spec_id, definition}` object names, which may also
-    carry the members `allowed` lists."""
+def load_spec(value: object, pointer: str) -> Spec:
+    """The spec a stored `{spec_id, definition}` object names."""
     obj = object_at(value, pointer)
-    check_keys(obj, pointer, required=("spec_id", "definition"), allowed=allowed)
+    check_keys(obj, pointer, required=("spec_id", "definition"))
     spec_id = obj["spec_id"]
     if not matches(SPEC_ID, spec_id):
         raise FormatError("format_invalid", f"{pointer}/spec_id", "not a spec id")
@@ -728,7 +676,7 @@ def load_definition(value: object, pointer: str) -> Spec:
     return Spec(definition["spec_id"], definition)
 
 
-@dataclass(frozen=True, slots=True, eq=False)
+@dataclass(frozen=True, slots=True, eq=False, repr=False)
 class RawResponse:
     """A response from `client.request`, for a route the client does not wrap.
 
@@ -739,8 +687,17 @@ class RawResponse:
     """
 
     status_code: int
-    headers: Mapping[str, str] = field(repr=False)
-    content: bytes = field(repr=False)
+    headers: Mapping[str, str]
+    content: bytes
+
+    @override
+    def __repr__(self) -> str:
+        return _joined(
+            "RawResponse",
+            str(self.status_code),
+            self.headers.get("content-type"),
+            counted(len(self.content), "byte"),
+        )
 
     @property
     def text(self) -> str:
@@ -756,20 +713,6 @@ class RawResponse:
         """
         return loads(self.content)
 
-
-type ResolveKind = Literal[
-    "country",
-    "continent",
-    "subregion",
-    "continental_union",
-    "organisation",
-    "aggregate",
-    "place_other",
-    "group",
-    "code",
-    "other",
-]
-"""A kind of graph node a name can resolve to."""
 
 type Node = (
     StatVarNode

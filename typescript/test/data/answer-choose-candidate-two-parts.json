@@ -1,0 +1,865 @@
+{
+  "format_version": 1,
+  "question": "mortality in Kenya from 2013 to 2022, and GDP of sub-Saharan Africa",
+  "answer": {
+    "diagnostics": {
+      "warnings": [],
+      "timed_out": false
+    },
+    "kind": "resolution",
+    "parts": [
+      {
+        "variable_text": "mortality",
+        "warnings": [],
+        "rendered_sentence": "3 readings. Deaths rate per capita in the 48 countries in Sub-Saharan Africa. World Development Indicators · 2013 to 2022. Number of deaths in the 48 countries in Sub-Saharan Africa. Kenya Census · 2018 to 2022. Count of mortality event (as fraction of count birth event live birth) in the 48 countries in Sub-Saharan Africa. Nigeria Statistics · 2014.",
+        "restatement": {
+          "variable_text": "mortality",
+          "entities": [
+            {
+              "text": "Kenya"
+            },
+            {
+              "text": "Sub-Saharan Africa"
+            }
+          ],
+          "time_text": "2013 to 2022",
+          "sources": [],
+          "operations": []
+        },
+        "operations": [],
+        "departures": [],
+        "assumptions": [],
+        "status": "candidates",
+        "candidates": {
+          "ordering": "intent_rank",
+          "specs": [
+            {
+              "spec_id": "spec_176fd5e63bb2a122c4ad00831497b863",
+              "definition": {
+                "schema_version": 1,
+                "spec_id": "spec_176fd5e63bb2a122c4ad00831497b863",
+                "identity": {
+                  "identity_version": "spec1",
+                  "shape": {
+                    "kind": "statvar_schema",
+                    "population_type": "MortalityEvent",
+                    "measured_property": "count",
+                    "stat_type": "measuredValue",
+                    "measurement_denominator": {
+                      "ref": "Count_Person"
+                    }
+                  },
+                  "slots": [
+                    {
+                      "property": "causeOfDeath",
+                      "binding": {
+                        "state": "unbound"
+                      }
+                    }
+                  ],
+                  "entities": {
+                    "observationAbout": [
+                      "country/AGO",
+                      "country/BDI",
+                      "country/BEN",
+                      "country/BFA",
+                      "country/BWA",
+                      "country/CAF",
+                      "country/CIV",
+                      "country/CMR",
+                      "country/COD",
+                      "country/COG",
+                      "country/COM",
+                      "country/CPV",
+                      "country/DJI",
+                      "country/ERI",
+                      "country/ETH",
+                      "country/GAB",
+                      "country/GHA",
+                      "country/GIN",
+                      "country/GMB",
+                      "country/GNB",
+                      "country/GNQ",
+                      "country/KEN",
+                      "country/LBR",
+                      "country/LSO",
+                      "country/MDG",
+                      "country/MLI",
+                      "country/MOZ",
+                      "country/MRT",
+                      "country/MUS",
+                      "country/MWI",
+                      "country/NAM",
+                      "country/NER",
+                      "country/NGA",
+                      "country/RWA",
+                      "country/SEN",
+                      "country/SLE",
+                      "country/SOM",
+                      "country/SSD",
+                      "country/STP",
+                      "country/SWZ",
+                      "country/SYC",
+                      "country/TCD",
+                      "country/TGO",
+                      "country/TZA",
+                      "country/UGA",
+                      "country/ZAF",
+                      "country/ZMB",
+                      "country/ZWE"
+                    ]
+                  },
+                  "requested_window": {
+                    "kind": "range",
+                    "start_year": 2013,
+                    "end_year": 2022
+                  }
+                }
+              },
+              "resolved": {
+                "entity_groups": {
+                  "observationAbout": {
+                    "ref": "SubSaharanAfrica",
+                    "label": "Sub-Saharan Africa",
+                    "entity_type": "UNGeoRegion"
+                  }
+                },
+                "facets": {
+                  "provenance": {
+                    "label": "World Development Indicators"
+                  }
+                },
+                "rendered_sentence": "Deaths rate per capita in the 48 countries in Sub-Saharan Africa, 2013 to 2022. World Development Indicators.",
+                "sentence_plan": [
+                  {
+                    "kind": "slot",
+                    "text": "Deaths rate",
+                    "axis": "what",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "text",
+                    "text": " ",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "per capita",
+                    "axis": "unit",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "",
+                    "axis": "how",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "text",
+                    "text": " in ",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "the 48 countries in Sub-Saharan Africa",
+                    "axis": "where",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "text",
+                    "text": ", ",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "2013 to 2022",
+                    "axis": "when",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "text",
+                    "text": ".",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "text",
+                    "text": " ",
+                    "segment": "byline"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "World Development Indicators",
+                    "axis": "source",
+                    "segment": "byline"
+                  },
+                  {
+                    "kind": "text",
+                    "text": ".",
+                    "segment": "byline"
+                  }
+                ]
+              }
+            },
+            {
+              "spec_id": "spec_1ca4f4991f0c01309d33fed3fe0bae60",
+              "definition": {
+                "schema_version": 1,
+                "spec_id": "spec_1ca4f4991f0c01309d33fed3fe0bae60",
+                "identity": {
+                  "identity_version": "spec1",
+                  "shape": {
+                    "kind": "statvar_schema",
+                    "population_type": "MortalityEvent",
+                    "measured_property": "count",
+                    "stat_type": "measuredValue"
+                  },
+                  "slots": [
+                    {
+                      "property": "age",
+                      "binding": {
+                        "state": "unbound"
+                      }
+                    },
+                    {
+                      "property": "ageGroupClassification",
+                      "binding": {
+                        "state": "unbound"
+                      }
+                    },
+                    {
+                      "property": "causeOfDeath",
+                      "binding": {
+                        "state": "unbound"
+                      }
+                    },
+                    {
+                      "property": "ethnicity",
+                      "binding": {
+                        "state": "unbound"
+                      }
+                    },
+                    {
+                      "property": "gender",
+                      "binding": {
+                        "state": "unbound"
+                      }
+                    },
+                    {
+                      "property": "incidentType",
+                      "binding": {
+                        "state": "unbound"
+                      }
+                    },
+                    {
+                      "property": "race",
+                      "binding": {
+                        "state": "unbound"
+                      }
+                    },
+                    {
+                      "property": "residentStatus",
+                      "binding": {
+                        "state": "unbound"
+                      }
+                    }
+                  ],
+                  "entities": {
+                    "observationAbout": [
+                      "country/AGO",
+                      "country/BDI",
+                      "country/BEN",
+                      "country/BFA",
+                      "country/BWA",
+                      "country/CAF",
+                      "country/CIV",
+                      "country/CMR",
+                      "country/COD",
+                      "country/COG",
+                      "country/COM",
+                      "country/CPV",
+                      "country/DJI",
+                      "country/ERI",
+                      "country/ETH",
+                      "country/GAB",
+                      "country/GHA",
+                      "country/GIN",
+                      "country/GMB",
+                      "country/GNB",
+                      "country/GNQ",
+                      "country/KEN",
+                      "country/LBR",
+                      "country/LSO",
+                      "country/MDG",
+                      "country/MLI",
+                      "country/MOZ",
+                      "country/MRT",
+                      "country/MUS",
+                      "country/MWI",
+                      "country/NAM",
+                      "country/NER",
+                      "country/NGA",
+                      "country/RWA",
+                      "country/SEN",
+                      "country/SLE",
+                      "country/SOM",
+                      "country/SSD",
+                      "country/STP",
+                      "country/SWZ",
+                      "country/SYC",
+                      "country/TCD",
+                      "country/TGO",
+                      "country/TZA",
+                      "country/UGA",
+                      "country/ZAF",
+                      "country/ZMB",
+                      "country/ZWE"
+                    ]
+                  },
+                  "requested_window": {
+                    "kind": "range",
+                    "start_year": 2013,
+                    "end_year": 2022
+                  }
+                }
+              },
+              "resolved": {
+                "entity_groups": {
+                  "observationAbout": {
+                    "ref": "SubSaharanAfrica",
+                    "label": "Sub-Saharan Africa",
+                    "entity_type": "UNGeoRegion"
+                  }
+                },
+                "facets": {
+                  "provenance": {
+                    "label": "Kenya Census"
+                  }
+                },
+                "rendered_sentence": "Number of deaths in the 48 countries in Sub-Saharan Africa, 2018 to 2022. Kenya Census.",
+                "sentence_plan": [
+                  {
+                    "kind": "slot",
+                    "text": "Number of deaths",
+                    "axis": "what",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "",
+                    "axis": "how",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "",
+                    "axis": "how",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "",
+                    "axis": "how",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "",
+                    "axis": "how",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "",
+                    "axis": "how",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "",
+                    "axis": "how",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "",
+                    "axis": "how",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "",
+                    "axis": "how",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "text",
+                    "text": " in ",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "the 48 countries in Sub-Saharan Africa",
+                    "axis": "where",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "text",
+                    "text": ", ",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "2018 to 2022",
+                    "axis": "when",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "text",
+                    "text": ".",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "text",
+                    "text": " ",
+                    "segment": "byline"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "Kenya Census",
+                    "axis": "source",
+                    "segment": "byline"
+                  },
+                  {
+                    "kind": "text",
+                    "text": ".",
+                    "segment": "byline"
+                  }
+                ]
+              }
+            },
+            {
+              "spec_id": "spec_66b488f4c8cd760c136a57ce16335332",
+              "definition": {
+                "schema_version": 1,
+                "spec_id": "spec_66b488f4c8cd760c136a57ce16335332",
+                "identity": {
+                  "identity_version": "spec1",
+                  "shape": {
+                    "kind": "statvar_schema",
+                    "population_type": "MortalityEvent",
+                    "measured_property": "count",
+                    "stat_type": "measuredValue",
+                    "measurement_denominator": {
+                      "ref": "Count_BirthEvent_LiveBirth"
+                    }
+                  },
+                  "slots": [
+                    {
+                      "property": "age",
+                      "binding": {
+                        "state": "unbound"
+                      }
+                    },
+                    {
+                      "property": "ageGroupClassification",
+                      "binding": {
+                        "state": "unbound"
+                      }
+                    }
+                  ],
+                  "entities": {
+                    "observationAbout": [
+                      "country/AGO",
+                      "country/BDI",
+                      "country/BEN",
+                      "country/BFA",
+                      "country/BWA",
+                      "country/CAF",
+                      "country/CIV",
+                      "country/CMR",
+                      "country/COD",
+                      "country/COG",
+                      "country/COM",
+                      "country/CPV",
+                      "country/DJI",
+                      "country/ERI",
+                      "country/ETH",
+                      "country/GAB",
+                      "country/GHA",
+                      "country/GIN",
+                      "country/GMB",
+                      "country/GNB",
+                      "country/GNQ",
+                      "country/KEN",
+                      "country/LBR",
+                      "country/LSO",
+                      "country/MDG",
+                      "country/MLI",
+                      "country/MOZ",
+                      "country/MRT",
+                      "country/MUS",
+                      "country/MWI",
+                      "country/NAM",
+                      "country/NER",
+                      "country/NGA",
+                      "country/RWA",
+                      "country/SEN",
+                      "country/SLE",
+                      "country/SOM",
+                      "country/SSD",
+                      "country/STP",
+                      "country/SWZ",
+                      "country/SYC",
+                      "country/TCD",
+                      "country/TGO",
+                      "country/TZA",
+                      "country/UGA",
+                      "country/ZAF",
+                      "country/ZMB",
+                      "country/ZWE"
+                    ]
+                  },
+                  "requested_window": {
+                    "kind": "range",
+                    "start_year": 2013,
+                    "end_year": 2022
+                  }
+                }
+              },
+              "resolved": {
+                "entity_groups": {
+                  "observationAbout": {
+                    "ref": "SubSaharanAfrica",
+                    "label": "Sub-Saharan Africa",
+                    "entity_type": "UNGeoRegion"
+                  }
+                },
+                "facets": {
+                  "provenance": {
+                    "label": "Nigeria Statistics"
+                  }
+                },
+                "rendered_sentence": "Count of mortality event (as fraction of count birth event live birth) in the 48 countries in Sub-Saharan Africa in 2014. Nigeria Statistics.",
+                "sentence_plan": [
+                  {
+                    "kind": "slot",
+                    "text": "Count of mortality event (as fraction of count birth event live birth)",
+                    "axis": "what",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "",
+                    "axis": "how",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "",
+                    "axis": "how",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "text",
+                    "text": " in ",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "the 48 countries in Sub-Saharan Africa",
+                    "axis": "where",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "text",
+                    "text": " ",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "in 2014",
+                    "axis": "when",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "text",
+                    "text": ".",
+                    "segment": "heading"
+                  },
+                  {
+                    "kind": "text",
+                    "text": " ",
+                    "segment": "byline"
+                  },
+                  {
+                    "kind": "slot",
+                    "text": "Nigeria Statistics",
+                    "axis": "source",
+                    "segment": "byline"
+                  },
+                  {
+                    "kind": "text",
+                    "text": ".",
+                    "segment": "byline"
+                  }
+                ]
+              }
+            }
+          ],
+          "truncated": false
+        },
+        "reading_assumptions": {
+          "spec_176fd5e63bb2a122c4ad00831497b863": [],
+          "spec_1ca4f4991f0c01309d33fed3fe0bae60": [],
+          "spec_66b488f4c8cd760c136a57ce16335332": []
+        }
+      },
+      {
+        "variable_text": "GDP",
+        "warnings": [],
+        "restatement": {
+          "variable_text": "GDP",
+          "entities": [
+            {
+              "text": "Kenya"
+            },
+            {
+              "text": "Sub-Saharan Africa"
+            }
+          ],
+          "time_text": "2013 to 2022",
+          "sources": [],
+          "operations": []
+        },
+        "operations": [],
+        "departures": [
+          {
+            "code": "entity_unavailable",
+            "binding_ref": "where:",
+            "asked": "sub-Saharan Africa",
+            "text": "The data holds no values for 1 of the 48 countries in Sub-Saharan Africa."
+          },
+          {
+            "code": "group_read_as_members",
+            "binding_ref": "where:",
+            "asked": "sub-Saharan Africa",
+            "text": "You asked for sub-Saharan Africa. This shows the countries in it, each on its own."
+          }
+        ],
+        "assumptions": [],
+        "status": "definite",
+        "spec": {
+          "spec_id": "spec_310c03c5f99c73c41d12226098714f81",
+          "definition": {
+            "schema_version": 1,
+            "spec_id": "spec_310c03c5f99c73c41d12226098714f81",
+            "identity": {
+              "identity_version": "spec1",
+              "shape": {
+                "kind": "statvar_schema",
+                "population_type": "EconomicActivity",
+                "measured_property": "amount",
+                "stat_type": "measuredValue",
+                "measurement_qualifier": "Nominal"
+              },
+              "slots": [
+                {
+                  "property": "activitySource",
+                  "binding": {
+                    "state": "value",
+                    "ref": "GrossDomesticProduction"
+                  }
+                },
+                {
+                  "property": "economicSector",
+                  "binding": {
+                    "state": "unbound"
+                  }
+                },
+                {
+                  "property": "naics",
+                  "binding": {
+                    "state": "unbound"
+                  }
+                },
+                {
+                  "property": "schoolGradeLevel",
+                  "binding": {
+                    "state": "unbound"
+                  }
+                }
+              ],
+              "entities": {
+                "observationAbout": [
+                  "country/AGO",
+                  "country/BDI",
+                  "country/BEN",
+                  "country/BFA",
+                  "country/BWA",
+                  "country/CAF",
+                  "country/CIV",
+                  "country/CMR",
+                  "country/COD",
+                  "country/COG",
+                  "country/COM",
+                  "country/CPV",
+                  "country/DJI",
+                  "country/ERI",
+                  "country/ETH",
+                  "country/GAB",
+                  "country/GHA",
+                  "country/GIN",
+                  "country/GMB",
+                  "country/GNB",
+                  "country/GNQ",
+                  "country/KEN",
+                  "country/LBR",
+                  "country/LSO",
+                  "country/MDG",
+                  "country/MLI",
+                  "country/MOZ",
+                  "country/MRT",
+                  "country/MUS",
+                  "country/MWI",
+                  "country/NAM",
+                  "country/NER",
+                  "country/NGA",
+                  "country/RWA",
+                  "country/SEN",
+                  "country/SLE",
+                  "country/SOM",
+                  "country/SSD",
+                  "country/STP",
+                  "country/SWZ",
+                  "country/SYC",
+                  "country/TCD",
+                  "country/TGO",
+                  "country/TZA",
+                  "country/UGA",
+                  "country/ZAF",
+                  "country/ZMB",
+                  "country/ZWE"
+                ]
+              },
+              "requested_window": {
+                "kind": "range",
+                "start_year": 2013,
+                "end_year": 2022
+              },
+              "facets": {
+                "unit": {
+                  "state": "value",
+                  "ref": "USDollar"
+                }
+              }
+            }
+          },
+          "resolved": {
+            "entity_groups": {
+              "observationAbout": {
+                "ref": "SubSaharanAfrica",
+                "label": "Sub-Saharan Africa",
+                "entity_type": "UNGeoRegion"
+              }
+            },
+            "facets": {
+              "provenance": {
+                "label": "World Development Indicators"
+              }
+            },
+            "rendered_sentence": "GDP in the 48 countries in Sub-Saharan Africa, 2013 to 2022. Current US dollars · World Development Indicators.",
+            "sentence_plan": [
+              {
+                "kind": "slot",
+                "text": "GDP",
+                "axis": "what",
+                "segment": "heading"
+              },
+              {
+                "kind": "slot",
+                "text": "",
+                "axis": "how",
+                "segment": "heading"
+              },
+              {
+                "kind": "slot",
+                "text": "",
+                "axis": "how",
+                "segment": "heading"
+              },
+              {
+                "kind": "slot",
+                "text": "",
+                "axis": "how",
+                "segment": "heading"
+              },
+              {
+                "kind": "slot",
+                "text": "",
+                "axis": "how",
+                "segment": "heading"
+              },
+              {
+                "kind": "text",
+                "text": " in ",
+                "segment": "heading"
+              },
+              {
+                "kind": "slot",
+                "text": "the 48 countries in Sub-Saharan Africa",
+                "axis": "where",
+                "segment": "heading"
+              },
+              {
+                "kind": "text",
+                "text": ", ",
+                "segment": "heading"
+              },
+              {
+                "kind": "slot",
+                "text": "2013 to 2022",
+                "axis": "when",
+                "segment": "heading"
+              },
+              {
+                "kind": "text",
+                "text": ".",
+                "segment": "heading"
+              },
+              {
+                "kind": "text",
+                "text": " ",
+                "segment": "byline"
+              },
+              {
+                "kind": "slot",
+                "text": "Current US dollars",
+                "axis": "unit",
+                "segment": "byline"
+              },
+              {
+                "kind": "text",
+                "text": " · ",
+                "segment": "byline"
+              },
+              {
+                "kind": "slot",
+                "text": "World Development Indicators",
+                "axis": "source",
+                "segment": "byline"
+              },
+              {
+                "kind": "text",
+                "text": ".",
+                "segment": "byline"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "rendered_sentence": "Answered 1 of 2 parts. Mortality has 3 readings. Deaths rate per capita in the 48 countries in Sub-Saharan Africa. World Development Indicators · 2013 to 2022. Number of deaths in the 48 countries in Sub-Saharan Africa. Kenya Census · 2018 to 2022. Count of mortality event (as fraction of count birth event live birth) in the 48 countries in Sub-Saharan Africa. Nigeria Statistics · 2014. GDP in the 48 countries in Sub-Saharan Africa, 2013 to 2022. Current US dollars · World Development Indicators. The data holds no values for 1 of the 48 countries in Sub-Saharan Africa. You asked for sub-Saharan Africa. This shows the countries in it, each on its own.",
+    "status": "mixed",
+    "trace_id": "b77a765cb10a47e2a332c4884f011b76"
+  }
+}

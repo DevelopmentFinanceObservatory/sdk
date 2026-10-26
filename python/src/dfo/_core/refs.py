@@ -1,15 +1,15 @@
 """The DatasetRef format: a dataset's members and the exact versions a ref names.
 
 The format is fixed, so a ref saved by one client or language loads in another.
-`Spec` and the JSON helpers its own format shares with this one live in
-`dfo._core.types`.
+`Spec` and the JSON helpers this format uses live in `dfo._core.types`.
 """
 
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Self
+from typing import Any, Self, override
 
+from dfo._core.text import single_line
 from dfo._core.types import (
     CONTENT_VERSION,
     DIGEST,
@@ -18,6 +18,7 @@ from dfo._core.types import (
     Rendering,
     Spec,
     check_keys,
+    clipped,
     decode,
     is_text,
     load_spec,
@@ -51,6 +52,10 @@ class RefMember:
     digest: str
     rendering: Rendering
 
+    @override
+    def __repr__(self) -> str:
+        return single_line(f"RefMember({self.spec.spec_id} at {self.content_version})")
+
 
 @dataclass(frozen=True, slots=True)
 class Member:
@@ -75,6 +80,16 @@ class Member:
     digest: str
     rendering: Rendering
 
+    @override
+    def __repr__(self) -> str:
+        version = f"{self.spec.spec_id} at {self.content_version}"
+        sources = "; ".join(source.label for source in self.citation.sources)
+        return single_line(
+            f"Member({version}, {clipped(sources)})"
+            if sources
+            else f"Member({version})"
+        )
+
     def ref_member(self) -> RefMember:
         """The member as a `DatasetRef` stores it."""
         return RefMember(
@@ -87,17 +102,49 @@ class Member:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class DatasetRef:
     """The exact versions a dataset holds, in the format every DFO client reads.
 
     The format is fixed, so a ref saved by one client or language loads in another.
+    `dfo.fetch(ref)` fetches the versions it names, and
+    `dfo.fetch(ref, latest=True)` the newest versions of its specs.
+
+    Two refs are equal when they name the same specs at the same versions in the
+    same renderings, in order. Digests, sentences and parts stay out, since a
+    version rendered again (`ref_digest_changed`) holds the same data.
 
     Attributes:
         members: One member per reading, each with a distinct spec.
     """
 
     members: tuple[RefMember, ...]
+
+    def _versions(self) -> tuple[tuple[str, str, Rendering], ...]:
+        return tuple(
+            (member.spec.spec_id, member.content_version, member.rendering)
+            for member in self.members
+        )
+
+    @override
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, DatasetRef):
+            return NotImplemented
+        return self._versions() == other._versions()
+
+    @override
+    def __hash__(self) -> int:
+        return hash(self._versions())
+
+    @override
+    def __repr__(self) -> str:
+        count = len(self.members)
+        versions = ", ".join(
+            f"{member.spec.spec_id} at {member.content_version}"
+            for member in self.members
+        )
+        noun = "member" if count == 1 else "members"
+        return single_line(f"DatasetRef({count} {noun}: {versions}, exact)")
 
     @classmethod
     def of(cls, members: Iterable[Member], /) -> Self:
@@ -153,7 +200,7 @@ def _member_object(member: RefMember) -> dict[str, Any]:
     return {
         "parts": list(member.parts),
         "sentence": member.sentence,
-        "spec": spec_object(member.spec, with_sentence=False),
+        "spec": spec_object(member.spec),
         "content_version": member.content_version,
         "artifact": {
             "digest": member.digest,

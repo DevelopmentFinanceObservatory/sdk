@@ -35,15 +35,17 @@ from dfo._core.codes import (
 from dfo._core.errors import (
     DataWarning,
     DfoError,
+    InvalidRequestError,
     client_error,
-    recast,
     warn,
+    with_hint,
 )
+from dfo._core.nearest import nearest
 from dfo._core.parse import parse_notices, parse_parts
 from dfo._core.refusals import describing, trace_id_of
+from dfo._core.text import cited
 from dfo._core.types import (
     RENDERING_SELECTORS,
-    AsyncCandidate,
     DefinitePart,
     Gap,
     Layout,
@@ -53,12 +55,13 @@ from dfo._core.types import (
     Wire,
 )
 from dfo._datasets.build import (
+    NOTHING_ASKED,
+    Asked,
     Cache,
     Reading,
     build_body,
     check_strict,
     counted_rows,
-    layout_of,
     pick_artifact,
     rendering_for,
     response_json,
@@ -66,16 +69,15 @@ from dfo._datasets.build import (
 )
 from dfo._datasets.cache import sha256_digest
 from dfo._datasets.dataset import Dataset, FetchedMember, build_dataset
+from dfo._datasets.interrupt import async_interrupt_note
 from dfo._datasets.operation import (
-    AsyncOperation,
     Built,
-    Finish,
     Poller,
     ProgressHook,
     finishing,
     post_build,
     progress_hook,
-    resume,
+    still_running,
 )
 from dfo._datasets.progress import ProgressRenderer
 from dfo._generated.strict import RESOLUTION_KIND
@@ -107,9 +109,11 @@ type SessionSource = Callable[[], Session]
 _UNNAMED_PART = "dataset"
 
 _SEARCH_AGAIN = (
-    " The server can no longer build this reading; search the question again "
+    "The server can no longer build this reading; search the question again "
     "for a current one."
 )
+# The code of a refusal of a role's entities the graph does not hold.
+_INVALID_ROLE_REF = "invalid_role_ref"
 
 
 async def fetch_members(
@@ -119,11 +123,12 @@ async def fetch_members(
     layout: Layout = "long",
     without_party_totals: bool = False,
     strict: bool = False,
-    timeout: float | None = 1800.0,
+    timeout: float | None = None,
     progress: bool | None = None,
     cache: Cache | None = None,
-    missing: Sequence[Gap[AsyncCandidate]] = (),
+    missing: Sequence[Gap] = (),
     narrowing: Mapping[str, Any] | None = None,
+    asked: Asked = NOTHING_ASKED,
 ) -> Dataset:
     """Build the latest version of each spec and assemble one dataset.
 
@@ -135,12 +140,16 @@ async def fetch_members(
         without_party_totals: Leave out the rows of parties the code index
             declares totals, on each party role the reading leaves open.
         strict: Raise the first dataset warning instead of issuing it.
-        timeout: The longest the fetch takes, in seconds; None for no limit.
+        timeout: The longest the fetch takes, in seconds; None waits as long as
+            the build takes.
         progress: Show long-build progress; None shows it unless `DFO_PROGRESS=0`.
         cache: The local cache, or None to fetch without one.
         missing: The gaps a partial answer leaves out; the dataset is complete
             when there are none.
         narrowing: The build request's `scope`, applied to every member.
+        asked: The values the caller's narrowing names, which a refusal of the
+            narrowing answers with the server's alternatives and, for a place
+            name, the lookup that finds its dcid.
 
     Raises:
         InvalidRequestError: `layout="frame"` with several members, `strict`
@@ -148,9 +157,9 @@ async def fetch_members(
             (`invalid_argument`), or the server refused a build as malformed.
         NetworkError: `DFO_OFFLINE=1` is set, and the cache holds no version of
             a spec, or the fetch narrows it (`offline`).
-        DfoTimeoutError: The deadline passed; a long build's message names the
-            call that resumes it. A long build the poll at the deadline reads
-            done still downloads, each request for one attempt of the client's
+        DfoTimeoutError: The deadline passed; the message says the build carries
+            on on the server. A long build the poll at the deadline reads done
+            still downloads, each request for one attempt of the client's
             timeout.
         DfoError: The server refused a request.
     """
@@ -184,14 +193,18 @@ async def fetch_members(
                 built = await _build_latest(
                     transport,
                     build_body(want.spec, rendering, narrowing),
-                    rendering=rendering,
+                    asked,
                     deadline=deadline,
+                    timeout=timeout,
                     on_progress=on_progress,
                 )
                 cached_data = None
-            with finishing(transport, built, deadline) as (finisher, bound):
-                fetched.append(
-                    await finish_member(
+            with finishing(transport, built, deadline, timeout=timeout) as (
+                finisher,
+                bound,
+            ):
+                try:
+                    member = await finish_member(
                         finisher,
                         built.manifest,
                         built.trace_id,
@@ -202,7 +215,14 @@ async def fetch_members(
                         deadline=bound,
                         cached_data=cached_data,
                     )
-                )
+                except InvalidRequestError as error:
+                    # Search refuses an entity of the built identity when it is
+                    # resubmitted for its sentence.
+                    hinted = _narrowing_refusal(error, asked, transport.caller)
+                    if hinted is error:
+                        raise
+                    raise hinted from error
+                fetched.append(member)
     return await async_offload(
         build_dataset,
         fetched,
@@ -211,32 +231,91 @@ async def fetch_members(
         missing=missing,
         stale=stale,
         cache=cache,
+        caller=transport.caller,
     )
 
 
 async def _build_latest(
     transport: AsyncTransport,
     body: Wire,
+    asked: Asked,
     *,
-    rendering: Rendering,
     deadline: float | None,
+    timeout: float | None,
     on_progress: ProgressHook,
 ) -> Built:
-    """Build a spec's latest version, hinting a search when a member is gone."""
+    """Build a spec's latest version, hinting a search when a member is gone and
+    a fix when the narrowing is refused."""
     try:
         return await build_version(
             transport,
             body,
-            rendering=rendering,
             deadline=deadline,
+            timeout=timeout,
             on_progress=on_progress,
         )
     except DfoError as error:
         if error.code == "member_not_resolvable":
-            raise recast(
-                error, type(error), message=f"{error}{_SEARCH_AGAIN}"
-            ) from error
-        raise
+            raise with_hint(error, _SEARCH_AGAIN) from error
+        if not isinstance(error, InvalidRequestError):
+            raise
+        if (hinted := _narrowing_refusal(error, asked, transport.caller)) is error:
+            raise
+        raise hinted from error
+
+
+def _narrowing_refusal(
+    error: InvalidRequestError, asked: Asked, caller: str, /
+) -> InvalidRequestError:
+    """A build's refusal with what helps the caller fix the narrowing.
+
+    It names the alternatives the server offers and the nearest of them to what
+    the caller posted, and, for a role's entity the graph does not hold, the
+    lookup that turns a name into a dcid, on `caller` (`client` or `dfo`). A
+    value with no `/` reads as a name,
+    since a place's dcid names its namespace, as `country/DEU` does. Without
+    either the error stays as it is.
+    """
+    hints = []
+    offered = [
+        (item["ref"], item["label"])
+        for item in _alternatives(error)
+        if isinstance(item, Mapping)
+        and isinstance(item.get("ref"), str)
+        and item["ref"]
+        and isinstance(item.get("label"), str)
+    ]
+    if offered:
+        refs = [ref for ref, _ in offered]
+        near = next(
+            (
+                found
+                for word in (*asked.dcids, *asked.refs)
+                if (found := nearest(word, refs)) is not None
+            ),
+            None,
+        )
+        if near is not None:
+            hints.append(f"Did you mean {cited(near)}?")
+        listed = ", ".join(f"{ref} ({label})" for ref, label in offered)
+        hints.append(f"The server offers {listed}.")
+    if error.code == _INVALID_ROLE_REF:
+        name = next((dcid for dcid in asked.dcids if "/" not in dcid), None)
+        if name is not None:
+            hints.append(
+                f"Entities take dcids; {caller}.lookup.resolve({cited(name)}) finds "
+                "one."
+            )
+    return with_hint(error, *hints) if hints else error
+
+
+def _alternatives(error: InvalidRequestError, /) -> list[object]:
+    """The alternatives a refusal offers, its own then its issues'."""
+    found: list[object] = list(error.alternatives)
+    for issue in error.issues:
+        if isinstance(listed := issue.get("alternatives"), list):
+            found.extend(listed)
+    return found
 
 
 async def _latest_cached(
@@ -295,121 +374,6 @@ def _is_plain_rendering(rendering: Mapping[str, Any], /) -> bool:
     )
 
 
-async def mint(
-    transport: AsyncTransport,
-    spec: Spec,
-    *,
-    layout: Layout = "long",
-    without_party_totals: bool = False,
-    progress: bool | None = None,
-    cache: Cache | None = None,
-) -> AsyncOperation:
-    """Start a spec's build and return it as an operation, done or running.
-
-    The build request reads for up to 150 seconds and has no outer deadline.
-    The operation's `result` bounds the wait for the build.
-
-    Raises:
-        InvalidRequestError: `spec` is not a `Spec`, such as a spec id, or
-            `progress` is neither a bool nor None (`invalid_argument`); no
-            request is sent.
-        DfoError: The server refused the build.
-    """
-    if not isinstance(spec, Spec):
-        raise client_error(
-            INVALID_ARGUMENT,
-            "mint takes a Spec, such as answer.specs[0], not "
-            f"{type(spec).__name__}; a spec id alone does not build",
-        )
-    rendering = rendering_for(layout, without_party_totals=without_party_totals)
-    renderer = ProgressRenderer(enabled=progress)
-    body = build_body(spec, rendering)
-    reply = await post_build(transport, body, deadline=None)
-    poller = Poller(
-        transport,
-        reply,
-        rendering=rendering,
-        body=body,
-        on_progress=progress_hook(renderer),
-    )
-    return AsyncOperation(
-        poller,
-        _finisher(Reading((), spec, spec.sentence), rendering, cache=cache),
-        renderer=renderer,
-    )
-
-
-async def operation(
-    transport: AsyncTransport,
-    operation_id: str,
-    *,
-    layout: Layout = "long",
-    without_party_totals: bool = False,
-    progress: bool | None = None,
-    cache: Cache | None = None,
-) -> AsyncOperation:
-    """Resume a build another process started, by its operation id.
-
-    The build's rendering is in its id, so `layout` and `without_party_totals`
-    must be the ones it was started with. An operation that already failed
-    raises its error from `result`.
-
-    Raises:
-        NotFoundError: The server holds no operation with that id.
-    """
-    rendering = rendering_for(layout, without_party_totals=without_party_totals)
-    renderer = ProgressRenderer(enabled=progress)
-    poller = await resume(
-        transport,
-        operation_id,
-        rendering=rendering,
-        on_progress=progress_hook(renderer),
-    )
-    return AsyncOperation(
-        poller,
-        _finisher(None, rendering, cache=cache),
-        renderer=renderer,
-    )
-
-
-def _finisher(
-    want: Reading | None,
-    rendering: Rendering,
-    *,
-    cache: Cache | None,
-) -> Finish:
-    """The step that downloads an operation's done build; it raises no warning."""
-
-    async def finish(
-        transport: AsyncTransport,
-        manifest: Wire,
-        trace_id: str | None,
-        deadline: float | None,
-        /,
-    ) -> Dataset:
-        member = await finish_member(
-            transport,
-            manifest,
-            trace_id,
-            want=want,
-            rendering=rendering,
-            strict=False,
-            cache=cache,
-            deadline=deadline,
-        )
-        return await async_offload(
-            build_dataset,
-            [member],
-            layout=layout_of(rendering),
-            complete=True,
-            missing=(),
-            stale=False,
-            cache=cache,
-        )
-
-    return finish
-
-
 def _distinct(readings: Sequence[Reading]) -> list[Reading]:
     """One reading per `spec_id`, in first-seen order, with the parts merged."""
     merged: dict[str, Reading] = {}
@@ -431,20 +395,27 @@ async def build_version(
     transport: AsyncTransport,
     body: Wire,
     *,
-    rendering: Rendering,
     deadline: float | None,
+    timeout: float | None,
     on_progress: ProgressHook,
 ) -> Built:
-    """Post a build of `rendering` and wait for it, through a long build if
-    needed, for `finishing` to download it under.
+    """Post a build and wait for it, through a long build if needed, for
+    `finishing` to download it under.
+
+    `timeout` is the caller's, in seconds, which set `deadline`. In the sync
+    client a `KeyboardInterrupt` while the build runs carries `INTERRUPT_NOTE`:
+    the build keeps running on the server, and the same fetch joins it.
+
+    Raises:
+        DfoTimeoutError: The deadline passed before the build was done
+            (`deadline_exceeded`); the message says it keeps running.
     """
-    reply = await post_build(transport, body, deadline=deadline)
-    if reply.manifest is not None:
-        return Built(reply.manifest, reply.trace_id)
-    poller = Poller(
-        transport, reply, rendering=rendering, body=body, on_progress=on_progress
-    )
-    return await poller.wait(deadline)
+    with async_interrupt_note(), still_running(transport, deadline, timeout):
+        reply = await post_build(transport, body, deadline=deadline)
+        if reply.manifest is not None:
+            return Built(reply.manifest, reply.trace_id)
+        poller = Poller(transport, reply, body=body, on_progress=on_progress)
+        return await poller.wait(deadline)
 
 
 async def finish_member(

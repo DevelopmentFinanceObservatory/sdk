@@ -24,6 +24,10 @@ from tests._fetch_support import OP_ID, operation
             {"window": {"kind": "range", "start_year": 2020, "end_year": 2023}},
         ),
         (
+            {"window": (1000, 2200)},
+            {"window": {"kind": "range", "start_year": 1000, "end_year": 2200}},
+        ),
+        (
             {"entities": {"recipient": ("country/NGA", "country/KEN")}},
             {"entities": {"recipient": ["country/NGA", "country/KEN"]}},
         ),
@@ -47,6 +51,8 @@ def test_narrowing_maps_to_the_build_scope(narrowing, expected) -> None:
         (2023, 2020),
         (2020, 2**53),
         (-(2**53), 2020),
+        (999, 2020),
+        (2020, 2201),
     ],
 )
 def test_a_malformed_window_is_refused(window) -> None:
@@ -56,12 +62,32 @@ def test_a_malformed_window_is_refused(window) -> None:
 
 
 @pytest.mark.parametrize(
+    ("window", "advice"),
+    [
+        (2022, "; for one year use window=(2022, 2022)."),
+        ("2022", "; for one year use window=(2022, 2022)."),
+        ([2022], "; for one year use window=(2022, 2022)."),
+        (("2022",), "; for one year use window=(2022, 2022)."),
+        ("twenty", "."),
+        ((0, 3000), "window years run from 1000 to 2200, not (0, 3000)."),
+        ((2021, 2019), "start_year first, not (2021, 2019)."),
+    ],
+)
+def test_a_refused_window_names_the_window_to_pass(window, advice) -> None:
+    with pytest.raises(InvalidRequestError) as caught:
+        scope(window=window)
+    assert caught.value.code == "invalid_argument"
+    assert str(caught.value).endswith(f"{advice} [invalid_argument]")
+
+
+@pytest.mark.parametrize(
     "narrowing",
     [
         {"entities": {"recipient": "country/NGA"}},
         {"entities": {"recipient": 5}},
         {"entities": {"recipient": [None]}},
         {"entities": {"recipient": [""]}},
+        {"entities": {"recipient": [" \t"]}},
         {"entities": {"recipient": []}},
         {"entities": {5: ["country/NGA"]}},
         {"entities": ["recipient"]},

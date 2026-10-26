@@ -150,3 +150,52 @@ describe("a party-totals cut in a ref", () => {
     }
   });
 });
+
+describe("DatasetRef.equals", () => {
+  const changed = (edit: (member: Record<string, unknown>) => void) => async () => {
+    const stored = structuredClone(await oneMember());
+    edit(stored.members[0]!);
+    return DatasetRef.fromJSON(stored);
+  };
+  const artifact = (member: Record<string, unknown>) =>
+    member["artifact"] as { digest: string; rendering: Record<string, unknown> };
+  // Each row edits the stored member and says whether the ref still equals the original.
+  for (const [name, edit, equal] of [
+    ["another digest", (m) => (artifact(m).digest = `sha256:${"e".repeat(64)}`), true],
+    ["another sentence", (m) => (m["sentence"] = "Another sentence."), true],
+    ["other parts", (m) => (m["parts"] = ["another part"]), true],
+    ["another version", (m) => (m["content_version"] = `cv_${"1".repeat(32)}`), false],
+    ["a party-totals cut", (m) => (artifact(m).rendering["without_party_totals"] = true), false],
+  ] as const satisfies readonly (readonly [
+    string,
+    (member: Record<string, unknown>) => void,
+    boolean,
+  ])[]) {
+    test(`a ref with ${name} is ${equal ? "equal" : "unequal"}`, async () => {
+      const original = DatasetRef.fromJSON(await oneMember());
+      const other = await changed(edit)();
+      assert.equal(original.equals(other), equal);
+      assert.equal(other.equals(original), equal);
+    });
+  }
+
+  test("is false for a ref of other members, and for what is not a ref", async () => {
+    const original = DatasetRef.fromJSON(await oneMember());
+    const [member] = original.members;
+    assert.equal(original.equals(new DatasetRef([member!, member!])), false);
+    assert.equal(original.equals(original.toJSON()), false);
+    assert.equal(original.equals(undefined), false);
+  });
+});
+
+describe("String(ref)", () => {
+  test("names each spec at its exact version", async () => {
+    const ref = DatasetRef.fromJSON(await oneMember());
+    const [member] = ref.members;
+    assert.equal(
+      String(ref),
+      `DatasetRef(1 member: ${member!.spec.spec_id} at ${member!.contentVersion}, exact)`,
+    );
+    assert.match(String(new DatasetRef([member!, member!])), /^DatasetRef\(2 members: /);
+  });
+});

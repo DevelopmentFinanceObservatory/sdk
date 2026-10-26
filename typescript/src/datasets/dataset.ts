@@ -2,17 +2,12 @@ import type { Gap } from "../search/answer.ts";
 import { decodeRows, encodeStacked, readParquet, stackedColumns } from "./parquet.ts";
 import type { Row, TablePart } from "./parquet.ts";
 import { DatasetRef } from "../core/ref.ts";
-import type { Layout, Rendering, SpecLike } from "../core/ref.ts";
+import type { Layout, Rendering, Spec } from "../core/ref.ts";
 import { manifestWarningsOf } from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
-import type {
-  Assumption,
-  CitationSource,
-  Departure,
-  RequestedOperation,
-  WarningModel,
-} from "../wire.ts";
+import type { Assumption, CitationSource, Departure, Notice, RequestedOperation } from "../wire.ts";
 import { isRecord, list, objects, text } from "../core/json.ts";
+import { inline } from "../core/text.ts";
 
 /** The version of the provenance a file from `bytes()` carries under `dfo.*` keys, the one
  *  Python's `Dataset.save` writes. */
@@ -30,7 +25,7 @@ export type Member = {
    *  spec fetched outside an answer. */
   readonly parts: readonly string[];
   /** The spec the server built, which a narrowing gives its own `spec_id`. */
-  readonly spec: SpecLike;
+  readonly spec: Spec;
   readonly contentVersion: string;
   /** Search's sentence for the built identity. */
   readonly sentence: string;
@@ -43,7 +38,7 @@ export type Member = {
 /** A built version, downloaded and checked against its digest, ready to join a dataset. */
 export type FetchedMember = {
   readonly parts: readonly string[];
-  readonly spec: SpecLike;
+  readonly spec: Spec;
   readonly sentence: string;
   readonly contentVersion: string;
   /** The manifest the server answered for the version, as parsed JSON. */
@@ -75,7 +70,7 @@ const unique = <T>(items: readonly T[]): T[] => [
 ];
 
 /** The datasets surface's warnings in the manifests, each with the members every warning has. */
-const warningsOf = (manifests: readonly Readonly<Record<string, unknown>>[]): WarningModel[] =>
+const warningsOf = (manifests: readonly Readonly<Record<string, unknown>>[]): Notice[] =>
   unique(manifests.flatMap((manifest) => manifestWarningsOf(manifest["warnings"])));
 
 function mergeCitations(citations: readonly Citation[]): Citation {
@@ -117,18 +112,16 @@ let readParts: (dataset: Dataset) => readonly TablePart[];
 
 /**
  * A table of data with its provenance: one exact version per member. It holds no client, so its
- * conversions never touch the network. `TMissing` is the type of the parts a partial fetch left
- * out. A dataset fetched from a spec or a ref is a `Dataset<never>`, which leaves none out, and
- * every dataset is a `Dataset`.
+ * conversions never touch the network. A dataset fetched from a spec or a ref leaves no part out.
  */
-export class Dataset<TMissing extends Gap = Gap> {
+export class Dataset {
   /** What the data shows, in Search's words: the members' sentences in order. */
   readonly sentence: string;
   readonly members: readonly Member[];
   /** How to cite the data, every member's sources together. */
   readonly citation: Citation;
   /** The datasets surface's warnings about the members' data. */
-  readonly warnings: readonly WarningModel[];
+  readonly warnings: readonly Notice[];
   /** How the readings differ from the question. */
   readonly departures: readonly Departure[];
   /** Computations the question asked for, which the data leaves to the caller. */
@@ -138,7 +131,7 @@ export class Dataset<TMissing extends Gap = Gap> {
   /** Whether every part of the question has a member. */
   readonly complete: boolean;
   /** The parts a partial fetch left out. */
-  readonly missing: readonly TMissing[];
+  readonly missing: readonly Gap[];
   /** The earliest time any member's version can still be fetched, or null when every member is
    *  pinned or while the server does not say. */
   readonly heldUntil: Date | null;
@@ -156,10 +149,11 @@ export class Dataset<TMissing extends Gap = Gap> {
     readParts = (dataset) => dataset.#parts;
   }
 
-  /** Builds a dataset from the members a fetch downloaded and checked against their digests. */
+  /** @internal Datasets come from a fetch. This builds one from the members it downloaded and
+   *  checked against their digests. */
   constructor(
     members: readonly FetchedMember[],
-    options: { layout: Layout; missing?: readonly TMissing[] },
+    options: { layout: Layout; missing?: readonly Gap[] },
   ) {
     if (members.length === 0) throw new TypeError("A dataset needs at least one member.");
     if (options.layout === "frame" && members.length > 1) {
@@ -219,8 +213,8 @@ export class Dataset<TMissing extends Gap = Gap> {
     );
   }
 
-  /** The number of rows in the table. */
-  get rows(): number {
+  /** The number of rows in the table, which `toRows()` returns. */
+  get rowCount(): number {
     return this.#parts.reduce((total, { file }) => total + file.rows, 0);
   }
 
@@ -231,12 +225,36 @@ export class Dataset<TMissing extends Gap = Gap> {
 
   /**
    * The dataset as one Parquet file whose key-value metadata carries the provenance and the ref
-   * under `dfo.*` keys, as Python's `Dataset.save` writes it, so `dfo.open_bundle` reads it
-   * back. Several members stack into the file, `part` first. `memberBytes` gives the file the
+   * under `dfo.*` keys, as Python's `Dataset.save` writes it, so `dfo.load` reads it back. Several members stack into the file, `part` first. `memberBytes` gives the file the
    * server built. It decodes every member and encodes the whole table in memory.
    */
   async bytes(): Promise<Uint8Array> {
     return encodeStacked(this.#parts, this.#metadata());
+  }
+
+  /**
+   * What the data shows, where it comes from, its versions and rows, and the line that keeps it:
+   * the ref as JSON, whose specs `client.fetch(ref, { latest: true })` later builds anew. Each
+   * line passes through `inline`, so the server's text keeps to its line.
+   */
+  toString(): string {
+    const lines = [this.sentence];
+    const sources = this.citation.sources.map((source) => source.label);
+    if (sources.length > 0) lines.push(`Source: ${sources.join("; ")}`);
+    const versions = this.members.map((member) => member.contentVersion);
+    const label = versions.length === 1 ? "Version" : "Versions";
+    lines.push(`${label}: ${versions.join(", ")} (exact)${retentionText(this)}`);
+    lines.push(`Rows: ${this.rowCount.toLocaleString("en-GB")}`);
+    if (!this.complete) lines.push(`Incomplete: ${this.missing.length} part(s) left out`);
+    lines.push(
+      "Keep: JSON.stringify(data.ref) · newest later: client.fetch(data.ref, { latest: true })",
+    );
+    return `<Dataset ${lines.map(inline).join("\n  ")}>`;
+  }
+
+  /** Node's `console.log` and `util.inspect` show the dataset as `String(data)` does. */
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return this.toString();
   }
 
   /** One member's Parquet file as the server built it, checked against its digest. */
@@ -255,7 +273,7 @@ export class Dataset<TMissing extends Gap = Gap> {
   }
 
   /** The provenance as the file's key-value metadata, in the shape Python's
-   *  `Dataset.save` writes, so `dfo.open_bundle` reads the file back. */
+   *  `Dataset.save` writes, so `dfo.load` reads the file back. */
   #metadata(): Record<string, string> {
     const sources = this.citation.sources;
     const licences = [...new Set(sources.flatMap((source) => source.license ?? []))];
@@ -299,6 +317,19 @@ export class Dataset<TMissing extends Gap = Gap> {
       "dfo.ref": JSON.stringify(this.ref),
     };
   }
+}
+
+/** How long the server keeps a dataset's versions, as `toString` shows it after the versions. */
+function retentionText({ pinned, heldUntil }: Pick<Dataset, "pinned" | "heldUntil">): string {
+  if (pinned) return ", pinned";
+  if (heldUntil === null) return "";
+  const date = heldUntil.toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+  return `, held until ${date}, not pinned`;
 }
 
 /** A dataset's stacked table parts, for the `arrow` entry point. */

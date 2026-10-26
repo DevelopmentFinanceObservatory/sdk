@@ -7,16 +7,16 @@ import { parquetWriteBuffer } from "hyparquet-writer";
 
 import { clientOver } from "../src/client.ts";
 import { envFrom } from "../src/config/env.ts";
-import { download, fetchMembers, mint } from "../src/datasets/fetch.ts";
+import { download, fetchMembers } from "../src/datasets/fetch.ts";
 import { fetchDataset } from "../src/datasets/resolve.ts";
 import type { FetchOptions } from "../src/datasets/fetch.ts";
 import { DatasetRef } from "../src/core/ref.ts";
-import type { DatasetRefJson, SpecLike } from "../src/core/ref.ts";
+import type { DatasetRefJson, Spec } from "../src/core/ref.ts";
 import { DEFAULT_MAX_BYTES, Transport } from "../src/http/transport.ts";
 import { DataWarning } from "../src/core/warnings.ts";
-import type { Spec } from "../src/wire.ts";
+import type { Spec as WireSpec } from "../src/wire.ts";
 import type { DfoWarning } from "../src/core/warnings.ts";
-import { ServerError } from "../src/core/errors.ts";
+import { InvalidRequestError, ServerError } from "../src/core/errors.ts";
 import {
   NO_EXCHANGES,
   REPLAY_BASE_URL,
@@ -30,6 +30,16 @@ import type { Exchange } from "./replay.ts";
 import type { Dataset } from "../src/datasets/dataset.ts";
 import { contractJson, json, mockFetch, problem } from "./support.ts";
 
+/** The error a promise rejects with; the test fails when it resolves. */
+async function rejection(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  return assert.fail("the call resolved");
+}
+
 describe("a fetched spec's ref", () => {
   test("is the contract's ref for that member", async () => {
     const record = await scenario("fetch-spec-known-sentence");
@@ -38,6 +48,50 @@ describe("a fetched spec's ref", () => {
     const dataset = await fetchDataset(replay(record).transport, spec);
     const { ref } = await contractJson<{ ref: unknown }>("refs/ref-one-member.json");
     assert.deepEqual(JSON.parse(JSON.stringify(dataset.ref)), ref);
+  });
+});
+
+describe("a ref fetched with latest", () => {
+  test("builds its spec as a spec fetch does", async () => {
+    const record = await scenario("fetch-spec-known-sentence");
+    const { spec } = stepOf(record, 0, "fetch");
+    assert.ok(spec);
+    const fetched = await fetchDataset(replay(record).transport, spec);
+    const { transport, remaining } = replay(record);
+    const newest = await fetchDataset(transport, fetched.ref, { latest: true });
+    assert.deepEqual(remaining(), []);
+    assert.ok(newest.ref.equals(fetched.ref));
+    assert.equal(newest.rowCount, fetched.rowCount);
+  });
+
+  test("returns the newest version where the ref names an older one", async () => {
+    const record = structuredClone(await scenario("fetch-spec-known-sentence"));
+    const { spec } = stepOf(record, 0, "fetch");
+    assert.ok(spec);
+    const fetched = await fetchDataset(replay(record).transport, spec);
+    const newer = `cv_${"1".repeat(32)}`;
+    (record.exchanges[0]!.response.json as Record<string, unknown>)["content_version"] = newer;
+    const newest = await fetchDataset(replay(record).transport, fetched.ref, { latest: true });
+    assert.equal(newest.members[0]!.contentVersion, newer);
+    assert.ok(!newest.ref.equals(fetched.ref));
+  });
+
+  test("stacks an answer's members under their parts", async () => {
+    const record = await scenario("answer-several-readings-folded");
+    const client = clientOver(replay(record).transport);
+    const answer = await client.search(stepOf(record, 0, "search").question);
+    const fetched = await answer.fetch();
+    const builds = { ...record, exchanges: record.exchanges.slice(1) };
+    const { transport, remaining } = replay(builds);
+    const newest = await fetchDataset(transport, fetched.ref, { latest: true });
+    assert.deepEqual(remaining(), []);
+    assert.ok(newest.ref.equals(fetched.ref));
+    assert.deepEqual(
+      newest.members.map((member) => member.parts),
+      fetched.members.map((member) => member.parts),
+    );
+    assert.deepEqual(newest.columns, fetched.columns);
+    assert.deepEqual(await newest.toRows(), await fetched.toRows());
   });
 });
 
@@ -73,7 +127,7 @@ describe("a manifest's warnings", () => {
     }
     await assert.rejects(fetchDataset(replay(record).transport, spec, { strict: true }), {
       name: "DataWarning",
-      message: "[2Jclearflip",
+      message: "[2Jclearflip [coverage_below_scope]",
     });
   });
 
@@ -98,7 +152,7 @@ describe("a manifest's warnings", () => {
 
 describe("arguments a fetch refuses before any request", () => {
   const { transport } = replay(NO_EXCHANGES);
-  const spec = (id: string): SpecLike => ({ spec_id: id, definition: { spec_id: id } });
+  const spec = (id: string): Spec => ({ spec_id: id, definition: { spec_id: id } });
 
   test("the frame layout with several members", async () => {
     await assert.rejects(
@@ -114,24 +168,79 @@ describe("arguments a fetch refuses before any request", () => {
     );
   });
 
-  for (const [name, target] of [
-    ["a spec id on its own", "spec_1"],
-    ["a spec without its definition", { spec_id: "spec_1" }],
-    ["a spec whose definition is not an object", { spec_id: "spec_1", definition: "x" }],
-    ["null", null],
+  // Each row gives a target that is not a spec and what the refusal says it got.
+  for (const [name, target, got] of [
+    ["a spec id on its own", "spec_1", 'the string "spec_1"'],
+    ["a spec without its definition", { spec_id: "spec_1" }, "an object"],
+    [
+      "a spec whose definition is not an object",
+      { spec_id: "spec_1", definition: "x" },
+      "an object",
+    ],
+    ["null", null, "null"],
+    ["undefined", undefined, "undefined"],
   ] as const) {
-    test(`${name}, to fetch or to mint`, async () => {
-      const refused = { name: "InvalidRequestError", code: "invalid_argument" };
-      await assert.rejects(fetchDataset(transport, target as unknown as SpecLike), refused);
-      await assert.rejects(mint(transport, target as unknown as SpecLike), refused);
+    test(`${name}, to fetch`, async () => {
+      await assert.rejects(fetchDataset(transport, target as unknown as Spec), {
+        name: "InvalidRequestError",
+        code: "invalid_argument",
+        message: new RegExp(`not ${got}.*answer\\.fetch\\(\\)`),
+      });
     });
   }
 
-  test("a narrowed ref", async () => {
-    const record = await scenario("fetch-ref");
-    const ref = DatasetRef.fromJSON(stepOf(record, 0, "fetch").ref);
-    await assert.rejects(fetchDataset(transport, ref, { window: [2020, 2021] }), {
+  const storedRef = async () =>
+    DatasetRef.fromJSON(stepOf(await scenario("fetch-ref"), 0, "fetch").ref);
+
+  for (const [name, options, named] of [
+    [
+      "a ref given the latest window",
+      { window: "latest" },
+      "A ref fetch takes no window; for the newest version use latest: true.",
+    ],
+    [
+      "a ref given a window",
+      { window: [2020, 2021] },
+      "fetch a member's spec: client.fetch(ref.members[0].spec, { window: [2020,2021] }).",
+    ],
+    [
+      "a ref given the latest window and latest",
+      { window: "latest", latest: true },
+      `fetch a member's spec: client.fetch(ref.members[0].spec, { window: "latest" }).`,
+    ],
+    ["a ref given entities", { entities: { origin: ["country/FRA"] } }, "ref.members[0].spec"],
+    ["a ref given latest that is not a boolean", { latest: "yes" }, "latest is true or false"],
+  ] as const) {
+    test(name, async () => {
+      await assert.rejects(fetchDataset(transport, await storedRef(), options as FetchOptions), {
+        name: "InvalidRequestError",
+        code: "invalid_argument",
+        message: new RegExp(named.replace(/[.[\](){}]/g, "\\$&")),
+      });
+    });
+  }
+
+  test("a spec given latest", async () => {
+    await assert.rejects(fetchDataset(transport, spec("spec_1"), { latest: true }), {
       name: "InvalidRequestError",
+      code: "invalid_argument",
+      message: /client\.fetch\(spec\)/,
+    });
+  });
+
+  test("a latest fetch of a ref whose members differ in rendering", async () => {
+    const [held] = (await storedRef()).members;
+    const specId = `spec_${"0".repeat(32)}`;
+    const cut = {
+      ...held!,
+      spec: { spec_id: specId, definition: { ...held!.spec.definition, spec_id: specId } },
+      rendering: { ...held!.rendering, without_party_totals: true as const },
+    };
+    await assert.rejects(fetchDataset(transport, new DatasetRef([held!, cut]), { latest: true }), {
+      name: "InvalidRequestError",
+      code: "invalid_argument",
+      message:
+        /client\.fetch\(ref\.members\[1\]\.spec, \{ layout: "long", withoutPartyTotals: true \}\)/,
     });
   });
 
@@ -175,7 +284,16 @@ describe("arguments a fetch refuses before any request", () => {
     });
   });
 
-  const identified: SpecLike = {
+  for (const window of [2022, "2022", [2022], ["2022"]]) {
+    test(`a one-year window ${JSON.stringify(window)} names the range of that year`, async () => {
+      await assert.rejects(fetchDataset(transport, spec("spec_1"), { window } as FetchOptions), {
+        code: "invalid_argument",
+        message: /; for one year use \[2022, 2022\]\. \[invalid_argument\]$/,
+      });
+    });
+  }
+
+  const identified: Spec = {
     spec_id: "spec_1",
     definition: { spec_id: "spec_1", identity: { entities: { origin: ["country/DEU"] } } },
   };
@@ -185,8 +303,9 @@ describe("arguments a fetch refuses before any request", () => {
     ["a window that ends before it starts", { window: [2021, 2019] }],
     ["a window that ends past the largest safe integer", { window: [2020, 2 ** 53] }],
     ["a window that starts before the smallest safe integer", { window: [-(2 ** 53), 2020] }],
-    ["a window of null", { window: null }],
-    ["entities of null", { entities: null }],
+    ["a window that starts before 1000", { window: [999, 2020] }],
+    ["a window that ends after 2200", { window: [2020, 2201] }],
+    ["a role bound to a list holding only white space", { entities: { origin: [" "] } }],
     ["entities as a list", { entities: [["origin", ["country/FRA"]]] }],
     ["a role bound to a string", { entities: { origin: "country/FRA" } }],
     ["a role with an empty name", { entities: { "": ["country/FRA"] } }],
@@ -194,7 +313,6 @@ describe("arguments a fetch refuses before any request", () => {
     ["a role bound to an empty list", { entities: { origin: [] } }],
     ["a role bound to a list holding a number", { entities: { origin: [5] } }],
     ["a role bound to a list holding an empty dcid", { entities: { origin: [""] } }],
-    ["facets of null", { facets: null }],
     ["a facet bound to a number", { facets: { unit: 5 } }],
     ["a facet bound to an object", { facets: { unit: { ref: "USDollar" } } }],
   ] as const) {
@@ -225,17 +343,18 @@ describe("a fetch's entities", () => {
   const definition = definitionWith(bound);
   // A wire Spec as Search answers it, passed whole to `client.fetch`: its groups sit under
   // `resolved`, and it holds no sentence, so the fetch resubmits for one.
-  const held = (answered.exchanges[0]!.response.json as { parts: { spec: Spec }[] }).parts[0]!.spec;
+  const held = (answered.exchanges[0]!.response.json as { parts: { spec: WireSpec }[] }).parts[0]!
+    .spec;
   const spec: Spec = {
     spec_id: String(definition["spec_id"]),
-    definition: definition as Spec["definition"],
+    definition,
     resolved: {
       ...held.resolved,
       rendered_sentence: null,
       entity_groups: { origin: EU, destination: WEST },
     },
   };
-  const rows: [string, FetchOptions, Record<string, unknown>, unknown][] = [
+  const rows: [string, FetchOptions, Record<string, unknown> | undefined, unknown][] = [
     [
       "replace only the role named",
       { entities: { origin: ["country/FRA"] } },
@@ -267,10 +386,22 @@ describe("a fetch's entities", () => {
       { origin: EU, destination: WEST },
     ],
     [
-      "post a window of the widest safe-integer years",
-      { window: [-(2 ** 53 - 1), 2 ** 53 - 1] },
-      { window: { kind: "range", start_year: -(2 ** 53 - 1), end_year: 2 ** 53 - 1 } },
+      "post a window of the widest years",
+      { window: [1000, 2200] },
+      { window: { kind: "range", start_year: 1000, end_year: 2200 } },
       { origin: EU, destination: WEST },
+    ],
+    [
+      "read null window, entities and facets as unset",
+      { window: null, entities: null, facets: null },
+      undefined,
+      { origin: EU, destination: WEST },
+    ],
+    [
+      "post each dcid without its surrounding white space",
+      { entities: { origin: [" country/FRA\t"] } },
+      { entities: { origin: ["country/FRA"], destination: bound.destination } },
+      { destination: WEST },
     ],
     [
       "post no entities for a map that names no role",
@@ -281,7 +412,7 @@ describe("a fetch's entities", () => {
   ];
   for (const [name, options, scope, groups] of rows) {
     test(name, async () => {
-      const entities = (scope["entities"] ?? bound) as Record<string, readonly string[]>;
+      const entities = (scope?.["entities"] ?? bound) as Record<string, readonly string[]>;
       const { fetch, seen } = mockFetch(
         json({ ...manifest, definition: definitionWith(entities) }),
         problem({ code: "request_invalid", status: 400 }),
@@ -305,6 +436,74 @@ describe("a fetch's entities", () => {
       assert.deepEqual(resubmit.input.entries[0]!.entity_groups, groups);
     });
   }
+
+  // Search refuses the built identity's entity when the fetch resubmits it for its sentence.
+  const refusedResubmit = (entities: Record<string, readonly string[]>, refusal: object) => {
+    const { fetch } = mockFetch(
+      json({ ...manifest, definition: definitionWith({ ...bound, ...entities }) }),
+      problem({ status: 422, ...refusal }),
+    );
+    const transport = new Transport({
+      baseUrl: "https://api.example/api",
+      apiKey: false,
+      env: envFrom({}),
+      readCredentialsFile: () => null,
+      fetch,
+      onWarning: () => undefined,
+    });
+    return clientOver(transport).fetch(spec, { entities });
+  };
+
+  for (const [name, origin, lookup] of [
+    ["a place name names the lookup that finds its dcid", "Germany", true],
+    ["a dcid the graph lacks names no lookup", "country/XXX", false],
+  ] as const) {
+    test(name, async () => {
+      const error = await rejection(
+        refusedResubmit(
+          { origin: [origin] },
+          {
+            code: "invalid_role_ref",
+            detail: `posted entity reference(s) not found in the graph: ${origin}`,
+            pointer: "/input/entities/origin",
+          },
+        ),
+      );
+      assert.ok(error instanceof InvalidRequestError);
+      assert.equal(error.code, "invalid_role_ref");
+      assert.equal(error.traceId, "trace-1");
+      // The hint keeps the field the pointer names and the bracket with the code and trace id.
+      assert.ok(
+        error.message.startsWith(
+          `posted entity reference(s) not found in the graph: ${origin} at /input/entities/origin`,
+        ),
+        error.message,
+      );
+      assert.ok(error.message.endsWith(" [invalid_role_ref · trace trace-1]"), error.message);
+      assert.equal(
+        error.message.includes(`client.lookup.resolve(${JSON.stringify(origin)})`),
+        lookup,
+      );
+    });
+  }
+
+  test("a refusal that offers alternatives names the nearest", async () => {
+    const error = await rejection(
+      refusedResubmit(
+        { origin: ["country/DEX"] },
+        {
+          code: "invalid_role_ref",
+          alternatives: [
+            { ref: "country/FRA", label: "France" },
+            { ref: "country/DEU", label: "Germany" },
+          ],
+        },
+      ),
+    );
+    assert.ok(error instanceof InvalidRequestError);
+    assert.match(error.message, /Did you mean "country\/DEU"\?/);
+    assert.match(error.message, /country\/FRA \(France\), country\/DEU \(Germany\)/);
+  });
 });
 
 /** fetch-spec-narrowed, which builds a spec that holds no sentence and resubmits it, served by a
@@ -678,7 +877,7 @@ describe("a download", async () => {
   ] as const) {
     test(`accepts a file with ${name}`, async () => {
       const dataset = await fetchServing(bytes(), { rows }).fetched;
-      assert.equal(dataset.rows, 1);
+      assert.equal(dataset.rowCount, 1);
     });
   }
 
@@ -759,7 +958,7 @@ describe("a fetch that builds no rows", () => {
       warnings: [EMPTY_RESULT],
     });
     const dataset = await fetched;
-    assert.equal(dataset.rows, 0);
+    assert.equal(dataset.rowCount, 0);
     assert.equal(dataset.sentence, SENTENCE);
     assert.equal(dataset.members[0]!.sentence, SENTENCE);
     assert.deepEqual(await dataset.toRows(), []);
@@ -800,7 +999,7 @@ describe("a fetch's party-totals cut", () => {
     [{ withoutPartyTotals: true }, { without_party_totals: true }],
   ] as const) {
     test(`posts ${JSON.stringify(posted)} for ${JSON.stringify(options)}`, async () => {
-      const spec: SpecLike = { spec_id: "spec_1", definition: { spec_id: "spec_1" } };
+      const spec: Spec = { spec_id: "spec_1", definition: { spec_id: "spec_1" } };
       const { fetch, seen } = mockFetch(problem({ code: "invalid_argument", status: 400 }));
       const transport = new Transport({
         baseUrl: "https://api.example/api",
@@ -814,21 +1013,4 @@ describe("a fetch's party-totals cut", () => {
       assert.deepEqual(body.options, { format: "parquet", bundle: false, ...posted });
     });
   }
-});
-
-describe("a mint", () => {
-  test("takes no narrowing", () => {
-    const spec: SpecLike = { spec_id: "spec_1", definition: { spec_id: "spec_1" } };
-    const { transport } = replay(NO_EXCHANGES);
-    // Only checked by the type checker: the call never runs.
-    const check = () => {
-      // @ts-expect-error -- a mint builds the spec as it stands; a fetch narrows it.
-      void mint(transport, spec, { window: [2020, 2023] });
-      // @ts-expect-error -- a mint builds the spec as it stands; a fetch narrows it.
-      void mint(transport, spec, { entities: { origin: ["country/FRA"] } });
-      // @ts-expect-error -- a mint builds the spec as it stands; a fetch narrows it.
-      void mint(transport, spec, { facets: { unit: null } });
-    };
-    assert.equal(typeof check, "function");
-  });
 });

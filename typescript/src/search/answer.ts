@@ -3,24 +3,28 @@
  *
  * An answer holds readings. `fetch` builds the dataset when every part has a reading,
  * and raises `IncompleteAnswerError` before any build when one does not. `choose` settles a part
- * that awaits a choice and returns a new answer.
+ * that awaits a choice and returns a new answer. `toJSON` and `Answer.fromJSON` carry an answer
+ * across a request, as between a web page and its server.
  */
+import { answerJson, readAnswerJson } from "./answer-json.ts";
+import type { AnswerJson } from "./answer-json.ts";
 import { answerText, declinedText, incompleteMessage, readingHints } from "./answer-text.ts";
-import { choiceInput, gapNamed, identityEntry, onlyChoice, pick } from "./choices.ts";
+import { choiceInput, gapNamed, onlyChoice, pick } from "./choices.ts";
 import type { ChoiceKey } from "./choices.ts";
+import type { Client } from "../client.ts";
 import { clientError, problemAt200 } from "../core/errors.ts";
-import type { IncompleteAnswerError } from "../core/errors.ts";
 import type { Dataset } from "../datasets/dataset.ts";
 import {
   fetchMembers as defaultFetchMembers,
   RESOLVE_PATH,
   RESOLVE_SCHEMA_VERSION,
 } from "../datasets/fetch.ts";
-import type { FetchMembersOptions, MemberRequest } from "../datasets/fetch.ts";
+import type { CallOptions, FetchMembersOptions, MemberRequest } from "../datasets/fetch.ts";
 import { CODE_GAP_KINDS } from "../generated/actions.ts";
 import type { GAP_KINDS } from "../generated/actions.ts";
 import { parsedInputOf, partFacts, warningsOf } from "../core/parse.ts";
 import { definiteParts, isKnownPart, partSentence, partText } from "../core/parts.ts";
+import { checkOptions, declareOptions } from "../core/options.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
 import type { Transport } from "../http/transport.ts";
@@ -28,17 +32,18 @@ import { DfoWarning, emitWarning } from "../core/warnings.ts";
 import type { WarningHandler } from "../core/warnings.ts";
 import type {
   Assumption,
-  CandidatesPart,
   DatasetResubmitInput,
+  DeclinedReason,
   Diagnostics,
   KnownPart,
   NoData,
   ParsedInput,
   Part,
+  Notice,
   RawTextInput,
-  Spec,
-  Warning,
+  Spec as WireSpec,
 } from "../wire.ts";
+import type { Spec } from "../core/ref.ts";
 import { isRecord, list, objects, strings, text } from "../core/json.ts";
 
 /** Longer than Search's 45-second soft deadline, so a slow answer arrives whole. */
@@ -64,19 +69,15 @@ export type AnswerStatus = KnownPart["status"] | "mixed" | "catalogue" | "declin
  *  sent them and are not checked. */
 export type AnswerDiagnostics = Readonly<Partial<Diagnostics>>;
 
-/** Builds a candidate's dataset through the answer it came from. */
-type CandidateFetch = (candidate: Candidate, options: AnswerFetchOptions) => Promise<Dataset>;
-
 /**
  * One reading of a part that has several. The label, unit and source split its sentence, and
- * `assumptions` lists what Search assumed for it, which a pick posts back.
- *
- * A candidate in an `Answer` fetches through that answer. One in `Dataset.missing` or in
- * `IncompleteAnswerError.gaps` belongs to no answer and holds no client; fetch its spec with
+ * `assumptions` lists what Search assumed for it, which a choice posts back. Choose it with
+ * `answer.choose(index)`, which returns Search's answer for the reading. A candidate in
+ * `Dataset.missing` or in `IncompleteAnswerError.gaps` belongs to no answer; fetch its spec with
  * `client.fetch(candidate.spec)`.
  */
-export class Candidate {
-  readonly kind = "candidate";
+export type Candidate = {
+  readonly kind: "candidate";
   readonly spec: Spec;
   /** Search's sentence for the reading. */
   readonly sentence: string | null;
@@ -89,45 +90,7 @@ export class Candidate {
   /** What Search assumed for this reading, from its part's `reading_assumptions`; empty when
    *  the part lists none. */
   readonly assumptions: readonly Assumption[];
-  readonly #fetch: CandidateFetch | null;
-
-  /** Candidates come from an answer. This constructor is the client's. */
-  constructor(
-    reading: Pick<Candidate, "spec" | "sentence" | "label" | "source" | "unit" | "assumptions">,
-    fetch: CandidateFetch | null = null,
-  ) {
-    this.spec = reading.spec;
-    this.sentence = reading.sentence;
-    this.label = reading.label;
-    this.source = reading.source;
-    this.unit = reading.unit;
-    this.assumptions = reading.assumptions;
-    this.#fetch = fetch;
-  }
-
-  /**
-   * Builds this reading's dataset. It asks Search for this reading alone, one request with no
-   * model call, and fetches that answer with `Answer.fetch`'s options; in a one-part answer that
-   * is the answer `answer.choose(index)` gives for this candidate's index.
-   *
-   * @throws {InvalidRequestError} The candidate came from no answer.
-   */
-  async fetch(options: AnswerFetchOptions = {}): Promise<Dataset> {
-    if (this.#fetch === null) {
-      throw clientError("invalid_argument", {
-        detail:
-          "candidate.fetch() cannot build this reading: it came from no answer; fetch its spec " +
-          "with client.fetch(candidate.spec).",
-      });
-    }
-    return this.#fetch(this, options);
-  }
-
-  /** The same reading, belonging to no answer. */
-  unbound(): Candidate {
-    return this.#fetch === null ? this : new Candidate(this);
-  }
-}
+};
 
 /** One way to settle a part that awaits a choice of place or source. */
 export type QueryOption = {
@@ -167,7 +130,7 @@ export type AnswerContext = {
   readonly fetchMembers?: (
     transport: Transport,
     members: readonly MemberRequest[],
-    options: FetchMembersOptions<Gap>,
+    options: FetchMembersOptions,
   ) => Promise<Dataset>;
 };
 
@@ -178,12 +141,43 @@ export type SearchOptions = {
   readonly timeout?: number;
 };
 
+/** A choice's options: the part it settles, and the Search request's signal and timeout. */
+export type ChooseOptions = SearchOptions & {
+  /** The part, by its index, its variable text, or a word of the question its options settle.
+   *  Needed only when several parts await a choice. */
+  readonly part?: ChoiceKey;
+};
+
 /** A fetch's options, less the gaps the answer supplies. `strict` also throws the
  *  `SearchWarning` instead of issuing it. */
-export type AnswerFetchOptions = Omit<FetchMembersOptions<Gap>, "missing" | "narrowing"> & {
+export type AnswerFetchOptions = CallOptions & {
   /** Build the parts that have a reading when others do not; the dataset lists the gaps. */
   readonly partial?: boolean;
 };
+
+/** The keys `client.search` takes. */
+export const SEARCH_OPTIONS = declareOptions<SearchOptions>("client.search", {
+  signal: true,
+  timeout: true,
+});
+
+/** The keys `answer.choose` takes. */
+const CHOOSE_OPTIONS = declareOptions<ChooseOptions>("answer.choose", {
+  signal: true,
+  timeout: true,
+  part: true,
+});
+
+/** The keys `answer.fetch` takes. */
+const ANSWER_FETCH_OPTIONS = declareOptions<AnswerFetchOptions>("answer.fetch", {
+  signal: true,
+  timeout: true,
+  onProgress: true,
+  strict: true,
+  layout: true,
+  withoutPartyTotals: true,
+  partial: true,
+});
 
 /** How the readings an answer builds differ from the question: departures, computations Search
  *  did not run, and its `warn` and `degraded` warnings. */
@@ -200,13 +194,21 @@ type AnswerInit = {
   parts?: readonly Part[];
   question: string | null;
   reason?: string | null;
-  warnings?: readonly Warning[];
+  warnings?: readonly Notice[];
   timedOut?: boolean;
   diagnostics?: AnswerDiagnostics;
   traceId?: string | null;
-  raw: unknown;
+  raw: Readonly<Record<string, unknown>>;
   context: AnswerContext;
 };
+
+/** The context each client's answers use, for `Answer.fromJSON`. */
+const CONTEXTS = new WeakMap<Client, AnswerContext>();
+
+/** Gives `Answer.fromJSON` the context a client's answers use. The client calls it. */
+export function registerClient(client: Client, context: AnswerContext): void {
+  CONTEXTS.set(client, context);
+}
 
 /** What Search understood a question to ask, as one reading per part. */
 export class Answer {
@@ -224,23 +226,26 @@ export class Answer {
   readonly gaps: readonly Gap[];
   /** The question asked, when the answer came from one. */
   readonly question: string | null;
-  /** Why Search declined, for a declined answer. */
-  readonly reason: string | null;
+  /** Why Search declined, for a declined answer. A reason a newer server sends still
+   *  typechecks. */
+  readonly reason: DeclinedReason | (string & {}) | null;
   /** Search's warnings for the whole answer. */
-  readonly warnings: readonly Warning[];
+  readonly warnings: readonly Notice[];
   /** Whether Search stopped at its time limit. */
   readonly timedOut: boolean;
-  /** Search's timing, token counts and build for the response; empty when it sent none. */
+  /** Search's timing, token counts and build for the response; empty when it sent none. An
+   *  answer read by `Answer.fromJSON` holds only `timed_out` and `warnings`. */
   readonly diagnostics: AnswerDiagnostics;
   /** The Search response's trace id, to quote when reporting it. */
   readonly traceId: string | null;
-  /** The decoded response body, untouched. */
-  readonly raw: unknown;
+  /** The decoded response body, untouched; for an answer read by `Answer.fromJSON`, the cut
+   *  body it held. */
+  readonly raw: Readonly<Record<string, unknown>>;
   readonly #context: AnswerContext;
   /** The members `fetch` builds, one per distinct spec. */
   readonly #members: readonly MemberRequest[];
 
-  /** Answers come from `client.search`. This constructor is the client's. */
+  /** @internal Answers come from `client.search`. This constructor is the client's. */
   constructor(init: AnswerInit) {
     this.kind = init.kind;
     this.status = init.status;
@@ -254,22 +259,8 @@ export class Answer {
     this.traceId = init.traceId ?? null;
     this.raw = init.raw;
     this.#context = init.context;
-    const bind =
-      (part: CandidatesPart): CandidateFetch =>
-      async (candidate, options) => {
-        const input: DatasetResubmitInput = {
-          kind: "dataset_resubmit",
-          entries: [identityEntry(part, candidate.spec)],
-        };
-        const signal = options.signal === undefined ? {} : { signal: options.signal };
-        const picked = await resolveAnswer(this.#context, input, {
-          ...signal,
-          question: this.question,
-        });
-        return picked.fetch(options);
-      };
     this.gaps = this.parts.flatMap((part, index) => {
-      const gap = gapFor(index, part, this.timedOut, bind);
+      const gap = gapFor(index, part, this.timedOut);
       return gap === null ? [] : [gap];
     });
     this.complete = this.kind === "resolution" && this.gaps.length === 0;
@@ -281,40 +272,42 @@ export class Answer {
   /**
    * Settles a part that awaits a choice and returns Search's answer to it, in one Search request.
    * Picking a reading needs no model call. A place choice, and any part restated beside it, asks
-   * Search to bind it again. `choose(option)` picks in the only part that awaits one;
-   * `choose(part, option)` names the part by its index, its variable text, or a word of the
-   * question its options settle. An option is named by its index or label. The picked answer's
-   * sentence and assumptions are Search's.
+   * Search to bind it again. The option is named by its index or its label. `part` names the
+   * part by its index, its variable text, or a word of the question its options settle, and is
+   * needed only when several parts await a choice: `answer.choose(0, { part: "GDP" })`. The
+   * chosen answer's sentence and assumptions are Search's.
    *
-   * @throws {InvalidRequestError} No part, or more than one, awaits a choice; the part or option
-   *   is unknown; the part offers no options; or a part cannot be posted back.
-   * @throws {ContractError} The chosen option carries no one-part `data_query`. The error carries the
-   *   answer's trace id.
+   * @throws {TypeError} The second argument is not an options object, as in a call that names
+   *   the part before the option.
+   * @throws {InvalidRequestError} No part, or more than one, awaits a choice and `part` is not
+   *   given; the part or option is unknown; the part offers no options; or a part cannot be
+   *   posted back (`choice_invalid`); or `options` holds a key outside `ChooseOptions`
+   *   (`invalid_argument`). A part or label that names nothing is refused with the nearest
+   *   match and the valid choices.
+   * @throws {ContractError} The chosen option carries no one-part `data_query`. The error carries
+   *   the answer's trace id.
    */
-  choose(option: ChoiceKey, options?: SearchOptions): Promise<Answer>;
-  choose(part: ChoiceKey, option: ChoiceKey, options?: SearchOptions): Promise<Answer>;
-  async choose(
-    first: ChoiceKey,
-    second?: ChoiceKey | SearchOptions,
-    third?: SearchOptions,
-  ): Promise<Answer> {
-    const named = typeof second === "number" || typeof second === "string";
+  async choose(option: ChoiceKey, options: ChooseOptions = {}): Promise<Answer> {
+    if (!isRecord(options)) {
+      throw new TypeError(
+        `answer.choose takes the option first and the part as an option: ` +
+          `answer.choose(${JSON.stringify(options)}, { part: ${JSON.stringify(option)} }).`,
+      );
+    }
+    const { part, ...request } = checkOptions(CHOOSE_OPTIONS, options);
     const input = describing(this.traceId, () => {
-      const gap = named ? gapNamed(this, first) : onlyChoice(this);
-      const chosen = pick(gap, named ? second : first, named ? first : undefined);
-      return choiceInput(this, gap, chosen);
+      const gap = part === undefined ? onlyChoice(this) : gapNamed(this, part);
+      return choiceInput(this, gap, pick(gap, option, part));
     });
-    const options = (named ? third : second) ?? {};
-    return resolveAnswer(this.#context, input, {
-      ...options,
-      question: this.question,
-    });
+    return resolveAnswer(this.#context, input, { ...request, question: this.question });
   }
 
   /**
    * Builds the dataset for the answer's readings. Each distinct spec builds once; several
    * readings stack into one long table with a `part` column.
    *
+   * @throws {InvalidRequestError} `options` holds a key outside `AnswerFetchOptions`
+   *   (`invalid_argument`).
    * @throws {DeclinedError} Search declined the question or answered with the catalogue.
    * @throws {IncompleteAnswerError} A part has no reading and `partial` is false, or no part has
    *   one.
@@ -322,16 +315,21 @@ export class Answer {
    * @throws {DataWarning} `strict` is true and a manifest carries a warning above `info`.
    */
   async fetch(options: AnswerFetchOptions = {}): Promise<Dataset> {
+    const { partial, ...fetchOptions } = checkOptions(ANSWER_FETCH_OPTIONS, options);
     if (this.kind !== "resolution") {
       throw clientError("answer_declined", {
         detail: declinedText(this.kind, this.reason),
         traceId: this.traceId,
       });
     }
-    const { partial, ...fetchOptions } = options;
     const members = this.#members;
     if (this.gaps.length > 0 && (partial !== true || members.length === 0)) {
-      throw this.incompleteError();
+      throw clientError("answer_incomplete", {
+        detail: incompleteMessage(this),
+        traceId: this.traceId,
+        answer: this,
+        gaps: this.gaps,
+      });
     }
     const hints = readingHints(this, { departures: true });
     if (hints.length > 0) {
@@ -340,29 +338,66 @@ export class Answer {
         `Search's reading differs from your question:\n  ${hints.map((h) => h.line).join("\n  ")}`,
         this.traceId,
       );
-      if (options.strict === true) throw warning;
+      if (fetchOptions.strict === true) throw warning;
       (this.#context.onWarning ?? emitWarning)(warning);
     }
     const build = this.#context.fetchMembers ?? defaultFetchMembers;
     return build(this.#context.transport, members, {
       ...fetchOptions,
-      missing: this.gaps.map(unboundGap),
+      missing: this.gaps,
     });
   }
 
-  /** The error `fetch` raises for this answer's gaps. */
-  incompleteError(): IncompleteAnswerError {
-    return clientError("answer_incomplete", {
-      detail: incompleteMessage(this),
-      traceId: this.traceId,
-      answer: this,
-      gaps: this.gaps.map(unboundGap),
-    });
-  }
-
-  /** The answer as a reader sees it: the sentence, or what is missing. */
+  /** The answer as a reader sees it: the sentence and the call that fetches it, or what is
+   *  missing and the calls that settle it. */
   toString(): string {
     return answerText(this);
+  }
+
+  /** Node's `console.log` and `util.inspect` show the answer as `String(answer)` does. */
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return this.toString();
+  }
+
+  /**
+   * The answer in the answer format, `{format_version: 1, question, answer}`, which every DFO
+   * client reads. `answer` is the Search response cut to the members a client reads, with the
+   * answer's trace id. `JSON.stringify(answer)` and `Response.json({ answer })` write it.
+   */
+  toJSON(): AnswerJson {
+    return answerJson(this.question, this.raw, this.traceId);
+  }
+
+  /**
+   * Reads an answer that `toJSON` wrote, in this or another DFO client, from its JSON text or
+   * the parsed value. Its `choose` and `fetch` go through `client`, and post the request the
+   * original answer would. The body is checked as a fresh Search response is, with the same
+   * parser and strict checks.
+   *
+   * The check proves the body is well formed, not that it came from Search. `choose` and `fetch`
+   * post what the answer holds: each part's spec and identity, and a place option's
+   * `data_query`. So a forged body can send any spec definition or parsed input to Search and
+   * the build route, under the client's key. With a public-tier key that costs quota, which a
+   * question route already exposes, so rate-limit both routes per visitor. With a key scoped
+   * beyond the public tier, keep the answer on the server, stored under a random id that the
+   * page sends back, or sign it before it leaves.
+   *
+   * @throws {FormatError} The value is not JSON in the answer format (`format_invalid`).
+   * @throws {InvalidRequestError} `client` is not a `Client` (`invalid_argument`).
+   * @throws {DfoError} The body is a problem document, as a Search response would raise it.
+   * @throws {ContractError} The body lacks a member the client acts on, as a Search response
+   *   would raise it.
+   */
+  static fromJSON(value: unknown, client: Client): Answer {
+    const context = CONTEXTS.get(client);
+    if (context === undefined) {
+      throw clientError("invalid_argument", {
+        detail:
+          "Answer.fromJSON needs the client its requests go through: Answer.fromJSON(value, client).",
+      });
+    }
+    const { question, body, traceId } = readAnswerJson(value);
+    return describing(traceId, () => answerFromBody(body, context, question, traceId));
   }
 }
 
@@ -511,8 +546,8 @@ function sharedStatus(parts: readonly Part[]): string {
 /** One member per distinct `spec_id`, in query order, with the first part's spec; folded parts
  *  share their spec's member, which names each of them that has variable text. A part without
  *  any names nothing. */
-function membersOf(parts: readonly Part[]): (MemberRequest & { readonly spec: Spec })[] {
-  const grouped = new Map<string, { spec: Spec; parts: string[]; answerParts: Part[] }>();
+function membersOf(parts: readonly Part[]): (MemberRequest & { readonly spec: WireSpec })[] {
+  const grouped = new Map<string, { spec: WireSpec; parts: string[]; answerParts: Part[] }>();
   for (const part of definiteParts(parts)) {
     const { spec } = part;
     const entry = grouped.get(spec.spec_id) ?? { spec, parts: [], answerParts: [] };
@@ -533,23 +568,8 @@ function membersOf(parts: readonly Part[]): (MemberRequest & { readonly spec: Sp
   });
 }
 
-/** A gap whose candidates belong to no answer, for a dataset or an error, which hold no client. */
-export function unboundGap(gap: Gap): Gap {
-  if (!gap.options.some((option) => option.kind === "candidate")) return gap;
-  return {
-    ...gap,
-    options: gap.options.map((option) => (option.kind === "candidate" ? option.unbound() : option)),
-  };
-}
-
-/** The gap a part leaves, or null when it has a reading. `bind` gives a candidates part's
- *  readings their fetch through the answer. */
-function gapFor(
-  partIndex: number,
-  part: Part,
-  timedOut: boolean,
-  bind: (part: CandidatesPart) => CandidateFetch,
-): Gap | null {
+/** The gap a part leaves, or null when it has a reading. */
+function gapFor(partIndex: number, part: Part, timedOut: boolean): Gap | null {
   const gap = (kind: GapKind, message: string, options: Gap["options"] = []): Gap => ({
     partIndex,
     part,
@@ -568,10 +588,9 @@ function gapFor(
     case "definite":
       return null;
     case "candidates": {
-      const fetch = bind(part);
       const { readingAssumptions } = partFacts(part);
       const candidates = part.candidates.specs.map((spec) =>
-        candidateFrom(spec, readingAssumptions.get(spec.spec_id) ?? NO_ASSUMPTIONS, fetch),
+        candidateFrom(spec, readingAssumptions.get(spec.spec_id) ?? NO_ASSUMPTIONS),
       );
       return gap("choice", `${candidates.length} readings`, candidates);
     }
@@ -608,11 +627,7 @@ function indexOf(value: unknown): number | null {
 /** A candidate from its full spec and what Search assumed for it. The label is the sentence's
  *  heading and the unit the byline's unit slot, so label, unit and source together say what the
  *  sentence says. */
-function candidateFrom(
-  spec: Spec,
-  assumptions: readonly Assumption[],
-  fetch: CandidateFetch,
-): Candidate {
+function candidateFrom(spec: WireSpec, assumptions: readonly Assumption[]): Candidate {
   const { resolved } = spec;
   const tokens = objects(resolved.sentence_plan);
   const heading = tokens
@@ -630,15 +645,13 @@ function candidateFrom(
   const sentence = text(resolved.rendered_sentence);
   const facets: unknown = resolved.facets;
   const provenance = isRecord(facets) ? facets["provenance"] : undefined;
-  return new Candidate(
-    {
-      spec,
-      sentence,
-      label: heading || sentence || null,
-      source: isRecord(provenance) ? text(provenance["label"]) : null,
-      unit: unit ?? null,
-      assumptions,
-    },
-    fetch,
-  );
+  return Object.freeze({
+    kind: "candidate",
+    spec,
+    sentence,
+    label: heading || sentence || null,
+    source: isRecord(provenance) ? text(provenance["label"]) : null,
+    unit: unit ?? null,
+    assumptions,
+  });
 }

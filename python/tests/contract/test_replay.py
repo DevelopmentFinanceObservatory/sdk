@@ -46,21 +46,21 @@ from dfo._core.errors import (
     SearchWarning,
     VersionUnavailableError,
 )
-from dfo._core.refs import DatasetRef
-from dfo._core.types import Gap, Spec
+from dfo._core.refs import DatasetRef, RefMember
+from dfo._core.types import Gap, Rendering, Spec
+from dfo._datasets import fetch as _fetch
 from dfo._datasets import operation as _operation
 from dfo._datasets import resolve as _resolve
-from dfo._datasets.build import rendering_for
-from dfo._datasets.dataset import Dataset
+from dfo._datasets.build import Reading, build_body, layout_of, rendering_for
+from dfo._datasets.dataset import Dataset, build_dataset
 from dfo._datasets.fetch import Session as AsyncSession
-from dfo._datasets.operation import AsyncOperation
 from dfo._http.transport import USER_AGENT, AsyncTransport
 from dfo._search.answer import AsyncAnswer
 from dfo._sync._client.client import Client
+from dfo._sync._datasets import fetch as _sync_fetch
 from dfo._sync._datasets import operation as _sync_operation
 from dfo._sync._datasets import resolve as _sync_resolve
 from dfo._sync._datasets.fetch import Session
-from dfo._sync._datasets.operation import Operation
 from dfo._sync._http.transport import Transport
 from dfo._sync._search.answer import Answer
 from tests._data import CONTRACT
@@ -158,12 +158,15 @@ class Exchanges:
         self.origin = _origin(base_url)
         self.recorded_origin = _recorded_origin(record)
         self.pending = list(record["exchanges"])
+        # Each request the client made, as its method, URL and body.
+        self.sent: list[tuple[str, bytes]] = []
         # A recorded scenario lists every body member the client sent.
         self.whole_bodies = record["origin"]["kind"] == "recorded"
 
     def __call__(self, request: httpx2.Request) -> httpx2.Response:
         seen = f"{request.method} {request.url}"
         assert self.pending, f"no exchange left for {seen}"
+        self.sent.append((seen, request.content))
         exchange = self.pending.pop(0)
         expected = exchange["request"]
         assert seen == f"{expected['method']} {self._target(expected)}"
@@ -215,7 +218,7 @@ def _client(
         transport = AsyncTransport(
             base_url=base_url,
             api_key=KEY,
-            default_headers={CLIENT_HEADER: "1"},
+            headers={CLIENT_HEADER: "1"},
             http_transport=httpx2.MockTransport(handler),
             sleep=clock.async_sleep,
             clock=clock.read,
@@ -224,7 +227,7 @@ def _client(
     sync = Transport(
         base_url=base_url,
         api_key=KEY,
-        default_headers={CLIENT_HEADER: "1"},
+        headers={CLIENT_HEADER: "1"},
         http_transport=httpx2.MockTransport(handler),
         sleep=clock.sleep,
         clock=clock.read,
@@ -262,13 +265,34 @@ def _options(step: Mapping[str, Any], *names: str) -> dict[str, Any]:
     return options
 
 
+def _latest_ref(step: Mapping[str, Any]) -> DatasetRef:
+    """A ref to some version of a fetch-spec step's spec, in the step's layout,
+    whose latest fetch builds what the step builds."""
+    spec = _spec(step["spec"])
+    return DatasetRef(
+        (
+            RefMember(
+                parts=(),
+                sentence=step["spec"]["sentence"],
+                spec=spec,
+                content_version="cv_" + "0" * 32,
+                digest="sha256:" + "0" * 64,
+                rendering=rendering_for(step.get("layout", "long")),
+            ),
+        )
+    )
+
+
 def _run(
     step: Mapping[str, Any],
     client: AsyncClient | Client,
     answer: Any,
     operation: Any,
+    *,
+    latest: bool = False,
 ) -> Any:
-    """Start one step; returns an awaitable for the async client."""
+    """Start one step; returns an awaitable for the async client. With `latest`,
+    a fetch-spec step fetches a ref to its spec with `latest=True`."""
     form = _form(step)
     if form not in STEP_KEYS:
         pytest.fail(f"step op {step['op']!r} has no replay")
@@ -278,13 +302,13 @@ def _run(
         case "search":
             started = client.search(step["question"])
         case "choose":
-            choice = (
-                (step["part"], step["option"]) if "part" in step else (step["option"],)
-            )
-            started = answer.choose(*choice)
+            started = answer.choose(step["option"], **_options(step, "part"))
         case "fetch-answer":
             options = _options(step, "layout", "partial", "strict")
             started = answer.fetch(**options)
+        case "fetch-spec" if latest:
+            options = _options(step, "strict")
+            started = client.fetch(_latest_ref(step), latest=True, **options)
         case "fetch-spec":
             options = _options(step, "layout", "strict", "window", "entities", "facets")
             started = client.fetch(_spec(step["spec"]), **options)
@@ -305,15 +329,98 @@ def _run(
                 deadline=None,
             )
         case "mint":
-            started = client.mint(_spec(step["spec"]), **_options(step, "layout"))
+            started = _mint(client, _spec(step["spec"]), step.get("layout", "long"))
         case "operation":
-            started = client.operation(step["operation_id"], **_options(step, "layout"))
+            started = _resume(client, step["operation_id"], step.get("layout", "long"))
         case _:
-            started = operation.result()
+            started = _result(client, operation)
     return started
 
 
-def _option_count(gap: Gap[Any]) -> int:
+# No public call starts a build without waiting for it, or reads one by its id.
+# The `mint`, `operation` and `result` steps drive the poller `fetch` waits
+# through, as `newest_version` drives its lookup.
+
+
+type AnyPoller = _operation.Poller | _sync_operation.Poller
+
+
+@dataclass(frozen=True)
+class LongBuild:
+    """A build a `mint` or `operation` step started, which `result` finishes.
+    `want` is the reading posted, or None for a build read by its id."""
+
+    poller: AnyPoller
+    want: Reading | None
+    rendering: Rendering
+
+    @property
+    def operation_id(self) -> str | None:
+        return self.poller.operation_id
+
+    @property
+    def status(self) -> str:
+        return self.poller.status
+
+
+def _engine(client: AsyncClient | Client) -> tuple[Any, Any]:
+    """The operation and fetch modules of the client's flavour."""
+    if isinstance(client, AsyncClient):
+        return _operation, _fetch
+    return _sync_operation, _sync_fetch
+
+
+def _quiet(*_: object) -> None:
+    """A progress hook that shows nothing."""
+
+
+async def _mint(client: AsyncClient | Client, spec: Spec, layout: str) -> LongBuild:
+    operation, _ = _engine(client)
+    transport = client._session.transport
+    rendering = rendering_for(layout)
+    body = build_body(spec, rendering)
+    reply = await _settle(operation.post_build(transport, body, deadline=None))
+    poller = operation.Poller(transport, reply, body=body, on_progress=_quiet)
+    return LongBuild(poller, Reading((), spec, spec.sentence), rendering)
+
+
+async def _resume(
+    client: AsyncClient | Client, operation_id: str, layout: str
+) -> LongBuild:
+    operation, _ = _engine(client)
+    poller = await _settle(
+        operation.resume(client._session.transport, operation_id, on_progress=_quiet)
+    )
+    return LongBuild(poller, None, rendering_for(layout))
+
+
+async def _result(client: AsyncClient | Client, build: LongBuild) -> Dataset:
+    _, fetch = _engine(client)
+    session = client._session
+    built = await _settle(build.poller.wait(None))
+    member = await _settle(
+        fetch.finish_member(
+            session.transport,
+            built.manifest,
+            built.trace_id,
+            want=build.want,
+            rendering=build.rendering,
+            strict=False,
+            cache=session.cache,
+            deadline=None,
+        )
+    )
+    return build_dataset(
+        [member],
+        layout=layout_of(build.rendering),
+        complete=True,
+        missing=(),
+        stale=False,
+        cache=session.cache,
+    )
+
+
+def _option_count(gap: Gap) -> int:
     return len(gap.options)
 
 
@@ -327,9 +434,6 @@ def _newest_version(error: object) -> str | None:
     if not isinstance(error, VersionUnavailableError):
         pytest.fail(f"newest_version read from {error!r}")
     return error.newest_version
-
-
-type AnyPoller = _operation.Poller | _sync_operation.Poller
 
 
 @dataclass(frozen=True)
@@ -433,7 +537,7 @@ READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
     "dataset": (
         (Dataset,),
         {
-            "rows": lambda data, _: data.rows,
+            "rows": lambda data, _: len(data),
             "columns": lambda data, _: list(data.to_arrow().column_names),
             "part_rows": lambda data, _: _part_rows(data),
             "complete": lambda data, _: data.complete,
@@ -460,7 +564,7 @@ READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
         {"content_version": lambda found, _: found.content_version},
     ),
     "operation": (
-        (AsyncOperation, Operation),
+        (LongBuild,),
         {
             "operation_id": lambda operation, _: operation.operation_id,
             "status": lambda operation, _: operation.status,
@@ -498,18 +602,29 @@ async def _replay(
     client: AsyncClient | Client,
     pollers: Pollers,
     clock: Clock,
+    *,
+    revive: bool = False,
+    latest: bool = False,
 ) -> None:
+    """Run a scenario's steps and check each outcome. With `revive`, each choose
+    and answer fetch runs on the answer read back from its JSON, as a web route
+    holding the answer between requests would. With `latest`, each fetch-spec
+    step fetches a ref to its spec with `latest=True`."""
     calls, outcomes = record["call"], record["expect"]
     assert len(calls) == len(outcomes), "expect holds one outcome per step"
     answer: Any = None
     operation: Any = None
     for index, (step, outcome) in enumerate(zip(calls, outcomes, strict=True)):
         where = f"step {index} ({step['op']})"
+        if revive and _form(step) in ("choose", "fetch-answer"):
+            answer = type(answer).from_json(answer.to_json(), client=client)
         retried = len(clock.retry_waits)
         with warnings.catch_warnings(record=True) as issued:
             warnings.simplefilter("always")
             try:
-                result = await _settle(_run(step, client, answer, operation))
+                result = await _settle(
+                    _run(step, client, answer, operation, latest=latest)
+                )
             except (DfoError, DfoWarning) as error:
                 if "error" not in outcome:
                     raise
@@ -521,7 +636,7 @@ async def _replay(
         _check(where, outcome, result, Step(issued, taken, clock.retry_waits[retried:]))
         if isinstance(result, AsyncAnswer | Answer):
             answer = result
-        elif isinstance(result, AsyncOperation | Operation):
+        elif isinstance(result, LongBuild):
             operation = result
     await _settle(
         client.aclose() if isinstance(client, AsyncClient) else client.close()
@@ -534,6 +649,14 @@ def fresh_process(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DFO_OFFLINE", raising=False)
     monkeypatch.setenv("DFO_PROGRESS", "0")
     monkeypatch.setattr(_errors, "_warned", set())
+
+
+# The scenarios with a step that runs on an answer Search gave.
+ANSWER_STEPS = [
+    name
+    for name, record in SCENARIOS.items()
+    if any(_form(step) in ("choose", "fetch-answer") for step in record["call"])
+]
 
 
 @pytest.mark.parametrize("flavour", ["async", "sync"])
@@ -551,3 +674,72 @@ def test_scenario_replays(
     client = _client(flavour, base_url, exchanges, clock)
     asyncio.run(_replay(record, client, pollers, clock))
     assert exchanges.pending == [], "the call left exchanges unmade"
+
+
+@pytest.mark.parametrize("flavour", ["async", "sync"])
+@pytest.mark.parametrize("name", ANSWER_STEPS)
+def test_a_revived_answer_sends_the_requests_the_original_sends(
+    name: str, flavour: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An answer read back from `to_json` chooses and fetches as the answer it
+    was written from: the same requests, byte for byte, and the same outcomes."""
+    record = SCENARIOS[name]
+    sent = []
+    for revive in (False, True):
+        monkeypatch.setattr(_errors, "_warned", set())
+        exchanges = Exchanges(record, BASE_URLS["api-path"])
+        pollers = Pollers(monkeypatch)
+        clock = Clock(pollers.poll_waits)
+        client = _client(flavour, BASE_URLS["api-path"], exchanges, clock)
+        asyncio.run(_replay(record, client, pollers, clock, revive=revive))
+        assert exchanges.pending == [], "the call left exchanges unmade"
+        sent.append(exchanges.sent)
+    assert sent[0] == sent[1]
+
+
+# The scenarios whose every spec fetch builds the spec as Search named it, with
+# its sentence, as a latest fetch of a ref to that spec builds it.
+LATEST_STEPS = [
+    name
+    for name, record in SCENARIOS.items()
+    if (specs := [step for step in record["call"] if _form(step) == "fetch-spec"])
+    and all(
+        not {"window", "entities", "facets"} & set(step) and "sentence" in step["spec"]
+        for step in specs
+    )
+]
+
+
+@pytest.mark.parametrize("flavour", ["async", "sync"])
+@pytest.mark.parametrize("name", LATEST_STEPS)
+def test_a_latest_ref_fetch_replays_the_spec_fetch(
+    name: str, flavour: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`fetch(ref, latest=True)` builds each member's spec as a spec fetch does:
+    the same exchanges and the same outcomes."""
+    record = SCENARIOS[name]
+    exchanges = Exchanges(record, BASE_URLS["api-path"])
+    pollers = Pollers(monkeypatch)
+    clock = Clock(pollers.poll_waits)
+    client = _client(flavour, BASE_URLS["api-path"], exchanges, clock)
+    asyncio.run(_replay(record, client, pollers, clock, latest=True))
+    assert exchanges.pending == [], "the call left exchanges unmade"
+
+
+def test_the_latest_replay_covers_both_layouts() -> None:
+    layouts = {
+        step.get("layout", "long")
+        for name in LATEST_STEPS
+        for step in SCENARIOS[name]["call"]
+        if _form(step) == "fetch-spec"
+    }
+    assert layouts == {"long", "frame"}
+
+
+def test_the_revived_replay_covers_choose_steps() -> None:
+    """A cut that drops a member a choice posts fails a revived replay."""
+    assert any(
+        step["op"] == "choose"
+        for name in ANSWER_STEPS
+        for step in SCENARIOS[name]["call"]
+    )

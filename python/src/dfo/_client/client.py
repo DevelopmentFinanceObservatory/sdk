@@ -1,15 +1,14 @@
 """The client: one connection to the DFO API, its key and its cache.
 
-A client asks Search what a question means (`search`), builds datasets (`fetch`,
-`mint`, `operation`) and looks up names and codes (`graph`, `codes`,
-`catalogue`). `request` reaches any route the client does not wrap. The client
+A client asks Search what a question means (`search`), builds datasets (`fetch`)
+and looks up names, codes and Search's catalogue (`lookup`). `request` reaches any route the client does not wrap. The client
 owns its connection pool: `with_options` returns a copy that shares the pool and
 the cache, and only the client that built the pool closes it.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from os import PathLike
-from typing import Any, Self
+from typing import Any, ClassVar, Self
 
 from dfo._config.keys import ApiKeyArgument
 from dfo._core.codes import INVALID_ARGUMENT
@@ -19,14 +18,12 @@ from dfo._core.refusals import caller_refusal
 from dfo._core.types import Layout, RawResponse, Spec, Window
 from dfo._datasets.cache import Cache
 from dfo._datasets.dataset import Dataset
-from dfo._datasets.fetch import Session, mint, operation
-from dfo._datasets.operation import AsyncOperation
+from dfo._datasets.fetch import Session
 from dfo._datasets.resolve import fetch
-from dfo._generated.wire import CatalogueResponse
 from dfo._http.hooks import AsyncHeaderProvider
 from dfo._http.transport import AsyncTransport
 from dfo._search.answer import SEARCH_TIMEOUT, AsyncAnswer
-from dfo._search.lookups import AsyncCodes, AsyncGraph, catalogue
+from dfo._search.lookups import AsyncLookup
 from dfo._search.search import search
 
 
@@ -34,12 +31,14 @@ class AsyncClient:
     """A connection to the DFO API, with its key and cache, used as a context manager.
 
     Attributes:
-        graph: Names to graph nodes, and a node by its dcid.
-        codes: The code registry, which says what each error code means.
+        lookup: Names to graph nodes, a node by its dcid, a code's registry
+            entry, and Search's catalogue.
     """
 
-    graph: AsyncGraph
-    codes: AsyncCodes
+    lookup: AsyncLookup
+    # What the client's hints name the owner of a call they suggest, as in
+    # `client.fetch(spec)`; the default client behind `dfo.fetch` names `dfo`.
+    _caller: ClassVar[str] = "client"
 
     def __init__(
         self,
@@ -50,7 +49,7 @@ class AsyncClient:
         max_retries: int = 2,
         cache_dir: str | PathLike[str] | None = None,
         cache: bool = True,
-        default_headers: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
         header_provider: AsyncHeaderProvider | None = None,
     ) -> None:
         """Build the client and resolve its key.
@@ -59,7 +58,9 @@ class AsyncClient:
             api_key: The key: a string, an `ApiKey`, or a callable returning one;
                 False for anonymous use; None to look one up in `DFO_API_KEY`,
                 the credentials file, then a Colab secret.
-            base_url: The API's base URL; None for the public API.
+            base_url: The API's base URL; None reads `DFO_BASE_URL`, and
+                with that unset or empty takes the public API. The repr names
+                `DFO_BASE_URL` when the URL came from it.
             timeout: The longest one request attempt waits, in seconds. A
                 search attempt and a download read until their call's
                 deadline instead, and a build request for up to 150 seconds.
@@ -70,13 +71,14 @@ class AsyncClient:
                 then the platform's cache directory. A relative path resolves
                 against the working directory when the client is built.
             cache: False fetches without reading or writing the cache.
-            default_headers: Headers sent with every API request.
+            headers: Headers sent with every API request.
             header_provider: Called before every API request for more headers,
                 such as an identity token.
 
         Raises:
-            InvalidRequestError: The base URL is invalid (`base_url_invalid`), a
-                default header's name is not an HTTP token or its value not a
+            InvalidRequestError: The base URL, passed or read from
+                `DFO_BASE_URL`, is invalid (`base_url_invalid`), a
+                header's name is not an HTTP token or its value not a
                 string of visible ASCII, spaces and tabs (`header_invalid`), the
                 key would travel over plain http to a host that is not loopback
                 (`insecure_transport`), the timeout is not a finite number above
@@ -92,8 +94,9 @@ class AsyncClient:
             api_key=api_key,
             timeout=timeout,
             max_retries=max_retries,
-            default_headers=default_headers,
+            headers=headers,
             header_provider=header_provider,
+            caller=self._caller,
         )
         self._attach(Session(transport, local))
 
@@ -106,8 +109,7 @@ class AsyncClient:
 
     def _attach(self, session: Session) -> None:
         self._session = session
-        self.graph = AsyncGraph(session.transport)
-        self.codes = AsyncCodes(session.transport)
+        self.lookup = AsyncLookup(session.transport)
 
     def _current(self) -> Session:
         return self._session
@@ -118,7 +120,10 @@ class AsyncClient:
         return self._session.transport.base_url
 
     def __repr__(self) -> str:
-        return f"<{type(self).__name__} {self.base_url}>"
+        transport = self._session.transport
+        source = transport.base_url_source
+        origin = " (from DFO_BASE_URL)" if source == "environment" else ""
+        return f"<{type(self).__name__} {transport.base_url}{origin}>"
 
     def with_options(
         self, *, timeout: float | None = None, max_retries: int | None = None
@@ -162,15 +167,21 @@ class AsyncClient:
         /,
         *,
         window: Window | None = None,
-        entities: Mapping[str, Sequence[str] | None] | None = None,
+        entities: Mapping[str, list[str] | tuple[str, ...] | None] | None = None,
         facets: Mapping[str, str | None] | None = None,
         layout: Layout | None = None,
         without_party_totals: bool | None = None,
+        latest: bool = False,
         strict: bool = False,
-        timeout: float | None = 1800.0,
+        timeout: float | None = None,
         progress: bool | None = None,
     ) -> Dataset:
-        """Fetch a spec's latest version, or the exact versions a ref names.
+        """Fetch a spec's latest version, the exact versions a ref names, or with
+        `latest=True` the newest versions of a ref's specs.
+
+        A cancelled or interrupted fetch leaves its build running on the server,
+        and the same fetch joins it. Ctrl-C in the synchronous client adds a
+        note saying so to the `KeyboardInterrupt`.
 
         Args:
             target: A `Spec` to build, or a `DatasetRef` to read back.
@@ -188,9 +199,14 @@ class AsyncClient:
                 declares totals, such as the DAC total beside its members, on
                 each party role the spec leaves open. None builds a spec with
                 every row and reads a ref as it was fetched.
+            latest: Build the newest version of each of a ref's specs, in the
+                rendering the ref holds, in place of the exact versions it
+                names, as `fetch(old.ref, latest=True)`. A spec always fetches
+                its newest version and refuses it.
             strict: Raise the first dataset warning instead of issuing it.
             timeout: The longest the fetch takes, in seconds, downloads
-                included; None for no limit. In the synchronous client,
+                included. None, the default, waits as long as the build takes,
+                which the server always ends. In the synchronous client,
                 platform name resolution can run past this bound; the
                 asynchronous client can cancel it.
             progress: Show long-build progress; None shows it unless
@@ -200,15 +216,17 @@ class AsyncClient:
             InvalidRequestError: The target is neither a `Spec` nor a
                 `DatasetRef`, such as a spec id, and no request is sent; a ref
                 is narrowed or given another layout or `without_party_totals`;
-                `window`, `entities`, `facets` or `layout` is malformed; or
+                `latest` is not a bool, is given a spec, or is given a ref
+                whose members differ in rendering; `window`, `entities`,
+                `facets` or `layout` is malformed; or
                 `timeout` is not None or a finite number above 0
                 (`invalid_argument`).
             VersionUnavailableError: A ref's version can no longer be fetched.
             ContractError: An artifact is not Parquet (`unexpected_response`),
                 or lacks a `time_period` or numeric `value` column
                 (`contract_violation`); the cache drops it.
-            DfoTimeoutError: The deadline passed. A long build's message names
-                the call that resumes it.
+            DfoTimeoutError: `timeout` passed (`deadline_exceeded`). The build
+                keeps running on the server, and the same fetch joins it.
             DfoError: The server refused a request.
         """
         return await fetch(
@@ -219,85 +237,12 @@ class AsyncClient:
             facets=facets,
             layout=layout,
             without_party_totals=without_party_totals,
+            latest=latest,
             strict=strict,
             timeout=timeout,
             progress=progress,
             cache=self._session.cache,
         )
-
-    async def mint(
-        self,
-        spec: Spec,
-        /,
-        *,
-        layout: Layout = "long",
-        without_party_totals: bool = False,
-        progress: bool | None = None,
-    ) -> AsyncOperation:
-        """Start a spec's build and return it as an operation, done or running.
-
-        The build request reads for up to 150 seconds. `result` bounds the wait
-        for the build. `without_party_totals` leaves out the rows of parties the
-        code index declares totals, as in `fetch`.
-
-        Raises:
-            InvalidRequestError: `spec` is not a `Spec`, such as a spec id
-                (`invalid_argument`); no request is sent.
-            DfoError: The server refused the build.
-        """
-        return await mint(
-            self._session.transport,
-            spec,
-            layout=layout,
-            without_party_totals=without_party_totals,
-            progress=progress,
-            cache=self._session.cache,
-        )
-
-    async def operation(
-        self,
-        operation_id: str,
-        /,
-        *,
-        layout: Layout = "long",
-        without_party_totals: bool = False,
-        progress: bool | None = None,
-    ) -> AsyncOperation:
-        """Resume a build started elsewhere, by its id (`op_...`).
-
-        Args:
-            operation_id: The id a deadline error or `Operation.operation_id`
-                names.
-            layout: The layout the build was started with.
-            without_party_totals: Whether the build was started without party
-                totals.
-            progress: Show the build's progress; None shows it unless
-                `DFO_PROGRESS=0`.
-
-        An operation that already failed raises its error from `result`.
-
-        Raises:
-            InvalidRequestError: `operation_id` is not `op_` and 64 hex digits
-                (`invalid_argument`).
-            NotFoundError: The server holds no operation with that id.
-        """
-        return await operation(
-            self._session.transport,
-            operation_id,
-            layout=layout,
-            without_party_totals=without_party_totals,
-            progress=progress,
-            cache=self._session.cache,
-        )
-
-    async def catalogue(self, *, place: str | None = None) -> CatalogueResponse:
-        """What Search holds data on: counts and example questions.
-
-        Args:
-            place: A country dcid, such as `country/NGA`, to scope the counts and
-                examples to that country.
-        """
-        return await catalogue(self._session.transport, place=place)
 
     async def request(
         self,

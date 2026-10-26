@@ -13,13 +13,14 @@ import type { Client } from "../src/client.ts";
 import { Dataset } from "../src/datasets/dataset.ts";
 import { newestVersion } from "../src/datasets/resolve.ts";
 import type { FetchOptions, Narrowing } from "../src/datasets/fetch.ts";
-import { Operation } from "../src/datasets/operation.ts";
 import type { LongBuild } from "../src/datasets/operation.ts";
 import { DatasetRef, renderingFor } from "../src/core/ref.ts";
 import type { Transport } from "../src/http/transport.ts";
 import { DfoError, isDfoError, VersionUnavailableError } from "../src/core/errors.ts";
 import { CLIENT_CODE_CLASSES } from "../src/generated/client-codes.ts";
 import { DataWarning, DfoWarning, forgetEmittedWarnings } from "../src/core/warnings.ts";
+import { mint, resume } from "./builds.ts";
+import type { StartedBuild } from "./builds.ts";
 import { recordedBaseUrl, replay, REPLAY_BASE_URLS, scenarios } from "./replay.ts";
 import type { LongBuildSummary, Outcome, Scenario, Step } from "./replay.ts";
 
@@ -28,7 +29,10 @@ const all = await scenarios();
 /** A `newest_version` step's version. */
 type NewestVersion = { readonly newestVersion: string | null };
 
-type Reached = Answer | Dataset | Operation | NewestVersion;
+type Reached = Answer | Dataset | StartedBuild | NewestVersion;
+
+const isStartedBuild = (reached: Reached | undefined): reached is StartedBuild =>
+  reached !== undefined && "poller" in reached;
 
 const WARNING_CLASSES = new Set(["SearchWarning", "DataWarning"]);
 
@@ -65,9 +69,7 @@ async function run(
       return client.search(step.question);
     case "choose":
       assert.ok(previous instanceof Answer, "a choice follows an answer");
-      return step.part === undefined
-        ? previous.choose(step.option)
-        : previous.choose(step.part, step.option);
+      return previous.choose(step.option, step.part === undefined ? {} : { part: step.part });
     case "fetch": {
       const { spec, ref, ...rest } = step;
       const options = callOptions(rest) as FetchOptions;
@@ -83,17 +85,14 @@ async function run(
           deadline: Infinity,
         }),
       };
-    case "mint": {
-      const { spec, ...rest } = step;
-      return client.mint(spec, callOptions(rest));
-    }
+    // The client has no mint or operation call: a fetch waits. These steps drive the poller
+    // under it, as `newest_version` drives the version lookup.
+    case "mint":
+      return mint(transport, step.spec, step.layout);
     case "operation":
-      return client.operation(
-        step.operation_id,
-        step.layout === undefined ? {} : { layout: step.layout },
-      );
+      return resume(transport, step.operation_id, step.layout);
     case "result":
-      assert.ok(previous instanceof Operation, "a result follows a mint");
+      assert.ok(isStartedBuild(previous), "a result follows a mint");
       return previous.result();
     default:
       assert.fail(`the replay does not know the step ${JSON.stringify(step)}`);
@@ -178,7 +177,7 @@ async function checkDataset(
   observed: Observed,
 ): Promise<void> {
   const rows = await dataset.toRows();
-  assert.equal(rows.length, dataset.rows, `${name}: decoded rows`);
+  assert.equal(rows.length, dataset.rowCount, `${name}: decoded rows`);
   assert.deepEqual(Object.keys(rows[0] ?? {}), dataset.columns, `${name}: decoded columns`);
   const partRows = new Map<string, number>();
   for (const row of rows) {
@@ -189,7 +188,7 @@ async function checkDataset(
     name,
     expected,
     {
-      rows: dataset.rows,
+      rows: dataset.rowCount,
       columns: dataset.columns,
       complete: dataset.complete,
       members: dataset.members.map((member) => ({
@@ -253,13 +252,13 @@ async function checkOutcome(
     return checkDataset(reached, expected.dataset, name, observed);
   }
   if ("operation" in expected) {
-    assert.ok(reached instanceof Operation, `${name}: gave an operation`);
+    assert.ok(isStartedBuild(reached), `${name}: gave an operation`);
     checkMembers(
       name,
       expected.operation,
       {
-        operation_id: reached.operationId,
-        status: reached.status,
+        operation_id: reached.poller.operationId,
+        status: reached.poller.status,
       },
       observed,
     );
@@ -280,7 +279,9 @@ async function checkOutcome(
   assert.fail(`${name}: the replay does not know the outcome ${kind}`);
 }
 
-async function replayScenario(record: Scenario, baseUrl?: string): Promise<void> {
+/** Replays a scenario step by step. With `revive`, each answer a step reads goes through
+ *  `toJSON`, `JSON.stringify` and `Answer.fromJSON` first, as an answer a web page posts back. */
+async function replayScenario(record: Scenario, baseUrl?: string, revive = false): Promise<void> {
   assert.equal(record.expect.length, record.call.length, `${record.name}: one outcome per step`);
   forgetEmittedWarnings();
   const observed: Observed = { warnings: [], longBuilds: [], retryWaits: [] };
@@ -297,6 +298,9 @@ async function replayScenario(record: Scenario, baseUrl?: string): Promise<void>
     observed.warnings.length = 0;
     observed.longBuilds.length = 0;
     const retriesBefore = retryWaits.length;
+    if (revive && previous instanceof Answer) {
+      previous = Answer.fromJSON(JSON.stringify(previous), client);
+    }
     let reached: Reached;
     try {
       reached = await run(client, transport, step, previous);
@@ -320,6 +324,20 @@ describe("every contract scenario", () => {
     for (const [form, baseUrl] of Object.entries(baseUrls)) {
       test(`${record.name} at the ${form} base URL`, () => replayScenario(record, baseUrl));
     }
+  }
+});
+
+// An answer revived from its JSON chooses and fetches as the original does: the replay checks
+// every request it posts against the recorded one, and every outcome against the expected one.
+describe("an answer revived from JSON replays every scenario that reads an answer", () => {
+  const reading = all.filter((record) =>
+    record.call.some(
+      (step) => step.op === "choose" || (step.op === "fetch" && !step.spec && !step.ref),
+    ),
+  );
+  assert.ok(reading.length > 0, "a scenario reads an answer");
+  for (const record of reading) {
+    test(record.name, () => replayScenario(record, undefined, true));
   }
 });
 

@@ -4,8 +4,8 @@ import { inspect } from "node:util";
 
 import { parquetMetadata } from "hyparquet";
 
-import { Answer, answerFromBody, Candidate, SearchWarning } from "../src/search/answer.ts";
-import type { AnswerContext, Gap, QueryOption } from "../src/search/answer.ts";
+import { Answer, answerFromBody, SearchWarning } from "../src/search/answer.ts";
+import type { AnswerContext, Candidate, Gap, QueryOption } from "../src/search/answer.ts";
 import {
   ContractError,
   DeclinedError,
@@ -33,7 +33,7 @@ const body = (name: string): Record<string, unknown> =>
 type Context = AnswerContext & { built: MemberRequest[][]; warnings: DfoWarning[] };
 
 /** What the recording builder returns for every fetch: one member of recorded Parquet. */
-const builtDataset = new Dataset<Gap>(
+const builtDataset = new Dataset(
   [
     {
       parts: [],
@@ -97,6 +97,7 @@ describe("IncompleteAnswerError", () => {
       `  answered "debt service": Kenya's external debt service owed to all creditors, 1970 to 2024. Current US dollars · World Bank International Debt Statistics (IDS).`,
       `  missing  "price of tea": Could not match "price of tea" to a supported indicator. Try a different wording or a related indicator.`,
       "  Or take the answered part: answer.fetch({ partial: true })",
+      "[answer_incomplete]",
     ]);
   });
 
@@ -109,21 +110,52 @@ describe("IncompleteAnswerError", () => {
       "    [0] Kenya's deaths rate per capita, 2013 to 2022 · World Development Indicators",
       "    [1] Kenya's number of deaths, 2018 to 2022 · Kenya Census",
       "  Choose: (await answer.choose(0)).fetch()",
+      "[answer_incomplete]",
     ]);
   });
 
-  test("names a place choice by the word it settles, or by the part when the word repeats", () => {
-    assert.deepEqual(
-      answerOf("choose-place-one-part").incompleteError().message.split("\n").slice(-1),
-      [`  Choose: (await answer.choose("Congo", "Congo [DRC]")).fetch()`],
-    );
-    assert.deepEqual(
-      answerOf("choose-place-two-parts").incompleteError().message.split("\n").slice(-2),
+  const hints: [string, string, string[]][] = [
+    [
+      "a place by its label when one part waits",
+      "choose-place-one-part",
+      [`  Choose: (await answer.choose("Congo [DRC]")).fetch()`],
+    ],
+    [
+      "a place by its index when its label repeats",
+      "choose-refused-shared-label",
+      ["  Choose: (await answer.choose(0)).fetch()"],
+    ],
+    [
+      "a part by the word it settles, or by its words when the word repeats",
+      "choose-place-two-parts",
       [
-        `  Choose: (await answer.choose("GDP", "Congo [DRC]")).fetch()`,
-        `  Choose: (await answer.choose("ODA disbursements", "Congo [DRC]")).fetch()`,
+        `  Choose: (await answer.choose("Congo [DRC]", { part: "GDP" })).fetch()`,
+        `  Choose: (await answer.choose("Congo [DRC]", { part: "ODA disbursements" })).fetch()`,
       ],
+    ],
+  ];
+  for (const [name, scenario, expected] of hints) {
+    test(`names ${name}`, async () => {
+      const error = (await rejection(answerOf(scenario).fetch())) as IncompleteAnswerError;
+      assert.deepEqual(error.message.split("\n").slice(-expected.length - 1), [
+        ...expected,
+        "[answer_incomplete]",
+      ]);
+    });
+  }
+
+  test("names a reading by its index and its part when several parts wait", async () => {
+    const answer = answerOf("resubmit-candidates-sibling");
+    const error = (await rejection(answer.fetch())) as IncompleteAnswerError;
+    const calls = error.message.split("\n").filter((line) => line.startsWith("  Choose: "));
+    assert.deepEqual(
+      calls,
+      answer.gaps.map(
+        (gap) =>
+          `  Choose: (await answer.choose(0, { part: ${JSON.stringify(gap.part.variable_text)} })).fetch()`,
+      ),
     );
+    assert.equal(calls.length, 2);
   });
 });
 
@@ -165,7 +197,6 @@ describe("gaps", () => {
     assert.equal(other.spec.spec_id, second!.spec_id);
     assert.equal(other.unit, null);
     assert.deepEqual(other.assumptions, []);
-    assert.deepEqual(candidate.unbound().assumptions, [ASSUMED]);
   });
 
   for (const sentence of [undefined, ""]) {
@@ -261,7 +292,7 @@ describe("choose", () => {
         }
         const answer = answerFromBody(edited, offline(), null);
         const index = parts.indexOf(part);
-        await assert.rejects(answer.choose(index, 0), {
+        await assert.rejects(answer.choose(0, { part: index }), {
           name: "ContractError",
           code: "contract_violation",
         });
@@ -280,20 +311,73 @@ describe("choose", () => {
     ["no part when several await a choice", () => answerOf("choose-place-two-parts").choose(0)],
     [
       "a word two parts share",
-      () => answerOf("choose-place-two-parts").choose("Congo", "Congo [DRC]"),
+      () => answerOf("choose-place-two-parts").choose("Congo [DRC]", { part: "Congo" }),
     ],
-    ["a part index out of range", () => answerOf("choose-place-one-part").choose(3, 0)],
+    ["a part index out of range", () => answerOf("choose-place-one-part").choose(0, { part: 3 })],
     [
       "a boolean part key",
-      () => answerOf("choose-place-two-parts").choose(true as unknown as number, 0),
+      () => answerOf("choose-place-two-parts").choose(0, { part: true as unknown as number }),
     ],
-    ["a part that already has a reading", () => answerOf("answer-mixed-fetch-raises").choose(0, 0)],
+    [
+      "a part that already has a reading",
+      () => answerOf("answer-mixed-fetch-raises").choose(0, { part: 0 }),
+    ],
   ];
   for (const [name, choose] of invalidChoices) {
     test(`refuses ${name}, with no request`, async () => {
       await assert.rejects(choose(), { name: "InvalidRequestError", code: "choice_invalid" });
     });
   }
+
+  // Each row names a part or an option that matches nothing, and the refusal's advice and the
+  // choices it lists on its second line.
+  for (const [name, choose, advice, choices] of [
+    [
+      "a label in another case",
+      () => answerOf("choose-place-one-part").choose("congo [drc]"),
+      'did you mean "Congo [DRC]"?',
+      "0 = Congo [DRC], 1 = Congo [Republic]",
+    ],
+    [
+      "a label like none",
+      () => answerOf("choose-place-one-part").choose("Kinshasa"),
+      "name it by index or label:",
+      "0 = Congo [DRC], 1 = Congo [Republic]",
+    ],
+    [
+      "a part word one letter short",
+      () => answerOf("choose-place-two-parts").choose(0, { part: "Cong" }),
+      'did you mean "Congo"?',
+      "0 = GDP / Congo, 1 = ODA disbursements / Congo",
+    ],
+  ] as const) {
+    test(`refuses ${name} with the nearest match and the choices`, async () => {
+      const error = await rejection(choose());
+      assert.ok(error instanceof InvalidRequestError);
+      assert.equal(error.code, "choice_invalid");
+      const [first, second, bracket] = error.message.split("\n");
+      assert.ok(first!.endsWith(advice), first);
+      assert.equal(second, `  ${choices}`);
+      assert.equal(bracket, "[choice_invalid]");
+    });
+  }
+
+  test("refuses an option out of range with the options it offers", async () => {
+    await assert.rejects(answerOf("choose-place-one-part").choose(5), {
+      code: "choice_invalid",
+      message: /offers 2: 0 = Congo \[DRC\], 1 = Congo \[Republic\]\. \[choice_invalid\]$/,
+    });
+  });
+
+  test("refuses two positional keys with a TypeError naming the part option, with no request", async () => {
+    const answer = answerOf("choose-place-two-parts");
+    const untyped = answer as unknown as { choose(part: string, option: string): Promise<Answer> };
+    await assert.rejects(untyped.choose("GDP", "Congo [DRC]"), (error: unknown) => {
+      assert.ok(error instanceof TypeError);
+      assert.match(error.message, /answer\.choose\("Congo \[DRC\]", \{ part: "GDP" \}\)/);
+      return true;
+    });
+  });
 
   test("a several-part choice of a candidate posts identities for the definite and the chosen part", async () => {
     const definite = (body("answer-definite-fetch")["parts"] as DefinitePart[])[0]!;
@@ -309,7 +393,7 @@ describe("choose", () => {
     const { fetch, seen } = mockFetch(json(body("answer-definite-fetch")));
     const answer = answerFromBody(resolution, offline(fetch), null);
 
-    await answer.choose(candidates.variable_text!, 1);
+    await answer.choose(1, { part: candidates.variable_text! });
 
     const posted = JSON.parse(seen[0]!.body!) as { input: unknown };
     assert.deepEqual(posted.input, {
@@ -352,42 +436,11 @@ function reachable(root: unknown): unknown[] {
 }
 
 const candidatesOf = (gaps: readonly Gap[]): Candidate[] =>
-  gaps.flatMap((gap) => gap.options.filter((option) => option instanceof Candidate));
+  gaps.flatMap((gap) =>
+    gap.options.filter((option): option is Candidate => option.kind === "candidate"),
+  );
 
-/** Checks that a candidate refuses `fetch`, naming the call that fetches its spec. */
-async function refusesFetch(candidate: Candidate): Promise<void> {
-  await assert.rejects(candidate.fetch(), (error: unknown) => {
-    assert.ok(error instanceof InvalidRequestError);
-    assert.equal(error.code, "invalid_argument");
-    assert.match(error.message, /client\.fetch\(candidate\.spec\)/);
-    return true;
-  });
-}
-
-describe("candidate.fetch", () => {
-  test("builds the dataset choosing the candidate builds", async () => {
-    const scenario = record("answer-candidates-choose-fetch");
-    const { transport, remaining } = replay(scenario);
-    const answer = await clientOver(transport).search(stepOf(scenario, 0, "search").question);
-    const dataset = await candidatesOf(answer.gaps)[0]!.fetch();
-    const expected = scenario.expect[2]!;
-    assert.ok("dataset" in expected);
-    assert.equal(dataset.rows, expected.dataset.rows);
-    assert.deepEqual(
-      dataset.members.map((member) => [
-        member.spec.spec_id,
-        member.contentVersion,
-        member.sentence,
-      ]),
-      expected.dataset.members.map((member) => [
-        member.spec_id,
-        member.content_version,
-        member.sentence,
-      ]),
-    );
-    assert.deepEqual(remaining(), []);
-  });
-
+describe("candidates", () => {
   test("a malformed assumption reads as absent on the candidate and its dataset, and its echo posts the read items", async () => {
     const scenario = structuredClone(record("answer-candidates-choose-fetch"));
     const [search, resubmit] = scenario.exchanges;
@@ -409,51 +462,10 @@ describe("candidate.fetch", () => {
 
     const answer = await clientOver(transport).search(stepOf(scenario, 0, "search").question);
     const candidate = candidatesOf(answer.gaps)[0]!;
-    const dataset = await candidate.fetch();
+    const dataset = await (await answer.choose(0)).fetch();
     assert.deepEqual(remaining(), []);
     assert.deepEqual(candidate.assumptions, [assumed]);
     assert.deepEqual(dataset.assumptions, candidate.assumptions);
-  });
-
-  test("in an answer of several parts, asks Search for the candidate alone and builds its answer with the options given", async () => {
-    const built: { members: MemberRequest[]; layout: unknown; timeout: unknown }[] = [];
-    const picked = body("answer-definite-fetch");
-    const { fetch, seen } = mockFetch(json(picked));
-    const context: AnswerContext = {
-      transport: replay(NO_EXCHANGES, { fetch }).transport,
-      onWarning: () => undefined,
-      fetchMembers: (_, members, options) => {
-        built.push({ members: [...members], layout: options.layout, timeout: options.timeout });
-        return Promise.resolve(builtDataset);
-      },
-    };
-    const answer = answerOf("choose-candidate-two-parts", context);
-    const part = answer.parts[0] as CandidatesPart;
-    const candidate = candidatesOf(answer.gaps)[1]!;
-    await candidate.fetch({ layout: "frame", timeout: 5_000 });
-
-    const posted = JSON.parse(seen[0]!.body!) as { input: unknown };
-    assert.deepEqual(posted.input, {
-      kind: "dataset_resubmit",
-      entries: [
-        {
-          variable_text: part.variable_text,
-          entry_kind: "identity",
-          identity: candidate.spec.definition.identity,
-          entity_groups: candidate.spec.resolved.entity_groups,
-          assumptions: part.reading_assumptions![candidate.spec.spec_id],
-        },
-      ],
-    });
-    const [answered] = picked["parts"] as DefinitePart[];
-    assert.deepEqual(
-      built.map(({ members, layout, timeout }) => ({
-        specs: members.map((member) => member.spec.spec_id),
-        layout,
-        timeout,
-      })),
-      [{ specs: [answered!.spec.spec_id], layout: "frame", timeout: 5_000 }],
-    );
   });
 
   test("a partial fetch's dataset and an IncompleteAnswerError hold candidates with no client", async () => {
@@ -464,21 +476,18 @@ describe("candidate.fetch", () => {
     const dataset = await answer.fetch({ partial: true });
     assert.deepEqual(remaining(), []);
 
-    assert.deepEqual(
-      reachable(dataset).filter((value) => value instanceof Transport),
-      [],
-    );
-    const missing = candidatesOf(dataset.missing);
-    assert.equal(missing.length, 3);
-    for (const candidate of missing) await refusesFetch(candidate);
-
-    const error = answer.incompleteError();
-    const held = candidatesOf(error.gaps);
-    assert.equal(held.length, 3);
-    for (const candidate of held) await refusesFetch(candidate);
+    const error = (await rejection(answer.fetch())) as IncompleteAnswerError;
+    assert.ok(error instanceof IncompleteAnswerError);
+    for (const held of [dataset, error.gaps]) {
+      assert.deepEqual(
+        reachable(held).filter((value) => value instanceof Transport),
+        [],
+      );
+    }
+    assert.equal(candidatesOf(dataset.missing).length, 3);
     assert.deepEqual(
       candidatesOf(answer.gaps).map((candidate) => candidate.spec),
-      held.map((candidate) => candidate.spec),
+      candidatesOf(error.gaps).map((candidate) => candidate.spec),
     );
   });
 });
@@ -507,7 +516,10 @@ describe("fetch", () => {
 
     const answer = await clientOver(transport).search(stepOf(scenario, 0, "search").question);
     // The answer's hints read the same operations the dataset keeps.
-    assert.deepEqual(String(answer).split("\n").slice(1), ['  Not done: rank ("top 5")']);
+    assert.deepEqual(String(answer).split("\n").slice(1), [
+      '  Not done: rank ("top 5")',
+      "  Fetch: answer.fetch()",
+    ]);
     const dataset = await answer.fetch();
     assert.deepEqual(remaining(), []);
     assert.deepEqual(dataset.assumptions, [
@@ -517,9 +529,9 @@ describe("fetch", () => {
     assert.deepEqual(dataset.requestedOperations, [{ verb: "rank", phrase: "top 5" }]);
 
     const rows = await dataset.toRows();
-    assert.equal(rows.length, dataset.rows);
+    assert.equal(rows.length, dataset.rowCount);
     const table = await toArrow(dataset);
-    assert.equal(table.numRows, dataset.rows);
+    assert.equal(table.numRows, dataset.rowCount);
     assert.deepEqual(
       table.schema.fields.map((field) => field.name),
       dataset.columns,
@@ -618,7 +630,7 @@ describe("fetch", () => {
 
     assert.equal(
       answer.toString(),
-      `${answer.sentence!}\n  Not done: rank ("top 5")\n  Note: One source answered slowly.`,
+      `${answer.sentence!}\n  Not done: rank ("top 5")\n  Note: One source answered slowly.\n  Fetch: answer.fetch()`,
     );
     await answer.fetch();
     assert.equal(context.warnings.length, 1);
@@ -644,7 +656,10 @@ describe("fetch", () => {
     ];
     const context = offline();
     const answer = answerFromBody(edited, context, null);
-    assert.equal(answer.toString(), `${answer.sentence!}\n  Note: One source answered slowly.`);
+    assert.equal(
+      answer.toString(),
+      `${answer.sentence!}\n  Note: One source answered slowly.\n  Fetch: answer.fetch()`,
+    );
     await assert.rejects(answer.fetch({ strict: true }), { name: "SearchWarning", code: "" });
     assert.equal(context.built.length, 0);
   });
@@ -725,8 +740,7 @@ describe("reading a Search response", () => {
     (part["candidates"] as { specs: Record<string, unknown>[] }).specs;
   const resolvedOf = (spec: Record<string, unknown>): Record<string, unknown> =>
     spec["resolved"] as Record<string, unknown>;
-  const sentenceOf = (name: string): string =>
-    String(answerFromBody(body(name), offline(), null).sentence);
+  const textOf = (name: string): string => String(answerFromBody(body(name), offline(), null));
   const malformed: [string, string, BodyEdit, string | Read][] = [
     [
       "candidates.specs that is not an array",
@@ -774,7 +788,7 @@ describe("reading a Search response", () => {
       "answer-definite-fetch",
       (_, p) => (p[0]!["operations"] = {}),
       (answer) => {
-        assert.equal(String(answer), sentenceOf("answer-definite-fetch"));
+        assert.equal(String(answer), textOf("answer-definite-fetch"));
       },
     ],
     [
@@ -782,7 +796,7 @@ describe("reading a Search response", () => {
       "answer-definite-fetch",
       (_, p) => (p[0]!["warnings"] = {}),
       (answer) => {
-        assert.equal(String(answer), sentenceOf("answer-definite-fetch"));
+        assert.equal(String(answer), textOf("answer-definite-fetch"));
       },
     ],
     ...[null, 5].map((segment): [string, string, BodyEdit, Read] => [
@@ -833,7 +847,7 @@ describe("reading a Search response", () => {
       (_, p) => (p[0]!["departures"] = [null]),
       async (answer) => {
         await answer.fetch();
-        assert.equal(String(answer), sentenceOf("answer-definite-fetch"));
+        assert.equal(String(answer), textOf("answer-definite-fetch"));
       },
     ],
   ];
@@ -882,7 +896,7 @@ describe("reading a Search response", () => {
       const edited = body(scenarioName);
       edit(edited, edited["parts"] as Record<string, unknown>[]);
       const { fetch, seen } = mockFetch(json(record(scenarioName).exchanges[1]!.response.json));
-      await answerFromBody(edited, offline(fetch), null).choose(0, 0);
+      await answerFromBody(edited, offline(fetch), null).choose(0, { part: 0 });
       const posted = JSON.parse(seen[0]!.body!) as {
         input: { entries: Record<string, unknown>[] };
       };

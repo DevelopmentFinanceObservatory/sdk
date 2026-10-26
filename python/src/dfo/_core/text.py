@@ -9,6 +9,7 @@ client message quotes at most `MESSAGE_TEXT_MAX` characters of it.
 """
 
 import ipaddress
+import json
 import re
 import unicodedata
 from typing import Any
@@ -24,6 +25,7 @@ _MAYBE_UNPRINTABLE = re.compile(r"[^\t\n\x20-\x7e]")
 # Controls (C0, DEL and C1) and format characters, such as the zero-width space,
 # the byte order mark, the soft hyphen and the bidirectional controls.
 _UNPRINTABLE_CATEGORIES = frozenset({"Cc", "Cf"})
+_LINE_BREAKS = str.maketrans("\t\n", "  ")
 # The Default_Ignorable_Code_Point ranges of DerivedCoreProperties.txt, Unicode
 # 17.0, which draw nothing whatever their category, such as the combining
 # grapheme joiner, the variation selectors and the Hangul fillers.
@@ -65,6 +67,12 @@ def printable(text: str, /) -> str:
     or draw nothing: every Unicode control but tab and line feed, every format
     character, and every default-ignorable code point."""
     return _MAYBE_UNPRINTABLE.sub(_drop_unprintable, text)
+
+
+def single_line(text: str, /) -> str:
+    """Return `printable(text)` with each tab and line feed turned into a space,
+    for a label or a line of a repr that server text must not break or steer."""
+    return printable(text).translate(_LINE_BREAKS)
 
 
 def _drop_unprintable(found: re.Match[str]) -> str:
@@ -137,6 +145,15 @@ def capped(text: str, /) -> str:
     if len(text) <= MESSAGE_TEXT_MAX:
         return text
     return text[:MESSAGE_TEXT_MAX] + "…"
+
+
+def cited(value: object, /) -> str:
+    """How a message quotes a caller's value: a string in double quotes, as JSON
+    writes it, so `"congo [drc]"` reads the same in both clients; anything else as
+    Python writes it, such as `(0, 3000)`."""
+    return (
+        json.dumps(value, ensure_ascii=False) if isinstance(value, str) else repr(value)
+    )
 
 
 def redacted_json(value: Any, key: str | None, /) -> Any:

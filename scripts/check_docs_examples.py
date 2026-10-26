@@ -50,6 +50,7 @@ type Outcome = Literal["pass", "fail", "skip"]
 
 ROOT = Path(__file__).resolve().parent.parent
 TYPESCRIPT = ROOT / "typescript"
+NODE_ENTRY = TYPESCRIPT / "src" / "index.node.ts"
 DEFAULT_FILES = (
     "README.md",
     "python/README.md",
@@ -205,15 +206,15 @@ def typescript_programs(blocks: Sequence[Block]) -> list[list[Block]]:
     return programs
 
 
-def package_entries(client_shim: str) -> dict[str, str]:
+def package_entries() -> dict[str, str]:
     """Map each import path of the package to the module a docs program loads.
 
-    The root loads `client_shim`. Each subpath in the `exports` of
+    The root loads `src/index.node.ts`. Each subpath in the `exports` of
     `typescript/package.json` loads the source file its build comes from, so
     `./dist/wire.js` becomes `src/wire.ts`.
     """
     exports = json.loads((TYPESCRIPT / "package.json").read_text())["exports"]
-    entries = {"": client_shim}
+    entries = {"": NODE_ENTRY.as_uri()}
     for subpath, target in exports.items():
         if subpath == "." or not isinstance(target, dict):
             continue
@@ -345,7 +346,7 @@ class Run:
             DFO_CREDENTIALS_FILE=str(self.workdir / "no-credentials.toml"),
             DFO_CACHE_DIR=str(self.workdir / "cache"),
             DFO_PROGRESS="0",
-            DFO_DOCS_CHECK_BASE_URL=self.base_url,
+            DFO_BASE_URL=self.base_url,
         )
         return env
 
@@ -455,7 +456,9 @@ def _in_file_order(results: Iterable[Result]) -> list[Result]:
 PRELUDE = """\
 import { appendFileSync } from "node:fs";
 
-const base = new URL(process.env.DFO_DOCS_CHECK_BASE_URL).hostname;
+import { Client } from __SOURCE__;
+
+const base = new URL(process.env.DFO_BASE_URL).hostname;
 const realFetch = globalThis.fetch;
 
 globalThis.fetch = (input, init) => {
@@ -472,22 +475,9 @@ globalThis.fetch = (input, init) => {
 
 globalThis.__dfoDocsCheckDone = (index) =>
   appendFileSync(process.env.DFO_DOCS_CHECK_DONE, `${index}\\n`);
-"""
 
-# The package root a docs program imports: the source's exports, with a `Client`
-# whose base URL defaults to the one under check.
-CLIENT_SHIM = """\
-import { Client as SourceClient } from __SOURCE__;
-
-export * from __SOURCE__;
-
-export class Client extends SourceClient {
-  constructor(options = {}) {
-    super({ baseUrl: process.env.DFO_DOCS_CHECK_BASE_URL, ...options });
-  }
-}
-
-const expected = new SourceClient({ baseUrl: process.env.DFO_DOCS_CHECK_BASE_URL }).baseUrl;
+// A client built without a base URL must read DFO_BASE_URL.
+const expected = new Client({ baseUrl: process.env.DFO_BASE_URL }).baseUrl;
 const built = new Client().baseUrl;
 if (built !== expected) {
   throw new Error(`docs check: new Client() targets ${built}, not ${expected}`);
@@ -498,13 +488,13 @@ if (built !== expected) {
 def python_worker(payload_path: Path) -> int:
     """Run the blocks of a payload in one namespace, recording each outcome.
 
-    Requests to the client's default API go to `DFO_DOCS_CHECK_BASE_URL`. A
-    request whose URL names a host `refused_host` refuses fails as httpx2 sends
+    Clients built without a base URL read `DFO_BASE_URL`, which `Run.env` sets.
+    A request whose URL names a host `refused_host` refuses fails as httpx2 sends
     it, proxy or not, and any other connection to one fails at name resolution.
     """
     payload = json.loads(payload_path.read_text())
     try:
-        _guard_python(os.environ["DFO_DOCS_CHECK_BASE_URL"])
+        _guard_python(os.environ["DFO_BASE_URL"])
     except RuntimeError as error:
         print(error, file=sys.stderr)
         return 1
@@ -553,8 +543,8 @@ class ProductionRequestError(RuntimeError):
 
 
 def _guard_python(base_url: str) -> None:
-    """Point the clients' default base URL at `base_url`, check that every
-    client the docs build without one uses it, and refuse the public API.
+    """Check that every client the docs build without a base URL uses `base_url`
+    (set as `DFO_BASE_URL`), and refuse the public API.
 
     Raises:
         RuntimeError: A client built without a base URL targets another one.
@@ -563,15 +553,7 @@ def _guard_python(base_url: str) -> None:
     import dfo  # noqa: PLC0415
     import httpx2  # noqa: PLC0415
     from dfo._client.default import default_client  # noqa: PLC0415
-    from dfo._http import transport  # noqa: PLC0415
-    from dfo._sync._http import transport as sync_transport  # noqa: PLC0415
 
-    for module in (transport, sync_transport):
-        if not hasattr(module, "DEFAULT_BASE_URL"):
-            raise RuntimeError(
-                f"{module.__name__} has no DEFAULT_BASE_URL to point at {base_url}"
-            )
-        vars(module)["DEFAULT_BASE_URL"] = base_url
     expected = dfo.Client(base_url=base_url).base_url
     built = {
         "dfo.Client()": dfo.Client().base_url,
@@ -792,11 +774,12 @@ def check(blocks: Sequence[Block], *, base_url: str, timeout: float) -> list[Res
     with tempfile.TemporaryDirectory(prefix="dfo-docs-check-") as scratch:
         run = Run(base_url=base_url, workdir=Path(scratch), timeout=timeout)
         prelude = run.workdir / "prelude.mjs"
-        prelude.write_text(PRELUDE.replace("__PRODUCTION__", PRODUCTION_HOST))
-        shim = run.workdir / "client.mjs"
-        source = json.dumps((TYPESCRIPT / "src" / "index.node.ts").as_uri())
-        shim.write_text(CLIENT_SHIM.replace("__SOURCE__", source))
-        entries = package_entries(shim.as_uri())
+        prelude.write_text(
+            PRELUDE.replace("__PRODUCTION__", PRODUCTION_HOST).replace(
+                "__SOURCE__", json.dumps(NODE_ENTRY.as_uri())
+            )
+        )
+        entries = package_entries()
         for (path, language), group in by_file(blocks).items():
             print(f"{path} ({language}): {len(group)} blocks", flush=True)
             if language == "python":

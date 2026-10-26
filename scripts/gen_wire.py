@@ -18,6 +18,11 @@ a string, integer, array or object type, directly or through its `$ref`, and an 
 pointer's values must all be in the property's enum. The generator refuses a
 contract that breaks any of these rules.
 
+`wire.py` also declares a closed `Literal` alias for each enum in `NAMED_ENUMS`,
+which the public classes read as `Name | str` and the client's options take as
+`Name`. The generator refuses a path that holds no string enum and a name that
+the generated module already declares.
+
 Run it with the package's environment, which provides datamodel-code-generator and
 ruff. Both modules come out formatted with the package's ruff settings.
 """
@@ -42,6 +47,37 @@ STRICT = PACKAGE / "src" / "dfo" / "_generated" / "strict.py"
 POINTER_PREFIX = "/components/schemas/"
 # The JSON types a required member can be checked for.
 JSON_TYPES = frozenset({"string", "integer", "array", "object"})
+
+# The enums declared as named closed aliases: each one's schema path and the line
+# that documents it.
+NAMED_ENUMS: dict[str, tuple[tuple[str, ...], str]] = {
+    "Severity": (
+        ("Warning", "properties", "severity"),
+        "How much a Search warning matters.",
+    ),
+    "AssumptionKind": (
+        ("Assumption", "properties", "kind"),
+        "What Search filled in that the question left open.",
+    ),
+    "DepartureCode": (
+        ("Departure", "properties", "code"),
+        "How a reading differs from what the question asked.",
+    ),
+    "NoDataReason": (("NoData", "properties", "reason"), "Why a part has no data."),
+    "DeclinedReason": (
+        ("DeclinedAnswer", "properties", "reason"),
+        "Why Search declined a question.",
+    ),
+    "ResolveKind": (
+        (
+            "graph_api__resolve_models__ResolveRequest",
+            "properties",
+            "kinds",
+            "items",
+        ),
+        "A kind of graph node a name can resolve to.",
+    ),
+}
 
 CODEGEN_ARGS = (
     "--input-file-type=openapi",
@@ -190,7 +226,34 @@ def render_strict(document: Mapping[str, Any], fields: Mapping[str, Any]) -> str
     )
 
 
-def render_wire() -> str:
+def named_enums(schemas: Mapping[str, Any], declared: str) -> str:
+    """The source of one documented `Literal` alias per enum in `NAMED_ENUMS`.
+
+    Args:
+        schemas: The served document's component schemas.
+        declared: The generated module the aliases join, whose top-level names
+            they must not take.
+    """
+    aliases = []
+    for name, (path, doc) in NAMED_ENUMS.items():
+        if f"\nclass {name}(" in declared or f"\ntype {name} =" in declared:
+            raise SystemExit(f"the enum name {name} is declared in {relative(WIRE)}")
+        node: Any = schemas
+        for key in path:
+            node = node.get(key) if isinstance(node, Mapping) else None
+        values = node.get("enum") if isinstance(node, Mapping) else None
+        if not values or not all(isinstance(value, str) for value in values):
+            raise SystemExit(f"{'.'.join(path)} holds no string enum for {name}")
+        field = ".".join(key for key in path if key != "properties")
+        literal = ", ".join(json.dumps(value) for value in values)
+        aliases.append(
+            f"type {name} = Literal[{literal}]\n"
+            f'"""{doc}\n\nThe values of `{field}` in the served document.\n"""\n'
+        )
+    return "\n\n".join(aliases)
+
+
+def render_wire(schemas: Mapping[str, Any]) -> str:
     """The source of `_generated/wire.py`, before formatting."""
     with tempfile.TemporaryDirectory() as scratch:
         output = Path(scratch) / "wire.py"
@@ -216,7 +279,8 @@ def render_wire() -> str:
     # module docstring replaces it.
     while lines and lines[0].startswith("#"):
         lines.pop(0)
-    return WIRE_DOCSTRING + "".join(lines)
+    source = "".join(lines)
+    return f"{WIRE_DOCSTRING}{source}\n\n{named_enums(schemas, source)}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -232,7 +296,10 @@ def main(argv: list[str] | None = None) -> int:
     sync_contract.require_current()
     document = json.loads(OPENAPI.read_text(encoding="utf-8"))
     fields = json.loads(STRICT_FIELDS.read_text(encoding="utf-8"))
-    generated = {WIRE: render_wire(), STRICT: render_strict(document, fields)}
+    generated = {
+        WIRE: render_wire(document["components"]["schemas"]),
+        STRICT: render_strict(document, fields),
+    }
     differs = [
         path
         for path, source in generated.items()

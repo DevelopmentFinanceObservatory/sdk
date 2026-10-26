@@ -278,7 +278,7 @@ describe("refusals", () => {
       assert.ok(error instanceof InvalidRequestError);
       assert.equal(error.code, "refusal_without_code");
       assert.equal(error.detail, `HTTP 400 with no refusal code: ${text}`);
-      assert.equal(error.message, error.detail);
+      assert.equal(error.message, `${error.detail} [refusal_without_code]`);
     });
   }
 
@@ -336,14 +336,14 @@ describe("refusals", () => {
     [
       "Field required",
       "/input/definition/schema_version",
-      "Field required at /input/definition/schema_version (request_invalid)",
+      "Field required at /input/definition/schema_version [request_invalid · trace trace-1]",
     ],
-    ["Field required.", "/input", "Field required at /input (request_invalid)"],
-    ["/input is required", "/input", "/input is required (request_invalid)"],
-    ["Field required", "", "Field required (request_invalid)"],
-    ["Field required", 7, "Field required (request_invalid)"],
+    ["Field required.", "/input", "Field required at /input [request_invalid · trace trace-1]"],
+    ["/input is required", "/input", "/input is required [request_invalid · trace trace-1]"],
+    ["Field required", "", "Field required [request_invalid · trace trace-1]"],
+    ["Field required", 7, "Field required [request_invalid · trace trace-1]"],
     // `problem` gives every document the title "Refused", which a document with no detail shows.
-    [undefined, "/input", "Refused at /input (request_invalid)"],
+    [undefined, "/input", "Refused at /input [request_invalid · trace trace-1]"],
   ] as const) {
     test(`name the pointer ${JSON.stringify(pointer)} in the message of ${JSON.stringify(detail)}`, async () => {
       const { fetch } = mockFetch(
@@ -360,9 +360,9 @@ describe("refusals", () => {
 
   // A coded body with no detail shows its title, else its legacy error, else the status.
   for (const [body, message, detail] of [
-    [{ title: "Bad input", error: "bad" }, "Bad input (request_invalid)", "Bad input"],
-    [{ error: "bad" }, "bad (request_invalid)", "bad"],
-    [{}, "HTTP 400 (request_invalid)", "request_invalid"],
+    [{ title: "Bad input", error: "bad" }, "Bad input [request_invalid]", "Bad input"],
+    [{ error: "bad" }, "bad [request_invalid]", "bad"],
+    [{}, "HTTP 400 [request_invalid]", "request_invalid"],
   ] as const) {
     test(`show ${JSON.stringify(message)} for a coded refusal of ${JSON.stringify(body)}`, async () => {
       const { fetch } = mockFetch(json({ code: "request_invalid", ...body }, 400));
@@ -851,6 +851,43 @@ describe("timeouts", () => {
       .catch((e: unknown) => e);
     assert.ok(error instanceof DfoTimeoutError);
     assert.equal(error.code, "deadline_exceeded");
+  });
+
+  test("fail a download that sends no byte for its stall bound as a retryable network_error", async () => {
+    const { fetch } = mockFetch(stalledBody);
+    const error = await transport({ fetch, timeout: 60_000 })
+      .fetchSigned(new URL("https://storage.googleapis.com/bucket/object"), {
+        timeout: Infinity,
+        stall: 20,
+      })
+      .catch((e: unknown) => e);
+    assert.ok(error instanceof NetworkError);
+    assert.equal(error.code, "network_error");
+    assert.equal(error.retryable, true);
+  });
+
+  test("let a download outlast its stall bound while bytes keep arriving", async () => {
+    // Six chunks 10 ms apart: 60 ms in all, never 30 ms without a byte.
+    const trickle = () => {
+      let sent = 0;
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          if (sent === 6) controller.close();
+          else controller.enqueue(new Uint8Array([sent++]));
+        },
+      });
+      return new Response(body, { status: 200 });
+    };
+    const { fetch } = mockFetch(trickle);
+    const data = await transport({ fetch, timeout: 60_000 }).fetchSigned(
+      new URL("https://storage.googleapis.com/bucket/object"),
+      {
+        timeout: Infinity,
+        stall: 30,
+      },
+    );
+    assert.deepEqual(data, new Uint8Array([0, 1, 2, 3, 4, 5]));
   });
 
   for (const [name, options] of [
@@ -1492,7 +1529,7 @@ describe("base URLs", () => {
     const url = `/api/../${"x".repeat(5_000)}`;
     assert.throws(() => transport({ apiKey: false }).originUrl(url), {
       code: "contract_violation",
-      message: `The file URL ${url.slice(0, 1_000)}… holds a . or .. segment.`,
+      message: `The file URL ${url.slice(0, 1_000)}… holds a . or .. segment. [contract_violation]`,
     });
   });
 
@@ -1756,7 +1793,10 @@ describe("server text", () => {
             ? await sent.then((response) => problemAt200(response.body, response.traceId))
             : await sent.catch((value: unknown) => value);
         assert.ok(error instanceof DfoError);
-        assert.equal(error.message, "[31mred[0m\nevil, sent [redacted] (request_invalid)");
+        assert.equal(
+          error.message,
+          "[31mred[0m\nevil, sent [redacted]\n[request_invalid · trace trace-1]",
+        );
         assert.equal(error.detail, "[31mred[0m\nevil, sent [redacted]");
         assert.equal(
           error.problem?.["detail"],
@@ -1775,13 +1815,16 @@ describe("server text", () => {
     const client = transport({ fetch, maxRetries: 0 });
     const coded = await client.request({ path: "/x" }).catch((value: unknown) => value);
     assert.ok(coded instanceof DfoError);
-    assert.equal(coded.message, `${"x".repeat(1_000)}… (request_invalid)`);
+    assert.equal(coded.message, `${"x".repeat(1_000)}… [request_invalid · trace trace-1]`);
     assert.equal(coded.detail.length, 5_000);
     const codeless = await client.request({ path: "/x" }).catch((value: unknown) => value);
     assert.ok(codeless instanceof DfoError);
     assert.equal(codeless.code, "refusal_without_code");
     // The cap counts the server's text alone, after the client's own lead.
-    assert.equal(codeless.message, `HTTP 502 with no refusal code: ${"y".repeat(1_000)}…`);
+    assert.equal(
+      codeless.message,
+      `HTTP 502 with no refusal code: ${"y".repeat(1_000)}… [refusal_without_code]`,
+    );
     assert.ok(codeless.detail.endsWith("y".repeat(5_000)));
   });
 
@@ -1799,7 +1842,7 @@ describe("server text", () => {
       }).request({ path: "/x" });
       assert.deepEqual(
         warnings.map((warning) => warning.message),
-        [`key [redacted] is anonymous-tier ${inside.length}`],
+        [`key [redacted] is anonymous-tier ${inside.length} [server_warning]`],
       );
     });
   }
@@ -1812,7 +1855,7 @@ describe("server text", () => {
     });
     assert.deepEqual(
       warnings.map((warning) => warning.message),
-      ["stripped 31mwarning"],
+      ["stripped 31mwarning [server_warning]"],
     );
   });
 
@@ -1822,20 +1865,20 @@ describe("server text", () => {
       "not_found",
       problem({ code: "not_found", status: 404, detail: noRoute }),
       `${noRoute} POST https://api.example/search/resolve matched no route; check baseUrl ` +
-        "(not_found)",
+        "[not_found · trace trace-1]",
       noRoute,
     ],
     [
       "spec_not_found",
       problem({ code: "spec_not_found", status: 404, detail: noRoute }),
-      `${noRoute} (spec_not_found)`,
+      `${noRoute} [spec_not_found · trace trace-1]`,
       noRoute,
     ],
     [
       "refusal_without_code",
       () => new Response("Not Found", { status: 404 }),
       "HTTP 404 with no refusal code. POST https://api.example/search/resolve matched no " +
-        "route; check baseUrl",
+        "route; check baseUrl [refusal_without_code]",
       "HTTP 404 with no refusal code.",
     ],
   ] as const) {

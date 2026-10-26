@@ -30,13 +30,17 @@ def test_a_complete_answer_reads_as_its_sentence_and_what_search_did_not_do() ->
         "assistance.",
         "  Note: no provider was named; the answer was resolved across every "
         "provider with data.",
+        "  Fetch: answer.fetch()",
     ]
 
 
 def test_info_warnings_stay_hidden() -> None:
     wire = load("search-1.json")
     wire["parts"][0]["warnings"][0]["severity"] = "info"
-    assert repr(read(wire)) == wire["rendered_sentence"]
+    assert repr(read(wire)).splitlines() == [
+        wire["rendered_sentence"],
+        "  Fetch: answer.fetch()",
+    ]
 
 
 def test_an_incomplete_answer_reads_as_what_is_answered_and_missing() -> None:
@@ -67,7 +71,36 @@ def test_a_place_choice_names_the_word_it_settles_and_the_first_option() -> None
     assert repr(read(wire)).splitlines()[-3:] == [
         "    [0] Congo [DRC]",
         "    [1] Congo [Republic]",
-        '  Choose: answer.choose("Congo", "Congo [DRC]").fetch()',
+        '  Choose: answer.choose("Congo [DRC]").fetch()',
+    ]
+
+
+def place_options(*mentions: str) -> list[dict[str, Any]]:
+    return [
+        {"mentions": [mention], "label": f"{mention} [{index}]", "data_query": {}}
+        for mention in mentions
+        for index in range(2)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mentions", "parts"),
+    [
+        (("Congo", "Niger"), ('"Congo"', '"Niger"')),
+        (("Congo", "Congo"), ('"GDP"', '"ODA disbursements"')),
+    ],
+    ids=["a-word-names-the-part", "a-shared-word-falls-back-to-the-variable"],
+)
+def test_several_waiting_gaps_name_the_part_by_keyword(
+    mentions: tuple[str, str], parts: tuple[str, str]
+) -> None:
+    wire = load("search-two-places.json")
+    for part, mention in zip(wire["parts"], mentions, strict=True):
+        part["no_data"]["options"] = place_options(mention)
+    choose = [line for line in repr(read(wire)).splitlines() if "Choose:" in line]
+    assert choose == [
+        f'  Choose: answer.choose("{mention} [0]", part={part}).fetch()'
+        for mention, part in zip(mentions, parts, strict=True)
     ]
 
 

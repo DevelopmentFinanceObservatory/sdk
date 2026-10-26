@@ -1,9 +1,12 @@
 /**
- * Build requests and long builds: posting a build, polling its operation, resuming one.
+ * Build requests and long builds: posting a build and polling its operation.
  *
  * A build posts to `/datasets`. The server answers a build within its synchronous limits with
  * the manifest, and a larger one with a 202 operation the client polls at
- * `/datasets/operations/{id}` until it is done or the deadline passes.
+ * `/datasets/operations/{id}` until it is done or failed. The server ends every build by
+ * itself, so a call with no deadline, a fetch's default, always reaches one or the other. A
+ * caller's `timeout` sets a deadline; the server keeps building past it, and the same build
+ * posted again joins the running operation, since its id is a hash of the request.
  *
  * This module owns build retries. The build request goes with no transport retries and reads
  * for up to 150 seconds within the call's deadline. Every retryable refusal of the build shares
@@ -31,13 +34,11 @@
  * that answers for another operation raises `contract_violation`.
  */
 
-import type { Dataset } from "./dataset.ts";
 import { capped, clientError, DfoError, DfoTimeoutError } from "../core/errors.ts";
-import { CONTENT_VERSION, mintOptions } from "../core/ref.ts";
-import type { Rendering } from "../core/ref.ts";
+import { CONTENT_VERSION } from "../core/ref.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
-import { passedDeadline, RETRY_AFTER_MAX_S, retryAfterMs } from "../http/transport.ts";
+import { passedDeadline, RETRY_AFTER_MAX_S, retryAfterMs, seconds } from "../http/transport.ts";
 import type { JsonResponse, Transport } from "../http/transport.ts";
 import { isRecord } from "../core/json.ts";
 
@@ -100,15 +101,51 @@ type Reply = {
   readonly traceId: string | null;
 };
 
-/** When a call must finish and the signal that aborts it. A download after the deadline poll
- *  also sets each request's retries and attempt timeout, which otherwise are the transport's,
- *  and a file's read, which otherwise runs until the deadline. */
+/** When a call must finish and the signal that aborts it. `callTimeout` is the caller's
+ *  `timeout` that set the deadline, which a deadline's message names. A download after the
+ *  deadline poll also sets each request's retries and attempt timeout, which otherwise are the
+ *  transport's, and a file's read, which otherwise runs until the deadline. */
 export type Wait = {
   readonly deadline: number;
   readonly signal?: AbortSignal | undefined;
+  readonly callTimeout?: number | undefined;
   readonly maxRetries?: number;
   readonly timeout?: number;
 };
+
+/** A call's wait: no deadline unless the caller gives a `timeout`, in milliseconds.
+ *
+ * @throws {InvalidRequestError} `timeout` is not a number above 0 (`invalid_argument`).
+ */
+export function waitFor(
+  transport: Transport,
+  { timeout, signal }: { timeout?: number | undefined; signal?: AbortSignal | undefined },
+): Wait {
+  if (timeout === undefined) return { deadline: Infinity, signal };
+  return { deadline: transport.deadlineAfter(timeout), signal, callTimeout: timeout };
+}
+
+/** The opening a deadline's message gives the caller's timeout: ` after 25 s`, or nothing. */
+const after = (wait: Wait): string =>
+  wait.callTimeout === undefined ? "" : ` after ${seconds(wait.callTimeout)}`;
+
+/** The error a build raises when the caller's deadline passes before it is done. */
+const stillRunning = (wait: Wait, cause?: unknown): DfoTimeoutError =>
+  clientError("deadline_exceeded", {
+    detail:
+      `The build is still running on the server${after(wait)}. The same fetch joins it if one ` +
+      "started.",
+    cause,
+  });
+
+/** The error a done build's download raises when the caller's deadline passes. */
+const downloadRanOut = (wait: Wait, cause: unknown): DfoTimeoutError =>
+  clientError("deadline_exceeded", {
+    detail:
+      `The build is done on the server, but its download ran out of time${after(wait)}. The ` +
+      "same fetch downloads it again.",
+    cause,
+  });
 
 /** Whether a problem document's `status` is a 4xx or 5xx. */
 const isErrorStatus = (value: unknown): boolean =>
@@ -217,7 +254,7 @@ function buildReply(response: JsonResponse): Reply {
 }
 
 /** A poll answers 200 with the resource of the operation it asked for. */
-function pollReply(response: JsonResponse, operationId: string): Reply {
+export function pollReply(response: JsonResponse, operationId: string): Reply {
   if (response.status !== 200) {
     throw clientError("unexpected_response", {
       status: response.status,
@@ -262,7 +299,7 @@ const isCutOff = (error: DfoError): boolean =>
  *
  * @throws {DfoError} The refusal, once the retries a build allows are spent.
  */
-async function postBuild(transport: Transport, body: unknown, { deadline, signal }: Wait) {
+export async function postBuild(transport: Transport, body: unknown, { deadline, signal }: Wait) {
   let cutOff = false;
   for (let retries = 0; ; retries += 1) {
     try {
@@ -286,22 +323,13 @@ async function postBuild(transport: Transport, body: unknown, { deadline, signal
   }
 }
 
-/** The `options` a build request posts, or none. */
-function postedOptions(body: unknown): Readonly<Record<string, unknown>> {
-  const options = isRecord(body) ? body["options"] : undefined;
-  return isRecord(options) ? options : {};
-}
-
 /** Polls one build until it is done, at the server's pacing. */
 export class Poller implements LongBuild {
   readonly #transport: Transport;
-  /** The build request, resubmitted once when the operation fails retryably. Undefined for a
-   *  resumed operation. */
+  /** The build request, resubmitted once when the operation fails retryably. Undefined for an
+   *  operation read by its id. */
   readonly #body: unknown;
-  /** The build's rendering options, as its request's `options` writes them, which the resume
-   *  hint names. */
-  readonly #buildOptions: Readonly<Record<string, unknown>>;
-  #onProgress: ProgressHandler | undefined;
+  readonly #onProgress: ProgressHandler | undefined;
   #manifest: Manifest | null = null;
   #state: OperationState | null = null;
   #headerWaitMs: number | null = null;
@@ -318,28 +346,16 @@ export class Poller implements LongBuild {
   constructor(
     transport: Transport,
     reply: Reply,
-    options: {
-      body?: unknown;
-      rendering?: Rendering;
-      onProgress?: ProgressHandler | undefined;
-    },
+    options: { body?: unknown; onProgress?: ProgressHandler | undefined },
   ) {
     this.#transport = transport;
     this.#body = options.body;
-    this.#buildOptions =
-      options.rendering === undefined
-        ? postedOptions(options.body)
-        : mintOptions(options.rendering);
     this.#onProgress = options.onProgress;
     this.#take(reply);
   }
 
   get operationId(): string | null {
     return this.#state?.operationId ?? null;
-  }
-
-  get progress(): Progress | null {
-    return this.#state?.progress ?? null;
   }
 
   get pollWaits(): readonly number[] {
@@ -354,16 +370,6 @@ export class Poller implements LongBuild {
     if (this.#error !== null) return FAILED;
     if (this.#manifest !== null) return DONE;
     return this.#state?.status ?? DONE;
-  }
-
-  set onProgress(handler: ProgressHandler | undefined) {
-    this.#onProgress = handler;
-  }
-
-  async done(wait: Wait): Promise<boolean> {
-    this.#start();
-    if (!this.#finished()) await this.#poll(wait, false);
-    return this.#finished();
   }
 
   /** Polls until the build is done and returns it. A wait that would reach the deadline ends
@@ -381,7 +387,7 @@ export class Poller implements LongBuild {
       this.#pollWaits.push(ms);
       await this.#transport.sleep(ms, wait.signal);
       await this.#poll(wait, last);
-      if (last && !this.#finished()) throw this.#stillRunning();
+      if (last && !this.#finished()) throw stillRunning(wait);
       late = last;
     }
     if (this.#error !== null) throw this.#error;
@@ -409,26 +415,6 @@ export class Poller implements LongBuild {
     const backoff = pollBackoff(this.#backoffStep);
     this.#backoffStep += 1;
     return backoff;
-  }
-
-  #stillRunning(): DfoTimeoutError {
-    return this.resumeHinted("The build is still running at the deadline.");
-  }
-
-  /** A `deadline_exceeded` error whose message ends with the call that resumes the build. */
-  resumeHinted(opening: string, cause?: unknown): DfoTimeoutError {
-    // The rendering is in the id, so the resuming call names the build's options.
-    const options = this.#buildOptions;
-    const named = [
-      ...(options["layout"] === "frame" ? ['layout: "frame"'] : []),
-      ...(options["without_party_totals"] === true ? ["withoutPartyTotals: true"] : []),
-    ];
-    const id = JSON.stringify(this.operationId ?? "");
-    const call = named.length === 0 ? id : `${id}, { ${named.join(", ")} }`;
-    return clientError("deadline_exceeded", {
-      detail: `${opening} Resume it with client.operation(${call}).`,
-      cause,
-    });
   }
 
   #take(reply: Reply): void {
@@ -515,78 +501,6 @@ export class Poller implements LongBuild {
   }
 }
 
-/** Turns a done build into the dataset an operation returns. */
-export type Finish = (built: Built, wait: Wait) => Promise<Dataset<never>>;
-
-/** Options for waiting on a long build. */
-export type ResultOptions = {
-  /** The longest to wait, polls and downloads included, in milliseconds; `Infinity` waits
-   *  without limit. Defaults to 30 minutes. Each poll attempt waits the client's timeout
-   *  within it. */
-  timeout?: number;
-  signal?: AbortSignal;
-  onProgress?: ProgressHandler;
-};
-
-const DEFAULT_FETCH_TIMEOUT_MS = 1_800_000;
-
-/** The deadline `timeout` milliseconds from now, or 30 minutes from now when none is given. */
-export const deadlineOf = (transport: Transport, timeout: number | undefined): number =>
-  transport.deadlineAfter(timeout ?? DEFAULT_FETCH_TIMEOUT_MS);
-
-/**
- * A long dataset build, running on the server or already done. `client.mint(spec)` returns
- * one, and `client.operation(id)` resumes one from another process. `operationId` is null for
- * a build the server finished inline.
- */
-export class Operation {
-  readonly #transport: Transport;
-  readonly #poller: Poller;
-  readonly #finish: Finish;
-
-  /** @internal Built by `mint` and `resumeOperation`. */
-  constructor(transport: Transport, poller: Poller, finish: Finish) {
-    this.#transport = transport;
-    this.#poller = poller;
-    this.#finish = finish;
-  }
-
-  /** The operation's id, `op_` and 64 hex digits, or null for a build finished inline. */
-  get operationId(): string | null {
-    return this.#poller.operationId;
-  }
-
-  /** `pending`, `running`, `done` or `failed`, as last read. A status outside these raises
-   *  `contract_violation` on the poll that reads it. */
-  get status(): string {
-    return this.#poller.status;
-  }
-
-  /** The progress the server last reported, or null. */
-  get progress(): Progress | null {
-    return this.#poller.progress;
-  }
-
-  /** Whether the build has finished, polling once when it had not, for as long as the client's
-   *  timeout lets one poll attempt run. */
-  done(options: { signal?: AbortSignal } = {}): Promise<boolean> {
-    return this.#poller.done({ deadline: Infinity, signal: options.signal });
-  }
-
-  /**
-   * Waits for the build and returns its dataset.
-   *
-   * @throws {DfoTimeoutError} The build was still running at the deadline, or its download ran
-   *   out of time. The message names the call that resumes it.
-   * @throws {DfoError} The build failed.
-   */
-  async result(options: ResultOptions = {}): Promise<Dataset<never>> {
-    const wait = { deadline: deadlineOf(this.#transport, options.timeout), signal: options.signal };
-    if (options.onProgress !== undefined) this.#poller.onProgress = options.onProgress;
-    return this.#finish(await this.#poller.wait(wait), wait);
-  }
-}
-
 /** A built version's manifest, the trace id of the response that carried it, and the poller
  *  of the long build that made it, if any. `late` is whether this call's poll at its deadline
  *  read the build done, which leaves its download no time within that deadline. It is absent
@@ -601,8 +515,9 @@ export type Built = {
 /**
  * Runs the requests that download a done build. Once this call's poll at its deadline has read
  * the build done, each request runs for one attempt of the client's timeout, so the call returns
- * the data. Any `deadline_exceeded` the download of a long build raises, an attempt's own
- * timeout with no retry left included, names the call that resumes it.
+ * the data. A download the caller's deadline cuts off, or one of those single attempts running
+ * out of time, raises `deadline_exceeded` saying the build is done and the same fetch downloads
+ * it again.
  */
 export async function downloadBuilt<T>(
   transport: Transport,
@@ -610,8 +525,7 @@ export async function downloadBuilt<T>(
   wait: Wait,
   run: (wait: Wait) => Promise<T>,
 ): Promise<T> {
-  const { poller, late = false } = built;
-  if (poller === undefined || poller.operationId === null) return run(wait);
+  const late = built.late === true && built.poller?.operationId != null;
   const once = {
     deadline: Infinity,
     maxRetries: 0,
@@ -621,69 +535,34 @@ export async function downloadBuilt<T>(
   try {
     return await run(late ? once : wait);
   } catch (error) {
-    if (error instanceof DfoTimeoutError && error.code === "deadline_exceeded") {
-      throw poller.resumeHinted("The build is done, but its download ran out of time.", error);
+    if (
+      error instanceof DfoTimeoutError &&
+      error.code === "deadline_exceeded" &&
+      (late || passedDeadline(error))
+    ) {
+      throw downloadRanOut(wait, error);
     }
     throw error;
   }
 }
 
-/** Posts a build and waits for its manifest, through a long build when the server starts one. */
+/**
+ * Posts a build and waits for its manifest, through a long build when the server starts one.
+ *
+ * @throws {DfoTimeoutError} The caller's deadline passed before the build was done
+ *   (`deadline_exceeded`).
+ */
 export async function build(
   transport: Transport,
   body: unknown,
   wait: Wait & { onProgress?: ProgressHandler | undefined },
 ): Promise<Built> {
-  const reply = await postBuild(transport, body, wait);
-  if (reply.manifest !== null) return { manifest: reply.manifest, traceId: reply.traceId };
-  return new Poller(transport, reply, { body, onProgress: wait.onProgress }).wait(wait);
-}
-
-/** Posts a build and returns it as an operation, done or running. */
-export async function startOperation(
-  transport: Transport,
-  body: unknown,
-  finish: Finish,
-  wait: Wait & { onProgress?: ProgressHandler | undefined },
-): Promise<Operation> {
-  const reply = await postBuild(transport, body, wait);
-  return new Operation(
-    transport,
-    new Poller(transport, reply, { body, onProgress: wait.onProgress }),
-    finish,
-  );
-}
-
-/**
- * Reads a running build's operation by id, to poll it from this process. `rendering` is the
- * one the build was started with, which the resume hint in a deadline's message names.
- *
- * @throws {InvalidRequestError} The id is not `op_` and 64 lower-case hex digits
- *   (`invalid_argument`).
- * @throws {NotFoundError} The server holds no operation with that id.
- */
-export async function resumeOperation(
-  transport: Transport,
-  operationId: string,
-  rendering: Rendering,
-  finish: Finish,
-  wait: Wait & { onProgress?: ProgressHandler | undefined },
-): Promise<Operation> {
-  if (!OPERATION_ID.test(operationId)) {
-    throw clientError("invalid_argument", {
-      detail:
-        "The operation id is not op_ and 64 lower-case hex digits, as Operation.operationId " +
-        "gives.",
-    });
+  try {
+    const reply = await postBuild(transport, body, wait);
+    if (reply.manifest !== null) return { manifest: reply.manifest, traceId: reply.traceId };
+    return await new Poller(transport, reply, { body, onProgress: wait.onProgress }).wait(wait);
+  } catch (error) {
+    if (error instanceof DfoError && passedDeadline(error)) throw stillRunning(wait, error);
+    throw error;
   }
-  const response = await transport.request({
-    path: `/datasets/operations/${operationId}`,
-    deadline: wait.deadline,
-    signal: wait.signal,
-  });
-  const poller = new Poller(transport, pollReply(response, operationId), {
-    rendering,
-    onProgress: wait.onProgress,
-  });
-  return new Operation(transport, poller, finish);
 }
