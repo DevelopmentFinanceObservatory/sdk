@@ -687,12 +687,16 @@ describe("a download", async () => {
     const data = parquet([year, { name: "a", data: [1] }]);
     const digest = `sha256:${createHash("sha256").update(data).digest("hex")}`;
     const ref = structuredClone(stepOf(record, 0, "fetch").ref) as DatasetRefJson;
+    const stored = ref.members[0]!.artifact.digest;
     ref.members[0]!.artifact.digest = digest;
     const manifest = structuredClone(record.exchanges[0]!.response.json) as {
       artifacts: Record<string, unknown>[];
     };
-    manifest.artifacts[0]!["artifact_digest"] = digest;
-    manifest.artifacts[0]!["bytes"] = data.byteLength;
+    // The plain file and the cut that leaves nothing out both list the stored digest.
+    for (const artifact of manifest.artifacts.filter((a) => a["artifact_digest"] === stored)) {
+      artifact["artifact_digest"] = digest;
+      artifact["bytes"] = data.byteLength;
+    }
     const { fetch } = mockFetch(json(manifest), () => new Response(data.slice(), { status: 200 }));
     const transport = new Transport({
       baseUrl: "https://api.example/api",
