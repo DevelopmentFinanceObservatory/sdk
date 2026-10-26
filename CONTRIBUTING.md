@@ -23,7 +23,7 @@ Both packages group their modules into the same seven layers. A module imports a
 | core             | `dfo/_core/`      | `src/core/`      | errors and warnings, refusal mapping, the public data classes, wire parsing and the DatasetRef format   |
 | generated        | `dfo/_generated/` | `src/generated/` | literals and types the generators write from the contract                                               |
 
-The public names sit above every layer. In Python they are `dfo/__init__.py`, the one public namespace. Each layer's `__init__.py` holds only a docstring. In TypeScript they are the entry points at the `src/` root (`index.ts`, `index.node.ts`, `wire.ts` and `arrow.ts`), which re-export from the layers. `_version.py` and `src/version.ts` hold the version constant and sit below every layer. The sync twin of each Python async module, under `dfo/_sync/`, sits in the layer of its source.
+The public names sit above every layer. In Python they are `dfo/__init__.py` and the task modules beside it, `dfo/errors.py`, `dfo/types.py`, `dfo/lookup.py` and `dfo/auth.py`. Each layer's `__init__.py` holds only a docstring. In TypeScript they are the entry points at the `src/` root (`index.ts`, `index.node.ts`, `wire.ts` and `arrow.ts`), which re-export from the layers. `_version.py` and `src/version.ts` hold the version constant and sit below every layer. The sync twin of each Python async module, under `dfo/_sync/`, sits in the layer of its source.
 
 Two checks enforce the rule, and each fails on a runtime import from a higher layer:
 
@@ -143,7 +143,7 @@ It prints a line per block, with `file:line`, `pass`, `fail` or `skip`, and the 
 
 The Python blocks of a file run in order in one process and one namespace, as a notebook runs them, so a block can use the names an earlier block set. The TypeScript blocks of a file form programs. A block that holds an `import` statement starts a program, and each block after it without one continues it. The script joins a program's blocks into one module, so a later block sees what the earlier ones declared. Imports of `@developmentfinance/client` load the TypeScript source, so no build is needed, but Node 22.18 or later and `pnpm --dir typescript install` are.
 
-Each file runs in its own scratch directory, with an empty cache and no API key. A client built without a base URL uses `DFO_BASE_URL`, and each process checks that before its first block. The script exits 2 when `DFO_BASE_URL` names developmentfinance.org, the public API, or a subdomain, unless `--allow-production` is passed. A block's request to the public API fails, checked on the request's URL as the SDK sends it, so a proxy does not hide it.
+Each file runs in its own working directory under one scratch directory, with no API key, no credentials file, `DFO_PROFILE` and `DFO_OFFLINE` unset, and progress off. The files of one run share a cache that starts empty. A client built without a base URL uses `DFO_BASE_URL`, and each process checks that before its first block. The script exits 2 when `DFO_BASE_URL` names developmentfinance.org, the public API, or a subdomain, unless `--allow-production` is passed. A block's request to the public API fails, checked on the request's URL as the SDK sends it, so a proxy does not hide it.
 
 To skip a block that cannot run there, such as one that needs a key or reads a file no earlier block writes, put a marker on the last line before its fence that is not blank:
 
