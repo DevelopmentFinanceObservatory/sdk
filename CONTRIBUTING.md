@@ -76,7 +76,7 @@ pnpm --dir typescript generate
 ```
 
 - `scripts/generate-wire.ts` writes `openapi.ts`, the wire types, from `contract/served/openapi.json` with openapi-typescript. It opens every string enum into a union with any other string, joins `UnknownPart` to the array of parts discriminated on `status`, and exports one type per schema, with `Operation` named `RequestedOperation`.
-- `scripts/generate-contract.ts` writes `strict.ts` from `contract/strict-fields.json` and `actions.ts` from `contract/actions.json`. It fails when a strict field is not required, or is nullable, in `contract/served/openapi.json`.
+- `scripts/generate-contract.ts` writes `strict.ts` from `contract/strict-fields.json`, `actions.ts` from `contract/actions.json`, `client-codes.ts`, `warning-codes.ts` and `proxy-codes.ts` from the matching JSON files, and `reading-order.ts` from `contract/rules/reading-order.json`. It fails when a strict field is not required, or is nullable, in `contract/served/openapi.json`.
 
 `pnpm generate:check` exits non-zero when a generated file differs from what the contract generates. CI and the pre-commit hooks run it.
 

@@ -5,6 +5,7 @@ import { inspect } from "node:util";
 import { parquetMetadata } from "hyparquet";
 
 import { Answer, answerFromBody, SearchWarning } from "../src/search/answer.ts";
+import { optionLine } from "../src/search/choices.ts";
 import type { AnswerContext, Candidate, Gap, QueryOption } from "../src/search/answer.ts";
 import {
   ContractError,
@@ -15,7 +16,7 @@ import {
 import { toArrow } from "../src/datasets/arrow.ts";
 import { clientOver } from "../src/client.ts";
 import { Dataset } from "../src/datasets/dataset.ts";
-import type { MemberRequest } from "../src/datasets/fetch.ts";
+import type { MemberRequest, Narrowing } from "../src/datasets/fetch.ts";
 import { search } from "../src/search/search.ts";
 import { Transport } from "../src/http/transport.ts";
 import type { DfoWarning } from "../src/core/warnings.ts";
@@ -30,10 +31,14 @@ const record = (name: string): Scenario => records.get(name)!;
 const body = (name: string): Record<string, unknown> =>
   structuredClone(record(name).exchanges[0]!.response.json) as Record<string, unknown>;
 
-type Context = AnswerContext & { built: MemberRequest[][]; warnings: DfoWarning[] };
+type Context = AnswerContext & {
+  built: MemberRequest[][];
+  narrowings: (Narrowing | undefined)[];
+  warnings: DfoWarning[];
+};
 
 /** What the recording builder returns for every fetch: one member of recorded Parquet. */
-const builtDataset = new Dataset(
+const builtDataset = await Dataset.create(
   [
     {
       parts: [],
@@ -53,15 +58,18 @@ const builtDataset = new Dataset(
  *  records its members. */
 function offline(fetch?: typeof globalThis.fetch): Context {
   const built: MemberRequest[][] = [];
+  const narrowings: (Narrowing | undefined)[] = [];
   const warnings: DfoWarning[] = [];
   return {
     transport: replay(NO_EXCHANGES, fetch === undefined ? {} : { fetch }).transport,
     onWarning: (warning) => warnings.push(warning),
-    fetchMembers: (_, members) => {
+    fetchMembers: (_, members, options) => {
       built.push([...members]);
+      narrowings.push(options.narrowing);
       return Promise.resolve(builtDataset);
     },
     built,
+    narrowings,
     warnings,
   };
 }
@@ -420,6 +428,61 @@ describe("choose", () => {
   });
 });
 
+describe("choose by the printed label", () => {
+  const printed = "Kenya's number of deaths, 2018 to 2022 · Kenya Census";
+  // Each key names the second reading of `answer-candidates-choose-fetch`: its label, and its
+  // whole printed line as copied from `String(answer)`, with the white space around it.
+  for (const key of ["label", "printed line"] as const) {
+    test(`a candidate chosen by its ${key} posts that reading`, async () => {
+      const answer = answerOf("answer-candidates-choose-fetch");
+      const option = answer.gaps[0]!.options[1] as Candidate;
+      assert.ok(String(answer).includes(`[1] ${printed}`), String(answer));
+      const given = {
+        label: option.label!,
+        "printed line": `  ${printed} `,
+      }[key];
+      const { fetch, seen } = mockFetch(json(body("answer-definite-fetch")));
+      await answerFromBody(body("answer-candidates-choose-fetch"), offline(fetch), null).choose(
+        given,
+      );
+      const posted = JSON.parse(seen[0]!.body!) as {
+        input: { entries: { identity: unknown }[] };
+      };
+      assert.deepEqual(posted.input.entries[0]!.identity, option.spec.definition["identity"]);
+    });
+  }
+});
+
+describe("choose by a printed line that ends in a full stop", () => {
+  test("a candidate whose source ends in a full stop is chosen by its printed line", async () => {
+    const wire = body("answer-candidates-choose-fetch");
+    const parts = wire["parts"] as { candidates?: { specs: WireSpecShape[] } | null }[];
+    const resolved = parts.find((part) => part.candidates)!.candidates!.specs[1]!.resolved;
+    resolved.facets.provenance.label += ".";
+    const printed = "Kenya's number of deaths, 2018 to 2022 · Kenya Census.";
+    const answer = answerFromBody(structuredClone(wire), offline(), null);
+    assert.ok(String(answer).includes(`[1] ${printed}`), String(answer));
+    const option = answer.gaps[0]!.options[1] as Candidate;
+    const { fetch, seen } = mockFetch(json(body("answer-definite-fetch")));
+    await answerFromBody(wire, offline(fetch), null).choose(printed);
+    const posted = JSON.parse(seen[0]!.body!) as { input: { entries: { identity: unknown }[] } };
+    assert.deepEqual(posted.input.entries[0]!.identity, option.spec.definition["identity"]);
+  });
+});
+
+describe("optionLine", () => {
+  // Python's `option_line` reads `label or sentence`, so an empty label prints the sentence.
+  test("a candidate with an empty label prints its sentence, then its source", () => {
+    const candidate = answerOf("answer-candidates-choose-fetch").gaps[0]!.options[1] as Candidate;
+    assert.equal(
+      optionLine({ ...candidate, label: "", sentence: "Kenya's deaths." }),
+      "Kenya's deaths · Kenya Census",
+    );
+  });
+});
+
+type WireSpecShape = { resolved: { facets: { provenance: { label: string } } } };
+
 /** Every value reachable from `root` through own properties, `root` included. */
 function reachable(root: unknown): unknown[] {
   const seen = new Set<unknown>();
@@ -538,7 +601,7 @@ describe("fetch", () => {
     );
 
     const saved = await dataset.bytes();
-    const reopened = new Dataset([{ ...dataset.members[0]!, manifest: {}, data: saved }], {
+    const reopened = await Dataset.create([{ ...dataset.members[0]!, manifest: {}, data: saved }], {
       layout: "long",
     });
     assert.deepEqual(await reopened.toRows(), rows);
@@ -573,6 +636,27 @@ describe("fetch", () => {
     );
   });
 
+  test("a declined or catalogue answer prints its reason and the catalogue call, as its error does", async () => {
+    for (const [name, next] of [
+      [
+        "answer-declined",
+        "  Next: ask for a figure DFO publishes; client.lookup.catalogue() lists example questions.",
+      ],
+      [
+        "answer-catalogue",
+        "  Next: client.lookup.catalogue() lists what DFO holds, with example questions.",
+      ],
+    ] as const) {
+      const answer = answerOf(name);
+      const [reason, ...rest] = String(answer).split("\n");
+      assert.match(reason!, /^Search (declined|answered with the catalogue)/, name);
+      assert.deepEqual(rest, [next], name);
+      const error = await rejection(answer.fetch());
+      assert.ok(error instanceof DeclinedError);
+      assert.equal(error.detail, String(answer));
+    }
+  });
+
   test("a declined or catalogue answer raises DeclinedError", async () => {
     for (const name of ["answer-declined", "answer-catalogue"]) {
       await assert.rejects(answerOf(name).fetch(), (error: unknown) => {
@@ -605,6 +689,34 @@ describe("fetch", () => {
     );
     // A folded reading keeps its first part's spec.
     assert.equal(answer.specs[0], (answer.parts[0] as DefinitePart).spec);
+  });
+
+  test("window, entities and facets narrow every reading, null read as unset", async () => {
+    const context = offline();
+    const answer = answerOf("answer-several-readings-folded", context);
+    await answer.fetch({ window: [2015, 2020], entities: null, facets: { unit: null } });
+    assert.deepEqual(context.narrowings, [{ window: [2015, 2020], facets: { unit: null } }]);
+  });
+
+  test("refuses a role a reading does not take, naming each reading's roles, with no request", async () => {
+    // No fetchMembers stand-in: the fetch goes through the build path, whose transport fails
+    // any request.
+    const answer = answerFromBody(
+      body("answer-several-readings-folded"),
+      { transport: replay(NO_EXCHANGES).transport, onWarning: () => {} },
+      null,
+    );
+    const [health, education, gdp] = (answer.parts as DefinitePart[]).map((part) =>
+      JSON.stringify(part.variable_text),
+    );
+    const error = await rejection(answer.fetch({ entities: { destination: ["country/GHA"] } }));
+    assert.ok(error instanceof InvalidRequestError);
+    assert.equal(error.code, "invalid_argument");
+    assert.equal(
+      error.detail,
+      `entities names "destination", a role ${gdp} does not declare. Each part's roles:\n` +
+        `  ${health} / ${education}: destination, origin\n  ${gdp}: place`,
+    );
   });
 
   test("a part with empty variable text adds nothing to its member's parts", async () => {

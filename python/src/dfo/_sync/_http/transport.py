@@ -22,7 +22,9 @@ Loopback is `localhost`, a name under `.localhost`, an address in 127.0.0.0/8 or
 header value with a character the header cannot hold is refused before any
 request (`key_invalid`, `header_invalid`), and so is a header that frames the
 message or names a hop, such as `Content-Length` or `Connection`, which httpx2
-sets itself. A path with a dot segment is refused (`invalid_argument`).
+sets itself, or names `X-DFO-Client`, which the client sets on every request to
+the API's origin and on none to another. A path with a dot segment is refused
+(`invalid_argument`).
 
 A forked child keeps its parent's transports and settings. The first request in a
 new process builds a fresh connection pool over the proxies the parent read, and
@@ -47,6 +49,7 @@ import ipaddress
 import json as jsonlib
 import math
 import os
+import platform
 import re
 import ssl
 from collections.abc import Generator, Iterable, Mapping
@@ -111,6 +114,21 @@ from dfo._version import __version__
 
 DEFAULT_BASE_URL = "https://developmentfinance.org/api/v1"
 USER_AGENT = f"dfo-python/{__version__}"
+
+# The header naming the client, its version and the runtime on every API request.
+CLIENT_HEADER = "X-DFO-Client"
+
+
+def client_identity(version: str, runtime: str, runtime_version: str) -> str:
+    """The `X-DFO-Client` value of `dfo-python` at `version` on `runtime`, with the
+    runtime's major and minor version, as `dfo-python/0.1.0 (CPython 3.14)`."""
+    major, minor = runtime_version.split(".")[:2]
+    return f"dfo-python/{version} ({runtime} {major}.{minor})"
+
+
+CLIENT_IDENTITY = client_identity(
+    __version__, platform.python_implementation(), platform.python_version()
+)
 
 # The host that serves the signed URLs a files route redirects to.
 STORAGE_ORIGIN = "https://storage.googleapis.com"
@@ -336,8 +354,8 @@ def _checked_headers(headers: Mapping[str, str], source: str) -> Mapping[str, st
         InvalidRequestError: A value is not a string, or holds a control or
             non-ASCII character, or a name is not a token, or is one of
             `Content-Length`, `Transfer-Encoding`, `Host`, `Connection`,
-            `Keep-Alive`, `TE`, `Trailer` and `Upgrade` (`header_invalid`).
-            The message names the header and the value's faulty character's
+            `Keep-Alive`, `TE`, `Trailer`, `Upgrade` and `X-DFO-Client`
+            (`header_invalid`). The message names the header and the value's faulty character's
             position, and omits the value.
     """
     for name, value in headers.items():
@@ -365,6 +383,13 @@ def _checked_headers(headers: Mapping[str, str], source: str) -> Mapping[str, st
                 HEADER_INVALID,
                 f"The {name} header from {source} frames the message or the "
                 "connection, which the client sets itself; drop it.",
+            )
+        if name.lower() == CLIENT_HEADER.lower():
+            raise client_error(
+                HEADER_INVALID,
+                f"The {name} header from {source} names the client to the API, "
+                "which the client sets itself; drop it, or name your application "
+                "in User-Agent.",
             )
     return headers
 
@@ -765,8 +790,8 @@ class Transport:
 
         Raises:
             InvalidRequestError: The base URL is invalid (`base_url_invalid`), a
-                header's name is not an HTTP token or its value not
-                visible ASCII, spaces and tabs (`header_invalid`), the key would
+                header's name is not an HTTP token or names `X-DFO-Client`, or its
+                value not visible ASCII, spaces and tabs (`header_invalid`), the key would
                 travel over plain http to a host that is not loopback
                 (`insecure_transport`), the timeout is not a finite number above
                 0, or the retry count not an integer from 0 to 10
@@ -1125,7 +1150,11 @@ class Transport:
                 key would travel over plain http (`insecure_transport`).
         """
         headers = httpx2.Headers(
-            {"User-Agent": USER_AGENT, "Accept": "application/json"}
+            {
+                "User-Agent": USER_AGENT,
+                CLIENT_HEADER: CLIENT_IDENTITY,
+                "Accept": "application/json",
+            }
         )
         headers.update(self._fixed_headers)
         if self._header_provider is not None:
@@ -1248,7 +1277,7 @@ class Transport:
                 deadline passed, while waiting or while a body was read, or the
                 header provider gave nothing in the time left on the attempt.
             InvalidRequestError: A header's name is not an HTTP token or names
-                a framing or hop-by-hop header, or its value is not visible
+                a framing or hop-by-hop header or `X-DFO-Client`, or its value is not visible
                 ASCII, spaces and tabs (`header_invalid`), the
                 key would travel over plain http (`insecure_transport`), or
                 `target` holds a dot segment or a control character, `method` is

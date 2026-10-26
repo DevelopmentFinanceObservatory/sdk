@@ -6,6 +6,7 @@ import { envFrom } from "../src/config/env.ts";
 import type { EntityGroups, Narrowing } from "../src/datasets/fetch.ts";
 import type { LongBuild } from "../src/datasets/operation.ts";
 import type { Layout, Spec } from "../src/core/ref.ts";
+import { CLIENT_HEADER, ownIdentity } from "../src/http/client-identity.ts";
 import { Transport } from "../src/http/transport.ts";
 import type { TransportOptions } from "../src/http/transport.ts";
 import type { ResolvedSpec } from "../src/wire.ts";
@@ -207,8 +208,9 @@ function expectedUrl(base: URL, request: Exchange["request"]): string {
 /**
  * A transport whose `fetch` answers a scenario's exchanges in order, checking each request's
  * method, URL and listed JSON members against the record. A request on the API, a `path` or an
- * `origin_path`, carries the replay's key, and a `url` request on the storage host carries no
- * header at all; a replay whose `options` name another key skips the key check. Sleeps advance a fake clock and are
+ * `origin_path`, carries `X-DFO-Client` and the replay's key, and a `url` request on the storage
+ * host carries no header at all, `X-DFO-Client` included; a replay whose `options` name another
+ * key skips the key check. Sleeps advance a fake clock and are
  * recorded, not waited: `waits` holds every sleep, and `retryWaits` the sleeps that are no
  * long build's poll wait. A poller records each poll wait just before it sleeps it, so a sleep
  * is a poll wait when the long builds' poll waits grew since the last sleep. `remaining` lists
@@ -248,16 +250,21 @@ export function replay(
     const { request, response } = exchange;
     assert.equal(init.method ?? "GET", request.method, `${record.name}: method of ${url}`);
     assert.equal(url, expectedUrl(base, request), `${record.name}: request URL`);
+    const sentHeaders = new Headers(init.headers);
+    assert.equal(
+      sentHeaders.get(CLIENT_HEADER),
+      request.url === undefined ? ownIdentity() : null,
+      `${record.name}: ${url} names the client only on the API`,
+    );
     if (options.apiKey === undefined) {
-      const headers = new Headers(init.headers);
       if (request.url === undefined) {
         assert.equal(
-          headers.get("authorization"),
+          sentHeaders.get("authorization"),
           `Bearer ${REPLAY_KEY}`,
           `${record.name}: ${url} carries the key`,
         );
       } else {
-        assert.deepEqual([...headers], [], `${record.name}: ${url} is bare`);
+        assert.deepEqual([...sentHeaders], [], `${record.name}: ${url} is bare`);
       }
     }
     if (request.json !== undefined) {

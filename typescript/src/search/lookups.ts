@@ -2,8 +2,8 @@
  * Lookups for names and codes: the graph's resolver and nodes, the code registry and Search's
  * catalogue.
  *
- * Each lookup returns the decoded response body, typed by the served OpenAPI document's schema.
- * The body must be an object holding the members that schema requires and that tell it from a
+ * Each lookup returns a frozen object from `lookup-results.ts` whose `raw` holds the decoded
+ * response body, typed by the served OpenAPI document's schema. The body must be an object holding the members that schema requires and that tell it from a
  * problem document. A body that does not, and is a problem document (a `code` and no `kind`),
  * raises the class `errorClassFor` gives its code, or `ContractError` (`contract_violation`) for a
  * code the contract does not map; any other body raises `contract_violation`. The client reads no
@@ -13,6 +13,7 @@
 
 import { clientError, problemAt200, REFUSAL_CODE } from "../core/errors.ts";
 import { checkOptions, declareOptions } from "../core/options.ts";
+import { isRecord } from "../core/json.ts";
 import { checkRequired } from "../core/strict.ts";
 import type { JsonType } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
@@ -23,14 +24,11 @@ import type {
   CatalogueResponse,
   CodeRegistryEntry,
   GraphApiResolveModelsResolveRequest,
-  paths,
   ResolveKind,
   ResolveResponse,
 } from "../wire.ts";
-
-/** One graph node, told apart by its `kind`. */
-export type GraphNode =
-  paths["/api/graph/node/{dcid}"]["get"]["responses"][200]["content"]["application/json"];
+import { Catalogue, Code, Match, Node } from "./lookup-results.ts";
+import type { GraphNode } from "./lookup-results.ts";
 
 /** A lookup's cancellation and attempt timeout. */
 export type LookupOptions = {
@@ -83,20 +81,59 @@ const CATALOGUE_OPTIONS = declareOptions<CatalogueOptions>("client.lookup.catalo
   place: true,
 });
 
-/** The body of a lookup's response, once it holds what `schema` requires. A body that does not,
- *  and is a problem document, raises the error the document stands for. */
+/** The body of a lookup's response, once it holds what `schema` requires and passes `nested`,
+ *  which checks the members below it the result reads. A body that does not hold what `schema`
+ *  requires, and is a problem document, raises the error the document stands for. */
 const lookupBody = (
   response: JsonResponse,
   schema: string,
   required: Readonly<Record<string, JsonType>>,
+  nested: (body: Readonly<Record<string, unknown>>) => void = () => {},
 ): Readonly<Record<string, unknown>> =>
   describing(response.traceId, () => {
+    let body: Readonly<Record<string, unknown>>;
     try {
-      return checkRequired(schema, required, response.body);
+      body = checkRequired(schema, required, response.body);
     } catch (error) {
       throw problemAt200(response.body, response.traceId) ?? error;
     }
+    nested(body);
+    return body;
   });
+
+/** Checks each item of `items` against what `schema` requires. */
+function checkEach(
+  schema: string,
+  required: Readonly<Record<string, JsonType>>,
+  items: readonly unknown[],
+  pointer: string,
+): void {
+  for (const [index, item] of items.entries()) {
+    checkRequired(schema, required, item, `${pointer}/${index}`);
+  }
+}
+
+/** What a `Match` reads of a resolver result, and of each node it names: the members the wire
+ *  schema requires and admits no null for. */
+const RESOLVE_RESULT = { input: "string", status: "string" } as const;
+const ENTITY_REF = { ref: "string", label: "string" } as const;
+
+/** Checks each resolver result and the nodes it names; `results` is an array by then. The
+ *  nullable `entity`, `candidates` and `near_matches` are checked only when held as an object or
+ *  an array, and read as absent when held as another JSON type. */
+function checkResults({ results }: Readonly<Record<string, unknown>>): void {
+  for (const [index, item] of (results as readonly unknown[]).entries()) {
+    const at = `/results/${index}`;
+    const result = checkRequired("ResolveResult", RESOLVE_RESULT, item, at);
+    if (isRecord(result.entity)) {
+      checkRequired("EntityRef", ENTITY_REF, result.entity, `${at}/entity`);
+    }
+    for (const member of ["candidates", "near_matches"] as const) {
+      const refs = result[member];
+      if (Array.isArray(refs)) checkEach("EntityRef", ENTITY_REF, refs, `${at}/${member}`);
+    }
+  }
+}
 
 const callOptions = ({ signal, timeout }: LookupOptions) => ({ signal, timeout });
 
@@ -122,14 +159,14 @@ export class Lookup {
 
   /**
    * Resolves names, such as "Nigeria" or "Sahel", to graph nodes. One to 25 names resolve as one
-   * batch, and `results` follows their order.
+   * batch, with one `Match` per name in their order.
    *
    * @throws {InvalidRequestError} The server refused the names or kinds.
    */
   async resolve(
     texts: string | readonly string[],
     options: ResolveOptions = {},
-  ): Promise<ResolveResponse> {
+  ): Promise<readonly Match[]> {
     const call = checkOptions(RESOLVE_OPTIONS, options);
     const { kinds, codeSystem, expandMembers = false } = call;
     const body: GraphApiResolveModelsResolveRequest = {
@@ -143,7 +180,13 @@ export class Lookup {
       json: body,
       ...callOptions(call),
     });
-    return lookupBody(response, "ResolveResponse", { results: "array" }) as ResolveResponse;
+    const { results } = lookupBody(
+      response,
+      "ResolveResponse",
+      { results: "array" },
+      checkResults,
+    ) as ResolveResponse;
+    return Object.freeze(results.map((result) => new Match(result)));
   }
 
   /**
@@ -153,7 +196,7 @@ export class Lookup {
    *   `#` or a control character (`invalid_argument`); no request is sent.
    * @throws {NotFoundError} The graph holds no node with that dcid.
    */
-  async node(dcid: string, options: NodeOptions = {}): Promise<GraphNode> {
+  async node(dcid: string, options: NodeOptions = {}): Promise<Node> {
     const call = checkOptions(NODE_OPTIONS, options);
     checkDcid(dcid);
     const path = `/graph/node/${dcid.split("/").map(encodeURIComponent).join("/")}`;
@@ -162,7 +205,13 @@ export class Lookup {
       query: { as_of: call.asOf },
       ...callOptions(call),
     });
-    return lookupBody(response, "GraphNode", { kind: "string", ref: "string" }) as GraphNode;
+    return new Node(
+      lookupBody(response, "GraphNode", {
+        kind: "string",
+        ref: "string",
+        types: "array",
+      }) as GraphNode,
+    );
   }
 
   /**
@@ -172,7 +221,7 @@ export class Lookup {
    * @throws {InvalidRequestError} The code is not lower-case snake case (`invalid_argument`).
    * @throws {NotFoundError} The registry holds no such code.
    */
-  async code(code: string, options: LookupOptions = {}): Promise<CodeRegistryEntry> {
+  async code(code: string, options: LookupOptions = {}): Promise<Code> {
     const call = checkOptions(CODE_OPTIONS, options);
     if (!REFUSAL_CODE.test(code)) {
       throw clientError("invalid_argument", {
@@ -183,25 +232,41 @@ export class Lookup {
       url: `/codes/${encodeURIComponent(code)}`,
       ...callOptions(call),
     });
-    return lookupBody(response, "CodeRegistryEntry", {
-      code: "string",
-      mappings: "array",
-    }) as CodeRegistryEntry;
+    return new Code(
+      lookupBody(response, "CodeRegistryEntry", {
+        code: "string",
+        mappings: "array",
+      }) as CodeRegistryEntry,
+    );
   }
 
   /** What Search holds data on: counts and example questions, for one country with `place`. */
-  async catalogue(options: CatalogueOptions = {}): Promise<CatalogueResponse> {
+  async catalogue(options: CatalogueOptions = {}): Promise<Catalogue> {
     const call = checkOptions(CATALOGUE_OPTIONS, options);
     const response = await this.#transport.request({
       path: "/search/catalogue",
       query: { place: call.place },
       ...callOptions(call),
     });
-    return lookupBody(response, "CatalogueResponse", {
-      catalogue_version: "string",
-      counts: "object",
-      examples: "array",
-    }) as CatalogueResponse;
+    return new Catalogue(
+      lookupBody(
+        response,
+        "CatalogueResponse",
+        {
+          catalogue_version: "string",
+          counts: "object",
+          examples: "array",
+        },
+        ({ examples }) => {
+          checkEach(
+            "CatalogueExampleSentence",
+            { text: "string" },
+            examples as readonly unknown[],
+            "/examples",
+          );
+        },
+      ) as CatalogueResponse,
+    );
   }
 }
 

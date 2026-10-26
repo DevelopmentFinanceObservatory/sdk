@@ -472,6 +472,47 @@ async def test_a_place_choice_in_a_one_part_answer_posts_the_option_unchanged() 
     assert chosen.complete
 
 
+@pytest.mark.parametrize("key", ["Congo [DRC].", "Congo [DRC]"], ids=["raw", "printed"])
+async def test_a_label_matches_as_search_gives_it_and_as_the_answer_prints_it(
+    key: str,
+) -> None:
+    wire = load("search-3.json")
+    wire["parts"][0] = with_options(wire["parts"][0])
+    option = wire["parts"][0]["no_data"]["options"][0]
+    option["label"] += "."
+    answer, server = await ask(
+        "ODA disbursements from Germany to Congo",
+        wire,
+        load("probe-option-posted.json"),
+    )
+    assert "    [0] Congo [DRC]\n" in repr(answer)
+    await answer.choose(key, part="Congo")
+    assert server.posted[1]["input"] == option["data_query"]
+
+
+@pytest.mark.parametrize(
+    "form", ["label", "line", "line with full stop", "line ending in its source's stop"]
+)
+async def test_a_candidate_matches_by_its_label_or_its_printed_line(form: str) -> None:
+    wire = load("search-2.json")
+    part = wire["parts"][0]
+    if form == "line ending in its source's stop":
+        resolved = part["candidates"]["specs"][1]["resolved"]
+        resolved["facets"]["provenance"]["label"] += "."
+        form = "line"
+    answer, server = await ask("GNI of Germany", wire, picked(part, 1))
+    candidate = answer.parts[0].candidates[1]
+    line = next(
+        text.removeprefix("    [1] ")
+        for text in repr(answer).splitlines()
+        if text.startswith("    [1] ")
+    )
+    assert line != candidate.label
+    key = {"label": candidate.label, "line": line, "line with full stop": line + "."}
+    await answer.choose(key[form])
+    assert server.posted[1]["input"]["entries"] == [identity_entry(part, 1)]
+
+
 @pytest.mark.parametrize("data_query", [None, {"parts": []}])
 async def test_a_place_option_without_a_one_part_query_raises_before_posting(
     data_query: dict[str, Any] | None,
@@ -821,6 +862,9 @@ async def test_fetch_builds_one_member_per_distinct_spec(
         "progress": None,
         "cache": None,
         "missing": (),
+        "window": None,
+        "entities": None,
+        "facets": None,
     }
     assert isinstance(transport_used, AsyncTransport)
     assert [len(m.answer_parts) for m in members] == [3, 1]
@@ -940,6 +984,36 @@ async def test_a_partial_fetch_holds_no_client_in_its_dataset(
     assert client_references(data) == []
 
 
+async def test_fetch_narrows_every_reading_and_refuses_a_role_one_lacks() -> None:
+    wire = load("probe-resubmit-candidate-chosen.json")
+    answer, server = await ask(TWO_PARTS, wire)
+    with pytest.raises(InvalidRequestError) as caught:
+        await answer.fetch(entities={"origin": ["country/FRA"]})
+    assert caught.value.code == "invalid_argument"
+    assert str(caught.value) == (
+        'entities names "origin", a role "gross national income" does not '
+        "declare. Each part's roles:\n"
+        '  "official development assistance": origin, destination\n'
+        '  "gross national income": place\n[invalid_argument]'
+    )
+    # The refusal comes before any build: only the search was posted.
+    assert len(server.posted) == 1
+
+
+async def test_fetch_passes_its_narrowing_to_every_reading(
+    fetched: list[tuple[Any, Any, Any]],
+) -> None:
+    answer, _ = await ask(TWO_PARTS, load("probe-resubmit-candidate-chosen.json"))
+    await answer.fetch(window=(2020, 2022), entities={}, facets={"unit": None})
+    ((_, members, options),) = fetched
+    assert len(members) == len(answer.specs)
+    assert (options["window"], options["entities"], options["facets"]) == (
+        (2020, 2022),
+        {},
+        {"unit": None},
+    )
+
+
 @pytest.mark.parametrize("body", ["search-declined.json", "search-catalogue.json"])
 async def test_fetch_of_a_declined_or_catalogue_answer_raises_declined(
     body: str, fetched: list[tuple[Any, Any, Any]]
@@ -949,7 +1023,8 @@ async def test_fetch_of_a_declined_or_catalogue_answer_raises_declined(
         await answer.fetch()
     assert caught.value.detail == load(body).get("reason", "catalogue")
     assert caught.value.code == "answer_declined"
-    assert str(caught.value) == f"{answer!r} [answer_declined · trace {TRACE}]"
+    # The message ends with its next line, so the code and trace go below it.
+    assert str(caught.value) == f"{answer!r}\n[answer_declined · trace {TRACE}]"
     assert answer.sentence is None
     assert fetched == []
 

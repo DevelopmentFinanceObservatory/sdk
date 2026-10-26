@@ -26,6 +26,7 @@ import { isRecord } from "../core/json.ts";
 import { nearest } from "../core/nearest.ts";
 import { assumptionsReadOf, operationsOf, parsedPartOf } from "../core/parse.ts";
 import { isKnownPart, partText } from "../core/parts.ts";
+import { inline } from "../core/text.ts";
 import type {
   Assumption,
   DatasetResubmitInput,
@@ -118,12 +119,42 @@ function unmatched(
 /** A label as it compares with a caller's: trimmed and in lower case. */
 const labelFold = (label: string): string => label.trim().toLowerCase();
 
-/** A gap's options as a refusal lists them, as `0 = Congo [DRC], 1 = Congo [Republic]`. A
- *  candidate with no label shows its `spec_id`. */
+/** Option text as an answer prints it: on one line, trimmed, without a closing full stop. The
+ *  printout and the label match both read it, so a label copied from `String(answer)` names its
+ *  option. */
+const shownText = (text: string): string => inline(text).trim().replace(/\.+$/, "");
+
+/** An option as `String(answer)` prints it: a candidate's label, source and unit joined by
+ *  ` · `, as `Kenya's GDP, 1960 to 2024 · World Development Indicators`, its sentence standing
+ *  in for a missing label, or a place option's label. */
+export function optionLine(option: Candidate | QueryOption): string {
+  if (option.kind === "query") return shownText(option.label);
+  // An empty label falls through to the sentence, as Python's `or` does.
+  const label = shownText(option.label || option.sentence || "");
+  return [label, option.source, option.unit]
+    .filter((piece): piece is string => Boolean(piece))
+    .map(inline)
+    .join(" · ");
+}
+
+/** Whether `key` names an option: its label or its printed line, each read by `shownText`, so a
+ *  line whose source or unit ends in a full stop pastes back. A candidate with no label matches
+ *  only by its line. */
+function labels(option: Candidate | QueryOption, key: unknown): boolean {
+  const asked = typeof key === "string" ? shownText(key) : "";
+  if (asked === "") return false;
+  return (
+    (option.label !== null && shownText(option.label) === asked) ||
+    shownText(optionLine(option)) === asked
+  );
+}
+
+/** A gap's options as a refusal lists them, as `0 = Congo [DRC], 1 = Congo [Republic]`, each as
+ *  the answer prints it. A candidate the answer prints as nothing shows its `spec_id`. */
 const optionList = ({ options }: Gap): string =>
   options
     .map((option, index) => {
-      const shown = option.label ?? (option.kind === "candidate" ? option.spec.spec_id : "");
+      const shown = optionLine(option) || (option.kind === "candidate" ? option.spec.spec_id : "");
       return `${index} = ${shown}`;
     })
     .join(", ");
@@ -153,15 +184,15 @@ export function pick(gap: Gap, key: ChoiceKey, mention?: ChoiceKey): Candidate |
       : undefined;
   const found = options.filter(
     (option) =>
-      option.label === key &&
+      labels(option, key) &&
       (scope === undefined || option.kind !== "query" || option.mentions.includes(scope)),
   );
   if (found.length === 1) return found[0]!;
   if (found.length === 0) {
-    const labels = options.flatMap((option) => (option.label === null ? [] : [option.label]));
+    const shown = options.map(optionLine).filter((line) => line !== "");
     throw unmatched(
       `Part ${gap.partIndex} has no option labelled ${JSON.stringify(key)}`,
-      typeof key === "string" ? nearest(key, labels, labelFold) : undefined,
+      typeof key === "string" ? nearest(key, shown, labelFold) : undefined,
       "name it by index or label",
       optionList(gap),
     );

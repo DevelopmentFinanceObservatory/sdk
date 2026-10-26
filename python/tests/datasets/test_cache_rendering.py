@@ -10,7 +10,7 @@ import pytest
 
 from dfo import Client, DatasetRef
 from dfo._datasets.cache import Cache, sha256_digest
-from dfo._datasets.dataset import reading_order
+from dfo._datasets.dataset import in_reading_order
 from dfo._sync._datasets.fetch import Session
 from dfo._sync._http.transport import Transport
 from dfo.types import RefMember, Rendering
@@ -61,7 +61,7 @@ def test_restoring_a_plain_ref_from_a_multi_render_snapshot_works_offline(
             ),
         )
     )
-    ordered = table.select(reading_order(table.column_names))
+    ordered = in_reading_order(table, member_rows=(table.num_rows,))
     with Client._over(Session(transport, cache)) as client:
         assert client.fetch(ref, progress=False).to_arrow().equals(ordered)
     monkeypatch.setenv("DFO_OFFLINE", "1")

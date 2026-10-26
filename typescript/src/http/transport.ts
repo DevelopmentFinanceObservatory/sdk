@@ -17,6 +17,7 @@ import { checkKeyFormat, inBrowser, lookUpApiKey, refuseSecretInBrowser } from "
 import type { ApiKeyOption, ResolvedKey } from "../config/keys.ts";
 import type { LongBuild } from "../datasets/operation.ts";
 import { traceIdFrom, traceIdOf } from "../core/trace.ts";
+import { CLIENT_HEADER, ownIdentity } from "./client-identity.ts";
 import { VERSION } from "../version.ts";
 import { clientWarning, emitWarning, warnOnce } from "../core/warnings.ts";
 import type { DfoWarning, WarningHandler } from "../core/warnings.ts";
@@ -267,12 +268,17 @@ function resolveBaseUrl(baseUrl: unknown, source: BaseUrlSource): URL {
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     throw refuse(`has the scheme ${url.protocol}, not https or http`);
   }
-  if (url.username !== "" || url.password !== "") {
+  // The authority as written: URL reads `https:///api` and `https:/api` as host `api`, rewrites
+  // an IPv4 form such as 127.1, 0x7f.1 or 2130706433 as a dotted quad, and drops an empty
+  // userinfo (`https://@host`), so all three are read from the string. A relative URL in a page
+  // has no scheme, and so no authority to read.
+  const written = /^[a-z][a-z0-9+.-]*:[/\\]{2}([^/\\]*)/i.exec(baseUrl)?.[1];
+  if (written === "" || (written === undefined && /^[a-z][a-z0-9+.-]*:/i.test(baseUrl))) {
+    throw refuse("names no host");
+  }
+  if (url.username !== "" || url.password !== "" || written?.includes("@")) {
     throw refuse("carries userinfo; pass the key as apiKey");
   }
-  // URL rewrites any IPv4 form, such as 127.1, 0x7f.1 or 2130706433, as a dotted quad, so the
-  // host as written is read from the string.
-  const written = /^[a-z][a-z0-9+.-]*:[/\\]*([^/\\]*)/i.exec(baseUrl)?.[1];
   if (
     written !== undefined &&
     DOTTED_QUAD.test(url.hostname) &&
@@ -300,10 +306,18 @@ const headerPairs = (init: HeadersInit): Iterable<[string, unknown]> =>
  * since it may be a token.
  *
  * @throws {InvalidRequestError} A value is not a string or holds another character, or a name is
- *   one HTTP cannot carry or one of `RESERVED_HEADERS` (`header_invalid`).
+ *   one HTTP cannot carry, one of `RESERVED_HEADERS` or `X-DFO-Client` in any letter case
+ *   (`header_invalid`).
  */
 function setHeaders(headers: Headers, pairs: Iterable<[string, unknown]>, source: string): void {
   for (const [name, value] of pairs) {
+    if (name.toLowerCase() === CLIENT_HEADER.toLowerCase()) {
+      throw clientError("header_invalid", {
+        detail:
+          `The ${name} header from ${source} names the client and its runtime, which the ` +
+          "client sets itself; leave it out.",
+      });
+    }
     if (RESERVED_HEADERS.has(name.toLowerCase())) {
       throw clientError("header_invalid", {
         detail:
@@ -1221,6 +1235,7 @@ export class Transport {
     headers.set("accept", "application/json");
     if (options.json !== undefined) headers.set("content-type", "application/json");
     setHeaders(headers, Object.entries(options.headers ?? {}), "the call's headers");
+    headers.set(CLIENT_HEADER, ownIdentity());
     return this.#keyHeader(url, options, headers);
   }
 

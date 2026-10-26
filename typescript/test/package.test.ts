@@ -19,7 +19,9 @@ test("the root entry exports these values and no others", async () => {
     "Answer",
     "ApiKey",
     "AuthenticationError",
+    "Catalogue",
     "Client",
+    "Code",
     "ContractError",
     "DataWarning",
     "Dataset",
@@ -29,11 +31,14 @@ test("the root entry exports these values and no others", async () => {
     "DfoError",
     "DfoTimeoutError",
     "DfoWarning",
+    "Entity",
     "FormatError",
     "IncompleteAnswerError",
     "InvalidRequestError",
     "Lookup",
+    "Match",
     "NetworkError",
+    "Node",
     "NotFoundError",
     "PART_STATUSES",
     "PermissionDeniedError",
@@ -46,6 +51,7 @@ test("the root entry exports these values and no others", async () => {
     "VersionUnavailableError",
     "isDfoError",
     "isKnownPart",
+    "specRoles",
   ]);
 });
 

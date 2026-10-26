@@ -1,8 +1,8 @@
 # Fetch and keep a dataset
 
-`dfo.fetch` builds a table and returns a `Dataset`: the rows, Search's sentence for them, the citation, and a ref that names the exact version you received. This page covers what comes after the search: narrowing a fetch, summing a column, moving the table into pandas, polars or Arrow, and keeping it so that a later run can tell whether the data changed.
+`dfo.fetch` builds a table and returns a `Dataset`: the rows, Search's sentence for them, the citation, and a ref that names the exact version you received.
 
-Each example on this page runs on its own.
+The blocks on this page run in order, as cells of one notebook.
 
 ## Fetch a spec, narrowed
 
@@ -15,12 +15,12 @@ Each example on this page runs on its own.
   Rows: 6
   Keep: data.save(path) · newest later: dfo.fetch(data.ref, latest=True)>
    time_period financingProvider_label        value
-0         2020                 Germany  447440917.0
-1         2021                 Germany  175013360.0
-2         2022                 Germany  252521505.0
-3         2020                  France   83268048.0
-4         2021                  France   55879173.0
-5         2022                  France  103160459.0
+0         2020                  France   83268048.0
+1         2021                  France   55879173.0
+2         2022                  France  103160459.0
+3         2020                 Germany  447440917.0
+4         2021                 Germany  175013360.0
+5         2022                 Germany  252521505.0
 ```
 
 ```python
@@ -40,23 +40,25 @@ print(data.to_pandas()[["time_period", "financingProvider_label", "value"]])
 
 Three arguments narrow a spec:
 
-- `window` takes `"all"`, `"latest"`, or a `(start_year, end_year)` pair.
-- `entities` binds roles to place dcids. The roles you name change, the spec's other roles keep their places, and a role set to None drops out. `spec.definition["identity"]["entities"]` lists the roles a spec binds. This spec binds only `destination`, so `origin` adds the two donors and Ethiopia stays the recipient.
-- `facets` binds the `provenance`, `measurementMethod` or `unit` axis to a ref. None picks the facets that declare no value on that axis.
+- `window` takes `"all"`, `"latest"`, or a `(start_year, end_year)` pair of years from 1000 to 2200. `(2020, 2020)` is one year.
+- `entities` binds roles to place dcids. The roles you name change, the spec's other roles keep their places, and a role set to None drops out. `spec.roles` lists the role keys a spec takes, each with the dcids it binds, or None for a role it leaves open: `place` for the place a measure is about, as in `{"place": ["country/NGA", "country/GHA"]}` for GDP, and `origin` and `destination` for a flow. This spec binds only `destination`, so `origin` adds the two donors and Ethiopia stays the recipient. A key the spec does not take, such as the column name `financingProvider`, raises `InvalidRequestError` before any request, and the message lists the spec's roles.
+- `facets` binds the `provenance`, `measurementMethod`, or `unit` axis to a ref. None picks the facets that declare no value on that axis.
+
+`answer.fetch` takes the same three arguments and narrows every reading of the answer with them. Each reading keeps the roles you leave out, and a role one reading does not take raises `InvalidRequestError` before any build, naming each part's roles.
 
 A narrowed fetch is a reading of its own, with its own `spec_id` in `data.members[0].spec`. A narrowing that leaves no rows returns a dataset with zero rows and the usual columns, and issues a `DataWarning` with the code `empty_result`.
 
 ## Sum a column
 
-A provider or recipient column in DFO data can hold group totals beside their members: "DAC countries" sits in the same column as Germany. `fetch` leaves those rows out, so a sum over `value` counts each donor once. `party_totals=True` keeps them, for when you want the published group figures:
+A provider or recipient column in DFO data can hold group totals beside their members. "DAC countries" sits in the same column as Germany. `fetch` leaves those rows out, so a sum over `value` counts each donor once. Pass `party_totals=True` to keep the published group figures:
 
 ```text
 95 rows, 5.55 billion dollars
 110 rows, 23.84 billion dollars
-   financingProvider_label         value
-14   official donors (DAC)  5.231667e+09
-9            DAC countries  2.756195e+09
-12     multilaterals (DAC)  2.272375e+09
+    financingProvider_label         value
+106   official donors (DAC)  5.231667e+09
+17            DAC countries  2.756195e+09
+104     multilaterals (DAC)  2.272375e+09
 ```
 
 ```python
@@ -82,7 +84,7 @@ The 15 extra rows are group totals worth 18.3 billion dollars, and each one coun
 
 ## Read the columns
 
-Every table leads with the columns a reader looks at, in this order, then the codes and the rest, with `stat_var` last:
+Every table leads with the columns a reader looks at, in this order:
 
 1. `time_period`
 1. the provider, as `financingProvider_label`
@@ -94,7 +96,9 @@ Every table leads with the columns a reader looks at, in this order, then the co
 1. the flow or aid type, as `crsTypeOfFlow_label` or `dac2aAidType_label`
 1. the source, as `provenance_label`
 
-A table without a column skips its slot. Where a table has no label column, the code column takes its place. A dataset of several readings adds a `part` column first, naming the part of the question each row answers.
+A table without a column skips its slot. Where a table has no label column, the code column takes its place. The columns whose values differ between rows come next, so you see what tells the rows apart, then the columns that hold one value in every row, with `stat_var` last. A dataset of several members adds a `part` column first, naming the part of the question each row answers, and judges which columns vary over all its rows.
+
+The rows sort by the leading columns other than `value` and `time_period`, then by the columns that vary, then by `time_period`, so the years of each series read together. Each member of a dataset keeps its own rows, in the order of its members. Text sorts by Unicode code point and an empty cell sorts last. The ref and the digest name the file the server wrote, before the client reordered it.
 
 ```text
 ['time_period', 'financingProvider_label', 'financingRecipient_label', 'value', 'unit_label', 'dac2aAidType_label', 'provenance_label', 'financingProvider', 'financingProvider_kind', 'financingRecipient', 'financingRecipient_kind', 'dac2aAidType', 'unit', 'currency', 'price_basis', 'base_year', 'measurementMethod', 'measurementMethod_label', 'provenance', 'stat_var']
@@ -107,7 +111,27 @@ data = dfo.search("ODA to Ethiopia from each donor in 2022").fetch()
 print(data.to_arrow().schema.names)
 ```
 
-## Convert to pandas, polars or Arrow
+## Get the pipeline frame
+
+`layout="frame"` returns the table the pipeline wrote, with code columns only:
+
+```text
+frame 95
+['time_period', 'financingProvider', 'financingRecipient', 'value', 'unit', 'stat_var_dac2aAidType', 'provenance', 'measurementMethod', 'status', 'stat_var']
+```
+
+```python
+import dfo
+
+spec = dfo.search("ODA to Ethiopia from each donor in 2022").specs[0]
+frame = dfo.fetch(spec, layout="frame")
+print(frame.layout_version, len(frame))
+print(frame.to_arrow().schema.names)
+```
+
+A frame holds one reading. `answer.fetch(layout="frame")` on an answer with several readings raises `InvalidRequestError` with the code `invalid_argument`, so fetch each spec on its own.
+
+## Convert to pandas, polars, or Arrow
 
 ```text
 OECD Creditor Reporting System (CRS)
@@ -131,7 +155,7 @@ table = pa.table(data)  # any library that reads the Arrow C stream
 print(len(data), table.num_rows)
 ```
 
-`to_pandas()` puts the provenance in `frame.attrs`: `sentence`, `citation`, `sources`, `licence`, `ref` as JSON, `complete`, and `missing`. A merge or a concat drops `attrs`, and the dataset keeps them. `to_arrow()` returns a `pyarrow.Table` with the provenance in its schema metadata. `pa.table(data)`, `polars.from_arrow(data)` and DuckDB read the dataset through `__arrow_c_stream__`. `len(data)` is the row count. A dataset holds no Python rows, so `for row in data` and `data["value"]` raise `TypeError` naming the conversions.
+`to_pandas()` puts the provenance in `frame.attrs`: `sentence`, `citation`, `sources`, `licence`, `ref` as JSON, `complete`, and `missing`. A merge or a concat drops `attrs`, and the dataset keeps them. `to_arrow()` returns a `pyarrow.Table` with the provenance in its schema metadata. `pa.table(data)`, `polars.from_arrow(data)`, and DuckDB read the dataset through `__arrow_c_stream__`. `len(data)` is the row count. Iterating over `data` or indexing it, as in `for row in data` and `data["value"]`, raises a `TypeError` that names the conversions.
 
 ## Keep it, and check later for new data
 
@@ -159,7 +183,7 @@ print(newest.ref)
 
 Two refs are equal when they name the same specs at the same versions in the same form, so `newest.ref == saved.ref` means the server holds no newer data. `dfo.fetch(saved.ref)` without `latest` returns the exact versions the ref names, from the cache when it holds them. A ref also travels on its own as JSON, through `data.ref.to_json()` and `dfo.DatasetRef.from_json(text)`, in a format the TypeScript client reads too.
 
-Compare refs, and leave the version strings alone. A table with party totals left out is a cut of the server's plain build, and the cut has a version id of its own. The same data therefore carries two ids:
+Compare refs, because one set of data can carry two version ids. A table with party totals left out is a cut of the server's plain build, and the cut has a version id of its own:
 
 ```text
 cv_c17d6a131cb4556543b91556e46814e9
@@ -202,18 +226,18 @@ print(len(data))
 ## What a dataset holds
 
 - `sentence`: what the data shows, in Search's words.
-- `members`: one per reading, each with its `spec`, `content_version` and `citation`.
+- `members`: one per built spec (readings that narrow to one spec share a member), each with its `spec`, `content_version` and `citation`.
 - `ref`: the exact versions, to fetch the same rows again.
 - `citation`, `sources` and `licence`: how to cite the data and under which terms.
-- `warnings`, `departures`, `requested_operations` and `assumptions`: how the data differs from the question and what Search assumed.
+- `warnings`, `departures`, `requested_operations`, and `assumptions`: how the data differs from the question and what Search assumed.
 - `complete` and `missing`: whether every part of the question has a member, and the parts a partial fetch left out.
 - `held_until` and `pinned`: how long the server keeps the versions.
 - `stale`: True when the rows came from the cache under `DFO_OFFLINE=1`.
 - `layout_version`: the column set, or `frame` for the pipeline frame that `layout="frame"` returns for one reading.
 
-`dfo.load` also opens a bundle downloaded from the website: the ZIP, the folder it extracts to, or its `datapackage.json`. It checks each file against its hash before it reads the data, and raises `dfo.errors.BundleError` when a file is missing or its bytes differ.
+`dfo.load` also opens a bundle downloaded from the website: the ZIP, the folder it extracts to, or its `datapackage.json`. It checks each file against its hash before it reads the data, and raises `dfo.errors.BundleError` when a file is missing or its bytes differ. `dfo.load(path, limits=dfo.types.BundleLimits(...))` changes the size bounds it enforces on a bundle.
 
 ## Next
 
-- [Wait for a large build](long-builds.md): progress, deadlines and Ctrl-C while a big table builds.
-- [The cache](cache.md): what the client keeps on disk, and working offline.
+- [Wait for a large build](long-builds.md) covers progress, deadlines, and Ctrl-C while a big table builds.
+- [The cache](cache.md) covers what the client keeps on disk, and working offline.

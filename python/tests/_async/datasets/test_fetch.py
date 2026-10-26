@@ -10,6 +10,7 @@ import warnings
 from pathlib import Path
 
 import httpx2
+import pyarrow.parquet as pq
 import pytest
 
 import dfo._datasets.fetch as fetch_module
@@ -29,14 +30,16 @@ from dfo._core.errors import (
 )
 from dfo._core.parse import parse_spec
 from dfo._core.refs import DatasetRef, RefMember
-from dfo._core.types import FormatError, Rendering, Spec
+from dfo._core.types import DefinitePart, Departure, FormatError, Rendering, Spec
 from dfo._datasets.build import Reading
+from dfo._datasets.bundle import load as load_saved
 from dfo._datasets.cache import Cache, file_entry, manifest_entry, sha256_digest
 from dfo._datasets.dataset import build_dataset
 from dfo._datasets.fetch import fetch_members
 from dfo._datasets.resolve import fetch
 from dfo._http.transport import AsyncTransport
 from tests._data import load
+from tests._datasets import PARQUET
 from tests._fetch_support import (
     BASE,
     CUT,
@@ -294,7 +297,7 @@ async def test_an_answer_part_resubmits_with_its_first_part() -> None:
         built = await fetch_members(
             transport,
             [Reading(("ODA", "aid"), spec())],
-            narrowing={"window": {"kind": "latest"}},
+            window="latest",
         )
     entry = server.body(1)["input"]["entries"][0]
     assert entry["variable_text"] == "ODA"
@@ -468,6 +471,47 @@ async def test_a_spec_listed_twice_builds_once_for_both_parts() -> None:
         )
     assert len(server.requests) == 3
     assert [member.parts for member in built.members] == [("ODA", "aid")]
+
+
+async def test_two_specs_narrowed_to_one_build_are_one_member_downloaded_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(fetch_module, "build_dataset", build_dataset)
+    data = PARQUET.read_bytes()
+    body = manifest(data=data)
+    other = Spec("spec_" + "e" * 32, posted_spec()["definition"], "Other sentence.")
+    closest = Departure(code="closest_match", text="The closest reading.")
+    asked = DefinitePart(status="definite", spec=other, departures=(closest,))
+    server = Server(
+        json_response(200, body),
+        json_response(200, resubmitted()),
+        redirect(),
+        parquet(data),
+        json_response(200, body),
+    )
+    async with make(server) as transport:
+        built = await fetch_members(
+            transport,
+            [Reading(("ODA",), spec()), Reading(("aid", "ODA"), other, None, (asked,))],
+            window="latest",
+        )
+    assert [call.split(" ")[0] for call in server.calls()] == [
+        "POST",
+        "POST",
+        "GET",
+        "GET",
+        "POST",
+    ]
+    (member,) = built.members
+    assert (member.spec.spec_id, member.parts) == (NARROWED_ID, ("ODA", "aid"))
+    assert built.departures == (closest,)
+    assert len(built) == pq.read_metadata(PARQUET).num_rows
+    assert DatasetRef.from_json(built.ref.to_json()) == built.ref
+    path = tmp_path / "saved.parquet"
+    built.save(path)
+    loaded = load_saved(path)
+    assert loaded.ref == built.ref
+    assert loaded.to_arrow().equals(built.to_arrow())
 
 
 async def test_members_build_one_after_another_each_finished_before_the_next() -> None:

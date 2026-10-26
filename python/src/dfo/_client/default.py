@@ -22,15 +22,11 @@ from datetime import date
 from os import PathLike
 
 from dfo._config.keys import ApiKeyArgument
+from dfo._core.lookup_results import Catalogue, Code, Match, Node
 from dfo._core.refs import DatasetRef
-from dfo._core.types import Layout, Node, Spec, Window
+from dfo._core.types import Layout, Spec, Window
 from dfo._datasets.dataset import Dataset
-from dfo._generated.wire import (
-    CatalogueResponse,
-    CodeRegistryEntry,
-    ResolveKind,
-    ResolveResponse,
-)
+from dfo._generated.wire import ResolveKind
 from dfo._http.hooks import HeaderProvider
 from dfo._search.answer import SEARCH_TIMEOUT
 from dfo._sync._client.client import Client
@@ -99,8 +95,8 @@ def configure(
     Raises:
         InvalidRequestError: The base URL, passed or read from `DFO_BASE_URL`,
             is invalid (`base_url_invalid`), a
-            header's name is not an HTTP token or its value not a string
-            of visible ASCII, spaces and tabs (`header_invalid`), the key would
+            header's name is not an HTTP token or names `X-DFO-Client`, or its
+            value not a string of visible ASCII, spaces and tabs (`header_invalid`), the key would
             travel over plain http to a host that is not loopback
             (`insecure_transport`), the timeout is not a finite number above 0,
             the retry count not an integer from 0 to 10, or, with `cache` on,
@@ -167,8 +163,9 @@ def fetch(
             such as a spec id, and no request is sent; a ref is narrowed or
             given another layout or `party_totals`; `latest` is not a
             bool, is given a spec, or is given a ref whose members differ in
-            rendering; `window`,
-            `entities`, `facets` or `layout` is malformed; or `timeout` is not
+            rendering; `window`, `entities`, `facets` or `layout` is
+            malformed; `entities` names a role the spec does not declare; or
+            `timeout` is not
             None or a finite number above 0 (`invalid_argument`).
         VersionUnavailableError: A ref's version can no longer be fetched.
         ContractError: An artifact is not Parquet (`unexpected_response`), or
@@ -197,7 +194,7 @@ def resolve(
     kinds: Sequence[ResolveKind] | None = None,
     code_system: str | None = None,
     expand_members: bool = False,
-) -> ResolveResponse:
+) -> list[Match]:
     """Resolve names, such as "Nigeria" or "Sahel", to graph nodes, with the
     default client.
 
@@ -225,7 +222,7 @@ def node(dcid: str, /, *, as_of: date | None = None) -> Node:
     return default_client().lookup.node(dcid, as_of=as_of)
 
 
-def code(code: str, /) -> CodeRegistryEntry:
+def code(code: str, /) -> Code:
     """The registry entry for one code, such as `spec_not_found`, with the
     default client.
 
@@ -237,7 +234,7 @@ def code(code: str, /) -> CodeRegistryEntry:
     return default_client().lookup.code(code)
 
 
-def catalogue(*, place: str | None = None) -> CatalogueResponse:
+def catalogue(*, place: str | None = None) -> Catalogue:
     """What Search holds data on, counts and example questions, with the default
     client.
 

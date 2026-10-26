@@ -11,10 +11,11 @@ import { download, fetchMembers } from "../src/datasets/fetch.ts";
 import { fetchDataset } from "../src/datasets/resolve.ts";
 import type { FetchOptions } from "../src/datasets/fetch.ts";
 import { DatasetRef, renderingFor } from "../src/core/ref.ts";
+import { specRoles } from "../src/core/roles.ts";
 import type { DatasetRefJson, Spec } from "../src/core/ref.ts";
 import { DEFAULT_MAX_BYTES, Transport } from "../src/http/transport.ts";
 import { DataWarning } from "../src/core/warnings.ts";
-import type { Spec as WireSpec } from "../src/wire.ts";
+import type { Part, Spec as WireSpec } from "../src/wire.ts";
 import type { DfoWarning } from "../src/core/warnings.ts";
 import { InvalidRequestError, ServerError } from "../src/core/errors.ts";
 import {
@@ -50,6 +51,56 @@ describe("a fetched spec's ref", () => {
     const dataset = await fetchDataset(replay(record).transport, spec);
     const { ref } = await contractJson<{ ref: unknown }>("refs/ref-without-party-totals.json");
     assert.deepEqual(JSON.parse(JSON.stringify(dataset.ref)), ref);
+  });
+});
+
+describe("two specs whose narrowed builds are one spec", () => {
+  test("make one member answering both parts, built twice and downloaded once", async () => {
+    const record = structuredClone(await scenario("fetch-spec-narrowed"));
+    const { spec, window } = stepOf(record, 0, "fetch");
+    assert.ok(spec);
+    const otherId = `spec_${"9".repeat(32)}`;
+    const other: Spec = {
+      ...spec,
+      spec_id: otherId,
+      definition: { ...spec.definition, spec_id: otherId },
+    };
+    const [built, resubmit, ...download] = record.exchanges;
+    const entries = (resubmit!.request.json as { input: { entries: Record<string, unknown>[] } })
+      .input.entries;
+    entries[0]!["variable_text"] = "health ODA";
+    // The second build posts the other spec, and the server answers the same built spec.
+    const rebuild = structuredClone(built!);
+    const input = (rebuild.request.json as { input: Record<string, unknown> }).input;
+    input["spec_id"] = otherId;
+    input["definition"] = other.definition;
+    const closest = { code: "closest_match", text: "The closest reading." };
+    const asked = { status: "definite", spec: other, departures: [closest] } as unknown as Part;
+    const { transport, remaining } = replay({
+      ...record,
+      origin: { kind: "synthetic", derived_from: record.name },
+      exchanges: [built!, resubmit!, ...download, rebuild],
+    });
+    const dataset = await fetchMembers(
+      transport,
+      [
+        { parts: ["health ODA"], spec },
+        { parts: ["basic health"], spec: other, answerParts: [asked] },
+      ],
+      { narrowing: { window } },
+    );
+    assert.deepEqual(remaining(), []);
+    assert.deepEqual(
+      dataset.members.map((member) => member.parts),
+      [["health ODA", "basic health"]],
+    );
+    const expected = record.expect[0]!;
+    assert.ok("dataset" in expected);
+    assert.equal(dataset.rowCount, expected.dataset.rows);
+    assert.ok(!dataset.columns.includes("part"));
+    assert.deepEqual(dataset.departures, [closest]);
+    const ref = DatasetRef.fromJSON(JSON.parse(JSON.stringify(dataset.ref)));
+    assert.ok(ref.equals(dataset.ref));
   });
 });
 
@@ -375,6 +426,63 @@ describe("arguments a fetch refuses before any request", () => {
       });
     });
   }
+});
+
+describe("a fetch's roles", () => {
+  const { transport } = replay(NO_EXCHANGES);
+  const top5 = (async () => {
+    const record = await scenario("search-warning-top5");
+    return (record.exchanges[0]!.response.json as { parts: { spec: WireSpec }[] }).parts[0]!.spec;
+  })();
+
+  test("refuses a role the spec does not take, naming its roles, with no request", async () => {
+    const error = await rejection(
+      fetchDataset(transport, await top5, { entities: { financingRecipient: ["country/KEN"] } }),
+    );
+    assert.ok(error instanceof InvalidRequestError);
+    assert.equal(error.code, "invalid_argument");
+    assert.equal(
+      error.detail,
+      'entities names "financingRecipient", a role the spec does not declare; its roles are ' +
+        "destination, origin.",
+    );
+  });
+
+  for (const [name, identity] of [
+    ["a place spec", { entities: { observationAbout: ["country/KEN"] } }],
+    ["a spec that names no role", {}],
+  ] as const) {
+    test(`refuses the wire name of place on ${name}, naming place`, async () => {
+      const spec = { spec_id: "spec_1", definition: { spec_id: "spec_1", identity } };
+      const error = await rejection(
+        fetchDataset(transport, spec, { entities: { observationAbout: ["country/NGA"] } }),
+      );
+      assert.ok(error instanceof InvalidRequestError);
+      assert.equal(
+        error.detail,
+        'entities names "observationAbout", the wire name of "place"; key it as "place".',
+      );
+    });
+  }
+
+  test("specRoles gives each role's dcids, a flow direction it binds none of as null", async () => {
+    const spec = await top5;
+    assert.deepEqual(specRoles(spec), { destination: ["country/ETH"], origin: null });
+    const identity = spec.definition["identity"] as Record<string, unknown>;
+    const place: Record<string, unknown> = {
+      ...identity,
+      entities: { observationAbout: ["country/KEN"] },
+    };
+    delete place["open_roles"];
+    assert.deepEqual(specRoles({ ...spec, definition: { ...spec.definition, identity: place } }), {
+      place: ["country/KEN"],
+    });
+    assert.deepEqual(specRoles({ spec_id: "spec_1", definition: {} }), {});
+    assert.throws(() => specRoles("spec_1" as unknown as Spec), {
+      name: "InvalidRequestError",
+      code: "invalid_argument",
+    });
+  });
 });
 
 // The build answers the narrowed definition; the resubmit for its sentence is refused, so each
@@ -962,11 +1070,10 @@ describe("a download", async () => {
     });
   });
 
-  test("raises ContractError unexpected_response on reading pages that do not decode", async () => {
+  test("raises ContractError unexpected_response on pages that do not decode", async () => {
+    // The fetch decodes every page to read the reading order, so it raises before it returns.
     const { fetched } = fetchServing(await flipped());
-    const dataset = await fetched;
-    await assert.rejects(dataset.toRows(), { name: "ContractError", code: "unexpected_response" });
-    await assert.rejects(dataset.bytes(), { name: "ContractError", code: "unexpected_response" });
+    await assert.rejects(fetched, { name: "ContractError", code: "unexpected_response" });
   });
 });
 

@@ -7,7 +7,7 @@
 
 import * as arrow from "apache-arrow";
 
-import { tableParts } from "./dataset.ts";
+import { datasetTable } from "./dataset.ts";
 import type { Dataset } from "./dataset.ts";
 import { decimalNumber, decodeStored } from "./parquet.ts";
 import type { ColumnType } from "./parquet.ts";
@@ -96,13 +96,14 @@ function arrowVector(type: ColumnType, values: readonly unknown[]): arrow.Vector
 }
 
 /**
- * The dataset's table as an apache-arrow `Table`, `part` first when several members stack.
+ * The dataset's table as an apache-arrow `Table`, its columns and rows in reading order, `part`
+ * first when several members stack.
  * INT64 columns keep their `bigint` values, and timestamps their stored unit. A DECIMAL column
  * reads as `Float64`, each value the float nearest the stored decimal. It decodes every member
  * and builds the whole table in memory.
  */
 export async function toArrow(dataset: Dataset): Promise<arrow.Table> {
-  const columns = await decodeStored(tableParts(dataset));
+  const columns = await decodeStored(datasetTable(dataset));
   // fromEntries defines each column as an own property, `__proto__` included.
   const vectors = Object.fromEntries(
     columns.map(({ name, type, values }) => [name, arrowVector(type, values)]),

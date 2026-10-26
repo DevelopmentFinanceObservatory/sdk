@@ -1,6 +1,6 @@
 # DFO SDK
 
-Client libraries for the Development Finance Observatory APIs at [developmentfinance.org](https://developmentfinance.org). Ask a question about aid, debt or development indicators in your own words, check what DFO understood, and get a versioned table back.
+Client libraries for the Development Finance Observatory APIs at [developmentfinance.org](https://developmentfinance.org). Ask a question about aid, debt, or development indicators in your own words, check what DFO understood, and get a versioned table back.
 
 ```bash
 pip install "development-finance[pandas]"
@@ -36,8 +36,8 @@ The Python package imports as `dfo`. Its [README](python/README.md) has a recipe
 npm install @developmentfinance/client
 ```
 
-The client runs in Node and the browser and has the same calls under TypeScript names. Its [README](typescript/README.md) covers the quickstart and a web-app route.
+The client has the search, choose, fetch, ref, and lookup calls under TypeScript names, and no CLI or disk cache. It runs in Node, Bun, Deno, Workers, and browsers. The API's CORS admits only the origins it lists, so a page on another origin calls your own server route, or a same-origin proxy of the API with `baseUrl: "/api/v1"`. Its [README](typescript/README.md) covers the quickstart and a web-app route.
 
 ## The contract
 
-Both clients follow the [client contract](https://github.com/DevelopmentFinanceObservatory/spec-kit/blob/dev/python/client-contract/README.md) kept in spec-kit, which `contract/` copies at the commit `contract/SOURCE` names. A dataset ref, a saved answer, a credentials file and a cache directory written by one client work in the other. [CONTRIBUTING.md](CONTRIBUTING.md) explains how the contract is synced and how releases are cut.
+Both clients follow the [client contract](https://github.com/DevelopmentFinanceObservatory/spec-kit/blob/dev/python/client-contract/README.md) kept in spec-kit, which `contract/` copies at the commit `contract/SOURCE` names. A dataset ref and a saved answer written by one client work in the other. The TypeScript client reads the credentials file the Python CLI writes. [CONTRIBUTING.md](CONTRIBUTING.md) explains how the contract is synced and how releases are cut.

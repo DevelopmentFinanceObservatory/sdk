@@ -1,6 +1,13 @@
 import type { Gap } from "../search/answer.ts";
-import { decodeRows, encodeStacked, readParquet, stackedColumns } from "./parquet.ts";
-import type { Row, TablePart } from "./parquet.ts";
+import {
+  decodeRows,
+  encodeStacked,
+  memberRows,
+  presentedOrder,
+  readParquet,
+  stackedColumns,
+} from "./parquet.ts";
+import type { Row, Table } from "./parquet.ts";
 import { DatasetRef } from "../core/ref.ts";
 import type { Layout, Rendering, Spec } from "../core/ref.ts";
 import { manifestWarningsOf } from "../core/parse.ts";
@@ -107,8 +114,8 @@ function retentionOf(manifests: readonly Readonly<Record<string, unknown>>[]): {
   return { heldUntil, pinned: false };
 }
 
-/** Reads a dataset's private table parts; Dataset's static block assigns it. */
-let readParts: (dataset: Dataset) => readonly TablePart[];
+/** Reads a dataset's private table; Dataset's static block assigns it. */
+let readTable: (dataset: Dataset) => Table;
 
 /**
  * A table of data with its provenance: one exact version per member. It holds no client, so its
@@ -141,24 +148,47 @@ export class Dataset {
   /** The artifact layout each member's manifest names, distinct ones joined by "; ". */
   readonly layoutVersion: string;
   readonly #data: readonly Uint8Array[];
-  /** Each member's file, labelled as its `part` column holds it. */
-  readonly #parts: readonly TablePart[];
-  readonly #columns: readonly string[];
+  /** Each member's file, one per member in member order, labelled as its `part` column holds
+   *  it when several stack, in reading order. */
+  readonly #table: Table;
 
   static {
-    readParts = (dataset) => dataset.#parts;
+    readTable = (dataset) => dataset.#table;
   }
 
-  /** @internal Datasets come from a fetch. This builds one from the members it downloaded and
-   *  checked against their digests. */
-  constructor(
+  /**
+   * @internal Datasets come from a fetch. This builds one from the members it downloaded and
+   * checked against their digests, decoding every member once to read the table's reading
+   * order.
+   *
+   * @throws {ContractError} The members do not stack, or a file is not one the client can read.
+   */
+  static async create(
     members: readonly FetchedMember[],
     options: { layout: Layout; missing?: readonly Gap[] },
-  ) {
+  ): Promise<Dataset> {
     if (members.length === 0) throw new TypeError("A dataset needs at least one member.");
     if (options.layout === "frame" && members.length > 1) {
       throw new TypeError("The frame layout holds one member.");
     }
+    const data = members.map((member) => new Uint8Array(member.data));
+    const parts = data.map((bytes, index) => {
+      const member = members[index]!;
+      return { file: readParquet(bytes), label: member.parts.join("; ") || member.sentence };
+    });
+    // Stacking the columns checks the members stack before any value is decoded. A pair of
+    // column types that does not widen raises ContractError.
+    stackedColumns(parts);
+    const table = { parts: Object.freeze(parts), order: await presentedOrder(parts) };
+    return new Dataset(members, options, data, table);
+  }
+
+  private constructor(
+    members: readonly FetchedMember[],
+    options: { layout: Layout; missing?: readonly Gap[] },
+    data: readonly Uint8Array[],
+    table: Table,
+  ) {
     const built = members.map((member) => ({
       parts: Object.freeze([...member.parts]),
       spec: member.spec,
@@ -184,19 +214,11 @@ export class Dataset {
     this.heldUntil = retention.heldUntil;
     this.pinned = retention.pinned;
     this.layout = options.layout;
-    this.#data = members.map((member) => new Uint8Array(member.data));
-    this.#parts = Object.freeze(
-      this.#data.map((data, index) => {
-        const member = built[index]!;
-        return { file: readParquet(data), label: member.parts.join("; ") || member.sentence };
-      }),
-    );
+    this.#data = data;
+    this.#table = table;
     this.layoutVersion = [
       ...new Set(members.map((member) => artifactLayout(member, options.layout))),
     ].join("; ");
-    // Reading the columns checks the members stack before the dataset is returned. A pair of
-    // column types that does not widen raises ContractError.
-    this.#columns = Object.freeze(stackedColumns(this.#parts).map((column) => column.name));
   }
 
   /** The exact versions the dataset holds, to fetch them again with `client.fetch(ref)`. */
@@ -215,21 +237,24 @@ export class Dataset {
 
   /** The number of rows in the table, which `toRows()` returns. */
   get rowCount(): number {
-    return this.#parts.reduce((total, { file }) => total + file.rows, 0);
+    return this.#table.order.rows.length;
   }
 
-  /** The table's column names, `part` first when several members stack. */
+  /** The table's column names in reading order, `part` first when several members stack. */
   get columns(): readonly string[] {
-    return this.#columns;
+    return this.#table.order.columns;
   }
 
   /**
    * The dataset as one Parquet file whose key-value metadata carries the provenance and the ref
-   * under `dfo.*` keys, as Python's `Dataset.save` writes it, so `dfo.load` reads it back. Several members stack into the file, `part` first. `memberBytes` gives the file the
-   * server built. It decodes every member and encodes the whole table in memory.
+   * under `dfo.*` keys, as Python's `Dataset.save` writes it, so `dfo.load` reads it back.
+   * Several members stack into the file, `part` first. `member_rows` in `dfo.dataset` holds each
+   * member's row count in member order, which marks where one member's rows end and the next
+   * begin. `memberBytes` gives the file the server built. It decodes every member and encodes
+   * the whole table in memory.
    */
   async bytes(): Promise<Uint8Array> {
-    return encodeStacked(this.#parts, this.#metadata());
+    return encodeStacked(this.#table, this.#metadata());
   }
 
   /**
@@ -269,7 +294,7 @@ export class Dataset {
   /** Every row as an object keyed by column name. `JSON.stringify` works on the result. It
    *  decodes the whole table in memory, one object per row. */
   toRows(): Promise<Row[]> {
-    return decodeRows(this.#parts);
+    return decodeRows(this.#table);
   }
 
   /** The provenance as the file's key-value metadata, in the shape Python's
@@ -313,6 +338,7 @@ export class Dataset {
         pinned: this.pinned,
         stale: false,
         layout_version: this.layoutVersion,
+        member_rows: memberRows(this.#table.parts),
       }),
       "dfo.ref": JSON.stringify(this.ref),
     };
@@ -332,9 +358,9 @@ function retentionText({ pinned, heldUntil }: Pick<Dataset, "pinned" | "heldUnti
   return `, held until ${date}, not pinned`;
 }
 
-/** A dataset's stacked table parts, for the `arrow` entry point. */
-export function tableParts(dataset: Dataset): readonly TablePart[] {
-  return readParts(dataset);
+/** A dataset's table, for the `arrow` entry point. */
+export function datasetTable(dataset: Dataset): Table {
+  return readTable(dataset);
 }
 
 /** The layout a member's manifest names for its artifact, else the fetch's layout. */

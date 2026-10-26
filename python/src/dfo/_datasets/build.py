@@ -34,6 +34,7 @@ from dfo._core.types import (
     Wire,
     matches,
 )
+from dfo._generated.role_keys import ROLE_KEYS
 from dfo._http.hooks import Hold
 
 # The longest the client reads a synchronous build. The server cuts off at 120 s.
@@ -49,6 +50,9 @@ _LAYOUTS = ("long", "frame")
 # exactly, and a year outside these builds an identity Search cannot resolve back.
 WINDOW_FIRST_YEAR = 1000
 WINDOW_LAST_YEAR = 2200
+
+# Each wire role a caller key renames, such as observationAbout, with that key.
+_WIRE_SPELLINGS = {wire: key for key, wire in ROLE_KEYS.items() if wire != key}
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,7 +198,7 @@ def scope(
 
     Args:
         window: `"all"`, `"latest"` or `(start_year, end_year)`.
-        entities: Role names bound to dcids, such as `{"recipient": ["country/NGA"]}`.
+        entities: Role names bound to dcids, such as `{"destination": ["country/NGA"]}`.
         facets: Facet axes (`provenance`, `measurementMethod`, `unit`) bound to a
             ref; None binds the facets that declare no value on the axis. An
             empty map names no axis.
@@ -221,6 +225,11 @@ def scope(
     return result or None
 
 
+type Entities = Mapping[str, list[str] | tuple[str, ...] | None]
+"""A fetch's `entities`: caller role keys, such as `place`, bound to dcids, or to
+None to drop the role."""
+
+
 @dataclass(frozen=True, slots=True)
 class Asked:
     """The values a caller's narrowing names, which a build's refusal answers.
@@ -240,7 +249,7 @@ NOTHING_ASKED = Asked()
 
 def asked(
     *,
-    entities: Mapping[str, list[str] | tuple[str, ...] | None] | None = None,
+    entities: Entities | None = None,
     facets: Mapping[str, str | None] | None = None,
 ) -> Asked:
     """The values a narrowing `scope` has accepted, for a refusal's hints."""
@@ -251,14 +260,13 @@ def asked(
     return Asked(tuple(dcids), tuple(refs))
 
 
-def rebind(
-    spec: Spec, entities: Mapping[str, list[str] | tuple[str, ...] | None]
-) -> dict[str, Sequence[str]]:
+def rebind(spec: Spec, entities: Entities) -> dict[str, Sequence[str]]:
     """The whole entity binding a fetch posts, the spec's own with `entities` applied.
 
     The server replaces a spec's entire binding with the posted one, so the
     client starts from the roles the spec's definition binds and changes only
-    the roles `entities` names. A role bound to None is dropped.
+    the roles `entities` names, each caller key posted as its wire role, so
+    `place` as `observationAbout`. A role bound to None is dropped.
 
     Raises:
         InvalidRequestError: `entities` is not a map of role names, or the
@@ -274,12 +282,91 @@ def rebind(
             "data.members[0].spec",
         )
     bound: dict[str, Sequence[str]] = dict(identity.get("entities", {}))
-    for role, dcids in entities.items():
+    for key, dcids in entities.items():
+        role = ROLE_KEYS.get(key, key)
         if dcids is None:
             bound.pop(role, None)
         else:
             bound[role] = dcids
     return bound
+
+
+def narrowings(
+    readings: Sequence[Reading],
+    *,
+    window: Window | None = None,
+    entities: Entities | None = None,
+    facets: Mapping[str, str | None] | None = None,
+) -> list[dict[str, Any] | None]:
+    """Each reading's build `scope`, in reading order: one narrowing applied to
+    every reading, with `entities` rebound on each reading's own binding.
+
+    Raises:
+        InvalidRequestError: The narrowing is malformed, as `scope` refuses it;
+            `entities` names a role a reading does not declare; or a reading's
+            definition holds no identity to rebind (`invalid_argument`).
+    """
+    if entities:
+        _names("entities", entities)
+        for role in entities:
+            _check_role(role, readings)
+    return [
+        scope(
+            window=window,
+            entities=rebind(reading.spec, entities) if entities else None,
+            facets=facets,
+        )
+        for reading in readings
+    ]
+
+
+def _check_role(role: str, readings: Sequence[Reading]) -> None:
+    """Refuse a role key one of `readings` does not declare, naming each
+    reading's role keys. A reading whose definition names no role is left to
+    the server, since the client cannot tell which roles it takes. A wire role
+    a caller key renames, such as `observationAbout`, is refused naming that
+    key when every reading takes it or names no role."""
+    key = _WIRE_SPELLINGS.get(role)
+    if key is not None and all(
+        not (roles := reading.spec.roles) or key in roles for reading in readings
+    ):
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"entities names {cited(role)}, the wire name of {cited(key)}; "
+            f"key it as {cited(key)}.",
+        )
+    lacking = [
+        reading
+        for reading in readings
+        if (roles := reading.spec.roles) and role not in roles
+    ]
+    if not lacking:
+        return
+    if len(readings) == 1:
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"entities names {cited(role)}, a role {_reading_name(lacking[0])} "
+            f"does not declare; its roles are {_role_keys(lacking[0])}.",
+        )
+    names = " and ".join(_reading_name(reading) for reading in lacking)
+    listed = "\n  ".join(
+        f"{_reading_name(reading)}: {_role_keys(reading)}" for reading in readings
+    )
+    raise client_error(
+        INVALID_ARGUMENT,
+        f"entities names {cited(role)}, a role {names} "
+        f"{'does' if len(lacking) == 1 else 'do'} not declare. Each part's "
+        f"roles:\n  {listed}",
+    )
+
+
+def _reading_name(reading: Reading) -> str:
+    """A reading as a refusal names it: its parts' words, else `the spec`."""
+    return " / ".join(cited(part) for part in reading.parts) or "the spec"
+
+
+def _role_keys(reading: Reading) -> str:
+    return ", ".join(reading.spec.roles) or "none stated"
 
 
 def _window(window: Window) -> dict[str, Any]:

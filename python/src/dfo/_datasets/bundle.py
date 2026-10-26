@@ -785,6 +785,7 @@ def _bundle_dataset(
         stale=False,
         layout_version="bundle",
         _table=table,
+        _member_rows=(table.num_rows,) if members else (),
     )
 
 

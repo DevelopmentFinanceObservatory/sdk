@@ -1,6 +1,6 @@
 # development-finance
 
-Ask the Development Finance Observatory (DFO) a question about aid, debt or development indicators in your own words, and get a versioned table back.
+Ask the Development Finance Observatory (DFO) a question about aid, debt, or development indicators in your own words, and get a versioned table back.
 
 ```bash
 pip install "development-finance[pandas]"
@@ -21,11 +21,11 @@ Germany's gross disbursements to Nigeria for official development assistance, 19
 
 The package imports as `dfo` and needs Python 3.12 or later. It works without a key, under a per-IP quota. The table arrives as Arrow. The `pandas` extra adds `to_pandas()`, `polars` adds `to_polars()`, and `xlsx` lets `dfo.load` open an XLSX bundle from the website.
 
-Each section below is a recipe for one task. The blocks on this page run in order, as cells of one notebook.
+The code blocks on this page run in order, as cells of one notebook.
 
 ## Ask a question and read the answer
 
-`dfo.search` returns an `Answer`, which says what DFO understood and holds no data yet. Printing it shows Search's sentence, naming the measure, places, years, unit and source, and the line to type next. Read the sentence before you fetch. Search is model-driven, and a wrong reading gives a plausible table for the wrong question.
+`dfo.search` returns an `Answer`, which says what DFO understood and holds no data yet. Printing it shows Search's sentence, naming the measure, places, years, unit, and source, and the line to type next. Read the sentence before you fetch. Search is model-driven, and a wrong reading gives a plausible table for the wrong question.
 
 `answer.fetch()` builds the table on the server, downloads it, and checks the file against its digest. Printing the dataset shows what it is, how big, and how to keep it:
 
@@ -54,7 +54,7 @@ df = data.to_pandas()
 print(df.iloc[:, :4].tail())
 ```
 
-The reading columns come first: the year, the parties, the value and its unit, each with a `_label` column of names beside the codes. The `stat_var` column comes last. `len(data)` is the row count, `data.to_polars()` gives a polars frame, and `pyarrow.table(data)` gives an Arrow table. While a build runs on the server, `fetch` shows its progress in a terminal or notebook. [Long builds](docs/long-builds.md) covers waiting, timeouts and Ctrl-C.
+The `_label` columns of names come first, covering the year, the parties, the value, and its unit. The other columns follow, codes included, with those that tell the rows apart before those that hold one value throughout, and `stat_var` last. The years of each series read in order. `len(data)` is the row count, `data.to_polars()` gives a polars frame, and `pyarrow.table(data)` gives an Arrow table. While a build runs on the server, `fetch` shows its progress in a terminal or notebook. [Long builds](docs/long-builds.md) covers waiting, timeouts, and Ctrl-C.
 
 ## Choose a reading
 
@@ -66,6 +66,7 @@ Answered 0 of 1 part of your question.
     [0] Kenya's percent of total government expenditure on education, 1980 to 2025 · World Development Indicators
     [1] Kenya's percent of nominal GDP spent on education, 1971 to 2024 · World Development Indicators
   Choose: answer.choose(0).fetch()
+Kenya's percent of total government expenditure on education, 1980 to 2025. World Development Indicators.
 ```
 
 ```python
@@ -76,7 +77,7 @@ data = answer.choose(0).fetch()
 print(data.sentence)
 ```
 
-`choose` takes the option's index or its full label, and makes one Search request. The new answer and its sentence are Search's. The order of readings can change between searches, so a script that runs again later keeps `data.ref` (see below) and leaves the index out of its notes. A place that matches several countries, such as "Congo", is settled the same way, with `answer.choose("Congo [DRC]")`. [Answers and choices](docs/answers.md) covers questions with several parts and answers that leave a part out.
+`choose` takes the option's index or its full label, and makes one Search request. The new answer and its sentence are Search's. The order of readings can change between searches, so a script that runs again later keeps `data.ref` and fetches that. A place that matches several countries, such as "Congo", is settled the same way, with `answer.choose("Congo [DRC]")`. [Answers and choices](docs/answers.md) covers questions with several parts and answers that leave a part out.
 
 ## Fetch other years or places
 
@@ -92,7 +93,7 @@ answer = dfo.search("ODA from Germany to Kenya and Ghana, 2015 to 2022")
 print(answer)
 ```
 
-To vary a reading you already have without a new search, pass its spec to `dfo.fetch` with `window` and `entities`. `window` takes `(start_year, end_year)`, `"latest"` or `"all"`. `entities` maps each role the spec names to place codes, and `spec.definition["identity"]["entities"]` lists those roles:
+To vary a reading you already have without a new search, pass its spec to `dfo.fetch` with `window` and `entities`. `window` takes `(start_year, end_year)` with years from 1000 to 2200, `"latest"`, or `"all"`. `entities` maps each role the spec names to place codes, keyed `place` for the place a measure is about and `origin` and `destination` for a flow, and `spec.roles` lists those roles with the places each binds, or None for a role left open. `answer.fetch` takes the same arguments and narrows every reading in the answer:
 
 ```text
 <Dataset Germany's gross disbursements to Ghana and Kenya for official development assistance, 2015 to 2022. Current US dollars · OECD DAC2a.
@@ -104,8 +105,8 @@ To vary a reading you already have without a new search, pass its spec to `dfo.f
 
 ```python
 spec = dfo.search("ODA from Germany to Nigeria").specs[0]
-print(spec.definition["identity"]["entities"])
-# {'destination': ['country/NGA'], 'origin': ['country/DEU']}
+print(spec.roles)
+# {'destination': ('country/NGA',), 'origin': ('country/DEU',)}
 
 data = dfo.fetch(
     spec,
@@ -143,7 +144,7 @@ Name: count, dtype: int64
 
 ## Save the data and load it later
 
-`data.save(path)` writes one Parquet file that carries the table, the citation and the ref. `dfo.load(path)` reads it back offline:
+`data.save(path)` writes one Parquet file that carries the table, the citation, and the ref. `dfo.load(path)` reads it back offline:
 
 ```python
 data = dfo.search("Kenya's external debt service").fetch()
@@ -188,23 +189,22 @@ Answer JSON that comes back from a browser can carry any reading, and its build 
 
 ## Look up a place code
 
-`dfo.lookup.resolve` turns names into the codes `entities` takes. A name that matches several places lists them:
+`dfo.lookup.resolve` turns names into the codes `entities` takes. It returns one `Match` per name, which prints what the name resolved to. A name that matches several places lists them, and a misspelt name names the nearest:
 
 ```python
-found = dfo.lookup.resolve("Nigeria", "Ghana", "Congo")
-for result in found["results"]:
-    print(result["input"], result["status"], result["entity"] or result["candidates"])
+for match in dfo.lookup.resolve("Nigeria", "Congo", "Germny"):
+    print(match)
 ```
 
 ```text
-Nigeria resolved {'ref': 'country/NGA', 'label': 'Nigeria', 'kind': 'country'}
-Ghana resolved {'ref': 'country/GHA', 'label': 'Ghana', 'kind': 'country'}
-Congo ambiguous [{'ref': 'country/COD', 'label': 'Congo [DRC]', 'kind': 'country'}, {'ref': 'country/COG', 'label': 'Congo [Republic]', 'kind': 'country'}]
+Nigeria -> Nigeria  country/NGA  (country)
+Congo -> ambiguous: Congo [DRC]  country/COD | Congo [Republic]  country/COG
+Germny -> not found; nearest: Germany  country/DEU
 ```
 
-`dfo.lookup.node("country/NGA")` returns one place with the regions it belongs to, `dfo.lookup.code("spec_not_found")` explains a code from an error, and `dfo.lookup.catalogue()` lists what Search holds data on, with example questions.
+`match.entity.dcid` holds the code of a resolved name, `match.candidates` the places an ambiguous one could mean, and `match.near_matches` the nearest spellings. `match.raw` keeps the server's result. `resolve` also takes `kinds`, such as `["country"]`, to limit the node kinds a name may match, `code_system` with `kinds=["code"]` to match one code system's codes, such as `CRSPurposeCodeEnum`, and `expand_members=True` to inline each group's members. `dfo.lookup.node("country/NGA")` returns one place, with the regions it belongs to in `node.raw`, and `as_of=` reads the graph on a past date. `dfo.lookup.code("spec_not_found")` explains a code from an error, and `dfo.lookup.catalogue()` lists what Search holds data on, with example questions. The result types live in `dfo.types`.
 
-## Settings, keys and errors
+## Settings, keys, and errors
 
 `dfo.search` and `dfo.fetch` use a default client that reads `DFO_BASE_URL` and your stored key. `dfo.Client` carries the same calls with its own settings, and closes its connections on exit:
 
@@ -214,15 +214,15 @@ with dfo.Client(timeout=60.0, max_retries=3) as client:
     print(len(data))
 ```
 
-`Client` takes `api_key`, `base_url`, `timeout` (one request attempt, 30 seconds by default), `max_retries` (0 to 10, default 2), `cache_dir`, `cache`, `headers` and `header_provider`. `dfo.configure(...)` takes the same options and replaces the default client. `dfo.AsyncClient` has the same methods as coroutines. `client.lookup` holds the lookups.
+`Client` takes `api_key`, `base_url`, `timeout` (one request attempt, 30 seconds by default), `max_retries` (0 to 10, default 2), `cache_dir`, `cache`, `headers`, and `header_provider`. `dfo.configure(...)` takes the same options and replaces the default client. `dfo.AsyncClient` has the same methods as coroutines. `client.lookup` holds the lookups. `client.with_options(timeout=..., max_retries=...)` returns a copy with other limits that shares the client's connections and cache.
 
 Run `dfo auth login` to store a key, and `dfo auth status` to see which key the client sends. [Keys and credentials](docs/keys.md) covers the lookup order.
 
-Every error derives from `dfo.errors.DfoError`, carries a `code`, and ends its message with `[code · trace id]`. A refusal names the fix, such as the call that settles an incomplete answer. [Errors](docs/errors.md) lists every class by what you do next. The types answers and datasets contain live in `dfo.types`.
+Every error derives from `dfo.errors.DfoError`, carries a `code`, and ends its message with `[code]`, or `[code · trace id]` when a response carried one. A refusal names the fix, such as the call that settles an incomplete answer. [Errors](docs/errors.md) lists every class by what you do next. The types answers and datasets contain live in `dfo.types`.
 
 ## Limits the client enforces
 
-Both DFO clients apply these limits. The constant names are the ones in the source.
+The Python and TypeScript clients both apply these limits. The constant names are those in the Python source.
 
 | Rule                | Value                                                                                                                                                                                                                                           |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -232,8 +232,8 @@ Both DFO clients apply these limits. The constant names are the ones in the sour
 | Versions walk       | Pages of 100 versions, at most 20 pages (`VERSIONS_PAGE_BUDGET`). A page cursor seen before raises `contract_violation`. Over the budget, no newest version is reported                                                                         |
 | Body size           | Decoded bytes are counted while the body streams, and the read stops at the limit with `response_too_large`. A file's limit is its manifest's `bytes`, else 2 GiB (`DOWNLOAD_MAX_BYTES`). A JSON body's limit is 16 MiB (`JSON_BODY_MAX_BYTES`) |
 | Keys                | Visible ASCII only, 0x21 to 0x7E. The key-format check (prefix, base62, checksum) only warns                                                                                                                                                    |
-| Header values       | Visible ASCII, space and tab. A control character, DEL or a non-ASCII character raises `header_invalid`                                                                                                                                         |
-| `timeout`           | A finite number above 0. A call's own `timeout` bounds the whole call: 60 seconds for `search`, and no limit for `fetch` unless you pass one                                                                                                    |
+| Header values       | Visible ASCII, space, and tab. A control character, DEL, or a non-ASCII character raises `header_invalid`                                                                                                                                       |
+| `timeout`           | A finite number above 0. A call's own `timeout` bounds the whole call (60 seconds for `search`, and no limit for `fetch` unless you pass one)                                                                                                   |
 | `max_retries`       | An integer from 0 to 10. A bool is refused                                                                                                                                                                                                      |
 | Error messages      | Name the source and the position of the offending character, and leave the key or header value out                                                                                                                                              |
 
@@ -246,7 +246,7 @@ The TypeScript client follows the same contract. It spells "no limit" as `Infini
 ## Documentation
 
 - [Answers and choices](docs/answers.md): parts, readings, `choose`, partial fetches, shared answers, and declined questions.
-- [Datasets and versions](docs/datasets.md): narrowing a fetch, layouts, conversions, refs, retention, `save` and `load`.
+- [Datasets and versions](docs/datasets.md): narrowing a fetch, layouts, conversions, refs, retention, `save`, and `load`.
 - [Long builds](docs/long-builds.md): progress, deadlines, and what Ctrl-C leaves running.
 - [Errors](docs/errors.md): every error class and code, by what you do next.
 - [Keys and credentials](docs/keys.md): the key lookup order, `dfo auth login`, and the credentials file.
@@ -256,7 +256,7 @@ The TypeScript client follows the same contract. It spells "no limit" as `Infini
 
 ## Development
 
-The repository root holds the contract, the pre-commit configuration, and the CI workflows, and `CONTRIBUTING.md` there explains them. From this directory:
+The repository root holds the contract, the pre-commit configuration, and the CI workflows, and [`CONTRIBUTING.md`](../CONTRIBUTING.md) there explains them. From this directory:
 
 ```bash
 uv sync

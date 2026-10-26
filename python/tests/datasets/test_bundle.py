@@ -20,7 +20,7 @@ from dfo._core.refs import DatasetRef
 from dfo._core.types import FormatError, Rendering
 from dfo._datasets.bundle import BundleError, BundleLimits, load
 from dfo._datasets.cache import sha256_digest
-from dfo._datasets.dataset import reading_order
+from dfo._datasets.dataset import in_reading_order
 from tests._data import DATA
 
 # Website bundles of one version, downloaded from dev, and that version's bare
@@ -31,9 +31,9 @@ PARQUET = DATA / "bundle-bare.parquet"
 
 
 def bare_table() -> pa.Table:
-    """The bare Parquet file's table, its columns in reading order."""
+    """The bare Parquet file's table, its columns and rows in reading order."""
     table = pq.read_table(PARQUET)
-    return table.select(reading_order(table.column_names))
+    return in_reading_order(table, member_rows=(table.num_rows,))
 
 
 DATA_FILE = "data/oecd-creditor-reporting-system.csv"

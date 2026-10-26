@@ -40,7 +40,8 @@ export type ClientOptions = {
   /** Headers sent with every request to the API, never to a signed storage URL. A `User-Agent` here
    *  replaces the client's own. While the client has a key, `Authorization` carries it and
    *  replaces one from here or from `headerProvider`. With `apiKey: false` the `Authorization`
-   *  given here is sent. */
+   *  given here is sent. `X-DFO-Client`, which the client sets to name itself and its runtime,
+   *  raises `InvalidRequestError` (`header_invalid`) here or from `headerProvider`. */
   headers?: Record<string, string>;
   /** Called before every request to the API for more headers, such as an identity token. Its
    *  headers replace those of `headers`, and the key's `Authorization` replaces any it returns. An
@@ -108,7 +109,7 @@ export class Client {
    *   not an absolute http or https URL, or carries userinfo, a query or a fragment
    *   (`base_url_invalid`); a key would go over plain
    *   http to a host that is not loopback (`insecure_transport`); a header value holds a control
-   *   character (`header_invalid`); `timeout` is not a finite number above 0, or `maxRetries` not
+   *   character, or a header is named `X-DFO-Client` (`header_invalid`); `timeout` is not a finite number above 0, or `maxRetries` not
    *   an integer from 0 to 10, or `options` holds a key outside `ClientOptions`
    *   (`invalid_argument`).
    * @throws {TypeError} A secret key is given in a browser page or worker without
@@ -129,17 +130,16 @@ export class Client {
     this.lookup = new Lookup(this.#transport);
   }
 
-  /** The API's base URL. */
+  /** The API's base URL, less any trailing slashes. */
   get baseUrl(): string {
-    return this.#transport.baseUrl.href;
+    return this.#transport.baseUrl.href.replace(/\/+$/, "");
   }
 
   /** The client as `<Client https://…>`, naming its base URL, with `(from DFO_BASE_URL)` when
    *  that variable set it. */
   toString(): string {
-    const { baseUrl, baseUrlSource } = this.#transport;
-    const from = baseUrlSource === "DFO_BASE_URL" ? " (from DFO_BASE_URL)" : "";
-    return `<Client ${baseUrl.href}${from}>`;
+    const from = this.#transport.baseUrlSource === "DFO_BASE_URL" ? " (from DFO_BASE_URL)" : "";
+    return `<Client ${this.baseUrl}${from}>`;
   }
 
   /** Node's `console.log` and `util.inspect` show the client as `String(client)` does. */
@@ -172,7 +172,7 @@ export class Client {
    * running on the server, and the same fetch joins it.
    *
    * @throws {InvalidRequestError} `options` holds a key outside `FetchOptions`, a window year
-   *   falls outside 1000 to 2200, the target is neither a ref nor a spec with its `spec_id` and
+   *   falls outside 1000 to 2200, `entities` names a role outside `specRoles(spec)`, the target is neither a ref nor a spec with its `spec_id` and
    *   `definition`, a ref is narrowed or given another layout or `partyTotals`, or
    *   `latest` is given a spec or a ref whose members differ in rendering.
    * @throws {VersionUnavailableError} A ref's version can no longer be fetched.
@@ -207,7 +207,7 @@ export class Client {
     const { params, json, signal, timeout } = checkOptions(REQUEST_OPTIONS, options);
     if (!path.startsWith("/") || path.startsWith("//")) {
       throw clientError("invalid_argument", {
-        detail: `${JSON.stringify(path)} is not a path on the API at ${transport.baseUrl.href}.`,
+        detail: `${JSON.stringify(path)} is not a path on the API at ${this.baseUrl}.`,
       });
     }
     // Refuses a path that leaves the base URL's path before any request.

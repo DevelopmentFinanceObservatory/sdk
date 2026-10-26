@@ -85,7 +85,7 @@ A base URL is an absolute http or https URL. A key travels over https, or over p
 
 The client looks for its key when it is built, and the first source that has one wins:
 
-1. the `api_key=` argument to `Client`, `AsyncClient` or `dfo.configure`;
+1. the `api_key=` argument to `Client`, `AsyncClient`, or `dfo.configure`;
 1. the `DFO_API_KEY` environment variable;
 1. the credentials file, profile `DFO_PROFILE`, else `default`;
 1. inside Google Colab, a notebook secret named `DFO_API_KEY`;
@@ -132,11 +132,11 @@ with dfo.Client(
     print(client.search("GDP of Kenya"))
 ```
 
-A provider's header replaces one of the same name in `headers`, and the key's `Authorization` header replaces one from either. A header value holds visible ASCII, spaces and tabs; any other character raises `InvalidRequestError` with `header_invalid`, naming the header and leaving the value out. The synchronous client calls the provider on your thread with no time limit, so give a provider that can block its own timeout. The asynchronous client bounds it by the time left on the request.
+A provider's header replaces one of the same name in `headers`, and the key's `Authorization` header replaces one from either. Every API request carries `X-DFO-Client`, naming the client, its version and the Python runtime, such as `dfo-python/0.1.0 (CPython 3.14)`. A header of that name, in any letter case, raises `InvalidRequestError` with `header_invalid` before any request. Name your application in `User-Agent` instead, which replaces the client's `dfo-python/0.1.0`. Requests to the storage host that serves downloads carry none of these headers. A header value holds visible ASCII, spaces, and tabs. Any other character raises `InvalidRequestError` with `header_invalid`, naming the header and leaving the value out. The synchronous client calls the provider on your thread with no time limit, so give a provider that can block its own timeout. The asynchronous client bounds it by the time left on the request.
 
 ## Keep the key out of logs
 
-`dfo.auth.ApiKey` wraps a key so it stays out of reprs, logs and pickles. `str` and `repr` show a masked form, `reveal()` returns the value, and pickling raises `TypeError`:
+`dfo.auth.ApiKey` wraps a key so it stays out of reprs, logs, and pickles. `str` and `repr` show a masked form, `reveal()` returns the value, and pickling raises `TypeError`:
 
 ```text
 ApiKey('dfo_k_***Qjsd')
@@ -166,7 +166,7 @@ The file lives at the first of:
 
 - `$DFO_CREDENTIALS_FILE`;
 - on Linux and macOS, `$XDG_CONFIG_HOME/dfo/credentials.toml`, else `~/.config/dfo/credentials.toml`;
-- on Windows, `%APPDATA%\dfo\credentials.toml`.
+- on Windows, `%APPDATA%\dfo\credentials.toml`, else `<home>\AppData\Roaming\dfo\credentials.toml`. Windows ignores `XDG_CONFIG_HOME`.
 
 Every DFO client reads the same file. It holds one table per profile, with a `key` line in each:
 
@@ -180,7 +180,7 @@ key = "dfo_k_..."
 
 `DFO_PROFILE=staging` picks the second profile for the CLI and for every client. `dfo auth login` with `DFO_PROFILE` set stores the key under that profile and keeps the others.
 
-The file is a strict subset of TOML: `[profile]` headers, `name = "value"` lines in double quotes, blank lines and whole-line `#` comments. A missing file, or one without a `default` profile while `DFO_PROFILE` is unset, moves the lookup on to the next source. These faults raise `AuthenticationError` when the client is built:
+The file is a strict subset of TOML: `[profile]` headers, `name = "value"` lines in double quotes, blank lines, and whole-line `#` comments. A missing file, or one without a `default` profile while `DFO_PROFILE` is unset, moves the lookup on to the next source. These faults raise `AuthenticationError` when the client is built:
 
 | Code                          | Cause                                                   | Fix                                                        |
 | ----------------------------- | ------------------------------------------------------- | ---------------------------------------------------------- |
@@ -191,13 +191,13 @@ The file is a strict subset of TOML: `[profile]` headers, `name = "value"` lines
 
 ### The key format
 
-A DFO secret key is 44 characters long: `dfo_k_`, a base62 body, then a six-character checksum. A key that fails the check issues a `DfoWarning` (`key_unknown_prefix`, `key_not_base62` or `key_checksum_mismatch`) and is sent anyway, so a typo shows up before the server refuses it.
+A DFO secret key is 44 characters long: `dfo_k_`, a base62 body, then a six-character checksum. A key that fails the check issues a `DfoWarning` (`key_unknown_prefix`, `key_not_base62`, or `key_checksum_mismatch`) and is sent anyway, so a typo shows up before the server refuses it.
 
 ### When the server refuses a key
 
-A key the server does not accept, because it is unknown, revoked or expired, raises `AuthenticationError`, and a key without a scope the call needs raises `PermissionDeniedError`. After a 401 the client looks up its key once more before it raises, so a key you replaced with `dfo auth login` in another terminal takes effect without a restart. [Errors](errors.md) lists every class and code.
+An unknown, revoked, or expired key raises `AuthenticationError`. A key without a scope the call needs raises `PermissionDeniedError`. After a 401 the client looks up its key once more before it raises, so a key you replaced with `dfo auth login` in another terminal takes effect without a restart. [Errors](errors.md) lists every class and code.
 
 ## Next
 
-- [Errors](errors.md): what to catch, and the fix each error names.
-- [The cache](cache.md): where the client keeps downloads.
+- [Errors](errors.md) covers what to catch and the fix each error names.
+- [The cache](cache.md) covers where the client keeps downloads.

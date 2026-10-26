@@ -7,7 +7,9 @@ member keeps the spec, the version and the definition the server answered with.
 
 Each member's sentence is Search's. It is the one the caller holds when the built
 `spec_id` equals the posted one, else the sentence Search gives the built identity
-when it is resubmitted, checked on `spec_id`. A narrowing that holds no data
+when it is resubmitted, checked on `spec_id`. Readings whose narrowed builds
+name one `spec_id` become one member, which downloads once and answers each
+reading's parts. A narrowing that holds no data
 builds an empty version, and Search answers its identity with one `no_data` part,
 whose sentence labels the empty member. Every download asks the files route
 and fetches the URL its `Location` names: bare on the storage host, with the
@@ -22,7 +24,7 @@ fetches of one artifact download it once, through `Cache.downloading`.
 
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 from urllib.parse import urljoin
 
@@ -53,16 +55,19 @@ from dfo._core.types import (
     NoDataPart,
     Rendering,
     Spec,
+    Window,
     Wire,
 )
 from dfo._datasets.build import (
-    NOTHING_ASKED,
     Asked,
     Cache,
+    Entities,
     Reading,
+    asked,
     build_body,
     check_strict,
     counted_rows,
+    narrowings,
     pick_artifact,
     rendering_for,
     response_json,
@@ -128,15 +133,18 @@ def fetch_members(
     progress: bool | None = None,
     cache: Cache | None = None,
     missing: Sequence[Gap] = (),
-    narrowing: Mapping[str, Any] | None = None,
-    asked: Asked = NOTHING_ASKED,
+    window: Window | None = None,
+    entities: Entities | None = None,
+    facets: Mapping[str, str | None] | None = None,
 ) -> Dataset:
     """Build the latest version of each spec and assemble one dataset.
 
     Args:
         transport: The transport requests go through.
         readings: The readings to build, in query order. A spec listed twice
-            builds once, answering both readings' parts.
+            builds once, answering both readings' parts, and readings whose
+            narrowed builds name one spec become one member, downloaded once,
+            in the first one's place.
         layout: `long`, or `frame` for one reading.
         party_totals: Keep the rows of parties the code index declares totals
             on each party role a reading leaves open. False, the default, builds
@@ -149,15 +157,18 @@ def fetch_members(
         cache: The local cache, or None to fetch without one.
         missing: The gaps a partial answer leaves out; the dataset is complete
             when there are none.
-        narrowing: The build request's `scope`, applied to every member.
-        asked: The values the caller's narrowing names, which a refusal of the
-            narrowing answers with the server's alternatives and, for a place
-            name, the lookup that finds its dcid.
+        window: Narrow every reading to `"all"`, `"latest"` or
+            `(start_year, end_year)`.
+        entities: Rebind the named roles of every reading to dcids; None drops
+            a role. Each reading keeps its other roles' binding.
+        facets: Bind every reading's provenance, measurement method or unit.
 
     Raises:
         InvalidRequestError: `layout="frame"` with several members, `strict`
-            is not a bool or `progress` neither a bool nor None
-            (`invalid_argument`), or the server refused a build as malformed.
+            is not a bool or `progress` neither a bool nor None, the narrowing
+            is malformed or `entities` names a role a reading does not declare
+            (`invalid_argument`), all before any request; or the server refused
+            a build as malformed.
         NetworkError: `DFO_OFFLINE=1` is set, and the cache holds no version of
             a spec, or the fetch narrows it (`offline`).
         DfoTimeoutError: The deadline passed; the message says the build carries
@@ -175,18 +186,20 @@ def fetch_members(
             'layout="frame" holds one reading; fetch each spec on its own for its '
             "frame",
         )
+    scopes = narrowings(wants, window=window, entities=entities, facets=facets)
+    named = asked(entities=entities, facets=facets)
     stale = offline()
-    if stale and narrowing is not None:
+    if stale and any(narrowed is not None for narrowed in scopes):
         raise client_error(
             OFFLINE,
             "DFO_OFFLINE=1 is set, and a narrowed spec's version is known only to "
             "the server; fetch it without window, entities or facets",
         )
     deadline = transport.deadline(timeout)
-    fetched = []
+    fetched: dict[str, FetchedMember] = {}
     with ProgressRenderer(enabled=progress) as renderer:
         on_progress = progress_hook(renderer)
-        for want in wants:
+        for want, narrowing in zip(wants, scopes, strict=True):
             if stale:
                 manifest, cached_data = _latest_cached(
                     cache, want.spec.spec_id, rendering
@@ -196,12 +209,21 @@ def fetch_members(
                 built = _build_latest(
                     transport,
                     build_body(want.spec, rendering, narrowing),
-                    asked,
+                    named,
                     deadline=deadline,
                     timeout=timeout,
                     on_progress=on_progress,
                 )
                 cached_data = None
+            spec_id = built.manifest["definition"]["spec_id"]
+            if (seen := fetched.get(spec_id)) is not None:
+                # Two specs can narrow to one built spec, which a dataset holds once.
+                fetched[spec_id] = replace(
+                    seen,
+                    parts=_joined(seen.parts, want.parts),
+                    answer_parts=seen.answer_parts + want.answer_parts,
+                )
+                continue
             with finishing(transport, built, deadline, timeout=timeout) as (
                 finisher,
                 bound,
@@ -221,14 +243,14 @@ def fetch_members(
                 except InvalidRequestError as error:
                     # Search refuses an entity of the built identity when it is
                     # resubmitted for its sentence.
-                    hinted = _narrowing_refusal(error, asked, transport.caller)
+                    hinted = _narrowing_refusal(error, named, transport.caller)
                     if hinted is error:
                         raise
                     raise hinted from error
-                fetched.append(member)
+                fetched[spec_id] = member
     return sync_offload(
         build_dataset,
-        fetched,
+        list(fetched.values()),
         layout=layout,
         complete=not missing,
         missing=missing,
@@ -390,13 +412,17 @@ def _distinct(readings: Sequence[Reading]) -> list[Reading]:
             merged[reading.spec.spec_id] = reading
             continue
         merged[reading.spec.spec_id] = Reading(
-            seen.parts
-            + tuple(part for part in reading.parts if part not in seen.parts),
+            _joined(seen.parts, reading.parts),
             seen.spec,
             seen.sentence or reading.sentence,
             seen.answer_parts + reading.answer_parts,
         )
     return list(merged.values())
+
+
+def _joined(first: tuple[str, ...], second: tuple[str, ...]) -> tuple[str, ...]:
+    """`first`, then the parts of `second` it does not hold."""
+    return first + tuple(part for part in second if part not in first)
 
 
 def build_version(

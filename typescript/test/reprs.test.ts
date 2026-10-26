@@ -9,12 +9,15 @@ import { DataWarning, DfoWarning } from "../src/core/warnings.ts";
 import { Dataset } from "../src/datasets/dataset.ts";
 import { RawResponse, Transport } from "../src/http/transport.ts";
 import { Answer, answerFromBody, SearchWarning } from "../src/search/answer.ts";
+import { Catalogue, Code, Match, Node } from "../src/search/lookup-results.ts";
+import type { GraphNode } from "../src/search/lookup-results.ts";
+import type { CatalogueResponse, EntityRef, ResolveResult } from "../src/wire.ts";
 import { NO_EXCHANGES, replay, scenarioBytes, scenarios } from "./replay.ts";
 
 const SPEC_ID = `spec_${"3f1a".repeat(8)}`;
 const VERSION = `cv_${"b92d".repeat(8)}`;
 
-const dataset = new Dataset(
+const dataset = await Dataset.create(
   [
     {
       parts: [],
@@ -39,6 +42,56 @@ const answer = answerFromBody(
 
 const lookup = clientOver(new Transport({ baseUrl: "https://api.example", apiKey: false })).lookup;
 
+const KENYA: EntityRef = { ref: "country/KEN", label: "Kenya", kind: "country" };
+const GERMANY: EntityRef = { ref: "country/DEU", label: "Germany", kind: "country" };
+
+/** A resolver result for `input`, with the members its status uses. */
+const result = (input: string, members: Partial<ResolveResult>): ResolveResult => ({
+  input,
+  status: "resolved",
+  entity: null,
+  matched: null,
+  reading: null,
+  projection: null,
+  member_count: null,
+  members: null,
+  candidates: null,
+  near_matches: null,
+  ...members,
+});
+
+const georgias = ["country/GEO", "geoId/13", "geoId/13a", "geoId/13b"].map(
+  (ref, index): EntityRef => ({
+    ref,
+    label: "Georgia",
+    kind: index === 0 ? "country" : "place_other",
+  }),
+);
+
+const kenyaNode = (label: string): GraphNode => ({
+  ref: "country/KEN",
+  label,
+  types: ["Country"],
+  description: null,
+  links: {},
+  gaps: [],
+  built_from: {},
+  kind: "country",
+  country: { contained_in: [], membership: null },
+});
+
+const catalogueOf = (version: string, example: string): CatalogueResponse => ({
+  catalogue_version: version,
+  counts: {
+    indicators: 108917,
+    datasets: 92,
+    publishers: 42,
+    countries: 246,
+    aid: { donors: 172, recipients: 235, years: { first: 1960, last: 2025 } },
+  },
+  examples: [{ text: example, template: "", stat_var: "", place: "country/KEN" }],
+});
+
 // Each row builds the object and gives what it prints: the whole text when `whole` is set, which
 // holds at most two lines of at most 200 characters, else the start of the text.
 const ROWS: [string, () => { toString(): string }, string, boolean][] = [
@@ -46,6 +99,83 @@ const ROWS: [string, () => { toString(): string }, string, boolean][] = [
   ["dataset", () => dataset, "<Dataset Germany's gross ODA disbursements to Nigeria.\n", false],
   ["dataset-ref", () => dataset.ref, `DatasetRef(1 member: ${SPEC_ID} at ${VERSION}, exact)`, true],
   ["lookup", () => lookup, "<Lookup: resolve(names), node(dcid), code(code), catalogue()>", true],
+  [
+    "match-resolved",
+    () => new Match(result("Kenya", { entity: KENYA })),
+    "Kenya -> Kenya  country/KEN  (country)",
+    true,
+  ],
+  [
+    "match-resolved-near",
+    () => new Match(result("Georgia", { entity: georgias[0]!, near_matches: [georgias[1]!] })),
+    "Georgia -> Georgia  country/GEO  (country)  +1 near match",
+    true,
+  ],
+  [
+    "match-resolved-near-matches",
+    () =>
+      new Match(result("Georgia", { entity: georgias[0]!, near_matches: georgias.slice(1, 3) })),
+    "Georgia -> Georgia  country/GEO  (country)  +2 near matches",
+    true,
+  ],
+  [
+    "match-ambiguous",
+    () => new Match(result("Georgia", { status: "ambiguous", candidates: georgias })),
+    "Georgia -> ambiguous: Georgia  country/GEO | Georgia  geoId/13 | Georgia  geoId/13a | +1 more",
+    true,
+  ],
+  [
+    "match-not-found-nearest",
+    () => new Match(result("Germny", { status: "not_found", near_matches: [GERMANY] })),
+    "Germny -> not found; nearest: Germany  country/DEU",
+    true,
+  ],
+  [
+    "match-not-found",
+    () => new Match(result("Xqzzy", { status: "not_found", near_matches: [] })),
+    "Xqzzy -> not found",
+    true,
+  ],
+  [
+    "match-not-held",
+    () =>
+      new Match(
+        result("Atlantis", {
+          status: "not_held",
+          entity: { ref: "dc/x", label: "Atlantis", kind: null },
+        }),
+      ),
+    "Atlantis -> not held: Atlantis  dc/x",
+    true,
+  ],
+  [
+    "node",
+    () => new Node(kenyaNode("Kenya")),
+    "Kenya  country/KEN  (country)  types: Country",
+    true,
+  ],
+  [
+    "code",
+    () =>
+      new Code({
+        code: "spec_not_found",
+        classification: "refusal",
+        definition: "No definition is registered at this id.",
+        lifecycle: "active",
+        mappings: [],
+        title: null,
+        detail: null,
+      }),
+    "spec_not_found: No definition is registered at this id.",
+    true,
+  ],
+  [
+    "catalogue",
+    () => new Catalogue(catalogueOf("cat_1", "Life expectancy in Kenya")),
+    "108,917 indicators, 92 datasets, 42 publishers, 246 countries; " +
+      '1 example question, such as "Life expectancy in Kenya"',
+    true,
+  ],
   [
     "raw-response",
     () =>
@@ -64,6 +194,20 @@ const ROWS: [string, () => { toString(): string }, string, boolean][] = [
     true,
   ],
 ];
+
+test("a match cuts its text, each name and its line, and counts the candidates it leaves out", () => {
+  const long = "Kenya's percent ".repeat(10);
+  const candidates = Array.from({ length: 120 }, () => ({
+    ref: `x/${"y".repeat(80)}`,
+    label: long,
+    kind: "place_other" as const,
+  }));
+  const text = String(new Match(result(long, { status: "ambiguous", candidates })));
+  const cut = (width: number) => `${long.slice(0, width - 1).trimEnd()}…`;
+  assert.ok(text.startsWith(`${cut(40)} -> ambiguous: ${cut(30)}  x/`), text);
+  assert.equal(Array.from(text).length, 180);
+  assert.ok(text.endsWith("…"), text);
+});
 
 for (const [name, build, expected, whole] of ROWS) {
   test(`${name} prints its summary in a template string and through util.inspect`, () => {
@@ -186,7 +330,7 @@ const DATASET_BYTES = await scenarioBytes("answer-definite-fetch.parquet");
 
 /** A dataset with `taint` in its sentence, source, spec id and version. */
 const datasetOf = (taint: string) =>
-  new Dataset(
+  Dataset.create(
     [
       {
         parts: [],
@@ -204,6 +348,13 @@ const datasetOf = (taint: string) =>
 
 // Each row builds an object whose display shows server text with `taint` in it. The empty
 // taint builds the clean twin, whose lines the tainted display must keep.
+/** `datasetOf`'s datasets, built before the rows below read them synchronously, with no
+ *  taint and with `TAINT`. */
+const DATASETS = new Map([
+  ["", await datasetOf("")],
+  [TAINT, await datasetOf(TAINT)],
+]);
+
 const TAINTED_ROWS: [string, (taint: string) => { toString(): string }][] = [
   ["a definite answer", answerOf("answer-definite-fetch")],
   [
@@ -213,8 +364,33 @@ const TAINTED_ROWS: [string, (taint: string) => { toString(): string }][] = [
   ["an answer awaiting a choice", answerOf("answer-candidates-choose-fetch")],
   ["a partly answered answer", answerOf("answer-mixed-fetch-partial")],
   ["a declined answer", answerOf("answer-declined")],
-  ["a dataset", datasetOf],
-  ["a dataset ref", (taint) => datasetOf(taint).ref],
+  ["a dataset", (taint) => DATASETS.get(taint)!],
+  [
+    "a match",
+    (taint) =>
+      new Match(
+        result(`Kenya${taint}`, {
+          status: "ambiguous",
+          candidates: [{ ...KENYA, label: `Kenya${taint}`, ref: `country/KEN${taint}` }],
+        }),
+      ),
+  ],
+  ["a node", (taint) => new Node(kenyaNode(`Kenya${taint}`))],
+  [
+    "a code",
+    (taint) =>
+      new Code({
+        code: "spec_not_found",
+        classification: null,
+        definition: `No spec.${taint}`,
+        lifecycle: null,
+        mappings: [],
+        title: null,
+        detail: null,
+      }),
+  ],
+  ["a catalogue", (taint) => new Catalogue(catalogueOf("cat_1", `GDP${taint}`))],
+  ["a dataset ref", (taint) => DATASETS.get(taint)!.ref],
   [
     "a raw response",
     // A header value holds no line break, so the response's taint stops at the controls.
@@ -242,7 +418,7 @@ for (const [name, build] of TAINTED_ROWS) {
 
 test("an answer and a dataset keep the server text their display cleans", () => {
   assert.ok(answerOf("answer-definite-fetch")(TAINT).sentence?.endsWith(TAINT));
-  const data = datasetOf(TAINT);
+  const data = DATASETS.get(TAINT)!;
   assert.ok(data.sentence.endsWith(TAINT));
   assert.ok(data.ref.members[0]!.contentVersion.endsWith(TAINT));
 });

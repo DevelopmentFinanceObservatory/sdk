@@ -16,10 +16,16 @@ import { clientError, problemAt200 } from "../core/errors.ts";
 import type { Dataset } from "../datasets/dataset.ts";
 import {
   fetchMembers as defaultFetchMembers,
+  narrowingOf,
   RESOLVE_PATH,
   RESOLVE_SCHEMA_VERSION,
 } from "../datasets/fetch.ts";
-import type { CallOptions, FetchMembersOptions, MemberRequest } from "../datasets/fetch.ts";
+import type {
+  CallOptions,
+  FetchMembersOptions,
+  MemberRequest,
+  Narrowing,
+} from "../datasets/fetch.ts";
 import { CODE_GAP_KINDS } from "../generated/actions.ts";
 import type { GAP_KINDS } from "../generated/actions.ts";
 import { parsedInputOf, partFacts, warningsOf } from "../core/parse.ts";
@@ -145,12 +151,14 @@ export type ChooseOptions = SearchOptions & {
   readonly part?: ChoiceKey;
 };
 
-/** A fetch's options, less the gaps the answer supplies. `strict` also throws the
+/** A fetch's options, less the gaps the answer supplies. `window`, `entities` and `facets`
+ *  narrow every reading as `client.fetch` narrows one spec. `strict` also throws the
  *  `SearchWarning` instead of issuing it. */
-export type AnswerFetchOptions = CallOptions & {
-  /** Build the parts that have a reading when others do not; the dataset lists the gaps. */
-  readonly partial?: boolean;
-};
+export type AnswerFetchOptions = CallOptions &
+  Narrowing & {
+    /** Build the parts that have a reading when others do not; the dataset lists the gaps. */
+    readonly partial?: boolean;
+  };
 
 /** The keys `client.search` takes. */
 export const SEARCH_OPTIONS = declareOptions<SearchOptions>("client.search", {
@@ -173,6 +181,9 @@ const ANSWER_FETCH_OPTIONS = declareOptions<AnswerFetchOptions>("answer.fetch", 
   strict: true,
   layout: true,
   partyTotals: true,
+  window: true,
+  entities: true,
+  facets: true,
   partial: true,
 });
 
@@ -300,11 +311,14 @@ export class Answer {
   }
 
   /**
-   * Builds the dataset for the answer's readings. Each distinct spec builds once; several
-   * readings stack into one long table with a `part` column.
+   * Builds the dataset for the answer's readings. Each distinct spec builds once; readings
+   * that narrow to one spec share a member, and several members stack into one long table with a
+   * `part` column. `window`, `entities` and `facets` narrow every reading as `client.fetch`
+   * narrows one spec.
    *
-   * @throws {InvalidRequestError} `options` holds a key outside `AnswerFetchOptions`
-   *   (`invalid_argument`).
+   * @throws {InvalidRequestError} `options` holds a key outside `AnswerFetchOptions`, or a
+   *   narrowing breaks its rule or names a role a reading does not take, which names each
+   *   reading's roles, before any request (`invalid_argument`).
    * @throws {DeclinedError} Search declined the question or answered with the catalogue.
    * @throws {IncompleteAnswerError} A part has no reading and `partial` is false, or no part has
    *   one.
@@ -312,7 +326,10 @@ export class Answer {
    * @throws {DataWarning} `strict` is true and a manifest carries a warning above `info`.
    */
   async fetch(options: AnswerFetchOptions = {}): Promise<Dataset> {
-    const { partial, ...fetchOptions } = checkOptions(ANSWER_FETCH_OPTIONS, options);
+    const { partial, window, entities, facets, ...fetchOptions } = checkOptions(
+      ANSWER_FETCH_OPTIONS,
+      options,
+    );
     if (this.kind !== "resolution") {
       throw clientError("answer_declined", {
         detail: declinedText(this.kind, this.reason),
@@ -341,6 +358,7 @@ export class Answer {
     const build = this.#context.fetchMembers ?? defaultFetchMembers;
     return build(this.#context.transport, members, {
       ...fetchOptions,
+      narrowing: narrowingOf({ window, entities, facets }),
       missing: this.gaps,
     });
   }

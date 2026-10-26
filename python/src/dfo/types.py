@@ -1,5 +1,5 @@
-"""The types a caller annotates with: the parts of an answer and the pieces of
-a dataset.
+"""The types a caller annotates with: the parts of an answer, the pieces of a
+dataset and the results of `dfo.lookup`.
 
 `dfo` itself holds `Answer`, `Dataset`, `Spec` and `DatasetRef`; this module
 holds what they contain, and the asynchronous `AsyncAnswer`.
@@ -11,6 +11,7 @@ the contract does not list yet; an option the client takes, such as `kinds`,
 takes `Name`.
 """
 
+from dfo._core.lookup_results import Catalogue, Code, Entity, Match, Node
 from dfo._core.refs import Member, RefMember
 from dfo._core.types import (
     Assumption,
@@ -53,18 +54,23 @@ __all__ = [
     "BundleLimits",
     "Candidate",
     "CandidatesPart",
+    "Catalogue",
     "Citation",
     "CitationSource",
+    "Code",
     "DeclinedReason",
     "DefinitePart",
     "Departure",
     "DepartureCode",
+    "Entity",
     "Gap",
     "GapKind",
     "Layout",
+    "Match",
     "Member",
     "NoDataPart",
     "NoDataReason",
+    "Node",
     "Notice",
     "Option",
     "Part",

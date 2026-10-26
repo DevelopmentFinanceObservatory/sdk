@@ -42,12 +42,13 @@ import {
   fetchMembers,
   finish,
   invalid,
+  narrowingOf,
   narrows,
   noteWarnings,
   pickArtifact,
   specIdOf,
 } from "./fetch.ts";
-import type { CallOptions, FetchOptions, Narrowing } from "./fetch.ts";
+import type { CallOptions, FetchOptions } from "./fetch.ts";
 import { build, readManifest, waitFor } from "./operation.ts";
 import type { Built, Manifest, Wait } from "./operation.ts";
 import {
@@ -62,7 +63,7 @@ import type { Layout, Rendering, RefMember, Spec } from "../core/ref.ts";
 import { checkOptions } from "../core/options.ts";
 import { describing } from "../core/trace.ts";
 import type { Transport } from "../http/transport.ts";
-import { isRecord, present } from "../core/json.ts";
+import { isRecord } from "../core/json.ts";
 import { clientWarning } from "../core/warnings.ts";
 
 /** The call that fetches the newest versions of a ref's specs, which a lost version names. */
@@ -88,12 +89,7 @@ export async function fetchDataset(
   options: FetchOptions = {},
 ): Promise<Dataset> {
   const { window, entities, facets, latest, ...rest } = checkOptions(FETCH_OPTIONS, options);
-  // Null reads as unset, as None does in the Python client.
-  const narrowing: Narrowing = present({
-    window: window ?? undefined,
-    entities: entities ?? undefined,
-    facets: facets ?? undefined,
-  });
+  const narrowing = narrowingOf({ window, entities, facets });
   if (latest !== undefined && typeof latest !== "boolean") {
     throw invalid(`latest is true or false, not ${JSON.stringify(latest)}.`);
   }
@@ -230,7 +226,7 @@ async function fetchRef(
   for (const [index, member] of ref.members.entries()) {
     fetched.push(await fetchVersion(transport, member, `/members/${index}`, options, wait));
   }
-  return new Dataset(fetched, { layout });
+  return Dataset.create(fetched, { layout });
 }
 
 const stored = (member: RefMember, manifest: Manifest, data: Uint8Array): FetchedMember => ({

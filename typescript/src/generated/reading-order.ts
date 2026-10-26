@@ -1,4 +1,4 @@
-// Generated from contract/rules/column-order.json by `pnpm generate`. Do not edit by hand.
+// Generated from contract/rules/reading-order.json by `pnpm generate`. Do not edit by hand.
 
 export const READING_COLUMNS = [
   ["time_period"],

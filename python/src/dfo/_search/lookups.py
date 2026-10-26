@@ -3,17 +3,17 @@
 A client carries them as `client.lookup`, and `dfo.lookup` holds the same calls on
 the default client.
 
-Each lookup returns the decoded response body, typed by the served OpenAPI
-document's schema. The body must be an object holding the members that schema
-requires, each as its JSON type, else it raises `ContractError`
-(`contract_violation`) with the pointer of the member it lacks. Such a body that is
+Each lookup returns a small frozen type from `dfo.types`, `Match`, `Node`, `Code`
+or `Catalogue`, which keeps the decoded response as `raw`. The body must be an
+object holding the members that type reads, each as its JSON type, else it raises
+`ContractError` (`contract_violation`) with the pointer of the member it lacks. Such a body that is
 a problem document sent with a success status, a string `code` and no `kind`,
 raises as the class the contract maps that code to, else `contract_violation`. The
-client reads no more of it, so an unknown member or enum value passes through
-untouched.
+client reads the rest tolerantly, so an unknown member or enum value passes
+through untouched.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import date
 from typing import Any
 from urllib.parse import quote
@@ -22,42 +22,49 @@ import httpx2
 
 from dfo._core.codes import INVALID_ARGUMENT
 from dfo._core.errors import ContractError, client_error
+from dfo._core.lookup_results import (
+    Catalogue,
+    Code,
+    Match,
+    Node,
+    read_catalogue,
+    read_code,
+    read_matches,
+    read_node,
+)
 from dfo._core.parse import require_members
 from dfo._core.refusals import CODE, describing, trace_id_of
 from dfo._core.text import control_fault, has_dot_segment
-from dfo._core.types import Node, matches
+from dfo._core.types import matches
 from dfo._datasets.build import response_json
 from dfo._generated.strict import JsonType
-from dfo._generated.wire import (
-    CatalogueResponse,
-    CodeRegistryEntry,
-    ResolveKind,
-    ResolveResponse,
-)
+from dfo._generated.wire import ResolveKind
 from dfo._http.transport import AsyncTransport
 
 
-def _lookup_body(
+def _lookup_body[T](
     transport: AsyncTransport,
     response: httpx2.Response,
     schema: str,
     required: tuple[tuple[str, JsonType], ...],
-) -> Any:
-    """The decoded body of a lookup's response, once it holds what `schema`
-    requires.
+    read: Callable[[Any], T],
+) -> T:
+    """The result `read` makes of a lookup's decoded body, once the body holds
+    what `schema` requires. A `ContractError` from `read` carries the response's
+    trace id.
 
     Raises:
         DfoError: The body lacks a required member and is a problem document. It
             raises as the class the contract maps its code to.
         ContractError: The body is not JSON (`unexpected_response`); it lacks a
             required member, or holds one as another JSON type, and is no
-            problem document; or the problem document's code is one the
-            contract does not map (`contract_violation`).
+            problem document; the problem document's code is one the contract
+            does not map; or `read` refuses the body (`contract_violation`).
     """
     body = response_json(response)
     try:
         with describing(trace_id_of(response, body)):
-            return require_members(body, schema, required)
+            return read(require_members(body, schema, required))
     except ContractError:
         if (problem := transport.success_problem(response, body)) is not None:
             raise problem from None
@@ -105,11 +112,11 @@ class AsyncLookup:
         kinds: Sequence[ResolveKind] | None = None,
         code_system: str | None = None,
         expand_members: bool = False,
-    ) -> ResolveResponse:
+    ) -> list[Match]:
         """Resolve names, such as "Nigeria" or "Sahel", to graph nodes.
 
         Args:
-            texts: One to 25 names, resolved as one batch. `results` follows
+            texts: One to 25 names, resolved as one batch, one match per name in
                 their order.
             kinds: The node kinds a name may resolve to; None takes the server's
                 default of every kind of place and group.
@@ -129,7 +136,11 @@ class AsyncLookup:
             body["expand"] = ["members"]
         response = await self._transport.request("POST", "/graph/resolve", json=body)
         return _lookup_body(
-            self._transport, response, "ResolveResponse", (("results", "array"),)
+            self._transport,
+            response,
+            "ResolveResponse",
+            (("results", "array"),),
+            read_matches,
         )
 
     async def node(self, dcid: str, /, *, as_of: date | None = None) -> Node:
@@ -154,10 +165,11 @@ class AsyncLookup:
             self._transport,
             response,
             "GraphNode",
-            (("kind", "string"), ("ref", "string")),
+            (("kind", "string"), ("ref", "string"), ("types", "array")),
+            read_node,
         )
 
-    async def code(self, code: str, /) -> CodeRegistryEntry:
+    async def code(self, code: str, /) -> Code:
         """The registry entry for one code, such as `spec_not_found`, which says
         what that refusal or warning means.
 
@@ -182,9 +194,10 @@ class AsyncLookup:
             response,
             "CodeRegistryEntry",
             (("code", "string"), ("mappings", "array")),
+            read_code,
         )
 
-    async def catalogue(self, *, place: str | None = None) -> CatalogueResponse:
+    async def catalogue(self, *, place: str | None = None) -> Catalogue:
         """What Search holds data on: counts and example questions.
 
         Args:
@@ -204,4 +217,5 @@ class AsyncLookup:
                 ("counts", "object"),
                 ("examples", "array"),
             ),
+            read_catalogue,
         )

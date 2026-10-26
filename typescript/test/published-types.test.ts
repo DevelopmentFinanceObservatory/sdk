@@ -25,8 +25,9 @@ import type {
   AnswerStatus,
   Departure,
   GapKind,
-  GraphNode,
   Lookup,
+  Match,
+  Node,
   Notice,
   Part,
   ProblemIssue,
@@ -42,8 +43,10 @@ export async function rows(question: string): Promise<number> {
   const dataset: Dataset = await client.fetch(spec);
   const bytes: Uint8Array = await dataset.bytes();
   const lookup: Lookup = client.lookup;
-  const node: GraphNode = await lookup.node("country/NGA");
-  return parts.length + dataset.rowCount + bytes.length + node.ref.length;
+  const node: Node = await lookup.node("country/NGA");
+  const matches: readonly Match[] = await lookup.resolve("Kenya");
+  const near: number = matches[0]?.nearMatches.length ?? 0;
+  return parts.length + dataset.rowCount + bytes.length + node.dcid.length + near;
 }
 
 // An answer's dataset and a spec's dataset are both a Dataset.

@@ -11,6 +11,7 @@ import ssl
 import time
 import warnings
 from collections.abc import Callable
+from typing import Any
 
 import httpcore2
 import httpx2
@@ -34,15 +35,19 @@ from dfo._core.errors import (
 from dfo._core.json_text import JSON_MAX_DEPTH
 from dfo._core.refusals import trace_id_of
 from dfo._http.transport import (
+    CLIENT_IDENTITY,
     DEFAULT_BASE_URL,
     JSON_BODY_MAX_BYTES,
     USER_AGENT,
     AsyncTransport,
+    BaseUrl,
     _DeadlineBackend,
     _keep_to_deadlines,
     attempt_deadline,
+    resolve_base_url,
 )
 from tests._fetch_support import Body, silent_server, stalling_server
+from tests.rule_vectors import ids, vectors
 
 pytestmark = pytest.mark.anyio
 
@@ -133,7 +138,7 @@ async def test_paths_resolve_under_the_base_url_and_server_urls_under_its_origin
     assert json.loads(recorder.requests[0].content) == {"q": 1}
 
 
-async def test_api_requests_carry_the_user_agent_key_and_first_party_headers() -> None:
+async def test_api_requests_carry_the_client_key_and_first_party_headers() -> None:
     calls = []
 
     async def provider() -> dict[str, str]:
@@ -151,6 +156,7 @@ async def test_api_requests_carry_the_user_agent_key_and_first_party_headers() -
     headers = recorder.requests[0].headers
     assert headers["user-agent"] == USER_AGENT
     assert USER_AGENT.startswith("dfo-python/")
+    assert headers["x-dfo-client"] == CLIENT_IDENTITY
     assert headers["authorization"] == f"Bearer {KEY}"
     assert headers["x-dfo-caller"] == "data-mcp"
     assert headers["x-serverless-authorization"] == "Bearer id-token"
@@ -226,6 +232,7 @@ async def test_download_is_bare_only_on_the_storage_host(url: str, bare: bool) -
         "x-serverless-authorization": headers.get("x-serverless-authorization"),
         "x-dfo-principal": headers.get("x-dfo-principal"),
         "user-agent": headers.get("user-agent") == USER_AGENT,
+        "x-dfo-client": headers.get("x-dfo-client"),
     }
     if bare:
         assert client_headers == dict.fromkeys(client_headers) | {"user-agent": False}
@@ -236,6 +243,7 @@ async def test_download_is_bare_only_on_the_storage_host(url: str, bare: bool) -
             "x-serverless-authorization": "Bearer id-token",
             "x-dfo-principal": "someone",
             "user-agent": True,
+            "x-dfo-client": CLIENT_IDENTITY,
         }
         assert calls == [1]
 
@@ -1074,6 +1082,20 @@ async def test_the_base_url_is_the_argument_then_dfo_base_url_then_the_public_ap
         monkeypatch.setenv("DFO_BASE_URL", env)
     async with make(Recorder(), base_url=argument) as transport:
         assert (transport.base_url, transport.base_url_source) == (url, source)
+
+
+@pytest.mark.parametrize("vector", vectors("base-url"), ids=ids("base-url"))
+def test_the_base_url_vectors(vector: dict[str, Any]) -> None:
+    def resolve() -> BaseUrl:
+        return resolve_base_url(vector.get("base_url"), env=vector["env"])
+
+    if "error" in vector:
+        with pytest.raises(InvalidRequestError) as caught:
+            resolve()
+        assert caught.value.code == vector["error"]["reason"]
+        return
+    resolved = resolve()
+    assert (resolved.source, resolved.url) == (vector["source"], vector["url"])
 
 
 @pytest.mark.parametrize(
