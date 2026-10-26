@@ -68,9 +68,13 @@ donors = dfo.fetch(spec).to_pandas()
 with_totals = dfo.fetch(spec, party_totals=True).to_pandas()
 
 print(f"{len(donors)} rows, {donors['value'].sum() / 1e9:.2f} billion dollars")
-print(f"{len(with_totals)} rows, {with_totals['value'].sum() / 1e9:.2f} billion dollars")
+print(
+    f"{len(with_totals)} rows, {with_totals['value'].sum() / 1e9:.2f} billion dollars"
+)
 
-totals = with_totals[~with_totals["financingProvider"].isin(donors["financingProvider"])]
+totals = with_totals[
+    ~with_totals["financingProvider"].isin(donors["financingProvider"])
+]
 print(totals.nlargest(3, "value")[["financingProvider_label", "value"]])
 ```
 
@@ -115,7 +119,9 @@ import pyarrow as pa
 
 import dfo
 
-data = dfo.search("ODA disbursements from Germany to Nigeria for basic health care").fetch()
+data = dfo.search(
+    "ODA disbursements from Germany to Nigeria for basic health care"
+).fetch()
 
 frame = data.to_pandas()  # needs development-finance[pandas]
 print(frame.attrs["citation"])

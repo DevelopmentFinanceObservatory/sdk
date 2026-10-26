@@ -23,7 +23,9 @@ import os
 import dfo
 from dfo.errors import NetworkError
 
-data = dfo.search("ODA disbursements from Germany to Nigeria for basic health care").fetch()
+data = dfo.search(
+    "ODA disbursements from Germany to Nigeria for basic health care"
+).fetch()
 data.save("health.parquet")
 
 os.environ["DFO_OFFLINE"] = "1"
@@ -85,10 +87,14 @@ To give one client its own cache, or fetch with no cache at all:
 import dfo
 
 with dfo.Client(cache_dir="./dfo-cache") as client:
-    data = client.search("ODA disbursements from Germany to Nigeria for basic health care").fetch()
+    data = client.search(
+        "ODA disbursements from Germany to Nigeria for basic health care"
+    ).fetch()
 
 with dfo.Client(cache=False) as client:  # reads and writes nothing on disk
-    data = client.search("ODA disbursements from Germany to Nigeria for basic health care").fetch()
+    data = client.search(
+        "ODA disbursements from Germany to Nigeria for basic health care"
+    ).fetch()
 print(len(data))
 ```
 

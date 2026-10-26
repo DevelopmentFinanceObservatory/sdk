@@ -70,7 +70,7 @@ for question in questions:
 
 ## In a service
 
-A web service answers its own caller. A question the caller can rephrase is the caller's to fix, a rate limit asks the caller to come back, an outage upstream is a 502 with the trace id in your logs, and anything else is a fault in your code or configuration.
+A web service answers its own caller. A question the caller can rephrase is the caller's to fix, a rate limit or a slow build asks the caller to come back, an outage upstream is a 502 with the trace id in your logs, and anything else is a fault in your code or configuration.
 
 ```text
 (200, {'rows': 66})
@@ -78,11 +78,12 @@ A web service answers its own caller. A question the caller can rephrase is the 
 ```
 
 ```python
+import asyncio
+
 import dfo
 from dfo.errors import (
     DeclinedError,
     DfoError,
-    DfoTimeoutError,
     IncompleteAnswerError,
     NetworkError,
     QuotaExceededError,
@@ -90,26 +91,37 @@ from dfo.errors import (
     ServerError,
 )
 
+client = dfo.AsyncClient()
 
-def respond(question: str) -> tuple[int, dict]:
+
+async def respond(question: str) -> tuple[int, dict]:
     try:
-        data = dfo.search(question).fetch(timeout=50)
+        async with asyncio.timeout(50):
+            answer = await client.search(question)
+            data = await answer.fetch()
     except (IncompleteAnswerError, DeclinedError) as error:
         return 422, {"error": error.code, "message": str(error)}
     except (RateLimitError, QuotaExceededError) as error:
         return 503, {"error": error.code, "retry_after": error.retry_after}
-    except (ServerError, NetworkError, DfoTimeoutError) as error:
+    except TimeoutError:
+        return 503, {"error": "deadline_exceeded"}
+    except (ServerError, NetworkError) as error:
         return 502, {"error": error.code, "trace_id": error.trace_id}
     except DfoError as error:
         return 500, {"error": error.code, "trace_id": error.trace_id}
     return 200, {"rows": len(data)}
 
 
-print(respond("GDP of Kenya"))
-print(respond("what is the meaning of life"))
+async def main() -> None:
+    print(await respond("GDP of Kenya"))
+    print(await respond("what is the meaning of life"))
+    await client.aclose()
+
+
+asyncio.run(main())
 ```
 
-`timeout=50` keeps the fetch inside the request limit of a platform that ends requests at 60 seconds. A fetch that runs out of time leaves its build running on the server, and the same fetch on the next request joins it. [Long builds](long-builds.md) covers the pattern.
+`asyncio.timeout(50)` bounds the search and the fetch together, so the handler answers inside the limit of a platform that ends requests at 60 seconds. Cancelling the async client stops the wait at once and leaves the build running on the server, and the same question on the next request joins it. [Long builds](long-builds.md) covers the pattern.
 
 ## Retrying
 
