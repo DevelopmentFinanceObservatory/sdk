@@ -1,0 +1,17 @@
+{
+ "status": 409,
+ "headers": {
+  "content-type": "application/problem+json",
+  "x-dfo-trace-id": "da1b41e8aa684226a062817920d96cec"
+ },
+ "body": {
+  "type": "/codes/share_not_replaceable",
+  "title": "Share Not Replaceable",
+  "status": 409,
+  "detail": "share 'lBm1RKBw' is a snapshot, whose cards are fixed for good; create a new share for new cards, or create it with latest=true to replace its cards later",
+  "code": "share_not_replaceable",
+  "trace_id": "da1b41e8aa684226a062817920d96cec",
+  "capability_version": "pres_f18e767e3235f78e",
+  "retryable": false
+ }
+}

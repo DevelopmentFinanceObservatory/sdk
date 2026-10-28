@@ -1,0 +1,103 @@
+{
+ "status": 201,
+ "headers": {
+  "content-type": "application/json",
+  "x-dfo-trace-id": "fe672f0ad7d54916a298c6a4261ed559"
+ },
+ "body": {
+  "component_id": "cmp_e27849edd4d5b43f8d6fa6d7",
+  "revision": 1,
+  "catalog_version": "2026.10.0",
+  "composition_id": null,
+  "composition_revision": null,
+  "changed": [],
+  "fact_summary": {
+   "changed": [],
+   "series": [
+    {
+     "id": "s_ce9b06a2b19fe8f7",
+     "label": "Ethiopia",
+     "coordinates": {
+      "measurementMethod": null,
+      "provenance": "src_oecd_dac",
+      "recipient": "country/ETH",
+      "stat_var": "dcid:MalariaGrantDisbursements",
+      "unit": null
+     },
+     "point_count": 1,
+     "first_value": "442",
+     "last_value": "442"
+    }
+   ],
+   "series_cut": 0,
+   "window": null,
+   "unit": null,
+   "change": {
+    "derivation": "percent_change",
+    "basis": [
+     "2023",
+     "2024"
+    ],
+    "value": 1.8907078625778162
+   },
+   "source_refs": null,
+   "defaults": []
+  },
+  "resolved_payload": {
+   "schema_version": 1,
+   "catalog_version": "2026.10.0",
+   "component_id": "cmp_e27849edd4d5b43f8d6fa6d7",
+   "revision": 1,
+   "provenance": {
+    "inputs": [
+     {
+      "spec_id": "spec_9f2e41a7c03b58d2a4c1f6b2e8d35790",
+      "content_version": "cv_f4a81c22d9075e3ba61c2ee98f83b405"
+     }
+    ],
+    "execution_ref": null,
+    "sources": [
+     {
+      "id": "src_oecd_dac",
+      "name": "src_oecd_dac",
+      "url": "",
+      "licence": "Not stated",
+      "retrieved": "2026-10-06",
+      "ref": "src_oecd_dac"
+     }
+    ],
+    "freshness": {
+     "data_through": null,
+     "last_refreshed": null,
+     "next_expected": null,
+     "partial_period": false
+    },
+    "warnings": [],
+    "generated_at": "2026-10-28T16:07:47.375816Z",
+    "citation": "src_oecd_dac (2026), processed by the Development Finance Observatory",
+    "refreshed_from": null
+   },
+   "component": {
+    "type": "stat_card",
+    "title": {
+     "text": "dcid:MalariaGrantDisbursements \u2014 Ethiopia",
+     "authorship": "model"
+    },
+    "value": 441.9,
+    "label": "Ethiopia",
+    "period": "2024",
+    "unit": null,
+    "change": {
+     "derivation": "percent_change",
+     "basis": [
+      "2023",
+      "2024"
+     ],
+     "value": 1.8907078625778162
+    }
+   }
+  },
+  "affordance": "Revise this component with PATCH /api/presentation/components/cmp_e27849edd4d5b43f8d6fa6d7, sending only the fields to change and this reply's write_token as x-dfo-write-token, or read it back with GET /api/presentation/components/cmp_e27849edd4d5b43f8d6fa6d7.",
+  "write_token": "cmw_c8oLWZxHOvmp_tXAdzv0xw"
+ }
+}

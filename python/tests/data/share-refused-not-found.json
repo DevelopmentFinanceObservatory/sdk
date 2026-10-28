@@ -1,0 +1,17 @@
+{
+ "status": 404,
+ "headers": {
+  "content-type": "application/problem+json",
+  "x-dfo-trace-id": "c14b4cf232564bfca82e424db2d46d08"
+ },
+ "body": {
+  "type": "/codes/not_found",
+  "title": "Not Found",
+  "status": 404,
+  "detail": "no share exists at id 'lBm1RKBw'",
+  "code": "not_found",
+  "trace_id": "c14b4cf232564bfca82e424db2d46d08",
+  "capability_version": "pres_f18e767e3235f78e",
+  "retryable": false
+ }
+}

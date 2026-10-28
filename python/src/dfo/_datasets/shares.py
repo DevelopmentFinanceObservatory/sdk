@@ -1,0 +1,191 @@
+"""Shares: cards published under one link that follows new data or stays fixed.
+
+`share` posts `{cards: [{component_id, revision}], latest}` to
+`POST /presentation/shares`, which answers 201 with the share's page, embed and
+per-slot data URLs and its `shw_` write token, the only reply that carries it.
+Each new share counts against a daily allowance per caller, refused 429
+`allowance_exhausted` once spent. The create is sent once, with no retry: a
+retry after a reply lost in transit would make a second share, whose token
+nobody holds, under a public URL.
+
+The routes that change a share send its token in `x-dfo-write-token`, and DFO
+checks it before anything else: none refuses 403 `write_token_required`, another
+share's 403 `write_token_invalid`.
+
+- `share(cards, latest=True, replace=share)` sends `PUT /presentation/shares/{id}`
+  `{cards}`: slot n shows the nth card, and slots past the last card stay empty,
+  so every slot keeps its URLs. A snapshot refuses 409 `share_not_replaceable`.
+- `snapshot(share)` sends `POST /presentation/shares/{id}/snapshot`, which fixes a
+  live share as a snapshot in place, each slot keeping the frame it serves now.
+  A snapshot answers as it is. No route turns a snapshot live.
+- `unshare(share)` sends `DELETE /presentation/shares/{id}`, which answers 204.
+- `history(share)` reads the public `GET /presentation/shares/{id}/history`:
+  every frame the share's slots served, newest first.
+
+A share id that names no share, or one taken down, refuses 404 `not_found`.
+"""
+
+from collections.abc import Sequence
+
+import httpx2
+
+from dfo._core.codes import INVALID_ARGUMENT
+from dfo._core.errors import client_error
+from dfo._core.refusals import describing, trace_id_of
+from dfo._datasets.build import response_json
+from dfo._datasets.publication import (
+    Card,
+    Served,
+    Share,
+    read_history,
+    read_share,
+    share_id_of,
+    write_token_of,
+)
+from dfo._http.transport import AsyncTransport
+
+SHARES_PATH = "/presentation/shares"
+WRITE_TOKEN_HEADER = "x-dfo-write-token"
+
+
+async def share(
+    transport: AsyncTransport,
+    cards: object,
+    *,
+    latest: object,
+    replace: object = None,
+    write_token: object = None,
+) -> Share:
+    """Publish `cards` as a new share, or give the live share `replace` names
+    these cards under its URLs.
+
+    Raises:
+        InvalidRequestError: `cards` is not a Card or a non-empty list of them,
+            `latest` is not a bool, `replace` is given with `latest=False`, or
+            `replace` or `write_token` is malformed (`invalid_argument`), and
+            no request is sent; or DFO refused the token
+            (`write_token_required`) or the share (`share_not_replaceable`).
+        PermissionDeniedError: The token is not the share's
+            (`write_token_invalid`).
+        QuotaExceededError: The daily share allowance is spent
+            (`allowance_exhausted`).
+    """
+    shown = _shown_cards(cards, transport.caller)
+    if not isinstance(latest, bool):
+        raise client_error(
+            INVALID_ARGUMENT,
+            "latest is True for a share that follows new data or False for a "
+            f"snapshot that keeps today's versions, not {latest!r}",
+        )
+    if replace is None:
+        if write_token is not None:
+            raise client_error(
+                INVALID_ARGUMENT,
+                "write_token goes with replace=, the share whose cards it replaces",
+            )
+        response = await transport.request(
+            "POST",
+            SHARES_PATH,
+            json={"cards": shown, "latest": latest},
+            max_retries=0,
+        )
+        return _share(response, f"POST {SHARES_PATH}", None)
+    share_id = share_id_of(replace, transport.caller)
+    if not latest:
+        raise client_error(
+            INVALID_ARGUMENT,
+            "replace= gives a live share new cards, so it takes latest=True; "
+            f"{transport.caller}.snapshot(share) fixes a live share as it shows now",
+        )
+    token = write_token_of(replace, write_token)
+    path = f"{SHARES_PATH}/{share_id}"
+    response = await transport.request(
+        "PUT", path, json={"cards": shown}, headers=_token_header(token)
+    )
+    return _share(response, f"PUT {path}", token)
+
+
+async def snapshot(
+    transport: AsyncTransport, target: object, *, write_token: object = None
+) -> Share:
+    """Fix the live share `target` names as a snapshot, under the same URLs.
+
+    Raises:
+        InvalidRequestError: `target` or `write_token` is malformed
+            (`invalid_argument`), and no request is sent; or no token was given
+            (`write_token_required`).
+        PermissionDeniedError: The token is not the share's
+            (`write_token_invalid`).
+    """
+    share_id = share_id_of(target, transport.caller)
+    token = write_token_of(target, write_token)
+    path = f"{SHARES_PATH}/{share_id}/snapshot"
+    response = await transport.request("POST", path, headers=_token_header(token))
+    return _share(response, f"POST {path}", token)
+
+
+async def unshare(
+    transport: AsyncTransport, target: object, *, write_token: object = None
+) -> None:
+    """Take the share `target` names down.
+
+    Raises:
+        InvalidRequestError: `target` or `write_token` is malformed
+            (`invalid_argument`), and no request is sent; or no token was given
+            (`write_token_required`).
+        PermissionDeniedError: The token is not the share's
+            (`write_token_invalid`).
+        NotFoundError: No share has that id, or it was taken down (`not_found`).
+    """
+    share_id = share_id_of(target, transport.caller)
+    token = write_token_of(target, write_token)
+    await transport.request(
+        "DELETE", f"{SHARES_PATH}/{share_id}", headers=_token_header(token)
+    )
+
+
+async def history(transport: AsyncTransport, target: object) -> tuple[Served, ...]:
+    """Every frame the share `target` names served, newest first.
+
+    Raises:
+        InvalidRequestError: `target` is malformed (`invalid_argument`), and no
+            request is sent.
+        NotFoundError: No share has that id, or it was taken down (`not_found`).
+    """
+    path = f"{SHARES_PATH}/{share_id_of(target, transport.caller)}/history"
+    response = await transport.request("GET", path)
+    reply = response_json(response)
+    with describing(trace_id_of(response, reply)):
+        return read_history(reply, route=f"GET {path}")
+
+
+def _shown_cards(cards: object, caller: str) -> list[dict[str, object]]:
+    """The cards a share shows, slot 1 first, as the request names them."""
+    if isinstance(cards, Card):
+        cards = [cards]
+    if (
+        isinstance(cards, str)
+        or not isinstance(cards, Sequence)
+        or not cards
+        or not all(isinstance(card, Card) for card in cards)
+    ):
+        raise client_error(
+            INVALID_ARGUMENT,
+            "A share shows a Card or a list of Cards, such as "
+            f"{caller}.cards.line(data), not {type(cards).__name__}",
+        )
+    return [
+        {"component_id": card.id, "revision": card.revision}
+        for card in cards
+        if isinstance(card, Card)
+    ]
+
+
+def _token_header(token: str | None) -> dict[str, str] | None:
+    return None if token is None else {WRITE_TOKEN_HEADER: token}
+
+
+def _share(response: httpx2.Response, route: str, token: str | None) -> Share:
+    reply = response_json(response)
+    with describing(trace_id_of(response, reply)):
+        return read_share(reply, route=route, write_token=token)

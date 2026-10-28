@@ -1,5 +1,6 @@
-"""The module functions `dfo.search`, `dfo.fetch`, `dfo.pin` and `dfo.configure`,
-and the lookups of `dfo.lookup`, over a default client.
+"""The module functions `dfo.search`, `dfo.fetch`, `dfo.pin`, `dfo.share`,
+`dfo.snapshot`, `dfo.unshare`, `dfo.history` and `dfo.configure`, and the lookups
+of `dfo.lookup`, over a default client.
 
 The default client is built on first use, under a lock, so importing `dfo` reads
 neither the environment nor the network. `configure` replaces it. An answer from
@@ -26,6 +27,7 @@ from dfo._core.lookup_results import Catalogue, Code, Match, Node
 from dfo._core.refs import DatasetRef
 from dfo._core.types import Layout, Spec, Window
 from dfo._datasets.dataset import Dataset
+from dfo._datasets.publication import Card, Served, Share, ShareTarget
 from dfo._datasets.recipe import Recipe
 from dfo._generated.wire import ResolveKind
 from dfo._http.hooks import HeaderProvider
@@ -204,6 +206,71 @@ def pin(data: Dataset, /) -> Dataset:
         QuotaExceededError: The daily pin allowance is spent (`allowance_exhausted`).
     """
     return default_client().pin(data)
+
+
+def share(
+    cards: Card | Sequence[Card],
+    /,
+    *,
+    latest: bool,
+    replace: ShareTarget | None = None,
+    write_token: str | None = None,
+) -> Share:
+    """Publish cards as a link, or give a live share new cards under the same
+    URLs, with the default client.
+
+    Takes `Client.share`'s arguments. `latest` has no default: True follows new
+    data, False keeps today's versions for good.
+
+    Raises:
+        InvalidRequestError: An argument is malformed (`invalid_argument`), and
+            no request is sent; DFO refused a replace without a token
+            (`write_token_required`) or of a snapshot (`share_not_replaceable`).
+        PermissionDeniedError: The token is not the share's (`write_token_invalid`).
+        QuotaExceededError: The daily share allowance is spent (`allowance_exhausted`).
+    """
+    return default_client().share(
+        cards, latest=latest, replace=replace, write_token=write_token
+    )
+
+
+def snapshot(share: ShareTarget, /, *, write_token: str | None = None) -> Share:
+    """Fix a live share as a snapshot under the same URLs, with the default
+    client.
+
+    Takes `Client.snapshot`'s arguments.
+
+    Raises:
+        InvalidRequestError: `share` is not a Share or a share URL
+            (`invalid_argument`); or no token was given (`write_token_required`).
+        PermissionDeniedError: The token is not the share's (`write_token_invalid`).
+    """
+    return default_client().snapshot(share, write_token=write_token)
+
+
+def unshare(share: ShareTarget, /, *, write_token: str | None = None) -> None:
+    """Take a share's link down, with the default client.
+
+    Takes `Client.unshare`'s arguments.
+
+    Raises:
+        InvalidRequestError: `share` is not a Share or a share URL
+            (`invalid_argument`); or no token was given (`write_token_required`).
+        PermissionDeniedError: The token is not the share's (`write_token_invalid`).
+        NotFoundError: No share has that id, or it was taken down (`not_found`).
+    """
+    default_client().unshare(share, write_token=write_token)
+
+
+def history(share: ShareTarget, /) -> tuple[Served, ...]:
+    """What each card of a share served, newest first, with the default client.
+
+    Raises:
+        InvalidRequestError: `share` is not a Share or a share URL
+            (`invalid_argument`).
+        NotFoundError: No share has that id, or it was taken down (`not_found`).
+    """
+    return default_client().history(share)
 
 
 def resolve(

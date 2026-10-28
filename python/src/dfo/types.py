@@ -3,7 +3,9 @@ dataset and the results of `dfo.lookup`.
 
 `dfo` itself holds `Answer`, `Dataset`, `Spec` and `DatasetRef`; this module
 holds what they contain, the asynchronous `AsyncAnswer`, the `Recipe` that
-`dfo.analysis.recipe` describes, and `LatestYear`, what `dfo.latest_year` returns.
+`dfo.analysis.recipe` describes, `LatestYear`, what `dfo.latest_year` returns,
+the `Card` a `dfo.cards` call stores, the `Share` `dfo.share` publishes and the
+`Served` frames `dfo.history` lists.
 
 `Severity`, `AssumptionKind`, `DepartureCode`, `NoDataReason`, `DeclinedReason`
 and `ResolveKind` are the values the served contract lists for each field. A
@@ -48,6 +50,7 @@ from dfo._core.types import (
 from dfo._datasets.build import Progress
 from dfo._datasets.bundle import BundleLimits
 from dfo._datasets.dataset import LeftOutSeries, LeftOutStep
+from dfo._datasets.publication import Card, CardKind, Served, Share
 from dfo._datasets.recipe import Recipe
 from dfo._generated.wire import (
     AssumptionKind,
@@ -66,6 +69,8 @@ __all__ = [
     "BundleLimits",
     "Candidate",
     "CandidatesPart",
+    "Card",
+    "CardKind",
     "Catalogue",
     "Citation",
     "CitationSource",
@@ -101,7 +106,9 @@ __all__ = [
     "ResolveKind",
     "ResolvedPeriod",
     "Root",
+    "Served",
     "Severity",
+    "Share",
     "UnknownPart",
     "UnsupportedPart",
     "Window",

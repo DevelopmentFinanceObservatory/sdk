@@ -1,0 +1,18 @@
+{
+ "status": 201,
+ "headers": {
+  "content-type": "application/json",
+  "x-dfo-trace-id": "518ee0e2940b40c8993b461be4a58dc1"
+ },
+ "body": {
+  "id": "lBm1RKBw",
+  "url": "https://site.example/s/lBm1RKBw",
+  "embed_url": "https://site.example/embed/lBm1RKBw",
+  "data_urls": [
+   "https://site.example/api/v1/presentation/shares/lBm1RKBw/slots/1/data"
+  ],
+  "revision": 1,
+  "latest": true,
+  "write_token": "shw_iGYq8-qYahz4BaNQ1NC1Dg"
+ }
+}

@@ -3,13 +3,15 @@
 
 A client asks Search what a question means (`search`), builds datasets (`fetch`),
 runs DFO's operations (`analysis`, and `fetch` of a recipe), pins versions
-(`pin`), and looks up names, codes and Search's catalogue (`lookup`). `request`
+(`pin`), stores cards DFO draws (`cards`), publishes them as links (`share`,
+`snapshot`, `unshare`, `history`), and looks up names, codes and Search's
+catalogue (`lookup`). `request`
 reaches any route the client does not wrap. The client
 owns its connection pool: `with_options` returns a copy that shares the pool and
 the cache, and only the client that built the pool closes it.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from os import PathLike
 from typing import Any, ClassVar, Self
 
@@ -21,12 +23,18 @@ from dfo._core.refusals import caller_refusal
 from dfo._core.types import Layout, RawResponse, Spec, Window
 from dfo._datasets.cache import Cache
 from dfo._datasets.dataset import Dataset
+from dfo._datasets.publication import Card, Served, Share, ShareTarget
 from dfo._datasets.recipe import Recipe
 from dfo._http.hooks import HeaderProvider
 from dfo._sync._datasets.analysis import Analysis
+from dfo._sync._datasets.cards import Cards
 from dfo._sync._datasets.fetch import Session
 from dfo._sync._datasets.pin import pin as pin_versions
 from dfo._sync._datasets.resolve import fetch
+from dfo._sync._datasets.shares import history as share_history
+from dfo._sync._datasets.shares import share as publish
+from dfo._sync._datasets.shares import snapshot as fix_share
+from dfo._sync._datasets.shares import unshare as take_down
 from dfo._sync._http.transport import Transport
 from dfo._sync._search.answer import SEARCH_TIMEOUT, Answer
 from dfo._sync._search.lookups import Lookup
@@ -40,10 +48,13 @@ class Client:
         lookup: Names to graph nodes, a node by its dcid, a code's registry
             entry, and Search's catalogue.
         analysis: DFO's operations, each run at once on DFO.
+        cards: Cards DFO stores and draws from a Dataset: line, bar, table,
+            stat and source.
     """
 
     lookup: Lookup
     analysis: Analysis
+    cards: Cards
     # What the client's hints name the owner of a call they suggest, as in
     # `client.fetch(spec)`; the default client behind `dfo.fetch` names `dfo`.
     _caller: ClassVar[str] = "client"
@@ -119,6 +130,7 @@ class Client:
         self._session = session
         self.lookup = Lookup(session.transport)
         self.analysis = Analysis(session.transport)
+        self.cards = Cards(session.transport)
 
     def _current(self) -> Session:
         return self._session
@@ -281,6 +293,107 @@ class Client:
                 (`allowance_exhausted`); `retry_after` says when it resets.
         """
         return pin_versions(self._session.transport, data)
+
+    def share(
+        self,
+        cards: Card | Sequence[Card],
+        /,
+        *,
+        latest: bool,
+        replace: ShareTarget | None = None,
+        write_token: str | None = None,
+    ) -> Share:
+        """Publish cards as a link, or give a live share new cards under the
+        same URLs.
+
+        Each card sits in a numbered slot. A share pins the versions its cards
+        draw, and each new share counts against a daily allowance per network
+        address. The `Share` carries the write token that changes or removes it,
+        and prints without it.
+
+        Args:
+            cards: A card from `cards`, or a list of them in slot order.
+            latest: True for a live share, which follows new data and takes new
+                cards; False for a snapshot, which keeps today's versions for
+                good. It has no default, since the two answer different
+                questions under a public URL.
+            replace: A live share, or its URL, to give these cards. Every slot
+                keeps its embed and data URLs, and slots past the last card
+                stay empty.
+            write_token: The share's write token, for a `replace` given as a URL;
+                a `Share` carries its own.
+
+        Raises:
+            InvalidRequestError: `cards` is not a Card or a non-empty list of
+                them, `latest` is not a bool, `replace` is given with
+                `latest=False`, or `replace` is not a Share or a share URL
+                (`invalid_argument`), and no request is sent; DFO refused a
+                replace without a token (`write_token_required`) or of a
+                snapshot (`share_not_replaceable`).
+            PermissionDeniedError: The token is not the share's
+                (`write_token_invalid`).
+            QuotaExceededError: The daily share allowance is spent
+                (`allowance_exhausted`); `retry_after` says when it resets.
+        """
+        return publish(
+            self._session.transport,
+            cards,
+            latest=latest,
+            replace=replace,
+            write_token=write_token,
+        )
+
+    def snapshot(
+        self, share: ShareTarget, /, *, write_token: str | None = None
+    ) -> Share:
+        """Fix a live share as a snapshot under the same URLs, each slot keeping
+        the version it shows now. A snapshot stays fixed for good.
+
+        Args:
+            share: The share, or its URL.
+            write_token: The share's write token, for a share given as a URL.
+
+        Raises:
+            InvalidRequestError: `share` is not a Share or a share URL
+                (`invalid_argument`), and no request is sent; or no token was
+                given (`write_token_required`).
+            PermissionDeniedError: The token is not the share's
+                (`write_token_invalid`).
+        """
+        return fix_share(self._session.transport, share, write_token=write_token)
+
+    def unshare(self, share: ShareTarget, /, *, write_token: str | None = None) -> None:
+        """Take a share's link down.
+
+        Args:
+            share: The share, or its URL.
+            write_token: The share's write token, for a share given as a URL.
+
+        Raises:
+            InvalidRequestError: `share` is not a Share or a share URL
+                (`invalid_argument`), and no request is sent; or no token was
+                given (`write_token_required`).
+            PermissionDeniedError: The token is not the share's
+                (`write_token_invalid`).
+            NotFoundError: No share has that id, or it was taken down
+                (`not_found`).
+        """
+        take_down(self._session.transport, share, write_token=write_token)
+
+    def history(self, share: ShareTarget, /) -> tuple[Served, ...]:
+        """What each card of a share served, newest first, with whether each
+        frame can still be fetched.
+
+        Args:
+            share: The share, or its URL.
+
+        Raises:
+            InvalidRequestError: `share` is not a Share or a share URL
+                (`invalid_argument`), and no request is sent.
+            NotFoundError: No share has that id, or it was taken down
+                (`not_found`).
+        """
+        return share_history(self._session.transport, share)
 
     def request(
         self,

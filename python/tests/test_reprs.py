@@ -3,6 +3,7 @@
 import json
 import unicodedata
 from collections.abc import Callable
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -45,7 +46,9 @@ from dfo._core.types import (
 )
 from dfo._datasets.analysis import AsyncAnalysis
 from dfo._datasets.bundle import BundleLimits
+from dfo._datasets.cards import AsyncCards
 from dfo._datasets.dataset import Dataset, LeftOutSeries, LeftOutStep, build_dataset
+from dfo._datasets.publication import Card, Served, Share
 from dfo._datasets.recipe import recipe
 from dfo._search.lookups import AsyncLookup
 from dfo._sync._search.answer import Answer
@@ -380,6 +383,60 @@ ROWS: list[tuple[str, Callable[[], object], str, bool]] = [
         lambda: object.__new__(AsyncAnalysis),
         "<AsyncAnalysis: filter, aggregate, growth, rank, quotient_of, share_of, "
         "join, sum_of, compare>",
+        True,
+    ),
+    (
+        "card",
+        lambda: Card(
+            "cmp_ad956b407b1623ec17cfcd55",
+            1,
+            "line",
+            _dataset().ref,
+            "German ODA, last ten years",
+            "cmw_secret",
+        ),
+        'Card(line cmp_ad956b407b1623ec17cfcd55, "German ODA, last ten years", draws '
+        f"{_dataset().members[0].spec.spec_id} at "
+        f"{_dataset().members[0].content_version})",
+        True,
+    ),
+    (
+        "share",
+        lambda: Share(
+            "k3Qx8vTa",
+            "https://developmentfinance.org/s/k3Qx8vTa",
+            "https://developmentfinance.org/embed/k3Qx8vTa",
+            (
+                "https://developmentfinance.org/api/v1/presentation/shares/k3Qx8vTa/slots/1/data",
+            ),
+            2,
+            True,
+            "shw_secret",
+        ),
+        "Share(live https://developmentfinance.org/s/k3Qx8vTa, 1 slot, revision 2)",
+        True,
+    ),
+    (
+        "served",
+        lambda: Served(
+            1,
+            "cmp_ad956b407b1623ec17cfcd55",
+            1,
+            "ops_" + "a" * 32,
+            "ocv_" + "b" * 32,
+            datetime(2026, 9, 24, 8, 0, tzinfo=UTC),
+            False,
+            date(2026, 11, 23),
+            True,
+        ),
+        f"Served(slot 1 cmp_ad956b407b1623ec17cfcd55 from 24 Sep 2026: ops_{'a' * 32} "
+        f"at ocv_{'b' * 32} · fetchable until 23 Nov 2026)",
+        True,
+    ),
+    (
+        "async-cards",
+        lambda: object.__new__(AsyncCards),
+        "<AsyncCards: line, bar, table, stat, source>",
         True,
     ),
     (

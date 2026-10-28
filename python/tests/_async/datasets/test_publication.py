@@ -1,0 +1,374 @@
+"""Tests for cards and shares: storing a card DFO draws, publishing cards as a
+link, replacing, fixing and taking it down, and reading what it served.
+
+The replies are recorded from dfo-apis' components and shares doors over their
+test doubles (`tests/presentation_api/test_shares_door.py` and
+`test_share_data_door.py`): a line card on the malaria frame, a live share of
+it, its replacement, history and snapshot, and each refusal of a change.
+`scripts/gen_sync.py` derives `tests/_sync/datasets/test_publication.py` from
+this file, so the sync client passes the same tests.
+"""
+
+import json
+from typing import Any
+
+import httpx2
+import pytest
+
+from dfo._core.errors import (
+    ContractError,
+    DfoError,
+    InvalidRequestError,
+    NotFoundError,
+    PermissionDeniedError,
+    QuotaExceededError,
+    ServerError,
+)
+from dfo._core.periods import latest_year
+from dfo._core.refs import DatasetRef, DerivedRefMember
+from dfo._core.types import Spec
+from dfo._datasets.cards import AsyncCards
+from dfo._datasets.dataset import Dataset, build_dataset, derived_dataset
+from dfo._datasets.publication import Card, Share
+from dfo._datasets.recipe import recipe
+from dfo._datasets.shares import history, share, snapshot, unshare
+from dfo._http.transport import AsyncTransport
+from tests._data import DATA, load
+from tests._datasets import other_member, recorded_member
+from tests._fetch_support import BASE, Server, json_response, problem
+
+pytestmark = pytest.mark.anyio
+
+SHARES = f"{BASE}/presentation/shares"
+SHARE_ID = "lBm1RKBw"
+SHARE_URL = f"https://site.example/s/{SHARE_ID}"
+TOKEN = "shw_iGYq8-qYahz4BaNQ1NC1Dg"
+
+
+def make(handler) -> AsyncTransport:
+    return AsyncTransport(
+        api_key=False, base_url=BASE, http_transport=httpx2.MockTransport(handler)
+    )
+
+
+def recorded(name: str) -> httpx2.Response:
+    reply = load(f"{name}.json")
+    headers = {k: v for k, v in reply["headers"].items() if k != "content-type"}
+    if reply["body"] is None:
+        return httpx2.Response(reply["status"], headers=headers)
+    return json_response(reply["status"], reply["body"], headers)
+
+
+def dataset() -> Dataset:
+    return build_dataset(
+        [recorded_member()], layout="long", complete=True, missing=(), stale=False
+    )
+
+
+def derived() -> Dataset:
+    (member,) = DatasetRef.from_json(
+        json.dumps(load("analysis-rank-ready.json")["ref"])
+    ).members
+    assert isinstance(member, DerivedRefMember)
+    return derived_dataset(
+        member,
+        load("analysis-rank-manifest.json"),
+        (DATA / "analysis-rank-frame.parquet").read_bytes(),
+    )
+
+
+def variables(data: Dataset) -> list[str]:
+    return sorted(set(data.to_arrow().column("stat_var").to_pylist()))
+
+
+def frame_of(data: Dataset) -> dict[str, str]:
+    (member,) = data.members
+    return {"spec_id": member.spec.spec_id, "content_version": member.content_version}
+
+
+def card(token: str = "cmw_AAAAAAAAAAAAAAAAAAAAAA") -> Card:
+    data = dataset()
+    return Card("cmp_ad956b407b1623ec17cfcd55", 1, "line", data.ref, None, token)
+
+
+def held_share() -> Share:
+    body = load("share-created.json")["body"]
+    return Share(
+        body["id"],
+        body["url"],
+        body["embed_url"],
+        tuple(body["data_urls"]),
+        body["revision"],
+        body["latest"],
+        body["write_token"],
+    )
+
+
+@pytest.mark.parametrize("build", [dataset, derived], ids=["dataset", "derived"])
+async def test_a_line_card_draws_every_variable_of_the_datasets_version(
+    build: Any,
+) -> None:
+    data = build()
+    server = Server(recorded("card-line-created"))
+    async with make(server) as transport:
+        made = await AsyncCards(transport).line(
+            data,
+            window=(latest_year(-9), latest_year()),
+            title="Malaria grants to Ethiopia",
+        )
+
+    assert server.calls() == [f"POST {BASE}/presentation/components"]
+    body = server.body(0)
+    held = variables(data)
+    assert body["intent"] == {
+        "type": "line_chart",
+        "frame_ref": frame_of(data),
+        "select": {"stat_var": held[0] if len(held) == 1 else held},
+        "window": {
+            "start": {"anchor": "latest", "offset": -9},
+            "end": {"anchor": "latest", "offset": 0},
+        },
+        "title": "Malaria grants to Ethiopia",
+    }
+    assert body["write_token"].startswith("cmw_")
+    assert len(body["write_token"]) == 26
+    assert (made.id, made.revision, made.kind, made.ref) == (
+        "cmp_ad956b407b1623ec17cfcd55",
+        1,
+        "line",
+        data.ref,
+    )
+    assert (made.title, made.write_token) == (
+        "Malaria grants to Ethiopia",
+        "cmw_AAAAAAAAAAAAAAAAAAAAAA",
+    )
+    assert made.write_token not in repr(made)
+
+
+async def test_a_card_of_a_ref_reads_the_frames_variables_first() -> None:
+    ref = dataset().ref
+    frame = frame_of(dataset())
+    server = Server(recorded("card-frame-variables"), recorded("card-stat-created"))
+    async with make(server) as transport:
+        made = await AsyncCards(transport).stat(
+            ref, year=latest_year(), compare_to=latest_year(-1)
+        )
+
+    path = f"{BASE}/presentation/frames/{frame['spec_id']}/{frame['content_version']}"
+    assert server.calls() == [f"GET {path}", f"POST {BASE}/presentation/components"]
+    assert server.requests[0].url.params["dimension"] == "stat_var"
+    assert server.body(1)["intent"]["select"] == {
+        "stat_var": "dcid:MalariaGrantDisbursements"
+    }
+    assert (made.kind, made.ref) == ("stat", ref)
+
+
+async def test_a_source_card_sends_its_frame_alone() -> None:
+    server = Server(recorded("card-line-created"))
+    async with make(server) as transport:
+        made = await AsyncCards(transport).source(dataset().ref)
+    assert server.body(0)["intent"] == {
+        "type": "source_card",
+        "frame_ref": frame_of(dataset()),
+    }
+    assert made.kind == "source"
+
+
+def several() -> Dataset:
+    return build_dataset(
+        [recorded_member(), other_member()],
+        layout="long",
+        complete=True,
+        missing=(),
+        stale=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        Spec("spec_" + "a" * 32, {}),
+        recipe(Spec("spec_" + "a" * 32, {})).rank(by="origin"),
+        "spec_" + "a" * 32,
+        several(),
+        several().ref,
+    ],
+    ids=["spec", "recipe", "text", "several-readings", "several-members-ref"],
+)
+async def test_a_card_of_anything_but_one_version_is_refused_unsent(
+    data: object,
+) -> None:
+    server = Server()
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await AsyncCards(transport).line(data)
+    assert caught.value.code == "invalid_argument"
+    assert server.requests == []
+
+
+async def test_a_share_publishes_its_cards_once_and_carries_its_token() -> None:
+    server = Server(recorded("share-created"))
+    async with make(server) as transport:
+        made = await share(transport, [card(), card()], latest=True)
+
+    assert server.calls() == [f"POST {SHARES}"]
+    shown = {"component_id": "cmp_ad956b407b1623ec17cfcd55", "revision": 1}
+    assert server.body(0) == {"cards": [shown, shown], "latest": True}
+    assert made == held_share()
+    assert TOKEN not in repr(made)
+
+
+async def test_a_share_is_not_sent_again_after_a_retryable_failure() -> None:
+    server = Server(problem(503, "service_unavailable", retryable=True))
+    async with make(server) as transport:
+        with pytest.raises(ServerError):
+            await share(transport, card(), latest=False)
+    assert len(server.requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("target", "write_token", "sent"),
+    [
+        (held_share(), None, TOKEN),
+        (SHARE_URL, "shw_other", "shw_other"),
+        (f"https://site.example/embed/{SHARE_ID}/", "shw_other", "shw_other"),
+    ],
+    ids=["share", "url", "embed-url"],
+)
+async def test_a_replace_gives_a_live_share_new_cards_with_its_token(
+    target: Share | str, write_token: str | None, sent: str
+) -> None:
+    server = Server(recorded("share-replaced"))
+    async with make(server) as transport:
+        made = await share(
+            transport, card(), latest=True, replace=target, write_token=write_token
+        )
+
+    assert server.calls() == [f"PUT {SHARES}/{SHARE_ID}"]
+    assert server.requests[0].headers["x-dfo-write-token"] == sent
+    assert server.body(0) == {
+        "cards": [{"component_id": "cmp_ad956b407b1623ec17cfcd55", "revision": 1}]
+    }
+    assert (made.revision, made.data_urls, made.write_token) == (
+        2,
+        held_share().data_urls,
+        sent,
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"cards": [], "latest": True},
+        {"cards": "cmp_x", "latest": True},
+        {"cards": [card(), "cmp_x"], "latest": True},
+        {"cards": card(), "latest": "yes"},
+        {"cards": card(), "latest": False, "replace": SHARE_URL},
+        {"cards": card(), "latest": True, "write_token": TOKEN},
+        {"cards": card(), "latest": True, "replace": SHARE_ID},
+        {"cards": card(), "latest": True, "replace": SHARE_URL, "write_token": ""},
+    ],
+    ids=[
+        "no-cards",
+        "card-id",
+        "mixed-cards",
+        "latest-not-bool",
+        "replace-a-snapshot",
+        "token-without-replace",
+        "bare-id",
+        "empty-token",
+    ],
+)
+async def test_a_malformed_share_is_refused_unsent(arguments: dict[str, Any]) -> None:
+    server = Server()
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await share(transport, **arguments)
+    assert caught.value.code == "invalid_argument"
+    assert server.requests == []
+
+
+async def test_snapshot_fixes_a_live_share_under_its_urls() -> None:
+    server = Server(recorded("share-snapshot"))
+    async with make(server) as transport:
+        fixed = await snapshot(transport, held_share())
+    assert server.calls() == [f"POST {SHARES}/{SHARE_ID}/snapshot"]
+    assert server.requests[0].headers["x-dfo-write-token"] == TOKEN
+    assert (fixed.latest, fixed.url, fixed.write_token) == (False, SHARE_URL, TOKEN)
+
+
+async def test_unshare_takes_the_share_down_with_its_token() -> None:
+    server = Server(httpx2.Response(204))
+    async with make(server) as transport:
+        assert await unshare(transport, SHARE_URL, write_token=TOKEN) is None
+    assert server.calls() == [f"DELETE {SHARES}/{SHARE_ID}"]
+    assert server.requests[0].headers["x-dfo-write-token"] == TOKEN
+
+
+async def test_history_lists_each_frame_served_newest_first() -> None:
+    server = Server(recorded("share-history"))
+    async with make(server) as transport:
+        served = await history(transport, held_share())
+
+    assert server.calls() == [f"GET {SHARES}/{SHARE_ID}/history"]
+    assert "x-dfo-write-token" not in server.requests[0].headers
+    assert [
+        (entry.slot, entry.content_version, entry.pinned, entry.fetchable)
+        for entry in served
+    ] == [
+        (1, "cv_" + "b" * 32, False, True),
+        (1, "cv_f4a81c22d9075e3ba61c2ee98f83b405", True, True),
+    ]
+    assert str(served[0].held_until) == "2026-11-27"
+    assert served[1].held_until is None
+    assert served[0].first_served > served[1].first_served
+
+
+@pytest.mark.parametrize(
+    ("reply", "error_class", "code"),
+    [
+        ("write-token-required", InvalidRequestError, "write_token_required"),
+        ("write-token-invalid", PermissionDeniedError, "write_token_invalid"),
+        ("not-replaceable", InvalidRequestError, "share_not_replaceable"),
+        ("not-found", NotFoundError, "not_found"),
+    ],
+)
+async def test_a_refused_change_raises_the_class_its_code_maps_to(
+    reply: str, error_class: type[DfoError], code: str
+) -> None:
+    server = Server(recorded(f"share-refused-{reply}"))
+    async with make(server) as transport:
+        with pytest.raises(error_class) as caught:
+            await share(transport, card(), latest=True, replace=SHARE_URL)
+    assert caught.value.code == code
+    assert len(server.requests) == 1
+
+
+async def test_a_spent_share_allowance_raises_quota_exceeded_with_its_reset() -> None:
+    server = Server(recorded("share-refused-allowance-exhausted"))
+    async with make(server) as transport:
+        with pytest.raises(QuotaExceededError) as caught:
+            await share(transport, card(), latest=True)
+    assert (caught.value.code, caught.value.retry_after) == (
+        "allowance_exhausted",
+        54000,
+    )
+
+
+@pytest.mark.parametrize(
+    ("reply", "pointer"),
+    [
+        ({**load("share-created.json")["body"], "latest": "live"}, "/latest"),
+        ({**load("share-created.json")["body"], "data_urls": None}, "/data_urls"),
+        ({**load("share-created.json")["body"], "revision": 0}, "/revision"),
+    ],
+    ids=["latest", "data-urls", "revision"],
+)
+async def test_a_share_reply_missing_a_member_raises_contract_error(
+    reply: dict[str, Any], pointer: str
+) -> None:
+    server = Server(json_response(201, reply))
+    async with make(server) as transport:
+        with pytest.raises(ContractError) as caught:
+            await share(transport, card(), latest=True)
+    assert (caught.value.code, caught.value.pointer) == ("contract_violation", pointer)

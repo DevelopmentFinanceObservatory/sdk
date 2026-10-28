@@ -28,6 +28,7 @@ from dfo._core.errors import InvalidRequestError
 from dfo._datasets.cache import Cache
 from dfo._sync._client.client import Client
 from dfo._sync._datasets.analysis import Analysis
+from dfo._sync._datasets.cards import Cards
 from dfo._sync._datasets.fetch import Session
 from dfo._sync._http.transport import Transport
 from dfo._sync._search.lookups import Lookup
@@ -66,6 +67,14 @@ def parameters(function: Callable[..., Any]) -> list[inspect.Parameter]:
         (dfo.lookup.code, Lookup.code),
         (dfo.lookup.catalogue, Lookup.catalogue),
         (dfo.pin, Client.pin),
+        (dfo.share, Client.share),
+        (dfo.snapshot, Client.snapshot),
+        (dfo.unshare, Client.unshare),
+        (dfo.history, Client.history),
+        *(
+            (getattr(dfo.cards, kind), getattr(Cards, kind))
+            for kind in ("line", "bar", "table", "stat", "source")
+        ),
         *(
             (getattr(dfo.analysis, verb), getattr(Analysis, verb))
             for verb in (
@@ -251,6 +260,32 @@ def test_the_analysis_functions_run_on_the_default_client(
     assert "newest later: dfo.fetch(data.ref, latest=True)" in repr(data)
     with pytest.raises(InvalidRequestError, match=r"dfo\.fetch\(data\.ref"):
         dfo.pin(data)
+
+
+def test_a_card_and_its_share_go_through_the_default_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replies = {
+        "/api/presentation/components": load("card-line-created.json")["body"],
+        "/api/presentation/shares": load("share-created.json")["body"],
+    }
+    seen: list[str] = []
+
+    def serve(request: httpx2.Request) -> httpx2.Response:
+        seen.append(f"{request.method} {request.url.path}")
+        return httpx2.Response(201, json=replies[request.url.path])
+
+    mock_clients(monkeypatch, {DEFAULT_URL: serve})
+    ref = dfo.DatasetRef.from_json(json.dumps(load("analysis-rank-ready.json")["ref"]))
+    card = dfo.cards.source(ref)
+    tile = dfo.share(card, latest=True)
+    assert seen == [
+        "POST /api/presentation/components",
+        "POST /api/presentation/shares",
+    ]
+    assert tile.write_token is not None
+    with pytest.raises(InvalidRequestError, match=r"dfo\.cards\.line\(data\)"):
+        dfo.share([], latest=True)
 
 
 @pytest.mark.parametrize("configured", [False, True], ids=["built", "configured"])

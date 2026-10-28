@@ -1,0 +1,17 @@
+{
+ "status": 403,
+ "headers": {
+  "content-type": "application/problem+json",
+  "x-dfo-trace-id": "9ef6444a338b407dbb9434399cb20a89"
+ },
+ "body": {
+  "type": "/codes/write_token_required",
+  "title": "Write Token Required",
+  "status": 403,
+  "detail": "replacing or deleting share 'lBm1RKBw' needs its write token in x-dfo-write-token",
+  "code": "write_token_required",
+  "trace_id": "9ef6444a338b407dbb9434399cb20a89",
+  "capability_version": "pres_f18e767e3235f78e",
+  "retryable": false
+ }
+}

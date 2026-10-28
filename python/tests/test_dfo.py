@@ -40,7 +40,7 @@ def test_type_hints_resolve_without_pyarrow() -> None:
     included, in a fresh interpreter that never loads pyarrow."""
     script = (
         "import inspect, sys, typing, dfo\n"
-        "modules = (dfo, dfo.types, dfo.errors, dfo.analysis, dfo.lookup, dfo.auth)\n"
+        "modules = (dfo, dfo.types, dfo.errors, dfo.analysis, dfo.cards, dfo.lookup, dfo.auth)\n"
         "classes = [getattr(m, n) for m in modules for n in m.__all__]\n"
         "classes = [c for c in classes if inspect.isclass(c)]\n"
         "for cls in classes:\n"
@@ -66,15 +66,20 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
         "Spec",
         "analysis",
         "auth",
+        "cards",
         "configure",
         "errors",
         "fetch",
+        "history",
         "latest_year",
         "load",
         "lookup",
         "pin",
         "search",
+        "share",
+        "snapshot",
         "types",
+        "unshare",
     ]
     assert sorted(dfo.__all__) == sorted([*public, "__version__"])
 
@@ -121,6 +126,8 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
                 "BundleLimits",
                 "Candidate",
                 "CandidatesPart",
+                "Card",
+                "CardKind",
                 "Catalogue",
                 "Citation",
                 "CitationSource",
@@ -156,7 +163,9 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
                 "ResolveKind",
                 "ResolvedPeriod",
                 "Root",
+                "Served",
                 "Severity",
+                "Share",
                 "UnknownPart",
                 "UnsupportedPart",
                 "Window",
@@ -177,6 +186,7 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
                 "sum_of",
             ],
         ),
+        (dfo.cards, ["bar", "line", "source", "stat", "table"]),
         (
             dfo.lookup,
             [
@@ -198,7 +208,7 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
             ],
         ),
     ],
-    ids=["errors", "types", "analysis", "lookup", "auth"],
+    ids=["errors", "types", "analysis", "cards", "lookup", "auth"],
 )
 def test_each_task_module_exports_its_names(
     module: ModuleType, names: list[str]
