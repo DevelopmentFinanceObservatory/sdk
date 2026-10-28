@@ -10,11 +10,14 @@ this file, so the sync client passes the same tests.
 """
 
 import json
+import re
+from datetime import date
 from typing import Any
 
 import httpx2
 import pytest
 
+import dfo._datasets.shares as shares_module
 from dfo._core.errors import (
     ContractError,
     DfoError,
@@ -22,7 +25,6 @@ from dfo._core.errors import (
     NotFoundError,
     PermissionDeniedError,
     QuotaExceededError,
-    ServerError,
 )
 from dfo._core.periods import latest_year
 from dfo._core.refs import DatasetRef, DerivedRefMember
@@ -45,10 +47,17 @@ SHARE_URL = f"https://site.example/s/{SHARE_ID}"
 TOKEN = "shw_iGYq8-qYahz4BaNQ1NC1Dg"
 
 
-def make(handler) -> AsyncTransport:
+def make(handler, **options: Any) -> AsyncTransport:
     return AsyncTransport(
-        api_key=False, base_url=BASE, http_transport=httpx2.MockTransport(handler)
+        api_key=False,
+        base_url=BASE,
+        http_transport=httpx2.MockTransport(handler),
+        **options,
     )
+
+
+async def no_wait(seconds: float) -> None:
+    """A transport sleep that returns at once."""
 
 
 def recorded(name: str) -> httpx2.Response:
@@ -145,6 +154,23 @@ async def test_a_line_card_draws_every_variable_of_the_datasets_version(
     assert made.write_token not in repr(made)
 
 
+@pytest.mark.parametrize(
+    ("reply", "held"),
+    [
+        ("card-created-held", (date(2026, 11, 27), False)),
+        ("card-line-created", (None, False)),
+    ],
+    ids=["held", "no-record"],
+)
+async def test_a_card_carries_the_retention_its_create_reply_states(
+    reply: str, held: tuple[date | None, bool]
+) -> None:
+    server = Server(recorded(reply))
+    async with make(server) as transport:
+        made = await AsyncCards(transport).line(dataset())
+    assert (made.held_until, made.pinned) == held
+
+
 async def test_a_card_of_a_ref_reads_the_frames_variables_first() -> None:
     ref = dataset().ref
     frame = frame_of(dataset())
@@ -206,24 +232,44 @@ async def test_a_card_of_anything_but_one_version_is_refused_unsent(
     assert server.requests == []
 
 
-async def test_a_share_publishes_its_cards_once_and_carries_its_token() -> None:
+async def test_a_share_publishes_its_cards_with_a_token_the_client_mints() -> None:
     server = Server(recorded("share-created"))
     async with make(server) as transport:
         made = await share(transport, [card(), card()], latest=True)
 
     assert server.calls() == [f"POST {SHARES}"]
     shown = {"component_id": "cmp_ad956b407b1623ec17cfcd55", "revision": 1}
-    assert server.body(0) == {"cards": [shown, shown], "latest": True}
+    body = server.body(0)
+    assert re.fullmatch(r"shw_[A-Za-z0-9_-]{22}", body.pop("write_token"))
+    assert body == {"cards": [shown, shown], "latest": True}
     assert made == held_share()
     assert TOKEN not in repr(made)
 
 
-async def test_a_share_is_not_sent_again_after_a_retryable_failure() -> None:
-    server = Server(problem(503, "service_unavailable", retryable=True))
-    async with make(server) as transport:
-        with pytest.raises(ServerError):
-            await share(transport, card(), latest=False)
-    assert len(server.requests) == 1
+async def test_a_retried_share_create_sends_the_same_token_and_gets_the_first_share(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = load("share-three-created.json")["body"]
+    monkeypatch.setattr(
+        shares_module.secrets,
+        "token_urlsafe",
+        lambda size: first["write_token"].removeprefix("shw_"),
+    )
+    server = Server(
+        problem(503, "service_unavailable", retryable=True),
+        recorded("share-three-created-again"),
+    )
+    async with make(server, sleep=no_wait) as transport:
+        made = await share(transport, [card()], latest=True)
+
+    assert server.calls() == [f"POST {SHARES}", f"POST {SHARES}"]
+    assert server.body(0) == server.body(1)
+    assert server.body(0)["write_token"] == first["write_token"]
+    assert (made.id, made.data_urls, made.write_token) == (
+        first["id"],
+        tuple(first["data_urls"]),
+        first["write_token"],
+    )
 
 
 @pytest.mark.parametrize(

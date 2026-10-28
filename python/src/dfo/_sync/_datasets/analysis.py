@@ -23,6 +23,8 @@ when its stored frame has aged out (`artifact_expired`), DFO computes the recipe
 again on the root versions the ref names, which must answer the same version.
 `latest=True` posts the bare derived root with `latest: true`, so DFO computes
 the stored recipe again on its datasets' newest versions.
+`fetch_computed_frame` reads a frame from its ids alone, as a share's slot names
+it, through the bare root with `latest: false`.
 
 Each read that left series out issues one `SeriesLeftOutWarning`, or raises it
 under `strict`.
@@ -42,6 +44,7 @@ from dfo._core.codes import (
     DEADLINE_EXCEEDED,
     INVALID_ARGUMENT,
     UNEXPECTED_RESPONSE,
+    VERSION_UNAVAILABLE,
 )
 from dfo._core.errors import (
     ContractError,
@@ -173,6 +176,49 @@ def fetch_derived(
         raise _unavailable(member, error, transport.caller) from error
     if again.content_version != member.content_version:
         raise _unavailable(member, expired, transport.caller)
+    return _read(transport, member, strict=strict, deadline=deadline, cache=cache)
+
+
+def fetch_computed_frame(
+    transport: Transport,
+    spec_id: str,
+    content_version: str,
+    *,
+    strict: bool = False,
+    timeout: float | None = None,
+    cache: Cache | None = None,
+) -> Dataset:
+    """The frame DFO computed that `spec_id` and `content_version` name, read
+    through its bare root, which answers the frame's ref member.
+
+    DFO answers the stored frame, or computes its recipe again on the versions
+    it read when the stored frame has aged out.
+
+    Raises:
+        DfoTimeoutError: The deadline passed while a root was building
+            (`deadline_exceeded`).
+        VersionUnavailableError: DFO computed another version on the versions
+            the recipe read, so this one can no longer be fetched.
+        ContractError: DFO answered a ref this client cannot read
+            (`contract_violation`).
+    """
+    check_strict(strict)
+    deadline = transport.deadline(timeout)
+    member = _analyse(
+        transport,
+        {
+            "tree": {"spec_id": spec_id, "content_version": content_version},
+            "latest": False,
+        },
+        deadline=deadline,
+        timeout=timeout,
+    )
+    if member.content_version != content_version:
+        raise client_error(
+            VERSION_UNAVAILABLE,
+            f"{spec_id} at {content_version} can no longer be fetched, and DFO "
+            f"computed {member.content_version} on the versions it read",
+        )
     return _read(transport, member, strict=strict, deadline=deadline, cache=cache)
 
 

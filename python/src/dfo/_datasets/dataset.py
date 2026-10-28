@@ -124,6 +124,11 @@ _MONTHS = (
 _PREVIEW_ROWS = 5
 
 
+def day_text(day: date) -> str:
+    """A day as a Dataset's repr prints it, such as `27 November 2026`."""
+    return f"{day.day} {_MONTHS[day.month - 1]} {day.year}"
+
+
 @dataclass(frozen=True, slots=True)
 class FetchedMember:
     """One built version, downloaded and ready to become part of a dataset.
@@ -308,6 +313,9 @@ class Dataset:
     _left_out_complete: bool = field(default=True, repr=False)
     # The recipe's steps in the order they ran, for the repr's derived line.
     _steps: tuple[DerivedStep, ...] = field(default=(), repr=False)
+    # The share slot a share fetch read, as the repr's "Shown by" line names it:
+    # `share k3Qx8vTa, slot 2 "Malaria grants", on 3 October 2026`. None otherwise.
+    _shown_by: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         rows = self._member_rows
@@ -444,6 +452,8 @@ class Dataset:
         if self.sources:
             lines.append("Source: " + "; ".join(self.sources))
         lines.extend(self._derived_summary())
+        if self._shown_by is not None:
+            lines.append(f"Shown by: {self._shown_by}")
         versions = [member.content_version for member in self.members]
         retention = self._retention()
         if versions:
@@ -489,10 +499,7 @@ class Dataset:
             return "pinned"
         if self.held_until is None:
             return None
-        held = self.held_until
-        return (
-            f"held until {held.day} {_MONTHS[held.month - 1]} {held.year}, not pinned"
-        )
+        return f"held until {day_text(self.held_until)}, not pinned"
 
     def _attrs(self) -> dict[str, Any]:
         ref = self._ref()

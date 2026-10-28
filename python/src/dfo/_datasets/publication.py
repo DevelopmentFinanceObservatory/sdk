@@ -6,6 +6,7 @@ draws from one frame. A `Share` publishes cards under one `/s/<id>` link, one
 card per numbered slot: a live share follows new data and takes new cards under
 the same URLs, and a snapshot keeps the versions its cards drew when it was
 made. A `Served` is one frame a share's slot served, as `dfo.history` lists it.
+`dfo.fetch(share)` reads the frame a slot shows, which `ShownFrame` names.
 
 A card's and a share's write tokens grant changing them, so each value carries
 its token and prints without it. Every value here is plain data with no client,
@@ -16,8 +17,9 @@ This module is sync and shared by both clients.
 
 import re
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime, time
 from typing import Any, Literal, override
 from urllib.parse import urlsplit
 
@@ -27,7 +29,7 @@ from dfo._core.refs import DatasetRef
 from dfo._core.text import single_line
 from dfo._core.types import clipped
 from dfo._datasets.build import read_held_until
-from dfo._datasets.dataset import Dataset
+from dfo._datasets.dataset import Dataset, day_text
 
 type CardKind = Literal["line", "bar", "table", "stat", "source"]
 """What a card draws: a line chart, a bar chart, a table, a headline number, or
@@ -71,7 +73,8 @@ class Card:
     """A card DFO stores and draws from one frame.
 
     A card on its own stays in DFO's 30-day tier; the first share that includes
-    it pins the version it draws.
+    it pins the version it draws. `held_until` and `pinned` state that version's
+    retention when the card was made.
 
     Attributes:
         id: The card's id, `cmp_<...>`.
@@ -83,6 +86,11 @@ class Card:
             for a source card, which shows no title.
         write_token: The `cmw_` token that grants revising the card. Keep it
             as a secret; the repr leaves it out.
+        held_until: The date the version the card draws stops being
+            guaranteed, 30 days after DFO stored it, when the card was made.
+            None when pinned or when DFO holds no record of the version.
+        pinned: Whether DFO kept that version with no time limit when the card
+            was made.
     """
 
     id: str
@@ -91,6 +99,8 @@ class Card:
     ref: DatasetRef
     title: str | None
     write_token: str = field(repr=False)
+    held_until: date | None = None
+    pinned: bool = False
 
     @override
     def __repr__(self) -> str:
@@ -187,6 +197,39 @@ class Served:
         )
 
 
+type Moment = date | datetime | str
+"""A moment `dfo.fetch(share, as_of=...)` reads a share at: a date, a datetime,
+or an ISO 8601 date or date-time string."""
+
+
+@dataclass(frozen=True, slots=True)
+class ShownFrame:
+    """The frame one slot of a share shows, and the card that shows it.
+
+    Attributes:
+        share_id: The share's id.
+        slot: The slot, from 1.
+        title: The title the slot's card shows, or None.
+        spec_id: The frame's spec id, `spec_<hex>` or `ops_<hex>`.
+        content_version: The frame's version, `cv_<hex>` or `ocv_<hex>`.
+        on: The day the fetch asked about, or None for what the slot shows now.
+    """
+
+    share_id: str
+    slot: int
+    title: str | None
+    spec_id: str
+    content_version: str
+    on: date | None
+
+    def line(self) -> str:
+        """The frame as a Dataset's repr names it, as
+        `share k3Qx8vTa, slot 2 "Malaria grants", on 3 October 2026`."""
+        title = f' "{clipped(self.title)}"' if self.title else ""
+        when = "now" if self.on is None else f"on {day_text(self.on)}"
+        return f"share {self.share_id}, slot {self.slot}{title}, {when}"
+
+
 def _day(day: date) -> str:
     return f"{day.day} {_MONTHS[day.month - 1]} {day.year}"
 
@@ -195,23 +238,26 @@ def read_card(reply: object, *, route: str, kind: CardKind, ref: DatasetRef) -> 
     """The card a create reply names.
 
     Raises:
-        ContractError: The reply lacks the card's id, revision or write token
-            (`contract_violation`).
+        ContractError: The reply lacks the card's id, revision or write token,
+            or its retention is malformed (`contract_violation`).
     """
     body = _object(reply, route, "")
+    pinned, held_until = _retention(body.get("retention"), route, "/retention")
     return Card(
         _text(body, "component_id", route),
         _count(body, "revision", route),
         kind,
         ref,
-        _card_title(body),
+        card_title(body),
         _text(body, "write_token", route),
+        held_until,
+        pinned,
     )
 
 
-def _card_title(body: Mapping[str, Any]) -> str | None:
-    """The title the reply's drawn card shows, or None when it shows none."""
-    payload = body.get("resolved_payload")
+def card_title(body: object) -> str | None:
+    """The title a card reply's drawn card shows, or None when it shows none."""
+    payload = body.get("resolved_payload") if isinstance(body, Mapping) else None
     component = payload.get("component") if isinstance(payload, Mapping) else None
     title = component.get("title") if isinstance(component, Mapping) else None
     text = title.get("text") if isinstance(title, Mapping) else None
@@ -261,14 +307,9 @@ def read_history(reply: object, *, route: str) -> tuple[Served, ...]:
 
 def _served(entry: Mapping[str, Any], route: str, pointer: str) -> Served:
     frame = _object(entry.get("frame"), route, f"{pointer}/frame")
-    retention = entry.get("retention")
-    # DFO answers no retention for a frame it holds no record of.
-    held = (
-        {"pinned": False}
-        if retention is None
-        else _object(retention, route, f"{pointer}/retention")
+    pinned, held_until = _retention(
+        entry.get("retention"), route, f"{pointer}/retention"
     )
-    pinned = _flag(held, "pinned", route, f"{pointer}/retention")
     try:
         served_at = datetime.fromisoformat(
             _text(entry, "first_served_at", route, pointer)
@@ -285,18 +326,27 @@ def _served(entry: Mapping[str, Any], route: str, pointer: str) -> Served:
         _text(frame, "content_version", route, f"{pointer}/frame"),
         served_at,
         pinned,
-        None if pinned else read_held_until(held.get("held_until")),
+        held_until,
         _flag(entry, "fetchable", route, pointer),
     )
 
 
-def share_id_of(target: object, caller: str) -> str:
-    """The id of the share `target` names: a `Share`, or the URL of its page or
-    embed, such as `https://developmentfinance.org/s/k3Qx8vTa`.
+def _retention(value: object, route: str, pointer: str) -> tuple[bool, date | None]:
+    """Whether a reply's retention pins its frame, and the date an unpinned one
+    is held until. DFO answers null for a frame it holds no record of, which
+    reads as unpinned with no date."""
+    if value is None:
+        return False, None
+    held = _object(value, route, pointer)
+    if _flag(held, "pinned", route, pointer):
+        return True, None
+    return False, read_held_until(held.get("held_until"))
 
-    Raises:
-        InvalidRequestError: `target` is neither (`invalid_argument`).
-    """
+
+def share_id_in(target: object) -> str | None:
+    """The id of the share `target` names: a `Share`, or the URL of its page or
+    embed, such as `https://developmentfinance.org/s/k3Qx8vTa`; None when it is
+    neither."""
     if isinstance(target, Share):
         return target.id
     if isinstance(target, str):
@@ -307,12 +357,135 @@ def share_id_of(target: object, caller: str) -> str:
             and SHARE_ID.fullmatch(segments[-1])
         ):
             return segments[-1]
+    return None
+
+
+def share_id_of(target: object, caller: str) -> str:
+    """The id of the share `target` names, as `share_id_in` reads it.
+
+    Raises:
+        InvalidRequestError: `target` names no share (`invalid_argument`).
+    """
+    if (share_id := share_id_in(target)) is not None:
+        return share_id
     raise client_error(
         INVALID_ARGUMENT,
         "A share is named by the Share a share call returned, or its URL, such as "
         f"'https://developmentfinance.org/s/k3Qx8vTa', not {target!r}; "
         f"{caller}.share(cards, latest=True) makes one",
     )
+
+
+def as_of_moment(as_of: object) -> tuple[datetime, date]:
+    """The moment `as_of` names, and its day.
+
+    A date reads as the end of that day in UTC, so it names what the share
+    showed on that day; a datetime without a time zone reads as UTC. Text is an
+    ISO 8601 date, read as a date, or date-time, read as a datetime.
+
+    Raises:
+        InvalidRequestError: `as_of` is none of those (`invalid_argument`).
+    """
+    if isinstance(as_of, str):
+        as_of = _iso_moment(as_of) or as_of
+    if isinstance(as_of, datetime):
+        moment = as_of if as_of.tzinfo is not None else as_of.replace(tzinfo=UTC)
+        return moment, as_of.date()
+    if isinstance(as_of, date):
+        return datetime.combine(as_of, time.max, tzinfo=UTC), as_of
+    raise client_error(
+        INVALID_ARGUMENT,
+        "as_of is a date, a datetime or an ISO 8601 date such as '2026-10-28', "
+        f"not {as_of!r}",
+    )
+
+
+def _iso_moment(text: str) -> date | datetime | None:
+    """`text` as an ISO 8601 date, else date-time, else None."""
+    for parse in (date.fromisoformat, datetime.fromisoformat):
+        with suppress(ValueError):
+            return parse(text)
+    return None
+
+
+def check_slot(slot: object) -> None:
+    """Refuse a `slot` that is neither None nor a slot number from 1.
+
+    Raises:
+        InvalidRequestError: It is not (`invalid_argument`).
+    """
+    if slot is None or (
+        isinstance(slot, int) and not isinstance(slot, bool) and slot >= 1
+    ):
+        return
+    raise client_error(
+        INVALID_ARGUMENT,
+        "slot is numbered from 1, as a share's data URLs are, so slot=1 is the "
+        f"first card, not {slot!r}",
+    )
+
+
+def chosen_slot(slot: int | None, count: int, share_id: str) -> int:
+    """The slot a share fetch reads: `slot`, or the only one of a share of one.
+
+    Raises:
+        InvalidRequestError: The share has several slots and `slot` is None, or
+            `slot` is past its last (`invalid_argument`).
+    """
+    if slot is None and count == 1:
+        return 1
+    if slot is not None and slot <= count:
+        return slot
+    held = f"Share {share_id} has {count} slot{'' if count == 1 else 's'}"
+    if slot is not None:
+        held += f" and no slot {slot}"
+    picks = "slot=1" if count == 1 else f"slot=1 to slot={count}"
+    raise client_error(
+        INVALID_ARGUMENT,
+        f"{held}; slots are numbered from 1 as its data URLs are, so pick one "
+        f"with {picks}",
+    )
+
+
+def read_slot_count(reply: object, *, route: str) -> int:
+    """The number of slots a share read lists.
+
+    Raises:
+        ContractError: The reply has no list of slots (`contract_violation`).
+    """
+    slots = _object(reply, route, "").get("slots")
+    if not isinstance(slots, list):
+        raise _violation(route, "/slots")
+    return len(slots)
+
+
+def read_shown_card(
+    reply: object, *, route: str
+) -> tuple[tuple[str, str] | None, str | None]:
+    """The frame a slot's card read is drawn on, as its spec id and version, or
+    None for a card that draws no frame, such as a note; and the card's title.
+
+    Raises:
+        ContractError: The reply names no list of inputs, or several, or an
+            input lacks its spec id or version (`contract_violation`).
+    """
+    body = _object(reply, route, "")
+    payload = _object(body.get("resolved_payload"), route, "/resolved_payload")
+    pointer = "/resolved_payload/provenance"
+    inputs = _object(payload.get("provenance"), route, pointer).get("inputs")
+    match inputs:
+        case []:
+            return None, card_title(body)
+        case [entry]:
+            at = f"{pointer}/inputs/0"
+            frame = _object(entry, route, at)
+            shown = (
+                _text(frame, "spec_id", route, at),
+                _text(frame, "content_version", route, at),
+            )
+            return shown, card_title(body)
+        case _:
+            raise _violation(route, f"{pointer}/inputs", "is not one frame")
 
 
 def write_token_of(target: object, write_token: object) -> str | None:

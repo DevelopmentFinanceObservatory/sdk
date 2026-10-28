@@ -1,5 +1,6 @@
-"""Fetching a target: a spec through the build path, a ref's exact versions, or
-a recipe or derived ref through DFO's analysis runner (`dfo._datasets.analysis`).
+"""Fetching a target: a spec through the build path, a ref's exact versions, a
+recipe or derived ref through DFO's analysis runner (`dfo._datasets.analysis`),
+or the frame a share's slot shows.
 
 A `DatasetRef` fetched with `latest=True` builds the newest version of each
 member's spec, in the ref's one rendering, stacked under the members' parts as an
@@ -19,9 +20,18 @@ while the first reads the cache or fetches the stored file, so the file download
 once. A cached manifest counts only when it lists the member's digest. Bytes the
 file selector served for a manifest that does not list them are stored with an
 artifact entry naming the selector, so they count on the next fetch.
+
+A share fetch finds the frame a slot shows (`dfo._datasets.shares.shown_frame`)
+and reads that exact version in the frame layout. A `spec_` frame reads its
+stored manifest at `GET /datasets/{spec_id}/{content_version}`, which holds the
+definition and lists the frame artifact a ref member names, asks Search the
+definition's sentence, and then takes a ref's lookup order. An `ops_` frame
+reads through its bare derived root (`fetch_computed_frame`). The Dataset's repr
+names the share, slot, card title and day.
 """
 
 from collections.abc import Mapping
+from dataclasses import replace
 
 import httpx2
 
@@ -45,7 +55,7 @@ from dfo._core.errors import (
     recast,
     warn,
 )
-from dfo._core.refs import DatasetRef, DerivedRefMember, RefMember
+from dfo._core.refs import OPS_ID, DatasetRef, DerivedRefMember, RefMember
 from dfo._core.refusals import describing, trace_id_of
 from dfo._core.text import cited
 from dfo._core.types import (
@@ -53,12 +63,13 @@ from dfo._core.types import (
     SPEC_ID,
     FormatError,
     Layout,
+    Rendering,
     Spec,
     Window,
     Wire,
     matches,
 )
-from dfo._datasets.analysis import fetch_derived, run_recipe
+from dfo._datasets.analysis import fetch_computed_frame, fetch_derived, run_recipe
 from dfo._datasets.build import (
     Cache,
     Entities,
@@ -76,6 +87,7 @@ from dfo._datasets.build import (
 from dfo._datasets.dataset import Dataset, FetchedMember, build_dataset
 from dfo._datasets.fetch import (
     build_version,
+    built_sentence,
     download,
     fetch_members,
     finish_member,
@@ -89,7 +101,9 @@ from dfo._datasets.operation import (
     progress_hook,
 )
 from dfo._datasets.progress import ProgressRenderer
+from dfo._datasets.publication import Moment, ShareTarget, share_id_in
 from dfo._datasets.recipe import Recipe
+from dfo._datasets.shares import shown_frame
 from dfo._http.hooks import async_offload
 from dfo._http.transport import AsyncTransport, offline
 
@@ -103,12 +117,17 @@ _VERSIONS_PAGE = 100
 # The most versions pages a newest-version lookup reads. Past them the lookup
 # reports no newest version.
 VERSIONS_PAGE_BUDGET = 20
+# The rendering a share fetch reads a dataset frame in: the bare Parquet frame.
+# Whether it leaves party totals out is the listed artifact's.
+_FRAME = Rendering("parquet", False, "frame")
 
 
 async def fetch(
     transport: AsyncTransport,
-    target: Spec | DatasetRef | Recipe,
+    target: Spec | DatasetRef | Recipe | ShareTarget,
     *,
+    as_of: Moment | None = None,
+    slot: int | None = None,
     window: Window | None = None,
     entities: Entities | None = None,
     facets: Mapping[str, str | None] | None = None,
@@ -121,15 +140,21 @@ async def fetch(
     cache: Cache | None = None,
 ) -> Dataset:
     """Fetch a spec's latest version, the exact versions a ref names, or with
-    `latest=True` the newest versions of a ref's specs; or run a recipe on DFO.
+    `latest=True` the newest versions of a ref's specs; run a recipe on DFO; or
+    fetch the exact version a share's slot shows.
 
     A `Recipe` and a ref of a frame DFO computed take `latest`, `strict` and
-    `timeout`, and refuse the options that narrow or render a spec.
+    `timeout`, and refuse the options that narrow or render a spec. A share
+    takes `as_of`, `slot`, `strict`, `timeout` and `progress`, and `layout`
+    only as `frame`.
 
     Args:
         transport: The transport requests go through.
-        target: A `Spec` to build, a `DatasetRef` to read back, or a `Recipe` to
-            run.
+        target: A `Spec` to build, a `DatasetRef` to read back, a `Recipe` to
+            run, or a `Share` or its page or embed URL.
+        as_of: For a share, the moment whose frame to read: the newest the slot
+            first served on or before it. None reads what the slot shows now.
+        slot: For a share, the slot to read, from 1; None for a share of one.
         window: Narrow a spec to `"all"`, `"latest"` or `(start_year, end_year)`.
         entities: Rebind the named roles of a spec to dcids; None drops a role.
             The keys are the spec's role keys, `spec.roles`. The spec's other
@@ -173,6 +198,33 @@ async def fetch(
             INVALID_ARGUMENT, f"latest is True or False, not {latest!r}."
         )
     caller = transport.caller
+    if share_id_in(target) is not None:
+        _check_shown(
+            window=window,
+            entities=entities,
+            facets=facets,
+            layout=layout,
+            party_totals=party_totals,
+            latest=latest,
+            caller=caller,
+        )
+        return await _fetch_shown(
+            transport,
+            target,
+            as_of=as_of,
+            slot=slot,
+            strict=strict,
+            timeout=timeout,
+            progress=progress,
+            cache=cache,
+        )
+    if as_of is not None or slot is not None:
+        raise client_error(
+            INVALID_ARGUMENT,
+            "as_of and slot pick what a share showed, so they go with a Share or "
+            f"its URL, such as {caller}.fetch(share, slot=1), not with "
+            f"{type(target).__name__}",
+        )
     derived = isinstance(target, DatasetRef) and any(
         isinstance(member, DerivedRefMember) for member in target.members
     )
@@ -237,8 +289,9 @@ async def fetch(
     if not isinstance(target, Spec):
         raise client_error(
             INVALID_ARGUMENT,
-            "fetch takes a Spec, such as answer.specs[0], a DatasetRef or a "
-            f"Recipe, not {type(target).__name__}; a spec id alone does not build",
+            "fetch takes a Spec, such as answer.specs[0], a DatasetRef, a Recipe, "
+            f"or a Share or its URL, not {_named(target)}; a spec id alone does "
+            "not build",
         )
     if latest:
         raise client_error(
@@ -258,6 +311,170 @@ async def fetch(
         window=window,
         entities=entities,
         facets=facets,
+    )
+
+
+def _named(target: object) -> str:
+    """A refused target as its message names it: text quoted, else its type."""
+    return repr(target) if isinstance(target, str) else type(target).__name__
+
+
+def _check_shown(
+    *,
+    window: object,
+    entities: object,
+    facets: object,
+    layout: object,
+    party_totals: object,
+    latest: bool,
+    caller: str,
+) -> None:
+    """Refuse the options a share fetch does not take: it reads the exact frame
+    a slot shows, as DFO stored it.
+
+    Raises:
+        InvalidRequestError: One is given (`invalid_argument`).
+    """
+    given = [
+        name
+        for name, value in (
+            ("window", window is not None),
+            ("entities", entities is not None),
+            ("facets", facets is not None),
+            ("party_totals", party_totals is not None),
+            ("latest=True", latest),
+        )
+        if value
+    ]
+    if layout not in (None, "frame"):
+        given.append(f"layout={layout!r}")
+    if given:
+        raise client_error(
+            INVALID_ARGUMENT,
+            "A share fetch reads the exact frame a slot shows and takes no "
+            f"{', '.join(given)}; narrow the Dataset it returns with "
+            f"{caller}.analysis.filter, or pick another moment with as_of",
+        )
+
+
+async def _fetch_shown(
+    transport: AsyncTransport,
+    target: object,
+    *,
+    as_of: object,
+    slot: object,
+    strict: bool,
+    timeout: float | None,
+    progress: bool | None,
+    cache: Cache | None,
+) -> Dataset:
+    """The exact version a share's slot shows, named in the Dataset's repr.
+
+    Raises:
+        NetworkError: `DFO_OFFLINE=1` is set, since only the server knows what
+            a share shows (`offline`); no request is sent.
+        ContractError: The slot names a frame that is neither `spec_` nor
+            `ops_` (`contract_violation`).
+    """
+    check_strict(strict)
+    if offline():
+        raise client_error(
+            OFFLINE,
+            "DFO_OFFLINE=1 is set, and what a share shows is known only to the "
+            "server; fetch the slot's data.ref instead",
+        )
+    shown = await shown_frame(transport, target, slot=slot, as_of=as_of)
+    if matches(OPS_ID, shown.spec_id):
+        dataset = await fetch_computed_frame(
+            transport,
+            shown.spec_id,
+            shown.content_version,
+            strict=strict,
+            timeout=timeout,
+            cache=cache,
+        )
+    elif matches(SPEC_ID, shown.spec_id):
+        dataset = await _fetch_frame(
+            transport,
+            shown.spec_id,
+            shown.content_version,
+            strict=strict,
+            timeout=timeout,
+            progress=progress,
+            cache=cache,
+        )
+    else:
+        raise client_error(
+            CONTRACT_VIOLATION,
+            f"Slot {shown.slot} of share {shown.share_id} names the frame "
+            f"{shown.spec_id!r}, which is neither a spec_ nor an ops_ id",
+        )
+    return replace(dataset, _shown_by=shown.line())
+
+
+async def _fetch_frame(
+    transport: AsyncTransport,
+    spec_id: str,
+    content_version: str,
+    *,
+    strict: bool,
+    timeout: float | None,
+    progress: bool | None,
+    cache: Cache | None,
+) -> Dataset:
+    """A dataset version in the frame layout, from its ids alone: the stored
+    manifest names its definition and frame artifact, and Search its sentence.
+
+    Raises:
+        ContractError: The manifest lists no bare Parquet frame artifact
+            (`contract_violation`).
+    """
+    deadline = transport.deadline(timeout)
+    stored = await _snapshot(transport, spec_id, content_version, deadline=deadline)
+    manifest, trace_id = stored
+    with describing(trace_id):
+        artifact = pick_artifact(manifest, _FRAME)
+        if artifact is None:
+            raise client_error(
+                CONTRACT_VIOLATION,
+                f"The manifest of {spec_id} at {content_version} lists no "
+                f"{_FRAME.to_object()} artifact",
+            )
+    sentence = await built_sentence(transport, manifest, (), None, deadline=deadline)
+    member = RefMember(
+        parts=(),
+        sentence=sentence,
+        spec=Spec(spec_id, manifest["definition"], sentence),
+        content_version=content_version,
+        digest=artifact["artifact_digest"],
+        rendering=replace(
+            _FRAME,
+            without_party_totals=artifact["rendering"].get("without_party_totals")
+            is True,
+        ),
+    )
+    with ProgressRenderer(enabled=progress) as renderer:
+        fetched = await _fetch_version(
+            transport,
+            member,
+            pointer="/members/0",
+            strict=strict,
+            on_progress=progress_hook(renderer),
+            cache=cache,
+            cache_only=False,
+            deadline=deadline,
+            timeout=timeout,
+            stored=stored,
+        )
+    return await async_offload(
+        build_dataset,
+        [fetched],
+        layout="frame",
+        complete=True,
+        missing=(),
+        stale=False,
+        cache=cache,
+        caller=transport.caller,
     )
 
 
@@ -454,9 +671,12 @@ async def _fetch_version(
     cache_only: bool,
     deadline: float | None,
     timeout: float | None,
+    stored: tuple[Wire, str | None] | None = None,
 ) -> FetchedMember:
     """One stored version, through the lookup order. `pointer` locates the
     member in the ref, and `timeout` is the caller's, which set `deadline`.
+    `stored` is the version's manifest and its trace id when the caller already
+    read it, which spares the snapshot request.
 
     Raises:
         InvalidRequestError: The member's spec id or version is not a server id
@@ -481,7 +701,9 @@ async def _fetch_version(
                 f"DFO_OFFLINE=1 is set, and the cache lacks {spec_id} at {version}",
             )
         try:
-            manifest, trace_id = await _snapshot(transport, member, deadline=deadline)
+            manifest, trace_id = stored or await _snapshot(
+                transport, spec_id, version, deadline=deadline
+            )
         except DfoError as error:
             if error.code != _FILE_EXPIRED:
                 raise
@@ -609,19 +831,22 @@ def _digest_changed(member: RefMember, digest: str) -> DfoWarning:
 
 
 async def _snapshot(
-    transport: AsyncTransport, member: RefMember, *, deadline: float | None
+    transport: AsyncTransport,
+    spec_id: str,
+    content_version: str,
+    *,
+    deadline: float | None,
 ) -> tuple[Wire, str | None]:
     """A stored version's manifest, and the trace id of the response that carried
     it."""
-    spec_id = member.spec.spec_id
     response = await transport.request(
-        "GET", f"/datasets/{spec_id}/{member.content_version}", deadline=deadline
+        "GET", f"/datasets/{spec_id}/{content_version}", deadline=deadline
     )
     manifest = response_json(response)
     trace_id = trace_id_of(response, manifest)
     with describing(trace_id):
         check_served_manifest(manifest)
-        check_built(manifest, spec_id, member.content_version)
+        check_built(manifest, spec_id, content_version)
     return manifest, trace_id
 
 

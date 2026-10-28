@@ -27,7 +27,7 @@ from dfo._core.lookup_results import Catalogue, Code, Match, Node
 from dfo._core.refs import DatasetRef
 from dfo._core.types import Layout, Spec, Window
 from dfo._datasets.dataset import Dataset
-from dfo._datasets.publication import Card, Served, Share, ShareTarget
+from dfo._datasets.publication import Card, Moment, Served, Share, ShareTarget
 from dfo._datasets.recipe import Recipe
 from dfo._generated.wire import ResolveKind
 from dfo._http.hooks import HeaderProvider
@@ -141,9 +141,11 @@ def search(question: str, /, *, timeout: float | None = SEARCH_TIMEOUT) -> Answe
 
 
 def fetch(
-    target: Spec | DatasetRef | Recipe,
+    target: Spec | DatasetRef | Recipe | ShareTarget,
     /,
     *,
+    as_of: Moment | None = None,
+    slot: int | None = None,
     window: Window | None = None,
     entities: Mapping[str, list[str] | tuple[str, ...] | None] | None = None,
     facets: Mapping[str, str | None] | None = None,
@@ -155,22 +157,26 @@ def fetch(
     progress: bool | None = None,
 ) -> Dataset:
     """Fetch a spec's latest version, the exact versions a ref names, or with
-    `latest=True` the newest versions of a ref's specs, or run a recipe on DFO,
-    with the default client.
+    `latest=True` the newest versions of a ref's specs; run a recipe on DFO; or
+    fetch the exact version a share's slot shows, with the default client.
 
     Takes `Client.fetch`'s arguments, including its timeout behavior: platform
     name resolution can run past a synchronous deadline, while the asynchronous
     client can cancel it.
 
     Raises:
-        InvalidRequestError: The target is not a `Spec`, a `DatasetRef` or a
-            `Recipe`, such as a spec id, and no request is sent; a ref is narrowed or
-            given another layout or `party_totals`; `latest` is not a
-            bool, is given a spec, or is given a ref whose members differ in
-            rendering; `window`, `entities`, `facets` or `layout` is
-            malformed; `entities` names a role the spec does not declare; or
-            `timeout` is not
-            None or a finite number above 0 (`invalid_argument`).
+        InvalidRequestError: The target is not a `Spec`, a `DatasetRef`, a
+            `Recipe`, or a `Share` or its URL, such as a spec id, and no request
+            is sent; a ref is narrowed or given another layout or
+            `party_totals`; `latest` is not a bool, is given a spec, or is
+            given a ref whose members differ in rendering; a share is given a
+            narrowing, `party_totals`, `latest=True` or a layout other than
+            `frame`, `slot` is 0, or `as_of` is malformed, all before any
+            request; a share of several slots is given no `slot`, or one past
+            its last; `as_of` is before the slot first served data; `window`,
+            `entities`, `facets` or `layout` is malformed; `entities` names a
+            role the spec does not declare; or `timeout` is not None or a
+            finite number above 0 (`invalid_argument`).
         VersionUnavailableError: A ref's version can no longer be fetched.
         ContractError: An artifact is not Parquet (`unexpected_response`), or
             lacks a `time_period` or numeric `value` column
@@ -181,6 +187,8 @@ def fetch(
     """
     return default_client().fetch(
         target,
+        as_of=as_of,
+        slot=slot,
         window=window,
         entities=entities,
         facets=facets,

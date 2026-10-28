@@ -23,7 +23,7 @@ from dfo._core.refusals import caller_refusal
 from dfo._core.types import Layout, RawResponse, Spec, Window
 from dfo._datasets.cache import Cache
 from dfo._datasets.dataset import Dataset
-from dfo._datasets.publication import Card, Served, Share, ShareTarget
+from dfo._datasets.publication import Card, Moment, Served, Share, ShareTarget
 from dfo._datasets.recipe import Recipe
 from dfo._http.hooks import HeaderProvider
 from dfo._sync._datasets.analysis import Analysis
@@ -184,9 +184,11 @@ class Client:
 
     def fetch(
         self,
-        target: Spec | DatasetRef | Recipe,
+        target: Spec | DatasetRef | Recipe | ShareTarget,
         /,
         *,
+        as_of: Moment | None = None,
+        slot: int | None = None,
         window: Window | None = None,
         entities: Mapping[str, list[str] | tuple[str, ...] | None] | None = None,
         facets: Mapping[str, str | None] | None = None,
@@ -198,8 +200,8 @@ class Client:
         progress: bool | None = None,
     ) -> Dataset:
         """Fetch a spec's latest version, the exact versions a ref names, or with
-        `latest=True` the newest versions of a ref's specs; or run a recipe on
-        DFO in one request.
+        `latest=True` the newest versions of a ref's specs; run a recipe on DFO
+        in one request; or fetch the exact version a share's slot shows.
 
         A ref of a frame DFO computed reads that frame, and with `latest=True`
         DFO computes its recipe again on the newest versions of its datasets. A
@@ -207,13 +209,29 @@ class Client:
         refuses the options that narrow or render a spec. A fetch that left
         series out for missing data issues one `SeriesLeftOutWarning`.
 
+        A share reads the frame its slot shows now, or with `as_of` the one it
+        showed then, in the frame layout, and the Dataset's repr names the
+        share, slot, card title and day. It takes `as_of`, `slot`, `strict`,
+        `timeout` and `progress`, and refuses the options that narrow or render
+        a spec and `latest=True`; `history(share)` lists what each slot showed.
+
         A cancelled or interrupted fetch leaves its build running on the server,
         and the same fetch joins it. Ctrl-C in the synchronous client adds a
         note saying so to the `KeyboardInterrupt`.
 
         Args:
-            target: A `Spec` to build, a `DatasetRef` to read back, or a
-                `Recipe` from `dfo.analysis.recipe` to run.
+            target: A `Spec` to build, a `DatasetRef` to read back, a
+                `Recipe` from `dfo.analysis.recipe` to run, or a `Share` or the
+                URL of its page or embed, such as
+                `https://developmentfinance.org/s/k3Qx8vTa`.
+            as_of: For a share, a date, a datetime or an ISO 8601 date such as
+                `"2026-10-28"`: the newest version the slot first served on or
+                before it. A date reads as the end of that day in UTC, and a
+                datetime without a time zone as UTC. None reads what the slot
+                shows now.
+            slot: For a share, the slot to read, numbered from 1 as the share's
+                data URLs are. None reads a share of one slot, and a share of
+                several refuses it.
             window: Narrow a spec to `"all"`, `"latest"` or
                 `(start_year, end_year)`.
             entities: Rebind the named roles of a spec to dcids, such as
@@ -245,11 +263,16 @@ class Client:
                 `DFO_PROGRESS=0`.
 
         Raises:
-            InvalidRequestError: The target is not a `Spec`, a `DatasetRef` or a
-                `Recipe`, such as a spec id, and no request is sent; a ref
-                is narrowed or given another layout or `party_totals`;
-                `latest` is not a bool, is given a spec, or is given a ref
-                whose members differ in rendering; `window`, `entities`,
+            InvalidRequestError: The target is not a `Spec`, a `DatasetRef`, a
+                `Recipe`, or a `Share` or its URL, such as a spec id, and no
+                request is sent; a ref is narrowed or given another layout or
+                `party_totals`; `latest` is not a bool, is given a spec, or is
+                given a ref whose members differ in rendering; a share is given
+                a narrowing, `party_totals`, `latest=True` or a layout other
+                than `frame`, `slot` is 0, or `as_of` is malformed, all before
+                any request; a share of several slots is given no `slot`, or
+                one past its last; `as_of` is before the slot first served
+                data; `window`, `entities`,
                 `facets` or `layout` is malformed; `entities` names a role the
                 spec does not declare; or
                 `timeout` is not None or a finite number above 0
@@ -265,6 +288,8 @@ class Client:
         return fetch(
             self._session.transport,
             target,
+            as_of=as_of,
+            slot=slot,
             window=window,
             entities=entities,
             facets=facets,
@@ -309,7 +334,8 @@ class Client:
         Each card sits in a numbered slot. A share pins the versions its cards
         draw, and each new share counts against a daily allowance per network
         address. The `Share` carries the write token that changes or removes it,
-        and prints without it.
+        and prints without it. The client mints that token, so a create retried
+        after a lost reply answers the first share and spends no allowance.
 
         Args:
             cards: A card from `cards`, or a list of them in slot order.
@@ -382,7 +408,7 @@ class Client:
 
     def history(self, share: ShareTarget, /) -> tuple[Served, ...]:
         """What each card of a share served, newest first, with whether each
-        frame can still be fetched.
+        frame can still be fetched. `fetch(share, slot=n, as_of=day)` reads one.
 
         Args:
             share: The share, or its URL.

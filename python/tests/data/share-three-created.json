@@ -1,0 +1,20 @@
+{
+ "status": 201,
+ "headers": {
+  "content-type": "application/json",
+  "x-dfo-trace-id": "144728ae266840bdaaa2429cd6f48e95"
+ },
+ "body": {
+  "id": "CJmD6XzG",
+  "url": "https://site.example/s/CJmD6XzG",
+  "embed_url": "https://site.example/embed/CJmD6XzG",
+  "data_urls": [
+   "https://site.example/api/v1/presentation/shares/CJmD6XzG/slots/1/data",
+   "https://site.example/api/v1/presentation/shares/CJmD6XzG/slots/2/data",
+   "https://site.example/api/v1/presentation/shares/CJmD6XzG/slots/3/data"
+  ],
+  "revision": 1,
+  "latest": true,
+  "write_token": "shw_YTl1UJie-ALFpVzospD1Aw"
+ }
+}

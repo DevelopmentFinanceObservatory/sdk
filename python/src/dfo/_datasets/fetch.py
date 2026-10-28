@@ -487,7 +487,7 @@ async def finish_member(
     parts = () if want is None else want.parts
     sentence = None if want is None else want.sentence or want.spec.sentence
     if want is None or spec_id != want.spec.spec_id or sentence is None:
-        sentence = await _sentence(
+        sentence = await built_sentence(
             transport,
             manifest,
             parts,
@@ -717,7 +717,7 @@ async def download(
     raise failure
 
 
-async def _sentence(
+async def built_sentence(
     transport: AsyncTransport,
     manifest: Wire,
     parts: tuple[str, ...],

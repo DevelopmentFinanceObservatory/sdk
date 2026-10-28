@@ -1,0 +1,342 @@
+"""Tests for fetching what a share shows: the slot's frame now or at a moment,
+read as the exact version, and every refusal of a slot, moment or option.
+
+The share replies are recorded from dfo-apis' shares door over its test doubles
+(`tests/presentation_api/test_share_data_door.py`): a live share of three cards,
+whose slot 2 served its card's own frame and then newer data. Those doubles
+draw a malaria frame no dataset route serves, so each test points the slot's
+frames at a recorded version: the contract's `fetch-ref` dataset version, whose
+manifest lists the frame file `fetch-spec-frame-layout.parquet`, and the ranked
+frame `analysis-rank-*` DFO computed. `scripts/gen_sync.py` derives
+`tests/_sync/datasets/test_share_fetch.py` from this file.
+"""
+
+import json
+from datetime import UTC, date, datetime
+from typing import Any
+
+import httpx2
+import pytest
+
+from dfo._core.errors import InvalidRequestError, NetworkError
+from dfo._core.refs import DatasetRef, DerivedRefMember, RefMember
+from dfo._core.types import Spec
+from dfo._datasets.publication import Share
+from dfo._datasets.resolve import fetch
+from dfo._http.transport import AsyncTransport
+from tests._data import CONTRACT, DATA, load
+from tests._fetch_support import (
+    BASE,
+    ORIGIN,
+    POSTED_ID,
+    Server,
+    json_response,
+    parquet,
+    resubmitted,
+)
+
+pytestmark = pytest.mark.anyio
+
+SHARE_ID = "CJmD6XzG"
+SHARES = f"{BASE}/presentation/shares"
+SLOT_2_CARD = "cmp_ced1680e050bfd9b4226a4e6"
+VERSION = "cv_b92d94774702c7f05f2075d0b03dd756"
+FRAME_FILE = (CONTRACT / "scenarios" / "fetch-spec-frame-layout.parquet").read_bytes()
+RANK = load("analysis-rank-ready.json")["ref"]["members"][0]
+
+
+def make(handler) -> AsyncTransport:
+    return AsyncTransport(
+        api_key=False, base_url=BASE, http_transport=httpx2.MockTransport(handler)
+    )
+
+
+@pytest.fixture(autouse=True)
+def online(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DFO_OFFLINE", raising=False)
+
+
+def recorded(name: str, body: Any = None) -> httpx2.Response:
+    reply = load(f"{name}.json")
+    headers = {k: v for k, v in reply["headers"].items() if k != "content-type"}
+    return json_response(
+        reply["status"], reply["body"] if body is None else body, headers
+    )
+
+
+def three_slots() -> Share:
+    body = load("share-three-created.json")["body"]
+    return Share(
+        body["id"],
+        body["url"],
+        body["embed_url"],
+        tuple(body["data_urls"]),
+        body["revision"],
+        body["latest"],
+        body["write_token"],
+    )
+
+
+def dataset_frame() -> dict[str, str]:
+    return {"spec_id": POSTED_ID, "content_version": VERSION}
+
+
+def computed_frame() -> dict[str, str]:
+    return {
+        "spec_id": RANK["spec"]["spec_id"],
+        "content_version": RANK["content_version"],
+    }
+
+
+def slot_card(frame: dict[str, str]) -> httpx2.Response:
+    """The recorded slot 2 card, drawn on `frame`."""
+    body = load("share-slot-card.json")["body"]
+    body["resolved_payload"]["provenance"]["inputs"] = [frame]
+    return recorded("share-slot-card", body)
+
+
+def slot_history() -> httpx2.Response:
+    """The recorded history, slot 2's newer frame computed and its first a
+    dataset version."""
+    body = load("share-three-history.json")["body"]
+    newer, _, first = body["served"]
+    newer["frame"], first["frame"] = computed_frame(), dataset_frame()
+    return recorded("share-three-history", body)
+
+
+def stored_version() -> list[httpx2.Response]:
+    """The dataset version's manifest, Search's sentence, and its frame file."""
+    scenario = json.loads((CONTRACT / "scenarios" / "fetch-ref.json").read_text())
+    return [
+        json_response(200, scenario["exchanges"][0]["response"]["json"]),
+        json_response(200, resubmitted(POSTED_ID)),
+        parquet(FRAME_FILE),
+    ]
+
+
+def stored_version_calls() -> list[str]:
+    files = f"{ORIGIN}/api/datasets/{POSTED_ID}/{VERSION}/files/sha256:f4026e80af4b8683d3bb86645ab3aca83dff75cd03fdd4c73ec54ba638922104"
+    return [
+        f"GET {BASE}/datasets/{POSTED_ID}/{VERSION}",
+        f"POST {BASE}/search/resolve",
+        f"GET {files}",
+    ]
+
+
+def computed_version() -> list[httpx2.Response]:
+    return [
+        json_response(200, load("analysis-rank-ready.json")),
+        json_response(200, load("analysis-rank-manifest.json")),
+        parquet((DATA / "analysis-rank-frame.parquet").read_bytes()),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("target", "read"),
+    [
+        (three_slots(), []),
+        (f"https://site.example/s/{SHARE_ID}", [recorded("share-three-read")]),
+        (f"https://site.example/embed/{SHARE_ID}/?x=1", [recorded("share-three-read")]),
+    ],
+    ids=["share", "url", "embed-url"],
+)
+async def test_a_share_fetch_reads_the_exact_version_its_slot_shows_now(
+    target: Share | str, read: list[httpx2.Response]
+) -> None:
+    server = Server(*read, slot_card(dataset_frame()), *stored_version())
+    async with make(server) as transport:
+        data = await fetch(transport, target, slot=2)
+
+    assert server.calls() == [
+        *([f"GET {SHARES}/{SHARE_ID}"] if read else []),
+        f"GET {SHARES}/{SHARE_ID}/slots/2",
+        *stored_version_calls(),
+    ]
+    (member,) = data.ref.members
+    assert isinstance(member, RefMember)
+    assert (member.spec.spec_id, member.content_version, member.digest) == (
+        POSTED_ID,
+        VERSION,
+        "sha256:f4026e80af4b8683d3bb86645ab3aca83dff75cd03fdd4c73ec54ba638922104",
+    )
+    assert (member.rendering.layout, member.rendering.without_party_totals) == (
+        "frame",
+        True,
+    )
+    assert data.layout_version == "frame"
+    assert f'Shown by: share {SHARE_ID}, slot 2 "Malaria grants by year", now' in repr(
+        data
+    )
+
+
+@pytest.mark.parametrize(
+    ("as_of", "version", "calls", "day"),
+    [
+        (
+            "2026-10-28",
+            computed_version(),
+            [
+                f"POST {BASE}/datasets/analysis",
+                f"GET {BASE}/datasets/derived/{RANK['spec']['spec_id']}/{RANK['content_version']}",
+                f"GET {BASE}/datasets/derived/{RANK['spec']['spec_id']}/{RANK['content_version']}/file",
+            ],
+            "28 October 2026",
+        ),
+        (
+            datetime(2026, 10, 28, 17, 13, 42, 427000, tzinfo=UTC),
+            stored_version(),
+            stored_version_calls(),
+            "28 October 2026",
+        ),
+        (
+            date(2026, 10, 29),
+            computed_version(),
+            [
+                f"POST {BASE}/datasets/analysis",
+                f"GET {BASE}/datasets/derived/{RANK['spec']['spec_id']}/{RANK['content_version']}",
+                f"GET {BASE}/datasets/derived/{RANK['spec']['spec_id']}/{RANK['content_version']}/file",
+            ],
+            "29 October 2026",
+        ),
+    ],
+    ids=["iso-date-newer-computed", "datetime-between-first-dataset", "later-date"],
+)
+async def test_as_of_reads_the_newest_frame_the_slot_first_served_by_then(
+    as_of: object, version: list[httpx2.Response], calls: list[str], day: str
+) -> None:
+    server = Server(slot_history(), recorded("card-read"), *version)
+    async with make(server) as transport:
+        data = await fetch(transport, three_slots(), slot=2, as_of=as_of)
+
+    assert server.calls() == [
+        f"GET {SHARES}/{SHARE_ID}/history",
+        f"GET {BASE}/presentation/components/{SLOT_2_CARD}",
+        *calls,
+    ]
+    assert server.requests[1].url.params["revision"] == "1"
+    (member,) = data.ref.members
+    shown = computed_frame() if "derived" in calls[1] else dataset_frame()
+    assert (member.spec.spec_id, member.content_version) == (
+        shown["spec_id"],
+        shown["content_version"],
+    )
+    if isinstance(member, DerivedRefMember):
+        assert server.body(2) == {"tree": shown, "latest": False}
+    assert f'slot 2 "Malaria grants by year", on {day}' in repr(data)
+
+
+async def test_as_of_before_the_slot_first_served_is_refused_naming_history() -> None:
+    server = Server(slot_history())
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await fetch(transport, three_slots(), slot=2, as_of=date(2026, 10, 27))
+    assert caught.value.code == "invalid_argument"
+    assert "history(share)" in str(caught.value)
+    assert server.calls() == [f"GET {SHARES}/{SHARE_ID}/history"]
+
+
+@pytest.mark.parametrize(
+    ("target", "slot", "read"),
+    [
+        (three_slots(), None, False),
+        (three_slots(), 4, False),
+        (f"https://site.example/s/{SHARE_ID}", None, True),
+        (f"https://site.example/s/{SHARE_ID}", 4, True),
+    ],
+    ids=["share-no-slot", "share-slot-4", "url-no-slot", "url-slot-4"],
+)
+async def test_a_slot_the_share_cannot_name_is_refused_with_its_numbering(
+    target: Share | str, slot: int | None, read: bool
+) -> None:
+    server = Server(recorded("share-three-read"))
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await fetch(transport, target, slot=slot)
+    assert caught.value.code == "invalid_argument"
+    assert "slot=1 to slot=3" in str(caught.value)
+    assert server.calls() == ([f"GET {SHARES}/{SHARE_ID}"] if read else [])
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"slot": 0},
+        {"slot": True},
+        {"slot": "2"},
+        {"as_of": "last week"},
+        {"as_of": 20261028},
+        {"window": "latest"},
+        {"entities": {"recipient": ["country/ETH"]}},
+        {"facets": {}},
+        {"party_totals": False},
+        {"layout": "long"},
+        {"latest": True},
+    ],
+    ids=[
+        "slot-0",
+        "slot-bool",
+        "slot-text",
+        "as-of-text",
+        "as-of-number",
+        "window",
+        "entities",
+        "facets",
+        "party-totals",
+        "long-layout",
+        "latest",
+    ],
+)
+async def test_an_option_a_share_does_not_take_is_refused_unsent(
+    options: dict[str, Any],
+) -> None:
+    server = Server()
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await fetch(transport, f"https://site.example/s/{SHARE_ID}", **options)
+    assert caught.value.code == "invalid_argument"
+    assert server.requests == []
+
+
+@pytest.mark.parametrize(
+    ("target", "options"),
+    [
+        (Spec("spec_" + "a" * 32, {}), {"slot": 1}),
+        (
+            DatasetRef.from_json(json.dumps(load("analysis-rank-ready.json")["ref"])),
+            {"as_of": "2026-10-28"},
+        ),
+        ("CJmD6XzG", {}),
+    ],
+    ids=["spec-slot", "ref-as-of", "bare-share-id"],
+)
+async def test_a_share_option_or_a_bare_id_without_a_share_is_refused_unsent(
+    target: object, options: dict[str, Any]
+) -> None:
+    server = Server()
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await fetch(transport, target, **options)
+    assert caught.value.code == "invalid_argument"
+    assert server.requests == []
+
+
+async def test_a_slot_showing_a_note_is_refused_after_its_card_is_read() -> None:
+    one = Share(SHARE_ID, "u", "e", (f"{SHARES}/{SHARE_ID}/slots/1/data",), 1, True)
+    server = Server(recorded("share-note-slot-card"))
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await fetch(transport, one)
+    assert caught.value.code == "invalid_argument"
+    assert server.calls() == [f"GET {SHARES}/{SHARE_ID}/slots/1"]
+
+
+async def test_a_share_fetch_offline_is_refused_unsent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DFO_OFFLINE", "1")
+    server = Server()
+    async with make(server) as transport:
+        with pytest.raises(NetworkError) as caught:
+            await fetch(transport, three_slots(), slot=1)
+    assert caught.value.code == "offline"
+    assert server.requests == []

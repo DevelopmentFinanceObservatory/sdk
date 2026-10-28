@@ -1,0 +1,47 @@
+{
+ "status": 200,
+ "headers": {
+  "content-type": "application/json",
+  "x-dfo-trace-id": "7f11040dacfd476da217846d1b176577"
+ },
+ "body": {
+  "component_id": "cmp_9e8787db42e9e270104946b4",
+  "revision": 1,
+  "catalog_version": "2026.10.0",
+  "composition_id": null,
+  "composition_revision": null,
+  "stored_intent": {
+   "type": "note_narration",
+   "text": "Grants rose."
+  },
+  "fact_summary": {
+   "changed": [],
+   "series": [],
+   "series_cut": 0,
+   "window": null,
+   "unit": null,
+   "change": null,
+   "source_refs": null,
+   "defaults": []
+  },
+  "resolved_payload": {
+   "schema_version": 1,
+   "catalog_version": "2026.10.0",
+   "component_id": "cmp_9e8787db42e9e270104946b4",
+   "revision": 1,
+   "provenance": {
+    "inputs": [],
+    "execution_ref": null,
+    "generated_at": "2026-10-28T17:13:42.433284Z",
+    "refreshed_from": null
+   },
+   "component": {
+    "type": "note_narration",
+    "text": "Grants rose.",
+    "authorship": "model"
+   }
+  },
+  "retention": null,
+  "freshness": "current"
+ }
+}
