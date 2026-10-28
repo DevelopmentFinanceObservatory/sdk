@@ -384,13 +384,15 @@ def _fetch_shown(
             "DFO_OFFLINE=1 is set, and what a share shows is known only to the "
             "server; fetch the slot's data.ref instead",
         )
-    shown = shown_frame(transport, target, slot=slot, as_of=as_of)
+    deadline = transport.deadline(timeout)
+    shown = shown_frame(transport, target, slot=slot, as_of=as_of, deadline=deadline)
     if matches(OPS_ID, shown.spec_id):
         dataset = fetch_computed_frame(
             transport,
             shown.spec_id,
             shown.content_version,
             strict=strict,
+            deadline=deadline,
             timeout=timeout,
             cache=cache,
         )
@@ -399,7 +401,12 @@ def _fetch_shown(
             transport,
             shown.spec_id,
             shown.content_version,
+            fix=(
+                "For what the slot shows now: "
+                f"{transport.caller}.fetch(share, slot={shown.slot})"
+            ),
             strict=strict,
+            deadline=deadline,
             timeout=timeout,
             progress=progress,
             cache=cache,
@@ -418,20 +425,30 @@ def _fetch_frame(
     spec_id: str,
     content_version: str,
     *,
+    fix: str,
     strict: bool,
+    deadline: float | None,
     timeout: float | None,
     progress: bool | None,
     cache: Cache | None,
 ) -> Dataset:
     """A dataset version in the frame layout, from its ids alone: the stored
     manifest names its definition and frame artifact, and Search its sentence.
+    Every read ends by the clock reading `deadline`, which `timeout` set.
 
     Raises:
+        VersionUnavailableError: DFO no longer stores the version
+            (`artifact_expired`), and the error ends with `fix`.
         ContractError: The manifest lists no bare Parquet frame artifact
             (`contract_violation`).
     """
-    deadline = transport.deadline(timeout)
-    stored = _snapshot(transport, spec_id, content_version, deadline=deadline)
+    try:
+        stored = _snapshot(transport, spec_id, content_version, deadline=deadline)
+    except DfoError as error:
+        if error.code != _FILE_EXPIRED:
+            raise
+        newest = _newest(transport, spec_id, deadline=deadline)
+        raise _unavailable(spec_id, content_version, newest, error, fix=fix) from error
     manifest, trace_id = stored
     with describing(trace_id):
         artifact = pick_artifact(manifest, _FRAME)
@@ -758,7 +775,13 @@ def _fetch_version(
                 warn(_digest_changed(member, fetched.digest))
             return fetched
         newest = built.manifest["content_version"]
-    raise _unavailable(member, newest, refusal, caller=transport.caller)
+    raise _unavailable(
+        spec_id,
+        version,
+        newest,
+        refusal,
+        fix=f"For the newest version: {transport.caller}.fetch(ref, latest=True)",
+    )
 
 
 def _cached_version(
@@ -1016,15 +1039,22 @@ def _stored(member: RefMember, manifest: Wire, data: bytes) -> FetchedMember:
 
 
 def _unavailable(
-    member: RefMember, newest: str | None, refusal: DfoError | None, *, caller: str
+    spec_id: str,
+    content_version: str,
+    newest: str | None,
+    refusal: DfoError | None,
+    *,
+    fix: str,
 ) -> VersionUnavailableError:
-    lost = f"{member.spec.spec_id} at {member.content_version} can no longer be fetched"
+    """The error that a version can no longer be fetched, ending with `fix`, the
+    call that reads newer data, unless the newest version is this one."""
+    lost = f"{spec_id} at {content_version} can no longer be fetched"
     # The message names no other version: the newest plain build is not
     # comparable with the version of a party-totals cut.
-    if newest == member.content_version:
+    if newest == content_version:
         message = f"{lost}, though the server lists it as the newest version."
     else:
-        message = f"{lost}. For the newest version: {caller}.fetch(ref, latest=True)"
+        message = f"{lost}. {fix}"
     if refusal is None:
         error = client_error(VERSION_UNAVAILABLE, message)
     else:

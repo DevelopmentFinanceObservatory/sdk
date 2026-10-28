@@ -16,7 +16,7 @@ import { Cards, statIntent } from "../src/datasets/cards.ts";
 import type { StatOptions } from "../src/datasets/cards.ts";
 import { Dataset } from "../src/datasets/dataset.ts";
 import { derivedDataset } from "../src/datasets/derived.ts";
-import { Card, Share, shareIdOf } from "../src/datasets/publication.ts";
+import { asOfMoment, Card, Share, shareIdOf } from "../src/datasets/publication.ts";
 import { recipe } from "../src/datasets/recipe.ts";
 import { history, share, snapshot, unshare } from "../src/datasets/shares.ts";
 import { Transport } from "../src/http/transport.ts";
@@ -488,6 +488,35 @@ describe("a share's URL", () => {
       });
     });
   }
+});
+
+type AsOfCase = { text: string; moment: string | null; day: string | null };
+/** The text rows python/tests/datasets/test_publication.py reads too, so both clients read
+ *  `asOf` text by one grammar. */
+const AS_OF_CASES = await recordedJson<AsOfCase[]>("as-of-cases.json");
+
+describe("asOf", () => {
+  for (const { text, moment, day } of AS_OF_CASES) {
+    test(`text reads by the grammar both clients share (${JSON.stringify(text)})`, () => {
+      if (moment === null) {
+        assert.throws(() => asOfMoment(text), { code: "invalid_argument" });
+        return;
+      }
+      const read = asOfMoment(text);
+      assert.deepEqual(
+        [read.moment.toISOString(), read.day.toISOString().slice(0, 10)],
+        [moment, day],
+      );
+    });
+  }
+
+  test("a Date reads as the instant it holds, on its UTC day", () => {
+    const read = asOfMoment(new Date("2026-10-28T23:30:00-05:00"));
+    assert.deepEqual(
+      [read.moment.toISOString(), read.day.toISOString()],
+      ["2026-10-29T04:30:00.000Z", "2026-10-29T00:00:00.000Z"],
+    );
+  });
 });
 
 test("client cards and shares run through the client's transport", async () => {

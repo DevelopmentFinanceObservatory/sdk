@@ -19,8 +19,11 @@ of the frame asks for the manifest alone, and concurrent reads download it once.
 
 `fetch_derived` reads a derived ref. An exact read takes the frame the ref names;
 when its stored frame has aged out (`artifact_expired`), DFO computes the recipe
-again on the root versions the ref names, which must answer the same version.
-`latest=True` posts the bare derived root with `latest: true`, so DFO computes
+again on the root versions the ref names, which must answer the same version,
+and the client reads the frame that answer names. When its digest differs from
+the ref's, the read issues a `DfoWarning` (`ref_digest_changed`). A refusal that
+says the roots cannot be read again raises `VersionUnavailableError`; any other
+error raises as it came. `latest=True` posts the bare derived root with `latest: true`, so DFO computes
 the stored recipe again on its datasets' newest versions.
 `fetch_computed_frame` reads a frame from its ids alone, as a share's slot names
 it, through the bare root with `latest: false`.
@@ -42,6 +45,7 @@ from dfo._core.codes import (
     CONTRACT_VIOLATION,
     DEADLINE_EXCEEDED,
     INVALID_ARGUMENT,
+    REF_DIGEST_CHANGED,
     SERIES_LEFT_OUT,
     UNEXPECTED_RESPONSE,
     VERSION_UNAVAILABLE,
@@ -49,6 +53,7 @@ from dfo._core.codes import (
 from dfo._core.errors import (
     ContractError,
     DfoError,
+    DfoWarning,
     VersionUnavailableError,
     client_error,
     client_warning,
@@ -85,6 +90,17 @@ ANALYSIS_PATH = "/datasets/analysis"
 # Parquet file in the frame layout, the only layout a derived frame has.
 FRAME_FILE = {"format": "parquet", "bundle": "false", "layout": "frame"}
 _EXPIRED = "artifact_expired"
+# The refusals of a recomputation that mean DFO cannot read the expired frame's
+# roots again, so the frame can no longer be fetched. Any other refusal of the
+# recomputation, a transient one included, raises as it came.
+_ROOTS_UNREADABLE = frozenset(
+    {
+        "snapshot_not_found",
+        "artifact_expired",
+        "recipe_not_found",
+        "rendering_not_recorded",
+    }
+)
 
 
 async def run_recipe(
@@ -143,7 +159,10 @@ async def fetch_derived(
     Raises:
         InvalidRequestError: The ref holds several derived members, which one
             read cannot stack (`invalid_argument`).
-        VersionUnavailableError: The frame and its roots can no longer be read.
+        VersionUnavailableError: The frame has aged out and DFO cannot read its
+            roots again (`snapshot_not_found`, `artifact_expired`,
+            `recipe_not_found` or `rendering_not_recorded`), or computed
+            another version on them.
     """
     check_strict(strict)
     member = _one_member(ref, transport.caller)
@@ -175,12 +194,14 @@ async def fetch_derived(
             timeout=timeout,
         )
     except DfoError as error:
-        if error.code in (CONTRACT_VIOLATION.code, DEADLINE_EXCEEDED.code):
+        if error.code not in _ROOTS_UNREADABLE:
             raise
         raise _unavailable(member, error, transport.caller) from error
     if again.content_version != member.content_version:
         raise _unavailable(member, expired, transport.caller)
-    return await _read(transport, member, strict=strict, deadline=deadline, cache=cache)
+    if again.digest != member.digest:
+        warn(_digest_changed(member, again.digest))
+    return await _read(transport, again, strict=strict, deadline=deadline, cache=cache)
 
 
 async def fetch_computed_frame(
@@ -189,11 +210,13 @@ async def fetch_computed_frame(
     content_version: str,
     *,
     strict: bool = False,
-    timeout: float | None = None,
+    deadline: float | None,
+    timeout: float | None,
     cache: Cache | None = None,
 ) -> Dataset:
     """The frame DFO computed that `spec_id` and `content_version` name, read
-    through its bare root, which answers the frame's ref member.
+    through its bare root, which answers the frame's ref member, by the clock
+    reading `deadline`, which `timeout` set.
 
     DFO answers the stored frame, or computes its recipe again on the versions
     it read when the stored frame has aged out.
@@ -207,7 +230,6 @@ async def fetch_computed_frame(
             (`contract_violation`).
     """
     check_strict(strict)
-    deadline = transport.deadline(timeout)
     member = await _analyse(
         transport,
         {
@@ -254,6 +276,20 @@ def _unavailable(
     )
     error.newest_version = None
     return error
+
+
+def _digest_changed(member: DerivedRefMember, digest: str) -> DfoWarning:
+    """The warning that DFO computed the ref's frame again with another digest.
+
+    The recomputation answered the ref's version, so the rows are the frame the
+    ref names, written to bytes with another digest.
+    """
+    return client_warning(
+        REF_DIGEST_CHANGED,
+        f"{member.spec.spec_id} at {member.content_version} was computed again as "
+        f"{digest}, not the ref's {member.digest}; the version is the same, and "
+        "dataset.ref names the new file",
+    )
 
 
 async def _analyse(

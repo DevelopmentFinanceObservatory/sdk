@@ -266,7 +266,8 @@ async function fetchShown(
     );
   }
   if (SPEC_ID.test(shown.specId)) {
-    return fetchFrame(transport, shown.specId, shown.contentVersion, options, wait);
+    const fix = `For what the slot shows now: client.fetch(share, { slot: ${shown.slot} })`;
+    return fetchFrame(transport, shown.specId, shown.contentVersion, fix, options, wait);
   }
   throw clientError("contract_violation", {
     detail:
@@ -279,6 +280,8 @@ async function fetchShown(
  * A dataset version in the frame layout, from its ids alone: the stored manifest names its
  * definition and frame artifact, and Search its sentence.
  *
+ * @throws {VersionUnavailableError} DFO no longer stores the version (`artifact_expired`), and
+ *   the error ends with `fix`.
  * @throws {ContractError} The manifest lists no bare Parquet frame artifact
  *   (`contract_violation`).
  */
@@ -286,10 +289,18 @@ async function fetchFrame(
   transport: Transport,
   specId: string,
   contentVersion: string,
+  fix: string,
   options: CallOptions,
   wait: Wait,
 ): Promise<Dataset> {
-  const found = await snapshot(transport, specId, contentVersion, wait);
+  let found: Built;
+  try {
+    found = await snapshot(transport, specId, contentVersion, wait);
+  } catch (error) {
+    if (!(error instanceof DfoError) || error.code !== FILE_EXPIRED) throw error;
+    const newest = await newestVersion(transport, specId, wait);
+    throw unavailable(specId, contentVersion, newest, error, fix);
+  }
   const { manifest } = found;
   const artifact = describing(found.traceId, () => {
     const listed = pickArtifact(manifest, FRAME);
@@ -498,7 +509,13 @@ async function fetchVersion(
     refusal ??= error;
     newest = await newestVersion(transport, member.spec.spec_id, wait);
   }
-  throw unavailable(member, newest, refusal);
+  throw unavailable(
+    member.spec.spec_id,
+    member.contentVersion,
+    newest,
+    refusal,
+    `For the newest version: ${LATEST_CALL}`,
+  );
 }
 
 /** Issues the client's warning that a rebuilt file differs from the ref's. The rebuild returned
@@ -695,18 +712,22 @@ function unreadable(specId: string, pointer: string, traceId: string | null): Df
   });
 }
 
+/** The error that a version can no longer be fetched, ending with `fix`, the call that reads
+ *  newer data, unless the newest version is this one. */
 function unavailable(
-  member: RefMember,
+  specId: string,
+  contentVersion: string,
   newest: string | null,
   refusal: DfoError | undefined,
+  fix: string,
 ): VersionUnavailableError {
-  const lost = `${member.spec.spec_id} at ${member.contentVersion} can no longer be fetched`;
+  const lost = `${specId} at ${contentVersion} can no longer be fetched`;
   // The newest version names a plain build, which a cut ref's version need not equal even when
   // no newer data exists, so only an equal id says something.
   const detail =
-    newest === member.contentVersion
+    newest === contentVersion
       ? `${lost}, though the server lists it as the newest version.`
-      : `${lost}. For the newest version: ${LATEST_CALL}`;
+      : `${lost}. ${fix}`;
   if (refusal === undefined) {
     return clientError("version_unavailable", { detail, newestVersion: newest });
   }

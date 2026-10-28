@@ -21,6 +21,7 @@ from dfo._core import errors as _errors
 from dfo._core.errors import (
     ContractError,
     DfoTimeoutError,
+    DfoWarning,
     InvalidRequestError,
     NotFoundError,
     QuotaExceededError,
@@ -342,6 +343,35 @@ def test_an_expired_frame_dfo_cannot_compute_again_is_unavailable(
     assert "fetch(ref, latest=True)" in str(caught.value)
     assert caught.value.newest_version is None
     assert len(server.requests) == 2
+
+
+def test_a_transient_refusal_of_a_recomputation_raises_as_it_came() -> None:
+    busy = [problem(503, "service_unavailable", retryable=True) for _ in range(3)]
+    server = Server(problem(410, "artifact_expired"), *busy)
+    with make(server) as transport:
+        with pytest.raises(ServerError) as caught:
+            fetch(transport, DatasetRef((member("rank"),)))
+    assert not isinstance(caught.value, VersionUnavailableError)
+    assert caught.value.code == "service_unavailable"
+    assert caught.value.retryable
+
+
+def test_a_recomputed_frame_with_another_digest_reads_it_and_warns() -> None:
+    answer = load("analysis-rank-ready.json")
+    stale = answer["ref"]["members"][0]["artifact"] | {"digest": "sha256:" + "0" * 64}
+    answer["ref"]["members"][0]["artifact"] = stale
+    (old,) = DatasetRef.from_json(json.dumps(answer["ref"])).members
+    server = Server(
+        problem(410, "artifact_expired"), ready("rank"), manifest("rank"), frame("rank")
+    )
+    with make(server) as transport:
+        with pytest.warns(DfoWarning) as caught:
+            data = fetch(transport, DatasetRef((old,)))
+    (record,) = caught
+    warning = record.message
+    assert type(warning) is DfoWarning
+    assert warning.code == "ref_digest_changed"
+    assert data.ref == DatasetRef((member("rank"),))
 
 
 def test_a_ref_of_two_derived_members_is_refused_unsent() -> None:

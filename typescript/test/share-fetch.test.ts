@@ -18,7 +18,7 @@ import { Share, today } from "../src/datasets/publication.ts";
 import { fetchDataset } from "../src/datasets/resolve.ts";
 import { Transport } from "../src/http/transport.ts";
 import { scenario, scenarioBytes } from "./replay.ts";
-import { json, mockFetch, recordedBytes, recordedJson } from "./support.ts";
+import { json, mockFetch, problem, recordedBytes, recordedJson } from "./support.ts";
 import type { Seen } from "./support.ts";
 
 const BASE = "https://api.example/api";
@@ -195,8 +195,8 @@ describe("a share fetch", () => {
       "28 October 2026",
     ],
     [
-      "a date-time without an offset reads as UTC",
-      "2026-10-28T17:13:42.427",
+      "an RFC 3339 date-time between reads the first dataset frame",
+      "2026-10-28T17:13:42.427Z",
       false,
       "28 October 2026",
     ],
@@ -227,6 +227,27 @@ describe("a share fetch", () => {
       assert.ok(String(data).includes(`slot 2 "${TITLE}", on ${day}`), String(data));
     });
   }
+
+  test("a slot whose dataset frame expired is unavailable, naming the newest", async () => {
+    const newest = `cv_${"c".repeat(32)}`;
+    const { transport, seen } = make(
+      await slotCard(datasetFrame()),
+      problem({ status: 410, code: "artifact_expired" }),
+      json({
+        spec_id: POSTED_ID,
+        versions: [{ content_version: newest, base_content_version: null, rendering: "plain" }],
+        next_cursor: null,
+        complete: true,
+      }),
+    );
+    await assert.rejects(fetchDataset(transport, await threeSlots(), { slot: 2 }), {
+      name: "VersionUnavailableError",
+      code: "artifact_expired",
+      newestVersion: newest,
+      message: /client\.fetch\(share, \{ slot: 2 \}\)/,
+    });
+    assert.equal(calls(seen).at(-1), `GET ${BASE}/datasets/${POSTED_ID}/versions?limit=100`);
+  });
 
   test("asOf before the slot first served is refused, naming history", async () => {
     const { transport, seen } = make(await slotHistory());

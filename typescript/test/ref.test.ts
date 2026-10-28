@@ -159,9 +159,14 @@ describe("a derived ref", () => {
     assert.throws(() => new DatasetRef([datasetMember, derivedMember]), TypeError);
   });
 
-  test("is not the same data as what is not a ref", async () => {
+  test("compares its data with a ref alone", async () => {
     const ref = DatasetRef.fromJSON(await derived());
-    assert.equal(ref.sameData(ref.toJSON()), false);
+    // The ref's JSON in place of the ref, the mistake the check names.
+    const stored: unknown = ref.toJSON();
+    assert.throws(() => ref.sameData(stored as DatasetRef), {
+      name: "InvalidRequestError",
+      code: "invalid_argument",
+    });
     assert.equal(ref.sameData(ref), true);
   });
 });

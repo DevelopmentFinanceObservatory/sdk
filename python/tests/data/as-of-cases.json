@@ -1,0 +1,162 @@
+[
+ {
+  "text": "2026-10-28",
+  "moment": "2026-10-28T23:59:59.999Z",
+  "day": "2026-10-28"
+ },
+ {
+  "text": "2024-02-29",
+  "moment": "2024-02-29T23:59:59.999Z",
+  "day": "2024-02-29"
+ },
+ {
+  "text": "0050-01-01",
+  "moment": "0050-01-01T23:59:59.999Z",
+  "day": "0050-01-01"
+ },
+ {
+  "text": "2026-10-28T10:00:00Z",
+  "moment": "2026-10-28T10:00:00.000Z",
+  "day": "2026-10-28"
+ },
+ {
+  "text": "2026-10-28t10:00:00z",
+  "moment": "2026-10-28T10:00:00.000Z",
+  "day": "2026-10-28"
+ },
+ {
+  "text": "2026-10-28T10:00:00.5+02:00",
+  "moment": "2026-10-28T08:00:00.500Z",
+  "day": "2026-10-28"
+ },
+ {
+  "text": "2026-10-28T23:30:00-05:00",
+  "moment": "2026-10-29T04:30:00.000Z",
+  "day": "2026-10-28"
+ },
+ {
+  "text": "2026-10-28T16:07:47.404686+00:00",
+  "moment": "2026-10-28T16:07:47.404Z",
+  "day": "2026-10-28"
+ },
+ {
+  "text": "2026-10-28T23:59:59.999999999Z",
+  "moment": "2026-10-28T23:59:59.999Z",
+  "day": "2026-10-28"
+ },
+ {
+  "text": "20261028",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "2026-W44-3",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "2026-301",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "2026-10",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "2026-10-28T10",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "2026-10-28T10:00Z",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "2026-10-28T10:00:00",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "2026-10-28 10:00:00Z",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "2026-10-28T10:00:00.Z",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "2026-10-28T10:00:00+0200",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": " 2026-10-28",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "2026-10-28 ",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "2026-02-30",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "2026-13-01",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "0000-01-01",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "2026-10-28T24:00:00Z",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "2026-10-28T10:60:00Z",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "2026-10-28T10:00:60Z",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "2026-10-28T10:00:00+24:00",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "2026-10-28T10:00:00+02:60",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "２０２６-10-28",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "last week",
+  "moment": null,
+  "day": null
+ },
+ {
+  "text": "",
+  "moment": null,
+  "day": null
+ }
+]

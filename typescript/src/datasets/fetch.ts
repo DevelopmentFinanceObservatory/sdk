@@ -118,9 +118,10 @@ export type FetchOptions = CallOptions &
     /** For a ref, build the newest version of each member's spec in the ref's rendering, in
      *  place of the exact versions it names. A spec always fetches its newest version. */
     latest?: boolean;
-    /** For a share, a `Date` or an ISO 8601 date such as `"2026-10-28"`: the newest version the
-     *  slot first served on or before it. A date string reads as the end of that day in UTC,
-     *  and a date-time string without an offset as UTC. Unset reads what the slot shows now. */
+    /** For a share, a `Date`, a date such as `"2026-10-28"` or an RFC 3339 date-time such as
+     *  `"2026-10-28T10:00:00Z"`: the newest version the slot first served on or before it. A
+     *  date string reads as the last millisecond of that day in UTC. Unset reads what the slot
+     *  shows now. */
     asOf?: Date | string | null | undefined;
     /** For a share, the slot to read, numbered from 1 as the share's data URLs are. Unset reads
      *  a share of one slot, and a share of several refuses it. */

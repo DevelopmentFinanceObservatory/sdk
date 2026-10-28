@@ -19,7 +19,12 @@ from typing import Any
 import httpx2
 import pytest
 
-from dfo._core.errors import InvalidRequestError, NetworkError
+from dfo._core.errors import (
+    DfoTimeoutError,
+    InvalidRequestError,
+    NetworkError,
+    VersionUnavailableError,
+)
 from dfo._core.refs import DatasetRef, DerivedRefMember, RefMember
 from dfo._core.types import Spec
 from dfo._datasets.dataset import day_text
@@ -34,6 +39,7 @@ from tests._fetch_support import (
     Server,
     json_response,
     parquet,
+    problem,
     resubmitted,
 )
 
@@ -224,6 +230,55 @@ def test_as_of_reads_the_newest_frame_the_slot_first_served_by_then(
     if isinstance(member, DerivedRefMember):
         assert server.body(2) == {"tree": shown, "latest": False}
     assert f'slot 2 "Malaria grants by year", on {day}' in repr(data)
+
+
+def test_a_slot_whose_dataset_frame_expired_is_unavailable_naming_the_newest() -> None:
+    newest = "cv_" + "c" * 32
+    versions = {
+        "spec_id": POSTED_ID,
+        "versions": [
+            {
+                "content_version": newest,
+                "base_content_version": None,
+                "rendering": "plain",
+            }
+        ],
+        "next_cursor": None,
+        "complete": True,
+    }
+    server = Server(
+        slot_card(dataset_frame()),
+        problem(410, "artifact_expired"),
+        json_response(200, versions),
+    )
+    with make(server) as transport:
+        with pytest.raises(VersionUnavailableError) as caught:
+            fetch(transport, three_slots(), slot=2)
+    assert caught.value.code == "artifact_expired"
+    assert caught.value.newest_version == newest
+    assert "fetch(share, slot=2)" in str(caught.value)
+    assert server.calls()[-1] == f"GET {BASE}/datasets/{POSTED_ID}/versions"
+
+
+def test_a_share_fetch_ends_its_reads_at_the_calls_timeout() -> None:
+    now = [1000.0]
+    stalled = Server(slot_history(), recorded("card-read"), *computed_version())
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        now[0] += 6.0
+        return stalled(request)
+
+    transport = Transport(
+        api_key=False,
+        base_url=BASE,
+        http_transport=httpx2.MockTransport(handler),
+        clock=lambda: now[0],
+    )
+    with transport:
+        with pytest.raises(DfoTimeoutError) as caught:
+            fetch(transport, three_slots(), slot=2, as_of="2026-10-28", timeout=5)
+    assert caught.value.code == "deadline_exceeded"
+    assert stalled.calls() == [f"GET {SHARES}/{SHARE_ID}/history"]
 
 
 def test_as_of_before_the_slot_first_served_is_refused_naming_history() -> None:

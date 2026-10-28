@@ -223,11 +223,12 @@ class AsyncClient:
                 `Recipe` from `dfo.analysis.recipe` to run, or a `Share` or the
                 URL of its page or embed, such as
                 `https://developmentfinance.org/s/k3Qx8vTa`.
-            as_of: For a share, a date, a datetime or an ISO 8601 date such as
-                `"2026-10-28"`: the newest version the slot first served on or
-                before it. A date reads as the end of that day in UTC, and a
-                datetime without a time zone as UTC. None reads what the slot
-                shows now.
+            as_of: For a share, a date, a datetime with its time zone, a date
+                such as `"2026-10-28"` or an RFC 3339 date-time such as
+                `"2026-10-28T10:00:00Z"`: the newest version the slot first
+                served on or before it, compared to the millisecond. A date
+                reads as the last millisecond of that day in UTC. None reads
+                what the slot shows now.
             slot: For a share, the slot to read, numbered from 1 as the share's
                 data URLs are. None reads a share of one slot, and a share of
                 several refuses it.

@@ -430,15 +430,23 @@ export function shownLine({ shareId, slot, title, on }: ShownFrame): string {
   return `share ${shareId}, slot ${slot}${titled}, on ${dayText(on)}`;
 }
 
-const DAY_MS = 86_400_000;
-const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
-const ISO_DATE_TIME =
-  /^(\d{4})-(\d{2})-(\d{2})[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})?$/i;
+/** The text forms `asOf` takes, the same in both clients: a day, or an RFC 3339 date-time with
+ *  its offset, `T` and `Z` in either case. */
+const AS_OF_DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
+const AS_OF_MOMENT =
+  /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:([Zz])|([+-])(\d{2}):(\d{2}))$/;
+/** From a day's UTC midnight to its last millisecond, where a day read as a moment ends. */
+const DAY_END_MS = 86_400_000 - 1;
 
 /** The UTC midnight of a written date, or undefined when the date does not exist. */
 function writtenDay(year: number, month: number, date: number): Date | undefined {
-  const day = new Date(Date.UTC(year, month - 1, date));
-  return day.getUTCMonth() === month - 1 && day.getUTCDate() === date ? day : undefined;
+  // setUTCFullYear, since Date.UTC reads the years 0 to 99 as 1900 to 1999. Year 0 is refused,
+  // as Python's date refuses it.
+  const day = new Date(0);
+  day.setUTCFullYear(year, month - 1, date);
+  return year >= 1 && day.getUTCFullYear() === year && day.getUTCMonth() === month - 1
+    ? day
+    : undefined;
 }
 
 /** The UTC midnight of the day `date` falls on in UTC. */
@@ -448,26 +456,33 @@ const utcDay = (date: Date): Date =>
 /** The UTC midnight of the day a fetch reads what a slot shows now. */
 export const today = (): Date => utcDay(new Date());
 
-/** An ISO 8601 date, read as the end of that UTC day, or date-time, read as UTC without an
- *  offset, with the day it writes; undefined for other text or a day that does not exist. */
-function readIsoMoment(text: string): { moment: Date; day: Date } | undefined {
-  const onlyDate = ISO_DATE.exec(text);
-  const found = onlyDate ?? ISO_DATE_TIME.exec(text);
+/** A day, read as its last millisecond in UTC, or an RFC 3339 date-time, to the millisecond,
+ *  with the day it writes; undefined for other text or a day or time that does not exist. */
+function readWrittenMoment(text: string): { moment: Date; day: Date } | undefined {
+  const onlyDay = AS_OF_DAY.exec(text);
+  const found = onlyDay ?? AS_OF_MOMENT.exec(text);
   if (found === null) return undefined;
-  const day = writtenDay(Number(found[1]), Number(found[2]), Number(found[3]));
+  const [, year, month, date, hour, minute, second, fraction, utc, sign, hours, minutes] = found;
+  const day = writtenDay(Number(year), Number(month), Number(date));
   if (day === undefined) return undefined;
-  if (onlyDate !== null) return { moment: new Date(day.getTime() + DAY_MS - 1), day };
-  const zoned = found[4] === undefined ? `${text}Z` : text;
-  const moment = new Date(zoned.replace(" ", "T"));
-  return Number.isNaN(moment.getTime()) ? undefined : { moment, day };
+  if (onlyDay !== null) return { moment: new Date(day.getTime() + DAY_END_MS), day };
+  const [h, m, s, offsetH, offsetM] = [hour, minute, second, hours, minutes].map(Number);
+  if (!(h! <= 23 && m! <= 59 && s! <= 59)) return undefined;
+  if (utc === undefined && !(offsetH! <= 23 && offsetM! <= 59)) return undefined;
+  const offset = utc === undefined ? (sign === "-" ? -1 : 1) * (offsetH! * 60 + offsetM!) : 0;
+  const milliseconds = Number((fraction ?? "").padEnd(3, "0").slice(0, 3));
+  const moment = day.getTime() + ((h! * 60 + m!) * 60 + s!) * 1000 + milliseconds;
+  return { moment: new Date(moment - offset * 60_000), day };
 }
 
 /**
  * The moment `asOf` names, and its day at UTC midnight.
  *
- * A date string reads as the end of that day in UTC, so it names what the share showed on that
- * day; a date-time string without an offset reads as UTC, and its day is the date it writes. A
- * `Date` is the instant it holds, on its UTC day.
+ * A day, `YYYY-MM-DD`, reads as the last millisecond of that day in UTC, so it names what the
+ * share showed on that day. An RFC 3339 date-time with its offset, such as
+ * `2026-10-28T10:00:00Z`, reads as that instant, and its day is the date it writes. A `Date` is
+ * the instant it holds, on its UTC day. Any other text is refused, as the Python client refuses
+ * it.
  *
  * @throws {InvalidRequestError} `asOf` is none of those (`invalid_argument`).
  */
@@ -476,12 +491,13 @@ export function asOfMoment(asOf: unknown): { moment: Date; day: Date } {
     return { moment: asOf, day: utcDay(asOf) };
   }
   if (typeof asOf === "string") {
-    const read = readIsoMoment(asOf.trim());
+    const read = readWrittenMoment(asOf);
     if (read !== undefined) return read;
   }
   throw clientError("invalid_argument", {
     detail:
-      'asOf is a Date or an ISO 8601 date such as "2026-10-28", not ' +
+      'asOf is a Date, a date such as "2026-10-28" or an RFC 3339 date-time such as ' +
+      '"2026-10-28T10:00:00Z", not ' +
       `${asOf instanceof Date ? "an invalid Date" : quoted(asOf)}.`,
   });
 }

@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from dfo._core.errors import InvalidRequestError
 from dfo._core.json_text import JSON_MAX_DEPTH
 from dfo._core.parse import parse_citation, parse_parts
 from dfo._core.refs import DatasetRef, Member, RefMember
@@ -172,9 +173,10 @@ def test_the_output_comparison_vectors(vector: dict[str, Any]) -> None:
 
 def test_same_data_takes_a_ref() -> None:
     stored = derived_ref()
-    with pytest.raises(TypeError, match="two DatasetRefs"):
+    with pytest.raises(InvalidRequestError) as caught:
         # The ref's JSON in place of the ref, the mistake the check names.
         _ref(stored).same_data(stored)  # ty: ignore[invalid-argument-type]
+    assert caught.value.code == "invalid_argument"
 
 
 @pytest.mark.parametrize(

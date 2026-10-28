@@ -13,6 +13,8 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Self, override
 
+from dfo._core.codes import INVALID_ARGUMENT
+from dfo._core.errors import client_error
 from dfo._core.text import single_line
 from dfo._core.types import (
     CONTENT_VERSION,
@@ -269,8 +271,11 @@ class DatasetRef:
     The format is fixed, so a ref saved by one client or language loads in another.
     `dfo.fetch(ref)` fetches the versions it names, and
     `dfo.fetch(ref, latest=True)` the newest versions of its specs. A ref holds
-    dataset members or derived members, never both. This client loads, saves and
-    compares a ref of derived members, and refuses to fetch one.
+    dataset members or derived members, never both. `dfo.fetch` reads a ref of
+    one derived member as the exact frame it names; when DFO no longer stores
+    that frame, it computes the recipe again on the root versions the ref names.
+    `dfo.fetch(ref, latest=True)` computes the recipe on its datasets' newest
+    versions.
 
     Two refs are equal when they name the same specs at the same versions in the
     same renderings, in order, and a derived member the same recipe. Digests,
@@ -329,11 +334,14 @@ class DatasetRef:
         release or an upstream rebuild that moves no number keeps it true.
 
         Raises:
-            TypeError: `other` is not a `DatasetRef`.
+            InvalidRequestError: `other` is not a `DatasetRef`
+                (`invalid_argument`).
         """
         if not isinstance(other, DatasetRef):
-            raise TypeError(
-                f"same_data compares two DatasetRefs, not {type(other).__name__}"
+            raise client_error(
+                INVALID_ARGUMENT,
+                f"same_data compares two DatasetRefs, not {type(other).__name__}; "
+                "read a saved ref with DatasetRef.from_json first",
             )
         return len(self.members) == len(other.members) and all(
             _same_output(mine, theirs)

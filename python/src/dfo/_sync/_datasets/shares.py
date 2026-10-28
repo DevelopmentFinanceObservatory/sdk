@@ -60,6 +60,7 @@ from dfo._datasets.publication import (
     read_shown_card,
     read_slot_count,
     share_id_of,
+    to_millisecond,
     write_token_of,
 )
 from dfo._sync._http.transport import Transport
@@ -164,8 +165,11 @@ def unshare(
     )
 
 
-def history(transport: Transport, target: object) -> tuple[Served, ...]:
-    """Every frame the share `target` names served, newest first.
+def history(
+    transport: Transport, target: object, *, deadline: float | None = None
+) -> tuple[Served, ...]:
+    """Every frame the share `target` names served, newest first, read by the
+    clock reading `deadline` when one is given.
 
     Raises:
         InvalidRequestError: `target` is malformed (`invalid_argument`), and no
@@ -173,7 +177,7 @@ def history(transport: Transport, target: object) -> tuple[Served, ...]:
         NotFoundError: No share has that id, or it was taken down (`not_found`).
     """
     path = f"{SHARES_PATH}/{share_id_of(target, transport.caller)}/history"
-    response = transport.request("GET", path)
+    response = transport.request("GET", path, deadline=deadline)
     reply = response_json(response)
     with describing(trace_id_of(response, reply)):
         return read_history(reply, route=f"GET {path}")
@@ -185,9 +189,10 @@ def shown_frame(
     *,
     slot: object = None,
     as_of: object = None,
+    deadline: float | None = None,
 ) -> ShownFrame:
     """The frame slot `slot` of the share `target` names shows now, or showed at
-    `as_of`.
+    `as_of`, with every read done by the clock reading `deadline`.
 
     Raises:
         InvalidRequestError: `target`, `slot` or `as_of` is malformed, or slot
@@ -204,14 +209,14 @@ def shown_frame(
         count = len(target.data_urls)
     else:
         path = f"{SHARES_PATH}/{share_id}"
-        response = transport.request("GET", path)
+        response = transport.request("GET", path, deadline=deadline)
         reply = response_json(response)
         with describing(trace_id_of(response, reply)):
             count = read_slot_count(reply, route=f"GET {path}")
     number = chosen_slot(slot if isinstance(slot, int) else None, count, share_id)
     if asked is None:
         path = f"{SHARES_PATH}/{share_id}/slots/{number}"
-        response = transport.request("GET", path)
+        response = transport.request("GET", path, deadline=deadline)
         reply = response_json(response)
         with describing(trace_id_of(response, reply)):
             frame, title = read_shown_card(reply, route=f"GET {path}")
@@ -227,8 +232,8 @@ def shown_frame(
     entry = next(
         (
             served
-            for served in history(transport, target)
-            if served.slot == number and served.first_served <= moment
+            for served in history(transport, target, deadline=deadline)
+            if served.slot == number and to_millisecond(served.first_served) <= moment
         ),
         None,
     )
@@ -239,16 +244,22 @@ def shown_frame(
             f"{day.isoformat()}; {transport.caller}.history(share) lists what "
             "each slot showed and when",
         )
-    title = _card_title(transport, entry.card_id, entry.card_revision)
+    title = _card_title(
+        transport, entry.card_id, entry.card_revision, deadline=deadline
+    )
     return ShownFrame(
         share_id, number, title, entry.spec_id, entry.content_version, day
     )
 
 
-def _card_title(transport: Transport, card_id: str, revision: int) -> str | None:
+def _card_title(
+    transport: Transport, card_id: str, revision: int, *, deadline: float | None
+) -> str | None:
     """The title a card revision shows, from its read."""
     path = f"/presentation/components/{card_id}"
-    response = transport.request("GET", path, params={"revision": revision})
+    response = transport.request(
+        "GET", path, params={"revision": revision}, deadline=deadline
+    )
     return card_title(response_json(response))
 
 

@@ -19,7 +19,7 @@ import re
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from typing import Any, Literal, override
 from urllib.parse import urlsplit
 
@@ -198,8 +198,9 @@ class Served:
 
 
 type Moment = date | datetime | str
-"""A moment `dfo.fetch(share, as_of=...)` reads a share at: a date, a datetime,
-or an ISO 8601 date or date-time string."""
+"""A moment `dfo.fetch(share, as_of=...)` reads a share at: a date, a datetime
+with its time zone, a `YYYY-MM-DD` day, or an RFC 3339 date-time string with
+its offset."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,35 +377,80 @@ def share_id_of(target: object, caller: str) -> str:
     )
 
 
-def as_of_moment(as_of: object) -> tuple[datetime, date]:
-    """The moment `as_of` names, and its day.
+# The text forms `as_of` takes, the same in both clients: a day, or an RFC 3339
+# date-time with its offset, `T` and `Z` in either case.
+# re.ASCII, so `\d` matches the ASCII digits alone, as JavaScript's does.
+_AS_OF_DAY = re.compile(r"(\d{4})-(\d{2})-(\d{2})", re.ASCII)
+_AS_OF_MOMENT = re.compile(
+    r"(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?"
+    r"(?:([Zz])|([+-])(\d{2}):(\d{2}))",
+    re.ASCII,
+)
+# The last millisecond of a day, where a day read as a moment ends.
+_DAY_END = time(23, 59, 59, 999_000)
 
-    A date reads as the end of that day in UTC, so it names what the share
-    showed on that day; a datetime without a time zone reads as UTC. Text is an
-    ISO 8601 date, read as a date, or date-time, read as a datetime.
+
+def as_of_moment(as_of: object) -> tuple[datetime, date]:
+    """The moment `as_of` names, to the millisecond, and its day.
+
+    A date reads as the last millisecond of that day in UTC, so it names what
+    the share showed on that day; a datetime must carry its time zone. Text is
+    a day, `YYYY-MM-DD`, read as a date, or an RFC 3339 date-time with its
+    offset, such as `2026-10-28T10:00:00Z`, whose day is the date it writes.
+    The moment keeps milliseconds, as the TypeScript client's does.
 
     Raises:
         InvalidRequestError: `as_of` is none of those (`invalid_argument`).
     """
     if isinstance(as_of, str):
-        as_of = _iso_moment(as_of) or as_of
-    if isinstance(as_of, datetime):
-        moment = as_of if as_of.tzinfo is not None else as_of.replace(tzinfo=UTC)
-        return moment, as_of.date()
-    if isinstance(as_of, date):
-        return datetime.combine(as_of, time.max, tzinfo=UTC), as_of
+        as_of = _written_moment(as_of) or as_of
+    if isinstance(as_of, datetime) and as_of.tzinfo is not None:
+        return to_millisecond(as_of), as_of.date()
+    if isinstance(as_of, date) and not isinstance(as_of, datetime):
+        return datetime.combine(as_of, _DAY_END, tzinfo=UTC), as_of
     raise client_error(
         INVALID_ARGUMENT,
-        "as_of is a date, a datetime or an ISO 8601 date such as '2026-10-28', "
+        "as_of is a date, a datetime with a time zone, a date such as "
+        "'2026-10-28' or an RFC 3339 date-time such as '2026-10-28T10:00:00Z', "
         f"not {as_of!r}",
     )
 
 
-def _iso_moment(text: str) -> date | datetime | None:
-    """`text` as an ISO 8601 date, else date-time, else None."""
-    for parse in (date.fromisoformat, datetime.fromisoformat):
+def to_millisecond(moment: datetime) -> datetime:
+    """`moment` without its digits past the millisecond, the precision both
+    clients compare moments at."""
+    return moment.replace(microsecond=moment.microsecond // 1000 * 1000)
+
+
+def _written_moment(text: str) -> date | datetime | None:
+    """`text` as a day, else an RFC 3339 date-time, else None when it is
+    neither or names a day or time that does not exist."""
+    if found := _AS_OF_DAY.fullmatch(text):
         with suppress(ValueError):
-            return parse(text)
+            return date(*map(int, found.groups()))
+        return None
+    found = _AS_OF_MOMENT.fullmatch(text)
+    if found is None:
+        return None
+    year, month, day, hour, minute, second, fraction, utc, sign, *offset = (
+        found.groups()
+    )
+    hours, minutes = (0, 0) if utc else map(int, offset)
+    if minutes > 59:
+        return None
+    shift = timedelta(hours=hours, minutes=minutes) * (-1 if sign == "-" else 1)
+    milliseconds = int((fraction or "").ljust(3, "0")[:3])
+    with suppress(ValueError):
+        return datetime(
+            int(year),
+            int(month),
+            int(day),
+            int(hour),
+            int(minute),
+            int(second),
+            milliseconds * 1000,
+            tzinfo=timezone(shift),
+        )
     return None
 
 

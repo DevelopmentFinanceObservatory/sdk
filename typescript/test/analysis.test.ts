@@ -302,6 +302,41 @@ describe("a derived ref", () => {
     });
   }
 
+  test("whose recomputation meets a transient refusal raises it as it came", async () => {
+    const busy = problem({ status: 503, code: "service_unavailable", retryable: true });
+    const { transport } = make(
+      problem({ status: 410, code: "artifact_expired" }),
+      busy,
+      busy,
+      busy,
+    );
+    await assert.rejects(fetchDataset(transport, new DatasetRef([await member("rank")])), {
+      name: "ServerError",
+      code: "service_unavailable",
+      retryable: true,
+    });
+  });
+
+  test("recomputed with another digest reads the new frame and warns", async () => {
+    const answer = await recordedJson<{ ref: { members: [{ artifact: { digest: string } }] } }>(
+      "analysis-rank-ready.json",
+    );
+    answer.ref.members[0].artifact.digest = `sha256:${"0".repeat(64)}`;
+    const old = DatasetRef.fromJSON(answer.ref);
+    const { transport, warnings } = make(
+      problem({ status: 410, code: "artifact_expired" }),
+      await ready("rank"),
+      await manifest("rank"),
+      await frame("rank"),
+    );
+    const data = await fetchDataset(transport, old);
+    assert.deepEqual(
+      warnings.map((warning) => warning.code),
+      ["ref_digest_changed"],
+    );
+    assert.ok(data.ref.equals(new DatasetRef([await member("rank")])));
+  });
+
   test("of two derived members is refused unsent", async () => {
     const { transport, seen } = make();
     const ref = new DatasetRef([await member(), await member("rank")]);

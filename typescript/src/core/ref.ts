@@ -313,8 +313,10 @@ function sameOutput(a: RefMember | DerivedRefMember, b: RefMember | DerivedRefMe
 /** The exact versions a dataset holds. `JSON.stringify(ref)` writes the stored format,
  *  `DatasetRef.fromJSON` reads one written by any DFO client, `client.fetch(ref)` fetches those
  *  versions, and `client.fetch(ref, { latest: true })` the newest versions of its specs. A ref
- *  holds dataset members or derived members, never both. This client loads, writes and compares
- *  a ref of derived members, and refuses to fetch one. */
+ *  holds dataset members or derived members, never both. `client.fetch` reads a ref of one
+ *  derived member as the exact frame it names; when DFO no longer stores that frame, it computes
+ *  the recipe again on the root versions the ref names. `client.fetch(ref, { latest: true })`
+ *  computes the recipe on its datasets' newest versions. */
 export class DatasetRef {
   readonly members: readonly (RefMember | DerivedRefMember)[];
 
@@ -343,11 +345,20 @@ export class DatasetRef {
    * with the same output digest, or dataset members at the same version with the same
    * party-totals cut. Recipes, roots, execution identities, layouts and file formats are left
    * out, so an engine release or an upstream rebuild that moves no number keeps it true.
+   *
+   * @throws {InvalidRequestError} `other` is not a `DatasetRef` (`invalid_argument`).
    */
-  sameData(other: unknown): boolean {
-    if (!(other instanceof DatasetRef) || other.members.length !== this.members.length) {
-      return false;
+  sameData(other: DatasetRef): boolean {
+    const given: unknown = other;
+    if (!(given instanceof DatasetRef)) {
+      const kind = given === null ? "null" : Array.isArray(given) ? "an array" : typeof given;
+      throw clientError("invalid_argument", {
+        detail:
+          `sameData compares two DatasetRefs, not ${kind}; read a saved ref with ` +
+          "DatasetRef.fromJSON first.",
+      });
     }
+    if (other.members.length !== this.members.length) return false;
     return this.members.every((member, index) => sameOutput(member, other.members[index]!));
   }
 

@@ -16,7 +16,10 @@
  *
  * `fetchDerived` reads a derived ref. An exact read takes the frame the ref names; when its
  * stored frame has aged out (`artifact_expired`), DFO computes the recipe again on the root
- * versions the ref names, which must answer the same version. `latest: true` posts the bare
+ * versions the ref names, which must answer the same version, and the client reads the frame
+ * that answer names. When its digest differs from the ref's, the read issues a `DfoWarning`
+ * (`ref_digest_changed`). A refusal that says the roots cannot be read again raises
+ * `VersionUnavailableError`; any other error raises as it came. `latest: true` posts the bare
  * derived root with `latest: true`, so DFO computes the stored recipe again on its datasets'
  * newest versions. `fetchComputedFrame` reads a frame from its ids alone, as a share's slot
  * names it, through the bare root with `latest: false`.
@@ -56,9 +59,15 @@ const ANALYSIS_PATH = "/datasets/analysis";
  *  the frame layout, the only layout a derived frame has. */
 const FRAME_FILE = "format=parquet&bundle=false&layout=frame";
 const EXPIRED = "artifact_expired";
-/** The errors that stop a recomputation of an expired frame as they are, since they say
- *  nothing about whether DFO can compute it again. */
-const PASSED_ON = new Set(["contract_violation", "deadline_exceeded"]);
+/** The refusals of a recomputation that mean DFO cannot read the expired frame's roots again,
+ *  so the frame can no longer be fetched. Any other refusal, a transient one included, raises as
+ *  it came. */
+const ROOTS_UNREADABLE: ReadonlySet<string> = new Set([
+  "snapshot_not_found",
+  "artifact_expired",
+  "recipe_not_found",
+  "rendering_not_recorded",
+]);
 
 /** The call that recomputes a derived ref on its datasets' newest versions. */
 const LATEST_CALL = "client.fetch(ref, { latest: true })";
@@ -99,7 +108,9 @@ export async function runRecipe(
  *
  * @throws {InvalidRequestError} The ref holds several members, which one read cannot stack
  *   (`invalid_argument`); no request is sent.
- * @throws {VersionUnavailableError} The frame and its roots can no longer be read.
+ * @throws {VersionUnavailableError} The frame has aged out and DFO cannot read its roots again
+ *   (`snapshot_not_found`, `artifact_expired`, `recipe_not_found` or `rendering_not_recorded`),
+ *   or computed another version on them.
  */
 export async function fetchDerived(
   transport: Transport,
@@ -125,11 +136,25 @@ export async function fetchDerived(
   try {
     again = await analyse(transport, { tree: root, latest: false }, wait);
   } catch (error) {
-    if (!(error instanceof DfoError) || PASSED_ON.has(error.code)) throw error;
+    if (!(error instanceof DfoError) || !ROOTS_UNREADABLE.has(error.code)) throw error;
     throw unavailable(member, error);
   }
   if (again.contentVersion !== member.contentVersion) throw unavailable(member, expired);
-  return read(transport, member, strict, wait);
+  if (again.digest !== member.digest) noteNewDigest(transport, member, again.digest);
+  return read(transport, again, strict, wait);
+}
+
+/** Issues the client's warning that DFO computed the ref's frame again with another digest. The
+ *  recomputation answered the ref's version, so the rows are the frame the ref names, written to
+ *  bytes with another digest. The data is returned, so strict does not raise it. */
+function noteNewDigest(transport: Transport, member: DerivedRefMember, digest: string): void {
+  transport.warn(
+    clientWarning(
+      "ref_digest_changed",
+      `${member.spec.spec_id} at ${member.contentVersion} was computed again as ${digest}, not ` +
+        `the ref's ${member.digest}; the version is the same, and dataset.ref names the new file.`,
+    ),
+  );
 }
 
 /**
