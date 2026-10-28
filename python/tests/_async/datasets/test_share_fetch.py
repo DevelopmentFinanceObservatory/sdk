@@ -113,13 +113,17 @@ def slot_history() -> httpx2.Response:
     return recorded("share-three-history", body)
 
 
-def emptied_history() -> httpx2.Response:
+def emptied_history(*, shuffled: bool = False) -> httpx2.Response:
     """Slot 2 serves a dataset frame, then a replace leaves it without a card,
-    then a later replace fills it with the computed frame."""
+    then a later replace fills it with the computed frame. `shuffled` serves
+    the entries in no order of time."""
     body = load("share-three-emptied-history.json")["body"]
     later, empty, _, first = body["served"]
     assert empty["component_id"] is None
     later["frame"], first["frame"] = computed_frame(), dataset_frame()
+    if shuffled:
+        slot_1, newest = body["served"][2], body["served"][0]
+        body["served"] = [first, newest, slot_1, empty]
     return recorded("share-three-emptied-history", body)
 
 
@@ -340,10 +344,11 @@ async def test_as_of_before_the_slot_first_served_is_refused_naming_history() ->
     ],
     ids=["before-emptied", "after-refilled"],
 )
+@pytest.mark.parametrize("shuffled", [False, True], ids=["newest-first", "shuffled"])
 async def test_as_of_reads_the_frames_either_side_of_an_emptied_slot(
-    as_of: str, version: list[httpx2.Response], calls: list[str]
+    as_of: str, version: list[httpx2.Response], calls: list[str], shuffled: bool
 ) -> None:
-    server = Server(emptied_history(), recorded("card-read"), *version)
+    server = Server(emptied_history(shuffled=shuffled), recorded("card-read"), *version)
     async with make(server) as transport:
         data = await fetch(transport, three_slots(), slot=2, as_of=as_of)
 
@@ -360,8 +365,11 @@ async def test_as_of_reads_the_frames_either_side_of_an_emptied_slot(
     )
 
 
-async def test_as_of_while_a_slot_showed_no_card_is_not_found_naming_the_slot() -> None:
-    server = Server(emptied_history())
+@pytest.mark.parametrize("shuffled", [False, True], ids=["newest-first", "shuffled"])
+async def test_as_of_while_a_slot_showed_no_card_is_not_found_naming_the_slot(
+    shuffled: bool,
+) -> None:
+    server = Server(emptied_history(shuffled=shuffled))
     async with make(server) as transport:
         with pytest.raises(NotFoundError) as caught:
             await fetch(transport, three_slots(), slot=2, as_of="2026-10-29")

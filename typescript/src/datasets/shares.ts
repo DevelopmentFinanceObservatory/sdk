@@ -257,9 +257,17 @@ export async function shownFrame(
   }
   const { moment, day } = asked;
   const served = await history(transport, target, wait);
-  const entry = served.find(
-    (frame) => frame.slot === number && frame.firstServed.getTime() <= moment.getTime(),
-  );
+  // The reply's order is not relied on: the latest entry at or before the moment wins, and of
+  // equal times the one later in the reply.
+  const entry = served
+    .filter((frame) => frame.slot === number && frame.firstServed.getTime() <= moment.getTime())
+    .reduce<Served | undefined>(
+      (latest, frame) =>
+        latest === undefined || frame.firstServed.getTime() >= latest.firstServed.getTime()
+          ? frame
+          : latest,
+      undefined,
+    );
   if (entry === undefined) {
     throw clientError("invalid_argument", {
       detail:

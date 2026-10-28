@@ -109,13 +109,17 @@ async function slotHistory(): Promise<Handler> {
 }
 
 /** Slot 2 serves a dataset frame, then a replace leaves it without a card, then a later replace
- *  fills it with the computed frame. */
-async function emptiedHistory(): Promise<Handler> {
+ *  fills it with the computed frame. `shuffled` serves the entries in no order of time. */
+async function emptiedHistory(shuffled = false): Promise<Handler> {
   const recorded = await reply("share-three-emptied-history");
-  const [later, empty, , first] = recorded.body["served"] as Record<string, unknown>[];
+  const served = recorded.body["served"] as Record<string, unknown>[];
+  const [later, empty, slotOne, first] = served;
   assert.equal(empty!["component_id"], null);
   later!["frame"] = await computedFrame();
   first!["frame"] = datasetFrame();
+  if (shuffled) {
+    recorded.body["served"] = [first, later, slotOne, empty];
+  }
   return answered(recorded);
 }
 
@@ -295,13 +299,25 @@ describe("a share fetch", () => {
     assert.deepEqual(calls(seen), [`GET ${SHARES}/${SHARE_ID}/history`]);
   });
 
-  for (const [name, asOf, computed] of [
-    ["before it was emptied reads the first frame", "2026-10-28", false],
-    ["after it was refilled reads the later frame", "2026-10-30", true],
+  for (const [name, asOf, computed, shuffled] of [
+    ["before it was emptied reads the first frame", "2026-10-28", false, false],
+    ["after it was refilled reads the later frame", "2026-10-30", true, false],
+    [
+      "before it was emptied reads the first frame from a shuffled history",
+      "2026-10-28",
+      false,
+      true,
+    ],
+    [
+      "after it was refilled reads the later frame from a shuffled history",
+      "2026-10-30",
+      true,
+      true,
+    ],
   ] as const) {
     test(`asOf ${name} of an emptied slot`, async () => {
       const { transport, seen } = make(
-        await emptiedHistory(),
+        await emptiedHistory(shuffled),
         answered(await reply("card-read")),
         ...(computed ? await computedVersion() : await storedVersion()),
       );
@@ -321,18 +337,20 @@ describe("a share fetch", () => {
     });
   }
 
-  test("asOf while a slot showed no card is not found, naming the slot", async () => {
-    const { transport, seen } = make(await emptiedHistory());
-    await assert.rejects(
-      fetchDataset(transport, await threeSlots(), { slot: 2, asOf: "2026-10-29" }),
-      (error: Error & { code?: string }) =>
-        error.name === "NotFoundError" &&
-        error.code === "not_found" &&
-        error.message.includes("Slot 2") &&
-        error.message.includes("no card"),
-    );
-    assert.deepEqual(calls(seen), [`GET ${SHARES}/${SHARE_ID}/history`]);
-  });
+  for (const shuffled of [false, true]) {
+    test(`asOf while a slot showed no card is not found, naming the slot${shuffled ? " (shuffled history)" : ""}`, async () => {
+      const { transport, seen } = make(await emptiedHistory(shuffled));
+      await assert.rejects(
+        fetchDataset(transport, await threeSlots(), { slot: 2, asOf: "2026-10-29" }),
+        (error: Error & { code?: string }) =>
+          error.name === "NotFoundError" &&
+          error.code === "not_found" &&
+          error.message.includes("Slot 2") &&
+          error.message.includes("no card"),
+      );
+      assert.deepEqual(calls(seen), [`GET ${SHARES}/${SHARE_ID}/history`]);
+    });
+  }
 
   for (const [name, target, slot] of [
     ["a Share given no slot", threeSlots, undefined],

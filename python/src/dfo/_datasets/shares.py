@@ -233,14 +233,17 @@ async def shown_frame(
         today = datetime.now(UTC).date()
         return ShownFrame(share_id, number, title, *frame, today)
     moment, day = asked
-    entry = next(
+    # The reply's order is not relied on: the latest entry at or before the
+    # moment wins, and of equal times the one later in the reply.
+    served_by_then = sorted(
         (
             served
             for served in await history(transport, target, deadline=deadline)
             if served.slot == number and to_millisecond(served.first_served) <= moment
         ),
-        None,
+        key=lambda served: to_millisecond(served.first_served),
     )
+    entry = served_by_then[-1] if served_by_then else None
     if entry is None:
         raise client_error(
             INVALID_ARGUMENT,
