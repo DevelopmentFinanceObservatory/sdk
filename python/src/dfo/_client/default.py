@@ -1,5 +1,5 @@
-"""The module functions `dfo.search`, `dfo.fetch` and `dfo.configure`, and the
-lookups of `dfo.lookup`, over a default client.
+"""The module functions `dfo.search`, `dfo.fetch`, `dfo.pin` and `dfo.configure`,
+and the lookups of `dfo.lookup`, over a default client.
 
 The default client is built on first use, under a lock, so importing `dfo` reads
 neither the environment nor the network. `configure` replaces it. An answer from
@@ -26,6 +26,7 @@ from dfo._core.lookup_results import Catalogue, Code, Match, Node
 from dfo._core.refs import DatasetRef
 from dfo._core.types import Layout, Spec, Window
 from dfo._datasets.dataset import Dataset
+from dfo._datasets.recipe import Recipe
 from dfo._generated.wire import ResolveKind
 from dfo._http.hooks import HeaderProvider
 from dfo._search.answer import SEARCH_TIMEOUT
@@ -138,7 +139,7 @@ def search(question: str, /, *, timeout: float | None = SEARCH_TIMEOUT) -> Answe
 
 
 def fetch(
-    target: Spec | DatasetRef,
+    target: Spec | DatasetRef | Recipe,
     /,
     *,
     window: Window | None = None,
@@ -152,15 +153,16 @@ def fetch(
     progress: bool | None = None,
 ) -> Dataset:
     """Fetch a spec's latest version, the exact versions a ref names, or with
-    `latest=True` the newest versions of a ref's specs, with the default client.
+    `latest=True` the newest versions of a ref's specs, or run a recipe on DFO,
+    with the default client.
 
     Takes `Client.fetch`'s arguments, including its timeout behavior: platform
     name resolution can run past a synchronous deadline, while the asynchronous
     client can cancel it.
 
     Raises:
-        InvalidRequestError: The target is neither a `Spec` nor a `DatasetRef`,
-            such as a spec id, and no request is sent; a ref is narrowed or
+        InvalidRequestError: The target is not a `Spec`, a `DatasetRef` or a
+            `Recipe`, such as a spec id, and no request is sent; a ref is narrowed or
             given another layout or `party_totals`; `latest` is not a
             bool, is given a spec, or is given a ref whose members differ in
             rendering; `window`, `entities`, `facets` or `layout` is
@@ -187,6 +189,21 @@ def fetch(
         timeout=timeout,
         progress=progress,
     )
+
+
+def pin(data: Dataset, /) -> Dataset:
+    """Keep `data`'s exact versions fetchable by its ref with no time limit, with
+    the default client, and return the same Dataset, now pinned.
+
+    Takes `Client.pin`'s argument.
+
+    Raises:
+        InvalidRequestError: `data` is not a Dataset, names no version, or holds
+            a frame DFO computed, which the pin route does not take
+            (`invalid_argument`); no request is sent.
+        QuotaExceededError: The daily pin allowance is spent (`allowance_exhausted`).
+    """
+    return default_client().pin(data)
 
 
 def resolve(

@@ -1,0 +1,195 @@
+{
+ "status": "ready",
+ "ref": {
+  "format_version": 2,
+  "members": [
+   {
+    "parts": [],
+    "sentence": "Computed by DFO: quotient_of, then growth.",
+    "spec": {
+     "spec_id": "ops_5289fc0f579270fcd6170c893ae5266f",
+     "recipe": {
+      "normal_form_hash": "rnf_a02a53ece5bd7962a13f6548994d3b4c",
+      "replay_key": "rpk_724e772df03498e22b4163f3970db004"
+     }
+    },
+    "content_version": "ocv_422e3d46d9e05f9ea8027c97c0c2f58b",
+    "output_digest": "out_87ee44179d7ab74a1a7129bceb38dc20",
+    "roots": [
+     {
+      "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "content_version": "cv_11111111111111111111111111111111",
+      "rendering": {
+       "format": "parquet",
+       "bundle": false,
+       "layout": "frame"
+      }
+     },
+     {
+      "spec_id": "spec_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "content_version": "cv_33333333333333333333333333333333",
+      "rendering": {
+       "format": "parquet",
+       "bundle": false,
+       "layout": "frame"
+      }
+     }
+    ],
+    "execution_identity": "0.9.0|1.1.0|0.2.0",
+    "resolved_periods": [],
+    "artifact": {
+     "digest": "sha256:a2580ac2bdbecf1ae22243101b99f10c74ecda4d834ca2559d2e138120555ad5",
+     "rendering": {
+      "format": "parquet",
+      "bundle": false
+     }
+    }
+   }
+  ]
+ },
+ "frame_content_version": "cv_1dbc2c0b1345bec7b901b3a007596378",
+ "output_digest": "out_87ee44179d7ab74a1a7129bceb38dc20",
+ "summary": {
+  "verb": "growth",
+  "spec_id": "ops_5289fc0f579270fcd6170c893ae5266f",
+  "content_version": "ocv_422e3d46d9e05f9ea8027c97c0c2f58b",
+  "frame_content_version": "cv_1dbc2c0b1345bec7b901b3a007596378",
+  "rows": 1,
+  "role_keys": [
+   "financingRecipient",
+   "financingRecipient_party_kind"
+  ],
+  "stat_var_count": 1,
+  "dropped_key_count": 0,
+  "right_dropped_key_count": 0,
+  "ranked_before_limit": null,
+  "exclusions": [
+   {
+    "reason": "endpoint_missing",
+    "rows": 1,
+    "entities": {
+     "financingRecipient": [
+      "country/NGA"
+     ],
+     "financingRecipient_party_kind": [
+      "party"
+     ]
+    },
+    "entities_truncated": false,
+    "side": null
+   }
+  ],
+  "time": {
+   "kind": "interval",
+   "start": "2021",
+   "end": "2022",
+   "contiguous": true,
+   "absent": [],
+   "absent_count": 0
+  },
+  "parameters": {
+   "change": "absolute",
+   "entity_by": [
+    "financingRecipient"
+   ],
+   "unit": null,
+   "window_end": "2022",
+   "window_start": "2021"
+  },
+  "execution_identity": {
+   "engine_version": "0.9.0",
+   "frame_grammar_version": "1.1.0",
+   "reduction_policy_version": "0.2.0"
+  },
+  "derived": {
+   "inherited_stat_var": true
+  },
+  "result": {
+   "resolved_unit": {
+    "numerator": "USDollar",
+    "denominator": "Person"
+   },
+   "facet_selections": [],
+   "warnings": [],
+   "window_start": "2021",
+   "window_end": "2022",
+   "entity_growths": [
+    {
+     "entity_key": [
+      [
+       "financingRecipient",
+       "country/KEN"
+      ]
+     ],
+     "value_start": 0.1,
+     "value_end": 0.1,
+     "growth_rate": 0.0,
+     "realised_coverage_fraction": 1.0
+    }
+   ],
+   "observed_periods": [
+    "2021",
+    "2022"
+   ],
+   "change": "absolute",
+   "exclusions": {
+    "records": [
+     {
+      "reason": "endpoint_missing",
+      "row_count": 1,
+      "entities": {
+       "financingRecipient": [
+        "country/NGA"
+       ],
+       "financingRecipient_party_kind": [
+        "party"
+       ]
+      },
+      "entities_truncated": false,
+      "side": null,
+      "parties": null
+     }
+    ]
+   },
+   "entities_left_out": {
+    "endpoint_missing": 1
+   }
+  }
+ },
+ "rows": 1,
+ "role_keys": [
+  "financingRecipient",
+  "financingRecipient_party_kind"
+ ],
+ "stat_var_count": 1,
+ "exclusions": [
+  {
+   "reason": "endpoint_missing",
+   "rows": 1,
+   "entities": {
+    "financingRecipient": [
+     "country/NGA"
+    ],
+    "financingRecipient_party_kind": [
+     "party"
+    ]
+   },
+   "entities_truncated": false,
+   "side": null
+  }
+ ],
+ "time": {
+  "kind": "interval",
+  "start": "2021",
+  "end": "2022",
+  "contiguous": true,
+  "absent": [],
+  "absent_count": 0
+ },
+ "execution_identity": {
+  "engine_version": "0.9.0",
+  "frame_grammar_version": "1.1.0",
+  "reduction_policy_version": "0.2.0"
+ },
+ "resolved_periods": []
+}

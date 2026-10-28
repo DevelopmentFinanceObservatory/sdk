@@ -27,6 +27,7 @@ from dfo._core.errors import (
     QuotaExceededError,
     RateLimitError,
     SearchWarning,
+    SeriesLeftOutWarning,
     ServerError,
     VersionUnavailableError,
 )
@@ -58,6 +59,7 @@ __all__ = [
     "QuotaExceededError",
     "RateLimitError",
     "SearchWarning",
+    "SeriesLeftOutWarning",
     "ServerError",
     "VersionUnavailableError",
 ]

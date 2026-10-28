@@ -1,7 +1,9 @@
 """The client: one connection to the DFO API, its key and its cache.
 
-A client asks Search what a question means (`search`), builds datasets (`fetch`)
-and looks up names, codes and Search's catalogue (`lookup`). `request` reaches any route the client does not wrap. The client
+A client asks Search what a question means (`search`), builds datasets (`fetch`),
+runs DFO's operations (`analysis`, and `fetch` of a recipe), pins versions
+(`pin`), and looks up names, codes and Search's catalogue (`lookup`). `request`
+reaches any route the client does not wrap. The client
 owns its connection pool: `with_options` returns a copy that shares the pool and
 the cache, and only the client that built the pool closes it.
 """
@@ -16,9 +18,12 @@ from dfo._core.errors import DfoError, client_error
 from dfo._core.refs import DatasetRef
 from dfo._core.refusals import caller_refusal
 from dfo._core.types import Layout, RawResponse, Spec, Window
+from dfo._datasets.analysis import AsyncAnalysis
 from dfo._datasets.cache import Cache
 from dfo._datasets.dataset import Dataset
 from dfo._datasets.fetch import Session
+from dfo._datasets.pin import pin as pin_versions
+from dfo._datasets.recipe import Recipe
 from dfo._datasets.resolve import fetch
 from dfo._http.hooks import AsyncHeaderProvider
 from dfo._http.transport import AsyncTransport
@@ -33,9 +38,11 @@ class AsyncClient:
     Attributes:
         lookup: Names to graph nodes, a node by its dcid, a code's registry
             entry, and Search's catalogue.
+        analysis: DFO's operations, each run at once on DFO.
     """
 
     lookup: AsyncLookup
+    analysis: AsyncAnalysis
     # What the client's hints name the owner of a call they suggest, as in
     # `client.fetch(spec)`; the default client behind `dfo.fetch` names `dfo`.
     _caller: ClassVar[str] = "client"
@@ -110,6 +117,7 @@ class AsyncClient:
     def _attach(self, session: Session) -> None:
         self._session = session
         self.lookup = AsyncLookup(session.transport)
+        self.analysis = AsyncAnalysis(session.transport)
 
     def _current(self) -> Session:
         return self._session
@@ -163,7 +171,7 @@ class AsyncClient:
 
     async def fetch(
         self,
-        target: Spec | DatasetRef,
+        target: Spec | DatasetRef | Recipe,
         /,
         *,
         window: Window | None = None,
@@ -177,14 +185,22 @@ class AsyncClient:
         progress: bool | None = None,
     ) -> Dataset:
         """Fetch a spec's latest version, the exact versions a ref names, or with
-        `latest=True` the newest versions of a ref's specs.
+        `latest=True` the newest versions of a ref's specs; or run a recipe on
+        DFO in one request.
+
+        A ref of a frame DFO computed reads that frame, and with `latest=True`
+        DFO computes its recipe again on the newest versions of its datasets. A
+        recipe or a computed frame takes `latest`, `strict` and `timeout`, and
+        refuses the options that narrow or render a spec. A fetch that left
+        series out for missing data issues one `SeriesLeftOutWarning`.
 
         A cancelled or interrupted fetch leaves its build running on the server,
         and the same fetch joins it. Ctrl-C in the synchronous client adds a
         note saying so to the `KeyboardInterrupt`.
 
         Args:
-            target: A `Spec` to build, or a `DatasetRef` to read back.
+            target: A `Spec` to build, a `DatasetRef` to read back, or a
+                `Recipe` from `dfo.analysis.recipe` to run.
             window: Narrow a spec to `"all"`, `"latest"` or
                 `(start_year, end_year)`.
             entities: Rebind the named roles of a spec to dcids, such as
@@ -205,7 +221,8 @@ class AsyncClient:
                 rendering the ref holds, in place of the exact versions it
                 names, as `fetch(old.ref, latest=True)`. A spec always fetches
                 its newest version and refuses it.
-            strict: Raise the first dataset warning instead of issuing it.
+            strict: Raise the first dataset warning, or the
+                `SeriesLeftOutWarning`, instead of issuing it.
             timeout: The longest the fetch takes, in seconds, downloads
                 included. None, the default, waits as long as the build takes,
                 which the server always ends. In the synchronous client,
@@ -215,8 +232,8 @@ class AsyncClient:
                 `DFO_PROGRESS=0`.
 
         Raises:
-            InvalidRequestError: The target is neither a `Spec` nor a
-                `DatasetRef`, such as a spec id, and no request is sent; a ref
+            InvalidRequestError: The target is not a `Spec`, a `DatasetRef` or a
+                `Recipe`, such as a spec id, and no request is sent; a ref
                 is narrowed or given another layout or `party_totals`;
                 `latest` is not a bool, is given a spec, or is given a ref
                 whose members differ in rendering; `window`, `entities`,
@@ -246,6 +263,23 @@ class AsyncClient:
             progress=progress,
             cache=self._session.cache,
         )
+
+    async def pin(self, data: Dataset, /) -> Dataset:
+        """Keep `data`'s exact versions fetchable by its ref with no time limit,
+        and return the same Dataset, now pinned.
+
+        Pinning cannot be undone, and each new pin counts against a daily
+        allowance per network address. `data.save(path)` keeps the rows on your
+        disk instead.
+
+        Raises:
+            InvalidRequestError: `data` is not a Dataset, names no version, or
+                holds a frame DFO computed, which the pin route does not take
+                (`invalid_argument`); no request is sent.
+            QuotaExceededError: The daily pin allowance is spent
+                (`allowance_exhausted`); `retry_after` says when it resets.
+        """
+        return await pin_versions(self._session.transport, data)
 
     async def request(
         self,

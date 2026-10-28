@@ -7,7 +7,13 @@ from collections.abc import Callable
 import pytest
 
 import dfo
-from dfo._core.errors import DataWarning, DfoWarning, NotFoundError, SearchWarning
+from dfo._core.errors import (
+    DataWarning,
+    DfoWarning,
+    NotFoundError,
+    SearchWarning,
+    SeriesLeftOutWarning,
+)
 from dfo._core.lookup_results import (
     Catalogue,
     Code,
@@ -17,6 +23,7 @@ from dfo._core.lookup_results import (
     read_matches,
 )
 from dfo._core.parse import parse_parts
+from dfo._core.periods import latest_year
 from dfo._core.refs import DatasetRef, Member, RefMember
 from dfo._core.types import (
     Assumption,
@@ -36,8 +43,10 @@ from dfo._core.types import (
     UnknownPart,
     UnsupportedPart,
 )
+from dfo._datasets.analysis import AsyncAnalysis
 from dfo._datasets.bundle import BundleLimits
-from dfo._datasets.dataset import Dataset, build_dataset
+from dfo._datasets.dataset import Dataset, LeftOutSeries, LeftOutStep, build_dataset
+from dfo._datasets.recipe import recipe
 from dfo._search.lookups import AsyncLookup
 from dfo._sync._search.answer import Answer
 from tests._data import load
@@ -346,6 +355,39 @@ ROWS: list[tuple[str, Callable[[], object], str, bool]] = [
         "SearchWarning('Shows 2022. [closest_match]')",
         True,
     ),
+    ("latest-year", lambda: latest_year(-4), "latest_year(-4)", True),
+    (
+        "recipe",
+        lambda: recipe(Spec(SPEC_ID, {})).rank(by="origin", limit=10),
+        f"Recipe(rank by origin, limit 10, from {SPEC_ID})",
+        True,
+    ),
+    (
+        "left-out-series",
+        lambda: LeftOutSeries(
+            {"financingRecipient": "country/NGA"},
+            LeftOutStep("growth", 0),
+            "data",
+            "endpoint_missing",
+            1,
+        ),
+        "LeftOutSeries(financingRecipient=country/NGA: growth dropped 1 row from data, "
+        "endpoint_missing)",
+        True,
+    ),
+    (
+        "async-analysis",
+        lambda: object.__new__(AsyncAnalysis),
+        "<AsyncAnalysis: filter, aggregate, growth, rank, quotient_of, share_of, "
+        "join, sum_of, compare>",
+        True,
+    ),
+    (
+        "series-left-out-warning",
+        lambda: SeriesLeftOutWarning("3 series left out."),
+        "SeriesLeftOutWarning('3 series left out.')",
+        True,
+    ),
     (
         "data-warning",
         lambda: DataWarning("No rows.", code="empty_result", severity="warn"),
@@ -473,6 +515,15 @@ HOSTILE_ROWS: list[tuple[str, Callable[[], str], bool]] = [
     ("error-code", lambda: str(NotFoundError("No entry.", code=HOSTILE)), False),
     ("error-trace", lambda: str(NotFoundError("No entry.", trace_id=HOSTILE)), False),
     ("warning-code", lambda: str(DfoWarning("No rows.", code=HOSTILE)), False),
+    (
+        "left-out-series",
+        lambda: repr(
+            LeftOutSeries(
+                {HOSTILE: HOSTILE}, LeftOutStep(HOSTILE, 0), HOSTILE, HOSTILE, 1
+            )
+        ),
+        False,
+    ),
     (
         "data-warning",
         lambda: str(DataWarning("No rows.", code=HOSTILE, severity="warn")),

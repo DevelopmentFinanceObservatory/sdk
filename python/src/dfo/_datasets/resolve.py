@@ -1,4 +1,5 @@
-"""Fetching a target: a spec through the build path, or a ref's exact versions.
+"""Fetching a target: a spec through the build path, a ref's exact versions, or
+a recipe or derived ref through DFO's analysis runner (`dfo._datasets.analysis`).
 
 A `DatasetRef` fetched with `latest=True` builds the newest version of each
 member's spec, in the ref's one rendering, stacked under the members' parts as an
@@ -44,7 +45,7 @@ from dfo._core.errors import (
     recast,
     warn,
 )
-from dfo._core.refs import DatasetRef, RefMember
+from dfo._core.refs import DatasetRef, DerivedRefMember, RefMember
 from dfo._core.refusals import describing, trace_id_of
 from dfo._core.text import cited
 from dfo._core.types import (
@@ -57,6 +58,7 @@ from dfo._core.types import (
     Wire,
     matches,
 )
+from dfo._datasets.analysis import fetch_derived, run_recipe
 from dfo._datasets.build import (
     Cache,
     Entities,
@@ -87,6 +89,7 @@ from dfo._datasets.operation import (
     progress_hook,
 )
 from dfo._datasets.progress import ProgressRenderer
+from dfo._datasets.recipe import Recipe
 from dfo._http.hooks import async_offload
 from dfo._http.transport import AsyncTransport, offline
 
@@ -104,7 +107,7 @@ VERSIONS_PAGE_BUDGET = 20
 
 async def fetch(
     transport: AsyncTransport,
-    target: Spec | DatasetRef,
+    target: Spec | DatasetRef | Recipe,
     *,
     window: Window | None = None,
     entities: Entities | None = None,
@@ -118,11 +121,15 @@ async def fetch(
     cache: Cache | None = None,
 ) -> Dataset:
     """Fetch a spec's latest version, the exact versions a ref names, or with
-    `latest=True` the newest versions of a ref's specs.
+    `latest=True` the newest versions of a ref's specs; or run a recipe on DFO.
+
+    A `Recipe` and a ref of a frame DFO computed take `latest`, `strict` and
+    `timeout`, and refuse the options that narrow or render a spec.
 
     Args:
         transport: The transport requests go through.
-        target: A `Spec` to build, or a `DatasetRef` to read back.
+        target: A `Spec` to build, a `DatasetRef` to read back, or a `Recipe` to
+            run.
         window: Narrow a spec to `"all"`, `"latest"` or `(start_year, end_year)`.
         entities: Rebind the named roles of a spec to dcids; None drops a role.
             The keys are the spec's role keys, `spec.roles`. The spec's other
@@ -166,6 +173,25 @@ async def fetch(
             INVALID_ARGUMENT, f"latest is True or False, not {latest!r}."
         )
     caller = transport.caller
+    derived = isinstance(target, DatasetRef) and any(
+        isinstance(member, DerivedRefMember) for member in target.members
+    )
+    if isinstance(target, Recipe) or derived:
+        _check_computed(
+            window=window,
+            entities=entities,
+            facets=facets,
+            layout=layout,
+            party_totals=party_totals,
+        )
+        if isinstance(target, Recipe):
+            return await run_recipe(
+                transport, target, latest=latest, strict=strict, timeout=timeout
+            )
+        assert isinstance(target, DatasetRef)
+        return await fetch_derived(
+            transport, target, latest=latest, strict=strict, timeout=timeout
+        )
     if isinstance(target, DatasetRef):
         members = _dataset_members(target)
         if window is not None:
@@ -201,8 +227,8 @@ async def fetch(
     if not isinstance(target, Spec):
         raise client_error(
             INVALID_ARGUMENT,
-            "fetch takes a Spec, such as answer.specs[0], or a DatasetRef, not "
-            f"{type(target).__name__}; a spec id alone does not build",
+            "fetch takes a Spec, such as answer.specs[0], a DatasetRef or a "
+            f"Recipe, not {type(target).__name__}; a spec id alone does not build",
         )
     if latest:
         raise client_error(
@@ -237,21 +263,43 @@ def _ref_window_refusal(window: object, latest: bool, caller: str) -> str:
     )
 
 
-def _dataset_members(ref: DatasetRef) -> tuple[RefMember, ...]:
-    """The dataset members of a ref.
+def _check_computed(
+    *,
+    window: object,
+    entities: object,
+    facets: object,
+    layout: object,
+    party_totals: object,
+) -> None:
+    """Refuse the options a recipe or a derived ref does not take: DFO computes
+    a frame in the frame layout from roots the recipe names.
 
     Raises:
-        InvalidRequestError: The ref holds derived members, which this client
-            reads but does not fetch (`invalid_argument`).
+        InvalidRequestError: One is given (`invalid_argument`).
     """
-    members = tuple(member for member in ref.members if isinstance(member, RefMember))
-    if len(members) != len(ref.members):
+    given = [
+        name
+        for name, value in (
+            ("window", window is not None),
+            ("entities", bool(entities)),
+            ("facets", bool(facets)),
+            ("party_totals", party_totals is not None),
+        )
+        if value
+    ]
+    if layout not in (None, "frame"):
+        given.append("layout")
+    if given:
         raise client_error(
             INVALID_ARGUMENT,
-            f"The DatasetRef names {ref.members[0].spec.spec_id}, a frame DFO "
-            "computed, and this client fetches dataset versions only",
+            f"A recipe or a frame DFO computed takes no {', '.join(given)}; set "
+            "them on the readings the recipe starts from",
         )
-    return members
+
+
+def _dataset_members(ref: DatasetRef) -> tuple[RefMember, ...]:
+    """The dataset members of a ref, which holds no derived member."""
+    return tuple(member for member in ref.members if isinstance(member, RefMember))
 
 
 def _checked_ref_layout(

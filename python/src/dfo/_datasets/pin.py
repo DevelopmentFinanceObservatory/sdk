@@ -1,0 +1,92 @@
+"""Pinning: keeping a Dataset's exact versions fetchable with no time limit.
+
+`pin` posts each member's artifact digest to
+`POST /datasets/{spec_id}/{content_version}/pin`, `{schema_version: 1,
+artifact_digest}`, one member after another. DFO keeps the artifact and a frame
+that serves its version in the pinned tier, so every format of the version stays
+fetchable by its ref. Pinning cannot be undone, and each new pin counts against a
+daily allowance per caller, which answers 429 `allowance_exhausted` once spent.
+
+The pin route takes dataset versions alone, so a derived Dataset, whose members
+name `ops_` frames, is refused before any request.
+"""
+
+from collections.abc import Mapping
+from dataclasses import replace
+
+from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT
+from dfo._core.errors import client_error
+from dfo._core.refs import DerivedMember, Member
+from dfo._core.refusals import trace_id_of
+from dfo._datasets.build import response_json
+from dfo._datasets.dataset import Dataset
+from dfo._http.transport import AsyncTransport
+
+
+async def pin(transport: AsyncTransport, data: Dataset) -> Dataset:
+    """Keep `data`'s versions fetchable with no time limit, and return it pinned.
+
+    Raises:
+        InvalidRequestError: `data` is not a Dataset, names no version, or holds
+            frames DFO computed (`invalid_argument`); no request is sent.
+        QuotaExceededError: The caller's daily pin allowance is spent
+            (`allowance_exhausted`).
+        ContractError: DFO answered for another version or artifact
+            (`contract_violation`).
+    """
+    members = _dataset_members(data, transport.caller)
+    for member in members:
+        await _pin_member(transport, member)
+    return replace(data, pinned=True, held_until=None)
+
+
+def _dataset_members(data: object, caller: str) -> tuple[Member, ...]:
+    if not isinstance(data, Dataset):
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"pin takes a Dataset, such as {caller}.fetch(spec), not "
+            f"{type(data).__name__}",
+        )
+    if not data.members:
+        raise client_error(
+            INVALID_ARGUMENT,
+            "A website bundle opened from a folder names no version to pin; fetch "
+            "the dataset, then pin it",
+        )
+    derived = next((m for m in data.members if isinstance(m, DerivedMember)), None)
+    if derived is not None:
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"pin keeps dataset versions, and {derived.spec.spec_id} at "
+            f"{derived.content_version} is a frame DFO computed, which the pin route "
+            "does not take. data.save(path) keeps its rows, and "
+            f"{caller}.fetch(data.ref, latest=True) computes it again",
+        )
+    return tuple(member for member in data.members if isinstance(member, Member))
+
+
+async def _pin_member(transport: AsyncTransport, member: Member) -> None:
+    """Pin one member's artifact.
+
+    Raises:
+        ContractError: The answer names another version or artifact
+            (`contract_violation`).
+    """
+    path = f"/datasets/{member.spec.spec_id}/{member.content_version}/pin"
+    response = await transport.request(
+        "POST", path, json={"schema_version": 1, "artifact_digest": member.digest}
+    )
+    body = response_json(response)
+    pinned = body.get("pinned") if isinstance(body, Mapping) else None
+    named = (
+        (pinned.get("content_version"), pinned.get("artifact_digest"))
+        if isinstance(pinned, Mapping)
+        else None
+    )
+    if named != (member.content_version, member.digest):
+        raise client_error(
+            CONTRACT_VIOLATION,
+            f"POST {path} answered no pin of {member.content_version} at "
+            f"{member.digest}",
+            trace_id=trace_id_of(response, body),
+        )

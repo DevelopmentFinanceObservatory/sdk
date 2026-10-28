@@ -2,7 +2,8 @@
 dataset and the results of `dfo.lookup`.
 
 `dfo` itself holds `Answer`, `Dataset`, `Spec` and `DatasetRef`; this module
-holds what they contain, and the asynchronous `AsyncAnswer`.
+holds what they contain, the asynchronous `AsyncAnswer`, the `Recipe` that
+`dfo.analysis.recipe` describes, and `LatestYear`, what `dfo.latest_year` returns.
 
 `Severity`, `AssumptionKind`, `DepartureCode`, `NoDataReason`, `DeclinedReason`
 and `ResolveKind` are the values the served contract lists for each field. A
@@ -12,6 +13,7 @@ takes `Name`.
 """
 
 from dfo._core.lookup_results import Catalogue, Code, Entity, Match, Node
+from dfo._core.periods import LatestYear
 from dfo._core.refs import (
     DerivedMember,
     DerivedRefMember,
@@ -45,6 +47,8 @@ from dfo._core.types import (
 )
 from dfo._datasets.build import Progress
 from dfo._datasets.bundle import BundleLimits
+from dfo._datasets.dataset import LeftOutSeries, LeftOutStep
+from dfo._datasets.recipe import Recipe
 from dfo._generated.wire import (
     AssumptionKind,
     DeclinedReason,
@@ -76,7 +80,10 @@ __all__ = [
     "Entity",
     "Gap",
     "GapKind",
+    "LatestYear",
     "Layout",
+    "LeftOutSeries",
+    "LeftOutStep",
     "Match",
     "Member",
     "NoDataPart",
@@ -87,6 +94,7 @@ __all__ = [
     "Part",
     "Progress",
     "RawResponse",
+    "Recipe",
     "RefMember",
     "Rendering",
     "RequestedOperation",

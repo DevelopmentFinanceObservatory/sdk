@@ -40,7 +40,7 @@ def test_type_hints_resolve_without_pyarrow() -> None:
     included, in a fresh interpreter that never loads pyarrow."""
     script = (
         "import inspect, sys, typing, dfo\n"
-        "modules = (dfo, dfo.types, dfo.errors, dfo.lookup, dfo.auth)\n"
+        "modules = (dfo, dfo.types, dfo.errors, dfo.analysis, dfo.lookup, dfo.auth)\n"
         "classes = [getattr(m, n) for m in modules for n in m.__all__]\n"
         "classes = [c for c in classes if inspect.isclass(c)]\n"
         "for cls in classes:\n"
@@ -64,12 +64,15 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
         "Dataset",
         "DatasetRef",
         "Spec",
+        "analysis",
         "auth",
         "configure",
         "errors",
         "fetch",
+        "latest_year",
         "load",
         "lookup",
+        "pin",
         "search",
         "types",
     ]
@@ -104,6 +107,7 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
                 "QuotaExceededError",
                 "RateLimitError",
                 "SearchWarning",
+                "SeriesLeftOutWarning",
                 "ServerError",
                 "VersionUnavailableError",
             ],
@@ -131,7 +135,10 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
                 "Entity",
                 "Gap",
                 "GapKind",
+                "LatestYear",
                 "Layout",
+                "LeftOutSeries",
+                "LeftOutStep",
                 "Match",
                 "Member",
                 "NoDataPart",
@@ -142,6 +149,7 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
                 "Part",
                 "Progress",
                 "RawResponse",
+                "Recipe",
                 "RefMember",
                 "Rendering",
                 "RequestedOperation",
@@ -152,6 +160,21 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
                 "UnknownPart",
                 "UnsupportedPart",
                 "Window",
+            ],
+        ),
+        (
+            dfo.analysis,
+            [
+                "aggregate",
+                "compare",
+                "filter",
+                "growth",
+                "join",
+                "quotient_of",
+                "rank",
+                "recipe",
+                "share_of",
+                "sum_of",
             ],
         ),
         (
@@ -175,7 +198,7 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
             ],
         ),
     ],
-    ids=["errors", "types", "lookup", "auth"],
+    ids=["errors", "types", "analysis", "lookup", "auth"],
 )
 def test_each_task_module_exports_its_names(
     module: ModuleType, names: list[str]
@@ -193,5 +216,5 @@ def test_every_error_and_warning_class_is_in_dfo_errors() -> None:
         if cls.__module__.startswith("dfo."):
             found.add(cls.__name__)
         pending.extend(cls.__subclasses__())
-    assert len(found) == 18
+    assert len(found) == 19
     assert found <= set(dfo.errors.__all__)

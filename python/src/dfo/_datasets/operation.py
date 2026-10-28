@@ -196,7 +196,7 @@ POLL_INTERVAL_MIN_S = 1.0
 POLL_INTERVAL_MAX_S = 60.0
 
 
-def _poll_interval(seconds: float) -> float:
+def poll_interval(seconds: float) -> float:
     """The server's poll interval, held between `POLL_INTERVAL_MIN_S` and
     `POLL_INTERVAL_MAX_S`."""
     return min(max(seconds, POLL_INTERVAL_MIN_S), POLL_INTERVAL_MAX_S)
@@ -346,11 +346,11 @@ class Poller:
     def _next_wait(self) -> float:
         if (refused := self._refused_wait) is not None:
             self._refused_wait = None
-            return _poll_interval(refused)
+            return poll_interval(refused)
         if self._state is not None and self._state.retry_after is not None:
-            return _poll_interval(self._state.retry_after)
+            return poll_interval(self._state.retry_after)
         if self._header_wait is not None:
-            return _poll_interval(self._header_wait)
+            return poll_interval(self._header_wait)
         wait = poll_backoff(self._backoff_step)
         self._backoff_step += 1
         return wait

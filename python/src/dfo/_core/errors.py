@@ -254,6 +254,15 @@ class SearchWarning(DfoWarning):
     """
 
 
+class SeriesLeftOutWarning(DfoWarning):
+    """An operation behind a Dataset dropped series for missing data.
+
+    Each fetch of a derived Dataset that left series out issues one, and
+    `Dataset.left_out` lists them. `warnings.filterwarnings("error",
+    category=SeriesLeftOutWarning)` turns it into a raise, as `strict=True` does.
+    """
+
+
 class DfoDeprecationWarning(DfoWarning, DeprecationWarning):
     """A call, or a route the server marked, that goes away in a later release."""
 

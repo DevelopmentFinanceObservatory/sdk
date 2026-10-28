@@ -1,0 +1,186 @@
+{
+ "spec_id": "ops_5289fc0f579270fcd6170c893ae5266f",
+ "content_version": "ocv_422e3d46d9e05f9ea8027c97c0c2f58b",
+ "retention": {
+  "pinned": false,
+  "held_until": "2026-11-27T15:10:16.473667Z"
+ },
+ "citation": {
+  "text": "",
+  "sources": []
+ },
+ "recipe": {
+  "normal_form_hash": "rnf_a02a53ece5bd7962a13f6548994d3b4c",
+  "replay_key": "rpk_724e772df03498e22b4163f3970db004",
+  "execution_identity": "0.9.0|1.1.0|0.2.0",
+  "tree": {
+   "frame": {
+    "spec_id": "ops_5289fc0f579270fcd6170c893ae5266f",
+    "content_version": "ocv_422e3d46d9e05f9ea8027c97c0c2f58b"
+   },
+   "op_spec": {
+    "frame_ref": {
+     "content_version": "ocv_50afd08815011cad2e8eabb32fade2e3",
+     "spec_id": "ops_f72f69cb463d4fdbeb6751800ba2544a"
+    },
+    "identity_version": "ops1",
+    "parameters": {
+     "change": "absolute",
+     "entity_by": [
+      "financingRecipient"
+     ],
+     "unit": null,
+     "window_end": "2022",
+     "window_start": "2021"
+    },
+    "verb": "growth"
+   },
+   "inputs": {
+    "frame_ref": {
+     "frame": {
+      "spec_id": "ops_f72f69cb463d4fdbeb6751800ba2544a",
+      "content_version": "ocv_50afd08815011cad2e8eabb32fade2e3"
+     },
+     "op_spec": {
+      "frame_ref": {
+       "content_version": "cv_11111111111111111111111111111111",
+       "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "identity_version": "ops1",
+      "parameters": {
+       "denominator_by": {
+        "financingRecipient": "observationAbout"
+       },
+       "denominator_entity": {},
+       "denominator_frame_ref": {
+        "content_version": "cv_33333333333333333333333333333333",
+        "spec_id": "spec_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+       },
+       "denominator_unit": null,
+       "numerator_by": [
+        "financingRecipient"
+       ],
+       "numerator_entity": {},
+       "numerator_unit": null
+      },
+      "verb": "quotient_of"
+     },
+     "inputs": {
+      "frame_ref": {
+       "frame": {
+        "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "content_version": "cv_11111111111111111111111111111111"
+       },
+       "root": 0
+      },
+      "denominator_frame_ref": {
+       "frame": {
+        "spec_id": "spec_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "content_version": "cv_33333333333333333333333333333333"
+       },
+       "root": 1
+      }
+     }
+    }
+   }
+  },
+  "roots": [
+   {
+    "schema_version": 1,
+    "frame": {
+     "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "content_version": "cv_11111111111111111111111111111111"
+    },
+    "dataset": {
+     "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "content_version": "cv_11111111111111111111111111111111"
+    },
+    "options": {
+     "format": "parquet",
+     "bundle": false,
+     "layout": "frame"
+    },
+    "scope": {}
+   },
+   {
+    "schema_version": 1,
+    "frame": {
+     "spec_id": "spec_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+     "content_version": "cv_33333333333333333333333333333333"
+    },
+    "dataset": {
+     "spec_id": "spec_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+     "content_version": "cv_33333333333333333333333333333333"
+    },
+    "options": {
+     "format": "parquet",
+     "bundle": false,
+     "layout": "frame"
+    },
+    "scope": {}
+   }
+  ]
+ },
+ "roots": [
+  {
+   "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "content_version": "cv_11111111111111111111111111111111",
+   "rendering": {
+    "format": "parquet",
+    "bundle": false,
+    "layout": "frame"
+   }
+  },
+  {
+   "spec_id": "spec_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "content_version": "cv_33333333333333333333333333333333",
+   "rendering": {
+    "format": "parquet",
+    "bundle": false,
+    "layout": "frame"
+   }
+  }
+ ],
+ "resolved_periods": [],
+ "anchor": null,
+ "left_out": [
+  {
+   "coordinates": {
+    "stat_var": "dcid:ops_f72f69cb463d4fdbeb6751800ba2544a",
+    "financingRecipient": "country/NGA"
+   },
+   "step": {
+    "verb": "growth",
+    "node": 0
+   },
+   "side": "data",
+   "reason": "endpoint_missing",
+   "rows": 1
+  },
+  {
+   "coordinates": {
+    "financingRecipient": "country/GHA"
+   },
+   "step": {
+    "verb": "quotient_of",
+    "node": 1
+   },
+   "side": "data",
+   "reason": "unmatched_key",
+   "rows": 2
+  },
+  {
+   "coordinates": {
+    "financingRecipient": "country/NGA"
+   },
+   "step": {
+    "verb": "quotient_of",
+    "node": 1
+   },
+   "side": "data",
+   "reason": "period_unmatched",
+   "rows": 1
+  }
+ ],
+ "left_out_complete": true
+}

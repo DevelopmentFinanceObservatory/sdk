@@ -27,7 +27,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date
 from itertools import accumulate
 from os import PathLike
-from typing import TYPE_CHECKING, Any, Never
+from typing import TYPE_CHECKING, Any, Never, override
 
 from dfo._core.codes import CONTRACT_VIOLATION, UNEXPECTED_RESPONSE
 from dfo._core.errors import ContractError, client_error, message_of
@@ -39,6 +39,7 @@ from dfo._core.refs import (
     DerivedRefMember,
     Member,
     RefMember,
+    ResolvedPeriod,
 )
 from dfo._core.text import single_line
 from dfo._core.types import (
@@ -58,6 +59,7 @@ from dfo._core.types import (
     RequestedOperation,
     Spec,
     check_keys,
+    clipped,
     decode,
     is_gap_kind,
     is_integer,
@@ -159,23 +161,87 @@ class FetchedMember:
 
 
 @dataclass(frozen=True, slots=True)
-class LeftOutSeries:
-    """A series a step of the recipe behind a dataset dropped for missing data.
+class LeftOutStep:
+    """The step of a recipe that dropped a series.
 
     Attributes:
-        coordinates: The value of each column that names the series, as
-            `(column, value)` pairs in the server's order.
-        step: The step that dropped the series.
-        side: The input the step dropped it from.
-        reason: Why the step dropped it.
-        rows: The rows the series held.
+        verb: The step's operation, such as `growth`.
+        node: The step's place in the recipe: 0 is the step that made the
+            Dataset, and each step comes before the steps it reads from.
     """
 
-    coordinates: tuple[tuple[str, str], ...]
-    step: str
+    verb: str
+    node: int
+
+
+@dataclass(frozen=True, slots=True)
+class LeftOutSeries:
+    """A series a step of the recipe behind a Dataset dropped for missing data.
+
+    Attributes:
+        coordinates: The value of each column that names the series, such as
+            `{"financingRecipient": "country/NGA"}`.
+        step: The step that dropped the series.
+        side: The step input it came from: `data`, or `other` for the second
+            reading of a two-reading operation.
+        reason: Why the step dropped it, in DFO's words, such as
+            `endpoint_missing` or `unmatched_key`.
+        rows: The rows of the series the step left out.
+    """
+
+    coordinates: Mapping[str, str]
+    step: LeftOutStep
     side: str
     reason: str
     rows: int
+
+    @override
+    def __hash__(self) -> int:
+        return hash(
+            (
+                tuple(self.coordinates.items()),
+                self.step,
+                self.side,
+                self.reason,
+                self.rows,
+            )
+        )
+
+    @override
+    def __repr__(self) -> str:
+        named = ", ".join(f"{key}={value}" for key, value in self.coordinates.items())
+        rows = "1 row" if self.rows == 1 else f"{self.rows:,} rows"
+        return single_line(
+            f"LeftOutSeries({clipped(named)}: {self.step.verb} dropped {rows} "
+            f"from {self.side}, {self.reason})"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DerivedStep:
+    """One step of a recipe, as a derived Dataset's repr names it.
+
+    Attributes:
+        verb: The operation.
+        by: The columns or roles it keeps apart.
+        limit: The most members it keeps, for a ranking.
+    """
+
+    verb: str
+    by: tuple[str, ...] = ()
+    limit: int | None = None
+
+    def text(self) -> str:
+        """The step as `rank by origin, limit 10`."""
+        text = self.verb + (f" by {', '.join(self.by)}" if self.by else "")
+        return text + (f", limit {self.limit}" if self.limit is not None else "")
+
+
+def steps_text(steps: Sequence[DerivedStep], source: str) -> str:
+    """Steps in the order they run and what they start from, as
+    `growth by origin, then rank by origin, limit 10, from 1 reading`."""
+    done = ", then ".join(step.text() for step in steps)
+    return f"{done}, from {source}" if done else f"from {source}"
 
 
 @dataclass(frozen=True, slots=True, eq=False, repr=False)
@@ -211,6 +277,10 @@ class Dataset:
             a newer version.
         layout_version: The column set of the table: the long layout's version,
             `frame` for the pipeline frame, or a bundle's rendition.
+        left_out: Every series a step of the recipe behind a derived Dataset
+            dropped for missing data, at any step, each naming its step. Empty
+            for a Dataset of dataset versions. DFO lists at most 2,000; the repr
+            says "at least" when it dropped more.
     """
 
     sentence: str
@@ -233,9 +303,11 @@ class Dataset:
     # The owner of the call the repr's newest-versions line names: the fetching
     # client's `client` or `dfo`, and `dfo` for a dataset `dfo.load` read.
     _caller: str = field(default="dfo", repr=False)
-    # Every series the recipe behind a derived dataset dropped for missing data,
-    # at any step; empty for a dataset of dataset members.
-    _left_out: tuple[LeftOutSeries, ...] = field(default=(), repr=False)
+    left_out: tuple[LeftOutSeries, ...] = ()
+    # Whether `left_out` lists every series the recipe dropped.
+    _left_out_complete: bool = field(default=True, repr=False)
+    # The recipe's steps in the order they ran, for the repr's derived line.
+    _steps: tuple[DerivedStep, ...] = field(default=(), repr=False)
 
     def __post_init__(self) -> None:
         rows = self._member_rows
@@ -371,6 +443,7 @@ class Dataset:
         lines: list[str] = []
         if self.sources:
             lines.append("Source: " + "; ".join(self.sources))
+        lines.extend(self._derived_summary())
         versions = [member.content_version for member in self.members]
         retention = self._retention()
         if versions:
@@ -390,6 +463,25 @@ class Dataset:
         if versions:
             keep += f" · newest later: {self._caller}.fetch(data.ref, latest=True)"
         lines.append(keep)
+        return lines
+
+    def _derived_summary(self) -> list[str]:
+        """The lines of a derived dataset: its steps, the period its latest years
+        settled on, and the series it left out. Empty for dataset versions."""
+        derived = [m for m in self.members if isinstance(m, DerivedMember)]
+        if not derived:
+            return []
+        roots = _unique(root for member in derived for root in member.roots)
+        readings = f"{len(roots)} reading" + ("" if len(roots) == 1 else "s")
+        lines = [f"Derived: {steps_text(self._steps, readings)}"]
+        if period := _period_line(derived[0].resolved_periods):
+            lines.append(period)
+        if self.left_out:
+            count = len(self.left_out)
+            least = "" if self._left_out_complete else "at least "
+            lines.append(
+                f"Missing data: {least}{count:,} series left out · data.left_out"
+            )
         return lines
 
     def _retention(self) -> str | None:
@@ -450,11 +542,30 @@ class Dataset:
         }
         if ref is not None:
             metadata["dfo.ref"] = ref.to_json()
-        if self._left_out:
+        if any(isinstance(member, DerivedMember) for member in self.members):
             metadata["dfo.left_out"] = _dumps(
-                [_left_out_object(series) for series in self._left_out]
+                {
+                    "series": [_left_out_object(series) for series in self.left_out],
+                    "complete": self._left_out_complete,
+                }
             )
+            metadata["dfo.steps"] = _dumps([asdict(step) for step in self._steps])
         return {key.encode(): value.encode() for key, value in metadata.items()}
+
+
+def _period_line(periods: Sequence[ResolvedPeriod]) -> str | None:
+    """The years a recipe's latest years settled on, and the newest year they
+    count back from, as `Period: 2020 to 2024, counted back from 2024, ...`."""
+    if not periods:
+        return None
+    # Each period is a year, and its offset counts years back from the newest.
+    newest = int(periods[0].period) - periods[0].offset
+    years = sorted({int(period.period) for period in periods})
+    span = f"{years[0]}" if len(years) == 1 else f"{years[0]} to {years[-1]}"
+    rule = "the newest year at least half the series hold"
+    if years == [newest]:
+        return f"Period: {newest}, {rule}"
+    return f"Period: {span}, counted back from {newest}, {rule}"
 
 
 def in_reading_order(table: pa.Table, *, member_rows: Sequence[int]) -> pa.Table:
@@ -670,6 +781,161 @@ def build_dataset(
     )
 
 
+def derived_dataset(
+    member: DerivedRefMember,
+    manifest: Mapping[str, Any],
+    data: bytes,
+    *,
+    caller: str = "dfo",
+) -> Dataset:
+    """Make a dataset from a derived frame: its ref member, the derived manifest
+    DFO serves for it and its rows as a bare Parquet file in the frame layout.
+
+    The member keeps every field of the ref. The manifest gives the citation,
+    the retention, the series the recipe left out and the steps the repr names,
+    read from the recipe's tree in the order they ran.
+
+    Raises:
+        ContractError: The manifest names another frame, or its `left_out` or
+            `left_out_complete` breaks the served shape (`contract_violation`);
+            the file is not Parquet (`unexpected_response`) or holds no
+            `time_period` or numeric `value` column (`contract_violation`).
+    """
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+    import pyarrow.parquet as pq  # noqa: PLC0415 - pyarrow loads on first use
+
+    frame = f"{member.spec.spec_id} at {member.content_version}"
+    if (manifest.get("spec_id"), manifest.get("content_version")) != (
+        member.spec.spec_id,
+        member.content_version,
+    ):
+        raise client_error(
+            CONTRACT_VIOLATION,
+            f"The derived manifest names {manifest.get('spec_id')} at "
+            f"{manifest.get('content_version')}, not {frame}",
+        )
+    left_out, complete = _served_left_out(manifest)
+    try:
+        table = pq.ParquetFile(pa.BufferReader(data)).read()
+    # pyarrow raises OSError, outside ArrowException, for a damaged footer or page
+    except (pa.ArrowException, OSError) as error:
+        raise client_error(
+            UNEXPECTED_RESPONSE,
+            f"The file of {frame} is not a Parquet file this client reads",
+        ) from error
+    if (fault := _artifact_fault(table, manifest)) is not None:
+        raise client_error(CONTRACT_VIOLATION, f"The file of {frame} {fault}")
+    retention = manifest.get("retention")
+    held_until, pinned = _retention(
+        [retention if isinstance(retention, Mapping) else None]
+    )
+    citation = parse_citation(manifest.get("citation"))
+    recipe = manifest.get("recipe")
+    tree = recipe.get("tree") if isinstance(recipe, Mapping) else None
+    return Dataset(
+        sentence=member.sentence,
+        members=(
+            DerivedMember(
+                parts=member.parts,
+                sentence=member.sentence,
+                spec=member.spec,
+                content_version=member.content_version,
+                output_digest=member.output_digest,
+                roots=member.roots,
+                execution_identity=member.execution_identity,
+                resolved_periods=member.resolved_periods,
+                citation=citation,
+                digest=member.digest,
+                rendering=member.rendering,
+            ),
+        ),
+        citation=citation,
+        warnings=(),
+        departures=(),
+        requested_operations=(),
+        complete=True,
+        missing=(),
+        held_until=held_until,
+        pinned=pinned,
+        stale=False,
+        layout_version="frame",
+        _table=table.replace_schema_metadata(None),
+        _member_rows=(table.num_rows,),
+        _caller=caller,
+        left_out=left_out,
+        _left_out_complete=complete,
+        _steps=tuple(_tree_steps(tree)) if isinstance(tree, Mapping) else (),
+    )
+
+
+def _served_left_out(
+    manifest: Mapping[str, Any],
+) -> tuple[tuple[LeftOutSeries, ...], bool]:
+    """A derived manifest's `left_out` and `left_out_complete`. Both are null for
+    a recipe stored without them, which reads as none left out.
+
+    Raises:
+        ContractError: Either breaks the served shape (`contract_violation`).
+    """
+    served, complete = manifest.get("left_out"), manifest.get("left_out_complete")
+    if served is None:
+        return (), True
+    try:
+        series = tuple(
+            read_left_out_series(item, f"/left_out/{index}")
+            for index, item in enumerate(_array(served, "/left_out"))
+        )
+    except FormatError as error:
+        raise _manifest_violation(error.pointer) from error
+    if not isinstance(complete, bool):
+        raise _manifest_violation("/left_out_complete")
+    return series, complete
+
+
+def _manifest_violation(pointer: str) -> ContractError:
+    error = client_error(
+        CONTRACT_VIOLATION,
+        f"The derived manifest's {pointer} breaks the shape this client reads",
+    )
+    error.pointer = pointer
+    return error
+
+
+# The parameter each operation names the columns it keeps apart in.
+_BY_PARAMETERS = ("group_by", "entity_by", "rank_by", "numerator_by", "join_keys")
+
+
+def _tree_steps(node: Mapping[str, Any]) -> Iterator[DerivedStep]:
+    """The steps of a stored recipe's tree in the order they ran: each step
+    after its inputs, the primary input first. A part of the tree this client
+    cannot read names no step, since only the repr reads them."""
+    inputs = node.get("inputs")
+    if isinstance(inputs, Mapping):
+        slots = sorted(inputs, key=lambda slot: (slot != "frame_ref", slot))
+        for slot in slots:
+            if isinstance(child := inputs[slot], Mapping):
+                yield from _tree_steps(child)
+    op_spec = node.get("op_spec")
+    if not isinstance(op_spec, Mapping) or not isinstance(op_spec.get("verb"), str):
+        return
+    parameters = op_spec.get("parameters")
+    parameters = parameters if isinstance(parameters, Mapping) else {}
+    by = next(
+        (
+            parameters[name]
+            for name in _BY_PARAMETERS
+            if isinstance(parameters.get(name), list)
+        ),
+        [],
+    )
+    limit = parameters.get("limit")
+    yield DerivedStep(
+        verb=op_spec["verb"],
+        by=tuple(column for column in by if isinstance(column, str)),
+        limit=limit if type(limit) is int else None,
+    )
+
+
 def _read_artifact(fetched: FetchedMember, cache: Cache | None) -> pa.Table:
     """A member's artifact as a table, removed from `cache` when it does not read.
 
@@ -803,7 +1069,7 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
         layout_version=_string(rest["layout_version"], "/dfo.dataset/layout_version"),
         _table=table.replace_schema_metadata(None),
         _member_rows=member_rows,
-        _left_out=_load_left_out(values.get("dfo.left_out")),
+        **_load_derived(values),
     )
 
 
@@ -839,44 +1105,99 @@ def _saved_member(
 def _left_out_object(series: LeftOutSeries) -> dict[str, Any]:
     return {
         "coordinates": dict(series.coordinates),
-        "step": series.step,
+        "step": {"verb": series.step.verb, "node": series.step.node},
         "side": series.side,
         "reason": series.reason,
         "rows": series.rows,
     }
 
 
-def _load_left_out(text: str | None) -> tuple[LeftOutSeries, ...]:
-    """A saved file's `dfo.left_out`, a JSON array of dropped series; empty when
-    the file has no such key."""
-    if text is None:
-        return ()
-    pointer = "/dfo.left_out"
+def _load_derived(values: Mapping[str, str]) -> dict[str, Any]:
+    """A saved file's `dfo.left_out` and `dfo.steps`, as the `Dataset` fields
+    they fill; none when the file holds dataset versions."""
+    loaded: dict[str, Any] = {}
+    if (text := values.get("dfo.left_out")) is not None:
+        series, complete = _load_left_out(_json_value(text, "/dfo.left_out"))
+        loaded["left_out"] = series
+        loaded["_left_out_complete"] = complete
+    if (text := values.get("dfo.steps")) is not None:
+        pointer = "/dfo.steps"
+        loaded["_steps"] = tuple(
+            _load_step(item, f"{pointer}/{index}")
+            for index, item in enumerate(_array(_json_value(text, pointer), pointer))
+        )
+    return loaded
+
+
+def _json_value(text: str, pointer: str) -> object:
     try:
-        items = loads(text)
+        return loads(text)
     except ValueError as error:
         raise FormatError("format_invalid", pointer, f"not JSON: {error}") from error
-    return tuple(
-        _load_left_out_series(item, f"{pointer}/{index}")
-        for index, item in enumerate(_array(items, pointer))
+
+
+def _load_left_out(value: object) -> tuple[tuple[LeftOutSeries, ...], bool]:
+    """A saved `dfo.left_out`: the dropped series and whether they are all."""
+    pointer = "/dfo.left_out"
+    obj = object_at(value, pointer)
+    check_keys(obj, pointer, required=("series", "complete"))
+    complete = obj["complete"]
+    if not isinstance(complete, bool):
+        raise FormatError("format_invalid", f"{pointer}/complete", "not a boolean")
+    items = _array(obj["series"], f"{pointer}/series")
+    return (
+        tuple(
+            read_left_out_series(item, f"{pointer}/series/{index}")
+            for index, item in enumerate(items)
+        ),
+        complete,
     )
 
 
-def _load_left_out_series(value: object, pointer: str) -> LeftOutSeries:
+def read_left_out_series(value: object, pointer: str) -> LeftOutSeries:
+    """One dropped series as the derived manifest serves it and a saved file
+    keeps it: `{coordinates, step: {verb, node}, side, reason, rows}`.
+
+    Raises:
+        FormatError: The value breaks that shape; `pointer` locates it.
+    """
     obj = object_at(value, pointer)
     check_keys(obj, pointer, required=("coordinates", "step", "side", "reason", "rows"))
     coordinates = object_at(obj["coordinates"], f"{pointer}/coordinates")
     for key, item in coordinates.items():
         _string(item, f"{pointer}/coordinates/{key}")
+    step = object_at(obj["step"], f"{pointer}/step")
+    check_keys(step, f"{pointer}/step", required=("verb", "node"))
+    node = step["node"]
+    if not is_integer(node) or node < 0:
+        raise FormatError("format_invalid", f"{pointer}/step/node", "not a node index")
     rows = obj["rows"]
     if not is_integer(rows) or rows < 0:
         raise FormatError("format_invalid", f"{pointer}/rows", "not a row count")
     return LeftOutSeries(
-        coordinates=tuple(coordinates.items()),
-        step=_string(obj["step"], f"{pointer}/step"),
+        coordinates=dict(coordinates),
+        step=LeftOutStep(
+            verb=_string(step["verb"], f"{pointer}/step/verb"), node=int(node)
+        ),
         side=_string(obj["side"], f"{pointer}/side"),
         reason=_string(obj["reason"], f"{pointer}/reason"),
         rows=int(rows),
+    )
+
+
+def _load_step(value: object, pointer: str) -> DerivedStep:
+    obj = object_at(value, pointer)
+    check_keys(obj, pointer, required=("verb", "by", "limit"))
+    by = _array(obj["by"], f"{pointer}/by")
+    limit = obj["limit"]
+    if limit is not None and not is_integer(limit):
+        raise FormatError("format_invalid", f"{pointer}/limit", "not an integer")
+    return DerivedStep(
+        verb=_string(obj["verb"], f"{pointer}/verb"),
+        by=tuple(
+            _string(item, f"{pointer}/by/{index}") for index, item in enumerate(by)
+        ),
+        limit=None if limit is None else int(limit),
     )
 
 
