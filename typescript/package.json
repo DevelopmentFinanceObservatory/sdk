@@ -44,6 +44,7 @@
     "fetch-contract": "node scripts/fetch-contract.ts",
     "test": "node scripts/fetch-contract.ts && node --test \"test/**/*.test.ts\"",
     "test:e2e": "node scripts/fetch-contract.ts && node --test \"test/e2e/*.e2e.ts\"",
+    "test:e2e:local": "node scripts/fetch-contract.ts && bash ../scripts/local-stack-journeys.sh typescript",
     "generate": "node scripts/fetch-contract.ts && node scripts/generate-wire.ts && node scripts/generate-contract.ts",
     "generate:check": "node scripts/fetch-contract.ts && node scripts/generate-wire.ts --check && node scripts/generate-contract.ts --check"
   },
