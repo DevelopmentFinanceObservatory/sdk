@@ -402,8 +402,8 @@ export class Analysis {
     return this.#run(recipe(data).filter(step), run);
   }
 
-  /** Totals or averages, keeping the members of `by` apart: `how` is `sum` by default, or
-   *  `mean`, `max` or `min`. */
+  /** Totals or averages the rows of each year, keeping the members of `by` apart: `how` is `sum`
+   *  by default, or `mean`, `max` or `min`. Each year stays its own row. */
   async aggregate(data: Start, options: AggregateOptions & RunOptions = {}): Promise<Dataset> {
     const [step, run] = split(options);
     return this.#run(recipe(data).aggregate(step), run);

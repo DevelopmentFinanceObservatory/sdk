@@ -51,12 +51,25 @@ def _step(chain: Recipe) -> dict[str, Any]:
         (
             lambda r: r.aggregate(by="origin"),
             "aggregate",
-            {"group_by": ["origin"], "aggregation": "sum"},
+            {"group_by": ["time_period", "origin"], "aggregation": "sum"},
         ),
         (
             lambda r: r.aggregate(by=["origin", "destination"], how="mean"),
             "aggregate",
-            {"group_by": ["origin", "destination"], "aggregation": "mean"},
+            {
+                "group_by": ["time_period", "origin", "destination"],
+                "aggregation": "mean",
+            },
+        ),
+        (
+            lambda r: r.aggregate(),
+            "aggregate",
+            {"group_by": ["time_period"], "aggregation": "sum"},
+        ),
+        (
+            lambda r: r.aggregate(by=["origin", "time_period"]),
+            "aggregate",
+            {"group_by": ["time_period", "origin"], "aggregation": "sum"},
         ),
         (
             lambda r: r.growth(by="origin", window=(latest_year(-4), latest_year())),
@@ -109,6 +122,8 @@ def _step(chain: Recipe) -> dict[str, Any]:
         "filter",
         "aggregate",
         "aggregate-mean",
+        "aggregate-no-by",
+        "aggregate-names-the-period",
         "growth-rolling",
         "growth-fixed",
         "rank",
@@ -348,7 +363,9 @@ ROOT = {"frame": {"spec_id": AID.spec_id}, "root": 0}
                 "rank",
                 {"rank_by": ["financingSource"]},
                 frame_ref=_stored(
-                    "aggregate", {"group_by": ["financingSource"]}, frame_ref=ROOT
+                    "aggregate",
+                    {"group_by": ["time_period", "financingSource"]},
+                    frame_ref=ROOT,
                 ),
             ),
             {},

@@ -65,13 +65,25 @@ describe("a one-reading step", () => {
       "aggregate",
       (r: Recipe) => r.aggregate({ by: "origin" }),
       "aggregate",
-      { group_by: ["origin"], aggregation: "sum" },
+      { group_by: ["time_period", "origin"], aggregation: "sum" },
     ],
     [
       "aggregate-mean",
       (r: Recipe) => r.aggregate({ by: ["origin", "destination"], how: "mean" }),
       "aggregate",
-      { group_by: ["origin", "destination"], aggregation: "mean" },
+      { group_by: ["time_period", "origin", "destination"], aggregation: "mean" },
+    ],
+    [
+      "aggregate-no-by",
+      (r: Recipe) => r.aggregate(),
+      "aggregate",
+      { group_by: ["time_period"], aggregation: "sum" },
+    ],
+    [
+      "aggregate-names-the-period",
+      (r: Recipe) => r.aggregate({ by: ["origin", "time_period"] }),
+      "aggregate",
+      { group_by: ["time_period", "origin"], aggregation: "sum" },
     ],
     [
       "growth-rolling",

@@ -513,11 +513,13 @@ class Analysis:
         strict: bool = False,
         timeout: float | None = None,
     ) -> Dataset:
-        """Totals or averages, keeping the members of `by` apart.
+        """Totals or averages the rows of each year, keeping the members of `by`
+        apart.
 
         Args:
             data: The reading.
-            by: The roles whose members stay apart, such as `"origin"`.
+            by: The roles whose members stay apart, such as `"origin"`; none
+                totals every row of each year.
             how: `sum`, `mean`, `max` or `min`.
             strict: Raise the `SeriesLeftOutWarning` instead of issuing it.
             timeout: The longest the call takes, in seconds; None waits.

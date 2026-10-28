@@ -1411,8 +1411,8 @@ export class Transport {
   /**
    * The error a refusal stands for, read from its problem document when it carries one, as
    * `problemError` builds it. The body is read whatever its media type, and the key sent reads
-   * as `[redacted]` in it. A 404 that matched no route, `not_found` or no code, names the request
-   * in the message, since the base URL is the likely fault. A body that passed
+   * as `[redacted]` in it. A 404 with no refusal code matched no route and names the request in
+   * the message, since the base URL is the likely fault; a 404 with a code answered from a route. A body that passed
    * `JSON_BODY_MAX_BYTES`, read as null, raises `refusal_without_code`, of the class and
    * retryable flag its status gives.
    */
@@ -1439,7 +1439,7 @@ export class Transport {
       untold: `HTTP ${status}`,
       retryAfterMs: retryAfterMs(response.headers) ?? null,
       unmatched: (code) =>
-        status === 404 && (code === "not_found" || code === "refusal_without_code")
+        status === 404 && code === "refusal_without_code"
           ? `${sent.method} ${sent.url.href}`
           : undefined,
       cause,
@@ -1469,7 +1469,7 @@ export class Transport {
       /** The code of a document that carries none; else `refusal_without_code`. */
       fallbackCode?: "operation_failed";
       retryAfterMs?: number | null;
-      /** The request a 404 that matched no route names, given the error's code. */
+      /** The request a 404 with no refusal code names, given the error's code. */
       unmatched?: (code: string) => string | undefined;
       cause?: unknown;
     },

@@ -66,6 +66,7 @@ MAX_LIMIT = 1000
 # Growth's `change` words, in the engine's names.
 _GROWTH_CHANGES: Mapping[str, str] = {"relative": "relative", "difference": "absolute"}
 
+_TIME_PERIOD = "time_period"
 # The parameters whose lists name a step's columns in the order the call named
 # its roles, as DFO stores them.
 _ORDERED_BY = ("group_by", "entity_by", "rank_by")
@@ -179,14 +180,20 @@ class Recipe:
         )
 
     def aggregate(self, *, by: Columns = (), how: Aggregation = "sum") -> "Recipe":
-        """Total or average the rows, keeping the members of `by` apart.
+        """Total or average the rows of each year, keeping the members of `by`
+        apart.
 
         Args:
             by: The roles whose members stay apart; none totals every row of
                 each year.
             how: `sum`, `mean`, `max` or `min`.
         """
-        group_by = _columns("by", by, empty=True)
+        # The engine groups by exactly these columns and collapses every year into
+        # one span without time_period, so the period always leads.
+        group_by = [
+            _TIME_PERIOD,
+            *(c for c in _columns("by", by, empty=True) if c != _TIME_PERIOD),
+        ]
         return self._step(
             "aggregate",
             {"group_by": group_by, "aggregation": _word("how", how)},

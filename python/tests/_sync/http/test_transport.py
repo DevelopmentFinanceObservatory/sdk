@@ -951,9 +951,9 @@ def test_retry_after_as_seconds_a_date_or_unreadable(
         ),
         (problem(404, code="spec_not_found", detail="No spec."), "spec_not_found"),
     ],
-    ids=["not-json", "no-route", "unknown-id"],
+    ids=["not-json", "route-answered-not-found", "unknown-id"],
 )
-def test_a_404_that_matched_no_route_names_the_request(
+def test_only_a_404_without_a_code_names_the_request_as_unmatched(
     response: httpx2.Response, code: str
 ) -> None:
     with make(Recorder(response)) as transport:
@@ -961,7 +961,7 @@ def test_a_404_that_matched_no_route_names_the_request(
             transport.request("GET", "/datasets/spec_1")
     named = f"GET {BASE}/datasets/spec_1 matched no route; check base_url"
     assert caught.value.code == code
-    assert (named in str(caught.value)) == (code != "spec_not_found")
+    assert (named in str(caught.value)) == (code == "refusal_without_code")
     assert named not in (caught.value.detail or "")
 
 

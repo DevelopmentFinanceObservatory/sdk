@@ -59,12 +59,13 @@ def aggregate(
     strict: bool = False,
     timeout: float | None = None,
 ) -> Dataset:
-    """Totals or averages, keeping the members of `by` apart.
+    """Totals or averages the rows of each year, keeping the members of `by`
+    apart.
 
     Args:
         data: A `Spec`, `DatasetRef`, `Dataset` or `Recipe` holding one reading.
         by: The roles whose members stay apart, such as `"origin"`; none totals
-            every row of each year.
+            every row of each year. Each year stays its own row.
         how: `sum`, `mean`, `max` or `min`.
         strict: Raise the `SeriesLeftOutWarning` instead of issuing it.
         timeout: The longest the call takes, in seconds; None waits.

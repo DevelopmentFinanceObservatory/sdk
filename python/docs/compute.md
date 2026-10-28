@@ -40,7 +40,7 @@ print(per_person.to_pandas()[["time_period", "financingRecipient", "value"]])
 
 Every function takes a `Spec`, a `DatasetRef`, a `Dataset`, or a `Recipe` as its data. A `Dataset` or ref sends its exact version, and a `Spec` sends the newest version without party totals, as `dfo.fetch(spec)` reads it. DFO builds any version it has not built yet, then computes. The call waits as long as that takes unless you pass `timeout=` in seconds.
 
-A derived frame's `time_period` is text, such as `"2022"`, or `"2018/2023"` for a value that spans years, as `growth` and `aggregate` write. A dataset in the long layout holds integer years, and one in the frame layout holds text. Compare years as text, or convert with `int(year)` where a value covers one year.
+A derived frame's `time_period` is text, such as `"2022"`, or `"2018/2023"` for a value that spans years, as `growth` writes. A dataset in the long layout holds integer years, and one in the frame layout holds text. Compare years as text, or convert with `int(year)` where a value covers one year.
 
 The result's `unit` column holds a unit id, such as `CurrencyUSD`, or, for a composed unit, its JSON text. Aid per person has the unit `{"denominator":{"stat_var":"dcid:Count_Person"},"numerator":"CurrencyUSD"}`, US dollars per person. A relative growth has no unit, and its `unit` cell is empty.
 
@@ -51,7 +51,7 @@ Each operation states its result on its own scale:
 | Function                                    | Result                                                                                                                                                                                                    |
 | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `filter(data, keep=...)`                    | The rows whose role or column holds one of the values, as `keep={"destination": "country/KEN"}`                                                                                                           |
-| `aggregate(data, by=..., how="sum")`        | One value per member of `by` over every year the data holds, by `sum`, `mean`, `max`, or `min`, in the data's unit                                                                                        |
+| `aggregate(data, by=..., how="sum")`        | One value per year for each member of `by`, by `sum`, `mean`, `max`, or `min`, in the data's unit                                                                                        |
 | `growth(data, by=..., window=(start, end))` | The change from the first year to the last. `change="relative"`, the default, is a fraction with no unit: 0.25 is a 25% rise. `change="difference"` is the last value minus the first, in the data's unit |
 | `rank(data, by=..., window=..., limit=...)` | The members of `by`, largest first, the top `limit` kept (1 to 1000). A tie at the last place keeps every member that shares it                                                                           |
 | `quotient_of(data, other, on=...)`          | `data` divided by `other`, in a composed unit                                                                                                                                                             |

@@ -112,6 +112,7 @@ const GROWTH_CHANGES: Readonly<Record<GrowthChange, string>> = {
   difference: "absolute",
 };
 
+const TIME_PERIOD = "time_period";
 /** The parameters whose lists name a step's columns in the order the call named its roles, as
  *  DFO stores them. */
 const ORDERED_BY = ["group_by", "entity_by", "rank_by"] as const;
@@ -241,15 +242,18 @@ export class Recipe {
     return this.#step("filter", { predicates }, optionsText({ keep }));
   }
 
-  /** Totals or averages the rows, keeping the members of `by` apart. */
+  /** Totals or averages the rows of each year, keeping the members of `by` apart. */
   aggregate(options: AggregateOptions = {}): Recipe {
     const { by = [], how = "sum" } = checkOptions(AGGREGATE, options);
-    const groupBy = columns("by", by, true);
+    const members = columns("by", by, true);
+    // The engine groups by exactly these columns and collapses every year into one span
+    // without time_period, so the period always leads.
+    const groupBy = [TIME_PERIOD, ...members.filter((column) => column !== TIME_PERIOD)];
     return this.#step(
       "aggregate",
       { group_by: groupBy, aggregation: word("how", how) },
       optionsText({
-        by: groupBy.length > 0 ? by : undefined,
+        by: members.length > 0 ? by : undefined,
         how: how === "sum" ? undefined : how,
       }),
     );

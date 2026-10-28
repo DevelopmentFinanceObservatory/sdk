@@ -1867,8 +1867,7 @@ describe("server text", () => {
     [
       "not_found",
       problem({ code: "not_found", status: 404, detail: noRoute }),
-      `${noRoute} POST https://api.example/search/resolve matched no route; check baseUrl ` +
-        "[not_found · trace trace-1]",
+      `${noRoute} [not_found · trace trace-1]`,
       noRoute,
     ],
     [
@@ -1885,7 +1884,7 @@ describe("server text", () => {
       "HTTP 404 with no refusal code.",
     ],
   ] as const) {
-    test(`name the request in the message of a 404 ${code} only when no route matched`, async () => {
+    test(`name the request in the message of a 404 ${code} only when it carries no code`, async () => {
       const { fetch } = mockFetch(answer);
       const error = await transport({ baseUrl: "https://api.example", fetch })
         .request({ path: "/search/resolve", json: {} })

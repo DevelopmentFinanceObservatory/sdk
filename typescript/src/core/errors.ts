@@ -292,8 +292,8 @@ export function actionFor(code: string): Action | undefined {
 /** A server refusal's message: its detail, cut to `MESSAGE_TEXT_MAX` characters after the
  *  client's own `lead`, if any, naming the field its problem document's `pointer` names unless
  *  the pointer is empty or the detail names it already, as in
- *  `Field required at /input/definition`. With `unmatched`, the request of a 404 that matched
- *  no route, the message names that request, as in
+ *  `Field required at /input/definition`. With `unmatched`, the request of a 404 with no
+ *  refusal code, which matched no route, the message names that request, as in
  *  `Not found. GET https://… matched no route; check baseUrl`. The error's constructor adds the
  *  bracket that names the code. */
 export function refusalMessage(
