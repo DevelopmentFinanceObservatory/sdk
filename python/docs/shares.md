@@ -99,7 +99,7 @@ share = dfo.share(
 )
 ```
 
-`replace` takes a `Share` or the URL of its page or embed. A snapshot cannot be replaced: `replace` with `latest=False` raises `InvalidRequestError` before any request, and DFO refuses a snapshot's URL with `share_not_replaceable`.
+`replace` takes a `Share` or the URL of its page or embed. A snapshot cannot be replaced: `replace` with `latest=False` raises `InvalidRequestError` before any request, and DFO refuses a snapshot's URL with `share_not_replaceable`. A replace with fewer cards leaves the later slots empty: their data URLs answer not found, and `dfo.fetch(share, slot=n)` of an empty slot raises `NotFoundError`.
 
 ## Fix a live share as a snapshot
 

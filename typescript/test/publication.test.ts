@@ -408,6 +408,23 @@ describe("a share", () => {
     });
   }
 
+  test("replace with fewer cards keeps every slot's URL", async () => {
+    // The contract's `live-replace-with-fewer-cards`: the reply lists the emptied slots' URLs
+    // under their positions.
+    const { body } = await recordedJson<{ body: { id: string; data_urls: string[] } }>(
+      "share-three-created.json",
+    );
+    const { transport, seen } = make(await recorded("share-emptied-replaced"));
+    const made = await share(transport, await card(), {
+      latest: true,
+      replace: `https://site.example/s/${body.id}`,
+      writeToken: TOKEN,
+    });
+
+    assert.equal((bodyOf(seen, 0)["cards"] as unknown[]).length, 1);
+    assert.deepEqual([made.dataUrls, made.revision], [body.data_urls, 2]);
+  });
+
   test("is refused unsent when malformed", async () => {
     const one = await card();
     const loose = (value: unknown): never => value as never;

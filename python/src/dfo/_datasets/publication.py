@@ -135,7 +135,9 @@ class Share:
         embed_url: The share's embeddable page, `/embed/<id>`.
         data_urls: One JSON data URL per slot, in slot order. A slot keeps its
             URL when the share's cards are replaced, so `data_urls[0]` always
-            reads the first slot. Any page may read them, with no key.
+            reads the first slot. A slot a replacement left without a card
+            keeps its URL, which answers not found. Any page may read them,
+            with no key.
         revision: The share revision this value names, 1 for a new share.
         latest: True for a live share, which follows new data and takes new
             cards; False for a snapshot, which keeps the versions its cards

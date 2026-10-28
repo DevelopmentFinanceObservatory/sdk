@@ -305,6 +305,31 @@ describe("a share fetch", () => {
     });
   }
 
+  // The share read after the contract's `live-replace-with-fewer-cards` replacement: slot 1
+  // holds a card, slots 2 and 3 are listed with `card: null` and keep their URLs.
+  for (const [name, target, read] of [
+    ["share", threeSlots, false],
+    ["url", () => SHARE_URL, true],
+  ] as const) {
+    test(`of a ${name} whose slot a replacement left empty is not found, naming the slot`, async () => {
+      const { transport, seen } = make(
+        ...(read ? [answered(await reply("share-emptied-read"))] : []),
+        answered(await reply("share-slot-empty")),
+      );
+      await assert.rejects(
+        fetchDataset(transport, await target(), { slot: 2 }),
+        (error: Error & { code?: string }) =>
+          error.name === "NotFoundError" &&
+          error.code === "not_found" &&
+          error.message.includes("slot 2"),
+      );
+      assert.deepEqual(calls(seen), [
+        ...(read ? [`GET ${SHARES}/${SHARE_ID}`] : []),
+        `GET ${SHARES}/${SHARE_ID}/slots/2`,
+      ]);
+    });
+  }
+
   for (const [name, options] of [
     ["slot 0", { slot: 0 }],
     ["slot 1.5", { slot: 1.5 }],

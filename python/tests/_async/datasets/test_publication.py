@@ -341,6 +341,31 @@ async def test_a_replace_gives_a_live_share_new_cards_with_its_token(
     )
 
 
+async def test_a_replace_with_fewer_cards_keeps_every_slots_url() -> None:
+    """The contract's `live-replace-with-fewer-cards`: the reply lists the
+    emptied slots' URLs under their positions."""
+    created = load("share-three-created.json")["body"]
+    three = Share(
+        created["id"],
+        created["url"],
+        created["embed_url"],
+        tuple(created["data_urls"]),
+        created["revision"],
+        created["latest"],
+        created["write_token"],
+    )
+    server = Server(recorded("share-emptied-replaced"))
+    async with make(server) as transport:
+        made = await share(transport, card(), latest=True, replace=three)
+
+    assert len(server.body(0)["cards"]) == 1
+    assert (made.data_urls, made.revision, made.write_token) == (
+        three.data_urls,
+        2,
+        three.write_token,
+    )
+
+
 @pytest.mark.parametrize(
     "arguments",
     [

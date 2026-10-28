@@ -145,8 +145,8 @@ export class Share {
   /** The share's embeddable page, `/embed/<id>`. */
   readonly embedUrl: ShareUrl;
   /** One JSON data URL per slot, in slot order. A slot keeps its URL when the share's cards are
-   *  replaced, so `dataUrls[0]` always reads the first slot. Any page may read them, with no
-   *  key. */
+   *  replaced, so `dataUrls[0]` always reads the first slot. A slot a replacement left without
+   *  a card keeps its URL, which answers not found. Any page may read them, with no key. */
   readonly dataUrls: readonly string[];
   /** The share revision this value names, 1 for a new share. */
   readonly revision: number;

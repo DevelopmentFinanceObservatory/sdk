@@ -23,6 +23,7 @@ from dfo._core.errors import (
     DfoTimeoutError,
     InvalidRequestError,
     NetworkError,
+    NotFoundError,
     VersionUnavailableError,
 )
 from dfo._core.refs import DatasetRef, DerivedRefMember, RefMember
@@ -333,6 +334,32 @@ async def test_a_slot_the_share_cannot_name_is_refused_with_its_numbering(
     assert caught.value.code == "invalid_argument"
     assert "slot=1 to slot=3" in str(caught.value)
     assert server.calls() == ([f"GET {SHARES}/{SHARE_ID}"] if read else [])
+
+
+@pytest.mark.parametrize(
+    ("target", "read"),
+    [
+        (three_slots(), []),
+        (f"https://site.example/s/{SHARE_ID}", [recorded("share-emptied-read")]),
+    ],
+    ids=["share", "url"],
+)
+async def test_a_slot_a_replacement_left_empty_is_not_found_naming_the_slot(
+    target: Share | str, read: list[httpx2.Response]
+) -> None:
+    """The reply is the share read after the contract's
+    `live-replace-with-fewer-cards` replacement: slot 1 holds a card, slots 2
+    and 3 are listed with `card: null` and keep their URLs."""
+    server = Server(*read, recorded("share-slot-empty"))
+    async with make(server) as transport:
+        with pytest.raises(NotFoundError) as caught:
+            await fetch(transport, target, slot=2)
+    assert caught.value.code == "not_found"
+    assert "slot 2" in str(caught.value)
+    assert server.calls() == [
+        *([f"GET {SHARES}/{SHARE_ID}"] if read else []),
+        f"GET {SHARES}/{SHARE_ID}/slots/2",
+    ]
 
 
 @pytest.mark.parametrize(
