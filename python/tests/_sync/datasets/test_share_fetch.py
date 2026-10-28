@@ -22,6 +22,7 @@ import pytest
 from dfo._core.errors import InvalidRequestError, NetworkError
 from dfo._core.refs import DatasetRef, DerivedRefMember, RefMember
 from dfo._core.types import Spec
+from dfo._datasets.dataset import day_text
 from dfo._datasets.publication import Share
 from dfo._sync._datasets.resolve import fetch
 from dfo._sync._http.transport import Transport
@@ -144,7 +145,9 @@ def test_a_share_fetch_reads_the_exact_version_its_slot_shows_now(
 ) -> None:
     server = Server(*read, slot_card(dataset_frame()), *stored_version())
     with make(server) as transport:
+        before = datetime.now(UTC).date()
         data = fetch(transport, target, slot=2)
+        after = datetime.now(UTC).date()
 
     assert server.calls() == [
         *([f"GET {SHARES}/{SHARE_ID}"] if read else []),
@@ -163,9 +166,8 @@ def test_a_share_fetch_reads_the_exact_version_its_slot_shows_now(
         True,
     )
     assert data.layout_version == "frame"
-    assert f'Shown by: share {SHARE_ID}, slot 2 "Malaria grants by year", now' in repr(
-        data
-    )
+    shown = f'Shown by: share {SHARE_ID}, slot 2 "Malaria grants by year", on '
+    assert any(f"{shown}{day_text(day)}" in repr(data) for day in (before, after))
 
 
 @pytest.mark.parametrize(

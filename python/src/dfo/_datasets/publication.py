@@ -212,7 +212,8 @@ class ShownFrame:
         title: The title the slot's card shows, or None.
         spec_id: The frame's spec id, `spec_<hex>` or `ops_<hex>`.
         content_version: The frame's version, `cv_<hex>` or `ocv_<hex>`.
-        on: The day the fetch asked about, or None for what the slot shows now.
+        on: The day the fetch asked about, or the day it read what the slot
+            shows now, in UTC.
     """
 
     share_id: str
@@ -220,14 +221,13 @@ class ShownFrame:
     title: str | None
     spec_id: str
     content_version: str
-    on: date | None
+    on: date
 
     def line(self) -> str:
         """The frame as a Dataset's repr names it, as
         `share k3Qx8vTa, slot 2 "Malaria grants", on 3 October 2026`."""
         title = f' "{clipped(self.title)}"' if self.title else ""
-        when = "now" if self.on is None else f"on {day_text(self.on)}"
-        return f"share {self.share_id}, slot {self.slot}{title}, {when}"
+        return f"share {self.share_id}, slot {self.slot}{title}, on {day_text(self.on)}"
 
 
 def _day(day: date) -> str:

@@ -185,6 +185,9 @@ type DatasetOptions = {
   readonly derived?: DerivedFacts;
   /** The retention in place of the one the manifests state, as after a pin. */
   readonly retention?: { readonly heldUntil: Date | null; readonly pinned: boolean };
+  /** The share slot a share fetch read, as the text form's "Shown by" line names it:
+   *  `share k3Qx8vTa, slot 2 "Malaria grants", on 3 October 2026`. */
+  readonly shownBy?: string;
 };
 
 /** A member a dataset is made from, without its bytes, which the dataset holds itself. */
@@ -195,6 +198,13 @@ let pinnedCopy: (dataset: Dataset) => Dataset;
 
 /** `dataset` with every version kept without a time limit, as a pin leaves it. */
 export const pinnedDataset = (dataset: Dataset): Dataset => pinnedCopy(dataset);
+
+/** Copies a dataset with the share slot it was read from; Dataset's static block assigns it. */
+let shownCopy: (dataset: Dataset, shownBy: string) => Dataset;
+
+/** `dataset` naming the share slot a share fetch read it from, as `shownBy` words it. */
+export const shownDataset = (dataset: Dataset, shownBy: string): Dataset =>
+  shownCopy(dataset, shownBy);
 
 /** The years a recipe's latest years settled on, and the newest year they count back from, as
  *  `Period: 2020 to 2024, counted back from 2024, ...`, or undefined when none settled. */
@@ -266,6 +276,10 @@ export class Dataset {
       const { members, options } = dataset.#inputs;
       const retention = { heldUntil: null, pinned: true };
       return new Dataset(members, { ...options, retention }, dataset.#data, dataset.#table);
+    };
+    shownCopy = (dataset, shownBy) => {
+      const { members, options } = dataset.#inputs;
+      return new Dataset(members, { ...options, shownBy }, dataset.#data, dataset.#table);
     };
   }
 
@@ -413,6 +427,9 @@ export class Dataset {
     const sources = this.citation.sources.map((source) => source.label);
     if (sources.length > 0) lines.push(`Source: ${sources.join("; ")}`);
     lines.push(...this.#derivedSummary());
+    if (this.#inputs.options.shownBy !== undefined) {
+      lines.push(`Shown by: ${this.#inputs.options.shownBy}`);
+    }
     const versions = this.members.map((member) => member.contentVersion);
     const label = versions.length === 1 ? "Version" : "Versions";
     lines.push(`${label}: ${versions.join(", ")} (exact)${retentionText(this)}`);
@@ -546,14 +563,17 @@ const derivedRefMember = (member: DerivedRefMember): DerivedRefMember => ({
 function retentionText({ pinned, heldUntil }: Pick<Dataset, "pinned" | "heldUntil">): string {
   if (pinned) return ", pinned";
   if (heldUntil === null) return "";
-  const date = heldUntil.toLocaleDateString("en-GB", {
+  return `, held until ${dayText(heldUntil)}, not pinned`;
+}
+
+/** A date's UTC day as a dataset's text form prints it, such as `27 November 2026`. */
+export const dayText = (date: Date): string =>
+  date.toLocaleDateString("en-GB", {
     day: "numeric",
     month: "long",
     year: "numeric",
     timeZone: "UTC",
   });
-  return `, held until ${date}, not pinned`;
-}
 
 /** A dataset's table, for the `arrow` entry point. */
 export function datasetTable(dataset: Dataset): Table {

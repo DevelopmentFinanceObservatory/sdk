@@ -16,12 +16,19 @@
  * the ref's digest under another rendering than the ref's raises `FormatError`, since the ref's
  * label and its file disagree.
  *
+ * A share fetch finds the frame a slot shows (`shownFrame` in `shares.ts`) and reads that exact
+ * version in the frame layout. A `spec_` frame reads its stored manifest at
+ * `GET /datasets/{spec_id}/{content_version}`, which holds the definition and lists the frame
+ * artifact a ref member names, asks Search the definition's sentence, and then takes a ref's
+ * lookup order with that manifest. An `ops_` frame reads through its bare derived root
+ * (`fetchComputedFrame`). The dataset's text form names the share, slot, card title and day.
+ *
  * The lookup reuses the build path's download, warnings and finishing steps, so this module
  * imports `fetch.ts` and `fetch.ts` imports nothing from here.
  */
 
-import { fetchDerived, runRecipe } from "./analysis.ts";
-import { Dataset } from "./dataset.ts";
+import { fetchComputedFrame, fetchDerived, runRecipe } from "./analysis.ts";
+import { Dataset, shownDataset } from "./dataset.ts";
 import type { FetchedMember } from "./dataset.ts";
 import {
   capped,
@@ -38,6 +45,7 @@ import {
   checkedPartyTotals,
   checkedSpec,
   contentVersionOf,
+  definitionOf,
   DIGEST_MISMATCH,
   download,
   FETCH_OPTIONS,
@@ -48,11 +56,15 @@ import {
   narrows,
   noteWarnings,
   pickArtifact,
+  sentenceFor,
   specIdOf,
 } from "./fetch.ts";
 import type { CallOptions, FetchOptions, Narrowing } from "./fetch.ts";
 import { build, readManifest, waitFor } from "./operation.ts";
+import { shareIdIn, shownLine } from "./publication.ts";
+import type { Share, ShownFrame } from "./publication.ts";
 import { Recipe } from "./recipe.ts";
+import { shownFrame } from "./shares.ts";
 import type { Built, Manifest, Wait } from "./operation.ts";
 import {
   CONTENT_VERSION,
@@ -62,7 +74,9 @@ import {
   isDerived,
   layoutOf,
   mintOptions,
+  OPS_ID,
   sameRendering,
+  SPEC_ID,
 } from "../core/ref.ts";
 import type { Layout, Rendering, RefMember, Spec } from "../core/ref.ts";
 import { checkOptions } from "../core/options.ts";
@@ -78,29 +92,53 @@ const LATEST_CALL = "client.fetch(ref, { latest: true })";
  *  has expired. An unknown version (`snapshot_not_found`) ends the lookup. */
 const FILE_EXPIRED = "artifact_expired";
 const FILE_GONE = new Set([FILE_EXPIRED, "artifact_not_found", "not_found"]);
+/** The rendering a share fetch reads a dataset frame in: the bare Parquet frame. Whether it
+ *  leaves party totals out is the listed artifact's. */
+const FRAME: Rendering = { format: "parquet", bundle: false, layout: "frame" };
+
 /**
  * Fetches a spec's latest version, the exact versions a ref names, or with `latest` the newest
  * versions of a ref's specs; or runs a recipe, or reads a ref of a frame DFO computed, which
  * take `latest`, `strict`, `timeout` and `signal` and refuse the options that narrow or render
- * a spec. `onProgress` reports no progress for them.
+ * a spec. `onProgress` reports no progress for them. A share, or its URL, reads the exact
+ * version its slot shows, or with `asOf` showed then; it takes `asOf`, `slot`, `strict`,
+ * `timeout`, `signal` and `onProgress`, and `layout` only as `frame`.
  *
  * @throws {InvalidRequestError} The target is neither a ref, a recipe nor a spec `checkedSpec`
  *   accepts, a ref is narrowed or given another layout or `partyTotals`, `latest` is given a
  *   spec or a ref whose members differ in rendering, `latest` is not a boolean, or a recipe or
  *   a derived ref is given `window`, `entities`, `facets`, `partyTotals` or a layout other than
- *   `frame`.
+ *   `frame`; a share is given a narrowing, `partyTotals`, `latest: true` or a layout other
+ *   than `frame`, `slot` is not a number from 1, or `asOf` is malformed, all before any
+ *   request; a share of several slots is given no `slot`, or one past its last; `asOf` is
+ *   before the slot first served data; or `asOf` or `slot` is given another target.
  * @throws {VersionUnavailableError} A ref's version can no longer be fetched.
  * @throws {DfoError} The server refused a request.
  */
 export async function fetchDataset(
   transport: Transport,
-  target: Spec | DatasetRef | Recipe,
+  target: Spec | DatasetRef | Recipe | Share | string,
   options: FetchOptions = {},
 ): Promise<Dataset> {
-  const { window, entities, facets, latest, ...rest } = checkOptions(FETCH_OPTIONS, options);
+  const { window, entities, facets, latest, asOf, slot, ...rest } = checkOptions(
+    FETCH_OPTIONS,
+    options,
+  );
   const narrowing = narrowingOf({ window, entities, facets });
   if (latest !== undefined && typeof latest !== "boolean") {
     throw invalid(`latest is true or false, not ${JSON.stringify(latest)}.`);
+  }
+  if (shareIdIn(target) !== null) {
+    checkShown(narrowing, rest, latest);
+    const wait = waitFor(transport, rest);
+    const shown = await shownFrame(transport, target, { slot, asOf }, wait);
+    return shownDataset(await fetchShown(transport, shown, rest, wait), shownLine(shown));
+  }
+  if ([asOf, slot].some((given) => given !== undefined && given !== null)) {
+    throw invalid(
+      "asOf and slot pick what a share showed, so they go with a Share or its URL, such as " +
+        "client.fetch(share, { slot: 1 }).",
+    );
   }
   if (
     target instanceof Recipe ||
@@ -178,6 +216,104 @@ function checkComputed(narrowing: Narrowing, options: CallOptions): void {
         "the recipe starts from.",
     );
   }
+}
+
+/**
+ * Refuses the options a share fetch does not take: it reads the exact frame a slot shows, as
+ * DFO stored it.
+ *
+ * @throws {InvalidRequestError} One is given (`invalid_argument`).
+ */
+function checkShown(narrowing: Narrowing, options: CallOptions, latest: boolean | undefined): void {
+  const given = [
+    narrowing.window !== undefined && "window",
+    narrowing.entities !== undefined && "entities",
+    narrowing.facets !== undefined && "facets",
+    options.partyTotals !== undefined && "partyTotals",
+    latest === true && "latest: true",
+    options.layout !== undefined &&
+      options.layout !== "frame" &&
+      `layout: ${capped(JSON.stringify(options.layout))}`,
+  ].filter((name) => name !== false);
+  if (given.length > 0) {
+    throw invalid(
+      `A share fetch reads the exact frame a slot shows and takes no ${given.join(", ")}; ` +
+        "narrow the dataset it returns with client.analysis.filter, or pick another moment " +
+        "with asOf.",
+    );
+  }
+}
+
+/**
+ * The exact version a share's slot shows, as `shownFrame` found it.
+ *
+ * @throws {ContractError} The slot names a frame that is neither `spec_` nor `ops_`
+ *   (`contract_violation`).
+ */
+async function fetchShown(
+  transport: Transport,
+  shown: ShownFrame,
+  options: CallOptions,
+  wait: Wait,
+): Promise<Dataset> {
+  if (OPS_ID.test(shown.specId)) {
+    return fetchComputedFrame(
+      transport,
+      shown.specId,
+      shown.contentVersion,
+      options.strict ?? false,
+      wait,
+    );
+  }
+  if (SPEC_ID.test(shown.specId)) {
+    return fetchFrame(transport, shown.specId, shown.contentVersion, options, wait);
+  }
+  throw clientError("contract_violation", {
+    detail:
+      `Slot ${shown.slot} of share ${shown.shareId} names the frame ` +
+      `${capped(JSON.stringify(shown.specId))}, which is neither a spec_ nor an ops_ id.`,
+  });
+}
+
+/**
+ * A dataset version in the frame layout, from its ids alone: the stored manifest names its
+ * definition and frame artifact, and Search its sentence.
+ *
+ * @throws {ContractError} The manifest lists no bare Parquet frame artifact
+ *   (`contract_violation`).
+ */
+async function fetchFrame(
+  transport: Transport,
+  specId: string,
+  contentVersion: string,
+  options: CallOptions,
+  wait: Wait,
+): Promise<Dataset> {
+  const found = await snapshot(transport, specId, contentVersion, wait);
+  const { manifest } = found;
+  const artifact = describing(found.traceId, () => {
+    const listed = pickArtifact(manifest, FRAME);
+    if (listed === undefined) {
+      throw clientError("contract_violation", {
+        detail:
+          `The manifest of ${specId} at ${contentVersion} lists no ` +
+          `${JSON.stringify(mintOptions(FRAME))} artifact.`,
+      });
+    }
+    return listed;
+  });
+  const rendering = artifact["rendering"];
+  const cut = isRecord(rendering) && rendering["without_party_totals"] === true;
+  const member: RefMember = {
+    parts: [],
+    sentence: await sentenceFor(transport, manifest, [], undefined, wait),
+    spec: { spec_id: specId, definition: definitionOf(manifest) },
+    contentVersion,
+    digest: String(artifact["artifact_digest"]),
+    rendering: cut ? { ...FRAME, without_party_totals: true } : FRAME,
+  };
+  const fetched = await fetchVersion(transport, member, "/members/0", options, wait, found);
+  return Dataset.create([fetched], { layout: "frame" });
 }
 
 /** The dataset members of a ref, which holds no derived member. */
@@ -291,20 +427,24 @@ const stored = (member: RefMember, manifest: Manifest, data: Uint8Array): Fetche
   data,
 });
 
-/** One stored version, through the lookup order. `pointer` locates the member in the ref. */
+/** One stored version, through the lookup order. `pointer` locates the member in the ref.
+ *  `snapshotted` is the version's manifest when the caller already read it, which spares the
+ *  snapshot request. */
 async function fetchVersion(
   transport: Transport,
   member: RefMember,
   pointer: string,
   options: CallOptions,
   wait: Wait,
+  snapshotted?: Built,
 ): Promise<FetchedMember> {
   const strict = options.strict ?? false;
   let refusal: DfoError | undefined;
 
   let found: Built | undefined;
   try {
-    found = await snapshot(transport, member, wait);
+    found =
+      snapshotted ?? (await snapshot(transport, member.spec.spec_id, member.contentVersion, wait));
   } catch (error) {
     if (!(error instanceof DfoError) || error.code !== FILE_EXPIRED) throw error;
     refusal = error;
@@ -377,11 +517,12 @@ function noteNewDigest(transport: Transport, member: RefMember, digest: string):
 /** A stored version's manifest, and the trace id of the response that carried it. */
 async function snapshot(
   transport: Transport,
-  member: RefMember,
+  specId: string,
+  contentVersion: string,
   { deadline, signal }: Wait,
 ): Promise<Built> {
   const response = await transport.request({
-    path: `/datasets/${member.spec.spec_id}/${member.contentVersion}`,
+    path: `/datasets/${specId}/${contentVersion}`,
     deadline,
     signal,
   });
@@ -389,12 +530,11 @@ async function snapshot(
   const manifest = describing(traceId, () => {
     const read = readManifest(response.body);
     const built = `${specIdOf(read)} at ${contentVersionOf(read)}`;
-    const asked = `${member.spec.spec_id} at ${member.contentVersion}`;
+    const asked = `${specId} at ${contentVersion}`;
     if (built !== asked) {
       throw clientError("contract_violation", {
         detail: `The server answered ${capped(built)} for ${asked}.`,
-        pointer:
-          specIdOf(read) === member.spec.spec_id ? "/content_version" : "/definition/spec_id",
+        pointer: specIdOf(read) === specId ? "/content_version" : "/definition/spec_id",
       });
     }
     return read;

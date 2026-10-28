@@ -18,7 +18,8 @@
  * stored frame has aged out (`artifact_expired`), DFO computes the recipe again on the root
  * versions the ref names, which must answer the same version. `latest: true` posts the bare
  * derived root with `latest: true`, so DFO computes the stored recipe again on its datasets'
- * newest versions.
+ * newest versions. `fetchComputedFrame` reads a frame from its ids alone, as a share's slot
+ * names it, through the bare root with `latest: false`.
  *
  * Each read that left series out issues one `SeriesLeftOutWarning`, or raises it under
  * `strict`.
@@ -128,6 +129,36 @@ export async function fetchDerived(
     throw unavailable(member, error);
   }
   if (again.contentVersion !== member.contentVersion) throw unavailable(member, expired);
+  return read(transport, member, strict, wait);
+}
+
+/**
+ * The frame DFO computed that `specId` and `contentVersion` name, read through its bare root,
+ * which answers the frame's ref member. DFO answers the stored frame, or computes its recipe
+ * again on the versions it read when the stored frame has aged out.
+ *
+ * @throws {DfoTimeoutError} The deadline passed while a root was building
+ *   (`deadline_exceeded`).
+ * @throws {VersionUnavailableError} DFO computed another version on the versions the recipe
+ *   read, so this one can no longer be fetched.
+ * @throws {ContractError} DFO answered a ref this client cannot read (`contract_violation`).
+ */
+export async function fetchComputedFrame(
+  transport: Transport,
+  specId: string,
+  contentVersion: string,
+  strict: boolean,
+  wait: Wait,
+): Promise<Dataset> {
+  const tree = { spec_id: specId, content_version: contentVersion };
+  const member = await analyse(transport, { tree, latest: false }, wait);
+  if (member.contentVersion !== contentVersion) {
+    throw clientError("version_unavailable", {
+      detail:
+        `${specId} at ${contentVersion} can no longer be fetched, and DFO computed ` +
+        `${member.contentVersion} on the versions it read.`,
+    });
+  }
   return read(transport, member, strict, wait);
 }
 

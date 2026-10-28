@@ -181,8 +181,9 @@ const invalid = (pointer: string, detail: string): FormatError =>
 /** The ref format of dataset members, and the one of derived members. */
 const DATASET_FORMAT = 1;
 const DERIVED_FORMAT = 2;
-const SPEC_ID = /^spec_[0-9a-f]{32}$/;
-const OPS_ID = /^ops_[0-9a-f]{32}$/;
+/** A dataset spec's id, and the id of a recipe's frame DFO computed. */
+export const SPEC_ID = /^spec_[0-9a-f]{32}$/;
+export const OPS_ID = /^ops_[0-9a-f]{32}$/;
 const DERIVED_VERSION = /^ocv_[0-9a-f]{32}$/;
 const OUTPUT_DIGEST = /^out_[0-9a-f]{32}$/;
 const NORMAL_FORM_HASH = /^rnf_[0-9a-f]{32}$/;

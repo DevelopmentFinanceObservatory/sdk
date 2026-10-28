@@ -27,8 +27,8 @@ share's 403 `write_token_invalid`.
 `dfo.fetch(share)`. A `Share` holds its slot count in its data URLs; a URL reads
 it from the public `GET /presentation/shares/{id}`. Without `as_of` it reads
 the slot's card from `GET /presentation/shares/{id}/slots/{n}`, drawn on the
-frame the slot serves now, which its `resolved_payload.provenance.inputs` name.
-With `as_of` it reads the history, takes the newest frame the slot first
+frame the slot serves now, which its `resolved_payload.provenance.inputs` name,
+and names the day of the read in UTC. With `as_of` it reads the history, takes the newest frame the slot first
 served on or before that moment, and reads that card revision's title from
 `GET /presentation/components/{id}?revision=n`.
 
@@ -37,6 +37,7 @@ A share id that names no share, or one taken down, refuses 404 `not_found`.
 
 import secrets
 from collections.abc import Sequence
+from datetime import UTC, datetime
 
 import httpx2
 
@@ -219,7 +220,8 @@ async def shown_frame(
                 f"Slot {number} of share {share_id} shows a card that draws no "
                 "data, such as a note, so it has no rows to fetch",
             )
-        return ShownFrame(share_id, number, title, *frame, None)
+        today = datetime.now(UTC).date()
+        return ShownFrame(share_id, number, title, *frame, today)
     moment, day = asked
     entry = next(
         (

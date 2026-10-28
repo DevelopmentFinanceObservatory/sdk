@@ -230,6 +230,15 @@ describe("a card", () => {
     });
   }
 
+  test("carries the retention a recorded held reply states", async () => {
+    const { transport } = make(await recorded("card-created-held"));
+    const made = await new Cards(transport).line(await dataset());
+    assert.deepEqual(
+      [made.heldUntil?.toISOString(), made.pinned],
+      ["2026-11-27T00:00:00.000Z", false],
+    );
+  });
+
   test("whose reply states a malformed retention raises ContractError", async () => {
     const { body } = await recordedJson<Recorded>("card-line-created.json");
     const { transport } = make(json({ ...(body as object), retention: { held_until: "x" } }, 201));

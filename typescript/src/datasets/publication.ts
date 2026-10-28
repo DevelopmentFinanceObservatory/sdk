@@ -6,12 +6,14 @@
  * frame. A `Share` publishes cards under one `/s/<id>` link, one card per numbered slot: a live
  * share follows new data and takes new cards under the same URLs, and a snapshot keeps the
  * versions its cards drew when it was made. A `Served` is one frame a share's slot served, as
- * `client.history` lists it.
+ * `client.history` lists it. `client.fetch(share)` reads the frame a slot shows, which a
+ * `ShownFrame` names.
  *
  * A card's and a share's write tokens grant changing them, so each value carries its token as a
  * getter, which `toString`, `util.inspect`, `JSON.stringify` and a spread leave out.
  */
 
+import { dayText } from "./dataset.ts";
 import { clientError } from "../core/errors.ts";
 import type { ContractError } from "../core/errors.ts";
 import { isRecord } from "../core/json.ts";
@@ -282,9 +284,9 @@ export function readCard(reply: unknown, route: string, kind: CardKind, ref: Dat
   });
 }
 
-/** The title the reply's drawn card shows, or null when it shows none. */
-function cardTitle(body: Record<string, unknown>): string | null {
-  const payload = body["resolved_payload"];
+/** The title a card reply's drawn card shows, or null when it shows none. */
+export function cardTitle(body: unknown): string | null {
+  const payload = isRecord(body) ? body["resolved_payload"] : undefined;
   const component = isRecord(payload) ? payload["component"] : undefined;
   const title = isRecord(component) ? component["title"] : undefined;
   const text = isRecord(title) ? title["text"] : undefined;
@@ -376,26 +378,187 @@ function retentionOf(
 /**
  * The id of the share `target` names: a `Share`, or the URL of its page or embed, such as
  * `https://developmentfinance.org/s/k3Qx8vTa`, on any host, with a trailing slash or a query
- * allowed.
+ * allowed; null when it is neither.
+ */
+export function shareIdIn(target: unknown): string | null {
+  if (target instanceof Share) return target.id;
+  if (typeof target !== "string") return null;
+  const path = URL.parse(target, "http://share.invalid/")?.pathname ?? "";
+  const segments = path.replace(/\/+$/, "").split("/");
+  const [page, id] = segments.slice(-2);
+  return segments.length >= 2 && SHARE_PAGES.has(page ?? "") && SHARE_ID.test(id ?? "")
+    ? id!
+    : null;
+}
+
+/**
+ * The id of the share `target` names, as `shareIdIn` reads it.
  *
- * @throws {InvalidRequestError} `target` is neither (`invalid_argument`).
+ * @throws {InvalidRequestError} `target` names no share (`invalid_argument`).
  */
 export function shareIdOf(target: unknown): string {
-  if (target instanceof Share) return target.id;
-  if (typeof target === "string") {
-    const path = URL.parse(target, "http://share.invalid/")?.pathname ?? "";
-    const segments = path.replace(/\/+$/, "").split("/");
-    const [page, id] = segments.slice(-2);
-    if (segments.length >= 2 && SHARE_PAGES.has(page ?? "") && SHARE_ID.test(id ?? "")) {
-      return id!;
-    }
-  }
+  const id = shareIdIn(target);
+  if (id !== null) return id;
   throw clientError("invalid_argument", {
     detail:
       "A share is named by the Share a share call returned, or its URL, such as " +
       `"https://developmentfinance.org/s/k3Qx8vTa", not ${quoted(target)}; ` +
       "client.share(cards, { latest: true }) makes one.",
   });
+}
+
+/** The frame one slot of a share shows, and the card that shows it. */
+export type ShownFrame = {
+  readonly shareId: string;
+  /** The slot, from 1. */
+  readonly slot: number;
+  /** The title the slot's card shows, or null. */
+  readonly title: string | null;
+  /** The frame's spec id, `spec_<hex>` or `ops_<hex>`. */
+  readonly specId: string;
+  /** The frame's version, `cv_<hex>` or `ocv_<hex>`. */
+  readonly contentVersion: string;
+  /** The day the fetch asked about, or the day it read what the slot shows now, at UTC
+   *  midnight. */
+  readonly on: Date;
+};
+
+/** The frame as a dataset's text form names it, as
+ *  `share k3Qx8vTa, slot 2 "Malaria grants", on 3 October 2026`. */
+export function shownLine({ shareId, slot, title, on }: ShownFrame): string {
+  const titled = title ? ` "${clipped(title)}"` : "";
+  return `share ${shareId}, slot ${slot}${titled}, on ${dayText(on)}`;
+}
+
+const DAY_MS = 86_400_000;
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const ISO_DATE_TIME =
+  /^(\d{4})-(\d{2})-(\d{2})[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})?$/i;
+
+/** The UTC midnight of a written date, or undefined when the date does not exist. */
+function writtenDay(year: number, month: number, date: number): Date | undefined {
+  const day = new Date(Date.UTC(year, month - 1, date));
+  return day.getUTCMonth() === month - 1 && day.getUTCDate() === date ? day : undefined;
+}
+
+/** The UTC midnight of the day `date` falls on in UTC. */
+const utcDay = (date: Date): Date =>
+  new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+
+/** The UTC midnight of the day a fetch reads what a slot shows now. */
+export const today = (): Date => utcDay(new Date());
+
+/** An ISO 8601 date, read as the end of that UTC day, or date-time, read as UTC without an
+ *  offset, with the day it writes; undefined for other text or a day that does not exist. */
+function readIsoMoment(text: string): { moment: Date; day: Date } | undefined {
+  const onlyDate = ISO_DATE.exec(text);
+  const found = onlyDate ?? ISO_DATE_TIME.exec(text);
+  if (found === null) return undefined;
+  const day = writtenDay(Number(found[1]), Number(found[2]), Number(found[3]));
+  if (day === undefined) return undefined;
+  if (onlyDate !== null) return { moment: new Date(day.getTime() + DAY_MS - 1), day };
+  const zoned = found[4] === undefined ? `${text}Z` : text;
+  const moment = new Date(zoned.replace(" ", "T"));
+  return Number.isNaN(moment.getTime()) ? undefined : { moment, day };
+}
+
+/**
+ * The moment `asOf` names, and its day at UTC midnight.
+ *
+ * A date string reads as the end of that day in UTC, so it names what the share showed on that
+ * day; a date-time string without an offset reads as UTC, and its day is the date it writes. A
+ * `Date` is the instant it holds, on its UTC day.
+ *
+ * @throws {InvalidRequestError} `asOf` is none of those (`invalid_argument`).
+ */
+export function asOfMoment(asOf: unknown): { moment: Date; day: Date } {
+  if (asOf instanceof Date && !Number.isNaN(asOf.getTime())) {
+    return { moment: asOf, day: utcDay(asOf) };
+  }
+  if (typeof asOf === "string") {
+    const read = readIsoMoment(asOf.trim());
+    if (read !== undefined) return read;
+  }
+  throw clientError("invalid_argument", {
+    detail:
+      'asOf is a Date or an ISO 8601 date such as "2026-10-28", not ' +
+      `${asOf instanceof Date ? "an invalid Date" : quoted(asOf)}.`,
+  });
+}
+
+/**
+ * Refuses a `slot` that is neither undefined, null nor a slot number from 1.
+ *
+ * @throws {InvalidRequestError} It is not (`invalid_argument`).
+ */
+export function checkSlot(slot: unknown): asserts slot is number | null | undefined {
+  if (slot === undefined || slot === null || (Number.isInteger(slot) && Number(slot) >= 1)) {
+    return;
+  }
+  throw clientError("invalid_argument", {
+    detail:
+      "slot is numbered from 1, as a share's data URLs are, so slot: 1 is the first card, not " +
+      `${quoted(slot)}.`,
+  });
+}
+
+/**
+ * The slot a share fetch reads: `slot`, or the only one of a share of one.
+ *
+ * @throws {InvalidRequestError} The share has several slots and `slot` is not given, or `slot`
+ *   is past its last (`invalid_argument`).
+ */
+export function chosenSlot(slot: number | undefined, count: number, shareId: string): number {
+  if (slot === undefined && count === 1) return 1;
+  if (slot !== undefined && slot <= count) return slot;
+  let held = `Share ${shareId} has ${count} slot${count === 1 ? "" : "s"}`;
+  if (slot !== undefined) held += ` and no slot ${slot}`;
+  const picks = count === 1 ? "slot: 1" : `slot: 1 to slot: ${count}`;
+  throw clientError("invalid_argument", {
+    detail: `${held}; slots are numbered from 1 as its data URLs are, so pick one with ${picks}.`,
+  });
+}
+
+/**
+ * The number of slots a share read lists.
+ *
+ * @throws {ContractError} The reply has no list of slots (`contract_violation`).
+ */
+export function readSlotCount(reply: unknown, route: string): number {
+  const slots = object(reply, route, "")["slots"];
+  if (!Array.isArray(slots)) throw violation(route, "/slots");
+  return slots.length;
+}
+
+/**
+ * The frame a slot's card read is drawn on, or null for a card that draws no frame, such as a
+ * note; and the card's title.
+ *
+ * @throws {ContractError} The reply names no list of inputs, or several, or an input lacks its
+ *   spec id or version (`contract_violation`).
+ */
+export function readShownCard(
+  reply: unknown,
+  route: string,
+): { frame: { specId: string; contentVersion: string } | null; title: string | null } {
+  const body = object(reply, route, "");
+  const payload = object(body["resolved_payload"], route, "/resolved_payload");
+  const pointer = "/resolved_payload/provenance";
+  const inputs = object(payload["provenance"], route, pointer)["inputs"];
+  if (!Array.isArray(inputs) || inputs.length > 1) {
+    throw violation(route, `${pointer}/inputs`, "is not one frame");
+  }
+  const [entry] = inputs as unknown[];
+  if (entry === undefined) return { frame: null, title: cardTitle(body) };
+  const at = `${pointer}/inputs/0`;
+  const frame = object(entry, route, at);
+  return {
+    frame: {
+      specId: textAt(frame, "spec_id", route, at),
+      contentVersion: textAt(frame, "content_version", route, at),
+    },
+    title: cardTitle(body),
+  };
 }
 
 /**

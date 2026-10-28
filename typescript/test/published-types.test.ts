@@ -129,8 +129,9 @@ export async function published(client: Client, dataset: Dataset): Promise<numbe
   const swapped = await client.share([stat], { latest: true, replace: tile });
   const fixed = await client.snapshot(swapped.url, { writeToken: token ?? "" });
   const served: readonly Served[] = await client.history(fixed);
+  const shown: Dataset = await client.fetch(fixed, { slot: 1, asOf: "2026-10-28" });
   await client.unshare(fixed);
-  return served.length + kind.length + (chart.heldUntil?.getTime() ?? 0);
+  return served.length + kind.length + shown.rowCount + (chart.heldUntil?.getTime() ?? 0);
 }
 
 // The mistakes a type check should catch, each of which fails to compile.
@@ -146,8 +147,8 @@ export async function mistakes(client: Client, answer: Answer): Promise<void> {
   await client.fetch(spec, { entities: { recipient: "country/NGA" } });
   // @ts-expect-error Options as a positional string.
   await client.fetch(spec, "all");
-  // @ts-expect-error A spec id where the fetch takes a spec.
-  await client.fetch("spec_123");
+  // @ts-expect-error A slot as text.
+  await client.fetch("https://developmentfinance.org/s/k3Qx8vTa", { slot: "2" });
   // @ts-expect-error A timeout as a string.
   await client.search("x", { timeout: "30" });
   const dataset = await client.fetch(spec);

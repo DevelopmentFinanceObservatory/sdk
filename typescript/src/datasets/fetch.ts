@@ -118,6 +118,13 @@ export type FetchOptions = CallOptions &
     /** For a ref, build the newest version of each member's spec in the ref's rendering, in
      *  place of the exact versions it names. A spec always fetches its newest version. */
     latest?: boolean;
+    /** For a share, a `Date` or an ISO 8601 date such as `"2026-10-28"`: the newest version the
+     *  slot first served on or before it. A date string reads as the end of that day in UTC,
+     *  and a date-time string without an offset as UTC. Unset reads what the slot shows now. */
+    asOf?: Date | string | null | undefined;
+    /** For a share, the slot to read, numbered from 1 as the share's data URLs are. Unset reads
+     *  a share of one slot, and a share of several refuses it. */
+    slot?: number | null | undefined;
   };
 
 /** The keys `client.fetch` takes. */
@@ -132,6 +139,8 @@ export const FETCH_OPTIONS = declareOptions<FetchOptions>("client.fetch", {
   entities: true,
   facets: true,
   latest: true,
+  asOf: true,
+  slot: true,
 });
 
 export type FetchMembersOptions = CallOptions & {
@@ -208,7 +217,8 @@ export function checkedSpec(spec: unknown): Spec {
     return spec as Spec;
   }
   throw invalid(
-    `A fetch takes a spec, a DatasetRef or a Recipe, not ${described(spec)}. Fetch an answer with ` +
+    `A fetch takes a spec, a DatasetRef, a Recipe, or a Share or its URL, not ${described(spec)}. ` +
+      "Fetch an answer with " +
       "answer.fetch(), or one of its readings with client.fetch(answer.specs[0]).",
   );
 }
@@ -537,7 +547,7 @@ export async function download(
   throw failure!;
 }
 
-function definitionOf(manifest: Manifest): Readonly<Record<string, unknown>> {
+export function definitionOf(manifest: Manifest): Readonly<Record<string, unknown>> {
   // readManifest has checked the definition is an object with a spec_id.
   return manifest["definition"] as Record<string, unknown>;
 }
@@ -613,7 +623,7 @@ function keptEntityGroups(
  * @throws {ContractError} Search did not answer with one definite part of the same `spec_id`
  *   and a sentence, or, for a build that counts no rows, one `no_data` part with a sentence.
  */
-async function sentenceFor(
+export async function sentenceFor(
   transport: Transport,
   manifest: Manifest,
   parts: readonly string[],

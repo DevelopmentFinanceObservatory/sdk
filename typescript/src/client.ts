@@ -182,7 +182,8 @@ export class Client {
   /**
    * Fetches a spec's latest version, narrowed by `window`, `entities` and `facets`, or the exact
    * versions a ref names, or with `latest: true` the newest versions of a ref's specs in the
-   * ref's rendering; or runs a recipe from `recipe(start)` on DFO in one request. It waits as
+   * ref's rendering; runs a recipe from `recipe(start)` on DFO in one request; or fetches the
+   * exact version a share's slot shows. It waits as
    * long as a build takes, reporting a long build's progress to `onProgress`. A `timeout` or an
    * aborted `signal` stops the wait and leaves the build running on the server, and the same
    * fetch joins it.
@@ -193,17 +194,30 @@ export class Client {
    * spec. A fetch that left series out for missing data issues one `SeriesLeftOutWarning`, which
    * `strict: true` raises.
    *
+   * A share, or the URL of its page or embed such as `https://developmentfinance.org/s/k3Qx8vTa`,
+   * reads the frame its slot shows now, or with `asOf` the one it showed then, in the frame
+   * layout, and the dataset's text form names the share, slot, card title and day. It takes
+   * `asOf`, `slot`, `strict`, `timeout`, `signal` and `onProgress`, and refuses the options that
+   * narrow or render a spec and `latest: true`; `client.history(share)` lists what each slot
+   * showed.
+   *
    * @throws {InvalidRequestError} `options` holds a key outside `FetchOptions`, a window year
    *   falls outside 1000 to 2200, `entities` names a role outside `specRoles(spec)`, the target is neither a ref nor a spec with its `spec_id` and
    *   `definition`, a ref is narrowed or given another layout or `partyTotals`, or
-   *   `latest` is given a spec or a ref whose members differ in rendering.
+   *   `latest` is given a spec or a ref whose members differ in rendering; a share is given a
+   *   narrowing, `partyTotals`, `latest: true` or a layout other than `frame`, `slot` is not a
+   *   number from 1, or `asOf` is malformed, all before any request; a share of several slots
+   *   is given no `slot`, or one past its last; or `asOf` is before the slot first served data.
    * @throws {VersionUnavailableError} A ref's version can no longer be fetched.
    * @throws {DataWarning} `strict` is true and a manifest carries a warning above `info`.
    * @throws {SeriesLeftOutWarning} `strict` is true and a recipe left series out.
    * @throws {DfoTimeoutError} The `timeout` passed (`deadline_exceeded`); the build carries on.
    * @throws {DfoError} The server refused a request.
    */
-  fetch(target: Spec | DatasetRef | Recipe, options: FetchOptions = {}): Promise<Dataset> {
+  fetch(
+    target: Spec | DatasetRef | Recipe | Share | string,
+    options: FetchOptions = {},
+  ): Promise<Dataset> {
     return fetchDataset(this.#transport, target, options);
   }
 
@@ -270,7 +284,7 @@ export class Client {
 
   /**
    * Every frame a share's slots served, newest first, each saying whether it can still be
-   * fetched. It needs no token.
+   * fetched. It needs no token. `client.fetch(share, { slot, asOf })` reads one.
    *
    * @throws {InvalidRequestError} `target` is neither a Share nor a share's URL
    *   (`invalid_argument`), and no request is sent.

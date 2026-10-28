@@ -22,12 +22,35 @@
  * - `history(share)` reads the public `GET /presentation/shares/{id}/history`: every frame the
  *   share's slots served, newest first.
  *
+ * `shownFrame(share, { slot, asOf })` finds the frame one slot shows, for `client.fetch(share)`.
+ * A `Share` holds its slot count in its data URLs; a URL reads it from the public
+ * `GET /presentation/shares/{id}`. Without `asOf` it reads the slot's card from
+ * `GET /presentation/shares/{id}/slots/{n}`, drawn on the frame the slot serves now, which its
+ * `resolved_payload.provenance.inputs` name. With `asOf` it reads the history, takes the newest
+ * frame the slot first served on or before that moment, and reads that card revision's title
+ * from `GET /presentation/components/{id}?revision=n`.
+ *
  * A share id that names no share, or one taken down, refuses 404 `not_found`.
  */
 
 import { mintToken } from "./cards.ts";
-import { Card, readHistory, readShare, shareIdOf, writeTokenOf } from "./publication.ts";
-import type { Served, Share } from "./publication.ts";
+import {
+  asOfMoment,
+  Card,
+  cardTitle,
+  checkSlot,
+  chosenSlot,
+  readHistory,
+  readShare,
+  readShownCard,
+  readSlotCount,
+  Share,
+  shareIdOf,
+  today,
+  writeTokenOf,
+} from "./publication.ts";
+import type { Served, ShownFrame } from "./publication.ts";
+import type { Wait } from "./operation.ts";
 import { clientError } from "../core/errors.ts";
 import { checkOptions, declareOptions } from "../core/options.ts";
 import { quoted } from "../core/text.ts";
@@ -170,11 +193,86 @@ export async function unshare(
  *   sent.
  * @throws {NotFoundError} No share has that id, or it was taken down (`not_found`).
  */
-export async function history(transport: Transport, target: unknown): Promise<readonly Served[]> {
+export async function history(
+  transport: Transport,
+  target: unknown,
+  wait?: Wait,
+): Promise<readonly Served[]> {
   const path = `${SHARES_PATH}/${shareIdOf(target)}/history`;
-  const response = await transport.request({ path });
+  const response = await transport.request({ path, ...within(wait) });
   return describing(response.traceId, () => readHistory(response.body, `GET ${path}`));
 }
+
+/**
+ * The frame slot `slot` of the share `target` names shows now, or showed at `asOf`.
+ *
+ * @throws {InvalidRequestError} `target`, `slot` or `asOf` is malformed, or `slot` is 0
+ *   (`invalid_argument`), and no request is sent; `slot` is not given for a share of several
+ *   slots, or is past its last; `asOf` is before the slot first served data; or the slot shows a
+ *   card that draws no data, such as a note.
+ * @throws {NotFoundError} No share has that id, or the slot is empty (`not_found`).
+ */
+export async function shownFrame(
+  transport: Transport,
+  target: unknown,
+  { slot, asOf }: { slot?: unknown; asOf?: unknown },
+  wait: Wait,
+): Promise<ShownFrame> {
+  const shareId = shareIdOf(target);
+  checkSlot(slot);
+  const asked = asOf === undefined || asOf === null ? undefined : asOfMoment(asOf);
+  let count: number;
+  if (target instanceof Share) {
+    count = target.dataUrls.length;
+  } else {
+    const path = `${SHARES_PATH}/${shareId}`;
+    const response = await transport.request({ path, ...within(wait) });
+    count = describing(response.traceId, () => readSlotCount(response.body, `GET ${path}`));
+  }
+  const number = chosenSlot(slot ?? undefined, count, shareId);
+  if (asked === undefined) {
+    const path = `${SHARES_PATH}/${shareId}/slots/${number}`;
+    const response = await transport.request({ path, ...within(wait) });
+    const { frame, title } = describing(response.traceId, () =>
+      readShownCard(response.body, `GET ${path}`),
+    );
+    if (frame === null) {
+      throw clientError("invalid_argument", {
+        detail:
+          `Slot ${number} of share ${shareId} shows a card that draws no data, such as a note, ` +
+          "so it has no rows to fetch.",
+      });
+    }
+    return { shareId, slot: number, title, ...frame, on: today() };
+  }
+  const { moment, day } = asked;
+  const served = await history(transport, target, wait);
+  const entry = served.find(
+    (frame) => frame.slot === number && frame.firstServed.getTime() <= moment.getTime(),
+  );
+  if (entry === undefined) {
+    throw clientError("invalid_argument", {
+      detail:
+        `Slot ${number} of share ${shareId} served no data on or before ` +
+        `${day.toISOString().slice(0, 10)}; client.history(share) lists what each slot showed ` +
+        "and when.",
+    });
+  }
+  const path = `/presentation/components/${entry.cardId}?revision=${entry.cardRevision}`;
+  const response = await transport.request({ path, ...within(wait) });
+  return {
+    shareId,
+    slot: number,
+    title: cardTitle(response.body),
+    specId: entry.specId,
+    contentVersion: entry.contentVersion,
+    on: day,
+  };
+}
+
+/** A read's deadline and signal from a fetch's wait, or none outside a fetch. */
+const within = (wait: Wait | undefined): { deadline?: number; signal?: AbortSignal | undefined } =>
+  wait === undefined ? {} : { deadline: wait.deadline, signal: wait.signal };
 
 /** The cards a share shows, slot 1 first, as the request names them. */
 function shownCards(cards: unknown): { component_id: string; revision: number }[] {
