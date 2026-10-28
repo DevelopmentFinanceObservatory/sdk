@@ -9,7 +9,7 @@ import {
 } from "./parquet.ts";
 import type { Row, Table } from "./parquet.ts";
 import { DatasetRef, isDerived } from "../core/ref.ts";
-import type { DerivedRefMember, Layout, Rendering, Spec } from "../core/ref.ts";
+import type { DerivedRefMember, Layout, Rendering, ResolvedPeriod, Spec } from "../core/ref.ts";
 import { manifestWarningsOf } from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
 import type { Assumption, CitationSource, Departure, Notice, RequestedOperation } from "../wire.ts";
@@ -46,18 +46,56 @@ export type Member = {
  *  citation. */
 export type DerivedMember = DerivedRefMember & { readonly citation: Citation };
 
+/** The step of a recipe that dropped a series. */
+export type LeftOutStep = {
+  /** The step's operation, such as `growth`. */
+  readonly verb: string;
+  /** The step's place in the recipe: 0 is the step that made the dataset, and each step comes
+   *  before the steps it reads from. */
+  readonly node: number;
+};
+
 /** A series a step of the recipe behind a dataset dropped for missing data. */
 export type LeftOutSeries = {
-  /** The value of each column that names the series. */
+  /** The value of each column that names the series, such as
+   *  `{ financingRecipient: "country/NGA" }`. */
   readonly coordinates: Readonly<Record<string, string>>;
   /** The step that dropped the series. */
-  readonly step: string;
-  /** The input the step dropped it from. */
+  readonly step: LeftOutStep;
+  /** The step input it came from: `data`, or `other` for the second reading of a two-reading
+   *  operation. */
   readonly side: string;
-  /** Why the step dropped it. */
+  /** Why the step dropped it, in DFO's words, such as `endpoint_missing` or `unmatched_key`. */
   readonly reason: string;
-  /** The rows the series held. */
+  /** The rows of the series the step left out. */
   readonly rows: number;
+};
+
+/** One step of a recipe, as a derived dataset's text names it: the operation, the columns or
+ *  roles it keeps apart, and for a ranking the most members it keeps. */
+export type DerivedStep = {
+  readonly verb: string;
+  readonly by: readonly string[];
+  readonly limit: number | null;
+};
+
+/** A step as `rank by origin, limit 10`. */
+const stepText = ({ verb, by, limit }: DerivedStep): string =>
+  verb + (by.length > 0 ? ` by ${by.join(", ")}` : "") + (limit === null ? "" : `, limit ${limit}`);
+
+/** Steps in the order they run and what they start from, as
+ *  `growth by origin, then rank by origin, limit 10, from 1 reading`. */
+export function stepsText(steps: readonly DerivedStep[], source: string): string {
+  const done = steps.map(stepText).join(", then ");
+  return done === "" ? `from ${source}` : `${done}, from ${source}`;
+}
+
+/** What a derived dataset adds to its member: every series its recipe left out, whether that
+ *  list is whole, and its steps in the order they ran. */
+export type DerivedFacts = {
+  readonly leftOut: readonly LeftOutSeries[];
+  readonly leftOutComplete: boolean;
+  readonly steps: readonly DerivedStep[];
 };
 
 /** A built version, downloaded and checked against its digest, ready to join a dataset. */
@@ -139,6 +177,40 @@ function retentionOf(manifests: readonly Readonly<Record<string, unknown>>[]): {
   return { heldUntil, pinned: false };
 }
 
+/** How `Dataset.create` assembles its members: the layout, the parts a partial fetch left out,
+ *  and for a derived dataset what its manifest adds. */
+type DatasetOptions = {
+  readonly layout: Layout;
+  readonly missing?: readonly Gap[];
+  readonly derived?: DerivedFacts;
+  /** The retention in place of the one the manifests state, as after a pin. */
+  readonly retention?: { readonly heldUntil: Date | null; readonly pinned: boolean };
+};
+
+/** A member a dataset is made from, without its bytes, which the dataset holds itself. */
+type MemberInput = Omit<FetchedMember, "data"> | Omit<FetchedDerivedMember, "data">;
+
+/** Copies a dataset as pinned; Dataset's static block assigns it. */
+let pinnedCopy: (dataset: Dataset) => Dataset;
+
+/** `dataset` with every version kept without a time limit, as a pin leaves it. */
+export const pinnedDataset = (dataset: Dataset): Dataset => pinnedCopy(dataset);
+
+/** The years a recipe's latest years settled on, and the newest year they count back from, as
+ *  `Period: 2020 to 2024, counted back from 2024, ...`, or undefined when none settled. */
+function periodLine(periods: readonly ResolvedPeriod[]): string | undefined {
+  const [first] = periods;
+  if (first === undefined) return undefined;
+  // Each period is a year, and its offset counts years back from the newest.
+  const newest = Number(first.period) - first.offset;
+  const years = [...new Set(periods.map((period) => Number(period.period)))].sort((a, b) => a - b);
+  const [earliest, latest] = [years[0]!, years[years.length - 1]!];
+  const span = earliest === latest ? `${earliest}` : `${earliest} to ${latest}`;
+  const rule = "the newest year at least half the series hold";
+  if (earliest === newest && latest === newest) return `Period: ${newest}, ${rule}`;
+  return `Period: ${span}, counted back from ${newest}, ${rule}`;
+}
+
 /** Reads a dataset's private table; Dataset's static block assigns it. */
 let readTable: (dataset: Dataset) => Table;
 
@@ -177,12 +249,24 @@ export class Dataset {
   /** Each member's file, one per member in member order, labelled as its `part` column holds
    *  it when several stack, in reading order. */
   readonly #table: Table;
-  /** Every series the recipe behind a derived dataset dropped for missing data, at any step;
-   *  empty for a dataset of dataset members. */
-  readonly #leftOut: readonly LeftOutSeries[];
+  /** Every series a step of the recipe behind a derived dataset dropped for missing data, at
+   *  any step, each naming its step. Empty for a dataset of dataset versions. DFO lists at most
+   *  2,000; `String(data)` says "at least" when it dropped more. */
+  readonly leftOut: readonly LeftOutSeries[];
+  /** Whether `leftOut` lists every series the recipe dropped. */
+  readonly #leftOutComplete: boolean;
+  /** The recipe's steps in the order they ran, for the text form's derived line. */
+  readonly #steps: readonly DerivedStep[];
+  /** The members and options the dataset was made from, less their bytes, for a copy. */
+  readonly #inputs: { members: readonly MemberInput[]; options: DatasetOptions };
 
   static {
     readTable = (dataset) => dataset.#table;
+    pinnedCopy = (dataset) => {
+      const { members, options } = dataset.#inputs;
+      const retention = { heldUntil: null, pinned: true };
+      return new Dataset(members, { ...options, retention }, dataset.#data, dataset.#table);
+    };
   }
 
   /**
@@ -194,7 +278,7 @@ export class Dataset {
    */
   static async create(
     members: readonly (FetchedMember | FetchedDerivedMember)[],
-    options: { layout: Layout; missing?: readonly Gap[]; leftOut?: readonly LeftOutSeries[] },
+    options: DatasetOptions,
   ): Promise<Dataset> {
     if (members.length === 0) throw new TypeError("A dataset needs at least one member.");
     if (options.layout === "frame" && members.length > 1) {
@@ -209,15 +293,19 @@ export class Dataset {
     // column types that does not widen raises ContractError.
     stackedColumns(parts);
     const table = { parts: Object.freeze(parts), order: await presentedOrder(parts) };
-    return new Dataset(members, options, data, table);
+    // The dataset holds the bytes itself, once.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the bytes are left out on purpose
+    const inputs = members.map(({ data: _, ...member }) => member);
+    return new Dataset(inputs, options, data, table);
   }
 
   private constructor(
-    members: readonly (FetchedMember | FetchedDerivedMember)[],
-    options: { layout: Layout; missing?: readonly Gap[]; leftOut?: readonly LeftOutSeries[] },
+    members: readonly MemberInput[],
+    options: DatasetOptions,
     data: readonly Uint8Array[],
     table: Table,
   ) {
+    this.#inputs = { members, options };
     const built = members.map((member): Member | DerivedMember => {
       const citation = citationOf(member.manifest);
       const parts = Object.freeze([...member.parts]);
@@ -238,7 +326,7 @@ export class Dataset {
     const facts = members.flatMap((member) =>
       isDerived(member) ? [] : (member.answerFacts ?? []),
     );
-    const retention = retentionOf(manifests);
+    const retention = options.retention ?? retentionOf(manifests);
     this.sentence = built.map((member) => member.sentence).join(" ");
     this.members = Object.freeze(built);
     this.citation = mergeCitations(built.map((member) => member.citation));
@@ -254,7 +342,22 @@ export class Dataset {
     this.layout = options.layout;
     this.#data = data;
     this.#table = table;
-    this.#leftOut = Object.freeze((options.leftOut ?? []).map((series) => Object.freeze(series)));
+    const derived = options.derived;
+    this.leftOut = Object.freeze(
+      (derived?.leftOut ?? []).map(({ coordinates, step, side, reason, rows }) =>
+        Object.freeze({
+          coordinates: Object.freeze({ ...coordinates }),
+          step: Object.freeze({ verb: step.verb, node: step.node }),
+          side,
+          reason,
+          rows,
+        }),
+      ),
+    );
+    this.#leftOutComplete = derived?.leftOutComplete ?? true;
+    this.#steps = Object.freeze(
+      (derived?.steps ?? []).map((step) => Object.freeze({ ...step, by: [...step.by] })),
+    );
     this.layoutVersion = [
       ...new Set(members.map((member) => artifactLayout(member, options.layout))),
     ].join("; ");
@@ -309,6 +412,7 @@ export class Dataset {
     const lines = [this.sentence];
     const sources = this.citation.sources.map((source) => source.label);
     if (sources.length > 0) lines.push(`Source: ${sources.join("; ")}`);
+    lines.push(...this.#derivedSummary());
     const versions = this.members.map((member) => member.contentVersion);
     const label = versions.length === 1 ? "Version" : "Versions";
     lines.push(`${label}: ${versions.join(", ")} (exact)${retentionText(this)}`);
@@ -323,6 +427,24 @@ export class Dataset {
   /** Node's `console.log` and `util.inspect` show the dataset as `String(data)` does. */
   [Symbol.for("nodejs.util.inspect.custom")](): string {
     return this.toString();
+  }
+
+  /** The lines of a derived dataset: its steps, the period its latest years settled on, and
+   *  the series it left out. Empty for dataset versions. */
+  #derivedSummary(): string[] {
+    const derived = this.members.filter((member): member is DerivedMember => isDerived(member));
+    if (derived.length === 0) return [];
+    const roots = unique(derived.flatMap((member) => member.roots));
+    const readings = `${roots.length} reading${roots.length === 1 ? "" : "s"}`;
+    const lines = [`Derived: ${stepsText(this.#steps, readings)}`];
+    const period = periodLine(derived[0]!.resolvedPeriods);
+    if (period !== undefined) lines.push(period);
+    if (this.leftOut.length > 0) {
+      const least = this.#leftOutComplete ? "" : "at least ";
+      const count = this.leftOut.length.toLocaleString("en-GB");
+      lines.push(`Missing data: ${least}${count} series left out · data.leftOut`);
+    }
+    return lines;
   }
 
   /** One member's Parquet file as the server built it, checked against its digest. */
@@ -345,20 +467,23 @@ export class Dataset {
   #metadata(): Record<string, string> {
     const sources = this.citation.sources;
     const licences = [...new Set(sources.flatMap((source) => source.license ?? []))];
-    const leftOut =
-      this.#leftOut.length === 0
-        ? {}
-        : {
-            "dfo.left_out": JSON.stringify(
-              this.#leftOut.map(({ coordinates, step, side, reason, rows }) => ({
-                coordinates,
-                step,
-                side,
-                reason,
-                rows,
-              })),
-            ),
-          };
+    const derived = !this.members.some(isDerived)
+      ? {}
+      : {
+          "dfo.left_out": JSON.stringify({
+            series: this.leftOut.map(({ coordinates, step, side, reason, rows }) => ({
+              coordinates,
+              step: { verb: step.verb, node: step.node },
+              side,
+              reason,
+              rows,
+            })),
+            complete: this.#leftOutComplete,
+          }),
+          "dfo.steps": JSON.stringify(
+            this.#steps.map(({ verb, by, limit }) => ({ verb, by, limit })),
+          ),
+        };
     return {
       "dfo.format_version": String(SAVED_FORMAT_VERSION),
       "dfo.sentence": this.sentence,
@@ -398,7 +523,7 @@ export class Dataset {
         member_rows: memberRows(this.#table.parts),
       }),
       "dfo.ref": JSON.stringify(this.ref),
-      ...leftOut,
+      ...derived,
     };
   }
 }

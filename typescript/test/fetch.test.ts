@@ -321,17 +321,14 @@ describe("arguments a fetch refuses before any request", () => {
     });
   }
 
-  for (const latest of [false, true]) {
-    test(`a derived ref${latest ? " given latest" : ""}`, async () => {
-      const { ref } = await contractJson<{ ref: unknown }>("refs/ref-derived-member.json");
-      const derived = DatasetRef.fromJSON(ref);
-      await assert.rejects(fetchDataset(transport, derived, { latest }), {
-        name: "InvalidRequestError",
-        code: "invalid_argument",
-        message: new RegExp(`${derived.members[0]!.spec.spec_id}, a frame DFO computed`),
-      });
+  test("a derived ref given a window", async () => {
+    const { ref } = await contractJson<{ ref: unknown }>("refs/ref-derived-member.json");
+    await assert.rejects(fetchDataset(transport, DatasetRef.fromJSON(ref), { window: "all" }), {
+      name: "InvalidRequestError",
+      code: "invalid_argument",
+      message: /A recipe or a frame DFO computed takes no window/,
     });
-  }
+  });
 
   test("a spec given latest", async () => {
     await assert.rejects(fetchDataset(transport, spec("spec_1"), { latest: true }), {

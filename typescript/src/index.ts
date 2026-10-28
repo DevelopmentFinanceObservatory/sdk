@@ -71,7 +71,30 @@ export type {
   UnsupportedPart,
 } from "./wire.ts";
 export { Dataset } from "./datasets/dataset.ts";
-export type { Citation, DerivedMember, Member } from "./datasets/dataset.ts";
+export type {
+  Citation,
+  DerivedMember,
+  LeftOutSeries,
+  LeftOutStep,
+  Member,
+} from "./datasets/dataset.ts";
+export { Analysis } from "./datasets/analysis.ts";
+export { Recipe, recipe } from "./datasets/recipe.ts";
+export type {
+  AggregateOptions,
+  Aggregation,
+  Change,
+  Columns,
+  FilterOptions,
+  GrowthOptions,
+  PairOptions,
+  Pairing,
+  RankOptions,
+  ShareOfOptions,
+  Start,
+  Year,
+} from "./datasets/recipe.ts";
+export { LatestYear, latestYear } from "./core/periods.ts";
 export type {
   CallOptions,
   EntityGroups,
@@ -111,5 +134,10 @@ export type {
 export { RawResponse } from "./http/transport.ts";
 export type { HeaderProvider } from "./http/transport.ts";
 export { VERSION } from "./version.ts";
-export { DataWarning, DfoDeprecationWarning, DfoWarning } from "./core/warnings.ts";
+export {
+  DataWarning,
+  DfoDeprecationWarning,
+  DfoWarning,
+  SeriesLeftOutWarning,
+} from "./core/warnings.ts";
 export type { WarningHandler } from "./core/warnings.ts";

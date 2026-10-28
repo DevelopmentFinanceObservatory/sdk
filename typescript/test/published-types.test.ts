@@ -17,8 +17,18 @@ const PACKAGE = fileURLToPath(new URL("..", import.meta.url));
 const TSC = join(PACKAGE, "node_modules", "typescript", "bin", "tsc");
 
 const CONSUMER = `
-import { Client, Dataset, InvalidRequestError, isDfoError } from "@developmentfinance/client";
+import {
+  Client,
+  Dataset,
+  InvalidRequestError,
+  isDfoError,
+  latestYear,
+  recipe,
+  SeriesLeftOutWarning,
+} from "@developmentfinance/client";
 import type {
+  LeftOutSeries,
+  Recipe,
   Alternative,
   Answer,
   AnswerKind,
@@ -83,6 +93,21 @@ export function loud(answer: Answer, dataset: Dataset): boolean {
   return notices.some((notice) => notice.severity === severe) || unseen === "closest_match";
 }
 
+// A recipe chains steps without I/O; a fetch runs it, and the analysis calls run one step.
+export async function analysed(client: Client, spec: Spec): Promise<number> {
+  const chain: Recipe = recipe(spec)
+    .growth({ by: "origin", window: [latestYear(-4), latestYear()] })
+    .rank({ by: "origin", limit: 10 });
+  const fastest: Dataset = await client.fetch(chain, { strict: true });
+  const top = await client.analysis.rank(fastest, { by: "origin", window: [2020, latestYear()] });
+  const share = await client.analysis.shareOf(top, { by: "origin" });
+  const newest = await client.fetch(top.ref, { latest: true });
+  const dropped: readonly LeftOutSeries[] = newest.leftOut;
+  const kept = await client.pin(await client.fetch(spec));
+  const loud = new SeriesLeftOutWarning("x").code === null;
+  return dropped.length + share.rowCount + (kept.pinned && loud ? 1 : 0);
+}
+
 // The mistakes a type check should catch, each of which fails to compile.
 export async function mistakes(client: Client, answer: Answer): Promise<void> {
   const spec = answer.specs[0]!;
@@ -111,6 +136,14 @@ export async function mistakes(client: Client, answer: Answer): Promise<void> {
   new Client({ maxRetries: "3" });
   // @ts-expect-error A Date where a node takes a YYYY-MM-DD date.
   await client.lookup.node("country/NGA", { asOf: new Date() });
+  // @ts-expect-error An aggregation the operations do not name.
+  recipe(spec).aggregate({ how: "median" });
+  // @ts-expect-error A limit as a string.
+  recipe(spec).rank({ by: "origin", limit: "10" });
+  // @ts-expect-error A window of one year.
+  await client.analysis.growth(spec, { window: [2020] });
+  // @ts-expect-error A spec id where a recipe starts from a spec.
+  recipe("spec_123");
   // @ts-expect-error A severity the contract does not list: the named unions are closed.
   const severity: Severity = "fatal";
   console.log(severity);

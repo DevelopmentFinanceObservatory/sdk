@@ -6,6 +6,9 @@ import type { Dataset } from "./datasets/dataset.ts";
 import { clientError, DfoError, InvalidRequestError, messageOf, optionsOf } from "./core/errors.ts";
 import { present } from "./core/json.ts";
 import { checkOptions, declareOptions } from "./core/options.ts";
+import { Analysis } from "./datasets/analysis.ts";
+import { pin } from "./datasets/pin.ts";
+import type { Recipe } from "./datasets/recipe.ts";
 import { fetchDataset } from "./datasets/resolve.ts";
 import type { FetchOptions } from "./datasets/fetch.ts";
 import type { ApiKeyOption } from "./config/keys.ts";
@@ -96,6 +99,9 @@ export class Client {
   /** Names to graph nodes, a node by its dcid, a code's registry entry, and what Search holds
    *  data on. */
   readonly lookup: Lookup;
+  /** DFO's operations, each run at once on DFO: `filter`, `aggregate`, `growth`, `rank`,
+   *  `quotientOf`, `shareOf`, `join`, `sumOf` and `compare`. */
+  readonly analysis: Analysis;
   readonly #transport: Transport;
   readonly #answers: AnswerContext;
 
@@ -128,6 +134,7 @@ export class Client {
     };
     registerClient(this, this.#answers);
     this.lookup = new Lookup(this.#transport);
+    this.analysis = new Analysis(this.#transport);
   }
 
   /** The API's base URL, less any trailing slashes. */
@@ -167,9 +174,16 @@ export class Client {
   /**
    * Fetches a spec's latest version, narrowed by `window`, `entities` and `facets`, or the exact
    * versions a ref names, or with `latest: true` the newest versions of a ref's specs in the
-   * ref's rendering. It waits as long as a build takes, reporting a long build's progress
-   * to `onProgress`. A `timeout` or an aborted `signal` stops the wait and leaves the build
-   * running on the server, and the same fetch joins it.
+   * ref's rendering; or runs a recipe from `recipe(start)` on DFO in one request. It waits as
+   * long as a build takes, reporting a long build's progress to `onProgress`. A `timeout` or an
+   * aborted `signal` stops the wait and leaves the build running on the server, and the same
+   * fetch joins it.
+   *
+   * A ref of a frame DFO computed reads that frame, and with `latest: true` DFO computes its
+   * recipe again on the newest versions of its datasets. A recipe or a computed frame takes
+   * `latest`, `strict`, `timeout` and `signal`, and refuses the options that narrow or render a
+   * spec. A fetch that left series out for missing data issues one `SeriesLeftOutWarning`, which
+   * `strict: true` raises.
    *
    * @throws {InvalidRequestError} `options` holds a key outside `FetchOptions`, a window year
    *   falls outside 1000 to 2200, `entities` names a role outside `specRoles(spec)`, the target is neither a ref nor a spec with its `spec_id` and
@@ -177,11 +191,26 @@ export class Client {
    *   `latest` is given a spec or a ref whose members differ in rendering.
    * @throws {VersionUnavailableError} A ref's version can no longer be fetched.
    * @throws {DataWarning} `strict` is true and a manifest carries a warning above `info`.
+   * @throws {SeriesLeftOutWarning} `strict` is true and a recipe left series out.
    * @throws {DfoTimeoutError} The `timeout` passed (`deadline_exceeded`); the build carries on.
    * @throws {DfoError} The server refused a request.
    */
-  fetch(target: Spec | DatasetRef, options: FetchOptions = {}): Promise<Dataset> {
+  fetch(target: Spec | DatasetRef | Recipe, options: FetchOptions = {}): Promise<Dataset> {
     return fetchDataset(this.#transport, target, options);
+  }
+
+  /**
+   * Keeps `data`'s exact versions fetchable by its ref with no time limit, and returns the same
+   * dataset, now pinned. Pinning cannot be undone, and each new pin counts against a daily
+   * allowance. `data.bytes()` keeps the rows in a file of your own instead.
+   *
+   * @throws {InvalidRequestError} `data` is not a Dataset, or holds a frame DFO computed, which
+   *   the pin route does not take (`invalid_argument`); no request is sent.
+   * @throws {QuotaExceededError} The daily pin allowance is spent (`allowance_exhausted`);
+   *   `retryAfterMs` says when it resets.
+   */
+  pin(data: Dataset): Promise<Dataset> {
+    return pin(this.#transport, data);
   }
 
   /**

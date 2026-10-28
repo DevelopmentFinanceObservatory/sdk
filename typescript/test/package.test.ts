@@ -16,6 +16,7 @@ const readJson = async <T>(path: string): Promise<T> =>
 test("the root entry exports these values and no others", async () => {
   const root = await import("../src/index.node.ts");
   assert.deepEqual(Object.keys(root).sort(), [
+    "Analysis",
     "Answer",
     "ApiKey",
     "AuthenticationError",
@@ -35,6 +36,7 @@ test("the root entry exports these values and no others", async () => {
     "FormatError",
     "IncompleteAnswerError",
     "InvalidRequestError",
+    "LatestYear",
     "Lookup",
     "Match",
     "NetworkError",
@@ -45,12 +47,16 @@ test("the root entry exports these values and no others", async () => {
     "QuotaExceededError",
     "RateLimitError",
     "RawResponse",
+    "Recipe",
     "SearchWarning",
+    "SeriesLeftOutWarning",
     "ServerError",
     "VERSION",
     "VersionUnavailableError",
     "isDfoError",
     "isKnownPart",
+    "latestYear",
+    "recipe",
     "specRoles",
   ]);
 });

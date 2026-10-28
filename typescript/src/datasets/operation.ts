@@ -43,7 +43,7 @@ import type { JsonResponse, Transport } from "../http/transport.ts";
 import { isRecord } from "../core/json.ts";
 
 /** The longest the client reads a synchronous build. The server cuts one off at 120 s. */
-const BUILD_READ_TIMEOUT_MS = 150_000;
+export const BUILD_READ_TIMEOUT_MS = 150_000;
 const POLL_BACKOFF_FIRST_MS = 1_000;
 const POLL_BACKOFF_CAP_MS = 8_000;
 /** An operation id: `op_` and 64 lower-case hex digits, one path segment as it stands. */
@@ -126,7 +126,7 @@ export function waitFor(
 }
 
 /** The opening a deadline's message gives the caller's timeout: ` after 25 s`, or nothing. */
-const after = (wait: Wait): string =>
+export const after = (wait: Wait): string =>
   wait.callTimeout === undefined ? "" : ` after ${seconds(wait.callTimeout)}`;
 
 /** The error a build raises when the caller's deadline passes before it is done. */
@@ -279,7 +279,7 @@ const POLL_INTERVAL_MIN_S = 1;
 const POLL_INTERVAL_MAX_S = 60;
 
 /** The server's poll interval, clamped to `POLL_INTERVAL_MIN_S` .. `POLL_INTERVAL_MAX_S`. */
-const pollInterval = (ms: number): number =>
+export const pollInterval = (ms: number): number =>
   Math.min(Math.max(ms, POLL_INTERVAL_MIN_S * 1000), POLL_INTERVAL_MAX_S * 1000);
 
 /** The wait before poll `step` (from 0) when the server sends no pacing. */

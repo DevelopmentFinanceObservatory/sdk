@@ -208,7 +208,7 @@ export function checkedSpec(spec: unknown): Spec {
     return spec as Spec;
   }
   throw invalid(
-    `A fetch takes a spec or a DatasetRef, not ${described(spec)}. Fetch an answer with ` +
+    `A fetch takes a spec, a DatasetRef or a Recipe, not ${described(spec)}. Fetch an answer with ` +
       "answer.fetch(), or one of its readings with client.fetch(answer.specs[0]).",
   );
 }
@@ -438,7 +438,21 @@ function countedRows(manifest: Manifest): number {
  *   (`contract_violation`).
  */
 export function checkArtifact(data: Uint8Array, manifest: Manifest, digest: string): void {
-  const name = `The artifact ${capped(digest)} of ${capped(specIdOf(manifest))}`;
+  checkTable(
+    data,
+    `The artifact ${capped(digest)} of ${capped(specIdOf(manifest))}`,
+    countedRows(manifest),
+  );
+}
+
+/**
+ * Checks that a file is a dataset's table, as `checkArtifact` does, `name` naming the file in
+ * a refusal and `counted` the rows its manifest counts.
+ *
+ * @throws {ContractError} The bytes do not decode as Parquet (`unexpected_response`), or the
+ *   file is not such a table (`contract_violation`).
+ */
+export function checkTable(data: Uint8Array, name: string, counted: number): void {
   let file: ParquetFile;
   try {
     file = readParquet(data);
@@ -446,7 +460,7 @@ export function checkArtifact(data: Uint8Array, manifest: Manifest, digest: stri
     if (!(error instanceof DfoError) || error.code !== UNEXPECTED_RESPONSE) throw error;
     throw clientError(UNEXPECTED_RESPONSE, { detail: `${name}: ${error.detail}`, cause: error });
   }
-  const fault = artifactFault(file, countedRows(manifest));
+  const fault = artifactFault(file, counted);
   if (fault !== undefined) {
     throw clientError("contract_violation", { detail: `${name} ${fault}.` });
   }
@@ -466,7 +480,8 @@ function artifactFault({ columns, rows }: ParquetFile, counted: number): string 
 }
 
 /**
- * Downloads a file through the route that redirects to it, checked against its digest. The
+ * Downloads a file through the route that redirects to it, checked against its digest unless
+ * the digest is null, as for a derived frame's file, which DFO renders on each read. The
  * route ask is an API request, which retries as one and waits the client's timeout per attempt;
  * its failure raises. The URL it names is fetched once, bare on the storage host and with the
  * client's headers on the API's origin, reading until the fetch's deadline, if any, while a byte
@@ -483,7 +498,7 @@ function artifactFault({ columns, rows }: ParquetFile, counted: number): string 
 export async function download(
   transport: Transport,
   target: Target,
-  digest: string,
+  digest: string | null,
   wait: Wait,
   size?: unknown,
 ): Promise<Uint8Array<ArrayBuffer>> {
@@ -512,6 +527,7 @@ export async function download(
     } else {
       data = located.data;
     }
+    if (digest === null) return data;
     const found = await digestOf(data);
     if (found === digest) return data;
     failure = clientError(DIGEST_MISMATCH, {

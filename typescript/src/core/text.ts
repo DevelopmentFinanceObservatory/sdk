@@ -94,3 +94,15 @@ export function bracketed(message: string, labels: readonly string[]): string {
   if (labels.length === 0) return message;
   return `${message}${message.includes("\n") ? "\n" : " "}[${printable(labels.join(" · "))}]`;
 }
+
+/** A caller's value as a refusal quotes it: its JSON where JSON holds it, else its kind. */
+export function quoted(value: unknown): string {
+  if (value === undefined) return "undefined";
+  if (typeof value === "function" || typeof value === "symbol") return `a ${typeof value}`;
+  if (typeof value === "bigint") return `${value.toString()}n`;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "a value JSON cannot hold";
+  }
+}

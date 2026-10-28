@@ -5,8 +5,10 @@ import { inspect } from "node:util";
 import { clientOver } from "../src/client.ts";
 import { DfoError, NotFoundError, serverCode } from "../src/core/errors.ts";
 import { describing } from "../src/core/trace.ts";
-import { DataWarning, DfoWarning } from "../src/core/warnings.ts";
+import { DataWarning, DfoWarning, SeriesLeftOutWarning } from "../src/core/warnings.ts";
 import { Dataset } from "../src/datasets/dataset.ts";
+import { recipe } from "../src/datasets/recipe.ts";
+import { latestYear } from "../src/core/periods.ts";
 import { RawResponse, Transport } from "../src/http/transport.ts";
 import { Answer, answerFromBody, SearchWarning } from "../src/search/answer.ts";
 import { Catalogue, Code, Match, Node } from "../src/search/lookup-results.ts";
@@ -193,6 +195,19 @@ const ROWS: [string, () => { toString(): string }, string, boolean][] = [
     "RawResponse(204, 1 byte)",
     true,
   ],
+  ["latest-year", () => latestYear(-4), "latestYear(-4)", true],
+  [
+    "recipe",
+    () => recipe({ spec_id: SPEC_ID, definition: {} }).rank({ by: "origin", limit: 10 }),
+    `Recipe(rank by origin, limit 10, from ${SPEC_ID})`,
+    true,
+  ],
+  [
+    "analysis",
+    () => clientOver(new Transport({ baseUrl: "https://api.example", apiKey: false })).analysis,
+    "<Analysis: filter, aggregate, growth, rank, quotientOf, shareOf, join, sumOf, compare>",
+    true,
+  ],
 ];
 
 test("a match cuts its text, each name and its line, and counts the candidates it leaves out", () => {
@@ -272,6 +287,11 @@ for (const [name, build, message] of [
     "Differs:\n  shows 2022\n[closest_match]",
   ],
   ["a warning with no code", () => new DfoWarning(null, "Differs."), "Differs."],
+  [
+    "a series-left-out warning, whose code is null",
+    () => new SeriesLeftOutWarning("3 series left out for missing data by growth"),
+    "3 series left out for missing data by growth",
+  ],
   [
     "an error whose trace id holds terminal controls",
     () => new DfoError({ code: "invalid_argument", detail: "Bad.", traceId: "x\u001b[31mRED" }),

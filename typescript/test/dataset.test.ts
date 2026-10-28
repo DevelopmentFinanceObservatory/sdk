@@ -12,10 +12,12 @@ import type { FetchedMember } from "../src/datasets/dataset.ts";
 import { decodeRows, decodeStored, readParquet, widen } from "../src/datasets/parquet.ts";
 import { partFacts } from "../src/core/parse.ts";
 import type { ColumnType, Row, StoredColumn, Table } from "../src/datasets/parquet.ts";
+import { derivedDataset } from "../src/datasets/derived.ts";
 import { DatasetRef, isDerived } from "../src/core/ref.ts";
+import type { DerivedRefMember } from "../src/core/ref.ts";
 import type { Gap } from "../src/search/answer.ts";
 import { scenarioBytes } from "./replay.ts";
-import { contractJson } from "./support.ts";
+import { recordedBytes, recordedJson } from "./support.ts";
 
 const SCENARIOS = new URL("../../contract/scenarios/", import.meta.url);
 
@@ -605,36 +607,166 @@ describe("one member", async () => {
   });
 });
 
-describe("a derived member", async () => {
-  const data = await scenarioBytes("fetch-ref.parquet");
-  const { ref: stored } = await contractJson<{ ref: unknown }>("refs/ref-derived-member.json");
-  const [derived] = DatasetRef.fromJSON(stored).members;
-  assert.ok(derived && isDerived(derived));
-  const leftOut = [
-    {
-      coordinates: { origin: "country/DEU", destination: "country/NGA" },
-      step: "growth",
-      side: "data",
-      reason: "no_value_at_window_end",
-      rows: 3,
-    },
-  ];
-  const dataset = await Dataset.create(
-    [{ ...derived, manifest: {}, digest: digestOf(data), data }],
-    { layout: "long", leftOut },
+/** A recorded analysis's derived dataset, from its ready answer's ref member, its manifest
+ *  with `change` applied, and its frame: `chain` divides aid by population and takes its growth,
+ *  dropping three series over the two steps; `rank` ranks with a latest year settled on 2022. */
+async function derived(
+  name: "chain" | "rank" = "chain",
+  change: Record<string, unknown> = {},
+  memberChange: Partial<DerivedRefMember> = {},
+): Promise<Dataset> {
+  const member = { ...(await derivedMember(name)), ...memberChange };
+  const manifest = { ...(await recordedJson(`analysis-${name}-manifest.json`)), ...change };
+  const data = await recordedBytes(`analysis-${name}-frame.parquet`);
+  return (await derivedDataset(member, manifest, data)).dataset;
+}
+
+async function derivedMember(name: "chain" | "rank" = "chain"): Promise<DerivedRefMember> {
+  const { ref } = await recordedJson<{ ref: unknown }>(`analysis-${name}-ready.json`);
+  const [member] = DatasetRef.fromJSON(ref).members;
+  assert.ok(member && isDerived(member));
+  return member;
+}
+
+const savedMetadata = async (dataset: Dataset): Promise<Record<string, string | undefined>> =>
+  Object.fromEntries(
+    (parquetMetadata((await dataset.bytes()).slice().buffer).key_value_metadata ?? []).map(
+      ({ key, value }) => [key, value],
+    ),
   );
 
-  test("bytes() writes its format 2 ref and the series its recipe left out", async () => {
-    const metadata = Object.fromEntries(
-      (parquetMetadata((await dataset.bytes()).slice().buffer).key_value_metadata ?? []).map(
-        ({ key, value }) => [key, value],
-      ),
+describe("a derived dataset", () => {
+  test("reads the series its manifest serves as left out", async () => {
+    const dataset = await derived();
+    const served = (await recordedJson("analysis-chain-manifest.json"))["left_out"];
+    assert.deepEqual(dataset.leftOut, served);
+    assert.ok(dataset.ref.equals(new DatasetRef([await derivedMember()])));
+    assert.deepEqual(
+      [dataset.heldUntil?.toISOString(), dataset.pinned, dataset.layoutVersion],
+      ["2026-11-27T15:10:16.473Z", false, "frame"],
     );
-    const ref = JSON.parse(metadata["dfo.ref"]!) as { format_version: number };
-    assert.equal(ref.format_version, 2);
-    assert.ok(DatasetRef.fromJSON(ref).equals(dataset.ref));
-    assert.ok(dataset.ref.sameData(DatasetRef.fromJSON(stored)));
-    assert.deepEqual(JSON.parse(metadata["dfo.left_out"]!), leftOut);
+  });
+
+  test("prints its steps, period and left-out series as Python's repr does", async () => {
+    const lines = String(await derived()).split("\n");
+    assert.deepEqual(lines.slice(1), [
+      "  Derived: quotient_of by financingRecipient, then growth by financingRecipient, from 2 " +
+        "readings",
+      "  Missing data: 3 series left out · data.leftOut",
+      "  Version: ocv_422e3d46d9e05f9ea8027c97c0c2f58b (exact), held until 27 November 2026, " +
+        "not pinned",
+      "  Rows: 1",
+      "  Keep: JSON.stringify(data.ref) · newest later: client.fetch(data.ref, { latest: true })>",
+    ]);
+    assert.deepEqual(
+      String(await derived("rank"))
+        .split("\n")
+        .slice(1, 3),
+      [
+        "  Derived: rank by financingRecipient, limit 2, from 1 reading",
+        "  Period: 2022, the newest year at least half the series hold",
+      ],
+    );
+  });
+
+  for (const [name, periods, line] of [
+    ["latest", [[0, "2024"]], "Period: 2024, the newest year at least half the series hold"],
+    [
+      "window",
+      [
+        [-4, "2020"],
+        [0, "2024"],
+      ],
+      "Period: 2020 to 2024, counted back from 2024, the newest year at least half the series " +
+        "hold",
+    ],
+    [
+      "before-latest",
+      [[-1, "2023"]],
+      "Period: 2023, counted back from 2024, the newest year at least half the series hold",
+    ],
+  ] as const) {
+    test(`counts its period back from the newest year (${name})`, async () => {
+      const resolvedPeriods = periods.map(([offset, period]) => ({
+        anchor: "latest" as const,
+        offset,
+        rule: "half1" as const,
+        period,
+      }));
+      const lines = String(await derived("rank", {}, { resolvedPeriods })).split("\n");
+      assert.ok(lines.includes(`  ${line}`), lines.join("\n"));
+    });
+  }
+
+  test("prints at least when its manifest lists only some of what it left out", async () => {
+    const lines = String(await derived("chain", { left_out_complete: false })).split("\n");
+    assert.ok(lines.includes("  Missing data: at least 3 series left out · data.leftOut"));
+  });
+
+  for (const complete of [true, false]) {
+    test(`bytes() writes its format 2 ref, left-out series and steps (complete ${complete})`, async () => {
+      const dataset = await derived("chain", { left_out_complete: complete });
+      const metadata = await savedMetadata(dataset);
+      const ref = JSON.parse(metadata["dfo.ref"]!) as { format_version: number };
+      assert.equal(ref.format_version, 2);
+      assert.ok(DatasetRef.fromJSON(ref).equals(dataset.ref));
+      assert.deepEqual(JSON.parse(metadata["dfo.left_out"]!), {
+        series: (await recordedJson("analysis-chain-manifest.json"))["left_out"],
+        complete,
+      });
+      assert.deepEqual(JSON.parse(metadata["dfo.steps"]!), [
+        { verb: "quotient_of", by: ["financingRecipient"], limit: null },
+        { verb: "growth", by: ["financingRecipient"], limit: null },
+      ]);
+    });
+  }
+
+  test("reads a manifest without left_out as none left out", async () => {
+    const dataset = await derived("chain", {
+      left_out: null,
+      left_out_complete: null,
+      recipe: null,
+    });
+    assert.deepEqual(dataset.leftOut, []);
+    assert.ok(String(dataset).split("\n").includes("  Derived: from 2 readings"));
+    const metadata = await savedMetadata(dataset);
+    assert.deepEqual(JSON.parse(metadata["dfo.left_out"]!), { series: [], complete: true });
+  });
+
+  for (const [name, change, pointer] of [
+    ["another frame", { content_version: `ocv_${"0".repeat(32)}` }, null],
+    ["left_out not a list", { left_out: {} }, "/left_out"],
+    ["a series damaged", { left_out: [{ step: {} }] }, "/left_out/0/coordinates"],
+    [
+      "a node below 0",
+      {
+        left_out: [
+          { coordinates: {}, step: { verb: "s", node: -1 }, side: "data", reason: "r", rows: 1 },
+        ],
+      },
+      "/left_out/0/step/node",
+    ],
+    ["left_out_complete null", { left_out_complete: null }, "/left_out_complete"],
+  ] as const) {
+    test(`refuses a manifest with ${name}`, async () => {
+      await assert.rejects(derived("chain", change), {
+        name: "ContractError",
+        code: "contract_violation",
+        pointer,
+      });
+    });
+  }
+});
+
+describe("a dataset of dataset versions", () => {
+  test("leaves nothing out and writes no derived key", async () => {
+    const data = await scenarioBytes("fetch-ref.parquet");
+    const dataset = await Dataset.create([member(data)], { layout: "long" });
+    assert.deepEqual(dataset.leftOut, []);
+    const metadata = await savedMetadata(dataset);
+    assert.equal(metadata["dfo.left_out"], undefined);
+    assert.equal(metadata["dfo.steps"], undefined);
+    assert.ok(!String(dataset).includes("Derived:"));
   });
 });
 

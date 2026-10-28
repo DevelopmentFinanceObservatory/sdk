@@ -1,6 +1,7 @@
 /**
- * Fetching a target: a spec through the build path in `fetch.ts`, or the exact versions a ref
- * names. With `latest`, a ref's specs build through that path instead, in the ref's one
+ * Fetching a target: a spec through the build path in `fetch.ts`, the exact versions a ref
+ * names, or a recipe or a ref of a frame DFO computed through the analysis runner in
+ * `analysis.ts`. With `latest`, a ref's specs build through that path instead, in the ref's one
  * rendering, as their newest versions.
  *
  * A ref returns the versions it names, found in this order: the snapshot route, then the files
@@ -19,6 +20,7 @@
  * imports `fetch.ts` and `fetch.ts` imports nothing from here.
  */
 
+import { fetchDerived, runRecipe } from "./analysis.ts";
 import { Dataset } from "./dataset.ts";
 import type { FetchedMember } from "./dataset.ts";
 import {
@@ -48,14 +50,16 @@ import {
   pickArtifact,
   specIdOf,
 } from "./fetch.ts";
-import type { CallOptions, FetchOptions } from "./fetch.ts";
+import type { CallOptions, FetchOptions, Narrowing } from "./fetch.ts";
 import { build, readManifest, waitFor } from "./operation.ts";
+import { Recipe } from "./recipe.ts";
 import type { Built, Manifest, Wait } from "./operation.ts";
 import {
   CONTENT_VERSION,
   DatasetRef,
   FormatError,
   isDatasetMember,
+  isDerived,
   layoutOf,
   mintOptions,
   sameRendering,
@@ -64,7 +68,7 @@ import type { Layout, Rendering, RefMember, Spec } from "../core/ref.ts";
 import { checkOptions } from "../core/options.ts";
 import { describing } from "../core/trace.ts";
 import type { Transport } from "../http/transport.ts";
-import { isRecord } from "../core/json.ts";
+import { isRecord, present } from "../core/json.ts";
 import { clientWarning } from "../core/warnings.ts";
 
 /** The call that fetches the newest versions of a ref's specs, which a lost version names. */
@@ -76,23 +80,42 @@ const FILE_EXPIRED = "artifact_expired";
 const FILE_GONE = new Set([FILE_EXPIRED, "artifact_not_found", "not_found"]);
 /**
  * Fetches a spec's latest version, the exact versions a ref names, or with `latest` the newest
- * versions of a ref's specs.
+ * versions of a ref's specs; or runs a recipe, or reads a ref of a frame DFO computed, which
+ * take `latest`, `strict`, `timeout` and `signal` and refuse the options that narrow or render
+ * a spec. `onProgress` reports no progress for them.
  *
- * @throws {InvalidRequestError} The target is neither a ref nor a spec `checkedSpec` accepts, a
- *   ref is narrowed or given another layout or `partyTotals`, `latest` is given a spec or
- *   a ref whose members differ in rendering, or `latest` is not a boolean.
+ * @throws {InvalidRequestError} The target is neither a ref, a recipe nor a spec `checkedSpec`
+ *   accepts, a ref is narrowed or given another layout or `partyTotals`, `latest` is given a
+ *   spec or a ref whose members differ in rendering, `latest` is not a boolean, or a recipe or
+ *   a derived ref is given `window`, `entities`, `facets`, `partyTotals` or a layout other than
+ *   `frame`.
  * @throws {VersionUnavailableError} A ref's version can no longer be fetched.
  * @throws {DfoError} The server refused a request.
  */
 export async function fetchDataset(
   transport: Transport,
-  target: Spec | DatasetRef,
+  target: Spec | DatasetRef | Recipe,
   options: FetchOptions = {},
 ): Promise<Dataset> {
   const { window, entities, facets, latest, ...rest } = checkOptions(FETCH_OPTIONS, options);
   const narrowing = narrowingOf({ window, entities, facets });
   if (latest !== undefined && typeof latest !== "boolean") {
     throw invalid(`latest is true or false, not ${JSON.stringify(latest)}.`);
+  }
+  if (
+    target instanceof Recipe ||
+    (target instanceof DatasetRef && target.members.some(isDerived))
+  ) {
+    checkComputed(narrowing, rest);
+    const computed = present({
+      latest,
+      strict: rest.strict,
+      timeout: rest.timeout,
+      signal: rest.signal,
+    });
+    return target instanceof Recipe
+      ? runRecipe(transport, target, computed)
+      : fetchDerived(transport, target, computed);
   }
   if (target instanceof DatasetRef) {
     const members = datasetMembers(target);
@@ -136,21 +159,30 @@ function refWindowRefusal(window: unknown, latest: boolean | undefined): string 
 }
 
 /**
- * The dataset members of a ref.
+ * Refuses the options a recipe or a derived ref does not take: DFO computes a frame in the
+ * frame layout from the roots the recipe names.
  *
- * @throws {InvalidRequestError} The ref holds derived members, which this client reads but does
- *   not fetch (`invalid_argument`).
+ * @throws {InvalidRequestError} One is given (`invalid_argument`).
  */
-function datasetMembers(ref: DatasetRef): readonly RefMember[] {
-  const members = ref.members.filter(isDatasetMember);
-  if (members.length !== ref.members.length) {
+function checkComputed(narrowing: Narrowing, options: CallOptions): void {
+  const given = [
+    narrowing.window !== undefined && "window",
+    narrows({ entities: narrowing.entities }) && "entities",
+    narrows({ facets: narrowing.facets }) && "facets",
+    options.partyTotals !== undefined && "partyTotals",
+    options.layout !== undefined && options.layout !== "frame" && "layout",
+  ].filter((name) => name !== false);
+  if (given.length > 0) {
     throw invalid(
-      `The DatasetRef names ${ref.members[0]!.spec.spec_id}, a frame DFO computed, and this ` +
-        "client fetches dataset versions only.",
+      `A recipe or a frame DFO computed takes no ${given.join(", ")}; set them on the readings ` +
+        "the recipe starts from.",
     );
   }
-  return members;
 }
+
+/** The dataset members of a ref, which holds no derived member. */
+const datasetMembers = (ref: DatasetRef): readonly RefMember[] =>
+  ref.members.filter(isDatasetMember);
 
 function refLayout(members: readonly RefMember[]): Layout {
   const layouts = new Set<Layout>();
