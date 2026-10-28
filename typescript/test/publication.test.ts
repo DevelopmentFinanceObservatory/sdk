@@ -249,6 +249,16 @@ describe("a card", () => {
     });
   });
 
+  test("whose create is refused for a spent allowance raises QuotaExceededError", async () => {
+    const { transport, seen } = make(await recorded("card-refused-allowance-exhausted"));
+    await assert.rejects(new Cards(transport).source((await dataset()).ref), {
+      name: "QuotaExceededError",
+      code: "allowance_exhausted",
+      retryAfterMs: 54_000_000,
+    });
+    assert.equal(seen.length, 1);
+  });
+
   test("of a source sends its frame alone", async () => {
     const data = await dataset();
     const { transport, seen } = make(await recorded("card-line-created"));

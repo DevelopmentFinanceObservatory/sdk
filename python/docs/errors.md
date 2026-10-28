@@ -194,7 +194,7 @@ An error the client raises before any request, such as `invalid_argument`, has a
 | `AuthenticationError`     | A key is missing, unknown, revoked, expired, or malformed, or the credentials file is bad | Run `dfo auth login`, or fix the file the message names                  |
 | `PermissionDeniedError`   | The key lacks a scope the call needs, or a write token is not the share's                 | Ask for the scope, or pass the token `dfo.share` returned                |
 | `RateLimitError`          | Over the rate limit after the client's retries                                            | Wait `retry_after` seconds                                               |
-| `QuotaExceededError`      | The day's allowance of pins or shares is spent (`allowance_exhausted`)                    | Wait `retry_after` seconds, until the allowance resets                   |
+| `QuotaExceededError`      | The day's allowance of pins, cards, or shares is spent (`allowance_exhausted`)            | Wait `retry_after` seconds, until the allowance resets                   |
 | `ServerError`             | The server failed after the client's retries, or a download failed its check              | Report the trace id                                                      |
 | `ContractError`           | A response lacks a member the client acts on, or has a form it does not know              | Upgrade `development-finance`, and report it if the newest release fails |
 | `NetworkError`            | The connection failed, or `DFO_OFFLINE=1` blocks a call that needs the server             | Retry later, or read from the cache                                      |

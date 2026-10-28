@@ -329,7 +329,7 @@ Branch on the class, or on `error.code` for one case. Each error also carries `s
 | `AuthenticationError`     | The key is malformed, unknown, revoked, or expired, or the credentials file is broken                           |
 | `PermissionDeniedError`   | The key lacks a scope, or a share's write token is wrong (`write_token_invalid`)                                |
 | `RateLimitError`          | Too many requests. `retryAfterMs` says how long to wait                                                         |
-| `QuotaExceededError`      | The day's allowance of pins or shares is spent (`allowance_exhausted`). `retryAfterMs` says when it resets      |
+| `QuotaExceededError`      | The day's allowance of pins, cards, or shares is spent (`allowance_exhausted`). `retryAfterMs` names the reset  |
 | `DfoTimeoutError`         | A `timeout` passed (`deadline_exceeded`)                                                                        |
 | `NetworkError`            | The connection failed                                                                                           |
 | `ServerError`             | The server failed or a download did not verify. A retryable failure is retried before you see it                |

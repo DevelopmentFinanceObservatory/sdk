@@ -228,6 +228,18 @@ async def test_a_card_reply_without_its_fact_summary_raises_contract_error() -> 
     assert caught.value.code == "contract_violation"
 
 
+async def test_a_spent_card_allowance_raises_quota_exceeded_with_its_reset() -> None:
+    server = Server(recorded("card-refused-allowance-exhausted"))
+    async with make(server) as transport:
+        with pytest.raises(QuotaExceededError) as caught:
+            await AsyncCards(transport).source(dataset().ref)
+    assert (caught.value.code, caught.value.retry_after) == (
+        "allowance_exhausted",
+        54000,
+    )
+    assert len(server.requests) == 1
+
+
 async def test_a_source_card_sends_its_frame_alone() -> None:
     server = Server(recorded("card-line-created"))
     async with make(server) as transport:
