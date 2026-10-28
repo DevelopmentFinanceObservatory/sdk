@@ -128,10 +128,21 @@ export async function published(client: Client, dataset: Dataset): Promise<numbe
   });
   const swapped = await client.share([stat], { latest: true, replace: tile });
   const fixed = await client.snapshot(swapped.url, { writeToken: token ?? "" });
+  const embedded: Served[] = [...(await client.history(fixed.embedUrl))];
   const served: readonly Served[] = await client.history(fixed);
   const shown: Dataset = await client.fetch(fixed, { slot: 1, asOf: "2026-10-28" });
   await client.unshare(fixed);
-  return served.length + kind.length + shown.rowCount + (chart.heldUntil?.getTime() ?? 0);
+  const series: number = chart.series + chart.seriesCut;
+  const timed = await client.analysis.rank(shown, { by: "origin", timeout: 5_000, strict: true });
+  return (
+    served.length +
+    embedded.length +
+    kind.length +
+    shown.rowCount +
+    series +
+    timed.rowCount +
+    (chart.heldUntil?.getTime() ?? 0)
+  );
 }
 
 // The mistakes a type check should catch, each of which fails to compile.
@@ -170,8 +181,12 @@ export async function mistakes(client: Client, answer: Answer): Promise<void> {
   await client.analysis.growth(spec, { window: [2020] });
   // @ts-expect-error A spec id where a recipe starts from a spec.
   recipe("spec_123");
-  // @ts-expect-error A change in the engine's word.
-  recipe(spec).growth({ window: [2020, 2024], change: "relative" });
+  // @ts-expect-error A growth change in the stat card's word.
+  recipe(spec).growth({ window: [2020, 2024], change: "percent" });
+  // @ts-expect-error A stat card change in growth's word.
+  await client.cards.stat(dataset, { change: "relative" });
+  // @ts-expect-error A spec id where the fetch takes a spec or a share's URL.
+  await client.fetch("spec_123");
   // @ts-expect-error A share without latest.
   await client.share(await client.cards.source(dataset), {});
   // @ts-expect-error A share takes no title.

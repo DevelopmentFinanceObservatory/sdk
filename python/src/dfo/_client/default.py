@@ -257,15 +257,17 @@ def snapshot(share: ShareTarget, /, *, write_token: str | None = None) -> Share:
 
 
 def unshare(share: ShareTarget, /, *, write_token: str | None = None) -> None:
-    """Take a share's link down, with the default client.
+    """Take a share's link down, with the default client. Taking it down again
+    with its token succeeds, so a retry is safe.
 
-    Takes `Client.unshare`'s arguments.
+    Takes `Client.unshare`'s arguments: a share given as a URL needs
+    `write_token=share.write_token`, from the `Share` that `dfo.share` returned.
 
     Raises:
         InvalidRequestError: `share` is not a Share or a share URL
             (`invalid_argument`); or no token was given (`write_token_required`).
         PermissionDeniedError: The token is not the share's (`write_token_invalid`).
-        NotFoundError: No share has that id, or it was taken down (`not_found`).
+        NotFoundError: No share has that id (`not_found`).
     """
     default_client().unshare(share, write_token=write_token)
 

@@ -125,6 +125,48 @@ describe("a recipe", () => {
     assert.equal(data.rowCount, 1);
   });
 
+  test("names each column of its left-out series and steps by the role the call used", async () => {
+    const { transport } = make(await ready(), await manifest(), await frame());
+    const data = await fetchDataset(transport, CHAIN);
+    assert.ok(
+      String(data).includes("  Derived: quotient_of by destination, then growth by destination, "),
+    );
+    assert.deepEqual(data.leftOut.map(String), [
+      "LeftOutSeries(destination=country/NGA: growth dropped 1 row from data, endpoint_missing)",
+      "LeftOutSeries(destination=country/GHA: quotient_of dropped 2 rows from data, unmatched_key)",
+      "LeftOutSeries(destination=country/NGA: quotient_of dropped 1 row from data, " +
+        "period_unmatched)",
+    ]);
+    // The coordinates keep DFO's columns, which the frame's columns match.
+    assert.equal(data.leftOut[0]?.coordinates["financingRecipient"], "country/NGA");
+  });
+
+  test("run as one operation takes strict, timeout and signal as fetch does", async () => {
+    const strict = make(await ready(), await manifest(), await frame());
+    await assert.rejects(
+      clientOver(strict.transport).analysis.growth(CHAIN, {
+        by: "destination",
+        window: [2021, 2022],
+        strict: true,
+      }),
+      SeriesLeftOutWarning,
+    );
+    const late = make(await pending());
+    await assert.rejects(
+      clientOver(late.transport).analysis.rank(AID, { by: "destination", timeout: 1500 }),
+      { name: "DfoTimeoutError", code: "deadline_exceeded" },
+    );
+    const aborted = make(await ready());
+    const reason = new Error("stopped");
+    await assert.rejects(
+      clientOver(aborted.transport).analysis.shareOf(AID, {
+        by: "origin",
+        signal: AbortSignal.abort(reason),
+      }),
+      reason,
+    );
+  });
+
   test("raises the left-out warning under strict", async () => {
     const { transport } = make(await ready(), await manifest(), await frame());
     await assert.rejects(fetchDataset(transport, CHAIN, { strict: true }), SeriesLeftOutWarning);
@@ -222,6 +264,7 @@ describe("a recipe", () => {
     ["facets", { facets: { unit: "USD" } }],
     ["layout", { layout: "long" }],
     ["partyTotals", { partyTotals: true }],
+    ["onProgress", { onProgress: () => undefined }],
   ] as const) {
     test(`refuses ${name} unsent`, async () => {
       const { transport, seen } = make();

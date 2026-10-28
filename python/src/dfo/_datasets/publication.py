@@ -38,6 +38,11 @@ the source and citation of its data."""
 type Source = Dataset | DatasetRef
 """What a card draws: a Dataset, or a ref of one version."""
 
+type StatChange = Literal["percent", "difference"]
+"""How a stat card works out its change since `compare_to`: `percent`, the
+difference as a percentage of the earlier year's value, where 25.0 is a 25%
+rise; or `difference`, the shown value minus the earlier, in the data's unit."""
+
 # Each card kind's component type in DFO's card catalogue.
 CARD_TYPES: Mapping[CardKind, str] = {
     "line": "line_chart",
@@ -91,6 +96,11 @@ class Card:
             None when pinned or when DFO holds no record of the version.
         pinned: Whether DFO kept that version with no time limit when the card
             was made.
+        series: How many series the card draws, which the repr prints, so a
+            card that draws 40 donors shows it before it goes on a page. 0 for
+            a source card.
+        series_cut: How many of those series the create reply's summary did
+            not list; DFO lists at most 12.
     """
 
     id: str
@@ -101,14 +111,17 @@ class Card:
     write_token: str = field(repr=False)
     held_until: date | None = None
     pinned: bool = False
+    series: int = 0
+    series_cut: int = 0
 
     @override
     def __repr__(self) -> str:
         (member,) = self.ref.members
         title = f', "{clipped(self.title)}"' if self.title else ""
+        drawn = "" if self.kind == "source" else f", {self.series:,} series"
         return single_line(
-            f"Card({self.kind} {self.id}{title}, draws {member.spec.spec_id} at "
-            f"{member.content_version})"
+            f"Card({self.kind} {self.id}{title}{drawn}, draws {member.spec.spec_id} "
+            f"at {member.content_version})"
         )
 
 
@@ -129,8 +142,10 @@ class Share:
             drew when it was made.
         write_token: The `shw_` token that grants replacing the share's cards,
             fixing it as a snapshot and taking it down. DFO returns it only when
-            the share is made, so keep it as a secret; the repr leaves it out.
-            None when this value was built without it.
+            the share is made and the client saves it nowhere, so keep it as a
+            secret beside the share's `url` and pass both to `dfo.unshare(url,
+            write_token=...)` later; the repr leaves it out. None when this
+            value was built without it.
     """
 
     id: str
@@ -215,6 +230,9 @@ class ShownFrame:
         content_version: The frame's version, `cv_<hex>` or `ocv_<hex>`.
         on: The day the fetch asked about, or the day it read what the slot
             shows now, in UTC.
+        newer_now: Whether the slot can show another frame now: True for an
+            `as_of` read of a live share, False when the read was of what the
+            slot shows now or of a snapshot, which keeps its frames.
     """
 
     share_id: str
@@ -223,6 +241,7 @@ class ShownFrame:
     spec_id: str
     content_version: str
     on: date
+    newer_now: bool = False
 
     def line(self) -> str:
         """The frame as a Dataset's repr names it, as
@@ -239,11 +258,12 @@ def read_card(reply: object, *, route: str, kind: CardKind, ref: DatasetRef) -> 
     """The card a create reply names.
 
     Raises:
-        ContractError: The reply lacks the card's id, revision or write token,
-            or its retention is malformed (`contract_violation`).
+        ContractError: The reply lacks the card's id, revision, write token or
+            fact summary, or its retention is malformed (`contract_violation`).
     """
     body = _object(reply, route, "")
     pinned, held_until = _retention(body.get("retention"), route, "/retention")
+    listed, cut = _drawn_series(body, route)
     return Card(
         _text(body, "component_id", route),
         _count(body, "revision", route),
@@ -253,7 +273,24 @@ def read_card(reply: object, *, route: str, kind: CardKind, ref: DatasetRef) -> 
         _text(body, "write_token", route),
         held_until,
         pinned,
+        listed + cut,
+        cut,
     )
+
+
+def _drawn_series(body: Mapping[str, Any], route: str) -> tuple[int, int]:
+    """The series a card reply's `fact_summary` lists, and how many it left
+    unlisted.
+
+    Raises:
+        ContractError: The reply holds no summary, or one with no list of series
+            or no count of the ones cut (`contract_violation`).
+    """
+    summary = _object(body.get("fact_summary"), route, "/fact_summary")
+    series = summary.get("series")
+    if not isinstance(series, list):
+        raise _violation(route, "/fact_summary/series", "is not a list")
+    return len(series), _count(summary, "series_cut", route, "/fact_summary", least=0)
 
 
 def card_title(body: object) -> str | None:
@@ -493,16 +530,17 @@ def chosen_slot(slot: int | None, count: int, share_id: str) -> int:
     )
 
 
-def read_slot_count(reply: object, *, route: str) -> int:
-    """The number of slots a share read lists.
+def read_slot_count(reply: object, *, route: str) -> tuple[int, bool]:
+    """The number of slots a share read lists, and whether the share is live.
 
     Raises:
         ContractError: The reply has no list of slots (`contract_violation`).
     """
-    slots = _object(reply, route, "").get("slots")
+    body = _object(reply, route, "")
+    slots = body.get("slots")
     if not isinstance(slots, list):
         raise _violation(route, "/slots")
-    return len(slots)
+    return len(slots), body.get("mode") == "live"
 
 
 def read_shown_card(
@@ -566,10 +604,12 @@ def _text(obj: Mapping[str, Any], key: str, route: str, pointer: str = "") -> st
     return value
 
 
-def _count(obj: Mapping[str, Any], key: str, route: str, pointer: str = "") -> int:
+def _count(
+    obj: Mapping[str, Any], key: str, route: str, pointer: str = "", *, least: int = 1
+) -> int:
     value = obj.get(key)
-    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-        raise _violation(route, f"{pointer}/{key}", "is not a count from 1")
+    if not isinstance(value, int) or isinstance(value, bool) or value < least:
+        raise _violation(route, f"{pointer}/{key}", f"is not a count from {least}")
     return value
 
 

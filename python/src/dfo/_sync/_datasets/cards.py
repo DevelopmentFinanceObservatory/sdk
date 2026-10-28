@@ -39,9 +39,10 @@ from dfo._datasets.publication import (
     Card,
     CardKind,
     Source,
+    StatChange,
     read_card,
 )
-from dfo._datasets.recipe import Change, Year
+from dfo._datasets.recipe import Year
 from dfo._sync._http.transport import Transport
 
 CARDS_PATH = "/presentation/components"
@@ -112,7 +113,8 @@ def _variables(
     transport: Transport, data: object, frame: Mapping[str, str]
 ) -> str | list[str]:
     """The variables the version holds, from a Dataset's rows when they name
-    them, else from DFO: one as text, several as a list."""
+    them, else from DFO: one as text, several as a sorted list, so one set of
+    variables always sends one select."""
     if isinstance(data, Dataset) and _STAT_VAR in data._table.column_names:
         found = [
             value
@@ -135,6 +137,7 @@ def _variables(
         raise client_error(
             INVALID_ARGUMENT, "The version names no variable, so a card draws nothing"
         )
+    found = sorted(dict.fromkeys(found))
     return found[0] if len(found) == 1 else found
 
 
@@ -177,7 +180,7 @@ def stat_intent(
 
     Raises:
         InvalidRequestError: `compare_to` is given without `year`, `change` is
-            not a `Change`, or a year is malformed (`invalid_argument`).
+            not a `StatChange`, or a year is malformed (`invalid_argument`).
     """
     if change not in ("difference", "percent"):
         raise client_error(
@@ -285,7 +288,7 @@ class Cards:
         *,
         year: Year | None = None,
         compare_to: Year | None = None,
-        change: Change = "difference",
+        change: StatChange = "difference",
         title: str | None = None,
     ) -> Card:
         """One headline value of a single series, with its change since another
@@ -297,8 +300,9 @@ class Cards:
                 year the series holds.
             compare_to: The year the change counts from, such as
                 `latest_year(-1)`; None shows no change.
-            change: `difference`, the shown value minus the earlier, or
-                `percent`, that difference as a percentage of the earlier.
+            change: `difference`, the default, the shown value minus the
+                earlier, in the data's unit; or `percent`, that difference as a
+                percentage of the earlier value, where 25.0 is a 25% rise.
             title: The card's title; None lets DFO title it.
 
         Raises:

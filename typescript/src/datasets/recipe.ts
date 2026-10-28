@@ -23,14 +23,12 @@
  *   `several_members`, since an operation takes one reading per side.
  */
 
-import { Dataset, stepsText } from "./dataset.ts";
-import type { DerivedStep } from "./dataset.ts";
+import { Dataset } from "./dataset.ts";
 import { clientError } from "../core/errors.ts";
 import type { InvalidRequestError } from "../core/errors.ts";
 import { isRecord } from "../core/json.ts";
 import { checkOptions, declareOptions } from "../core/options.ts";
-import { periodObject } from "../core/periods.ts";
-import type { LatestYear } from "../core/periods.ts";
+import { LatestYear, periodObject } from "../core/periods.ts";
 import { DatasetRef, isDatasetMember } from "../core/ref.ts";
 import type { Spec } from "../core/ref.ts";
 import { inline, quoted } from "../core/text.ts";
@@ -49,9 +47,10 @@ export type Pairing = Readonly<Record<string, string>> | readonly string[] | str
 /** How an operation reduces several rows to one. */
 export type Aggregation = "sum" | "mean" | "max" | "min";
 
-/** How a change is worked out: `percent`, the change as a percentage of the earlier value, or
- *  `difference`, the later value minus the earlier. */
-export type Change = "percent" | "difference";
+/** How `growth` works out a change: `relative`, the change divided by the first year's value, a
+ *  fraction where 0.25 is a 25% rise; or `difference`, the last year's value minus the first's,
+ *  in the data's unit. */
+export type GrowthChange = "relative" | "difference";
 
 /** What a recipe starts from, and what a two-reading step takes as its other reading. */
 export type Start = Spec | DatasetRef | Dataset | Recipe;
@@ -74,9 +73,10 @@ export type GrowthOptions = {
   by?: Columns;
   /** The first and last years, such as `[latestYear(-4), latestYear()]`. */
   window: readonly [start: Year, end: Year];
-  /** `percent` by default, the change relative to the first year's value as a fraction such as
-   *  0.25 for 25%; `difference` is an amount in the data's unit. */
-  change?: Change;
+  /** `relative` by default, the change divided by the first year's value, a fraction where 0.25
+   *  is a 25% rise; `difference` is the last year's value minus the first's, in the data's
+   *  unit. */
+  change?: GrowthChange;
 };
 
 export type RankOptions = {
@@ -107,9 +107,22 @@ export type ShareOfOptions = PairOptions & {
 const FILTER = declareOptions<FilterOptions>("filter", { keep: true });
 const AGGREGATE = declareOptions<AggregateOptions>("aggregate", { by: true, how: true });
 /** Growth's `change` words, in the engine's names. */
-const GROWTH_CHANGES: Readonly<Record<Change, string>> = {
-  percent: "relative",
+const GROWTH_CHANGES: Readonly<Record<GrowthChange, string>> = {
+  relative: "relative",
   difference: "absolute",
+};
+
+/** The parameters whose lists name a step's columns in the order the call named its roles, as
+ *  DFO stores them. */
+const ORDERED_BY = ["group_by", "entity_by", "rank_by"] as const;
+/** The stored parameter that holds each two-reading step's `on`, its keys the columns of `data`
+ *  and its values those of `other`. */
+const STORED_PAIRS: Readonly<Record<string, string>> = {
+  compare: "on",
+  sum_of: "on",
+  quotient_of: "denominator_by",
+  share_of: "denominator_by",
+  join: "right_keys",
 };
 
 const GROWTH = declareOptions<GrowthOptions>("growth", { by: true, window: true, change: true });
@@ -125,8 +138,8 @@ const SHARE_OF = declareOptions<ShareOfOptions>("shareOf", { by: true, on: true 
 /** The most members a ranking keeps, as DFO's rank accepts it. */
 const MAX_LIMIT = 1000;
 
-/** The most characters of the roots' names a recipe's text shows. */
-const ROOTS_SHOWN_MAX = 60;
+/** The most characters of a refused value a refusal quotes. */
+const SHOWN_MAX = 60;
 
 /** A reading a recipe starts from, as the request names it. */
 type RootNode = {
@@ -142,7 +155,9 @@ type StepNode = {
   readonly arguments: Readonly<Record<string, unknown>>;
   readonly data: TreeNode;
   readonly other: TreeNode | undefined;
-  readonly shown: DerivedStep;
+  /** The call's own options as the text form prints them, `{ by: "origin", limit: 10 }`, after
+   *  the other reading; empty when it was given none. */
+  readonly call: string;
 };
 
 type TreeNode = RootNode | StepNode;
@@ -156,6 +171,8 @@ let treeOf: (recipe: Recipe) => TreeNode;
  * whole chain in one request. Each step method takes the options of the `client.analysis`
  * call of its name, without the first reading, and returns a new recipe one step longer. A
  * two-reading step takes the other reading as a spec, `DatasetRef`, `Dataset` or `Recipe`.
+ * `String(recipe)` prints the chain as it was called, and `equals` compares the trees two
+ * recipes send.
  */
 export class Recipe {
   readonly #tree: TreeNode;
@@ -170,11 +187,16 @@ export class Recipe {
     Object.freeze(this);
   }
 
-  /** The steps in run order and what they start from, as
-   *  `Recipe(growth by origin, then rank by origin, limit 10, from spec_…)`. */
+  /** The chain as it was called, each reading by its spec id, as
+   *  `recipe(spec_…).rank({ by: "origin", limit: 10 })`. */
   toString(): string {
-    const start = clipped([...new Set(rootsOf(this.#tree))].join(", "));
-    return inline(`Recipe(${stepsText(shownOf(this.#tree), start)})`);
+    return inline(callText(this.#tree));
+  }
+
+  /** Whether `other` is a recipe that sends the same tree, so `{ by: "origin" }` and
+   *  `{ by: ["origin"] }` make equal recipes. */
+  equals(other: unknown): boolean {
+    return other instanceof Recipe && canonical(wire(this.#tree)) === canonical(wire(other.#tree));
   }
 
   /** Node's `console.log` and `util.inspect` show the recipe as `String(recipe)` does. */
@@ -216,7 +238,7 @@ export class Recipe {
       column: name("keep", column),
       values: texts("keep", values),
     }));
-    return this.#step("filter", { predicates }, { verb: "filter", by: [], limit: null });
+    return this.#step("filter", { predicates }, optionsText({ keep }));
   }
 
   /** Totals or averages the rows, keeping the members of `by` apart. */
@@ -226,26 +248,33 @@ export class Recipe {
     return this.#step(
       "aggregate",
       { group_by: groupBy, aggregation: word("how", how) },
-      { verb: "aggregate", by: groupBy, limit: null },
+      optionsText({
+        by: groupBy.length > 0 ? by : undefined,
+        how: how === "sum" ? undefined : how,
+      }),
     );
   }
 
   /**
    * The change of each member of `by` from the first to the last year of `window`.
    *
-   * @throws {InvalidRequestError} `change` is neither `percent` nor `difference`
+   * @throws {InvalidRequestError} `change` is neither `relative` nor `difference`
    *   (`invalid_argument`).
    */
   growth(options: GrowthOptions): Recipe {
-    const { by = [], window, change = "percent" } = checkOptions(GROWTH, options);
+    const { by = [], window, change = "relative" } = checkOptions(GROWTH, options);
     const entityBy = columns("by", by, true);
     if (!Object.hasOwn(GROWTH_CHANGES, change)) {
-      throw refusal("change", 'is "percent" or "difference"', change);
+      throw refusal("change", 'is "relative" or "difference"', change);
     }
     return this.#step(
       "growth",
       { ...windowOf(window), entity_by: entityBy, change: GROWTH_CHANGES[change] },
-      { verb: "growth", by: entityBy, limit: null },
+      optionsText({
+        by: entityBy.length > 0 ? by : undefined,
+        window,
+        change: change === "relative" ? undefined : change,
+      }),
     );
   }
 
@@ -268,7 +297,7 @@ export class Recipe {
       }
       args["limit"] = limit;
     }
-    return this.#step("rank", args, { verb: "rank", by: rankBy, limit: limit ?? null });
+    return this.#step("rank", args, optionsText({ by, window, how, limit }));
   }
 
   /** Divides by another reading, pairing members through `on`, such as aid per person with
@@ -278,8 +307,10 @@ export class Recipe {
   }
 
   /**
-   * Each value as a percentage of the matching row of `total`, or, with no `total`, of the
-   * total across all members of `by` in the same year, as `.shareOf({ by: "origin" })`.
+   * Each value as a percentage of the matching row of `total`, from 0 to 100 when each value is
+   * part of its total, so 25 is a quarter; or, with no `total`, of the total across all members
+   * of `by` in the same year, as `.shareOf({ by: "origin" })`. The rows' `unit` names the
+   * percentage.
    *
    * @throws {InvalidRequestError} Neither `total` nor `by` is given, or `on` is given with no
    *   total (`invalid_argument`).
@@ -308,11 +339,7 @@ export class Recipe {
       );
     }
     const numeratorBy = columns("by", by, false);
-    return this.#step(
-      "share_of",
-      { numerator_by: numeratorBy },
-      { verb: "share_of", by: numeratorBy, limit: null },
-    );
+    return this.#step("share_of", { numerator_by: numeratorBy }, optionsText({ by }));
   }
 
   /** Matches another reading's rows on their keys and keeps both sides' rows in long format,
@@ -337,10 +364,11 @@ export class Recipe {
     const numeratorBy = by === null ? [] : columns("by", by, false);
     if (by !== null) args["numerator_by"] = numeratorBy;
     if (on != null) args["on"] = pairing(on);
-    return this.#step(verb, args, { verb, by: numeratorBy, limit: null }, nodeOf(other, "other"));
+    const call = optionsText({ by: by ?? undefined, on: on ?? undefined });
+    return this.#step(verb, args, call, nodeOf(other, "other"));
   }
 
-  #step(verb: string, args: Record<string, unknown>, shown: DerivedStep, other?: TreeNode): Recipe {
+  #step(verb: string, args: Record<string, unknown>, call: string, other?: TreeNode): Recipe {
     return makeRecipe(
       Object.freeze({
         kind: "step",
@@ -348,7 +376,7 @@ export class Recipe {
         arguments: structuredClone(args),
         data: this.#tree,
         other,
-        shown: Object.freeze({ ...shown, by: Object.freeze([...shown.by]) }),
+        call,
       }),
     );
   }
@@ -418,21 +446,119 @@ function wire(node: TreeNode): Record<string, unknown> {
   return { verb: node.verb, arguments: structuredClone(node.arguments), inputs };
 }
 
-/** The steps in the order they run: each after its inputs, `data` first. */
-function shownOf(node: TreeNode): DerivedStep[] {
-  if (node.kind === "root") return [];
-  const other = node.other === undefined ? [] : shownOf(node.other);
-  return [...shownOf(node.data), ...other, node.shown];
+/** The chain that makes `node`, as it was called: `recipe(spec_…).rank({ … })`. */
+function callText(node: TreeNode): string {
+  if (node.kind === "root") return `recipe(${node.name})`;
+  const other =
+    node.other === undefined
+      ? ""
+      : node.other.kind === "root"
+        ? node.other.name
+        : callText(node.other);
+  const args = [other, node.call].filter((text) => text !== "").join(", ");
+  // The method a step's verb is called by: `quotient_of` is `quotientOf`.
+  const method = node.verb.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
+  return `${callText(node.data)}.${method}(${args})`;
 }
 
-function rootsOf(node: TreeNode): string[] {
-  if (node.kind === "root") return [node.name];
-  const other = node.other === undefined ? [] : rootsOf(node.other);
-  return [...rootsOf(node.data), ...other];
+/** The options given, as a call writes them; undefined and null are ones left out. */
+function optionsText(options: Readonly<Record<string, unknown>>): string {
+  const given = Object.entries(options).filter(([, value]) => value != null);
+  if (given.length === 0) return "";
+  return `{ ${given.map(([key, value]) => `${key}: ${valueText(value)}`).join(", ")} }`;
+}
+
+/** A value as code writes it: text quoted, a latest year as its call, arrays and objects in
+ *  their literal forms. */
+function valueText(value: unknown): string {
+  if (value instanceof LatestYear) return String(value);
+  if (Array.isArray(value)) return `[${value.map(valueText).join(", ")}]`;
+  if (isRecord(value)) {
+    const entries = Object.entries(value).map(
+      ([key, item]) =>
+        `${/^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key)}: ${valueText(item)}`,
+    );
+    return entries.length === 0 ? "{}" : `{ ${entries.join(", ")} }`;
+  }
+  return quoted(value);
+}
+
+/** A tree as JSON with every object's keys sorted, so equal trees write equal text. */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (isRecord(value)) {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+  }
+  // A tree holds JSON values alone, so undefined stands only for a missing member.
+  return value === undefined ? "null" : JSON.stringify(value);
+}
+
+/**
+ * The role word `chain` named each of DFO's columns by, such as
+ * `{ financingRecipient: "destination" }`, read step by step from the tree the client sent and
+ * the tree DFO stored for it. A column the call named by itself is left out, as is one two
+ * words name and one whose word the stored tree does not place, such as a role of a step whose
+ * `by` and `on` DFO merged into one sorted list.
+ */
+export function columnRoles(chain: Recipe, stored: unknown): Record<string, string> {
+  const found = new Map<string, Set<string>>();
+  noteRoles(treeOf(chain), stored, found);
+  const roles: Record<string, string> = {};
+  for (const [column, words] of found) {
+    const [word] = words;
+    if (words.size === 1 && word !== undefined && word !== column) roles[column] = word;
+  }
+  return roles;
+}
+
+/** Adds to `found` the columns a step and its inputs name each word by. */
+function noteRoles(node: TreeNode, stored: unknown, found: Map<string, Set<string>>): void {
+  if (node.kind !== "step" || !isRecord(stored)) return;
+  const opSpec = stored["op_spec"];
+  const inputs = stored["inputs"];
+  if (!isRecord(opSpec) || !isRecord(inputs) || !isRecord(opSpec["parameters"])) return;
+  const parameters = opSpec["parameters"];
+  const note = (words: unknown, columnsOf: unknown): void => {
+    if (!Array.isArray(words) || !Array.isArray(columnsOf)) return;
+    if (words.length !== columnsOf.length) return;
+    words.forEach((word: unknown, index) => {
+      const column: unknown = columnsOf[index];
+      if (typeof word !== "string" || typeof column !== "string") return;
+      found.set(column, (found.get(column) ?? new Set<string>()).add(word));
+    });
+  };
+  const args = node.arguments;
+  for (const name of ORDERED_BY) note(args[name], parameters[name]);
+  const on = args["on"];
+  const pairs = Array.isArray(on)
+    ? Object.fromEntries(on.map((word: unknown) => [String(word), word]))
+    : on;
+  if (isRecord(pairs)) {
+    const storedPairs = parameters[STORED_PAIRS[node.verb] ?? ""];
+    if (isRecord(storedPairs)) {
+      note(Object.keys(pairs), Object.keys(storedPairs));
+      note(Object.values(pairs), Object.values(storedPairs));
+    } else if (node.verb === "join" && Object.keys(pairs).length === 1) {
+      // A join whose pair names one column on both sides stores it alone.
+      const [[key, value]] = Object.entries(pairs) as [[string, unknown]];
+      note([key], parameters["join_keys"]);
+      note([value], parameters["join_keys"]);
+    }
+  } else if (Object.hasOwn(args, "numerator_by")) {
+    note(args["numerator_by"], parameters["numerator_by"]);
+  }
+  // Compare reads `data` as its right frame, as DFO's runner places it.
+  const dataSlot = node.verb === "compare" ? "right_frame_ref" : "frame_ref";
+  noteRoles(node.data, inputs[dataSlot], found);
+  if (node.other !== undefined) {
+    const otherSlots = Object.keys(inputs).filter((slot) => slot !== dataSlot);
+    if (otherSlots.length === 1) noteRoles(node.other, inputs[otherSlots[0]!], found);
+  }
 }
 
 const clipped = (text: string): string =>
-  text.length <= ROOTS_SHOWN_MAX ? text : `${text.slice(0, ROOTS_SHOWN_MAX - 1).trimEnd()}…`;
+  text.length <= SHOWN_MAX ? text : `${text.slice(0, SHOWN_MAX - 1).trimEnd()}…`;
 
 const invalid = (detail: string): InvalidRequestError =>
   clientError("invalid_argument", { detail });

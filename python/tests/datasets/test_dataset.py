@@ -672,7 +672,8 @@ def test_a_derived_dataset_prints_its_steps_period_and_left_out_series() -> None
         "  Missing data: 3 series left out · data.left_out",
         "  Version: ocv_422e3d46d9e05f9ea8027c97c0c2f58b (exact), held until 27 "
         "November 2026, not pinned",
-        "  Rows: 1",
+        # A frame holds time_period as text, which a filter on 2022 would miss.
+        '  Rows: 1, time_period as text, such as "2022" or "2021/2022"',
         "  Keep: data.save(path) · newest later: dfo.fetch(data.ref, latest=True)>",
     ]
     assert repr(ranked).splitlines()[1:3] == [
@@ -967,7 +968,8 @@ def test_repr_leads_with_the_sentence() -> None:
     assert text.startswith("<Dataset " + EXPECTED["members"][0]["sentence"])
     assert "Source: OECD Creditor Reporting System (CRS)" in text
     assert "Version: cv_bf242138f8d0a892c97da9373d1626f4" in text
-    assert "Rows: 4" in text
+    # The long layout holds time_period as integers, which the Rows line names.
+    assert "  Rows: 4, time_period as integer years\n" in text
     assert "(exact)" in text
     assert text.splitlines()[-1].startswith("  Keep: data.save(")
 

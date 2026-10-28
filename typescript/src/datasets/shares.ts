@@ -18,7 +18,8 @@
  * - `snapshot(share)` sends `POST /presentation/shares/{id}/snapshot`, which fixes a live share
  *   as a snapshot in place, each slot keeping the frame it serves now. A snapshot answers as it
  *   is. No route turns a snapshot live.
- * - `unshare(share)` sends `DELETE /presentation/shares/{id}`, which answers 204.
+ * - `unshare(share)` sends `DELETE /presentation/shares/{id}`, which answers 204, and answers 204
+ *   again to a token holder who deletes it once more.
  * - `history(share)` reads the public `GET /presentation/shares/{id}/history`: every frame the
  *   share's slots served, newest first.
  *
@@ -49,9 +50,9 @@ import {
   today,
   writeTokenOf,
 } from "./publication.ts";
-import type { Served, ShownFrame } from "./publication.ts";
+import type { Served, ShareUrl, ShownFrame } from "./publication.ts";
 import type { Wait } from "./operation.ts";
-import { clientError } from "../core/errors.ts";
+import { clientError, InvalidRequestError, optionsOf } from "../core/errors.ts";
 import { checkOptions, declareOptions } from "../core/options.ts";
 import { quoted } from "../core/text.ts";
 import { describing } from "../core/trace.ts";
@@ -66,7 +67,7 @@ export type ShareOptions = {
   latest: boolean;
   /** The live share whose cards these replace under its URLs: the `Share` a share call
    *  returned, or the URL of its page or embed. */
-  replace?: Share | string;
+  replace?: Share | ShareUrl;
   /** The `shw_` token of the share `replace` names, when it is a URL or a `Share` made without
    *  its token. */
   writeToken?: string;
@@ -133,12 +134,9 @@ export async function share(
   }
   const token = writeTokenOf(replace, writeToken);
   const path = `${SHARES_PATH}/${id}`;
-  const response = await transport.request({
-    method: "PUT",
-    path,
-    json: { cards: shown },
-    ...tokenHeader(token),
-  });
+  const response = await withToken(id, () =>
+    transport.request({ method: "PUT", path, json: { cards: shown }, ...tokenHeader(token) }),
+  );
   return shareOf(response, `PUT ${path}`, token);
 }
 
@@ -158,17 +156,20 @@ export async function snapshot(
   const id = shareIdOf(target);
   const token = writeTokenOf(target, writeToken);
   const path = `${SHARES_PATH}/${id}/snapshot`;
-  const response = await transport.request({ method: "POST", path, ...tokenHeader(token) });
+  const response = await withToken(id, () =>
+    transport.request({ method: "POST", path, ...tokenHeader(token) }),
+  );
   return shareOf(response, `POST ${path}`, token);
 }
 
 /**
- * Takes the share `target` names down.
+ * Takes the share `target` names down. A token holder who takes it down again succeeds, so a
+ * retry is safe.
  *
  * @throws {InvalidRequestError} `target` or `writeToken` is malformed (`invalid_argument`), and
  *   no request is sent; or no token was given (`write_token_required`).
  * @throws {PermissionDeniedError} The token is not the share's (`write_token_invalid`).
- * @throws {NotFoundError} No share has that id, or it was taken down (`not_found`).
+ * @throws {NotFoundError} No share has that id (`not_found`).
  */
 export async function unshare(
   transport: Transport,
@@ -179,11 +180,9 @@ export async function unshare(
   const id = shareIdOf(target);
   const token = writeTokenOf(target, writeToken);
   // DELETE answers 204 with no body, so its bytes are read as they are.
-  await transport.requestRaw({
-    method: "DELETE",
-    path: `${SHARES_PATH}/${id}`,
-    ...tokenHeader(token),
-  });
+  await withToken(id, () =>
+    transport.requestRaw({ method: "DELETE", path: `${SHARES_PATH}/${id}`, ...tokenHeader(token) }),
+  );
 }
 
 /**
@@ -222,12 +221,15 @@ export async function shownFrame(
   checkSlot(slot);
   const asked = asOf === undefined || asOf === null ? undefined : asOfMoment(asOf);
   let count: number;
+  let live: boolean;
   if (target instanceof Share) {
-    count = target.dataUrls.length;
+    [count, live] = [target.dataUrls.length, target.latest];
   } else {
     const path = `${SHARES_PATH}/${shareId}`;
     const response = await transport.request({ path, ...within(wait) });
-    count = describing(response.traceId, () => readSlotCount(response.body, `GET ${path}`));
+    ({ count, live } = describing(response.traceId, () =>
+      readSlotCount(response.body, `GET ${path}`),
+    ));
   }
   const number = chosenSlot(slot ?? undefined, count, shareId);
   if (asked === undefined) {
@@ -243,7 +245,7 @@ export async function shownFrame(
           "so it has no rows to fetch.",
       });
     }
-    return { shareId, slot: number, title, ...frame, on: today() };
+    return { shareId, slot: number, title, ...frame, on: today(), newerNow: false };
   }
   const { moment, day } = asked;
   const served = await history(transport, target, wait);
@@ -267,6 +269,7 @@ export async function shownFrame(
     specId: entry.specId,
     contentVersion: entry.contentVersion,
     on: day,
+    newerNow: live,
   };
 }
 
@@ -289,6 +292,28 @@ function shownCards(cards: unknown): { component_id: string; revision: number }[
     });
   }
   return list.map((card) => ({ component_id: card.id, revision: card.revision }));
+}
+
+/**
+ * Sends a change of share `shareId` with its write token.
+ *
+ * @throws {InvalidRequestError} No token was given (`write_token_required`); the message names
+ *   the option that takes it.
+ */
+async function withToken<T>(shareId: string, send: () => Promise<T>): Promise<T> {
+  try {
+    return await send();
+  } catch (error) {
+    if (!(error instanceof InvalidRequestError) || error.code !== "write_token_required") {
+      throw error;
+    }
+    throw new InvalidRequestError({
+      ...optionsOf(error),
+      message:
+        `Changing share ${shareId} needs its write token: pass { writeToken: "shw_…" }, the ` +
+        "token on the Share client.share returned, which DFO gives only when the share is made.",
+    });
+  }
 }
 
 const tokenHeader = (token: string | null): { headers?: Record<string, string> } =>

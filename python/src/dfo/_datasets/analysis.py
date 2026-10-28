@@ -74,12 +74,13 @@ from dfo._datasets.fetch import download, holding
 from dfo._datasets.operation import poll_interval, still_running
 from dfo._datasets.recipe import (
     Aggregation,
-    Change,
     Columns,
+    GrowthChange,
     Pairing,
     Recipe,
     Start,
     Year,
+    column_roles,
     recipe,
 )
 from dfo._http.hooks import async_offload
@@ -141,7 +142,14 @@ async def run_recipe(
     member = await _analyse(
         transport, {"tree": tree, "latest": latest}, deadline=deadline, timeout=timeout
     )
-    return await _read(transport, member, strict=strict, deadline=deadline, cache=cache)
+    return await _read(
+        transport,
+        member,
+        strict=strict,
+        deadline=deadline,
+        cache=cache,
+        chain=target,
+    )
 
 
 async def fetch_derived(
@@ -390,9 +398,11 @@ async def _read(
     strict: bool,
     deadline: float | None,
     cache: Cache | None,
+    chain: Recipe | None = None,
 ) -> Dataset:
     """The derived frame `member` names, from its manifest and its file, which
-    `cache` holds under its digest once read."""
+    `cache` holds under its digest once read. The Dataset names each column by
+    the role word `chain`, the recipe that made it, named it by."""
     path = f"/datasets/derived/{member.spec.spec_id}/{member.content_version}"
     response = await transport.request("GET", path, deadline=deadline)
     manifest = response_json(response)
@@ -412,6 +422,13 @@ async def _read(
             )
             if cache is not None:
                 await async_offload(cache.put_bytes, digest, data)
+    recipe_object = manifest.get("recipe")
+    tree = recipe_object.get("tree") if isinstance(recipe_object, Mapping) else None
+    roles = (
+        column_roles(chain, tree)
+        if chain is not None and isinstance(tree, Mapping)
+        else None
+    )
     with describing(trace_id):
         dataset = await async_offload(
             derived_dataset,
@@ -420,6 +437,7 @@ async def _read(
             data,
             cache=cache,
             caller=transport.caller,
+            roles=roles,
         )
     if dataset.left_out:
         _left_out(dataset, strict=strict)
@@ -446,7 +464,10 @@ class AsyncAnalysis:
 
     Each call takes a `Spec`, `DatasetRef`, `Dataset` or `Recipe` and returns a
     derived `Dataset`; `dfo.analysis.recipe` describes a longer chain to fetch
-    in one request.
+    in one request. Each takes `strict` and `timeout` as `fetch` does: `strict`
+    raises the `SeriesLeftOutWarning` instead of issuing it, and `timeout` is
+    the longest the call takes, in seconds, the read included, while None waits
+    as long as the readings take to build.
     """
 
     def __init__(self, transport: AsyncTransport, cache: Cache | None = None) -> None:
@@ -460,11 +481,21 @@ class AsyncAnalysis:
             "share_of, join, sum_of, compare>"
         )
 
-    async def _run(self, chain: Recipe) -> Dataset:
-        return await run_recipe(self._transport, chain, cache=self._cache)
+    async def _run(
+        self, chain: Recipe, *, strict: bool, timeout: float | None
+    ) -> Dataset:
+        return await run_recipe(
+            self._transport, chain, strict=strict, timeout=timeout, cache=self._cache
+        )
 
     async def filter(
-        self, data: Start, /, *, keep: Mapping[str, str | Sequence[str]]
+        self,
+        data: Start,
+        /,
+        *,
+        keep: Mapping[str, str | Sequence[str]],
+        strict: bool = False,
+        timeout: float | None = None,
     ) -> Dataset:
         """Keep the rows whose role or column holds one of the values, as
         `keep={"destination": ["country/KEN"]}`.
@@ -472,11 +503,20 @@ class AsyncAnalysis:
         Raises:
             InvalidRequestError: `keep` is malformed, and no request is sent
                 (`invalid_argument`); or DFO refused the step.
+            DfoTimeoutError: `timeout` passed (`deadline_exceeded`).
         """
-        return await self._run(recipe(data).filter(keep=keep))
+        chain = recipe(data).filter(keep=keep)
+        return await self._run(chain, strict=strict, timeout=timeout)
 
     async def aggregate(
-        self, data: Start, /, *, by: Columns = (), how: Aggregation = "sum"
+        self,
+        data: Start,
+        /,
+        *,
+        by: Columns = (),
+        how: Aggregation = "sum",
+        strict: bool = False,
+        timeout: float | None = None,
     ) -> Dataset:
         """Totals or averages, keeping the members of `by` apart.
 
@@ -484,8 +524,11 @@ class AsyncAnalysis:
             data: The reading.
             by: The roles whose members stay apart, such as `"origin"`.
             how: `sum`, `mean`, `max` or `min`.
+            strict: Raise the `SeriesLeftOutWarning` instead of issuing it.
+            timeout: The longest the call takes, in seconds; None waits.
         """
-        return await self._run(recipe(data).aggregate(by=by, how=how))
+        chain = recipe(data).aggregate(by=by, how=how)
+        return await self._run(chain, strict=strict, timeout=timeout)
 
     async def growth(
         self,
@@ -494,13 +537,16 @@ class AsyncAnalysis:
         *,
         by: Columns = (),
         window: tuple[Year, Year],
-        change: Change = "percent",
+        change: GrowthChange = "relative",
+        strict: bool = False,
+        timeout: float | None = None,
     ) -> Dataset:
         """Change from the first to the last year of `window`, for each member of
-        `by`: with `percent`, the change relative to the first year's value as a
-        fraction (0.25 is 25%); with `difference`, an amount in the data's
-        unit."""
-        return await self._run(recipe(data).growth(by=by, window=window, change=change))
+        `by`: with `relative`, the change divided by the first year's value, a
+        fraction where 0.25 is a 25% rise; with `difference`, the last year's
+        value minus the first's, in the data's unit."""
+        chain = recipe(data).growth(by=by, window=window, change=change)
+        return await self._run(chain, strict=strict, timeout=timeout)
 
     async def rank(
         self,
@@ -511,6 +557,8 @@ class AsyncAnalysis:
         window: tuple[Year, Year] | None = None,
         how: Aggregation | None = None,
         limit: int | None = None,
+        strict: bool = False,
+        timeout: float | None = None,
     ) -> Dataset:
         """Order the members of `by`, largest first, and keep the top `limit`.
 
@@ -521,17 +569,26 @@ class AsyncAnalysis:
                 `(latest_year(), latest_year())`; None ranks every year.
             how: How each member's rows reduce to one value first.
             limit: The most members kept, from 1 to 1000.
+            strict: Raise the `SeriesLeftOutWarning` instead of issuing it.
+            timeout: The longest the call takes, in seconds; None waits.
         """
-        return await self._run(
-            recipe(data).rank(by=by, window=window, how=how, limit=limit)
-        )
+        chain = recipe(data).rank(by=by, window=window, how=how, limit=limit)
+        return await self._run(chain, strict=strict, timeout=timeout)
 
     async def quotient_of(
-        self, data: Start, other: Start, /, *, on: Pairing | None = None
+        self,
+        data: Start,
+        other: Start,
+        /,
+        *,
+        on: Pairing | None = None,
+        strict: bool = False,
+        timeout: float | None = None,
     ) -> Dataset:
         """Divide one reading by another, pairing roles through `on`, such as
         aid per person with `on={"destination": "place"}`."""
-        return await self._run(recipe(data).quotient_of(other, on=on))
+        chain = recipe(data).quotient_of(other, on=on)
+        return await self._run(chain, strict=strict, timeout=timeout)
 
     async def share_of(
         self,
@@ -541,27 +598,55 @@ class AsyncAnalysis:
         *,
         by: Columns | None = None,
         on: Pairing | None = None,
+        strict: bool = False,
+        timeout: float | None = None,
     ) -> Dataset:
-        """Each value as a percentage of the matching row of `total`, or of the
-        total across all members of `by` in the same year."""
-        return await self._run(recipe(data).share_of(total, by=by, on=on))
+        """Each value as a percentage of the matching row of `total`, from 0 to
+        100 when each value is part of its total, so 25.0 is a quarter; or of
+        the total across all members of `by` in the same year."""
+        chain = recipe(data).share_of(total, by=by, on=on)
+        return await self._run(chain, strict=strict, timeout=timeout)
 
     async def join(
-        self, data: Start, other: Start, /, *, on: Pairing | None = None
+        self,
+        data: Start,
+        other: Start,
+        /,
+        *,
+        on: Pairing | None = None,
+        strict: bool = False,
+        timeout: float | None = None,
     ) -> Dataset:
         """Both readings' matched rows in long format, told apart by
         `stat_var`."""
-        return await self._run(recipe(data).join(other, on=on))
+        chain = recipe(data).join(other, on=on)
+        return await self._run(chain, strict=strict, timeout=timeout)
 
     async def sum_of(
-        self, data: Start, other: Start, /, *, on: Pairing | None = None
+        self,
+        data: Start,
+        other: Start,
+        /,
+        *,
+        on: Pairing | None = None,
+        strict: bool = False,
+        timeout: float | None = None,
     ) -> Dataset:
         """The matching rows of two readings added over the years both hold."""
-        return await self._run(recipe(data).sum_of(other, on=on))
+        chain = recipe(data).sum_of(other, on=on)
+        return await self._run(chain, strict=strict, timeout=timeout)
 
     async def compare(
-        self, data: Start, other: Start, /, *, on: Pairing | None = None
+        self,
+        data: Start,
+        other: Start,
+        /,
+        *,
+        on: Pairing | None = None,
+        strict: bool = False,
+        timeout: float | None = None,
     ) -> Dataset:
         """`data` minus `other` for each matching member over the years both
         hold. DFO refuses two different units."""
-        return await self._run(recipe(data).compare(other, on=on))
+        chain = recipe(data).compare(other, on=on)
+        return await self._run(chain, strict=strict, timeout=timeout)

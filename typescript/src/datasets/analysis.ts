@@ -33,7 +33,7 @@ import { derivedDataset } from "./derived.ts";
 import { download, invalid } from "./fetch.ts";
 import { after, BUILD_READ_TIMEOUT_MS, pollInterval, waitFor } from "./operation.ts";
 import type { Wait } from "./operation.ts";
-import { isStart, recipe } from "./recipe.ts";
+import { columnRoles, isStart, recipe } from "./recipe.ts";
 import type {
   AggregateOptions,
   FilterOptions,
@@ -46,7 +46,7 @@ import type {
 import type { Recipe } from "./recipe.ts";
 import { clientError, DfoError, optionsOf, VersionUnavailableError } from "../core/errors.ts";
 import type { ContractError, DfoTimeoutError } from "../core/errors.ts";
-import { isRecord } from "../core/json.ts";
+import { isRecord, present } from "../core/json.ts";
 import { DatasetRef, FormatError, isDerived } from "../core/ref.ts";
 import type { DerivedRefMember } from "../core/ref.ts";
 import { describing } from "../core/trace.ts";
@@ -80,6 +80,26 @@ export type AnalysisFetchOptions = {
   readonly signal?: AbortSignal | undefined;
 };
 
+/** How a `client.analysis` call runs, as `client.fetch` takes the same options. */
+export type RunOptions = {
+  /** Raises the `SeriesLeftOutWarning` instead of passing it to the warning handler. */
+  strict?: boolean;
+  /** The longest the call takes, the read included, in milliseconds. None by default: the call
+   *  waits as long as the readings take to build. Past it the call raises `DfoTimeoutError`
+   *  (`deadline_exceeded`). */
+  timeout?: number;
+  /** Aborts the call, rejecting with `signal.reason`. */
+  signal?: AbortSignal;
+};
+
+/** A call's options split into the step's own and the run's. Options that are not an object
+ *  stay with the step, whose check refuses them. */
+function split<T>(options: T & RunOptions): [T, AnalysisFetchOptions] {
+  if (!isRecord(options)) return [options, {}];
+  const { strict, timeout, signal, ...step } = options;
+  return [step as T, present({ strict, timeout, signal })];
+}
+
 /**
  * Runs `target` on DFO and reads the frame it stores.
  *
@@ -99,7 +119,7 @@ export async function runRecipe(
   const tree = target.tree();
   const wait = waitFor(transport, options);
   const member = await analyse(transport, { tree, latest: options.latest ?? false }, wait);
-  return read(transport, member, options.strict ?? false, wait);
+  return read(transport, member, options.strict ?? false, wait, target);
 }
 
 /**
@@ -298,12 +318,14 @@ const violation = (pointer: string, cause?: unknown): ContractError =>
     cause,
   });
 
-/** The derived frame `member` names, from its manifest and its file. */
+/** The derived frame `member` names, from its manifest and its file. The dataset names each
+ *  column by the role word `chain`, the recipe that made it, named it by. */
 async function read(
   transport: Transport,
   member: DerivedRefMember,
   strict: boolean,
   wait: Wait,
+  chain?: Recipe,
 ): Promise<Dataset> {
   const path = `/datasets/derived/${member.spec.spec_id}/${member.contentVersion}`;
   const { deadline, signal } = wait;
@@ -317,7 +339,10 @@ async function read(
   }
   const target = { path: `${path}/file?${FRAME_FILE}` };
   const data = await download(transport, target, member.digest, wait);
-  const { dataset, facts } = await derivedDataset(member, manifest, data, response.traceId);
+  const recipeObject = manifest["recipe"];
+  const tree = isRecord(recipeObject) ? recipeObject["tree"] : undefined;
+  const roles = chain === undefined ? {} : columnRoles(chain, tree);
+  const { dataset, facts } = await derivedDataset(member, manifest, data, response.traceId, roles);
   if (facts.leftOut.length > 0) noteLeftOut(transport, facts, strict);
   return dataset;
 }
@@ -339,7 +364,8 @@ function noteLeftOut(transport: Transport, facts: DerivedFacts, strict: boolean)
 /**
  * DFO's operations, each run at once on DFO as a recipe of one step. Each call takes a spec,
  * `DatasetRef`, `Dataset` or `Recipe` and returns a derived `Dataset`; `recipe(start)` describes
- * a longer chain to fetch in one request with `client.fetch`.
+ * a longer chain to fetch in one request with `client.fetch`. Each takes `strict`, `timeout` and
+ * `signal` beside its own options, as `client.fetch` does.
  */
 export class Analysis {
   readonly #transport: Transport;
@@ -359,8 +385,8 @@ export class Analysis {
     return this.toString();
   }
 
-  #run(chain: Recipe): Promise<Dataset> {
-    return runRecipe(this.#transport, chain);
+  #run(chain: Recipe, run: AnalysisFetchOptions): Promise<Dataset> {
+    return runRecipe(this.#transport, chain, run);
   }
 
   /**
@@ -369,71 +395,94 @@ export class Analysis {
    *
    * @throws {InvalidRequestError} `keep` is malformed, and no request is sent
    *   (`invalid_argument`); or DFO refused the step.
+   * @throws {DfoTimeoutError} The `timeout` passed (`deadline_exceeded`).
    */
-  async filter(data: Start, options: FilterOptions): Promise<Dataset> {
-    return this.#run(recipe(data).filter(options));
+  async filter(data: Start, options: FilterOptions & RunOptions): Promise<Dataset> {
+    const [step, run] = split(options);
+    return this.#run(recipe(data).filter(step), run);
   }
 
   /** Totals or averages, keeping the members of `by` apart: `how` is `sum` by default, or
    *  `mean`, `max` or `min`. */
-  async aggregate(data: Start, options: AggregateOptions = {}): Promise<Dataset> {
-    return this.#run(recipe(data).aggregate(options));
+  async aggregate(data: Start, options: AggregateOptions & RunOptions = {}): Promise<Dataset> {
+    const [step, run] = split(options);
+    return this.#run(recipe(data).aggregate(step), run);
   }
 
   /** Change from the first to the last year of `window`, for each member of `by`: with
-   *  `percent`, the default, the change relative to the first year's value as a fraction (0.25
-   *  is 25%); with `difference`, an amount in the data's unit. */
-  async growth(data: Start, options: GrowthOptions): Promise<Dataset> {
-    return this.#run(recipe(data).growth(options));
+   *  `relative`, the default, the change divided by the first year's value, a fraction where
+   *  0.25 is a 25% rise; with `difference`, the last year's value minus the first's, in the
+   *  data's unit. */
+  async growth(data: Start, options: GrowthOptions & RunOptions): Promise<Dataset> {
+    const [step, run] = split(options);
+    return this.#run(recipe(data).growth(step), run);
   }
 
   /** Orders the members of `by`, largest first, and keeps the top `limit`, from 1 to 1000. A
    *  `window` such as `[latestYear(), latestYear()]` ranks those years; none ranks every year. */
-  async rank(data: Start, options: RankOptions): Promise<Dataset> {
-    return this.#run(recipe(data).rank(options));
+  async rank(data: Start, options: RankOptions & RunOptions): Promise<Dataset> {
+    const [step, run] = split(options);
+    return this.#run(recipe(data).rank(step), run);
   }
 
   /** Divides one reading by another, pairing roles through `on`, such as aid per person with
    *  `{ on: { destination: "place" } }`. */
-  async quotientOf(data: Start, other: Start, options: PairOptions = {}): Promise<Dataset> {
-    return this.#run(recipe(data).quotientOf(other, options));
+  async quotientOf(
+    data: Start,
+    other: Start,
+    options: PairOptions & RunOptions = {},
+  ): Promise<Dataset> {
+    const [step, run] = split(options);
+    return this.#run(recipe(data).quotientOf(other, step), run);
   }
 
   /**
-   * Each value as a percentage of the matching row of `total`, or of the total across all
-   * members of `by` in the same year, as `client.analysis.shareOf(data, { by: "origin" })`.
+   * Each value as a percentage of the matching row of `total`, from 0 to 100 when each value is
+   * part of its total, so 25 is a quarter; or of the total across all members of `by` in the
+   * same year, as `client.analysis.shareOf(data, { by: "origin" })`.
    *
    * @throws {InvalidRequestError} Neither `total` nor `by` is given (`invalid_argument`); no
    *   request is sent.
    */
-  async shareOf(data: Start, options: ShareOfOptions): Promise<Dataset>;
-  async shareOf(data: Start, total: Start, options?: ShareOfOptions): Promise<Dataset>;
+  async shareOf(data: Start, options: ShareOfOptions & RunOptions): Promise<Dataset>;
+  async shareOf(data: Start, total: Start, options?: ShareOfOptions & RunOptions): Promise<Dataset>;
   async shareOf(
     data: Start,
-    total?: Start | ShareOfOptions,
-    options?: ShareOfOptions,
+    total?: Start | (ShareOfOptions & RunOptions),
+    options?: ShareOfOptions & RunOptions,
   ): Promise<Dataset> {
     const chain = recipe(data);
-    if (isStart(total)) return this.#run(chain.shareOf(total, options));
+    if (isStart(total)) {
+      const [step, run] = split(options ?? {});
+      return this.#run(chain.shareOf(total, step), run);
+    }
     if (options !== undefined) {
       throw invalid("shareOf takes the total reading second, then its options.");
     }
-    return this.#run(chain.shareOf(total ?? {}));
+    const [step, run] = split(total ?? {});
+    return this.#run(chain.shareOf(step), run);
   }
 
   /** Both readings' matched rows in long format, told apart by `stat_var`. */
-  async join(data: Start, other: Start, options: PairOptions = {}): Promise<Dataset> {
-    return this.#run(recipe(data).join(other, options));
+  async join(data: Start, other: Start, options: PairOptions & RunOptions = {}): Promise<Dataset> {
+    const [step, run] = split(options);
+    return this.#run(recipe(data).join(other, step), run);
   }
 
   /** The matching rows of two readings added over the years both hold. */
-  async sumOf(data: Start, other: Start, options: PairOptions = {}): Promise<Dataset> {
-    return this.#run(recipe(data).sumOf(other, options));
+  async sumOf(data: Start, other: Start, options: PairOptions & RunOptions = {}): Promise<Dataset> {
+    const [step, run] = split(options);
+    return this.#run(recipe(data).sumOf(other, step), run);
   }
 
   /** `data` minus `other` for each matching member over the years both hold. DFO refuses two
    *  different units. */
-  async compare(data: Start, other: Start, options: PairOptions = {}): Promise<Dataset> {
-    return this.#run(recipe(data).compare(other, options));
+  async compare(
+    data: Start,
+    other: Start,
+    options: PairOptions & RunOptions = {},
+  ): Promise<Dataset> {
+    const [step, run] = split(options);
+    return this.#run(recipe(data).compare(other, step), run);
   }
 }

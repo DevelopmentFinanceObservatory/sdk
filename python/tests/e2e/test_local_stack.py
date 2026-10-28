@@ -427,11 +427,6 @@ def test_10_pin_refuses_a_derived_frame_and_pins_a_version(
     assert pinned.ref == oda.ref
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="dfo-apis orders a table's rows by the order of select.stat_var, so "
-    "one intent in two orders draws two tables",
-)
 def test_11_card_variables_are_a_set(client: Client, population: Dataset) -> None:
     """Two creates of one table intent whose variables come in either order draw
     the same table. Each SDK lists a frame's variables in its own read order."""

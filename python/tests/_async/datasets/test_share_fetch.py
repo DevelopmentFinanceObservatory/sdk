@@ -12,6 +12,7 @@ frame `analysis-rank-*` DFO computed. `scripts/gen_sync.py` derives
 """
 
 import json
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -233,9 +234,18 @@ async def test_as_of_reads_the_newest_frame_the_slot_first_served_by_then(
     assert f'slot 2 "Malaria grants by year", on {day}' in repr(data)
 
 
-async def test_a_slot_whose_dataset_frame_expired_is_unavailable_naming_the_newest() -> (
-    None
-):
+@pytest.mark.parametrize(
+    ("latest", "as_of", "hinted"),
+    [
+        (True, None, False),
+        (True, datetime(2026, 10, 28, 17, 13, 42, 427000, tzinfo=UTC), True),
+        (False, datetime(2026, 10, 28, 17, 13, 42, 427000, tzinfo=UTC), False),
+    ],
+    ids=["now", "as-of-live", "as-of-snapshot"],
+)
+async def test_a_slot_whose_dataset_frame_expired_is_unavailable_naming_the_newest(
+    latest: bool, as_of: datetime | None, hinted: bool
+) -> None:
     newest = "cv_" + "c" * 32
     versions = {
         "spec_id": POSTED_ID,
@@ -249,17 +259,26 @@ async def test_a_slot_whose_dataset_frame_expired_is_unavailable_naming_the_newe
         "next_cursor": None,
         "complete": True,
     }
+    shown = (
+        [slot_card(dataset_frame())]
+        if as_of is None
+        else [slot_history(), recorded("card-read")]
+    )
     server = Server(
-        slot_card(dataset_frame()),
+        *shown,
         problem(410, "artifact_expired"),
         json_response(200, versions),
     )
+    share = replace(three_slots(), latest=latest)
     async with make(server) as transport:
         with pytest.raises(VersionUnavailableError) as caught:
-            await fetch(transport, three_slots(), slot=2)
+            await fetch(transport, share, slot=2, as_of=as_of)
     assert caught.value.code == "artifact_expired"
     assert caught.value.newest_version == newest
-    assert "fetch(share, slot=2)" in str(caught.value)
+    # Only a live share read at an earlier moment can show other data now; any
+    # other read of what the slot shows now would fail the same way.
+    assert ("fetch(share, slot=2)" in str(caught.value)) is hinted
+    assert ("cannot show slot 2" in str(caught.value)) is not hinted
     assert server.calls()[-1] == f"GET {BASE}/datasets/{POSTED_ID}/versions"
 
 

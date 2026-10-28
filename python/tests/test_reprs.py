@@ -362,7 +362,7 @@ ROWS: list[tuple[str, Callable[[], object], str, bool]] = [
     (
         "recipe",
         lambda: recipe(Spec(SPEC_ID, {})).rank(by="origin", limit=10),
-        f"Recipe(rank by origin, limit 10, from {SPEC_ID})",
+        f"recipe({SPEC_ID}).rank(by='origin', limit=10)",
         True,
     ),
     (
@@ -374,8 +374,38 @@ ROWS: list[tuple[str, Callable[[], object], str, bool]] = [
             "endpoint_missing",
             1,
         ),
-        "LeftOutSeries(financingRecipient=country/NGA: growth dropped 1 row from data, "
+        "LeftOutSeries(financingRecipient=country/NGA: growth dropped 1 row from "
+        "data, endpoint_missing)",
+        True,
+    ),
+    (
+        "left-out-series-named-by-role",
+        lambda: LeftOutSeries(
+            {
+                "stat_var": "dcid:ops_" + "f72f" * 8,
+                "financingRecipient": "country/NGA",
+            },
+            LeftOutStep("growth", 0),
+            "data",
+            "endpoint_missing",
+            1,
+            {"financingRecipient": "destination"},
+        ),
+        "LeftOutSeries(destination=country/NGA: growth dropped 1 row from data, "
         "endpoint_missing)",
+        True,
+    ),
+    (
+        "left-out-series-long-entity",
+        lambda: LeftOutSeries(
+            {"donor": "dcid:" + "a" * 70, "stat_var": "dcid:MalariaGrants"},
+            LeftOutStep("quotient_of", 1),
+            "other",
+            "unmatched_key",
+            2,
+        ),
+        f"LeftOutSeries(donor=dcid:{'a' * 70}, stat_var=dcid:MalariaGrants: "
+        "quotient_of dropped 2 rows from other, unmatched_key)",
         True,
     ),
     (
@@ -394,9 +424,11 @@ ROWS: list[tuple[str, Callable[[], object], str, bool]] = [
             _dataset().ref,
             "German ODA, last ten years",
             "cmw_secret",
+            series=40,
+            series_cut=28,
         ),
-        'Card(line cmp_ad956b407b1623ec17cfcd55, "German ODA, last ten years", draws '
-        f"{_dataset().members[0].spec.spec_id} at "
+        'Card(line cmp_ad956b407b1623ec17cfcd55, "German ODA, last ten years", 40 '
+        f"series, draws {_dataset().members[0].spec.spec_id} at "
         f"{_dataset().members[0].content_version})",
         True,
     ),

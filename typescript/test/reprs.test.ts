@@ -6,8 +6,9 @@ import { clientOver } from "../src/client.ts";
 import { DfoError, NotFoundError, serverCode } from "../src/core/errors.ts";
 import { describing } from "../src/core/trace.ts";
 import { DataWarning, DfoWarning, SeriesLeftOutWarning } from "../src/core/warnings.ts";
-import { Dataset } from "../src/datasets/dataset.ts";
+import { Dataset, LeftOutSeries } from "../src/datasets/dataset.ts";
 import { Card, Served, Share } from "../src/datasets/publication.ts";
+import type { ShareUrl } from "../src/datasets/publication.ts";
 import { recipe } from "../src/datasets/recipe.ts";
 import { latestYear } from "../src/core/periods.ts";
 import { RawResponse, Transport } from "../src/http/transport.ts";
@@ -107,9 +108,11 @@ const cardOf = (title: string): Card =>
     heldUntil: null,
     pinned: false,
     writeToken: "cmw_secret",
+    series: 40,
+    seriesCut: 28,
   });
 
-const shareOf = (url: string): Share =>
+const shareOf = (url: ShareUrl): Share =>
   new Share({
     id: "k3Qx8vTa",
     url,
@@ -223,7 +226,40 @@ const ROWS: [string, () => { toString(): string }, string, boolean][] = [
   [
     "recipe",
     () => recipe({ spec_id: SPEC_ID, definition: {} }).rank({ by: "origin", limit: 10 }),
-    `Recipe(rank by origin, limit 10, from ${SPEC_ID})`,
+    `recipe(${SPEC_ID}).rank({ by: "origin", limit: 10 })`,
+    true,
+  ],
+  [
+    "left-out-series-named-by-role",
+    () =>
+      new LeftOutSeries(
+        {
+          coordinates: {
+            stat_var: `dcid:ops_${"f72f".repeat(8)}`,
+            financingRecipient: "country/NGA",
+          },
+          step: { verb: "growth", node: 0 },
+          side: "data",
+          reason: "endpoint_missing",
+          rows: 1,
+        },
+        { financingRecipient: "destination" },
+      ),
+    "LeftOutSeries(destination=country/NGA: growth dropped 1 row from data, endpoint_missing)",
+    true,
+  ],
+  [
+    "left-out-series-long-entity",
+    () =>
+      new LeftOutSeries({
+        coordinates: { donor: `dcid:${"a".repeat(70)}`, stat_var: "dcid:MalariaGrants" },
+        step: { verb: "quotient_of", node: 1 },
+        side: "other",
+        reason: "unmatched_key",
+        rows: 2,
+      }),
+    `LeftOutSeries(donor=dcid:${"a".repeat(70)}, stat_var=dcid:MalariaGrants: quotient_of ` +
+      "dropped 2 rows from other, unmatched_key)",
     true,
   ],
   [
@@ -241,8 +277,8 @@ const ROWS: [string, () => { toString(): string }, string, boolean][] = [
   [
     "card",
     () => cardOf("German ODA, last ten years"),
-    `Card(line cmp_ad956b407b1623ec17cfcd55, "German ODA, last ten years", draws ${SPEC_ID} ` +
-      `at ${VERSION})`,
+    `Card(line cmp_ad956b407b1623ec17cfcd55, "German ODA, last ten years", 40 series, draws ` +
+      `${SPEC_ID} at ${VERSION})`,
     true,
   ],
   [

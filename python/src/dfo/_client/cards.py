@@ -5,8 +5,8 @@ client the caller builds. `dfo.configure` sets the client they use.
 """
 
 from dfo._client.default import default_client
-from dfo._datasets.publication import Card, Source
-from dfo._datasets.recipe import Change, Year
+from dfo._datasets.publication import Card, Source, StatChange
+from dfo._datasets.recipe import Year
 
 
 def line(
@@ -63,7 +63,7 @@ def stat(
     *,
     year: Year | None = None,
     compare_to: Year | None = None,
-    change: Change = "difference",
+    change: StatChange = "difference",
     title: str | None = None,
 ) -> Card:
     """One headline value of a single series, with its change since another year.
@@ -74,8 +74,9 @@ def stat(
             the series holds.
         compare_to: The year the change counts from, such as `latest_year(-1)`;
             None shows no change.
-        change: `difference`, the shown value minus the earlier, or `percent`,
-            that difference as a percentage of the earlier.
+        change: `difference`, the default, the shown value minus the earlier,
+            in the data's unit; or `percent`, that difference as a percentage of
+            the earlier value, where 25.0 is a 25% rise.
         title: The card's title; None lets DFO title it.
 
     Raises:

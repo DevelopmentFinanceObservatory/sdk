@@ -99,8 +99,8 @@ const FRAME: Rendering = { format: "parquet", bundle: false, layout: "frame" };
 /**
  * Fetches a spec's latest version, the exact versions a ref names, or with `latest` the newest
  * versions of a ref's specs; or runs a recipe, or reads a ref of a frame DFO computed, which
- * take `latest`, `strict`, `timeout` and `signal` and refuse the options that narrow or render
- * a spec. `onProgress` reports no progress for them. A share, or its URL, reads the exact
+ * take `latest`, `strict`, `timeout` and `signal`, and refuse `onProgress`, which DFO does not
+ * report for them, and the options that narrow or render a spec. A share, or its URL, reads the exact
  * version its slot shows, or with `asOf` showed then; it takes `asOf`, `slot`, `strict`,
  * `timeout`, `signal` and `onProgress`, and `layout` only as `frame`.
  *
@@ -145,6 +145,12 @@ export async function fetchDataset(
     (target instanceof DatasetRef && target.members.some(isDerived))
   ) {
     checkComputed(narrowing, rest);
+    if (rest.onProgress !== undefined) {
+      throw invalid(
+        "DFO reports no progress while it computes a recipe, so a recipe or a frame DFO " +
+          "computed takes no onProgress; drop it.",
+      );
+    }
     const computed = present({
       latest,
       strict: rest.strict,
@@ -266,7 +272,9 @@ async function fetchShown(
     );
   }
   if (SPEC_ID.test(shown.specId)) {
-    const fix = `For what the slot shows now: client.fetch(share, { slot: ${shown.slot} })`;
+    const fix = shown.newerNow
+      ? `For what the slot shows now: client.fetch(share, { slot: ${shown.slot} })`
+      : `The frame is gone, so share ${shown.shareId} cannot show slot ${shown.slot}'s data`;
     return fetchFrame(transport, shown.specId, shown.contentVersion, fix, options, wait);
   }
   throw clientError("contract_violation", {

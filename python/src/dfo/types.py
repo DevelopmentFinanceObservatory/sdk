@@ -7,6 +7,11 @@ holds what they contain, the asynchronous `AsyncAnswer`, the `Recipe` that
 the `Card` a `dfo.cards` call stores, the `Share` `dfo.share` publishes and the
 `Served` frames `dfo.history` lists.
 
+It also holds the argument types the public signatures name: `Start`, `Year`,
+`Columns`, `Pairing`, `Aggregation` and `GrowthChange` for `dfo.analysis`;
+`Source` and `StatChange` for `dfo.cards`; and `ShareTarget` and `Moment` for
+the share calls and `dfo.fetch(share, as_of=...)`.
+
 `Severity`, `AssumptionKind`, `DepartureCode`, `NoDataReason`, `DeclinedReason`
 and `ResolveKind` are the values the served contract lists for each field. A
 field the client reads takes `Name | str`, since a newer server can send a value
@@ -50,8 +55,25 @@ from dfo._core.types import (
 from dfo._datasets.build import Progress
 from dfo._datasets.bundle import BundleLimits
 from dfo._datasets.dataset import LeftOutSeries, LeftOutStep
-from dfo._datasets.publication import Card, CardKind, Served, Share
-from dfo._datasets.recipe import Recipe
+from dfo._datasets.publication import (
+    Card,
+    CardKind,
+    Moment,
+    Served,
+    Share,
+    ShareTarget,
+    Source,
+    StatChange,
+)
+from dfo._datasets.recipe import (
+    Aggregation,
+    Columns,
+    GrowthChange,
+    Pairing,
+    Recipe,
+    Start,
+    Year,
+)
 from dfo._generated.wire import (
     AssumptionKind,
     DeclinedReason,
@@ -63,6 +85,7 @@ from dfo._generated.wire import (
 from dfo._search.answer import AsyncAnswer
 
 __all__ = [
+    "Aggregation",
     "Assumption",
     "AssumptionKind",
     "AsyncAnswer",
@@ -75,6 +98,7 @@ __all__ = [
     "Citation",
     "CitationSource",
     "Code",
+    "Columns",
     "DeclinedReason",
     "DefinitePart",
     "Departure",
@@ -85,17 +109,20 @@ __all__ = [
     "Entity",
     "Gap",
     "GapKind",
+    "GrowthChange",
     "LatestYear",
     "Layout",
     "LeftOutSeries",
     "LeftOutStep",
     "Match",
     "Member",
+    "Moment",
     "NoDataPart",
     "NoDataReason",
     "Node",
     "Notice",
     "Option",
+    "Pairing",
     "Part",
     "Progress",
     "RawResponse",
@@ -109,7 +136,12 @@ __all__ = [
     "Served",
     "Severity",
     "Share",
+    "ShareTarget",
+    "Source",
+    "Start",
+    "StatChange",
     "UnknownPart",
     "UnsupportedPart",
     "Window",
+    "Year",
 ]

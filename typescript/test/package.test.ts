@@ -39,6 +39,7 @@ test("the root entry exports these values and no others", async () => {
     "IncompleteAnswerError",
     "InvalidRequestError",
     "LatestYear",
+    "LeftOutSeries",
     "Lookup",
     "Match",
     "NetworkError",

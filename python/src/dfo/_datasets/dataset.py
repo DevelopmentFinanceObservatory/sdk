@@ -23,7 +23,7 @@ from __future__ import annotations
 import html
 import json
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from itertools import accumulate
 from os import PathLike
@@ -59,7 +59,6 @@ from dfo._core.types import (
     RequestedOperation,
     Spec,
     check_keys,
-    clipped,
     decode,
     is_gap_kind,
     is_integer,
@@ -183,14 +182,40 @@ class LeftOutStep:
 class LeftOutSeries:
     """A series a step of the recipe behind a Dataset dropped for missing data.
 
+    The repr leads with the entity, as
+    `LeftOutSeries(destination=country/NGA: growth dropped 1 row from data,
+    endpoint_missing)`. A Dataset a recipe from this client made names each
+    column by the role the call used, such as `destination`; one read from a
+    ref or a saved file names DFO's column, such as `financingRecipient`. The
+    `stat_var` of a frame an earlier step computed, `dcid:ops_…`, is left out
+    of the repr.
+
+    `reason` is one of DFO's data-gap codes:
+
+    - `endpoint_missing`: growth found no value in the window's first year or
+      its last.
+    - `zero_or_sign_crossing_base`: a relative growth's first-year value is
+      zero, or the value changes sign, so the fraction has no meaning.
+    - `non_finite`: the change worked out to a number too large to hold.
+    - `unmatched_key`: the other reading holds no row for this member, as
+      when a population reading lacks Ghana; `side` names the reading that
+      held the row.
+    - `period_unmatched`: the two readings share no year for this member, or
+      hold some of its years on one side only.
+    - `zero_denominator`: a quotient whose other reading sums to zero.
+    - `unit_unbound`: the rows declare no unit, so the step could not check
+      that both readings share one.
+
+    A newer DFO can send a code this list lacks.
+
     Attributes:
-        coordinates: The value of each column that names the series, such as
-            `{"financingRecipient": "country/NGA"}`.
+        coordinates: The value of each column that names the series, by DFO's
+            column names, such as `{"financingRecipient": "country/NGA"}`,
+            which match the frame's columns.
         step: The step that dropped the series.
         side: The step input it came from: `data`, or `other` for the second
             reading of a two-reading operation.
-        reason: Why the step dropped it, in DFO's words, such as
-            `endpoint_missing` or `unmatched_key`.
+        reason: Why the step dropped it, one of the codes above.
         rows: The rows of the series the step left out.
     """
 
@@ -199,6 +224,8 @@ class LeftOutSeries:
     side: str
     reason: str
     rows: int
+    # The role word the call named each column by, for the repr alone.
+    _roles: Mapping[str, str] = field(default_factory=dict, repr=False, compare=False)
 
     @override
     def __hash__(self) -> int:
@@ -214,10 +241,19 @@ class LeftOutSeries:
 
     @override
     def __repr__(self) -> str:
-        named = ", ".join(f"{key}={value}" for key, value in self.coordinates.items())
+        entity = [
+            (self._roles.get(key, key), value)
+            for key, value in self.coordinates.items()
+            if key != "stat_var"
+        ]
+        variable = self.coordinates.get("stat_var")
+        if variable is not None and not variable.startswith("dcid:ops_"):
+            entity.append(("stat_var", variable))
+        named = ", ".join(f"{key}={value}" for key, value in entity)
         rows = "1 row" if self.rows == 1 else f"{self.rows:,} rows"
+        lead = f"{named}: " if named else ""
         return single_line(
-            f"LeftOutSeries({clipped(named)}: {self.step.verb} dropped {rows} "
+            f"LeftOutSeries({lead}{self.step.verb} dropped {rows} "
             f"from {self.side}, {self.reason})"
         )
 
@@ -252,6 +288,14 @@ def steps_text(steps: Sequence[DerivedStep], source: str) -> str:
 @dataclass(frozen=True, slots=True, eq=False, repr=False)
 class Dataset:
     """A table of data with its provenance, one exact version per member.
+
+    The type of `time_period` follows the layout. The long layout holds it as
+    an integer calendar year, such as 2022. The frame layout, which a derived
+    Dataset and a share fetch hold, writes it as text: a year such as
+    `"2022"`, or for a growth an interval of its first and last years, such as
+    `"2021/2022"`. So `df[df.time_period == 2022]` finds no rows in a frame,
+    and a merge of a frame with a long table must cast one side first. The
+    repr's Rows line names the type.
 
     Attributes:
         sentence: What the data shows, in Search's words, or the members' sentences
@@ -462,7 +506,7 @@ class Dataset:
             lines.append(f"{label}: {', '.join(versions)} (exact){held}")
         elif retention:
             lines.append(retention[0].upper() + retention[1:])
-        lines.append(f"Rows: {len(self):,}")
+        lines.append(f"Rows: {len(self):,}{self._period_type()}")
         if not self.complete:
             lines.append(f"Incomplete: {len(self.missing)} part(s) left out")
         if self.stale:
@@ -474,6 +518,20 @@ class Dataset:
             keep += f" · newest later: {self._caller}.fetch(data.ref, latest=True)"
         lines.append(keep)
         return lines
+
+    def _period_type(self) -> str:
+        """The type `time_period` holds, as the Rows line names it."""
+        import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+
+        names = self._table.column_names
+        if "time_period" not in names:
+            return ""
+        kind = self._table.schema.field("time_period").type
+        if pa.types.is_integer(kind):
+            return ", time_period as integer years"
+        if pa.types.is_string(kind) or pa.types.is_large_string(kind):
+            return ', time_period as text, such as "2022" or "2021/2022"'
+        return f", time_period as {kind}"
 
     def _derived_summary(self) -> list[str]:
         """The lines of a derived dataset: its steps, the period its latest years
@@ -803,6 +861,7 @@ def derived_dataset(
     *,
     cache: Cache | None = None,
     caller: str = "dfo",
+    roles: Mapping[str, str] | None = None,
 ) -> Dataset:
     """Make a dataset from a derived frame: its ref member, the derived manifest
     DFO serves for it and its stored frame, the bare Parquet file whose digest
@@ -810,9 +869,10 @@ def derived_dataset(
 
     The member keeps every field of the ref. The manifest gives the citation,
     the retention, the series the recipe left out and the steps the repr names,
-    read from the recipe's tree in the order they ran. The file reads through
-    `read_artifact`, as a dataset version's does, and leaves `cache` when it
-    does not read.
+    read from the recipe's tree in the order they ran. `roles` maps a column to
+    the role word the call named it by, which the repr's steps and left-out
+    series print in its place. The file reads through `read_artifact`, as a
+    dataset version's does, and leaves `cache` when it does not read.
 
     Raises:
         ContractError: The manifest names another frame, or its `left_out` or
@@ -831,6 +891,9 @@ def derived_dataset(
             f"{manifest.get('content_version')}, not {frame}",
         )
     left_out, complete = _served_left_out(manifest)
+    roles = dict(roles or {})
+    if roles:
+        left_out = tuple(replace(series, _roles=roles) for series in left_out)
     table = read_artifact(
         data,
         digest=member.digest,
@@ -877,7 +940,10 @@ def derived_dataset(
         _caller=caller,
         left_out=left_out,
         _left_out_complete=complete,
-        _steps=tuple(_tree_steps(tree)) if isinstance(tree, Mapping) else (),
+        _steps=tuple(
+            replace(step, by=tuple(roles.get(column, column) for column in step.by))
+            for step in (_tree_steps(tree) if isinstance(tree, Mapping) else ())
+        ),
     )
 
 

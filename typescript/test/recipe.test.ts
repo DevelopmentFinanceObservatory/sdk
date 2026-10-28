@@ -159,7 +159,20 @@ test("a chain nests each step over the one before", () => {
   assert.deepEqual(paired.inputs["other"], other.tree());
   assert.equal(
     String(chain),
-    `Recipe(growth by origin, then rank by origin, limit 10, from ${AID.spec_id})`,
+    `recipe(${AID.spec_id}).growth({ by: "origin", window: [latestYear(-4), latestYear()] })` +
+      '.rank({ by: "origin", limit: 10 })',
+  );
+});
+
+test("a recipe prints the chain as it was called", () => {
+  const chain = recipe(AID)
+    .quotientOf(POPULATION, { on: { destination: "place" } })
+    .growth({ by: "destination", window: [latestYear(-1), latestYear()], change: "difference" });
+  assert.equal(
+    String(chain),
+    `recipe(${AID.spec_id}).quotientOf(${POPULATION.spec_id}, { on: { destination: "place" } })` +
+      '.growth({ by: "destination", window: [latestYear(-1), latestYear()], change: ' +
+      '"difference" })',
   );
 });
 
@@ -226,7 +239,11 @@ describe("a malformed step is refused when it is added", () => {
     ["window text", () => recipe(AID).growth({ window: loose(["2020", 2024]) })],
     [
       "growth change in the engine's words",
-      () => recipe(AID).growth({ window: [2020, 2024], change: loose("relative") }),
+      () => recipe(AID).growth({ window: [2020, 2024], change: loose("absolute") }),
+    ],
+    [
+      "growth change in the stat card's words",
+      () => recipe(AID).growth({ window: [2020, 2024], change: loose("percent") }),
     ],
     ["share of nothing", () => recipe(AID).shareOf(loose(undefined))],
     ["share of by with on", () => recipe(AID).shareOf({ by: "origin", on: ["place"] })],
@@ -250,4 +267,18 @@ test("latestYear prints the call that makes it", () => {
   );
   assert.ok(latestYear(-4) instanceof LatestYear);
   assert.equal(latestYear(-4).offset, -4);
+});
+
+test("recipes that send the same tree are equal", () => {
+  const chain = (by: string | string[], window: [number, number]): Recipe =>
+    recipe(AID).growth({ by, window }).rank({ by: "origin" });
+  assert.ok(chain("origin", [2020, 2024]).equals(chain(["origin"], [2020, 2024])));
+  assert.ok(!chain("origin", [2020, 2024]).equals(chain("origin", [2019, 2024])));
+  assert.notEqual(String(chain("origin", [2020, 2024])), String(chain("origin", [2019, 2024])));
+  assert.ok(
+    !recipe(AID)
+      .rank({ by: "origin" })
+      .equals(recipe(POPULATION).rank({ by: "origin" })),
+  );
+  assert.ok(!recipe(AID).rank({ by: "origin" }).equals({ spec_id: AID.spec_id }));
 });

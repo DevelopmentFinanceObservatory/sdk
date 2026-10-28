@@ -23,7 +23,7 @@ import { decodeStored } from "./parquet.ts";
 import { CARD_TYPES, readCard } from "./publication.ts";
 import type { Card, CardKind } from "./publication.ts";
 import { Recipe } from "./recipe.ts";
-import type { Change, Year } from "./recipe.ts";
+import type { Year } from "./recipe.ts";
 import { clientError } from "../core/errors.ts";
 import type { InvalidRequestError } from "../core/errors.ts";
 import { isRecord } from "../core/json.ts";
@@ -47,15 +47,20 @@ export type CardOptions = {
   title?: string;
 };
 
+/** How a stat card works out its change since `compareTo`: `percent`, the difference as a
+ *  percentage of the earlier year's value, where 25 is a 25% rise; or `difference`, the shown
+ *  value minus the earlier, in the data's unit. */
+export type StatChange = "percent" | "difference";
+
 /** A stat card's options. */
 export type StatOptions = {
   /** The year shown, such as `latestYear()`; none shows the newest year the series holds. */
   year?: Year;
   /** The year the change counts from, such as `latestYear(-1)`; none shows no change. */
   compareTo?: Year;
-  /** `difference` by default, the shown value minus the earlier; `percent` is that difference
-   *  as a percentage of the earlier. */
-  change?: Change;
+  /** `difference` by default, the shown value minus the earlier, in the data's unit; `percent`
+   *  is that difference as a percentage of the earlier value, where 25 is a 25% rise. */
+  change?: StatChange;
   /** The card's title; none lets DFO title it. */
   title?: string;
 };
@@ -70,7 +75,7 @@ const STAT_OPTIONS = declareOptions<StatOptions>("cards.stat", {
 
 /** A stat card's `change` words, in the card schema's derivations: `difference` is its
  *  default, which the intent leaves out. */
-const STAT_DERIVATIONS: Readonly<Record<Change, string | null>> = {
+const STAT_DERIVATIONS: Readonly<Record<StatChange, string | null>> = {
   difference: null,
   percent: "percent_change",
 };
@@ -141,7 +146,7 @@ function described(value: unknown): string {
 }
 
 /** The variables the version holds, from a Dataset's rows when they name them, else from DFO:
- *  one as text, several as a list. */
+ *  one as text, several as a sorted list, so one set of variables always sends one select. */
 async function variables(
   transport: Transport,
   data: unknown,
@@ -164,9 +169,10 @@ async function variables(
     }
     found = values.filter((value): value is string => typeof value === "string");
   }
-  const [first, ...others] = found;
+  const sorted = [...new Set(found)].sort();
+  const [first, ...others] = sorted;
   if (first === undefined) throw invalid("The version names no variable, so a card draws nothing.");
-  return others.length === 0 ? first : found;
+  return others.length === 0 ? first : sorted;
 }
 
 /**
@@ -198,7 +204,7 @@ const windowed = (window: unknown): Record<string, unknown> =>
 /**
  * A stat card's title, window and change.
  *
- * @throws {InvalidRequestError} `compareTo` is given without `year`, `change` is not a `Change`
+ * @throws {InvalidRequestError} `compareTo` is given without `year`, `change` is not a `StatChange`
  *   or is `percent` without `compareTo`, or a year is malformed (`invalid_argument`).
  */
 export function statIntent(options: StatOptions): Record<string, unknown> {

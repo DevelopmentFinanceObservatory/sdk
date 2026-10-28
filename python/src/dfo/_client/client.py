@@ -205,7 +205,8 @@ class AsyncClient:
         A ref of a frame DFO computed reads that frame, and with `latest=True`
         DFO computes its recipe again on the newest versions of its datasets. A
         recipe or a computed frame takes `latest`, `strict` and `timeout`, and
-        refuses the options that narrow or render a spec. A fetch that left
+        refuses `progress`, which DFO does not report while it computes, and the
+        options that narrow or render a spec. A fetch that left
         series out for missing data issues one `SeriesLeftOutWarning`.
 
         A share reads the frame its slot shows now, or with `as_of` the one it
@@ -267,7 +268,8 @@ class AsyncClient:
                 `Recipe`, or a `Share` or its URL, such as a spec id, and no
                 request is sent; a ref is narrowed or given another layout or
                 `party_totals`; `latest` is not a bool, is given a spec, or is
-                given a ref whose members differ in rendering; a share is given
+                given a ref whose members differ in rendering; a recipe or a
+                computed frame is given `progress`; a share is given
                 a narrowing, `party_totals`, `latest=True` or a layout other
                 than `frame`, `slot` is 0, or `as_of` is malformed, all before
                 any request; a share of several slots is given no `slot`, or
@@ -334,8 +336,11 @@ class AsyncClient:
         Each card sits in a numbered slot. A share pins the versions its cards
         draw, and each new share counts against a daily allowance per network
         address. The `Share` carries the write token that changes or removes it,
-        and prints without it. The client mints that token, so a create retried
-        after a lost reply answers the first share and spends no allowance.
+        and prints without it. DFO returns the token only here and the client
+        saves it nowhere else, so keep `share.write_token` with the share's URL
+        and pass both to `unshare` or `snapshot` later. The client mints that
+        token, so a create retried after a lost reply answers the first share
+        and spends no allowance.
 
         Args:
             cards: A card from `cards`, or a list of them in slot order.
@@ -391,20 +396,22 @@ class AsyncClient:
     async def unshare(
         self, share: ShareTarget, /, *, write_token: str | None = None
     ) -> None:
-        """Take a share's link down.
+        """Take a share's link down. Taking it down again with its token
+        succeeds, so a retry after a lost reply is safe.
 
         Args:
             share: The share, or its URL.
-            write_token: The share's write token, for a share given as a URL.
+            write_token: The share's write token, `share.write_token` of the
+                `Share` that `share` returned, for a share given as a URL.
 
         Raises:
             InvalidRequestError: `share` is not a Share or a share URL
                 (`invalid_argument`), and no request is sent; or no token was
-                given (`write_token_required`).
+                given (`write_token_required`), and the message says to pass
+                `write_token=`.
             PermissionDeniedError: The token is not the share's
                 (`write_token_invalid`).
-            NotFoundError: No share has that id, or it was taken down
-                (`not_found`).
+            NotFoundError: No share has that id (`not_found`).
         """
         await take_down(self._session.transport, share, write_token=write_token)
 

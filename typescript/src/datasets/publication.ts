@@ -24,6 +24,11 @@ import { inline, quoted } from "../core/text.ts";
  *  citation of its data. */
 export type CardKind = "line" | "bar" | "table" | "stat" | "source";
 
+/** The URL of a share's page or embed, such as `https://developmentfinance.org/s/k3Qx8vTa`, as
+ *  the share calls take it. A `Share`'s `url` and `embedUrl` are ones; a URL held in a plain
+ *  `string` takes `as ShareUrl`, and the calls still refuse text that names no share. */
+export type ShareUrl = `${string}/s/${string}` | `${string}/embed/${string}`;
+
 /** Each card kind's component type in DFO's card catalogue. */
 export const CARD_TYPES: Readonly<Record<CardKind, string>> = {
   line: "line_chart",
@@ -50,6 +55,8 @@ type CardFields = {
   readonly heldUntil: Date | null;
   readonly pinned: boolean;
   readonly writeToken: string;
+  readonly series: number;
+  readonly seriesCut: number;
 };
 
 /** A card DFO stores and draws from one frame. A card on its own stays in DFO's 30-day tier;
@@ -73,6 +80,11 @@ export class Card {
   readonly heldUntil: Date | null;
   /** Whether DFO kept that version with no time limit when the card was made. */
   readonly pinned: boolean;
+  /** How many series the card draws, which the text form prints, so a card that draws 40 donors
+   *  shows it before it goes on a page. 0 for a source card. */
+  readonly series: number;
+  /** How many of those series the create reply's summary did not list; DFO lists at most 12. */
+  readonly seriesCut: number;
   readonly #writeToken: string;
 
   /** @internal A card comes from a `client.cards` call. */
@@ -84,6 +96,8 @@ export class Card {
     this.title = fields.title;
     this.heldUntil = fields.heldUntil;
     this.pinned = fields.pinned;
+    this.series = fields.series;
+    this.seriesCut = fields.seriesCut;
     this.#writeToken = fields.writeToken;
     Object.freeze(this);
   }
@@ -94,12 +108,13 @@ export class Card {
     return this.#writeToken;
   }
 
-  /** The card as `Card(line cmp_…, "title", draws spec_… at cv_…)`. */
+  /** The card as `Card(line cmp_…, "title", 3 series, draws spec_… at cv_…)`. */
   toString(): string {
     const [member] = this.ref.members;
     const title = this.title ? `, "${clipped(this.title)}"` : "";
+    const drawn = this.kind === "source" ? "" : `, ${this.series.toLocaleString("en-GB")} series`;
     return inline(
-      `Card(${this.kind} ${this.id}${title}, draws ${member?.spec.spec_id ?? "?"} at ` +
+      `Card(${this.kind} ${this.id}${title}${drawn}, draws ${member?.spec.spec_id ?? "?"} at ` +
         `${member?.contentVersion ?? "?"})`,
     );
   }
@@ -113,8 +128,8 @@ export class Card {
 /** A share's fields, as the client reads them from a reply. */
 type ShareFields = {
   readonly id: string;
-  readonly url: string;
-  readonly embedUrl: string;
+  readonly url: ShareUrl;
+  readonly embedUrl: ShareUrl;
   readonly dataUrls: readonly string[];
   readonly revision: number;
   readonly latest: boolean;
@@ -126,9 +141,9 @@ export class Share {
   /** The share's id, 8 letters and digits. */
   readonly id: string;
   /** The share's page, `/s/<id>`. */
-  readonly url: string;
+  readonly url: ShareUrl;
   /** The share's embeddable page, `/embed/<id>`. */
-  readonly embedUrl: string;
+  readonly embedUrl: ShareUrl;
   /** One JSON data URL per slot, in slot order. A slot keeps its URL when the share's cards are
    *  replaced, so `dataUrls[0]` always reads the first slot. Any page may read them, with no
    *  key. */
@@ -153,8 +168,10 @@ export class Share {
   }
 
   /** The `shw_` token that grants replacing the share's cards, fixing it as a snapshot and
-   *  taking it down. Keep it as a secret on your server; the text form and JSON leave it out.
-   *  Null when this value was made without it. */
+   *  taking it down. DFO returns it only when the share is made and the client saves it
+   *  nowhere, so keep it as a secret on your server beside the share's `url`, and pass both to
+   *  `client.unshare(url, { writeToken })` later; the text form and JSON leave it out. Null when
+   *  this value was made without it. */
   get writeToken(): string | null {
     return this.#writeToken;
   }
@@ -266,12 +283,13 @@ function heldUntilOf(value: unknown): Date | null {
 /**
  * The card a create reply names.
  *
- * @throws {ContractError} The reply lacks the card's id, revision or write token
+ * @throws {ContractError} The reply lacks the card's id, revision, write token or fact summary
  *   (`contract_violation`).
  */
 export function readCard(reply: unknown, route: string, kind: CardKind, ref: DatasetRef): Card {
   const body = object(reply, route, "");
   const { pinned, heldUntil } = retentionOf(body["retention"], route, "/retention");
+  const { listed, cut } = drawnSeries(body, route);
   return new Card({
     id: textAt(body, "component_id", route),
     revision: countAt(body, "revision", route),
@@ -281,7 +299,25 @@ export function readCard(reply: unknown, route: string, kind: CardKind, ref: Dat
     heldUntil,
     pinned,
     writeToken: textAt(body, "write_token", route),
+    series: listed + cut,
+    seriesCut: cut,
   });
+}
+
+/**
+ * The series a card reply's `fact_summary` lists, and how many it left unlisted.
+ *
+ * @throws {ContractError} The reply holds no summary, or one with no list of series or no count
+ *   of the ones cut (`contract_violation`).
+ */
+function drawnSeries(
+  body: Record<string, unknown>,
+  route: string,
+): { listed: number; cut: number } {
+  const summary = object(body["fact_summary"], route, "/fact_summary");
+  const series = summary["series"];
+  if (!Array.isArray(series)) throw violation(route, "/fact_summary/series", "is not a list");
+  return { listed: series.length, cut: countAt(summary, "series_cut", route, "/fact_summary", 0) };
 }
 
 /** The title a card reply's drawn card shows, or null when it shows none. */
@@ -311,8 +347,8 @@ export function readShare(reply: unknown, route: string, writeToken: string | nu
   }
   return new Share({
     id: textAt(body, "id", route),
-    url: textAt(body, "url", route),
-    embedUrl: textAt(body, "embed_url", route),
+    url: shareUrlAt(body, "url", route),
+    embedUrl: shareUrlAt(body, "embed_url", route),
     dataUrls,
     revision: countAt(body, "revision", route),
     latest: flagAt(body, "latest", route),
@@ -421,6 +457,10 @@ export type ShownFrame = {
   /** The day the fetch asked about, or the day it read what the slot shows now, at UTC
    *  midnight. */
   readonly on: Date;
+  /** Whether the slot can show another frame now: true for an `asOf` read of a live share,
+   *  false when the read was of what the slot shows now or of a snapshot, which keeps its
+   *  frames. */
+  readonly newerNow: boolean;
 };
 
 /** The frame as a dataset's text form names it, as
@@ -536,14 +576,15 @@ export function chosenSlot(slot: number | undefined, count: number, shareId: str
 }
 
 /**
- * The number of slots a share read lists.
+ * The number of slots a share read lists, and whether the share is live.
  *
  * @throws {ContractError} The reply has no list of slots (`contract_violation`).
  */
-export function readSlotCount(reply: unknown, route: string): number {
-  const slots = object(reply, route, "")["slots"];
+export function readSlotCount(reply: unknown, route: string): { count: number; live: boolean } {
+  const body = object(reply, route, "");
+  const slots = body["slots"];
   if (!Array.isArray(slots)) throw violation(route, "/slots");
-  return slots.length;
+  return { count: slots.length, live: body["mode"] === "live" };
 }
 
 /**
@@ -607,12 +648,25 @@ function textAt(obj: Record<string, unknown>, key: string, route: string, pointe
   return value;
 }
 
-function countAt(obj: Record<string, unknown>, key: string, route: string, pointer = ""): number {
+function countAt(
+  obj: Record<string, unknown>,
+  key: string,
+  route: string,
+  pointer = "",
+  least = 1,
+): number {
   const value = obj[key];
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-    throw violation(route, `${pointer}/${key}`, "is not a count from 1");
+  if (typeof value !== "number" || !Number.isInteger(value) || value < least) {
+    throw violation(route, `${pointer}/${key}`, `is not a count from ${least}`);
   }
   return value;
+}
+
+/** A reply's URL of a share's page or embed, which `shareIdIn` reads. */
+function shareUrlAt(obj: Record<string, unknown>, key: string, route: string): ShareUrl {
+  const value = textAt(obj, key, route);
+  if (shareIdIn(value) === null) throw violation(route, `/${key}`, "is not a share's URL");
+  return value as ShareUrl;
 }
 
 function flagAt(obj: Record<string, unknown>, key: string, route: string, pointer = ""): boolean {

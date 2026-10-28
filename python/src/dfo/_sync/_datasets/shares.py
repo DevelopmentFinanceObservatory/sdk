@@ -11,8 +11,10 @@ daily allowance per caller, refused 429 `allowance_exhausted` once spent; a
 retry answered with the first share spends none.
 
 The routes that change a share send its token in `x-dfo-write-token`, and DFO
-checks it before anything else: none refuses 403 `write_token_required`, another
-share's 403 `write_token_invalid`.
+checks it before anything else: none refuses 403 `write_token_required`, which
+the client raises saying to pass `write_token=`, another share's 403
+`write_token_invalid`. DFO returns the token only when the share is made, and
+the client keeps it nowhere but on that `Share`.
 
 - `share(cards, latest=True, replace=share)` sends `PUT /presentation/shares/{id}`
   `{cards}`: slot n shows the nth card, and slots past the last card stay empty,
@@ -20,7 +22,8 @@ share's 403 `write_token_invalid`.
 - `snapshot(share)` sends `POST /presentation/shares/{id}/snapshot`, which fixes a
   live share as a snapshot in place, each slot keeping the frame it serves now.
   A snapshot answers as it is. No route turns a snapshot live.
-- `unshare(share)` sends `DELETE /presentation/shares/{id}`, which answers 204.
+- `unshare(share)` sends `DELETE /presentation/shares/{id}`, which answers 204,
+  and answers 204 again to a token holder who deletes it once more.
 - `history(share)` reads the public `GET /presentation/shares/{id}/history`:
   every frame the share's slots served, newest first.
 
@@ -43,7 +46,7 @@ from datetime import UTC, datetime
 import httpx2
 
 from dfo._core.codes import INVALID_ARGUMENT
-from dfo._core.errors import client_error
+from dfo._core.errors import DfoError, client_error, recast
 from dfo._core.refusals import describing, trace_id_of
 from dfo._datasets.build import response_json
 from dfo._datasets.publication import (
@@ -120,9 +123,7 @@ def share(
         )
     token = write_token_of(replace, write_token)
     path = f"{SHARES_PATH}/{share_id}"
-    response = transport.request(
-        "PUT", path, json={"cards": shown}, headers=_token_header(token)
-    )
+    response = _change(transport, "PUT", path, share_id, token, json={"cards": shown})
     return _share(response, f"PUT {path}", token)
 
 
@@ -141,14 +142,15 @@ def snapshot(
     share_id = share_id_of(target, transport.caller)
     token = write_token_of(target, write_token)
     path = f"{SHARES_PATH}/{share_id}/snapshot"
-    response = transport.request("POST", path, headers=_token_header(token))
+    response = _change(transport, "POST", path, share_id, token)
     return _share(response, f"POST {path}", token)
 
 
 def unshare(
     transport: Transport, target: object, *, write_token: object = None
 ) -> None:
-    """Take the share `target` names down.
+    """Take the share `target` names down. A token holder who takes it down
+    again succeeds, so a retry is safe.
 
     Raises:
         InvalidRequestError: `target` or `write_token` is malformed
@@ -156,13 +158,11 @@ def unshare(
             (`write_token_required`).
         PermissionDeniedError: The token is not the share's
             (`write_token_invalid`).
-        NotFoundError: No share has that id, or it was taken down (`not_found`).
+        NotFoundError: No share has that id (`not_found`).
     """
     share_id = share_id_of(target, transport.caller)
     token = write_token_of(target, write_token)
-    transport.request(
-        "DELETE", f"{SHARES_PATH}/{share_id}", headers=_token_header(token)
-    )
+    _change(transport, "DELETE", f"{SHARES_PATH}/{share_id}", share_id, token)
 
 
 def history(
@@ -206,13 +206,13 @@ def shown_frame(
     check_slot(slot)
     asked = None if as_of is None else as_of_moment(as_of)
     if isinstance(target, Share):
-        count = len(target.data_urls)
+        count, live = len(target.data_urls), target.latest
     else:
         path = f"{SHARES_PATH}/{share_id}"
         response = transport.request("GET", path, deadline=deadline)
         reply = response_json(response)
         with describing(trace_id_of(response, reply)):
-            count = read_slot_count(reply, route=f"GET {path}")
+            count, live = read_slot_count(reply, route=f"GET {path}")
     number = chosen_slot(slot if isinstance(slot, int) else None, count, share_id)
     if asked is None:
         path = f"{SHARES_PATH}/{share_id}/slots/{number}"
@@ -248,7 +248,7 @@ def shown_frame(
         transport, entry.card_id, entry.card_revision, deadline=deadline
     )
     return ShownFrame(
-        share_id, number, title, entry.spec_id, entry.content_version, day
+        share_id, number, title, entry.spec_id, entry.content_version, day, live
     )
 
 
@@ -285,8 +285,37 @@ def _shown_cards(cards: object, caller: str) -> list[dict[str, object]]:
     ]
 
 
-def _token_header(token: str | None) -> dict[str, str] | None:
-    return None if token is None else {WRITE_TOKEN_HEADER: token}
+def _change(
+    transport: Transport,
+    method: str,
+    path: str,
+    share_id: str,
+    token: str | None,
+    *,
+    json: object = None,
+) -> httpx2.Response:
+    """Send a change of a share with its write token.
+
+    Raises:
+        InvalidRequestError: No token was given (`write_token_required`); the
+            message names the argument that takes it.
+    """
+    headers = None if token is None else {WRITE_TOKEN_HEADER: token}
+    try:
+        return transport.request(method, path, json=json, headers=headers)
+    except DfoError as error:
+        if error.code != "write_token_required":
+            raise
+        caller = transport.caller
+        raise recast(
+            error,
+            type(error),
+            message=(
+                f"Changing share {share_id} needs its write token: pass "
+                f"write_token='shw_…', the token on the Share {caller}.share "
+                "returned, which DFO gives only when the share is made"
+            ),
+        ) from error
 
 
 def _share(response: httpx2.Response, route: str, token: str | None) -> Share:

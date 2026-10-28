@@ -10,7 +10,7 @@
  */
 
 import { Dataset } from "./dataset.ts";
-import type { DerivedFacts, DerivedStep, LeftOutSeries } from "./dataset.ts";
+import type { DerivedFacts, DerivedStep, LeftOutFields } from "./dataset.ts";
 import { checkTable } from "./fetch.ts";
 import { clientError } from "../core/errors.ts";
 import type { ContractError } from "../core/errors.ts";
@@ -28,7 +28,8 @@ const SERIES_KEYS = ["coordinates", "step", "side", "reason", "rows"] as const;
  * The dataset of a derived frame: its ref member, the derived manifest DFO serves for it, whose
  * response's trace id is `traceId`, and its rows as a bare Parquet file in the frame layout. The
  * member keeps every field of the ref; the manifest gives the citation, the retention, the
- * series the recipe left out and the steps the text form names.
+ * series the recipe left out and the steps the text form names. `roles` maps a column to the
+ * role word the call named it by, which the text form prints in its place.
  *
  * @throws {ContractError} As `derivedFacts` raises.
  */
@@ -37,8 +38,9 @@ export async function derivedDataset(
   manifest: Readonly<Record<string, unknown>>,
   data: Uint8Array,
   traceId: string | null = null,
+  roles: Readonly<Record<string, string>> = {},
 ): Promise<{ dataset: Dataset; facts: DerivedFacts }> {
-  const facts = describing(traceId, () => derivedFacts(member, manifest, data));
+  const facts = { ...describing(traceId, () => derivedFacts(member, manifest, data)), roles };
   const dataset = await Dataset.create([{ ...member, manifest, data }], {
     layout: "frame",
     derived: facts,
@@ -75,7 +77,7 @@ export function derivedFacts(
 }
 
 function servedLeftOut(manifest: Readonly<Record<string, unknown>>): {
-  leftOut: readonly LeftOutSeries[];
+  leftOut: readonly LeftOutFields[];
   leftOutComplete: boolean;
 } {
   const served = manifest["left_out"];
@@ -88,7 +90,7 @@ function servedLeftOut(manifest: Readonly<Record<string, unknown>>): {
 }
 
 /** One dropped series as the derived manifest serves it. */
-function series(value: unknown, pointer: string): LeftOutSeries {
+function series(value: unknown, pointer: string): LeftOutFields {
   const item = objectAt(value, pointer);
   checkKeys(item, pointer, SERIES_KEYS);
   const coordinates = objectAt(item["coordinates"], `${pointer}/coordinates`);

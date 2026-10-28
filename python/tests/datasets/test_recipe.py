@@ -12,7 +12,7 @@ from dfo._core.periods import LatestYear, latest_year
 from dfo._core.refs import DatasetRef, DerivedRefMember
 from dfo._core.types import Rendering, Spec
 from dfo._datasets.dataset import build_dataset
-from dfo._datasets.recipe import Recipe, recipe
+from dfo._datasets.recipe import Recipe, column_roles, recipe
 from tests._data import load
 from tests._datasets import other_member, recorded_member
 
@@ -243,7 +243,8 @@ def test_a_recipe_returns_a_recipe_given_as_it_is() -> None:
         lambda: recipe(AID).growth(window=(2020,)),
         lambda: recipe(AID).growth(window=(2020.0, 2024)),
         lambda: recipe(AID).growth(window=("2020", 2024)),
-        lambda: recipe(AID).growth(window=(2020, 2024), change="relative"),
+        lambda: recipe(AID).growth(window=(2020, 2024), change="absolute"),
+        lambda: recipe(AID).growth(window=(2020, 2024), change="percent"),
         lambda: recipe(AID).share_of(),
         lambda: recipe(AID).share_of(by="origin", on=["place"]),
         lambda: recipe(AID).quotient_of(POPULATION, on={}),
@@ -266,6 +267,7 @@ def test_a_recipe_returns_a_recipe_given_as_it_is() -> None:
         "window-float",
         "window-text",
         "growth-change-in-the-engines-words",
+        "growth-change-in-the-stat-cards-words",
         "share-of-nothing",
         "share-of-by-with-on",
         "on-empty",
@@ -287,3 +289,79 @@ def test_latest_year_prints_the_call_that_makes_it() -> None:
         "latest_year(-4)",
     )
     assert latest_year(-4) == LatestYear(-4)
+
+
+def test_a_recipe_prints_the_chain_as_it_was_called() -> None:
+    chain = (
+        recipe(AID)
+        .quotient_of(POPULATION, on={"destination": "place"})
+        .growth(by="destination", window=(latest_year(-1), latest_year()))
+        .rank(by="destination", limit=5)
+    )
+    assert repr(chain) == (
+        f"recipe({AID.spec_id}).quotient_of({POPULATION.spec_id}, "
+        "on={'destination': 'place'}).growth(by='destination', "
+        "window=(latest_year(-1), latest_year())).rank(by='destination', limit=5)"
+    )
+    other = recipe(POPULATION).aggregate(by="place", how="mean")
+    assert repr(recipe(AID).share_of(other, by="origin")) == (
+        f"recipe({AID.spec_id}).share_of(recipe({POPULATION.spec_id})"
+        ".aggregate(by='place', how='mean'), by='origin')"
+    )
+
+
+def test_recipes_that_send_the_same_tree_are_equal_and_hash_alike() -> None:
+    def chain(by: str | list[str], window: tuple[int, int]) -> Recipe:
+        return recipe(AID).growth(by=by, window=window).rank(by="origin")
+
+    assert chain("origin", (2020, 2024)) == chain(["origin"], (2020, 2024))
+    assert hash(chain("origin", (2020, 2024))) == hash(chain(["origin"], (2020, 2024)))
+    assert len({chain("origin", (2020, 2024)), chain("origin", (2020, 2024))}) == 1
+    assert chain("origin", (2020, 2024)) != chain("origin", (2019, 2024))
+    assert repr(chain("origin", (2020, 2024))) != repr(chain("origin", (2019, 2024)))
+    assert recipe(AID).rank(by="origin") != recipe(POPULATION).rank(by="origin")
+
+
+def _stored(verb: str, parameters: dict[str, Any], **inputs: Any) -> dict[str, Any]:
+    return {"op_spec": {"verb": verb, "parameters": parameters}, "inputs": inputs}
+
+
+ROOT = {"frame": {"spec_id": AID.spec_id}, "root": 0}
+
+
+@pytest.mark.parametrize(
+    ("chain", "stored", "roles"),
+    [
+        (
+            recipe(AID).compare(POPULATION, on={"destination": "place"}),
+            _stored(
+                "compare",
+                {"on": {"financingRecipient": "observationAbout"}},
+                frame_ref=ROOT,
+                right_frame_ref=ROOT,
+            ),
+            {"financingRecipient": "destination", "observationAbout": "place"},
+        ),
+        (
+            recipe(AID).aggregate(by="origin").rank(by="donor"),
+            _stored(
+                "rank",
+                {"rank_by": ["financingSource"]},
+                frame_ref=_stored(
+                    "aggregate", {"group_by": ["financingSource"]}, frame_ref=ROOT
+                ),
+            ),
+            {},
+        ),
+        (
+            recipe(AID).rank(by="financingSource"),
+            _stored("rank", {"rank_by": ["financingSource"]}, frame_ref=ROOT),
+            {},
+        ),
+    ],
+    ids=["compare-on-pairs", "two-words-one-column", "a-column-itself"],
+)
+def test_column_roles_maps_dfos_columns_back_to_the_calls_words(
+    chain: Recipe, stored: dict[str, Any], roles: dict[str, str]
+) -> None:
+    assert column_roles(chain, stored) == roles

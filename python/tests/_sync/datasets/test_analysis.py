@@ -35,6 +35,7 @@ from dfo._core.types import Spec
 from dfo._datasets.cache import Cache
 from dfo._datasets.dataset import build_dataset, derived_dataset
 from dfo._datasets.recipe import recipe
+from dfo._sync._datasets.analysis import Analysis
 from dfo._sync._datasets.pin import pin
 from dfo._sync._datasets.resolve import fetch
 from dfo._sync._http.transport import Transport
@@ -152,6 +153,40 @@ def test_a_recipe_runs_in_one_request_and_reads_its_frame() -> None:
     assert len(data) == 1
 
 
+def test_a_recipes_dataset_names_columns_by_the_roles_the_call_used() -> None:
+    server = Server(ready(), manifest(), frame())
+    with make(server) as transport:
+        with pytest.warns(SeriesLeftOutWarning):
+            data = fetch(transport, CHAIN)
+
+    assert "  Derived: quotient_of by destination, then growth by destination, " in (
+        repr(data)
+    )
+    assert [repr(series) for series in data.left_out] == [
+        "LeftOutSeries(destination=country/NGA: growth dropped 1 row from data, "
+        "endpoint_missing)",
+        "LeftOutSeries(destination=country/GHA: quotient_of dropped 2 rows from "
+        "data, unmatched_key)",
+        "LeftOutSeries(destination=country/NGA: quotient_of dropped 1 row from "
+        "data, period_unmatched)",
+    ]
+    # The coordinates keep DFO's columns, which the frame's columns match.
+    assert data.left_out[0].coordinates["financingRecipient"] == "country/NGA"
+
+
+def test_an_operation_takes_strict_and_timeout_as_fetch_does() -> None:
+    server = Server(ready(), manifest(), frame())
+    with make(server) as transport:
+        operations = Analysis(transport)
+        with pytest.raises(SeriesLeftOutWarning):
+            operations.growth(CHAIN, by="destination", window=(2021, 2022), strict=True)
+    timeline = Timeline()
+    with make(Server(pending()), timeline) as transport:
+        with pytest.raises(DfoTimeoutError) as caught:
+            Analysis(transport).rank(AID, by="destination", timeout=1.5)
+    assert caught.value.code == "deadline_exceeded"
+
+
 def test_strict_raises_the_left_out_warning() -> None:
     server = Server(ready(), manifest(), frame())
     with make(server) as transport:
@@ -245,8 +280,9 @@ def test_a_ready_answer_without_one_derived_member_raises_contract_error(
         {"facets": {"unit": "USD"}},
         {"layout": "long"},
         {"party_totals": True},
+        {"progress": False},
     ],
-    ids=["window", "entities", "facets", "layout", "party-totals"],
+    ids=["window", "entities", "facets", "layout", "party-totals", "progress"],
 )
 def test_a_recipe_refuses_the_options_of_a_spec_unsent(
     options: dict[str, Any],

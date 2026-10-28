@@ -188,6 +188,45 @@ def test_a_card_of_a_ref_reads_the_frames_variables_first() -> None:
     assert (made.kind, made.ref) == ("stat", ref)
 
 
+def test_a_card_sends_its_variables_sorted_whatever_order_dfo_lists() -> None:
+    listed = {"dimension": "stat_var", "values": ["dcid:Zeta", "dcid:Alpha"]}
+    server = Server(json_response(200, listed), recorded("card-line-created"))
+    with make(server) as transport:
+        Cards(transport).line(dataset().ref)
+    assert server.body(1)["intent"]["select"] == {
+        "stat_var": ["dcid:Alpha", "dcid:Zeta"]
+    }
+
+
+@pytest.mark.parametrize(
+    ("listed", "cut", "series"),
+    [(1, 0, 1), (12, 28, 40)],
+    ids=["one", "cut-summary"],
+)
+def test_a_card_counts_the_series_its_create_reply_summarises(
+    listed: int, cut: int, series: int
+) -> None:
+    body = load("card-line-created.json")["body"]
+    summary = body["fact_summary"]
+    summary["series"] = summary["series"] * listed
+    summary["series_cut"] = cut
+    server = Server(json_response(201, body))
+    with make(server) as transport:
+        made = Cards(transport).line(dataset())
+    assert (made.series, made.series_cut) == (series, cut)
+    assert f", {series} series, draws " in repr(made)
+
+
+def test_a_card_reply_without_its_fact_summary_raises_contract_error() -> None:
+    body = load("card-line-created.json")["body"]
+    del body["fact_summary"]
+    server = Server(json_response(201, body))
+    with make(server) as transport:
+        with pytest.raises(ContractError) as caught:
+            Cards(transport).line(dataset())
+    assert caught.value.code == "contract_violation"
+
+
 def test_a_source_card_sends_its_frame_alone() -> None:
     server = Server(recorded("card-line-created"))
     with make(server) as transport:
@@ -387,6 +426,26 @@ def test_a_refused_change_raises_the_class_its_code_maps_to(
             share(transport, card(), latest=True, replace=SHARE_URL)
     assert caught.value.code == code
     assert len(server.requests) == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda transport: share(transport, card(), latest=True, replace=SHARE_URL),
+        lambda transport: snapshot(transport, SHARE_URL),
+        lambda transport: unshare(transport, SHARE_URL),
+    ],
+    ids=["replace", "snapshot", "unshare"],
+)
+def test_a_change_with_no_token_says_to_pass_write_token(change: Any) -> None:
+    server = Server(recorded("share-refused-write-token-required"))
+    with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            change(transport)
+    assert caught.value.code == "write_token_required"
+    assert f"share {SHARE_ID}" in str(caught.value)
+    assert "write_token=" in str(caught.value)
+    assert "x-dfo-write-token" not in str(caught.value)
 
 
 def test_a_spent_share_allowance_raises_quota_exceeded_with_its_reset() -> None:

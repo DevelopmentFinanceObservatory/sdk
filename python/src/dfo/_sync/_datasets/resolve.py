@@ -145,7 +145,8 @@ def fetch(
     fetch the exact version a share's slot shows.
 
     A `Recipe` and a ref of a frame DFO computed take `latest`, `strict` and
-    `timeout`, and refuse the options that narrow or render a spec. A share
+    `timeout`, and refuse `progress`, which DFO does not report for them, and
+    the options that narrow or render a spec. A share
     takes `as_of`, `slot`, `strict`, `timeout` and `progress`, and `layout`
     only as `frame`.
 
@@ -180,7 +181,8 @@ def fetch(
         InvalidRequestError: The target is neither a `Spec` nor a `DatasetRef`,
             such as a spec id; a ref is narrowed or given another layout or
             `party_totals`; `latest` is not a bool, is given a spec, or
-            is given a ref whose members differ in rendering; `window`,
+            is given a ref whose members differ in rendering; a recipe or a
+            frame DFO computed is given `progress`; `window`,
             `entities`, `facets`, `layout`, `strict` or `progress` is malformed;
             `entities` names a role the spec does not declare; or `entities`
             rebinds a spec whose definition holds no identity.
@@ -237,6 +239,12 @@ def fetch(
             layout=layout,
             party_totals=party_totals,
         )
+        if progress is not None:
+            raise client_error(
+                INVALID_ARGUMENT,
+                "DFO reports no progress while it computes a recipe, so a recipe "
+                "or a frame DFO computed takes no progress; drop it",
+            )
         if isinstance(target, Recipe):
             return run_recipe(
                 transport,
@@ -404,6 +412,9 @@ def _fetch_shown(
             fix=(
                 "For what the slot shows now: "
                 f"{transport.caller}.fetch(share, slot={shown.slot})"
+                if shown.newer_now
+                else f"The frame is gone, so share {shown.share_id} cannot show "
+                f"slot {shown.slot}'s data"
             ),
             strict=strict,
             deadline=deadline,

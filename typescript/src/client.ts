@@ -8,7 +8,7 @@ import { present } from "./core/json.ts";
 import { checkOptions, declareOptions } from "./core/options.ts";
 import { Analysis } from "./datasets/analysis.ts";
 import { Cards } from "./datasets/cards.ts";
-import type { Card, Served, Share } from "./datasets/publication.ts";
+import type { Card, Served, Share, ShareUrl } from "./datasets/publication.ts";
 import { history, share, snapshot, unshare } from "./datasets/shares.ts";
 import type { ShareOptions, WriteTokenOptions } from "./datasets/shares.ts";
 import { pin } from "./datasets/pin.ts";
@@ -190,8 +190,9 @@ export class Client {
    *
    * A ref of a frame DFO computed reads that frame, and with `latest: true` DFO computes its
    * recipe again on the newest versions of its datasets. A recipe or a computed frame takes
-   * `latest`, `strict`, `timeout` and `signal`, and refuses the options that narrow or render a
-   * spec. A fetch that left series out for missing data issues one `SeriesLeftOutWarning`, which
+   * `latest`, `strict`, `timeout` and `signal`, and refuses `onProgress`, which DFO does not
+   * report while it computes, and the options that narrow or render a spec. A fetch that left
+   * series out for missing data issues one `SeriesLeftOutWarning`, which
    * `strict: true` raises.
    *
    * A share, or the URL of its page or embed such as `https://developmentfinance.org/s/k3Qx8vTa`,
@@ -215,7 +216,7 @@ export class Client {
    * @throws {DfoError} The server refused a request.
    */
   fetch(
-    target: Spec | DatasetRef | Recipe | Share | string,
+    target: Spec | DatasetRef | Recipe | Share | ShareUrl,
     options: FetchOptions = {},
   ): Promise<Dataset> {
     return fetchDataset(this.#transport, target, options);
@@ -239,8 +240,9 @@ export class Client {
    * Publishes cards from `client.cards` under one link, one card per numbered slot, as
    * `client.share(card, { latest: true })`: a live share (`latest: true`) follows new data, and a
    * snapshot (`latest: false`) keeps the versions its cards draw now. The `Share` carries the
-   * page, embed and data URLs and the `shw_` write token that changes it; keep the token on your
-   * server. With `replace`, the live share it names shows these cards under its URLs instead.
+   * page, embed and data URLs and the `shw_` write token that changes it. DFO returns the token
+   * only here and the client saves it nowhere else, so keep `share.writeToken` on your server
+   * beside `share.url`, and pass both to `unshare` or `snapshot` later. With `replace`, the live share it names shows these cards under its URLs instead.
    * Each new share counts against a daily allowance.
    *
    * @throws {InvalidRequestError} `cards` is not a Card or a non-empty list of them, `latest`
@@ -265,20 +267,21 @@ export class Client {
    *   (`write_token_required`).
    * @throws {PermissionDeniedError} The token is not the share's (`write_token_invalid`).
    */
-  snapshot(target: Share | string, options: WriteTokenOptions = {}): Promise<Share> {
+  snapshot(target: Share | ShareUrl, options: WriteTokenOptions = {}): Promise<Share> {
     return snapshot(this.#transport, target, options);
   }
 
   /**
-   * Takes a share down. It sends the `writeToken` given, else the `Share`'s own.
+   * Takes a share down. It sends the `writeToken` given, else the `Share`'s own. Taking it down
+   * again with its token succeeds, so a retry after a lost reply is safe.
    *
    * @throws {InvalidRequestError} `target` is neither a Share nor a share's URL
    *   (`invalid_argument`), and no request is sent; or no token was sent
-   *   (`write_token_required`).
+   *   (`write_token_required`), and the message says to pass `writeToken`.
    * @throws {PermissionDeniedError} The token is not the share's (`write_token_invalid`).
-   * @throws {NotFoundError} No share has that id, or it was taken down (`not_found`).
+   * @throws {NotFoundError} No share has that id (`not_found`).
    */
-  unshare(target: Share | string, options: WriteTokenOptions = {}): Promise<void> {
+  unshare(target: Share | ShareUrl, options: WriteTokenOptions = {}): Promise<void> {
     return unshare(this.#transport, target, options);
   }
 
@@ -290,7 +293,7 @@ export class Client {
    *   (`invalid_argument`), and no request is sent.
    * @throws {NotFoundError} No share has that id, or it was taken down (`not_found`).
    */
-  history(target: Share | string): Promise<readonly Served[]> {
+  history(target: Share | ShareUrl): Promise<readonly Served[]> {
     return history(this.#transport, target);
   }
 

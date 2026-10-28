@@ -528,7 +528,8 @@ describe("String(dataset)", async () => {
       "<Dataset A sentence.",
       "  Source: World Development Indicators",
       `  Version: cv_${"0".repeat(32)} (exact), held until 11 November 2026, not pinned`,
-      `  Rows: ${dataset.rowCount.toLocaleString("en-GB")}`,
+      // The long layout holds time_period as integers, which the Rows line names.
+      `  Rows: ${dataset.rowCount.toLocaleString("en-GB")}, time_period as integer years`,
       "  Keep: JSON.stringify(data.ref) · newest later: client.fetch(data.ref, { latest: true })>",
     ]);
   });
@@ -639,7 +640,22 @@ describe("a derived dataset", () => {
   test("reads the series its manifest serves as left out", async () => {
     const dataset = await derived();
     const served = (await recordedJson("analysis-chain-manifest.json"))["left_out"];
-    assert.deepEqual(dataset.leftOut, served);
+    assert.deepEqual(
+      dataset.leftOut.map(({ coordinates, step, side, reason, rows }) => ({
+        coordinates: { ...coordinates },
+        step: { ...step },
+        side,
+        reason,
+        rows,
+      })),
+      served,
+    );
+    // A series prints a line that leads with its entity, the ops_ variable left out.
+    assert.equal(
+      String(dataset.leftOut[0]),
+      "LeftOutSeries(financingRecipient=country/NGA: growth dropped 1 row from data, " +
+        "endpoint_missing)",
+    );
     assert.ok(dataset.ref.equals(new DatasetRef([await derivedMember()])));
     assert.deepEqual(
       [dataset.heldUntil?.toISOString(), dataset.pinned, dataset.layoutVersion],
@@ -655,7 +671,8 @@ describe("a derived dataset", () => {
       "  Missing data: 3 series left out · data.leftOut",
       "  Version: ocv_422e3d46d9e05f9ea8027c97c0c2f58b (exact), held until 27 November 2026, " +
         "not pinned",
-      "  Rows: 1",
+      // A frame holds time_period as text, which a filter on 2022 would miss.
+      '  Rows: 1, time_period as text, such as "2022" or "2021/2022"',
       "  Keep: JSON.stringify(data.ref) · newest later: client.fetch(data.ref, { latest: true })>",
     ]);
     assert.deepEqual(

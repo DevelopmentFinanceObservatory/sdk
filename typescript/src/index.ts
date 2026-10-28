@@ -70,27 +70,22 @@ export type {
   UnknownPart,
   UnsupportedPart,
 } from "./wire.ts";
-export { Dataset } from "./datasets/dataset.ts";
-export type {
-  Citation,
-  DerivedMember,
-  LeftOutSeries,
-  LeftOutStep,
-  Member,
-} from "./datasets/dataset.ts";
+export { Dataset, LeftOutSeries } from "./datasets/dataset.ts";
+export type { Citation, DerivedMember, LeftOutStep, Member } from "./datasets/dataset.ts";
 export { Analysis } from "./datasets/analysis.ts";
+export type { RunOptions } from "./datasets/analysis.ts";
 export { Cards } from "./datasets/cards.ts";
-export type { CardOptions, StatOptions } from "./datasets/cards.ts";
+export type { CardOptions, StatChange, StatOptions } from "./datasets/cards.ts";
 export { Card, Served, Share } from "./datasets/publication.ts";
-export type { CardKind } from "./datasets/publication.ts";
+export type { CardKind, ShareUrl } from "./datasets/publication.ts";
 export type { ShareOptions, WriteTokenOptions } from "./datasets/shares.ts";
 export { Recipe, recipe } from "./datasets/recipe.ts";
 export type {
   AggregateOptions,
   Aggregation,
-  Change,
   Columns,
   FilterOptions,
+  GrowthChange,
   GrowthOptions,
   PairOptions,
   Pairing,

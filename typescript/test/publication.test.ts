@@ -17,6 +17,7 @@ import type { StatOptions } from "../src/datasets/cards.ts";
 import { Dataset } from "../src/datasets/dataset.ts";
 import { derivedDataset } from "../src/datasets/derived.ts";
 import { asOfMoment, Card, Share, shareIdOf } from "../src/datasets/publication.ts";
+import type { ShareUrl } from "../src/datasets/publication.ts";
 import { recipe } from "../src/datasets/recipe.ts";
 import { history, share, snapshot, unshare } from "../src/datasets/shares.ts";
 import { Transport } from "../src/http/transport.ts";
@@ -116,6 +117,8 @@ async function card(): Promise<Card> {
     heldUntil: null,
     pinned: false,
     writeToken: "cmw_AAAAAAAAAAAAAAAAAAAAAA",
+    series: 1,
+    seriesCut: 0,
   });
 }
 
@@ -132,8 +135,8 @@ async function heldShare(): Promise<Share> {
   const { body } = await recordedJson<{ body: Created }>("share-created.json");
   return new Share({
     id: body.id,
-    url: body.url,
-    embedUrl: body.embed_url,
+    url: body.url as ShareUrl,
+    embedUrl: body.embed_url as ShareUrl,
     dataUrls: body.data_urls,
     revision: body.revision,
     latest: body.latest,
@@ -201,6 +204,49 @@ describe("a card", () => {
     assert.deepEqual(intent["select"], { stat_var: "dcid:MalariaGrantDisbursements" });
     assert.equal(made.kind, "stat");
     assert.ok(made.ref.equals(ref));
+  });
+
+  test("sends its variables sorted, whatever order DFO lists them in", async () => {
+    const listed = { dimension: "stat_var", values: ["dcid:Zeta", "dcid:Alpha"] };
+    const { transport, seen } = make(json(listed), await recorded("card-line-created"));
+    await new Cards(transport).line((await dataset()).ref);
+    const intent = bodyOf(seen, 1)["intent"] as Record<string, unknown>;
+    assert.deepEqual(intent["select"], { stat_var: ["dcid:Alpha", "dcid:Zeta"] });
+  });
+
+  for (const [name, listed, cut, series] of [
+    ["one", 1, 0, 1],
+    ["a cut summary", 12, 28, 40],
+  ] as const) {
+    test(`counts the series its create reply summarises (${name})`, async () => {
+      const { body } = await recordedJson<{ body: Record<string, Record<string, unknown>> }>(
+        "card-line-created.json",
+      );
+      const summary = body["fact_summary"]!;
+      const entries = summary["series"] as unknown[];
+      const reply = {
+        ...body,
+        fact_summary: {
+          ...summary,
+          series: Array.from({ length: listed }, () => entries[0]),
+          series_cut: cut,
+        },
+      };
+      const { transport } = make(json(reply, 201));
+      const made = await new Cards(transport).line(await dataset());
+      assert.deepEqual([made.series, made.seriesCut], [series, cut]);
+      assert.ok(String(made).includes(`, ${series} series, draws `), String(made));
+    });
+  }
+
+  test("whose reply has no fact summary raises ContractError", async () => {
+    const { body } = await recordedJson<Recorded>("card-line-created.json");
+    const { transport } = make(json({ ...(body as object), fact_summary: undefined }, 201));
+    await assert.rejects(new Cards(transport).line(await dataset()), {
+      name: "ContractError",
+      code: "contract_violation",
+      pointer: "/fact_summary",
+    });
   });
 
   test("of a source sends its frame alone", async () => {
@@ -435,6 +481,38 @@ describe("a share", () => {
       assert.equal(seen.length, 1);
     });
   }
+
+  for (const [name, change] of [
+    [
+      "replace",
+      async (transport: Transport) =>
+        share(transport, await card(), { latest: true, replace: SHARE_URL }),
+    ],
+    ["snapshot", (transport: Transport) => snapshot(transport, SHARE_URL)],
+    ["unshare", (transport: Transport) => unshare(transport, SHARE_URL)],
+  ] as const) {
+    test(`a change with no token says to pass writeToken (${name})`, async () => {
+      const { transport } = make(await recorded("share-refused-write-token-required"));
+      const error = await change(transport).then(
+        () => assert.fail("the change went through without a token"),
+        (caught: unknown) => caught as Error & { code: string },
+      );
+      assert.equal(error.name, "InvalidRequestError");
+      assert.equal(error.code, "write_token_required");
+      assert.ok(error.message.includes(`share ${SHARE_ID}`), error.message);
+      assert.ok(error.message.includes("writeToken"), error.message);
+      assert.ok(!error.message.includes("x-dfo-write-token"), error.message);
+    });
+  }
+
+  test("a reply whose url names no share raises ContractError", async () => {
+    const { body } = await recordedJson<Recorded>("share-created.json");
+    const { transport } = make(json({ ...(body as object), url: "https://site.example/x" }, 201));
+    await assert.rejects(share(transport, await card(), { latest: true }), {
+      name: "ContractError",
+      pointer: "/url",
+    });
+  });
 
   test("a spent allowance raises QuotaExceededError with its reset", async () => {
     const { transport, seen } = make(await recorded("share-refused-allowance-exhausted"));

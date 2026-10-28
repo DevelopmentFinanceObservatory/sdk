@@ -55,21 +55,91 @@ export type LeftOutStep = {
   readonly node: number;
 };
 
-/** A series a step of the recipe behind a dataset dropped for missing data. */
-export type LeftOutSeries = {
-  /** The value of each column that names the series, such as
-   *  `{ financingRecipient: "country/NGA" }`. */
+/** A left-out series' fields, as the derived manifest serves them and a saved file keeps
+ *  them. */
+export type LeftOutFields = {
+  readonly coordinates: Readonly<Record<string, string>>;
+  readonly step: LeftOutStep;
+  readonly side: string;
+  readonly reason: string;
+  readonly rows: number;
+};
+
+/**
+ * A series a step of the recipe behind a dataset dropped for missing data.
+ *
+ * `String(series)` leads with the entity, as
+ * `LeftOutSeries(destination=country/NGA: growth dropped 1 row from data, endpoint_missing)`. A
+ * dataset a recipe from this client made names each column by the role the call used, such as
+ * `destination`; one read from a ref names DFO's column, such as `financingRecipient`. The
+ * `stat_var` of a frame an earlier step computed, `dcid:ops_…`, is left out of the text.
+ *
+ * `reason` is one of DFO's data-gap codes:
+ *
+ * - `endpoint_missing`: growth found no value in the window's first year or its last.
+ * - `zero_or_sign_crossing_base`: a relative growth's first-year value is zero, or the value
+ *   changes sign, so the fraction has no meaning.
+ * - `non_finite`: the change worked out to a number too large to hold.
+ * - `unmatched_key`: the other reading holds no row for this member, as when a population
+ *   reading lacks Ghana; `side` names the reading that held the row.
+ * - `period_unmatched`: the two readings share no year for this member, or hold some of its
+ *   years on one side only.
+ * - `zero_denominator`: a quotient whose other reading sums to zero.
+ * - `unit_unbound`: the rows declare no unit, so the step could not check that both readings
+ *   share one.
+ *
+ * A newer DFO can send a code this list lacks.
+ */
+export class LeftOutSeries {
+  /** The value of each column that names the series, by DFO's column names, such as
+   *  `{ financingRecipient: "country/NGA" }`, which match the frame's columns. */
   readonly coordinates: Readonly<Record<string, string>>;
   /** The step that dropped the series. */
   readonly step: LeftOutStep;
   /** The step input it came from: `data`, or `other` for the second reading of a two-reading
    *  operation. */
   readonly side: string;
-  /** Why the step dropped it, in DFO's words, such as `endpoint_missing` or `unmatched_key`. */
+  /** Why the step dropped it, one of the codes above. */
   readonly reason: string;
   /** The rows of the series the step left out. */
   readonly rows: number;
-};
+  /** The role word the call named each column by, for the text form alone. */
+  readonly #roles: Readonly<Record<string, string>>;
+
+  /** @internal A series comes from a derived dataset's `leftOut`. */
+  constructor(fields: LeftOutFields, roles: Readonly<Record<string, string>> = {}) {
+    this.coordinates = Object.freeze({ ...fields.coordinates });
+    this.step = Object.freeze({ verb: fields.step.verb, node: fields.step.node });
+    this.side = fields.side;
+    this.reason = fields.reason;
+    this.rows = fields.rows;
+    this.#roles = Object.freeze({ ...roles });
+    Object.freeze(this);
+  }
+
+  /** The series as `LeftOutSeries(destination=country/NGA: growth dropped 1 row from data,
+   *  endpoint_missing)`. */
+  toString(): string {
+    const entity = Object.entries(this.coordinates)
+      .filter(([key]) => key !== "stat_var")
+      .map(([key, value]) => [this.#roles[key] ?? key, value]);
+    const variable = this.coordinates["stat_var"];
+    if (variable !== undefined && !variable.startsWith("dcid:ops_")) {
+      entity.push(["stat_var", variable]);
+    }
+    const named = entity.map(([key, value]) => `${key}=${value}`).join(", ");
+    const rows = this.rows === 1 ? "1 row" : `${this.rows.toLocaleString("en-GB")} rows`;
+    return inline(
+      `LeftOutSeries(${named === "" ? "" : `${named}: `}${this.step.verb} dropped ${rows} from ` +
+        `${this.side}, ${this.reason})`,
+    );
+  }
+
+  /** Node's `console.log` and `util.inspect` show the series as `String(series)` does. */
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return this.toString();
+  }
+}
 
 /** One step of a recipe, as a derived dataset's text names it: the operation, the columns or
  *  roles it keeps apart, and for a ranking the most members it keeps. */
@@ -91,11 +161,13 @@ export function stepsText(steps: readonly DerivedStep[], source: string): string
 }
 
 /** What a derived dataset adds to its member: every series its recipe left out, whether that
- *  list is whole, and its steps in the order they ran. */
+ *  list is whole, its steps in the order they ran, and the role word the call named each
+ *  column by. */
 export type DerivedFacts = {
-  readonly leftOut: readonly LeftOutSeries[];
+  readonly leftOut: readonly LeftOutFields[];
   readonly leftOutComplete: boolean;
   readonly steps: readonly DerivedStep[];
+  readonly roles?: Readonly<Record<string, string>>;
 };
 
 /** A built version, downloaded and checked against its digest, ready to join a dataset. */
@@ -227,6 +299,12 @@ let readTable: (dataset: Dataset) => Table;
 /**
  * A table of data with its provenance: one exact version per member. It holds no client, so its
  * conversions never touch the network. A dataset fetched from a spec or a ref leaves no part out.
+ *
+ * The type of `time_period` follows the layout. The long layout holds it as an integer calendar
+ * year, such as 2022. The frame layout, which a derived dataset and a share fetch hold, writes
+ * it as text: a year such as `"2022"`, or for a growth an interval of its first and last years,
+ * such as `"2021/2022"`. So a filter on `row.time_period === 2022` finds no rows in a frame. The
+ * text form's Rows line names the type.
  */
 export class Dataset {
   /** What the data shows, in Search's words: the members' sentences in order. */
@@ -357,20 +435,15 @@ export class Dataset {
     this.#data = data;
     this.#table = table;
     const derived = options.derived;
+    const roles = derived?.roles ?? {};
     this.leftOut = Object.freeze(
-      (derived?.leftOut ?? []).map(({ coordinates, step, side, reason, rows }) =>
-        Object.freeze({
-          coordinates: Object.freeze({ ...coordinates }),
-          step: Object.freeze({ verb: step.verb, node: step.node }),
-          side,
-          reason,
-          rows,
-        }),
-      ),
+      (derived?.leftOut ?? []).map((series) => new LeftOutSeries(series, roles)),
     );
     this.#leftOutComplete = derived?.leftOutComplete ?? true;
     this.#steps = Object.freeze(
-      (derived?.steps ?? []).map((step) => Object.freeze({ ...step, by: [...step.by] })),
+      (derived?.steps ?? []).map((step) =>
+        Object.freeze({ ...step, by: step.by.map((column) => roles[column] ?? column) }),
+      ),
     );
     this.layoutVersion = [
       ...new Set(members.map((member) => artifactLayout(member, options.layout))),
@@ -433,7 +506,7 @@ export class Dataset {
     const versions = this.members.map((member) => member.contentVersion);
     const label = versions.length === 1 ? "Version" : "Versions";
     lines.push(`${label}: ${versions.join(", ")} (exact)${retentionText(this)}`);
-    lines.push(`Rows: ${this.rowCount.toLocaleString("en-GB")}`);
+    lines.push(`Rows: ${this.rowCount.toLocaleString("en-GB")}${this.#periodType()}`);
     if (!this.complete) lines.push(`Incomplete: ${this.missing.length} part(s) left out`);
     lines.push(
       "Keep: JSON.stringify(data.ref) · newest later: client.fetch(data.ref, { latest: true })",
@@ -444,6 +517,16 @@ export class Dataset {
   /** Node's `console.log` and `util.inspect` show the dataset as `String(data)` does. */
   [Symbol.for("nodejs.util.inspect.custom")](): string {
     return this.toString();
+  }
+
+  /** The type `time_period` holds, as the Rows line names it. */
+  #periodType(): string {
+    const column = stackedColumns(this.#table.parts).find(({ name }) => name === "time_period");
+    if (column === undefined) return "";
+    if (column.type.kind === "int") return ", time_period as integer years";
+    if (column.type.kind === "string")
+      return ', time_period as text, such as "2022" or "2021/2022"';
+    return `, time_period as ${column.type.kind}`;
   }
 
   /** The lines of a derived dataset: its steps, the period its latest years settled on, and

@@ -15,6 +15,7 @@ import type { Spec } from "../src/core/ref.ts";
 import { dayText } from "../src/datasets/dataset.ts";
 import type { FetchOptions } from "../src/datasets/fetch.ts";
 import { Share, today } from "../src/datasets/publication.ts";
+import type { ShareUrl } from "../src/datasets/publication.ts";
 import { fetchDataset } from "../src/datasets/resolve.ts";
 import { Transport } from "../src/http/transport.ts";
 import { scenario, scenarioBytes } from "./replay.ts";
@@ -68,8 +69,8 @@ async function threeSlots(): Promise<Share> {
   const { body } = await reply("share-three-created");
   return new Share({
     id: String(body["id"]),
-    url: String(body["url"]),
-    embedUrl: String(body["embed_url"]),
+    url: String(body["url"]) as ShareUrl,
+    embedUrl: String(body["embed_url"]) as ShareUrl,
     dataUrls: body["data_urls"] as string[],
     revision: Number(body["revision"]),
     latest: body["latest"] === true,
@@ -228,26 +229,50 @@ describe("a share fetch", () => {
     });
   }
 
-  test("a slot whose dataset frame expired is unavailable, naming the newest", async () => {
-    const newest = `cv_${"c".repeat(32)}`;
-    const { transport, seen } = make(
-      await slotCard(datasetFrame()),
-      problem({ status: 410, code: "artifact_expired" }),
-      json({
-        spec_id: POSTED_ID,
-        versions: [{ content_version: newest, base_content_version: null, rendering: "plain" }],
-        next_cursor: null,
-        complete: true,
-      }),
-    );
-    await assert.rejects(fetchDataset(transport, await threeSlots(), { slot: 2 }), {
-      name: "VersionUnavailableError",
-      code: "artifact_expired",
-      newestVersion: newest,
-      message: /client\.fetch\(share, \{ slot: 2 \}\)/,
+  // Only a live share read at an earlier moment can show other data now; any other read of what
+  // the slot shows now would fail the same way, so its error names no fetch.
+  for (const [name, latest, asOf, hinted] of [
+    ["now", true, undefined, false],
+    ["asOf on a live share", true, "2026-10-28T17:13:42.427Z", true],
+    ["asOf on a snapshot", false, "2026-10-28T17:13:42.427Z", false],
+  ] as const) {
+    test(`a slot whose dataset frame expired is unavailable, naming the newest: ${name}`, async () => {
+      const newest = `cv_${"c".repeat(32)}`;
+      const shown =
+        asOf === undefined
+          ? [await slotCard(datasetFrame())]
+          : [await slotHistory(), answered(await reply("card-read"))];
+      const { transport, seen } = make(
+        ...shown,
+        problem({ status: 410, code: "artifact_expired" }),
+        json({
+          spec_id: POSTED_ID,
+          versions: [{ content_version: newest, base_content_version: null, rendering: "plain" }],
+          next_cursor: null,
+          complete: true,
+        }),
+      );
+      const three = await threeSlots();
+      const share = new Share({
+        id: three.id,
+        url: three.url,
+        embedUrl: three.embedUrl,
+        dataUrls: three.dataUrls,
+        revision: three.revision,
+        latest,
+        writeToken: three.writeToken,
+      });
+      const error = await fetchDataset(transport, share, { slot: 2, asOf }).then(
+        () => assert.fail("the fetch read an expired frame"),
+        (caught: unknown) => caught as Error & { code: string; newestVersion: string },
+      );
+      assert.equal(error.name, "VersionUnavailableError");
+      assert.deepEqual([error.code, error.newestVersion], ["artifact_expired", newest]);
+      assert.equal(/client\.fetch\(share, \{ slot: 2 \}\)/.test(error.message), hinted);
+      assert.equal(error.message.includes("cannot show slot 2"), !hinted);
+      assert.equal(calls(seen).at(-1), `GET ${BASE}/datasets/${POSTED_ID}/versions?limit=100`);
     });
-    assert.equal(calls(seen).at(-1), `GET ${BASE}/datasets/${POSTED_ID}/versions?limit=100`);
-  });
+  }
 
   test("asOf before the slot first served is refused, naming history", async () => {
     const { transport, seen } = make(await slotHistory());
@@ -308,8 +333,8 @@ describe("a share fetch", () => {
   test("of a slot showing a note is refused after its card is read", async () => {
     const one = new Share({
       id: SHARE_ID,
-      url: "u",
-      embedUrl: "e",
+      url: "https://site.example/s/u",
+      embedUrl: "https://site.example/embed/e",
       dataUrls: [`${SHARES}/${SHARE_ID}/slots/1/data`],
       revision: 1,
       latest: true,

@@ -103,7 +103,9 @@ CHOICES = textwrap.dedent(
         dfo.share(card, latest=True)
         dfo.share(card)  # error
         dfo.cards.stat(data, change="percent_change")  # error
-        dfo.analysis.growth(data, window=(2020, 2024), change="relative")  # error
+        dfo.analysis.growth(data, window=(2020, 2024), change="relative")
+        dfo.analysis.growth(data, window=(2020, 2024), change="percent")  # error
+        dfo.cards.stat(data, change="relative")  # error
     """
 )
 
@@ -138,7 +140,7 @@ def pyright_errors(source: str, directory: Path) -> list[int]:
 
 @pytest.mark.parametrize(
     ("source", "count"),
-    [(CANDIDATES, 3), (CHOICES, 8)],
+    [(CANDIDATES, 3), (CHOICES, 9)],
     ids=["answer-forms", "closed-inputs-open-outputs"],
 )
 def test_pyright_reports_exactly_the_marked_lines(
