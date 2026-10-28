@@ -146,7 +146,7 @@ today = dfo.fetch(share.url, slot=1, as_of=datetime.date.today())
 
 `as_of` takes a `date`, read as the end of that day in UTC, a `datetime`, read as UTC when it has no time zone, or ISO text such as `"2026-10-28"`. The fetch returns the version the slot first served on or before that moment, and raises `InvalidRequestError` when the slot served nothing by then. Without `as_of`, it returns the version the slot shows now. The repr's `Shown by` line names the share, the slot, the card's title, and the day.
 
-`dfo.history(share)` lists every version each slot served, newest first, as `Served` entries, and needs no token. A slot's entry appears once the share serves it, when a page, an embed, or a fetch first reads the slot. An entry marked `fetchable` can still be fetched. Each version a share serves is pinned, so it stays fetchable while the share is up.
+`dfo.history(share)` lists every version each slot served, newest first, as `Served` entries, and needs no token. A slot's entry appears once the share serves it, when a page, an embed, or a fetch first reads the slot. An entry marked `fetchable` can still be fetched. Each version a share serves is pinned, so it stays fetchable while the share is up. When a replace leaves a slot without a card, `history` adds an entry for that slot with `card_id`, `card_revision`, `spec_id`, and `content_version` all `None`, and `fetch(share, slot=n, as_of=...)` raises `NotFoundError` for a moment after it, until a later replace fills the slot.
 
 A share fetch reads the frame layout, and refuses `window`, `entities`, `facets`, `party_totals`, `latest=True`, and any other layout, before any request.
 
@@ -198,7 +198,7 @@ Each takes a `Share` or the URL of its page or embed, as `https://developmentfin
 
 ### `Served`
 
-`dfo.types.Served`, an entry of `dfo.history`: `slot`, `card_id`, `card_revision`, `spec_id`, `content_version`, `first_served`, a UTC `datetime`, `pinned`, `held_until`, and `fetchable`.
+`dfo.types.Served`, an entry of `dfo.history`: `slot`, `card_id`, `card_revision`, `spec_id`, `content_version`, all `None` for a slot left without a card, `first_served`, a UTC `datetime`, `pinned`, `held_until`, and `fetchable`.
 
 ### Fetching a share
 

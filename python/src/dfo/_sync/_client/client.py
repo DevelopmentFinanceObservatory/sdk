@@ -280,6 +280,8 @@ class Client:
                 spec does not declare; or
                 `timeout` is not None or a finite number above 0
                 (`invalid_argument`).
+            NotFoundError: A share is unknown, its slot is empty, or with
+                `as_of` the slot showed no card then (`not_found`).
             VersionUnavailableError: A ref's version can no longer be fetched.
             ContractError: An artifact is not Parquet (`unexpected_response`),
                 or lacks a `time_period` or numeric `value` column
@@ -417,6 +419,8 @@ class Client:
     def history(self, share: ShareTarget, /) -> tuple[Served, ...]:
         """What each card of a share served, newest first, with whether each
         frame can still be fetched. `fetch(share, slot=n, as_of=day)` reads one.
+        An entry with `card_id` None marks a replace that left the slot without
+        a card.
 
         Args:
             share: The share, or its URL.

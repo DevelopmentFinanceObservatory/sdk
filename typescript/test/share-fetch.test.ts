@@ -108,6 +108,17 @@ async function slotHistory(): Promise<Handler> {
   return answered(recorded);
 }
 
+/** Slot 2 serves a dataset frame, then a replace leaves it without a card, then a later replace
+ *  fills it with the computed frame. */
+async function emptiedHistory(): Promise<Handler> {
+  const recorded = await reply("share-three-emptied-history");
+  const [later, empty, , first] = recorded.body["served"] as Record<string, unknown>[];
+  assert.equal(empty!["component_id"], null);
+  later!["frame"] = await computedFrame();
+  first!["frame"] = datasetFrame();
+  return answered(recorded);
+}
+
 /** The dataset version's manifest, Search's sentence, and its frame file. */
 async function storedVersion(): Promise<Handler[]> {
   const record = await scenario("fetch-ref");
@@ -280,6 +291,45 @@ describe("a share fetch", () => {
       fetchDataset(transport, await threeSlots(), { slot: 2, asOf: "2026-10-27" }),
       (error: Error & { code?: string }) =>
         error.code === "invalid_argument" && error.message.includes("client.history(share)"),
+    );
+    assert.deepEqual(calls(seen), [`GET ${SHARES}/${SHARE_ID}/history`]);
+  });
+
+  for (const [name, asOf, computed] of [
+    ["before it was emptied reads the first frame", "2026-10-28", false],
+    ["after it was refilled reads the later frame", "2026-10-30", true],
+  ] as const) {
+    test(`asOf ${name} of an emptied slot`, async () => {
+      const { transport, seen } = make(
+        await emptiedHistory(),
+        answered(await reply("card-read")),
+        ...(computed ? await computedVersion() : await storedVersion()),
+      );
+      const data = await fetchDataset(transport, await threeSlots(), { slot: 2, asOf });
+
+      assert.deepEqual(calls(seen), [
+        `GET ${SHARES}/${SHARE_ID}/history`,
+        `GET ${BASE}/presentation/components/${SLOT_2_CARD}?revision=1`,
+        ...(computed ? await computedVersionCalls() : storedVersionCalls),
+      ]);
+      const [member] = data.ref.members;
+      const shown = computed ? await computedFrame() : datasetFrame();
+      assert.deepEqual(
+        [member?.spec.spec_id, member?.contentVersion],
+        [shown.spec_id, shown.content_version],
+      );
+    });
+  }
+
+  test("asOf while a slot showed no card is not found, naming the slot", async () => {
+    const { transport, seen } = make(await emptiedHistory());
+    await assert.rejects(
+      fetchDataset(transport, await threeSlots(), { slot: 2, asOf: "2026-10-29" }),
+      (error: Error & { code?: string }) =>
+        error.name === "NotFoundError" &&
+        error.code === "not_found" &&
+        error.message.includes("Slot 2") &&
+        error.message.includes("no card"),
     );
     assert.deepEqual(calls(seen), [`GET ${SHARES}/${SHARE_ID}/history`]);
   });

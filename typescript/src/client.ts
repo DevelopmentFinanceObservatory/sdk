@@ -209,6 +209,8 @@ export class Client {
    *   narrowing, `partyTotals`, `latest: true` or a layout other than `frame`, `slot` is not a
    *   number from 1, or `asOf` is malformed, all before any request; a share of several slots
    *   is given no `slot`, or one past its last; or `asOf` is before the slot first served data.
+   * @throws {NotFoundError} A share is unknown, its slot is empty, or with `asOf` the slot showed no
+   *   card then (`not_found`).
    * @throws {VersionUnavailableError} A ref's version can no longer be fetched.
    * @throws {DataWarning} `strict` is true and a manifest carries a warning above `info`.
    * @throws {SeriesLeftOutWarning} `strict` is true and a recipe left series out.
@@ -287,7 +289,8 @@ export class Client {
 
   /**
    * Every frame a share's slots served, newest first, each saying whether it can still be
-   * fetched. It needs no token. `client.fetch(share, { slot, asOf })` reads one.
+   * fetched. It needs no token. `client.fetch(share, { slot, asOf })` reads one. An entry whose
+   * `cardId` is null marks a replace that left the slot without a card.
    *
    * @throws {InvalidRequestError} `target` is neither a Share nor a share's URL
    *   (`invalid_argument`), and no request is sent.

@@ -21,7 +21,7 @@
  * - `unshare(share)` sends `DELETE /presentation/shares/{id}`, which answers 204, and answers 204
  *   again to a token holder who deletes it once more.
  * - `history(share)` reads the public `GET /presentation/shares/{id}/history`: every frame the
- *   share's slots served, newest first.
+ *   share's slots served, newest first, and each moment a replace left a slot without a card.
  *
  * `shownFrame(share, { slot, asOf })` finds the frame one slot shows, for `client.fetch(share)`.
  * A `Share` holds its slot count in its data URLs; a URL reads it from the public
@@ -29,7 +29,8 @@
  * `GET /presentation/shares/{id}/slots/{n}`, drawn on the frame the slot serves now, which its
  * `resolved_payload.provenance.inputs` name. With `asOf` it reads the history, takes the newest
  * frame the slot first served on or before that moment, and reads that card revision's title
- * from `GET /presentation/components/{id}?revision=n`.
+ * from `GET /presentation/components/{id}?revision=n`. When that entry is an empty slot it throws
+ * `not_found` without requesting a frame.
  *
  * A share id that names no share, or one taken down, refuses 404 `not_found`.
  */
@@ -52,7 +53,13 @@ import {
 } from "./publication.ts";
 import type { Served, ShareUrl, ShownFrame } from "./publication.ts";
 import type { Wait } from "./operation.ts";
-import { clientError, InvalidRequestError, optionsOf } from "../core/errors.ts";
+import {
+  clientError,
+  InvalidRequestError,
+  NotFoundError,
+  optionsOf,
+  serverCode,
+} from "../core/errors.ts";
 import { checkOptions, declareOptions } from "../core/options.ts";
 import { quoted } from "../core/text.ts";
 import { describing } from "../core/trace.ts";
@@ -209,7 +216,8 @@ export async function history(
  *   (`invalid_argument`), and no request is sent; `slot` is not given for a share of several
  *   slots, or is past its last; `asOf` is before the slot first served data; or the slot shows a
  *   card that draws no data, such as a note.
- * @throws {NotFoundError} No share has that id, or the slot is empty (`not_found`).
+ * @throws {NotFoundError} No share has that id, or the slot is empty, or with `asOf` it showed no
+ *   card at that moment (`not_found`).
  */
 export async function shownFrame(
   transport: Transport,
@@ -258,6 +266,19 @@ export async function shownFrame(
         `Slot ${number} of share ${shareId} served no data on or before ` +
         `${day.toISOString().slice(0, 10)}; client.history(share) lists what each slot showed ` +
         "and when.",
+    });
+  }
+  if (
+    entry.cardId === null ||
+    entry.cardRevision === null ||
+    entry.specId === null ||
+    entry.contentVersion === null
+  ) {
+    throw new NotFoundError({
+      code: serverCode("not_found"),
+      detail:
+        `Slot ${number} of share ${shareId} showed no card on ${day.toISOString().slice(0, 10)}; ` +
+        "client.history(share) lists what each slot showed and when.",
     });
   }
   const path = `/presentation/components/${entry.cardId}?revision=${entry.cardRevision}`;

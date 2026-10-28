@@ -25,7 +25,8 @@ the client keeps it nowhere but on that `Share`.
 - `unshare(share)` sends `DELETE /presentation/shares/{id}`, which answers 204,
   and answers 204 again to a token holder who deletes it once more.
 - `history(share)` reads the public `GET /presentation/shares/{id}/history`:
-  every frame the share's slots served, newest first.
+  every frame the share's slots served, newest first, and each moment a replace
+  left a slot without a card.
 
 `shown_frame(share, slot=, as_of=)` finds the frame one slot shows, for
 `dfo.fetch(share)`. A `Share` holds its slot count in its data URLs; a URL reads
@@ -34,7 +35,8 @@ the slot's card from `GET /presentation/shares/{id}/slots/{n}`, drawn on the
 frame the slot serves now, which its `resolved_payload.provenance.inputs` name,
 and names the day of the read in UTC. With `as_of` it reads the history, takes the newest frame the slot first
 served on or before that moment, and reads that card revision's title from
-`GET /presentation/components/{id}?revision=n`.
+`GET /presentation/components/{id}?revision=n`. When that entry is an empty
+slot it raises `not_found` without requesting a frame.
 
 A share id that names no share, or one taken down, refuses 404 `not_found`.
 """
@@ -46,7 +48,7 @@ from datetime import UTC, datetime
 import httpx2
 
 from dfo._core.codes import INVALID_ARGUMENT
-from dfo._core.errors import DfoError, client_error, recast
+from dfo._core.errors import DfoError, NotFoundError, client_error, recast
 from dfo._core.refusals import describing, trace_id_of
 from dfo._datasets.build import response_json
 from dfo._datasets.publication import (
@@ -200,7 +202,8 @@ def shown_frame(
             for a share of several slots, or past its last; `as_of` is before
             the slot first served data; or the slot shows a card that draws no
             data, such as a note.
-        NotFoundError: No share has that id, or the slot is empty (`not_found`).
+        NotFoundError: No share has that id, or the slot is empty, or with
+            `as_of` it showed no card at that moment (`not_found`).
     """
     share_id = share_id_of(target, transport.caller)
     check_slot(slot)
@@ -243,6 +246,18 @@ def shown_frame(
             f"Slot {number} of share {share_id} served no data on or before "
             f"{day.isoformat()}; {transport.caller}.history(share) lists what "
             "each slot showed and when",
+        )
+    if (
+        entry.card_id is None
+        or entry.card_revision is None
+        or entry.spec_id is None
+        or entry.content_version is None
+    ):
+        raise NotFoundError(
+            f"Slot {number} of share {share_id} showed no card on "
+            f"{day.isoformat()}; {transport.caller}.history(share) lists what "
+            "each slot showed and when",
+            code="not_found",
         )
     title = _card_title(
         transport, entry.card_id, entry.card_revision, deadline=deadline

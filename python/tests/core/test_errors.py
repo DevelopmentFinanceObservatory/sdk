@@ -257,7 +257,8 @@ def test_every_client_raise_names_a_contract_code() -> None:
 
     `client_error` takes a `dfo._core.codes` constant, never a string. A class built by
     name outside `dfo._core.errors` must carry a refusal's code (`code=<error>.code`),
-    so no raise can set a code the contract lacks, or none at all.
+    or a code the contract maps to that class in `actions.json`, so no raise can set
+    a code the contract lacks, or none at all.
     """
     problems = []
     for where, callee, call in _raises():
@@ -268,6 +269,10 @@ def test_every_client_raise_names_a_contract_code() -> None:
         if where.startswith("_core/errors.py:"):
             continue
         code = next((kw.value for kw in call.keywords if kw.arg == "code"), None)
+        if isinstance(code, ast.Constant) and isinstance(code.value, str):
+            mapped = error_class(code.value, None)
+            if code.value in ACTIONS and mapped.__name__ == callee:
+                continue
         if not (isinstance(code, ast.Attribute) and code.attr == "code"):
             problems.append(f"{where}: {callee} built without client_error")
     assert problems == []

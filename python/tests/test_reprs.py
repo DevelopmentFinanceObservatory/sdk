@@ -466,6 +466,22 @@ ROWS: list[tuple[str, Callable[[], object], str, bool]] = [
         True,
     ),
     (
+        "served-no-card",
+        lambda: Served(
+            2,
+            None,
+            None,
+            None,
+            None,
+            datetime(2026, 9, 24, 8, 0, tzinfo=UTC),
+            False,
+            None,
+            False,
+        ),
+        "Served(slot 2 showed no card from 24 Sep 2026)",
+        True,
+    ),
+    (
         "async-cards",
         lambda: object.__new__(AsyncCards),
         "<AsyncCards: line, bar, table, stat, source>",

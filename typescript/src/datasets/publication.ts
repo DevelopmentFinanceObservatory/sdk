@@ -195,29 +195,31 @@ export class Share {
 /** A served frame's fields, as the client reads them from a history reply. */
 type ServedFields = {
   readonly slot: number;
-  readonly cardId: string;
-  readonly cardRevision: number;
-  readonly specId: string;
-  readonly contentVersion: string;
+  readonly cardId: string | null;
+  readonly cardRevision: number | null;
+  readonly specId: string | null;
+  readonly contentVersion: string | null;
   readonly firstServed: Date;
   readonly pinned: boolean;
   readonly heldUntil: Date | null;
   readonly fetchable: boolean;
 };
 
-/** One frame a share's slot served, as `client.history` lists it. */
+/** One frame a share's slot served, as `client.history` lists it, or the moment a replace left a
+ *  slot without a card. An empty entry has `cardId`, `cardRevision`, `specId` and
+ *  `contentVersion` all null; a later replace that fills the slot adds an entry after it. */
 export class Served {
   /** The slot that served it, from 1. */
   readonly slot: number;
-  /** The card the slot showed. */
-  readonly cardId: string;
-  /** The card revision the slot showed. */
-  readonly cardRevision: number;
-  /** The frame's spec id, `spec_<hex>` or `ops_<hex>`. */
-  readonly specId: string;
-  /** The frame's version, `cv_<hex>` or `ocv_<hex>`. */
-  readonly contentVersion: string;
-  /** When a read first served the frame. */
+  /** The card the slot showed, or null when it showed no card. */
+  readonly cardId: string | null;
+  /** The card revision the slot showed, or null. */
+  readonly cardRevision: number | null;
+  /** The frame's spec id, `spec_<hex>` or `ops_<hex>`, or null. */
+  readonly specId: string | null;
+  /** The frame's version, `cv_<hex>` or `ocv_<hex>`, or null. */
+  readonly contentVersion: string | null;
+  /** When a read first served the frame, or when the replace emptied the slot. */
   readonly firstServed: Date;
   /** Whether DFO keeps the frame with no time limit. */
   readonly pinned: boolean;
@@ -242,8 +244,11 @@ export class Served {
   }
 
   /** The frame as `Served(slot 1 cmp_… from 24 Sep 2026: ops_… at ocv_… · fetchable until 23
-   *  Nov 2026)`. */
+   *  Nov 2026)`, or `Served(slot 2 showed no card from 24 Sep 2026)`. */
   toString(): string {
+    if (this.cardId === null) {
+      return inline(`Served(slot ${this.slot} showed no card from ${day(this.firstServed)})`);
+    }
     let keep: string;
     if (!this.fetchable) keep = "no longer fetchable";
     else if (this.pinned || this.heldUntil === null) keep = "fetchable";
@@ -357,7 +362,8 @@ export function readShare(reply: unknown, route: string, writeToken: string | nu
 }
 
 /**
- * The frames a history reply lists, newest first.
+ * The frames a history reply lists, newest first, with the moments a replace left a slot without
+ * a card.
  *
  * @throws {ContractError} An entry lacks a member it is read from (`contract_violation`).
  */
@@ -373,22 +379,35 @@ export function readHistory(reply: unknown, route: string): readonly Served[] {
 }
 
 function servedEntry(entry: Record<string, unknown>, route: string, pointer: string): Served {
-  const frame = object(entry["frame"], route, `${pointer}/frame`);
   const { pinned, heldUntil } = retentionOf(entry["retention"], route, `${pointer}/retention`);
   const firstServed = new Date(textAt(entry, "first_served_at", route, pointer));
   if (Number.isNaN(firstServed.getTime())) {
     throw violation(route, `${pointer}/first_served_at`, "is not an ISO 8601 time");
   }
-  return new Served({
+  const shared = {
     slot: countAt(entry, "slot", route, pointer),
-    cardId: textAt(entry, "component_id", route, pointer),
-    cardRevision: countAt(entry, "revision", route, pointer),
-    specId: textAt(frame, "spec_id", route, `${pointer}/frame`),
-    contentVersion: textAt(frame, "content_version", route, `${pointer}/frame`),
     firstServed,
     pinned,
     heldUntil,
     fetchable: flagAt(entry, "fetchable", route, pointer),
+  };
+  if (entry["component_id"] === null || entry["component_id"] === undefined) {
+    // A replace left the slot without a card.
+    return new Served({
+      ...shared,
+      cardId: null,
+      cardRevision: null,
+      specId: null,
+      contentVersion: null,
+    });
+  }
+  const frame = object(entry["frame"], route, `${pointer}/frame`);
+  return new Served({
+    ...shared,
+    cardId: textAt(entry, "component_id", route, pointer),
+    cardRevision: countAt(entry, "revision", route, pointer),
+    specId: textAt(frame, "spec_id", route, `${pointer}/frame`),
+    contentVersion: textAt(frame, "content_version", route, `${pointer}/frame`),
   });
 }
 

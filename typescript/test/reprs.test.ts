@@ -305,6 +305,23 @@ const ROWS: [string, () => { toString(): string }, string, boolean][] = [
       `ocv_${"b".repeat(32)} · fetchable until 23 Nov 2026)`,
     true,
   ],
+  [
+    "served-no-card",
+    () =>
+      new Served({
+        slot: 2,
+        cardId: null,
+        cardRevision: null,
+        specId: null,
+        contentVersion: null,
+        firstServed: new Date("2026-09-24T08:00:00Z"),
+        pinned: false,
+        heldUntil: null,
+        fetchable: false,
+      }),
+    "Served(slot 2 showed no card from 24 Sep 2026)",
+    true,
+  ],
 ];
 
 test("a match cuts its text, each name and its line, and counts the candidates it leaves out", () => {

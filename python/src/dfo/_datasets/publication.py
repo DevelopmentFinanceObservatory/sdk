@@ -174,15 +174,21 @@ type ShareTarget = Share | str
 
 @dataclass(frozen=True, slots=True)
 class Served:
-    """One frame a share's slot served, as `dfo.history` lists it.
+    """One frame a share's slot served, as `dfo.history` lists it, or the moment
+    a replace left a slot with no card.
+
+    An empty entry has `card_id`, `card_revision`, `spec_id` and
+    `content_version` all None. A later replace that fills the slot adds an entry
+    after it.
 
     Attributes:
         slot: The slot that served it, from 1.
-        card_id: The card the slot showed.
-        card_revision: The card revision the slot showed.
-        spec_id: The frame's spec id, `spec_<hex>` or `ops_<hex>`.
-        content_version: The frame's version, `cv_<hex>` or `ocv_<hex>`.
-        first_served: When a read first served the frame.
+        card_id: The card the slot showed, or None when it showed no card.
+        card_revision: The card revision the slot showed, or None.
+        spec_id: The frame's spec id, `spec_<hex>` or `ops_<hex>`, or None.
+        content_version: The frame's version, `cv_<hex>` or `ocv_<hex>`, or None.
+        first_served: When a read first served the frame, or when the replace
+            emptied the slot.
         pinned: Whether DFO keeps the frame with no time limit.
         held_until: The date an unpinned frame stops being guaranteed, 30 days
             after DFO stored it. None when pinned or when DFO holds no record.
@@ -190,10 +196,10 @@ class Served:
     """
 
     slot: int
-    card_id: str
-    card_revision: int
-    spec_id: str
-    content_version: str
+    card_id: str | None
+    card_revision: int | None
+    spec_id: str | None
+    content_version: str | None
     first_served: datetime
     pinned: bool
     held_until: date | None
@@ -202,6 +208,8 @@ class Served:
     @override
     def __repr__(self) -> str:
         served = _day(self.first_served.date())
+        if self.card_id is None:
+            return single_line(f"Served(slot {self.slot} showed no card from {served})")
         if not self.fetchable:
             keep = "no longer fetchable"
         elif self.pinned or self.held_until is None:
@@ -330,7 +338,8 @@ def read_share(reply: object, *, route: str, write_token: str | None) -> Share:
 
 
 def read_history(reply: object, *, route: str) -> tuple[Served, ...]:
-    """The frames a history reply lists, newest first.
+    """The frames a history reply lists, newest first, with the moments a replace
+    left a slot without a card.
 
     Raises:
         ContractError: An entry lacks a member it is read from
@@ -346,7 +355,6 @@ def read_history(reply: object, *, route: str) -> tuple[Served, ...]:
 
 
 def _served(entry: Mapping[str, Any], route: str, pointer: str) -> Served:
-    frame = _object(entry.get("frame"), route, f"{pointer}/frame")
     pinned, held_until = _retention(
         entry.get("retention"), route, f"{pointer}/retention"
     )
@@ -358,8 +366,16 @@ def _served(entry: Mapping[str, Any], route: str, pointer: str) -> Served:
         raise _violation(
             route, f"{pointer}/first_served_at", "is not an ISO 8601 time"
         ) from error
+    slot = _count(entry, "slot", route, pointer)
+    fetchable = _flag(entry, "fetchable", route, pointer)
+    if entry.get("component_id") is None:
+        # A replace left the slot without a card.
+        return Served(
+            slot, None, None, None, None, served_at, pinned, held_until, fetchable
+        )
+    frame = _object(entry.get("frame"), route, f"{pointer}/frame")
     return Served(
-        _count(entry, "slot", route, pointer),
+        slot,
         _text(entry, "component_id", route, pointer),
         _count(entry, "revision", route, pointer),
         _text(frame, "spec_id", route, f"{pointer}/frame"),
@@ -367,7 +383,7 @@ def _served(entry: Mapping[str, Any], route: str, pointer: str) -> Served:
         served_at,
         pinned,
         held_until,
-        _flag(entry, "fetchable", route, pointer),
+        fetchable,
     )
 
 

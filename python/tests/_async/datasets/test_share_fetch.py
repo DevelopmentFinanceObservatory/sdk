@@ -113,6 +113,16 @@ def slot_history() -> httpx2.Response:
     return recorded("share-three-history", body)
 
 
+def emptied_history() -> httpx2.Response:
+    """Slot 2 serves a dataset frame, then a replace leaves it without a card,
+    then a later replace fills it with the computed frame."""
+    body = load("share-three-emptied-history.json")["body"]
+    later, empty, _, first = body["served"]
+    assert empty["component_id"] is None
+    later["frame"], first["frame"] = computed_frame(), dataset_frame()
+    return recorded("share-three-emptied-history", body)
+
+
 def stored_version() -> list[httpx2.Response]:
     """The dataset version's manifest, Search's sentence, and its frame file."""
     scenario = json.loads((CONTRACT / "scenarios" / "fetch-ref.json").read_text())
@@ -311,6 +321,53 @@ async def test_as_of_before_the_slot_first_served_is_refused_naming_history() ->
             await fetch(transport, three_slots(), slot=2, as_of=date(2026, 10, 27))
     assert caught.value.code == "invalid_argument"
     assert "history(share)" in str(caught.value)
+    assert server.calls() == [f"GET {SHARES}/{SHARE_ID}/history"]
+
+
+@pytest.mark.parametrize(
+    ("as_of", "version", "calls"),
+    [
+        ("2026-10-28", stored_version(), stored_version_calls()),
+        (
+            "2026-10-30",
+            computed_version(),
+            [
+                f"POST {BASE}/datasets/analysis",
+                f"GET {BASE}/datasets/derived/{RANK['spec']['spec_id']}/{RANK['content_version']}",
+                f"GET {BASE}/datasets/derived/{RANK['spec']['spec_id']}/{RANK['content_version']}/file",
+            ],
+        ),
+    ],
+    ids=["before-emptied", "after-refilled"],
+)
+async def test_as_of_reads_the_frames_either_side_of_an_emptied_slot(
+    as_of: str, version: list[httpx2.Response], calls: list[str]
+) -> None:
+    server = Server(emptied_history(), recorded("card-read"), *version)
+    async with make(server) as transport:
+        data = await fetch(transport, three_slots(), slot=2, as_of=as_of)
+
+    assert server.calls() == [
+        f"GET {SHARES}/{SHARE_ID}/history",
+        f"GET {BASE}/presentation/components/{SLOT_2_CARD}",
+        *calls,
+    ]
+    shown = computed_frame() if "derived" in calls[1] else dataset_frame()
+    (member,) = data.ref.members
+    assert (member.spec.spec_id, member.content_version) == (
+        shown["spec_id"],
+        shown["content_version"],
+    )
+
+
+async def test_as_of_while_a_slot_showed_no_card_is_not_found_naming_the_slot() -> None:
+    server = Server(emptied_history())
+    async with make(server) as transport:
+        with pytest.raises(NotFoundError) as caught:
+            await fetch(transport, three_slots(), slot=2, as_of="2026-10-29")
+    assert caught.value.code == "not_found"
+    assert "Slot 2" in str(caught.value)
+    assert "no card" in str(caught.value)
     assert server.calls() == [f"GET {SHARES}/{SHARE_ID}/history"]
 
 

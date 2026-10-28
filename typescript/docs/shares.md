@@ -145,7 +145,7 @@ const today = await client.fetch(share.url, { slot: 1, asOf: new Date() });
 
 `asOf` takes a `Date` or an ISO string. A date string such as `"2026-10-28"` reads as the last millisecond of that day in UTC. The fetch returns the version the slot first served on or before that moment, and raises `InvalidRequestError` when the slot served nothing by then. Without `asOf`, it returns the version the slot shows now. The text form's `Shown by` line names the share, the slot, the card's title, and the day.
 
-`client.history(share)` lists every version each slot served, newest first, as `Served` entries, and needs no token. A slot's entry appears once the share serves it, when a page, an embed, or a fetch first reads the slot. An entry marked `fetchable` can still be fetched. Each version a share serves is pinned, so it stays fetchable while the share is up.
+`client.history(share)` lists every version each slot served, newest first, as `Served` entries, and needs no token. A slot's entry appears once the share serves it, when a page, an embed, or a fetch first reads the slot. An entry marked `fetchable` can still be fetched. Each version a share serves is pinned, so it stays fetchable while the share is up. When a replace leaves a slot without a card, `history` adds an entry for that slot with `cardId`, `cardRevision`, `specId`, and `contentVersion` all `null`, and `client.fetch(share, { slot: n, asOf })` throws `NotFoundError` for a moment after it, until a later replace fills the slot.
 
 A share fetch reads the frame layout, and refuses the options that narrow a spec, `partyTotals`, `latest: true`, and any other layout, before any request.
 
@@ -197,7 +197,7 @@ Each takes a `Share` or the URL of its page or embed, as `https://developmentfin
 
 ### `Served`
 
-An entry of `client.history`: `slot`, `cardId`, `cardRevision`, `specId`, `contentVersion`, `firstServed`, a `Date`, `pinned`, `heldUntil`, and `fetchable`.
+An entry of `client.history`: `slot`, `cardId`, `cardRevision`, `specId`, `contentVersion`, all `null` for a slot left without a card, `firstServed`, a `Date`, `pinned`, `heldUntil`, and `fetchable`.
 
 ### Fetching a share
 
