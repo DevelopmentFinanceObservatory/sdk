@@ -11,8 +11,8 @@
  * A derived frame reads in two requests, both derived from the ref member: the manifest at
  * `GET /datasets/derived/{ops_id}/{ocv}`, which carries the retention, citation, recipe and the
  * series the recipe left out, and the rows at `.../file?format=parquet&bundle=false&layout=frame`.
- * DFO renders that file from the stored frame on each read, so its bytes need not hash to the
- * ref's artifact digest, and the client checks none.
+ * That file is the frame in the layout a dataset version's file has, and its bytes hash to the
+ * ref's artifact digest, which `download` checks as it does for a dataset file.
  *
  * `fetchDerived` reads a derived ref. An exact read takes the frame the ref names; when its
  * stored frame has aged out (`artifact_expired`), DFO computes the recipe again on the root
@@ -259,7 +259,8 @@ async function read(
       traceId: response.traceId,
     });
   }
-  const data = await download(transport, { path: `${path}/file?${FRAME_FILE}` }, null, wait);
+  const target = { path: `${path}/file?${FRAME_FILE}` };
+  const data = await download(transport, target, member.digest, wait);
   const { dataset, facts } = await derivedDataset(member, manifest, data, response.traceId);
   if (facts.leftOut.length > 0) noteLeftOut(transport, facts, strict);
   return dataset;

@@ -43,7 +43,7 @@ def growth(
     *,
     by: Columns = (),
     window: tuple[Year, Year],
-    change: Change = "relative",
+    change: Change = "percent",
 ) -> Dataset:
     """Change from the first to the last year of `window`, for each member of
     `by`.
@@ -53,8 +53,8 @@ def growth(
         by: The roles whose members each get their own change.
         window: The first and last years, such as
             `(latest_year(-4), latest_year())`.
-        change: `relative`, a fraction such as 0.25 for 25%, or `absolute`, an
-            amount in the data's unit.
+        change: `percent`, the change as a percentage of the first year's value,
+            or `difference`, an amount in the data's unit.
     """
     return default_client().analysis.growth(data, by=by, window=window, change=change)
 

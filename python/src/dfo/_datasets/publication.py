@@ -36,10 +36,6 @@ the source and citation of its data."""
 type Source = Dataset | DatasetRef
 """What a card draws: a Dataset, or a ref of one version."""
 
-type StatChange = Literal["difference", "percent_change"]
-"""How a stat card's change is worked out: the shown value minus the earlier,
-or that difference as a percentage of the earlier."""
-
 # Each card kind's component type in DFO's card catalogue.
 CARD_TYPES: Mapping[CardKind, str] = {
     "line": "line_chart",

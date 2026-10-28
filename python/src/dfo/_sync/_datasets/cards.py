@@ -39,10 +39,9 @@ from dfo._datasets.publication import (
     Card,
     CardKind,
     Source,
-    StatChange,
     read_card,
 )
-from dfo._datasets.recipe import Year
+from dfo._datasets.recipe import Change, Year
 from dfo._sync._http.transport import Transport
 
 CARDS_PATH = "/presentation/components"
@@ -178,12 +177,12 @@ def stat_intent(
 
     Raises:
         InvalidRequestError: `compare_to` is given without `year`, `change` is
-            not a `StatChange`, or a year is malformed (`invalid_argument`).
+            not a `Change`, or a year is malformed (`invalid_argument`).
     """
-    if change not in ("difference", "percent_change"):
+    if change not in ("difference", "percent"):
         raise client_error(
             INVALID_ARGUMENT,
-            f"change is 'difference' or 'percent_change', not {change!r}",
+            f"change is 'difference' or 'percent', not {change!r}",
         )
     intent = _titled(title)
     if compare_to is None:
@@ -204,7 +203,7 @@ def stat_intent(
         )
     start, end = period_object(compare_to, "compare_to"), period_object(year, "year")
     basis: dict[str, Any] = {"basis": [start, end]}
-    if change == "percent_change":
+    if change == "percent":
         basis["derivation"] = "percent_change"
     return {**intent, "window": {"start": start, "end": end}, "change": basis}
 
@@ -286,7 +285,7 @@ class Cards:
         *,
         year: Year | None = None,
         compare_to: Year | None = None,
-        change: StatChange = "difference",
+        change: Change = "difference",
         title: str | None = None,
     ) -> Card:
         """One headline value of a single series, with its change since another
@@ -299,8 +298,7 @@ class Cards:
             compare_to: The year the change counts from, such as
                 `latest_year(-1)`; None shows no change.
             change: `difference`, the shown value minus the earlier, or
-                `percent_change`, that difference as a percentage of the
-                earlier.
+                `percent`, that difference as a percentage of the earlier.
             title: The card's title; None lets DFO title it.
 
         Raises:

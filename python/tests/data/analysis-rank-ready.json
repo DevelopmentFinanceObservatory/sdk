@@ -36,10 +36,11 @@
      }
     ],
     "artifact": {
-     "digest": "sha256:f36c147ad00a51011aa1999e0c029cadbe70a8e0849bfb632052ff7d55b54384",
+     "digest": "sha256:4cd350dceb0c3e3aee2960d90793d875958683879bfcfd29c5c5cb24e7b9986c",
      "rendering": {
       "format": "parquet",
-      "bundle": false
+      "bundle": false,
+      "layout": "frame"
      }
     }
    }

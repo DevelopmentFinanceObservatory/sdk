@@ -38,10 +38,11 @@
     "execution_identity": "0.9.0|1.1.0|0.2.0",
     "resolved_periods": [],
     "artifact": {
-     "digest": "sha256:a2580ac2bdbecf1ae22243101b99f10c74ecda4d834ca2559d2e138120555ad5",
+     "digest": "sha256:243b33434424a66fd01ee2821de5d85b06be3bfd4421d0df2eb811702d318c6f",
      "rendering": {
       "format": "parquet",
-      "bundle": false
+      "bundle": false,
+      "layout": "frame"
      }
     }
    }

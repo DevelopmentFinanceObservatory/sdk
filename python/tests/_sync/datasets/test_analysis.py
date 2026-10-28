@@ -11,6 +11,7 @@ passes the same tests.
 
 import json
 import warnings
+from pathlib import Path
 from typing import Any
 
 import httpx2
@@ -24,11 +25,13 @@ from dfo._core.errors import (
     NotFoundError,
     QuotaExceededError,
     SeriesLeftOutWarning,
+    ServerError,
     VersionUnavailableError,
 )
 from dfo._core.periods import latest_year
 from dfo._core.refs import DatasetRef, DerivedMember, DerivedRefMember
 from dfo._core.types import Spec
+from dfo._datasets.cache import Cache
 from dfo._datasets.dataset import build_dataset, derived_dataset
 from dfo._datasets.recipe import recipe
 from dfo._sync._datasets.pin import pin
@@ -260,6 +263,35 @@ def test_a_derived_ref_reads_the_frame_it_names() -> None:
             data = fetch(transport, DatasetRef((member(),)))
     assert server.calls() == frame_paths()
     assert data.ref == DatasetRef((member(),))
+
+
+def test_a_derived_file_that_misses_the_refs_digest_raises() -> None:
+    tampered = (DATA / "analysis-chain-frame.parquet").read_bytes() + b"\0"
+    server = Server(
+        manifest(),
+        httpx2.Response(200, content=tampered),
+        httpx2.Response(200, content=tampered),
+    )
+    with make(server) as transport:
+        with pytest.raises(ServerError) as caught:
+            fetch(transport, DatasetRef((member(),)))
+    assert caught.value.code == "digest_mismatch"
+    assert server.calls() == [*frame_paths(), frame_paths()[1]]
+
+
+def test_a_second_read_of_a_derived_frame_takes_its_file_from_the_cache(
+    tmp_path: Path,
+) -> None:
+    cache = Cache(tmp_path, env={})
+    server = Server(manifest(), frame(), manifest())
+    ref = DatasetRef((member(),))
+    with make(server) as transport:
+        with pytest.warns(SeriesLeftOutWarning):
+            first = fetch(transport, ref, cache=cache)
+        with pytest.warns(SeriesLeftOutWarning):
+            again = fetch(transport, ref, cache=cache)
+    assert server.calls() == [*frame_paths(), frame_paths()[0]]
+    assert again.to_arrow().equals(first.to_arrow())
 
 
 def test_a_derived_ref_with_latest_posts_its_bare_root() -> None:

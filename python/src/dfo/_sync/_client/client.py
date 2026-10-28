@@ -129,7 +129,7 @@ class Client:
     def _attach(self, session: Session) -> None:
         self._session = session
         self.lookup = Lookup(session.transport)
-        self.analysis = Analysis(session.transport)
+        self.analysis = Analysis(session.transport, session.cache)
         self.cards = Cards(session.transport)
 
     def _current(self) -> Session:

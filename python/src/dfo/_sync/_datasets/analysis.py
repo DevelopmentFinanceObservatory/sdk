@@ -12,10 +12,11 @@ the problem document's `fix` on `error.problem`.
 A derived frame reads in two requests, both derived from the ref member: the
 manifest at `GET /datasets/derived/{ops_id}/{ocv}`, which carries the
 retention, citation, recipe and the series the recipe left out, and the rows at
-`.../file?format=parquet&bundle=false&layout=frame`. DFO renders that file from
-the stored frame on each read, so its bytes need not hash to the ref's artifact
-digest, and the client checks none. The client caches no derived frame for the
-same reason.
+`.../file?format=parquet&bundle=false&layout=frame`. That file is the stored
+frame's bytes, checked against the ref's artifact digest as a dataset version's
+file is: bytes that hash to another digest are asked for once more, then raise
+`digest_mismatch`. The cache keeps the file under its digest, so a second read
+of the frame asks for the manifest alone, and concurrent reads download it once.
 
 `fetch_derived` reads a derived ref. An exact read takes the frame the ref names;
 when its stored frame has aged out (`artifact_expired`), DFO computes the recipe
@@ -54,7 +55,12 @@ from dfo._core.errors import (
 from dfo._core.refs import DatasetRef, DerivedRefMember
 from dfo._core.refusals import describing, trace_id_of
 from dfo._core.types import FormatError
-from dfo._datasets.build import BUILD_READ_TIMEOUT, check_strict, response_json
+from dfo._datasets.build import (
+    BUILD_READ_TIMEOUT,
+    Cache,
+    check_strict,
+    response_json,
+)
 from dfo._datasets.dataset import Dataset, derived_dataset
 from dfo._datasets.recipe import (
     Aggregation,
@@ -67,7 +73,7 @@ from dfo._datasets.recipe import (
     recipe,
 )
 from dfo._http.hooks import sync_offload
-from dfo._sync._datasets.fetch import download
+from dfo._sync._datasets.fetch import download, holding
 from dfo._sync._datasets.operation import poll_interval, still_running
 from dfo._sync._http.transport import Transport, retry_after
 
@@ -85,6 +91,7 @@ def run_recipe(
     latest: bool = False,
     strict: bool = False,
     timeout: float | None = None,
+    cache: Cache | None = None,
 ) -> Dataset:
     """Run `target` on DFO and read the frame it stores.
 
@@ -96,6 +103,7 @@ def run_recipe(
         strict: Raise `SeriesLeftOutWarning` instead of issuing it.
         timeout: The longest the run takes, in seconds, the read included; None
             waits as long as the roots take to build.
+        cache: The local cache, or None to fetch without one.
 
     Raises:
         InvalidRequestError: The recipe has no step and starts from a dataset
@@ -105,6 +113,8 @@ def run_recipe(
         ContractError: DFO answered a ref or manifest this client cannot read
             (`contract_violation`), or a file that is not Parquet
             (`unexpected_response`).
+        ServerError: The file did not hash to the ref's digest on either
+            attempt (`digest_mismatch`).
     """
     check_strict(strict)
     tree = target.tree()
@@ -112,7 +122,7 @@ def run_recipe(
     member = _analyse(
         transport, {"tree": tree, "latest": latest}, deadline=deadline, timeout=timeout
     )
-    return _read(transport, member, strict=strict, deadline=deadline)
+    return _read(transport, member, strict=strict, deadline=deadline, cache=cache)
 
 
 def fetch_derived(
@@ -122,6 +132,7 @@ def fetch_derived(
     latest: bool = False,
     strict: bool = False,
     timeout: float | None = None,
+    cache: Cache | None = None,
 ) -> Dataset:
     """The derived frame a ref names, or with `latest=True` its recipe computed
     again on its datasets' newest versions.
@@ -142,9 +153,9 @@ def fetch_derived(
             deadline=deadline,
             timeout=timeout,
         )
-        return _read(transport, member, strict=strict, deadline=deadline)
+        return _read(transport, member, strict=strict, deadline=deadline, cache=cache)
     try:
-        return _read(transport, member, strict=strict, deadline=deadline)
+        return _read(transport, member, strict=strict, deadline=deadline, cache=cache)
     except DfoError as error:
         if error.code != _EXPIRED:
             raise
@@ -162,7 +173,7 @@ def fetch_derived(
         raise _unavailable(member, error, transport.caller) from error
     if again.content_version != member.content_version:
         raise _unavailable(member, expired, transport.caller)
-    return _read(transport, member, strict=strict, deadline=deadline)
+    return _read(transport, member, strict=strict, deadline=deadline, cache=cache)
 
 
 def _one_member(ref: DatasetRef, caller: str) -> DerivedRefMember:
@@ -292,8 +303,10 @@ def _read(
     *,
     strict: bool,
     deadline: float | None,
+    cache: Cache | None,
 ) -> Dataset:
-    """The derived frame `member` names, from its manifest and its file."""
+    """The derived frame `member` names, from its manifest and its file, which
+    `cache` holds under its digest once read."""
     path = f"/datasets/derived/{member.spec.spec_id}/{member.content_version}"
     response = transport.request("GET", path, deadline=deadline)
     manifest = response_json(response)
@@ -304,12 +317,23 @@ def _read(
             f"GET {path} answered a manifest that is not an object",
             trace_id=trace_id,
         )
-    data = download(
-        transport, f"{path}/file", None, params=FRAME_FILE, deadline=deadline
-    )
+    digest = member.digest
+    with holding(transport, cache, digest, deadline=deadline):
+        data = None if cache is None else sync_offload(cache.get_bytes, digest)
+        if data is None:
+            data = download(
+                transport, f"{path}/file", digest, params=FRAME_FILE, deadline=deadline
+            )
+            if cache is not None:
+                sync_offload(cache.put_bytes, digest, data)
     with describing(trace_id):
         dataset = sync_offload(
-            derived_dataset, member, manifest, data, caller=transport.caller
+            derived_dataset,
+            member,
+            manifest,
+            data,
+            cache=cache,
+            caller=transport.caller,
         )
     if dataset.left_out:
         _left_out(dataset, strict=strict)
@@ -338,9 +362,10 @@ class Analysis:
     in one request.
     """
 
-    def __init__(self, transport: Transport) -> None:
-        """Run through `transport`."""
+    def __init__(self, transport: Transport, cache: Cache | None = None) -> None:
+        """Run through `transport`, reading frames through `cache`."""
         self._transport = transport
+        self._cache = cache
 
     def __repr__(self) -> str:
         return (
@@ -349,7 +374,7 @@ class Analysis:
         )
 
     def _run(self, chain: Recipe) -> Dataset:
-        return run_recipe(self._transport, chain)
+        return run_recipe(self._transport, chain, cache=self._cache)
 
     def filter(
         self, data: Start, /, *, keep: Mapping[str, str | Sequence[str]]
@@ -382,11 +407,12 @@ class Analysis:
         *,
         by: Columns = (),
         window: tuple[Year, Year],
-        change: Change = "relative",
+        change: Change = "percent",
     ) -> Dataset:
         """Change from the first to the last year of `window`, for each member of
-        `by`: a fraction (0.25 is 25%) with `relative`, an amount with
-        `absolute`."""
+        `by`: with `percent`, the change relative to the first year's value as a
+        fraction (0.25 is 25%); with `difference`, an amount in the data's
+        unit."""
         return self._run(recipe(data).growth(by=by, window=window, change=change))
 
     def rank(

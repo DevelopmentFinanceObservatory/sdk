@@ -186,11 +186,21 @@ async def fetch(
         )
         if isinstance(target, Recipe):
             return await run_recipe(
-                transport, target, latest=latest, strict=strict, timeout=timeout
+                transport,
+                target,
+                latest=latest,
+                strict=strict,
+                timeout=timeout,
+                cache=cache,
             )
         assert isinstance(target, DatasetRef)
         return await fetch_derived(
-            transport, target, latest=latest, strict=strict, timeout=timeout
+            transport,
+            target,
+            latest=latest,
+            strict=strict,
+            timeout=timeout,
+            cache=cache,
         )
     if isinstance(target, DatasetRef):
         members = _dataset_members(target)

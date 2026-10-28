@@ -244,6 +244,16 @@ describe("a derived ref", () => {
     assert.equal(warnings.length, 1);
   });
 
+  test("whose file does not hash to the ref's digest is refused after one more ask", async () => {
+    const tampered = () => new Response(new Uint8Array([0]), { status: 200 });
+    const { transport, seen } = make(await manifest(), tampered, tampered);
+    await assert.rejects(fetchDataset(transport, new DatasetRef([await member()])), {
+      code: "digest_mismatch",
+    });
+    const [manifestCall, fileCall] = await framePaths();
+    assert.deepEqual(calls(seen), [manifestCall, fileCall, fileCall]);
+  });
+
   test("with latest posts its bare root", async () => {
     const { transport, seen } = make(
       await ready("rank"),

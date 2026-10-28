@@ -29,7 +29,7 @@ BEFORE = {"anchor": "latest", "offset": -1}
             {
                 "year": latest_year(),
                 "compare_to": 2015,
-                "change": "percent_change",
+                "change": "percent",
                 "title": "Aid to Kenya",
             },
             {
@@ -52,7 +52,7 @@ def test_a_stat_card_shows_its_year_and_counts_its_change_from_compare_to(
     "arguments",
     [
         {"compare_to": latest_year(-1)},
-        {"year": latest_year(), "change": "percent_change"},
+        {"year": latest_year(), "change": "percent"},
         {"year": latest_year(), "compare_to": 2015, "change": "ratio"},
         {"year": "2020"},
         {"title": ""},

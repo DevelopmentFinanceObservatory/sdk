@@ -98,11 +98,12 @@ CHOICES = textwrap.dedent(
 
 
     def chooses_live_or_fixed_out_loud(data: dfo.Dataset) -> None:
-        card = dfo.cards.stat(data, change="percent_change")
+        card = dfo.cards.stat(data, change="percent")
         kind: dfo.types.CardKind = card.kind
         dfo.share(card, latest=True)
         dfo.share(card)  # error
-        dfo.cards.stat(data, change="ratio")  # error
+        dfo.cards.stat(data, change="percent_change")  # error
+        dfo.analysis.growth(data, window=(2020, 2024), change="relative")  # error
     """
 )
 
@@ -137,7 +138,7 @@ def pyright_errors(source: str, directory: Path) -> list[int]:
 
 @pytest.mark.parametrize(
     ("source", "count"),
-    [(CANDIDATES, 3), (CHOICES, 7)],
+    [(CANDIDATES, 3), (CHOICES, 8)],
     ids=["answer-forms", "closed-inputs-open-outputs"],
 )
 def test_pyright_reports_exactly_the_marked_lines(

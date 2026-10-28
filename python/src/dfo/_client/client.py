@@ -128,7 +128,7 @@ class AsyncClient:
     def _attach(self, session: Session) -> None:
         self._session = session
         self.lookup = AsyncLookup(session.transport)
-        self.analysis = AsyncAnalysis(session.transport)
+        self.analysis = AsyncAnalysis(session.transport, session.cache)
         self.cards = AsyncCards(session.transport)
 
     def _current(self) -> Session:

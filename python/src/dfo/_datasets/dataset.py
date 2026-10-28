@@ -734,7 +734,15 @@ def build_dataset(
         retention = fetched.manifest.get("retention")
         retentions.append(retention if isinstance(retention, Mapping) else None)
         warnings.extend(parse_notices(fetched.manifest.get("warnings")))
-        tables.append(_read_artifact(fetched, cache))
+        tables.append(
+            read_artifact(
+                fetched.data,
+                digest=fetched.digest,
+                spec_id=fetched.spec.spec_id,
+                manifest=fetched.manifest,
+                cache=cache,
+            )
+        )
     member_rows = tuple(table.num_rows for table in tables)
 
     if len(tables) > 1:
@@ -786,14 +794,18 @@ def derived_dataset(
     manifest: Mapping[str, Any],
     data: bytes,
     *,
+    cache: Cache | None = None,
     caller: str = "dfo",
 ) -> Dataset:
     """Make a dataset from a derived frame: its ref member, the derived manifest
-    DFO serves for it and its rows as a bare Parquet file in the frame layout.
+    DFO serves for it and its stored frame, the bare Parquet file whose digest
+    the ref names.
 
     The member keeps every field of the ref. The manifest gives the citation,
     the retention, the series the recipe left out and the steps the repr names,
-    read from the recipe's tree in the order they ran.
+    read from the recipe's tree in the order they ran. The file reads through
+    `read_artifact`, as a dataset version's does, and leaves `cache` when it
+    does not read.
 
     Raises:
         ContractError: The manifest names another frame, or its `left_out` or
@@ -801,9 +813,6 @@ def derived_dataset(
             the file is not Parquet (`unexpected_response`) or holds no
             `time_period` or numeric `value` column (`contract_violation`).
     """
-    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
-    import pyarrow.parquet as pq  # noqa: PLC0415 - pyarrow loads on first use
-
     frame = f"{member.spec.spec_id} at {member.content_version}"
     if (manifest.get("spec_id"), manifest.get("content_version")) != (
         member.spec.spec_id,
@@ -815,16 +824,13 @@ def derived_dataset(
             f"{manifest.get('content_version')}, not {frame}",
         )
     left_out, complete = _served_left_out(manifest)
-    try:
-        table = pq.ParquetFile(pa.BufferReader(data)).read()
-    # pyarrow raises OSError, outside ArrowException, for a damaged footer or page
-    except (pa.ArrowException, OSError) as error:
-        raise client_error(
-            UNEXPECTED_RESPONSE,
-            f"The file of {frame} is not a Parquet file this client reads",
-        ) from error
-    if (fault := _artifact_fault(table, manifest)) is not None:
-        raise client_error(CONTRACT_VIOLATION, f"The file of {frame} {fault}")
+    table = read_artifact(
+        data,
+        digest=member.digest,
+        spec_id=member.spec.spec_id,
+        manifest=manifest,
+        cache=cache,
+    )
     retention = manifest.get("retention")
     held_until, pinned = _retention(
         [retention if isinstance(retention, Mapping) else None]
@@ -936,8 +942,18 @@ def _tree_steps(node: Mapping[str, Any]) -> Iterator[DerivedStep]:
     )
 
 
-def _read_artifact(fetched: FetchedMember, cache: Cache | None) -> pa.Table:
-    """A member's artifact as a table, removed from `cache` when it does not read.
+def read_artifact(
+    data: bytes,
+    *,
+    digest: str,
+    spec_id: str,
+    manifest: Mapping[str, Any],
+    cache: Cache | None,
+) -> pa.Table:
+    """An artifact's bytes as a table, removed from `cache` when they do not read.
+
+    A dataset version's file and a derived frame's file both read through it;
+    `manifest` is the one that lists the artifact, whose coverage counts its rows.
 
     Raises:
         ContractError: The bytes are not Parquet (`unexpected_response`), or
@@ -946,20 +962,20 @@ def _read_artifact(fetched: FetchedMember, cache: Cache | None) -> pa.Table:
     import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
     import pyarrow.parquet as pq  # noqa: PLC0415 - pyarrow loads on first use
 
-    name = f"The artifact {fetched.digest} of {fetched.spec.spec_id}"
+    name = f"The artifact {digest} of {spec_id}"
     try:
-        table = pq.ParquetFile(pa.BufferReader(fetched.data)).read()
+        table = pq.ParquetFile(pa.BufferReader(data)).read()
     # pyarrow raises OSError, outside ArrowException, for a damaged footer or page
     except (pa.ArrowException, OSError) as error:
         if cache is not None:
-            cache.discard(fetched.digest)
+            cache.discard(digest)
         raise client_error(
             UNEXPECTED_RESPONSE, f"{name} is not a Parquet file this client reads"
         ) from error
-    if (fault := _artifact_fault(table, fetched.manifest)) is None:
+    if (fault := _artifact_fault(table, manifest)) is None:
         return table
     if cache is not None:
-        cache.discard(fetched.digest)
+        cache.discard(digest)
     raise client_error(CONTRACT_VIOLATION, f"{name} {fault}")
 
 

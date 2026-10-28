@@ -52,14 +52,18 @@ role or roles both readings name alike."""
 type Aggregation = Literal["sum", "mean", "max", "min"]
 """How an operation reduces several rows to one."""
 
-type Change = Literal["relative", "absolute"]
-"""`relative`, a fraction of the first year's value, or `absolute`, an amount."""
+type Change = Literal["percent", "difference"]
+"""How a change is worked out: `percent`, the change as a percentage of the
+earlier value, or `difference`, the later value minus the earlier."""
 
 type Start = Spec | DatasetRef | Dataset | Recipe
 """What a recipe starts from, and what a two-reading step takes as `other`."""
 
 # The most members a ranking keeps, as DFO's rank accepts it.
 MAX_LIMIT = 1000
+
+# Growth's `change` words, in the engine's names.
+_GROWTH_CHANGES: Mapping[str, str] = {"percent": "relative", "difference": "absolute"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,7 +164,7 @@ class Recipe:
         *,
         by: Columns = (),
         window: tuple[Year, Year],
-        change: Change = "relative",
+        change: Change = "percent",
     ) -> "Recipe":
         """The change of each member of `by` from the first to the last year of
         `window`.
@@ -169,16 +173,21 @@ class Recipe:
             by: The roles whose members each get their own change.
             window: The first and last years, such as
                 `(latest_year(-4), latest_year())`.
-            change: `relative`, a fraction such as 0.25 for 25%, or
-                `absolute`, an amount in the data's unit.
+            change: `percent`, the change as a percentage of the first year's
+                value, or `difference`, an amount in the data's unit.
+
+        Raises:
+            InvalidRequestError: `change` is neither word (`invalid_argument`).
         """
         entity_by = _columns("by", by, empty=True)
+        if change not in _GROWTH_CHANGES:
+            raise _refusal("change", "is 'percent' or 'difference'", change)
         return self._step(
             "growth",
             {
                 **_window(window),
                 "entity_by": entity_by,
-                "change": _word("change", change),
+                "change": _GROWTH_CHANGES[change],
             },
             DerivedStep("growth", tuple(entity_by)),
         )

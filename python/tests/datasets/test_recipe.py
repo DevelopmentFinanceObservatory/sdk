@@ -69,7 +69,7 @@ def _step(chain: Recipe) -> dict[str, Any]:
             },
         ),
         (
-            lambda r: r.growth(window=(2015, 2020), change="absolute"),
+            lambda r: r.growth(window=(2015, 2020), change="difference"),
             "growth",
             {
                 "window_start": "2015",
@@ -243,6 +243,7 @@ def test_a_recipe_returns_a_recipe_given_as_it_is() -> None:
         lambda: recipe(AID).growth(window=(2020,)),
         lambda: recipe(AID).growth(window=(2020.0, 2024)),
         lambda: recipe(AID).growth(window=("2020", 2024)),
+        lambda: recipe(AID).growth(window=(2020, 2024), change="relative"),
         lambda: recipe(AID).share_of(),
         lambda: recipe(AID).share_of(by="origin", on=["place"]),
         lambda: recipe(AID).quotient_of(POPULATION, on={}),
@@ -264,6 +265,7 @@ def test_a_recipe_returns_a_recipe_given_as_it_is() -> None:
         "window-one-year",
         "window-float",
         "window-text",
+        "growth-change-in-the-engines-words",
         "share-of-nothing",
         "share-of-by-with-on",
         "on-empty",
