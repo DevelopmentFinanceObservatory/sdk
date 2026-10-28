@@ -42,7 +42,7 @@ Each card takes a slot, numbered from 1 in the order given. `share.url` is the p
 
 `latest` has no default, because it decides what the link shows over time:
 
-- `latest=True` makes a live share. Each card follows new data: a card of a Spec or a derived result draws the newest version each time DFO publishes one, and a window of `dfo.latest_year(...)` moves with it. A live share also takes new cards under the same link.
+- `latest=True` makes a live share. Each card follows new data. A card of a Spec or a derived result draws the newest version each time DFO publishes one, and a window of `dfo.latest_year(...)` moves with it. A live share also takes new cards under the same link.
 - `latest=False` makes a snapshot. Each card keeps the version it draws today, for good.
 
 `dfo.cards` has five kinds:
@@ -99,7 +99,7 @@ share = dfo.share(
 )
 ```
 
-`replace` takes a `Share` or the URL of its page or embed. A snapshot cannot be replaced: `replace` with `latest=False` raises `InvalidRequestError` before any request, and DFO refuses a snapshot's URL with `share_not_replaceable`. A replace with fewer cards leaves the later slots empty: their data URLs answer not found, and `dfo.fetch(share, slot=n)` of an empty slot raises `NotFoundError`.
+`replace` takes a `Share` or the URL of its page or embed. A snapshot cannot be replaced. `replace` with `latest=False` raises `InvalidRequestError` before any request, and DFO refuses a snapshot's URL with `share_not_replaceable`. A replace with fewer cards leaves the later slots empty. Their data URLs answer not found, and `dfo.fetch(share, slot=n)` of an empty slot raises `NotFoundError`.
 
 ## Fix a live share as a snapshot
 

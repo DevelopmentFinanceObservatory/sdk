@@ -26,7 +26,7 @@ export type CardKind = "line" | "bar" | "table" | "stat" | "source";
 
 /** The URL of a share's page or embed, such as `https://developmentfinance.org/s/k3Qx8vTa`, as
  *  the share calls take it. A `Share`'s `url` and `embedUrl` are ones; a URL held in a plain
- *  `string` takes `as ShareUrl`, and the calls still refuse text that names no share. */
+ *  `string` takes `as ShareUrl`, and the calls refuse text that names no share. */
 export type ShareUrl = `${string}/s/${string}` | `${string}/embed/${string}`;
 
 /** Each card kind's component type in DFO's card catalogue. */

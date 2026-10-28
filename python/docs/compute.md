@@ -51,7 +51,7 @@ Each operation states its result on its own scale:
 | Function                                    | Result                                                                                                                                                                                                    |
 | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `filter(data, keep=...)`                    | The rows whose role or column holds one of the values, as `keep={"destination": "country/KEN"}`                                                                                                           |
-| `aggregate(data, by=..., how="sum")`        | One value per year for each member of `by`, by `sum`, `mean`, `max`, or `min`, in the data's unit                                                                                        |
+| `aggregate(data, by=..., how="sum")`        | One value per year for each member of `by`, by `sum`, `mean`, `max`, or `min`, in the data's unit                                                                                                         |
 | `growth(data, by=..., window=(start, end))` | The change from the first year to the last. `change="relative"`, the default, is a fraction with no unit: 0.25 is a 25% rise. `change="difference"` is the last value minus the first, in the data's unit |
 | `rank(data, by=..., window=..., limit=...)` | The members of `by`, largest first, the top `limit` kept (1 to 1000). A tie at the last place keeps every member that shares it                                                                           |
 | `quotient_of(data, other, on=...)`          | `data` divided by `other`, in a composed unit                                                                                                                                                             |
@@ -204,7 +204,7 @@ Ghana and Nigeria have no population rows to divide by. Kenya's population cover
 | `endpoint_missing`           | Growth found no value in the window's first year or its last                          |
 | `zero_or_sign_crossing_base` | A relative growth's first value is zero, or the value changes sign                    |
 | `non_finite`                 | The change worked out to a number too large to hold                                   |
-| `unmatched_key`              | The other reading holds no row for this member; `side` names the reading that held it |
+| `unmatched_key`              | The other reading holds no row for this member. `side` names the reading that held it |
 | `period_unmatched`           | The two readings share no year for this member, or hold some of its years on one side |
 | `zero_denominator`           | A quotient's other reading sums to zero                                               |
 | `unit_unbound`               | The rows declare no unit, so the step could not check that both readings share one    |

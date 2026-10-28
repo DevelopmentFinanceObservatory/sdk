@@ -4,7 +4,7 @@
 
 Cards and shares are public. Anyone with a share's link sees its page and can download the data behind each card from its data URLs, with no key. Share only data you would publish.
 
-The examples on this page form one program: each block after the first continues it.
+The examples on this page form one program. Each block after the first continues it.
 
 ## Make cards and publish a share
 
@@ -48,7 +48,7 @@ Each card takes a slot, numbered from 1 in the order given. `share.url` is the p
 
 `latest` has no default, because it decides what the link shows over time:
 
-- `latest: true` makes a live share. Each card follows new data: a card of a spec or a derived result draws the newest version each time DFO publishes one, and a window of `latestYear(...)` moves with it. A live share also takes new cards under the same link.
+- `latest: true` makes a live share. Each card follows new data. A card of a spec or a derived result draws the newest version each time DFO publishes one, and a window of `latestYear(...)` moves with it. A live share also takes new cards under the same link.
 - `latest: false` makes a snapshot. Each card keeps the version it draws today, for good.
 
 `client.cards` has five kinds:
@@ -101,7 +101,7 @@ share = await client.share([recent, stat], {
 });
 ```
 
-`replace` takes a `Share` or the URL of its page or embed. A snapshot cannot be replaced: `replace` with `latest: false` raises `InvalidRequestError` before any request, and DFO refuses a snapshot's URL with `share_not_replaceable`. A replace with fewer cards leaves the later slots empty: their data URLs answer not found, and `client.fetch(share, { slot: n })` of an empty slot rejects with `NotFoundError`.
+`replace` takes a `Share` or the URL of its page or embed. A snapshot cannot be replaced. `replace` with `latest: false` raises `InvalidRequestError` before any request, and DFO refuses a snapshot's URL with `share_not_replaceable`. A replace with fewer cards leaves the later slots empty. Their data URLs answer not found, and `client.fetch(share, { slot: n })` of an empty slot rejects with `NotFoundError`.
 
 ## Fix a live share as a snapshot
 

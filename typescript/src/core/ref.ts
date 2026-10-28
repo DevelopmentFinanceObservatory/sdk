@@ -313,8 +313,8 @@ function sameOutput(a: RefMember | DerivedRefMember, b: RefMember | DerivedRefMe
 /** The exact versions a dataset holds. `JSON.stringify(ref)` writes the stored format,
  *  `DatasetRef.fromJSON` reads one written by any DFO client, `client.fetch(ref)` fetches those
  *  versions, and `client.fetch(ref, { latest: true })` the newest versions of its specs. A ref
- *  holds dataset members or derived members, never both. `client.fetch` reads a ref of one
- *  derived member as the exact frame it names; when DFO no longer stores that frame, it computes
+ *  holds dataset members or derived members, one kind per ref. `client.fetch` reads a ref of one
+ *  derived member as the exact frame it names. When DFO no longer stores that frame, it computes
  *  the recipe again on the root versions the ref names. `client.fetch(ref, { latest: true })`
  *  computes the recipe on its datasets' newest versions. */
 export class DatasetRef {

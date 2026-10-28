@@ -271,9 +271,10 @@ class DatasetRef:
     The format is fixed, so a ref saved by one client or language loads in another.
     `dfo.fetch(ref)` fetches the versions it names, and
     `dfo.fetch(ref, latest=True)` the newest versions of its specs. A ref holds
-    dataset members or derived members, never both. `dfo.fetch` reads a ref of
-    one derived member as the exact frame it names; when DFO no longer stores
-    that frame, it computes the recipe again on the root versions the ref names.
+    dataset members or derived members, one kind per ref. `dfo.fetch` reads a
+    ref of one derived member as the exact frame it names. When DFO no longer
+    stores that frame, it computes the recipe again on the root versions the
+    ref names.
     `dfo.fetch(ref, latest=True)` computes the recipe on its datasets' newest
     versions.
 
