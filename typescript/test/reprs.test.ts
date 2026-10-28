@@ -7,6 +7,7 @@ import { DfoError, NotFoundError, serverCode } from "../src/core/errors.ts";
 import { describing } from "../src/core/trace.ts";
 import { DataWarning, DfoWarning, SeriesLeftOutWarning } from "../src/core/warnings.ts";
 import { Dataset } from "../src/datasets/dataset.ts";
+import { Card, Served, Share } from "../src/datasets/publication.ts";
 import { recipe } from "../src/datasets/recipe.ts";
 import { latestYear } from "../src/core/periods.ts";
 import { RawResponse, Transport } from "../src/http/transport.ts";
@@ -96,6 +97,29 @@ const catalogueOf = (version: string, example: string): CatalogueResponse => ({
 
 // Each row builds the object and gives what it prints: the whole text when `whole` is set, which
 // holds at most two lines of at most 200 characters, else the start of the text.
+const cardOf = (title: string): Card =>
+  new Card({
+    id: "cmp_ad956b407b1623ec17cfcd55",
+    revision: 1,
+    kind: "line",
+    ref: dataset.ref,
+    title,
+    heldUntil: null,
+    pinned: false,
+    writeToken: "cmw_secret",
+  });
+
+const shareOf = (url: string): Share =>
+  new Share({
+    id: "k3Qx8vTa",
+    url,
+    embedUrl: "https://developmentfinance.org/embed/k3Qx8vTa",
+    dataUrls: ["https://developmentfinance.org/api/v1/presentation/shares/k3Qx8vTa/slots/1/data"],
+    revision: 2,
+    latest: true,
+    writeToken: "shw_secret",
+  });
+
 const ROWS: [string, () => { toString(): string }, string, boolean][] = [
   ["answer", () => answer, String(answer).split("\n")[0]!, false],
   ["dataset", () => dataset, "<Dataset Germany's gross ODA disbursements to Nigeria.\n", false],
@@ -206,6 +230,43 @@ const ROWS: [string, () => { toString(): string }, string, boolean][] = [
     "analysis",
     () => clientOver(new Transport({ baseUrl: "https://api.example", apiKey: false })).analysis,
     "<Analysis: filter, aggregate, growth, rank, quotientOf, shareOf, join, sumOf, compare>",
+    true,
+  ],
+  [
+    "cards",
+    () => clientOver(new Transport({ baseUrl: "https://api.example", apiKey: false })).cards,
+    "<Cards: line, bar, table, stat, source>",
+    true,
+  ],
+  [
+    "card",
+    () => cardOf("German ODA, last ten years"),
+    `Card(line cmp_ad956b407b1623ec17cfcd55, "German ODA, last ten years", draws ${SPEC_ID} ` +
+      `at ${VERSION})`,
+    true,
+  ],
+  [
+    "share",
+    () => shareOf("https://developmentfinance.org/s/k3Qx8vTa"),
+    "Share(live https://developmentfinance.org/s/k3Qx8vTa, 1 slot, revision 2)",
+    true,
+  ],
+  [
+    "served",
+    () =>
+      new Served({
+        slot: 1,
+        cardId: "cmp_ad956b407b1623ec17cfcd55",
+        cardRevision: 1,
+        specId: `ops_${"a".repeat(32)}`,
+        contentVersion: `ocv_${"b".repeat(32)}`,
+        firstServed: new Date("2026-09-24T08:00:00Z"),
+        pinned: false,
+        heldUntil: new Date("2026-11-23T00:00:00Z"),
+        fetchable: true,
+      }),
+    `Served(slot 1 cmp_ad956b407b1623ec17cfcd55 from 24 Sep 2026: ops_${"a".repeat(32)} at ` +
+      `ocv_${"b".repeat(32)} · fetchable until 23 Nov 2026)`,
     true,
   ],
 ];
@@ -411,6 +472,8 @@ const TAINTED_ROWS: [string, (taint: string) => { toString(): string }][] = [
   ],
   ["a catalogue", (taint) => new Catalogue(catalogueOf("cat_1", `GDP${taint}`))],
   ["a dataset ref", (taint) => DATASETS.get(taint)!.ref],
+  ["a card", (taint) => cardOf(`German ODA${taint}`)],
+  ["a share", (taint) => shareOf(`https://developmentfinance.org/s/k3Qx8vTa${taint}`)],
   [
     "a raw response",
     // A header value holds no line break, so the response's taint stops at the controls.

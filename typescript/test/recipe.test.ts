@@ -86,7 +86,7 @@ describe("a one-reading step", () => {
     ],
     [
       "growth-fixed",
-      (r: Recipe) => r.growth({ window: [2015, 2020], change: "absolute" }),
+      (r: Recipe) => r.growth({ window: [2015, 2020], change: "difference" }),
       "growth",
       { window_start: "2015", window_end: "2020", entity_by: [], change: "absolute" },
     ],
@@ -224,6 +224,10 @@ describe("a malformed step is refused when it is added", () => {
     ["window one year", () => recipe(AID).growth({ window: loose([2020]) })],
     ["window not an integer", () => recipe(AID).growth({ window: [2020.5, 2024] })],
     ["window text", () => recipe(AID).growth({ window: loose(["2020", 2024]) })],
+    [
+      "growth change in the engine's words",
+      () => recipe(AID).growth({ window: [2020, 2024], change: loose("relative") }),
+    ],
     ["share of nothing", () => recipe(AID).shareOf(loose(undefined))],
     ["share of by with on", () => recipe(AID).shareOf({ by: "origin", on: ["place"] })],
     ["on empty", () => recipe(AID).quotientOf(POPULATION, { on: {} })],

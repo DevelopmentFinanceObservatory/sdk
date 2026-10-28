@@ -79,6 +79,11 @@ export type {
   Member,
 } from "./datasets/dataset.ts";
 export { Analysis } from "./datasets/analysis.ts";
+export { Cards } from "./datasets/cards.ts";
+export type { CardOptions, StatOptions } from "./datasets/cards.ts";
+export { Card, Served, Share } from "./datasets/publication.ts";
+export type { CardKind } from "./datasets/publication.ts";
+export type { ShareOptions, WriteTokenOptions } from "./datasets/shares.ts";
 export { Recipe, recipe } from "./datasets/recipe.ts";
 export type {
   AggregateOptions,

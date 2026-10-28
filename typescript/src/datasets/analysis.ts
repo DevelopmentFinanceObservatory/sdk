@@ -323,8 +323,9 @@ export class Analysis {
     return this.#run(recipe(data).aggregate(options));
   }
 
-  /** Change from the first to the last year of `window`, for each member of `by`: a fraction
-   *  (0.25 is 25%) with `relative`, the default, an amount with `absolute`. */
+  /** Change from the first to the last year of `window`, for each member of `by`: with
+   *  `percent`, the default, the change relative to the first year's value as a fraction (0.25
+   *  is 25%); with `difference`, an amount in the data's unit. */
   async growth(data: Start, options: GrowthOptions): Promise<Dataset> {
     return this.#run(recipe(data).growth(options));
   }

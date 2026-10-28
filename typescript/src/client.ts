@@ -7,6 +7,10 @@ import { clientError, DfoError, InvalidRequestError, messageOf, optionsOf } from
 import { present } from "./core/json.ts";
 import { checkOptions, declareOptions } from "./core/options.ts";
 import { Analysis } from "./datasets/analysis.ts";
+import { Cards } from "./datasets/cards.ts";
+import type { Card, Served, Share } from "./datasets/publication.ts";
+import { history, share, snapshot, unshare } from "./datasets/shares.ts";
+import type { ShareOptions, WriteTokenOptions } from "./datasets/shares.ts";
 import { pin } from "./datasets/pin.ts";
 import type { Recipe } from "./datasets/recipe.ts";
 import { fetchDataset } from "./datasets/resolve.ts";
@@ -102,6 +106,9 @@ export class Client {
   /** DFO's operations, each run at once on DFO: `filter`, `aggregate`, `growth`, `rank`,
    *  `quotientOf`, `shareOf`, `join`, `sumOf` and `compare`. */
   readonly analysis: Analysis;
+  /** Charts, tables, headline numbers and source notes DFO stores and draws: `line`, `bar`,
+   *  `table`, `stat` and `source`, each from one Dataset or ref. */
+  readonly cards: Cards;
   readonly #transport: Transport;
   readonly #answers: AnswerContext;
 
@@ -135,6 +142,7 @@ export class Client {
     registerClient(this, this.#answers);
     this.lookup = new Lookup(this.#transport);
     this.analysis = new Analysis(this.#transport);
+    this.cards = new Cards(this.#transport);
   }
 
   /** The API's base URL, less any trailing slashes. */
@@ -211,6 +219,65 @@ export class Client {
    */
   pin(data: Dataset): Promise<Dataset> {
     return pin(this.#transport, data);
+  }
+
+  /**
+   * Publishes cards from `client.cards` under one link, one card per numbered slot, as
+   * `client.share(card, { latest: true })`: a live share (`latest: true`) follows new data, and a
+   * snapshot (`latest: false`) keeps the versions its cards draw now. The `Share` carries the
+   * page, embed and data URLs and the `shw_` write token that changes it; keep the token on your
+   * server. With `replace`, the live share it names shows these cards under its URLs instead.
+   * Each new share counts against a daily allowance.
+   *
+   * @throws {InvalidRequestError} `cards` is not a Card or a non-empty list of them, `latest`
+   *   is not a boolean, `replace` goes with `latest: false`, `writeToken` goes without
+   *   `replace`, or `replace` is neither a Share nor a share's URL (`invalid_argument`), and no
+   *   request is sent; or the change carried no token (`write_token_required`) or `replace`
+   *   names a snapshot (`share_not_replaceable`).
+   * @throws {PermissionDeniedError} The token is not the share's (`write_token_invalid`).
+   * @throws {QuotaExceededError} The daily share allowance is spent (`allowance_exhausted`);
+   *   `retryAfterMs` says when it resets.
+   */
+  share(cards: Card | readonly Card[], options: ShareOptions): Promise<Share> {
+    return share(this.#transport, cards, options);
+  }
+
+  /**
+   * Fixes a live share as a snapshot under the same URLs, each slot keeping the frame it serves
+   * now. It sends the `writeToken` given, else the `Share`'s own.
+   *
+   * @throws {InvalidRequestError} `target` is neither a Share nor a share's URL
+   *   (`invalid_argument`), and no request is sent; or no token was sent
+   *   (`write_token_required`).
+   * @throws {PermissionDeniedError} The token is not the share's (`write_token_invalid`).
+   */
+  snapshot(target: Share | string, options: WriteTokenOptions = {}): Promise<Share> {
+    return snapshot(this.#transport, target, options);
+  }
+
+  /**
+   * Takes a share down. It sends the `writeToken` given, else the `Share`'s own.
+   *
+   * @throws {InvalidRequestError} `target` is neither a Share nor a share's URL
+   *   (`invalid_argument`), and no request is sent; or no token was sent
+   *   (`write_token_required`).
+   * @throws {PermissionDeniedError} The token is not the share's (`write_token_invalid`).
+   * @throws {NotFoundError} No share has that id, or it was taken down (`not_found`).
+   */
+  unshare(target: Share | string, options: WriteTokenOptions = {}): Promise<void> {
+    return unshare(this.#transport, target, options);
+  }
+
+  /**
+   * Every frame a share's slots served, newest first, each saying whether it can still be
+   * fetched. It needs no token.
+   *
+   * @throws {InvalidRequestError} `target` is neither a Share nor a share's URL
+   *   (`invalid_argument`), and no request is sent.
+   * @throws {NotFoundError} No share has that id, or it was taken down (`not_found`).
+   */
+  history(target: Share | string): Promise<readonly Served[]> {
+    return history(this.#transport, target);
   }
 
   /**

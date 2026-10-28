@@ -27,8 +27,12 @@ import {
   SeriesLeftOutWarning,
 } from "@developmentfinance/client";
 import type {
+  Card,
+  CardKind,
   LeftOutSeries,
   Recipe,
+  Served,
+  Share,
   Alternative,
   Answer,
   AnswerKind,
@@ -108,6 +112,27 @@ export async function analysed(client: Client, spec: Spec): Promise<number> {
   return dropped.length + share.rowCount + (kept.pinned && loud ? 1 : 0);
 }
 
+// A card draws a dataset, a share publishes it, and history lists what it served.
+export async function published(client: Client, dataset: Dataset): Promise<number> {
+  const chart: Card = await client.cards.line(dataset, {
+    window: [latestYear(-9), latestYear()],
+    title: "German ODA",
+  });
+  const kind: CardKind = chart.kind;
+  const tile: Share = await client.share(chart, { latest: true });
+  const token: string | null = tile.writeToken;
+  const stat = await client.cards.stat(dataset.ref, {
+    year: latestYear(),
+    compareTo: latestYear(-1),
+    change: "percent",
+  });
+  const swapped = await client.share([stat], { latest: true, replace: tile });
+  const fixed = await client.snapshot(swapped.url, { writeToken: token ?? "" });
+  const served: readonly Served[] = await client.history(fixed);
+  await client.unshare(fixed);
+  return served.length + kind.length + (chart.heldUntil?.getTime() ?? 0);
+}
+
 // The mistakes a type check should catch, each of which fails to compile.
 export async function mistakes(client: Client, answer: Answer): Promise<void> {
   const spec = answer.specs[0]!;
@@ -144,6 +169,12 @@ export async function mistakes(client: Client, answer: Answer): Promise<void> {
   await client.analysis.growth(spec, { window: [2020] });
   // @ts-expect-error A spec id where a recipe starts from a spec.
   recipe("spec_123");
+  // @ts-expect-error A change in the engine's word.
+  recipe(spec).growth({ window: [2020, 2024], change: "relative" });
+  // @ts-expect-error A share without latest.
+  await client.share(await client.cards.source(dataset), {});
+  // @ts-expect-error A share takes no title.
+  await client.share(await client.cards.source(dataset), { latest: true, title: "Aid" });
   // @ts-expect-error A severity the contract does not list: the named unions are closed.
   const severity: Severity = "fatal";
   console.log(severity);

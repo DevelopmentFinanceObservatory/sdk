@@ -49,8 +49,9 @@ export type Pairing = Readonly<Record<string, string>> | readonly string[] | str
 /** How an operation reduces several rows to one. */
 export type Aggregation = "sum" | "mean" | "max" | "min";
 
-/** `relative`, a fraction of the first year's value, or `absolute`, an amount. */
-export type Change = "relative" | "absolute";
+/** How a change is worked out: `percent`, the change as a percentage of the earlier value, or
+ *  `difference`, the later value minus the earlier. */
+export type Change = "percent" | "difference";
 
 /** What a recipe starts from, and what a two-reading step takes as its other reading. */
 export type Start = Spec | DatasetRef | Dataset | Recipe;
@@ -73,8 +74,8 @@ export type GrowthOptions = {
   by?: Columns;
   /** The first and last years, such as `[latestYear(-4), latestYear()]`. */
   window: readonly [start: Year, end: Year];
-  /** `relative` by default, a fraction such as 0.25 for 25%; `absolute` is an amount in the
-   *  data's unit. */
+  /** `percent` by default, the change relative to the first year's value as a fraction such as
+   *  0.25 for 25%; `difference` is an amount in the data's unit. */
   change?: Change;
 };
 
@@ -105,6 +106,12 @@ export type ShareOfOptions = PairOptions & {
 
 const FILTER = declareOptions<FilterOptions>("filter", { keep: true });
 const AGGREGATE = declareOptions<AggregateOptions>("aggregate", { by: true, how: true });
+/** Growth's `change` words, in the engine's names. */
+const GROWTH_CHANGES: Readonly<Record<Change, string>> = {
+  percent: "relative",
+  difference: "absolute",
+};
+
 const GROWTH = declareOptions<GrowthOptions>("growth", { by: true, window: true, change: true });
 const RANK = declareOptions<RankOptions>("rank", {
   by: true,
@@ -223,13 +230,21 @@ export class Recipe {
     );
   }
 
-  /** The change of each member of `by` from the first to the last year of `window`. */
+  /**
+   * The change of each member of `by` from the first to the last year of `window`.
+   *
+   * @throws {InvalidRequestError} `change` is neither `percent` nor `difference`
+   *   (`invalid_argument`).
+   */
   growth(options: GrowthOptions): Recipe {
-    const { by = [], window, change = "relative" } = checkOptions(GROWTH, options);
+    const { by = [], window, change = "percent" } = checkOptions(GROWTH, options);
     const entityBy = columns("by", by, true);
+    if (!Object.hasOwn(GROWTH_CHANGES, change)) {
+      throw refusal("change", 'is "percent" or "difference"', change);
+    }
     return this.#step(
       "growth",
-      { ...windowOf(window), entity_by: entityBy, change: word("change", change) },
+      { ...windowOf(window), entity_by: entityBy, change: GROWTH_CHANGES[change] },
       { verb: "growth", by: entityBy, limit: null },
     );
   }
