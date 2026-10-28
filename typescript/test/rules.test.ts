@@ -1,5 +1,5 @@
-// Replays the contract's rule vectors for keys, credentials, the reading order, role keys and the
-// client's identity. The cache rules have no TypeScript counterpart: this client keeps no cache on disk.
+// Replays the contract's rule vectors for keys, credentials, the reading order, role keys, the
+// client's identity and the comparison of refs. The cache rules have no TypeScript counterpart: this client keeps no cache on disk.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
@@ -20,6 +20,7 @@ import {
 } from "../src/http/client-identity.ts";
 import type { Runtime } from "../src/http/client-identity.ts";
 import { VERSION } from "../src/version.ts";
+import { DatasetRef } from "../src/core/ref.ts";
 import { Dataset } from "../src/datasets/dataset.ts";
 import type { FetchedMember } from "../src/datasets/dataset.ts";
 import { readingOrder } from "../src/datasets/reading-order.ts";
@@ -361,6 +362,23 @@ describe("client-identity", async () => {
       } else {
         await send();
         assert.equal(seen[0]?.headers.get(CLIENT_HEADER), ownIdentity());
+      }
+    });
+  }
+});
+
+describe("output-comparison", async () => {
+  type Vector = { left: unknown; right: unknown; equal: boolean; same_data: boolean };
+  for (const vector of await vectors<Vector>("output-comparison")) {
+    test(vector.name, () => {
+      const left = DatasetRef.fromJSON(vector.left);
+      const right = DatasetRef.fromJSON(vector.right);
+      for (const [mine, theirs] of [
+        [left, right],
+        [right, left],
+      ] as const) {
+        assert.equal(mine.equals(theirs), vector.equal);
+        assert.equal(mine.sameData(theirs), vector.same_data);
       }
     });
   }

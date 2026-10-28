@@ -16,7 +16,7 @@ import pytest
 
 from dfo._core.errors import ContractError
 from dfo._core.parse import parse_parts
-from dfo._core.refs import DatasetRef
+from dfo._core.refs import DatasetRef, DerivedMember, DerivedRefMember, Member
 from dfo._core.types import (
     Assumption,
     CandidatesPart,
@@ -30,8 +30,13 @@ from dfo._core.types import (
 )
 from dfo._datasets.bundle import load as load_saved
 from dfo._datasets.cache import sha256_digest
-from dfo._datasets.dataset import Dataset, FetchedMember, build_dataset
-from tests._data import load
+from dfo._datasets.dataset import (
+    Dataset,
+    FetchedMember,
+    LeftOutSeries,
+    build_dataset,
+)
+from tests._data import CONTRACT, load
 from tests._datasets import PARQUET, manifest, other_member, recorded_member, scenario
 from tests._fetch_support import FakeCache
 from tests.rule_vectors import ids, vectors
@@ -609,7 +614,98 @@ def test_save_then_load_returns_an_equal_dataset(tmp_path: Path) -> None:
     assert stored[b"dfo.sentence"].decode() == data.sentence
     assert data.ref is not None
     assert stored[b"dfo.ref"].decode() == data.ref.to_json()
+    assert b"dfo.left_out" not in stored
     _assert_same(load_saved(path), data)
+
+
+def _derived() -> Dataset:
+    """A dataset of the contract's derived member, with two series left out."""
+    record = json.loads((CONTRACT / "refs" / "ref-derived-member.json").read_text())
+    (stored,) = DatasetRef.from_json(json.dumps(record["ref"])).members
+    assert isinstance(stored, DerivedRefMember)
+    data = build_dataset(
+        [recorded_member()], layout="long", complete=True, missing=(), stale=False
+    )
+    member = DerivedMember(
+        parts=stored.parts,
+        sentence=stored.sentence,
+        spec=stored.spec,
+        content_version=stored.content_version,
+        output_digest=stored.output_digest,
+        roots=stored.roots,
+        execution_identity=stored.execution_identity,
+        resolved_periods=stored.resolved_periods,
+        citation=data.citation,
+        digest=stored.digest,
+        rendering=stored.rendering,
+    )
+    left_out = (
+        LeftOutSeries(
+            coordinates=(("origin", "country/DEU"), ("destination", "country/NGA")),
+            step="growth",
+            side="data",
+            reason="no_value_at_window_end",
+            rows=3,
+        ),
+        LeftOutSeries(
+            coordinates=(("origin", "country/FRA"),),
+            step="rank",
+            side="other",
+            reason="no_value_in_period",
+            rows=0,
+        ),
+    )
+    return replace(data, members=(member,), _left_out=left_out)
+
+
+def test_a_derived_dataset_saves_its_ref_and_left_out_series(tmp_path: Path) -> None:
+    data = _derived()
+    path = tmp_path / "derived.parquet"
+    data.save(path)
+    stored = pq.read_metadata(path).metadata
+    assert json.loads(stored[b"dfo.ref"])["format_version"] == 2
+    assert json.loads(stored[b"dfo.left_out"])[0] == {
+        "coordinates": {"origin": "country/DEU", "destination": "country/NGA"},
+        "step": "growth",
+        "side": "data",
+        "reason": "no_value_at_window_end",
+        "rows": 3,
+    }
+    loaded = load_saved(path)
+    _assert_same(loaded, data)
+    assert loaded._left_out == data._left_out
+
+
+@pytest.mark.parametrize(
+    ("value", "pointer"),
+    [
+        (b"{garbage", "/dfo.left_out"),
+        (b"{}", "/dfo.left_out"),
+        (b'[{"coordinates": {"origin": 1}}]', "/dfo.left_out/0/step"),
+        (
+            b'[{"coordinates": {"origin": 1}, "step": "s", "side": "data", '
+            b'"reason": "r", "rows": 1}]',
+            "/dfo.left_out/0/coordinates/origin",
+        ),
+        (
+            b'[{"coordinates": {}, "step": "s", "side": "data", "reason": "r", '
+            b'"rows": -1}]',
+            "/dfo.left_out/0/rows",
+        ),
+    ],
+    ids=["not-json", "not-an-array", "step-missing", "value-not-text", "rows-negative"],
+)
+def test_a_damaged_left_out_key_raises_format_error(
+    tmp_path: Path, value: bytes, pointer: str
+) -> None:
+    path = tmp_path / "derived.parquet"
+    _derived().save(path)
+    table = pq.read_table(path)
+    metadata = {**table.schema.metadata, b"dfo.left_out": value}
+    pq.write_table(table.replace_schema_metadata(metadata), path)
+    with pytest.raises(FormatError) as caught:
+        load_saved(path)
+    assert (caught.value.reason, caught.value.pointer) == ("format_invalid", pointer)
 
 
 def _saved() -> Dataset:
@@ -837,6 +933,10 @@ def _assert_same(loaded: Dataset, data: Dataset) -> None:
     assert [gap.part.raw for gap in loaded.missing] == [
         gap.part.raw for gap in data.missing
     ]
-    assert [member.spec.definition for member in loaded.members] == [
-        member.spec.definition for member in data.members
+    assert [
+        member.spec.definition
+        for member in loaded.members
+        if isinstance(member, Member)
+    ] == [
+        member.spec.definition for member in data.members if isinstance(member, Member)
     ]

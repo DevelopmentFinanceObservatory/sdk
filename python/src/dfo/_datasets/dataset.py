@@ -9,7 +9,8 @@ columns and rows in the contract's reading order, `READING_COLUMNS` first and
 `stat_var` last, after the member's file was hashed, so the digest and the ref name
 the server's file. `save` writes one Parquet file whose
 key-value metadata carries the provenance and the ref, which `dfo.load` reads
-back. That file is the durable form. A dataset also pickles, for transfer between
+back, and, for a dataset DFO computed, the series its recipe left out. That file is
+the durable form. A dataset also pickles, for transfer between
 processes that run the same client version, as `multiprocessing` does. Another
 version may fail to load the pickle or load it wrong.
 
@@ -30,8 +31,15 @@ from typing import TYPE_CHECKING, Any, Never
 
 from dfo._core.codes import CONTRACT_VIOLATION, UNEXPECTED_RESPONSE
 from dfo._core.errors import ContractError, client_error, message_of
+from dfo._core.json_text import loads
 from dfo._core.parse import parse_citation, parse_notices, parse_part
-from dfo._core.refs import DatasetRef, Member
+from dfo._core.refs import (
+    DatasetRef,
+    DerivedMember,
+    DerivedRefMember,
+    Member,
+    RefMember,
+)
 from dfo._core.text import single_line
 from dfo._core.types import (
     Assumption,
@@ -150,6 +158,26 @@ class FetchedMember:
     rendering: Rendering | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class LeftOutSeries:
+    """A series a step of the recipe behind a dataset dropped for missing data.
+
+    Attributes:
+        coordinates: The value of each column that names the series, as
+            `(column, value)` pairs in the server's order.
+        step: The step that dropped the series.
+        side: The input the step dropped it from.
+        reason: Why the step dropped it.
+        rows: The rows the series held.
+    """
+
+    coordinates: tuple[tuple[str, str], ...]
+    step: str
+    side: str
+    reason: str
+    rows: int
+
+
 @dataclass(frozen=True, slots=True, eq=False, repr=False)
 class Dataset:
     """A table of data with its provenance, one exact version per member.
@@ -158,8 +186,9 @@ class Dataset:
         sentence: What the data shows, in Search's words, or the members' sentences
             in order when there are several.
         members: One member per built spec, each an exact version; readings
-            that narrow to one spec share a member. Empty for a
-            website bundle opened from a folder, which names no artifact.
+            that narrow to one spec share a member. A dataset DFO computed holds
+            derived members instead. Empty for a website bundle opened from a
+            folder, which names no artifact.
         citation: How to cite the data, every member's sources together.
         warnings: The datasets surface's warnings about the members' data.
         departures: How the readings differ from the question.
@@ -185,7 +214,7 @@ class Dataset:
     """
 
     sentence: str
-    members: tuple[Member, ...]
+    members: tuple[Member | DerivedMember, ...]
     citation: Citation
     warnings: tuple[Notice, ...]
     departures: tuple[Departure, ...]
@@ -204,6 +233,9 @@ class Dataset:
     # The owner of the call the repr's newest-versions line names: the fetching
     # client's `client` or `dfo`, and `dfo` for a dataset `dfo.load` read.
     _caller: str = field(default="dfo", repr=False)
+    # Every series the recipe behind a derived dataset dropped for missing data,
+    # at any step; empty for a dataset of dataset members.
+    _left_out: tuple[LeftOutSeries, ...] = field(default=(), repr=False)
 
     def __post_init__(self) -> None:
         rows = self._member_rows
@@ -418,6 +450,10 @@ class Dataset:
         }
         if ref is not None:
             metadata["dfo.ref"] = ref.to_json()
+        if self._left_out:
+            metadata["dfo.left_out"] = _dumps(
+                [_left_out_object(series) for series in self._left_out]
+            )
         return {key.encode(): value.encode() for key, value in metadata.items()}
 
 
@@ -717,14 +753,9 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
             "dfo.ref names",
         )
     members = tuple(
-        Member(
-            parts=stored.parts,
-            spec=stored.spec,
-            content_version=stored.content_version,
-            sentence=stored.sentence,
-            citation=_load_citation(citation, f"/dfo.dataset/member_citations/{index}"),
-            digest=stored.digest,
-            rendering=stored.rendering,
+        _saved_member(
+            stored,
+            _load_citation(citation, f"/dfo.dataset/member_citations/{index}"),
         )
         for index, (stored, citation) in enumerate(
             zip(ref_members, citations, strict=True)
@@ -772,6 +803,80 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
         layout_version=_string(rest["layout_version"], "/dfo.dataset/layout_version"),
         _table=table.replace_schema_metadata(None),
         _member_rows=member_rows,
+        _left_out=_load_left_out(values.get("dfo.left_out")),
+    )
+
+
+def _saved_member(
+    stored: RefMember | DerivedRefMember, citation: Citation
+) -> Member | DerivedMember:
+    """A saved ref's member as the dataset holds it, with its citation."""
+    if isinstance(stored, RefMember):
+        return Member(
+            parts=stored.parts,
+            spec=stored.spec,
+            content_version=stored.content_version,
+            sentence=stored.sentence,
+            citation=citation,
+            digest=stored.digest,
+            rendering=stored.rendering,
+        )
+    return DerivedMember(
+        parts=stored.parts,
+        sentence=stored.sentence,
+        spec=stored.spec,
+        content_version=stored.content_version,
+        output_digest=stored.output_digest,
+        roots=stored.roots,
+        execution_identity=stored.execution_identity,
+        resolved_periods=stored.resolved_periods,
+        citation=citation,
+        digest=stored.digest,
+        rendering=stored.rendering,
+    )
+
+
+def _left_out_object(series: LeftOutSeries) -> dict[str, Any]:
+    return {
+        "coordinates": dict(series.coordinates),
+        "step": series.step,
+        "side": series.side,
+        "reason": series.reason,
+        "rows": series.rows,
+    }
+
+
+def _load_left_out(text: str | None) -> tuple[LeftOutSeries, ...]:
+    """A saved file's `dfo.left_out`, a JSON array of dropped series; empty when
+    the file has no such key."""
+    if text is None:
+        return ()
+    pointer = "/dfo.left_out"
+    try:
+        items = loads(text)
+    except ValueError as error:
+        raise FormatError("format_invalid", pointer, f"not JSON: {error}") from error
+    return tuple(
+        _load_left_out_series(item, f"{pointer}/{index}")
+        for index, item in enumerate(_array(items, pointer))
+    )
+
+
+def _load_left_out_series(value: object, pointer: str) -> LeftOutSeries:
+    obj = object_at(value, pointer)
+    check_keys(obj, pointer, required=("coordinates", "step", "side", "reason", "rows"))
+    coordinates = object_at(obj["coordinates"], f"{pointer}/coordinates")
+    for key, item in coordinates.items():
+        _string(item, f"{pointer}/coordinates/{key}")
+    rows = obj["rows"]
+    if not is_integer(rows) or rows < 0:
+        raise FormatError("format_invalid", f"{pointer}/rows", "not a row count")
+    return LeftOutSeries(
+        coordinates=tuple(coordinates.items()),
+        step=_string(obj["step"], f"{pointer}/step"),
+        side=_string(obj["side"], f"{pointer}/side"),
+        reason=_string(obj["reason"], f"{pointer}/reason"),
+        rows=int(rows),
     )
 
 

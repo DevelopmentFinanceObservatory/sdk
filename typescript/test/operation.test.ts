@@ -6,7 +6,7 @@ import { envFrom } from "../src/config/env.ts";
 import { ContractError, DfoTimeoutError, VersionUnavailableError } from "../src/core/errors.ts";
 import { fetchDataset, VERSIONS_PAGE_BUDGET } from "../src/datasets/resolve.ts";
 import type { ProgressEvent } from "../src/datasets/operation.ts";
-import { DatasetRef } from "../src/core/ref.ts";
+import { DatasetRef, isDerived } from "../src/core/ref.ts";
 import { DfoWarning } from "../src/core/warnings.ts";
 import type { DatasetRefJson } from "../src/core/ref.ts";
 import { Transport } from "../src/http/transport.ts";
@@ -699,6 +699,7 @@ describe("a stored version's lookup order", () => {
     else delete rendering.without_party_totals;
     const ref = DatasetRef.fromJSON(saved);
     const member = ref.members[0]!;
+    assert.ok(!isDerived(member));
     return {
       ref,
       member,

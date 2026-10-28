@@ -167,6 +167,7 @@ async def fetch(
         )
     caller = transport.caller
     if isinstance(target, DatasetRef):
+        members = _dataset_members(target)
         if window is not None:
             raise client_error(
                 INVALID_ARGUMENT, _ref_window_refusal(window, latest, caller)
@@ -177,11 +178,11 @@ async def fetch(
                 "A ref fetch takes no entities or facets; narrow a member's spec "
                 f"instead, as {caller}.fetch(ref.members[0].spec, entities=...).",
             )
-        layout = _checked_ref_layout(target, layout=layout, party_totals=party_totals)
+        layout = _checked_ref_layout(members, layout=layout, party_totals=party_totals)
         if latest:
             return await _fetch_newest(
                 transport,
-                target,
+                members,
                 layout=layout,
                 strict=strict,
                 timeout=timeout,
@@ -190,7 +191,7 @@ async def fetch(
             )
         return await _fetch_ref(
             transport,
-            target,
+            members,
             layout=layout,
             strict=strict,
             timeout=timeout,
@@ -236,8 +237,25 @@ def _ref_window_refusal(window: object, latest: bool, caller: str) -> str:
     )
 
 
+def _dataset_members(ref: DatasetRef) -> tuple[RefMember, ...]:
+    """The dataset members of a ref.
+
+    Raises:
+        InvalidRequestError: The ref holds derived members, which this client
+            reads but does not fetch (`invalid_argument`).
+    """
+    members = tuple(member for member in ref.members if isinstance(member, RefMember))
+    if len(members) != len(ref.members):
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"The DatasetRef names {ref.members[0].spec.spec_id}, a frame DFO "
+            "computed, and this client fetches dataset versions only",
+        )
+    return members
+
+
 def _checked_ref_layout(
-    ref: DatasetRef, *, layout: Layout | None, party_totals: bool | None
+    members: tuple[RefMember, ...], *, layout: Layout | None, party_totals: bool | None
 ) -> Layout:
     """The layout a ref holds, once the call's `layout` and `party_totals`, when
     given, are the ref's own.
@@ -247,14 +265,14 @@ def _checked_ref_layout(
             or the call names another layout or `party_totals`
             (`invalid_argument`).
     """
-    ref_layout = _ref_layout(ref)
+    ref_layout = _ref_layout(members)
     if layout is not None and layout != ref_layout:
         raise client_error(
             INVALID_ARGUMENT,
             f'The DatasetRef holds the {ref_layout} layout, not "{layout}"; '
             "fetch its specs for another layout",
         )
-    for member in ref.members:
+    for member in members:
         held = not member.rendering.without_party_totals
         if party_totals is not None and party_totals is not held:
             raise client_error(
@@ -268,7 +286,7 @@ def _checked_ref_layout(
 
 async def _fetch_newest(
     transport: AsyncTransport,
-    ref: DatasetRef,
+    members: tuple[RefMember, ...],
     *,
     layout: Layout,
     strict: bool,
@@ -283,7 +301,7 @@ async def _fetch_newest(
         InvalidRequestError: The members hold different renderings, since one
             fetch builds one (`invalid_argument`).
     """
-    first, *others = ref.members
+    first, *others = members
     for index, other in enumerate(others, start=1):
         if other.rendering != first.rendering:
             raise client_error(
@@ -297,7 +315,7 @@ async def _fetch_newest(
             )
     return await fetch_members(
         transport,
-        [Reading(member.parts, member.spec, member.sentence) for member in ref.members],
+        [Reading(member.parts, member.spec, member.sentence) for member in members],
         layout=layout,
         party_totals=not first.rendering.without_party_totals,
         strict=strict,
@@ -309,7 +327,7 @@ async def _fetch_newest(
 
 async def _fetch_ref(
     transport: AsyncTransport,
-    ref: DatasetRef,
+    members: tuple[RefMember, ...],
     *,
     layout: Layout,
     strict: bool,
@@ -334,7 +352,7 @@ async def _fetch_ref(
                 deadline=deadline,
                 timeout=timeout,
             )
-            for index, member in enumerate(ref.members)
+            for index, member in enumerate(members)
         ]
     return await async_offload(
         build_dataset,
@@ -348,9 +366,9 @@ async def _fetch_ref(
     )
 
 
-def _ref_layout(ref: DatasetRef) -> Layout:
+def _ref_layout(members: tuple[RefMember, ...]) -> Layout:
     layouts = set()
-    for member in ref.members:
+    for member in members:
         if member.rendering.format != "parquet" or member.rendering.bundle:
             raise client_error(
                 INVALID_ARGUMENT,
@@ -359,7 +377,7 @@ def _ref_layout(ref: DatasetRef) -> Layout:
                 "Parquet versions",
             )
         layouts.add(layout_of(member.rendering))
-    if "frame" in layouts and len(ref.members) > 1:
+    if "frame" in layouts and len(members) > 1:
         raise client_error(
             INVALID_ARGUMENT,
             'layout="frame" holds one reading, and this DatasetRef holds several',

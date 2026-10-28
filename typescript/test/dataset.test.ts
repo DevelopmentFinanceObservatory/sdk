@@ -12,9 +12,10 @@ import type { FetchedMember } from "../src/datasets/dataset.ts";
 import { decodeRows, decodeStored, readParquet, widen } from "../src/datasets/parquet.ts";
 import { partFacts } from "../src/core/parse.ts";
 import type { ColumnType, Row, StoredColumn, Table } from "../src/datasets/parquet.ts";
-import { DatasetRef } from "../src/core/ref.ts";
+import { DatasetRef, isDerived } from "../src/core/ref.ts";
 import type { Gap } from "../src/search/answer.ts";
 import { scenarioBytes } from "./replay.ts";
+import { contractJson } from "./support.ts";
 
 const SCENARIOS = new URL("../../contract/scenarios/", import.meta.url);
 
@@ -594,12 +595,46 @@ describe("one member", async () => {
       ]),
     );
     assert.equal(metadata["dfo.format_version"], "1");
+    assert.equal(metadata["dfo.left_out"], undefined);
     const saved = JSON.parse(metadata["dfo.dataset"]!) as Record<string, unknown>;
     assert.deepEqual(saved["assumptions"], [assumed]);
     const reread = await Dataset.create([member(written)], { layout: "long" });
     assert.deepEqual(reread.columns, dataset.columns);
     assert.ok(!reread.columns.includes("part"));
     assert.deepEqual(await reread.toRows(), await dataset.toRows());
+  });
+});
+
+describe("a derived member", async () => {
+  const data = await scenarioBytes("fetch-ref.parquet");
+  const { ref: stored } = await contractJson<{ ref: unknown }>("refs/ref-derived-member.json");
+  const [derived] = DatasetRef.fromJSON(stored).members;
+  assert.ok(derived && isDerived(derived));
+  const leftOut = [
+    {
+      coordinates: { origin: "country/DEU", destination: "country/NGA" },
+      step: "growth",
+      side: "data",
+      reason: "no_value_at_window_end",
+      rows: 3,
+    },
+  ];
+  const dataset = await Dataset.create(
+    [{ ...derived, manifest: {}, digest: digestOf(data), data }],
+    { layout: "long", leftOut },
+  );
+
+  test("bytes() writes its format 2 ref and the series its recipe left out", async () => {
+    const metadata = Object.fromEntries(
+      (parquetMetadata((await dataset.bytes()).slice().buffer).key_value_metadata ?? []).map(
+        ({ key, value }) => [key, value],
+      ),
+    );
+    const ref = JSON.parse(metadata["dfo.ref"]!) as { format_version: number };
+    assert.equal(ref.format_version, 2);
+    assert.ok(DatasetRef.fromJSON(ref).equals(dataset.ref));
+    assert.ok(dataset.ref.sameData(DatasetRef.fromJSON(stored)));
+    assert.deepEqual(JSON.parse(metadata["dfo.left_out"]!), leftOut);
   });
 });
 

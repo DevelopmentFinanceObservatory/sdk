@@ -39,7 +39,7 @@ from dfo._datasets.dataset import build_dataset
 from dfo._sync._datasets.fetch import fetch_members
 from dfo._sync._datasets.resolve import fetch
 from dfo._sync._http.transport import Transport
-from tests._data import load
+from tests._data import CONTRACT, load
 from tests._datasets import PARQUET
 from tests._fetch_support import (
     BASE,
@@ -1051,6 +1051,19 @@ def test_a_ref_reads_its_version_through_the_snapshot_and_files_routes() -> None
         member.digest,
     )
     assert built.stale is False
+
+
+@pytest.mark.parametrize("latest", [False, True])
+def test_a_derived_ref_is_refused_before_any_request(latest: bool) -> None:
+    record = json.loads((CONTRACT / "refs" / "ref-derived-member.json").read_text())
+    ref = DatasetRef.from_json(json.dumps(record["ref"]))
+    server = Server()
+    with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            fetch(transport, ref, latest=latest)
+    assert caught.value.code == "invalid_argument"
+    assert ref.members[0].spec.spec_id in str(caught.value)
+    assert server.requests == []
 
 
 def test_a_ref_with_an_unknown_version_raises_at_the_snapshot() -> None:

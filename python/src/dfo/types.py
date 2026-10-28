@@ -12,7 +12,15 @@ takes `Name`.
 """
 
 from dfo._core.lookup_results import Catalogue, Code, Entity, Match, Node
-from dfo._core.refs import Member, RefMember
+from dfo._core.refs import (
+    DerivedMember,
+    DerivedRefMember,
+    DerivedSpec,
+    Member,
+    RefMember,
+    ResolvedPeriod,
+    Root,
+)
 from dfo._core.types import (
     Assumption,
     Candidate,
@@ -62,6 +70,9 @@ __all__ = [
     "DefinitePart",
     "Departure",
     "DepartureCode",
+    "DerivedMember",
+    "DerivedRefMember",
+    "DerivedSpec",
     "Entity",
     "Gap",
     "GapKind",
@@ -80,6 +91,8 @@ __all__ = [
     "Rendering",
     "RequestedOperation",
     "ResolveKind",
+    "ResolvedPeriod",
+    "Root",
     "Severity",
     "UnknownPart",
     "UnsupportedPart",

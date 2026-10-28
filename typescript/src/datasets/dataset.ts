@@ -8,8 +8,8 @@ import {
   stackedColumns,
 } from "./parquet.ts";
 import type { Row, Table } from "./parquet.ts";
-import { DatasetRef } from "../core/ref.ts";
-import type { Layout, Rendering, Spec } from "../core/ref.ts";
+import { DatasetRef, isDerived } from "../core/ref.ts";
+import type { DerivedRefMember, Layout, Rendering, Spec } from "../core/ref.ts";
 import { manifestWarningsOf } from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
 import type { Assumption, CitationSource, Departure, Notice, RequestedOperation } from "../wire.ts";
@@ -42,6 +42,24 @@ export type Member = {
   readonly rendering: Rendering;
 };
 
+/** One derived frame inside a dataset: the frame an analysis recipe computed, with its
+ *  citation. */
+export type DerivedMember = DerivedRefMember & { readonly citation: Citation };
+
+/** A series a step of the recipe behind a dataset dropped for missing data. */
+export type LeftOutSeries = {
+  /** The value of each column that names the series. */
+  readonly coordinates: Readonly<Record<string, string>>;
+  /** The step that dropped the series. */
+  readonly step: string;
+  /** The input the step dropped it from. */
+  readonly side: string;
+  /** Why the step dropped it. */
+  readonly reason: string;
+  /** The rows the series held. */
+  readonly rows: number;
+};
+
 /** A built version, downloaded and checked against its digest, ready to join a dataset. */
 export type FetchedMember = {
   readonly parts: readonly string[];
@@ -57,6 +75,13 @@ export type FetchedMember = {
    *  from an answer. Their departures, requested computations and assumptions reach the
    *  dataset. */
   readonly answerFacts?: readonly PartFacts[];
+};
+
+/** A derived frame, downloaded and checked against its digest, ready to join a dataset. */
+export type FetchedDerivedMember = DerivedRefMember & {
+  /** The manifest the server answered for the frame, as parsed JSON. */
+  readonly manifest: Readonly<Record<string, unknown>>;
+  readonly data: Uint8Array;
 };
 
 /** A cited source as the server sent it, with the two members every source carries. */
@@ -124,7 +149,8 @@ let readTable: (dataset: Dataset) => Table;
 export class Dataset {
   /** What the data shows, in Search's words: the members' sentences in order. */
   readonly sentence: string;
-  readonly members: readonly Member[];
+  /** One member per built spec, or for a dataset DFO computed, one derived member. */
+  readonly members: readonly (Member | DerivedMember)[];
   /** How to cite the data, every member's sources together. */
   readonly citation: Citation;
   /** The datasets surface's warnings about the members' data. */
@@ -151,6 +177,9 @@ export class Dataset {
   /** Each member's file, one per member in member order, labelled as its `part` column holds
    *  it when several stack, in reading order. */
   readonly #table: Table;
+  /** Every series the recipe behind a derived dataset dropped for missing data, at any step;
+   *  empty for a dataset of dataset members. */
+  readonly #leftOut: readonly LeftOutSeries[];
 
   static {
     readTable = (dataset) => dataset.#table;
@@ -164,8 +193,8 @@ export class Dataset {
    * @throws {ContractError} The members do not stack, or a file is not one the client can read.
    */
   static async create(
-    members: readonly FetchedMember[],
-    options: { layout: Layout; missing?: readonly Gap[] },
+    members: readonly (FetchedMember | FetchedDerivedMember)[],
+    options: { layout: Layout; missing?: readonly Gap[]; leftOut?: readonly LeftOutSeries[] },
   ): Promise<Dataset> {
     if (members.length === 0) throw new TypeError("A dataset needs at least one member.");
     if (options.layout === "frame" && members.length > 1) {
@@ -184,22 +213,31 @@ export class Dataset {
   }
 
   private constructor(
-    members: readonly FetchedMember[],
-    options: { layout: Layout; missing?: readonly Gap[] },
+    members: readonly (FetchedMember | FetchedDerivedMember)[],
+    options: { layout: Layout; missing?: readonly Gap[]; leftOut?: readonly LeftOutSeries[] },
     data: readonly Uint8Array[],
     table: Table,
   ) {
-    const built = members.map((member) => ({
-      parts: Object.freeze([...member.parts]),
-      spec: member.spec,
-      contentVersion: member.contentVersion,
-      sentence: member.sentence,
-      citation: citationOf(member.manifest),
-      digest: member.digest,
-      rendering: member.rendering,
-    }));
+    const built = members.map((member): Member | DerivedMember => {
+      const citation = citationOf(member.manifest);
+      const parts = Object.freeze([...member.parts]);
+      if (isDerived(member)) {
+        return { ...derivedRefMember(member), parts, citation };
+      }
+      return {
+        parts,
+        spec: member.spec,
+        contentVersion: member.contentVersion,
+        sentence: member.sentence,
+        citation,
+        digest: member.digest,
+        rendering: member.rendering,
+      };
+    });
     const manifests = members.map((member) => member.manifest);
-    const facts = members.flatMap((member) => member.answerFacts ?? []);
+    const facts = members.flatMap((member) =>
+      isDerived(member) ? [] : (member.answerFacts ?? []),
+    );
     const retention = retentionOf(manifests);
     this.sentence = built.map((member) => member.sentence).join(" ");
     this.members = Object.freeze(built);
@@ -216,6 +254,7 @@ export class Dataset {
     this.layout = options.layout;
     this.#data = data;
     this.#table = table;
+    this.#leftOut = Object.freeze((options.leftOut ?? []).map((series) => Object.freeze(series)));
     this.layoutVersion = [
       ...new Set(members.map((member) => artifactLayout(member, options.layout))),
     ].join("; ");
@@ -224,14 +263,18 @@ export class Dataset {
   /** The exact versions the dataset holds, to fetch them again with `client.fetch(ref)`. */
   get ref(): DatasetRef {
     return new DatasetRef(
-      this.members.map((member) => ({
-        parts: member.parts,
-        sentence: member.sentence,
-        spec: member.spec,
-        contentVersion: member.contentVersion,
-        digest: member.digest,
-        rendering: member.rendering,
-      })),
+      this.members.map((member) =>
+        isDerived(member)
+          ? derivedRefMember(member)
+          : {
+              parts: member.parts,
+              sentence: member.sentence,
+              spec: member.spec,
+              contentVersion: member.contentVersion,
+              digest: member.digest,
+              rendering: member.rendering,
+            },
+      ),
     );
   }
 
@@ -302,6 +345,20 @@ export class Dataset {
   #metadata(): Record<string, string> {
     const sources = this.citation.sources;
     const licences = [...new Set(sources.flatMap((source) => source.license ?? []))];
+    const leftOut =
+      this.#leftOut.length === 0
+        ? {}
+        : {
+            "dfo.left_out": JSON.stringify(
+              this.#leftOut.map(({ coordinates, step, side, reason, rows }) => ({
+                coordinates,
+                step,
+                side,
+                reason,
+                rows,
+              })),
+            ),
+          };
     return {
       "dfo.format_version": String(SAVED_FORMAT_VERSION),
       "dfo.sentence": this.sentence,
@@ -341,9 +398,24 @@ export class Dataset {
         member_rows: memberRows(this.#table.parts),
       }),
       "dfo.ref": JSON.stringify(this.ref),
+      ...leftOut,
     };
   }
 }
+
+/** A derived member as a ref stores it, without what the dataset adds. */
+const derivedRefMember = (member: DerivedRefMember): DerivedRefMember => ({
+  parts: member.parts,
+  sentence: member.sentence,
+  spec: member.spec,
+  contentVersion: member.contentVersion,
+  outputDigest: member.outputDigest,
+  roots: member.roots,
+  executionIdentity: member.executionIdentity,
+  resolvedPeriods: member.resolvedPeriods,
+  digest: member.digest,
+  rendering: member.rendering,
+});
 
 /** How long the server keeps a dataset's versions, as `toString` shows it after the versions. */
 function retentionText({ pinned, heldUntil }: Pick<Dataset, "pinned" | "heldUntil">): string {
@@ -364,7 +436,10 @@ export function datasetTable(dataset: Dataset): Table {
 }
 
 /** The layout a member's manifest names for its artifact, else the fetch's layout. */
-function artifactLayout(member: FetchedMember, layout: Layout): string {
+function artifactLayout(
+  member: Pick<FetchedMember, "manifest" | "digest">,
+  layout: Layout,
+): string {
   const artifact = objects(member.manifest["artifacts"]).find(
     (entry) => entry["artifact_digest"] === member.digest,
   );

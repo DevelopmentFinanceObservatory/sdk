@@ -63,6 +63,7 @@ type WarningCodeName = Literal[
 ]
 
 ACTIONS: Final[dict[str, Action]] = {
+    "allowance_exhausted": "wait_for_reset",
     "artifact_expired": "take_newest_version",
     "artifact_not_found": "check_id",
     "binding_invalid": "fix_request",
@@ -74,6 +75,7 @@ ACTIONS: Final[dict[str, Action]] = {
     "collection_probe_ceiling": "fix_request",
     "column_not_droppable": "fix_request",
     "column_unknown": "fix_request",
+    "conflicting_requested_options": "fix_request",
     "constraint_violation": "fix_request",
     "default_facet_undefined": "fix_request",
     "definition_not_reproducible": "fix_request",
@@ -133,16 +135,20 @@ ACTIONS: Final[dict[str, Action]] = {
     "render_target_mismatch": "fix_request",
     "rendering_not_recorded": "fix_request",
     "request_invalid": "fix_request",
+    "requested_option_unavailable": "fix_request",
     "resolution_ambiguous": "fix_request",
     "resource_exhausted": "fix_request",
     "role_incompatible": "fix_request",
     "role_not_resolved": "choose",
     "role_signature_incompatible": "fix_request",
+    "rolling_populations_differ": "fix_request",
     "rollup_not_summable": "fix_request",
     "schema_invalid": "fix_request",
     "scope_too_broad": "fix_request",
     "service_unavailable": "report",
+    "several_members": "fix_request",
     "shape_mismatch": "fix_request",
+    "share_not_replaceable": "fix_request",
     "skill_not_found": "check_id",
     "skill_resource_not_found": "check_id",
     "snapshot_not_found": "check_id",
@@ -165,6 +171,8 @@ ACTIONS: Final[dict[str, Action]] = {
     "upstream_version_changed": "report",
     "variable_not_resolved": "ask_data_question",
     "write_refused": "request_scope",
+    "write_token_invalid": "request_scope",
+    "write_token_required": "fix_request",
 }
 GAP_KINDS: Final[dict[str, GapKind]] = {
     "binding_mismatch": "no_data",

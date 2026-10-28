@@ -71,7 +71,7 @@ export type {
   UnsupportedPart,
 } from "./wire.ts";
 export { Dataset } from "./datasets/dataset.ts";
-export type { Citation, Member } from "./datasets/dataset.ts";
+export type { Citation, DerivedMember, Member } from "./datasets/dataset.ts";
 export type {
   CallOptions,
   EntityGroups,
@@ -98,10 +98,14 @@ export { specRoles } from "./core/roles.ts";
 export { DatasetRef, FormatError } from "./core/ref.ts";
 export type {
   DatasetRefJson,
+  DerivedRefMember,
+  DerivedSpec,
   FormatErrorReason,
   Layout,
   RefMember,
   Rendering,
+  ResolvedPeriod,
+  Root,
   Spec,
 } from "./core/ref.ts";
 export { RawResponse } from "./http/transport.ts";

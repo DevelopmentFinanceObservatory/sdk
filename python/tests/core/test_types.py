@@ -1,4 +1,4 @@
-"""Specs and dataset refs: the ref format, equality and pickling."""
+"""Specs and dataset refs: the ref format, equality, same data and pickling."""
 
 import json
 import pickle
@@ -9,9 +9,10 @@ import pytest
 
 from dfo._core.json_text import JSON_MAX_DEPTH
 from dfo._core.parse import parse_citation, parse_parts
-from dfo._core.refs import DatasetRef, Member
+from dfo._core.refs import DatasetRef, Member, RefMember
 from dfo._core.types import DefinitePart, FormatError, Rendering, Spec
 from tests._data import CONTRACT, load
+from tests.rule_vectors import ids, vectors
 
 REF_EXAMPLES = sorted((CONTRACT / "refs").glob("*.json"))
 ACCEPTED = [
@@ -36,7 +37,8 @@ def test_accepted_refs_round_trip(path: Path) -> None:
     assert ref.to_json() == json.dumps(ref_json, ensure_ascii=False)
     assert DatasetRef.from_json(ref.to_json()) == ref
     for member, member_json in zip(ref.members, ref_json["members"], strict=True):
-        assert member.spec.sentence == member_json["sentence"]
+        if isinstance(member, RefMember):
+            assert member.spec.sentence == member_json["sentence"]
 
 
 @pytest.mark.parametrize("path", REJECTED, ids=lambda path: path.stem)
@@ -56,10 +58,27 @@ def accepted_ref() -> dict[str, Any]:
     return example(CONTRACT / "refs" / "ref-answer-member.json")["ref"]
 
 
+def derived_ref() -> dict[str, Any]:
+    return example(CONTRACT / "refs" / "ref-derived-member.json")["ref"]
+
+
+def _edited(ref: dict[str, Any], pointer: str, value: object) -> dict[str, Any]:
+    """`ref` with the value at `pointer` replaced."""
+    *parents, key = pointer.strip("/").split("/")
+    target: Any = ref
+    for step in parents:
+        target = target[int(step)] if step.isdigit() else target[step]
+    if isinstance(target, list):
+        target[int(key)] = value
+    else:
+        target[key] = value
+    return ref
+
+
 @pytest.mark.parametrize(
     ("pointer", "value"),
     [
-        ("/format_version", 2),
+        ("/format_version", 3),
         ("/format_version", True),
         ("/extra", 1),
         ("/members/0/parts", [""]),
@@ -81,15 +100,81 @@ def accepted_ref() -> dict[str, Any]:
     ],
 )
 def test_refs_breaking_the_format_name_the_pointer(pointer: str, value: object) -> None:
-    ref = accepted_ref()
-    *parents, key = pointer.strip("/").split("/")
-    target: Any = ref
-    for step in parents:
-        target = target[int(step)] if step.isdigit() else target[step]
-    target[key] = value
+    ref = _edited(accepted_ref(), pointer, value)
     with pytest.raises(FormatError) as raised:
         DatasetRef.from_json(json.dumps(ref))
     assert (raised.value.reason, raised.value.pointer) == ("format_invalid", pointer)
+
+
+# Each row breaks one check of a derived member that no contract record pins.
+@pytest.mark.parametrize(
+    ("pointer", "value"),
+    [
+        ("/members/0/spec/spec_id", "spec_" + "0" * 32),
+        ("/members/0/spec/recipe/normal_form_hash", "rnf_short"),
+        ("/members/0/spec/recipe/replay_key", "rnf_" + "0" * 32),
+        ("/members/0/content_version", "cv_" + "0" * 32),
+        ("/members/0/output_digest", "sha256:" + "0" * 64),
+        ("/members/0/roots", []),
+        ("/members/0/roots/0/spec_id", "ops_" + "0" * 32),
+        ("/members/0/roots/0/content_version", "ocv_" + "0" * 32),
+        ("/members/0/execution_identity", "0.9.0|1.1.0"),
+        ("/members/0/resolved_periods/0/anchor", "first"),
+        ("/members/0/resolved_periods/0/offset", -1.5),
+        ("/members/0/resolved_periods/0/rule", "half2"),
+        ("/members/0/resolved_periods/0/period", "20x0"),
+        (
+            "/members/0/resolved_periods/1",
+            {"anchor": "latest", "offset": -3, "rule": "half1", "period": "2020"},
+        ),
+    ],
+)
+def test_derived_refs_breaking_the_format_name_the_pointer(
+    pointer: str, value: object
+) -> None:
+    ref = _edited(derived_ref(), pointer, value)
+    with pytest.raises(FormatError) as raised:
+        DatasetRef.from_json(json.dumps(ref))
+    assert (raised.value.reason, raised.value.pointer) == ("format_invalid", pointer)
+
+
+def test_a_repeated_root_is_refused() -> None:
+    ref = derived_ref()
+    roots = ref["members"][0]["roots"]
+    roots.append(roots[0])
+    with pytest.raises(FormatError) as raised:
+        DatasetRef.from_json(json.dumps(ref))
+    assert raised.value.pointer == "/members/0/roots/1"
+
+
+def test_a_ref_holds_one_kind_of_member() -> None:
+    (dataset_member,) = DatasetRef.from_json(json.dumps(accepted_ref())).members
+    (derived_member,) = DatasetRef.from_json(json.dumps(derived_ref())).members
+    with pytest.raises(ValueError, match="not both"):
+        DatasetRef((dataset_member, derived_member))
+
+
+def _ref(obj: dict[str, Any]) -> DatasetRef:
+    return DatasetRef.from_json(json.dumps(obj))
+
+
+@pytest.mark.parametrize(
+    "vector", vectors("output-comparison"), ids=ids("output-comparison")
+)
+def test_the_output_comparison_vectors(vector: dict[str, Any]) -> None:
+    left, right = _ref(vector["left"]), _ref(vector["right"])
+    for mine, theirs in ((left, right), (right, left)):
+        assert (mine == theirs) is vector["equal"]
+        assert mine.same_data(theirs) is vector["same_data"]
+    if vector["equal"]:
+        assert hash(left) == hash(right)
+
+
+def test_same_data_takes_a_ref() -> None:
+    stored = derived_ref()
+    with pytest.raises(TypeError, match="two DatasetRefs"):
+        # The ref's JSON in place of the ref, the mistake the check names.
+        _ref(stored).same_data(stored)  # ty: ignore[invalid-argument-type]
 
 
 @pytest.mark.parametrize(
@@ -153,8 +238,9 @@ def test_answer_parts_hash_and_pickle() -> None:
     assert pickle.loads(pickle.dumps(parts)) == parts
 
 
-def test_a_ref_pickles() -> None:
-    ref = DatasetRef.from_json(json.dumps(accepted_ref()))
+@pytest.mark.parametrize("ref_json", [accepted_ref(), derived_ref()])
+def test_a_ref_pickles(ref_json: dict[str, Any]) -> None:
+    ref = DatasetRef.from_json(json.dumps(ref_json))
     assert pickle.loads(pickle.dumps(ref)) == ref
 
 

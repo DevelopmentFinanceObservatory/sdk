@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { readdir } from "node:fs/promises";
 import { describe, test } from "node:test";
 
-import { DatasetRef, FormatError, renderingFor, renderingMatches } from "../src/core/ref.ts";
+import {
+  DatasetRef,
+  FormatError,
+  isDerived,
+  renderingFor,
+  renderingMatches,
+} from "../src/core/ref.ts";
 import { contractJson } from "./support.ts";
 
 type RefRecord = {
@@ -67,7 +73,7 @@ describe("DatasetRef.fromJSON", () => {
     spec.definition.identity["entities"] = { origin: ["country/XXX"] };
     assert.equal(JSON.stringify(loaded), written);
     const [member] = loaded.members;
-    assert.ok(member);
+    assert.ok(member && !isDerived(member));
     const definition = member.spec.definition as { identity: Record<string, unknown> };
     assert.throws(() => {
       definition.identity["entities"] = {};
@@ -106,6 +112,57 @@ describe("DatasetRef.fromJSON", () => {
         pointer: `/members/0/${path.join("/")}`,
       });
     }
+  });
+});
+
+/** The stored ref of the contract's derived-member record. */
+const derived = async (): Promise<{ members: Record<string, unknown>[] }> =>
+  (
+    await contractJson<{ ref: { members: Record<string, unknown>[] } }>(
+      "refs/ref-derived-member.json",
+    )
+  ).ref;
+
+describe("a derived ref", () => {
+  // Each row breaks one check of a derived member that no contract record pins.
+  const cases: [path: (string | number)[], value: unknown][] = [
+    [["spec", "spec_id"], `spec_${"0".repeat(32)}`],
+    [["spec", "recipe", "replay_key"], `rnf_${"0".repeat(32)}`],
+    [["content_version"], `cv_${"0".repeat(32)}`],
+    [["output_digest"], `sha256:${"0".repeat(64)}`],
+    [["roots"], []],
+    [["roots", 0, "content_version"], `ocv_${"0".repeat(32)}`],
+    [["execution_identity"], "0.9.0|1.1.0"],
+    [["resolved_periods", 0, "offset"], -1.5],
+    [["resolved_periods", 0, "period"], "20x0"],
+    [["resolved_periods", 1], { anchor: "latest", offset: -3, rule: "half1", period: "2020" }],
+  ];
+  for (const [path, value] of cases) {
+    test(`refuses ${JSON.stringify(value)} at ${path.join("/")}`, async () => {
+      const broken = structuredClone(await derived());
+      let holder: Record<string | number, unknown> = broken.members[0]!;
+      for (const step of path.slice(0, -1)) {
+        holder = holder[step] as Record<string | number, unknown>;
+      }
+      holder[path.at(-1)!] = value;
+      assert.throws(() => DatasetRef.fromJSON(broken), {
+        reason: "format_invalid",
+        pointer: `/members/0/${path.join("/")}`,
+      });
+    });
+  }
+
+  test("holds no dataset member beside a derived one", async () => {
+    const [datasetMember] = DatasetRef.fromJSON(await oneMember()).members;
+    const [derivedMember] = DatasetRef.fromJSON(await derived()).members;
+    assert.ok(datasetMember && derivedMember && isDerived(derivedMember));
+    assert.throws(() => new DatasetRef([datasetMember, derivedMember]), TypeError);
+  });
+
+  test("is not the same data as what is not a ref", async () => {
+    const ref = DatasetRef.fromJSON(await derived());
+    assert.equal(ref.sameData(ref.toJSON()), false);
+    assert.equal(ref.sameData(ref), true);
   });
 });
 

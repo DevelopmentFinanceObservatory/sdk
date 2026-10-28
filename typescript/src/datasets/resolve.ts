@@ -55,6 +55,7 @@ import {
   CONTENT_VERSION,
   DatasetRef,
   FormatError,
+  isDatasetMember,
   layoutOf,
   mintOptions,
   sameRendering,
@@ -94,6 +95,7 @@ export async function fetchDataset(
     throw invalid(`latest is true or false, not ${JSON.stringify(latest)}.`);
   }
   if (target instanceof DatasetRef) {
+    const members = datasetMembers(target);
     if (narrowing.window !== undefined) throw invalid(refWindowRefusal(narrowing.window, latest));
     if (narrows(narrowing)) {
       throw invalid(
@@ -102,8 +104,8 @@ export async function fetchDataset(
       );
     }
     return latest === true
-      ? fetchNewest(transport, target, rest)
-      : fetchRef(transport, target, rest);
+      ? fetchNewest(transport, members, rest)
+      : fetchRef(transport, members, rest);
   }
   const spec = checkedSpec(target);
   if (latest === true) {
@@ -133,9 +135,26 @@ function refWindowRefusal(window: unknown, latest: boolean | undefined): string 
   );
 }
 
-function refLayout(ref: DatasetRef): Layout {
+/**
+ * The dataset members of a ref.
+ *
+ * @throws {InvalidRequestError} The ref holds derived members, which this client reads but does
+ *   not fetch (`invalid_argument`).
+ */
+function datasetMembers(ref: DatasetRef): readonly RefMember[] {
+  const members = ref.members.filter(isDatasetMember);
+  if (members.length !== ref.members.length) {
+    throw invalid(
+      `The DatasetRef names ${ref.members[0]!.spec.spec_id}, a frame DFO computed, and this ` +
+        "client fetches dataset versions only.",
+    );
+  }
+  return members;
+}
+
+function refLayout(members: readonly RefMember[]): Layout {
   const layouts = new Set<Layout>();
-  for (const member of ref.members) {
+  for (const member of members) {
     if (member.rendering.format !== "parquet" || member.rendering.bundle) {
       throw invalid(
         `The DatasetRef stores ${member.spec.spec_id} as ` +
@@ -144,7 +163,7 @@ function refLayout(ref: DatasetRef): Layout {
     }
     layouts.add(layoutOf(member.rendering));
   }
-  if (layouts.has("frame") && ref.members.length > 1) {
+  if (layouts.has("frame") && members.length > 1) {
     throw invalid('layout "frame" holds one reading, and this DatasetRef holds several.');
   }
   return layouts.has("frame") ? "frame" : "long";
@@ -157,8 +176,8 @@ function refLayout(ref: DatasetRef): Layout {
  * @throws {InvalidRequestError} The ref holds a rendering this client does not read, or the
  *   call names another layout or `partyTotals` (`invalid_argument`).
  */
-function checkedRefLayout(ref: DatasetRef, options: CallOptions): Layout {
-  const layout = refLayout(ref);
+function checkedRefLayout(members: readonly RefMember[], options: CallOptions): Layout {
+  const layout = refLayout(members);
   if (options.layout !== undefined && options.layout !== layout) {
     throw invalid(
       `The DatasetRef holds the ${layout} layout, not "${options.layout}"; fetch its specs for ` +
@@ -167,7 +186,7 @@ function checkedRefLayout(ref: DatasetRef, options: CallOptions): Layout {
   }
   if (options.partyTotals === undefined) return layout;
   const asked = checkedPartyTotals(options.partyTotals);
-  for (const member of ref.members) {
+  for (const member of members) {
     const held = keepsPartyTotals(member.rendering);
     if (asked !== held) {
       throw invalid(
@@ -190,11 +209,11 @@ const keepsPartyTotals = (rendering: Rendering): boolean => rendering.without_pa
  */
 async function fetchNewest(
   transport: Transport,
-  ref: DatasetRef,
+  refMembers: readonly RefMember[],
   options: CallOptions,
 ): Promise<Dataset> {
-  const layout = checkedRefLayout(ref, options);
-  const [first, ...others] = ref.members;
+  const layout = checkedRefLayout(refMembers, options);
+  const [first, ...others] = refMembers;
   // A ref holds at least one member: fromJSON refuses an empty one, and a dataset has one.
   const rendering = first!.rendering;
   const index = others.findIndex((member) => !sameRendering(member.rendering, rendering));
@@ -207,7 +226,7 @@ async function fetchNewest(
         `partyTotals: ${keepsPartyTotals(other.rendering)} }).`,
     );
   }
-  const members = ref.members.map(({ parts, spec, sentence }) => ({ parts, spec, sentence }));
+  const members = refMembers.map(({ parts, spec, sentence }) => ({ parts, spec, sentence }));
   return fetchMembers(transport, members, {
     ...options,
     layout,
@@ -217,13 +236,13 @@ async function fetchNewest(
 
 async function fetchRef(
   transport: Transport,
-  ref: DatasetRef,
+  members: readonly RefMember[],
   options: CallOptions,
 ): Promise<Dataset> {
-  const layout = checkedRefLayout(ref, options);
+  const layout = checkedRefLayout(members, options);
   const wait = waitFor(transport, options);
   const fetched: FetchedMember[] = [];
-  for (const [index, member] of ref.members.entries()) {
+  for (const [index, member] of members.entries()) {
     fetched.push(await fetchVersion(transport, member, `/members/${index}`, options, wait));
   }
   return Dataset.create(fetched, { layout });
