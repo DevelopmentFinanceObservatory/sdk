@@ -11,13 +11,21 @@ import dfo
 
 answer = dfo.search("ODA from Germany to Nigeria")
 print(answer)
-df = answer.fetch().to_pandas()
+data = answer.fetch()
+df = data.to_pandas()
+
+growth = dfo.analysis.growth(data, window=(2015, 2024))
+share = dfo.share(dfo.cards.line(data, title="German ODA to Nigeria"), latest=True)
+print(share.url)
 ```
 
 ```text
 Germany's gross disbursements to Nigeria for official development assistance, 1960 to 2024. Current US dollars · OECD DAC2a.
   Fetch: answer.fetch()
+https://developmentfinance.org/s/k3Qx8vTa
 ```
+
+`dfo.analysis.growth` computes the change from 2015 to 2024 on DFO, as a fraction where 0.25 is a 25% rise. `dfo.share` publishes a line chart of the data at a public URL that anyone with the link can open, and follows new data.
 
 The package imports as `dfo` and needs Python 3.12 or later. It works without a key, under a per-IP quota. The table arrives as Arrow. The `pandas` extra adds `to_pandas()`, `polars` adds `to_polars()`, and `xlsx` lets `dfo.load` open an XLSX bundle from the website.
 
@@ -248,6 +256,8 @@ The TypeScript client follows the same contract. It spells "no limit" as `Infini
 - [Answers and choices](docs/answers.md): parts, readings, `choose`, partial fetches, shared answers, and declined questions.
 - [Datasets and versions](docs/datasets.md): narrowing a fetch, layouts, conversions, refs, retention, `save`, and `load`.
 - [Long builds](docs/long-builds.md): progress, deadlines, and what Ctrl-C leaves running.
+- [Compute a figure on DFO](docs/compute.md): `dfo.analysis`, recipes, `latest_year`, recomputing on new data, and the series an operation leaves out.
+- [Cards and shares](docs/shares.md): charts, tables and headline numbers, public share links, write tokens, snapshots, and what a share showed on a date.
 - [Errors](docs/errors.md): every error class and code, by what you do next.
 - [Keys and credentials](docs/keys.md): the key lookup order, `dfo auth login`, and the credentials file.
 - [The cache](docs/cache.md): where downloads go, `DFO_OFFLINE`, and stale reads.

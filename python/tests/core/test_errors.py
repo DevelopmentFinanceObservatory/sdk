@@ -410,3 +410,48 @@ def test_a_proxy_refusal_keeps_its_code_and_takes_its_status_class(
         row["code"],
         True,
     )
+
+
+_ERRORS_DOC = Path(__file__).parents[2] / "docs" / "errors.md"
+
+
+def _doc_table(heading: str) -> list[list[str]]:
+    """The cells of the first table under `heading` in docs/errors.md, header and
+    rule left out, each cell stripped of its backticks."""
+    text = _ERRORS_DOC.read_text(encoding="utf-8").split(f"\n{heading}\n", 1)[1]
+    lines = text.splitlines()
+    first = next(index for index, line in enumerate(lines) if line.startswith("|"))
+    rows = []
+    for line in lines[first + 2 :]:
+        if not line.startswith("|"):
+            break
+        rows.append(
+            [cell.strip().replace("`", "") for cell in line.strip("|").split("|")]
+        )
+    return rows
+
+
+def test_the_errors_doc_lists_each_server_code_under_its_class() -> None:
+    documented = {
+        cls: set(codes.split(", ")) for cls, codes in _doc_table("### Server codes")
+    }
+    mapped: dict[str, set[str]] = {}
+    for code in {*ACTIONS, *(row["code"] for row in _PROXY_ROWS)}:
+        mapped.setdefault(error_class(code, None).__name__, set()).add(code)
+    assert documented == mapped
+
+
+def test_the_errors_doc_lists_each_client_and_warning_code() -> None:
+    client = {
+        code: (cls, retryable)
+        for code, cls, retryable, _ in _doc_table("### Client codes")
+    }
+    assert client == {
+        row["code"]: (
+            "by status" if row["class"] == "by_status" else row["class"],
+            {True: "yes", False: "no", "by_status": "by status"}[row["retryable"]],
+        )
+        for row in _CLIENT_ROWS
+    }
+    warnings_ = {code: cls for code, cls, _ in _doc_table("### Warnings")}
+    assert warnings_ == {row["code"]: row["class"] for row in _WARNING_ROWS}

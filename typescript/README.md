@@ -15,6 +15,7 @@ Germany's gross ODA disbursements to Nigeria for basic health care, 1995 to 2024
   Fetch: answer.fetch()
 30 time_period, financingProvider_label, financingRecipient_label, crsPurpose_label
 30
+https://developmentfinance.org/s/k3Qx8vTa
 ```
 
 ```ts
@@ -31,9 +32,16 @@ const data = await answer.fetch();
 console.log(data.rowCount, data.columns.slice(0, 4).join(", "));
 const table = await toArrow(data);
 console.log(table.numRows);
+
+const growth = await client.analysis.growth(data, { window: [2015, 2024] });
+const chart = await client.cards.line(data, { title: "German aid to Nigeria for basic health care" });
+const share = await client.share(chart, { latest: true });
+console.log(share.url);
 ```
 
 `String(answer)` is Search's sentence and the next call to make. `answer.fetch()` builds the table and returns a `Dataset`: `rowCount`, `columns`, `toRows()` for plain objects, `toArrow(data)` for an Arrow table, and `bytes()` for one Parquet file that the Python client's `dfo.load` reads. Every table comes in reading order. The columns start with the year, the provider, the recipient, the subject, the purpose, the value, the unit, the flow type, and the source, as the table holds them, then the columns whose values tell the rows apart, then those that hold one value throughout. `stat_var` comes last, and `part` comes first when several members stack; readings that narrow to one spec share a member. The rows sort by those columns, with each series' years together. Without a key the client calls the API anonymously. See [Keys and base URL](#keys-and-base-url) for keys and configuration.
+
+`client.analysis.growth` computes the change from 2015 to 2024 on DFO, as a fraction where 0.25 is a 25% rise. `client.share` publishes a line chart of the data at a public URL that anyone with the link can open, and follows new data. [Compute a figure on DFO](docs/compute.md) covers every operation and recipes, and [Cards and shares](docs/shares.md) covers cards, write tokens, snapshots, and what a share showed on a date.
 
 ## Choose a reading
 
@@ -319,9 +327,9 @@ Branch on the class, or on `error.code` for one case. Each error also carries `s
 | `NotFoundError`           | A spec, place, code, or version is unknown                                                                      |
 | `VersionUnavailableError` | A ref's version can no longer be built. `newestVersion` names the current one                                   |
 | `AuthenticationError`     | The key is malformed, unknown, revoked, or expired, or the credentials file is broken                           |
-| `PermissionDeniedError`   | The key lacks a scope                                                                                           |
+| `PermissionDeniedError`   | The key lacks a scope, or a share's write token is wrong (`write_token_invalid`)                                |
 | `RateLimitError`          | Too many requests. `retryAfterMs` says how long to wait                                                         |
-| `QuotaExceededError`      | The key's quota is spent                                                                                        |
+| `QuotaExceededError`      | The day's allowance of pins or shares is spent (`allowance_exhausted`). `retryAfterMs` says when it resets      |
 | `DfoTimeoutError`         | A `timeout` passed (`deadline_exceeded`)                                                                        |
 | `NetworkError`            | The connection failed                                                                                           |
 | `ServerError`             | The server failed or a download did not verify. A retryable failure is retried before you see it                |
@@ -329,7 +337,7 @@ Branch on the class, or on `error.code` for one case. Each error also carries `s
 
 `client.lookup.code(code)` explains a code the server sends. The client raises these itself: `answer_declined`, `answer_incomplete`, `base_url_invalid`, `choice_invalid`, `contract_violation`, `credentials_file_invalid`, `credentials_file_unreadable`, `deadline_exceeded`, `digest_mismatch`, `download_failed`, `header_invalid`, `insecure_transport`, `invalid_argument`, `key_empty`, `key_invalid`, `network_error`, `offline`, `profile_not_found`, `profile_without_key`, `refusal_without_code`, `response_too_large`, `unexpected_response`, and `version_unavailable`.
 
-Some faults raise other errors. An aborted call rejects with its signal's `reason`. A `strict` fetch throws its first `SearchWarning` or `DataWarning` in place of passing it to `onWarning`. `DatasetRef.fromJSON` and `Answer.fromJSON` throw a `FormatError` for JSON in the wrong format, and in a browser `new Client()` throws a `TypeError` for a secret key from `apiKey`, as the first request does for one in `headers` or from `headerProvider`.
+Some faults raise other errors. An aborted call rejects with its signal's `reason`. A `strict` fetch throws its first `SearchWarning`, `DataWarning`, or `SeriesLeftOutWarning` in place of passing it to `onWarning`. `SeriesLeftOutWarning` (`series_left_out`) says an operation dropped series for missing data, which `data.leftOut` lists. `DatasetRef.fromJSON` and `Answer.fromJSON` throw a `FormatError` for JSON in the wrong format, and in a browser `new Client()` throws a `TypeError` for a secret key from `apiKey`, as the first request does for one in `headers` or from `headerProvider`.
 
 ## Use it in a web app
 
