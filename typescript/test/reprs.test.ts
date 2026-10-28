@@ -349,9 +349,10 @@ for (const [name, build, message] of [
   ],
   ["a warning with no code", () => new DfoWarning(null, "Differs."), "Differs."],
   [
-    "a series-left-out warning, whose code is null",
-    () => new SeriesLeftOutWarning("3 series left out for missing data by growth"),
-    "3 series left out for missing data by growth",
+    "a series-left-out warning",
+    () =>
+      new SeriesLeftOutWarning("series_left_out", "3 series left out for missing data by growth"),
+    "3 series left out for missing data by growth [series_left_out]",
   ],
   [
     "an error whose trace id holds terminal controls",

@@ -47,7 +47,7 @@ import { isRecord } from "../core/json.ts";
 import { DatasetRef, FormatError, isDerived } from "../core/ref.ts";
 import type { DerivedRefMember } from "../core/ref.ts";
 import { describing } from "../core/trace.ts";
-import { SeriesLeftOutWarning } from "../core/warnings.ts";
+import { clientWarning } from "../core/warnings.ts";
 import { passedDeadline, retryAfterMs } from "../http/transport.ts";
 import type { Transport } from "../http/transport.ts";
 
@@ -302,7 +302,8 @@ function noteLeftOut(transport: Transport, facts: DerivedFacts, strict: boolean)
   const count = facts.leftOut.length.toLocaleString("en-GB");
   const least = facts.leftOutComplete ? "" : "at least ";
   const steps = [...new Set(facts.leftOut.map((series) => series.step.verb))].join(", ");
-  const warning = new SeriesLeftOutWarning(
+  const warning = clientWarning(
+    "series_left_out",
     `${least}${count} series left out for missing data by ${steps}; the dataset's leftOut ` +
       "lists each with its step and reason",
   );

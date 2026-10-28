@@ -36,19 +36,10 @@ export class DataWarning extends DfoWarning {
 
 /** An operation behind a dataset dropped series for missing data. Each fetch of a derived
  *  dataset that left series out issues one, and the dataset's `leftOut` lists them. A fetch with
- *  `strict: true` raises it. Its code is null. */
-export class SeriesLeftOutWarning extends DfoWarning {
-  constructor(message: string) {
-    super(null, message);
-  }
-}
+ *  `strict: true` raises it. Its code is `series_left_out`. */
+export class SeriesLeftOutWarning extends DfoWarning {}
 
-const WARNING_CLASSES = { DfoWarning, DfoDeprecationWarning, DataWarning };
-
-Object.defineProperty(SeriesLeftOutWarning.prototype, "name", {
-  value: "SeriesLeftOutWarning",
-  configurable: true,
-});
+const WARNING_CLASSES = { DfoWarning, DfoDeprecationWarning, DataWarning, SeriesLeftOutWarning };
 
 for (const [name, warningClass] of Object.entries(WARNING_CLASSES)) {
   Object.defineProperty(warningClass.prototype, "name", { value: name, configurable: true });

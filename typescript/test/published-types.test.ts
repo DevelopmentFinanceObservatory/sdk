@@ -108,7 +108,7 @@ export async function analysed(client: Client, spec: Spec): Promise<number> {
   const newest = await client.fetch(top.ref, { latest: true });
   const dropped: readonly LeftOutSeries[] = newest.leftOut;
   const kept = await client.pin(await client.fetch(spec));
-  const loud = new SeriesLeftOutWarning("x").code === null;
+  const loud = new SeriesLeftOutWarning("series_left_out", "x").code === "series_left_out";
   return dropped.length + share.rowCount + (kept.pinned && loud ? 1 : 0);
 }
 

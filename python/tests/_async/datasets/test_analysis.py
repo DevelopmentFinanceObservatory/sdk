@@ -147,6 +147,8 @@ async def test_a_recipe_runs_in_one_request_and_reads_its_frame() -> None:
     ]
     assert len(caught) == 1
     assert "3 series left out" in str(caught[0].message)
+    assert isinstance(caught[0].message, SeriesLeftOutWarning)
+    assert caught[0].message.code == "series_left_out"
     assert len(data) == 1
 
 

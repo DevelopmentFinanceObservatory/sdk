@@ -43,15 +43,16 @@ from dfo._core.codes import (
     CONTRACT_VIOLATION,
     DEADLINE_EXCEEDED,
     INVALID_ARGUMENT,
+    SERIES_LEFT_OUT,
     UNEXPECTED_RESPONSE,
     VERSION_UNAVAILABLE,
 )
 from dfo._core.errors import (
     ContractError,
     DfoError,
-    SeriesLeftOutWarning,
     VersionUnavailableError,
     client_error,
+    client_warning,
     recast,
     warn,
 )
@@ -391,9 +392,10 @@ def _left_out(dataset: Dataset, *, strict: bool) -> None:
     count = len(dataset.left_out)
     least = "" if dataset._left_out_complete else "at least "
     steps = ", ".join(dict.fromkeys(series.step.verb for series in dataset.left_out))
-    warning = SeriesLeftOutWarning(
+    warning = client_warning(
+        SERIES_LEFT_OUT,
         f"{least}{count:,} series left out for missing data by {steps}; the "
-        "Dataset's left_out lists each with its step and reason"
+        "Dataset's left_out lists each with its step and reason",
     )
     if strict:
         raise warning

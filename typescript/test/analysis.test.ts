@@ -120,7 +120,7 @@ describe("a recipe", () => {
     );
     assert.equal(warnings.length, 1);
     assert.ok(warnings[0] instanceof SeriesLeftOutWarning);
-    assert.equal(warnings[0].code, null);
+    assert.equal(warnings[0].code, "series_left_out");
     assert.match(warnings[0].message, /^3 series left out for missing data by growth, quotient_of/);
     assert.equal(data.rowCount, 1);
   });
