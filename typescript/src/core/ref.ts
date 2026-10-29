@@ -303,12 +303,21 @@ const derivedJson = (member: DerivedRefMember) => ({
   artifact: { digest: member.digest, rendering: { ...member.rendering } },
 });
 
-/** A groupby in the stored format, `levels` only when set. */
-const groupbyJson = ({ by, op, levels }: Groupby) => ({
-  by: [...by],
-  op,
-  ...(levels === undefined ? {} : { levels: { ...levels } }),
-});
+/** A groupby in the stored format, `levels` only when it names an axis, its axes sorted. */
+const groupbyJson = (groupby: Groupby) => {
+  const { by, op, levels } = normalGroupby(groupby);
+  return { by: [...by], op, ...(levels === undefined ? {} : { levels: { ...levels } }) };
+};
+
+/** A groupby frozen with `levels` only when it names an axis, its axes sorted on an object with
+ *  no prototype, so key order leaves the JSON alone and a `__proto__` axis stays an axis. */
+function normalGroupby({ by, levels = {} }: Groupby): Groupby {
+  const axes = Object.keys(levels).sort();
+  if (axes.length === 0) return Object.freeze({ by: Object.freeze([...by]), op: "sum" });
+  const depths: Record<string, number> = Object.create(null) as Record<string, number>;
+  for (const axis of axes) depths[axis] = levels[axis]!;
+  return Object.freeze({ by: Object.freeze([...by]), op: "sum", levels: Object.freeze(depths) });
+}
 
 /** Whether two members are one identity: the same spec at the same version in the same
  *  rendering, and for derived members the same recipe. */
@@ -700,11 +709,9 @@ function loadGroupby(value: unknown, pointer: string): Groupby {
   }
   if (new Set(by).size < by.length) throw invalid(`${pointer}/by`, "names a column twice");
   if (groupby["op"] !== "sum") throw invalid(`${pointer}/op`, 'not "sum"');
-  if (!Object.hasOwn(groupby, "levels"))
-    return Object.freeze({ by: Object.freeze([...by]), op: "sum" });
+  if (!Object.hasOwn(groupby, "levels")) return normalGroupby({ by, op: "sum" });
   const levels = objectAt(groupby["levels"], `${pointer}/levels`);
   if (Object.keys(levels).length === 0) throw invalid(`${pointer}/levels`, "empty");
-  const depths: Record<string, number> = {};
   for (const [axis, depth] of Object.entries(levels)) {
     if (
       typeof depth !== "number" ||
@@ -714,9 +721,8 @@ function loadGroupby(value: unknown, pointer: string): Groupby {
     ) {
       throw invalid(`${pointer}/levels/${axis}`, `not an integer from 0 to ${MAX_GROUPBY_LEVEL}`);
     }
-    depths[axis] = depth;
   }
-  return Object.freeze({ by: Object.freeze([...by]), op: "sum", levels: Object.freeze(depths) });
+  return normalGroupby({ by, op: "sum", levels: levels as Record<string, number> });
 }
 
 function loadResolvedPeriod(value: unknown, pointer: string): ResolvedPeriod {

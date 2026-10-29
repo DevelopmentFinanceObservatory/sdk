@@ -11,6 +11,7 @@ import json
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, fields
+from types import MappingProxyType
 from typing import Any, Literal, Self, override
 
 from dfo._core.codes import INVALID_ARGUMENT
@@ -149,17 +150,32 @@ class Groupby:
         by: The columns the sum keeps, such as `("time_period", "crsPurpose")`.
         op: `sum`.
         levels: The depth each kept hierarchical axis it names was rolled up to
-            before the sum, 0 being the root codes, or None when none was.
+            before the sum, 0 being the root codes, or None when none was. An
+            empty mapping becomes None, and the mapping is read-only with its
+            axes sorted, so key order leaves equality, the hash and the JSON alone.
     """
 
     by: tuple[str, ...]
     op: Literal["sum"]
     levels: Mapping[str, int] | None = None
 
+    def __post_init__(self) -> None:
+        levels = (
+            MappingProxyType(dict(sorted(self.levels.items()))) if self.levels else None
+        )
+        object.__setattr__(self, "by", tuple(self.by))
+        object.__setattr__(self, "levels", levels)
+
     @override
     def __hash__(self) -> int:
-        levels = tuple(sorted(self.levels.items())) if self.levels else None
+        levels = tuple(self.levels.items()) if self.levels else None
         return hash((self.by, self.op, levels))
+
+    @override
+    def __reduce__(self) -> tuple[Any, ...]:
+        # A mappingproxy does not pickle, so the groupby pickles as its arguments.
+        levels = dict(self.levels) if self.levels else None
+        return (Groupby, (self.by, self.op, levels))
 
     def to_object(self) -> dict[str, Any]:
         """The groupby as a ref's root rendering holds it, `levels` only when set."""

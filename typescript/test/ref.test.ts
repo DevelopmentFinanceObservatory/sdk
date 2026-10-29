@@ -184,12 +184,48 @@ describe("a grouped root", () => {
     assert.ok(member && isDerived(member));
     const [root] = member.roots;
     assert.ok(root?.groupby);
-    assert.deepEqual(root.groupby, {
+    assert.deepEqual(JSON.parse(JSON.stringify(root.groupby)), {
       by: ["time_period", "crsPurpose"],
       op: "sum",
       levels: { crsPurpose: 0 },
     });
     assert.ok(Object.isFrozen(root.groupby.levels));
+  });
+
+  test("refuses a second root whose levels differ only in key order", async () => {
+    const ref = structuredClone(await grouped());
+    const roots = ref.members[0]!["roots"] as { rendering: { groupby: { levels: object } } }[];
+    roots[0]!.rendering.groupby.levels = { crsPurpose: 0, time_period: 1 };
+    const again = structuredClone(roots[0]!);
+    again.rendering.groupby.levels = { time_period: 1, crsPurpose: 0 };
+    roots.push(again);
+    assert.throws(() => DatasetRef.fromJSON(ref), {
+      reason: "format_invalid",
+      pointer: "/members/0/roots/1",
+    });
+  });
+
+  test("keeps a __proto__ level and writes a ref that loads again", async () => {
+    const ref = structuredClone(await grouped());
+    const roots = ref.members[0]!["roots"] as { rendering: { groupby: { levels: unknown } } }[];
+    roots[0]!.rendering.groupby.levels = JSON.parse('{"__proto__": 1}');
+    const loaded = DatasetRef.fromJSON(JSON.stringify(ref));
+    const again = DatasetRef.fromJSON(JSON.stringify(loaded)).members[0];
+    assert.ok(again && isDerived(again));
+    assert.deepEqual(Object.keys(again.roots[0]!.groupby!.levels!), ["__proto__"]);
+  });
+
+  test("writes a hand-built groupby with empty levels without them", async () => {
+    const [member] = DatasetRef.fromJSON(await grouped()).members;
+    assert.ok(member && isDerived(member));
+    const root = {
+      ...member.roots[0]!,
+      groupby: { by: ["time_period"], op: "sum" as const, levels: {} },
+    };
+    const written = new DatasetRef([{ ...member, roots: [root] }]);
+    const [loaded] = DatasetRef.fromJSON(JSON.stringify(written)).members;
+    assert.ok(loaded && isDerived(loaded));
+    assert.deepEqual(loaded.roots[0]!.groupby, { by: ["time_period"], op: "sum" });
   });
 
   // Each row breaks one check of a root's groupby that no contract record pins.

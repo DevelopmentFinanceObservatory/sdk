@@ -181,6 +181,30 @@ def test_a_grouped_root_keeps_its_groupby() -> None:
     assert len({root, *revived.roots}) == 1
 
 
+def test_a_groupby_is_normalised_at_construction() -> None:
+    plain = Groupby(by=("time_period",), op="sum")
+    assert Groupby(by=["time_period"], op="sum", levels={}) == plain
+    assert hash(Groupby(by=("time_period",), op="sum", levels={})) == hash(plain)
+    ordered = Groupby(by=("a", "b"), op="sum", levels={"a": 0, "b": 1})
+    reordered = Groupby(by=("a", "b"), op="sum", levels={"b": 1, "a": 0})
+    assert (ordered, hash(ordered)) == (reordered, hash(reordered))
+    assert reordered.to_object()["levels"] == {"a": 0, "b": 1}
+    with pytest.raises(TypeError):
+        ordered.levels["a"] = 3
+
+
+def test_a_root_repeated_with_its_levels_reordered_is_refused() -> None:
+    ref = grouped_ref()
+    roots = ref["members"][0]["roots"]
+    roots[0]["rendering"]["groupby"]["levels"] = {"crsPurpose": 0, "time_period": 1}
+    again = json.loads(json.dumps(roots[0]))
+    again["rendering"]["groupby"]["levels"] = {"time_period": 1, "crsPurpose": 0}
+    roots.append(again)
+    with pytest.raises(FormatError) as raised:
+        DatasetRef.from_json(json.dumps(ref))
+    assert raised.value.pointer == "/members/0/roots/1"
+
+
 def test_a_repeated_root_is_refused() -> None:
     ref = derived_ref()
     roots = ref["members"][0]["roots"]
@@ -200,7 +224,7 @@ def test_a_ref_holds_one_kind_of_member() -> None:
 def test_a_ref_refuses_a_member_of_neither_kind() -> None:
     (member,) = DatasetRef.from_json(json.dumps(accepted_ref())).members
     with pytest.raises(TypeError, match="not Spec"):
-        DatasetRef((member.spec,))  # ty: ignore[invalid-argument-type]
+        DatasetRef((member.spec,))
 
 
 def _ref(obj: dict[str, Any]) -> DatasetRef:
@@ -223,7 +247,7 @@ def test_same_data_takes_a_ref() -> None:
     stored = derived_ref()
     with pytest.raises(InvalidRequestError) as caught:
         # The ref's JSON in place of the ref, the mistake the check names.
-        _ref(stored).same_data(stored)  # ty: ignore[invalid-argument-type]
+        _ref(stored).same_data(stored)
     assert caught.value.code == "invalid_argument"
 
 

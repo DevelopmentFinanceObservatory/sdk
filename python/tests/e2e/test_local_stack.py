@@ -74,6 +74,8 @@ GNI = (
 PAIRING = {"destination": "place"}
 # A breakdown by recipient, the sum data-mcp's `get_data` reads a frame with.
 BREAKDOWN = {"by": ["time_period", "financingRecipient"], "op": "sum"}
+# The breakdown as a ref names it: dfo-apis sorts `by`.
+SORTED_BREAKDOWN = {"by": ["financingRecipient", "time_period"], "op": "sum"}
 SHARES = "/presentation/shares"
 WRONG_TOKEN = "shw_" + "0" * 22
 # Where `Shim` moves a download link that points off the API's origin.
@@ -521,12 +523,12 @@ def test_14_a_grouped_root_survives_save_card_share_and_fetch(
     }
     ready = client.request("POST", "/datasets/analysis", json={"tree": tree}).json()
     (served,) = ready["ref"]["members"]
-    assert served["roots"][0]["rendering"]["groupby"] == BREAKDOWN
+    assert served["roots"][0]["rendering"]["groupby"] == SORTED_BREAKDOWN
 
     ref = DatasetRef.from_json(json.dumps(ready["ref"]))
     assert json.loads(ref.to_json()) == ready["ref"]
     data = client.fetch(ref)
-    expected = Groupby(by=("time_period", "financingRecipient"), op="sum")
+    expected = Groupby(by=("financingRecipient", "time_period"), op="sum")
     assert _grouped_root(data) == expected
 
     path = tmp_path / "grouped.parquet"
@@ -536,8 +538,10 @@ def test_14_a_grouped_root_survives_save_card_share_and_fetch(
     card = client.cards.line(data, title="ODA to Kenya")
     assert card.ref == data.ref
     share = client.share(card, latest=False)
-    shown = client.fetch(share, slot=1)
-    assert _grouped_root(shown) == expected
-    assert shown.ref.same_data(data.ref)
-    assert _rows(shown) == _rows(data)
-    client.unshare(share)
+    try:
+        shown = client.fetch(share, slot=1)
+        assert _grouped_root(shown) == expected
+        assert shown.ref.same_data(data.ref)
+        assert _rows(shown) == _rows(data)
+    finally:
+        client.unshare(share)

@@ -53,6 +53,8 @@ const POPULATION = {
 const PAIRING = { destination: "place" };
 // A breakdown by recipient, the sum data-mcp's `get_data` reads a frame with.
 const BREAKDOWN = { by: ["time_period", "financingRecipient"], op: "sum" };
+// The breakdown as a ref names it: dfo-apis sorts `by`.
+const SORTED_BREAKDOWN = { by: ["financingRecipient", "time_period"], op: "sum" };
 const ROW_COLUMNS = ["time_period", "financingRecipient", "value"] as const;
 const WRONG_TOKEN = `shw_${"0".repeat(22)}`;
 // Where `shim` moves a download link that points off the API's origin.
@@ -298,15 +300,18 @@ describe(`the local-stack journey against ${baseUrl}`, { concurrency: false }, (
     };
 
     const data = await client.fetch(ref);
-    assert.deepEqual(groupbyOf(data), BREAKDOWN);
+    assert.deepEqual(groupbyOf(data), SORTED_BREAKDOWN);
     const card = await client.cards.line(data, { title: "ODA to Kenya" });
     assert.ok(card.ref.equals(data.ref));
     const grouped = await client.share(card, { latest: false });
-    const shown = await client.fetch(grouped, { slot: 1 });
-    assert.deepEqual(groupbyOf(shown), BREAKDOWN);
-    assert.ok(shown.ref.sameData(data.ref));
-    assert.deepEqual(await rowsOf(shown), await rowsOf(data));
-    await client.unshare(grouped);
+    try {
+      const shown = await client.fetch(grouped, { slot: 1 });
+      assert.deepEqual(groupbyOf(shown), SORTED_BREAKDOWN);
+      assert.ok(shown.ref.sameData(data.ref));
+      assert.deepEqual(await rowsOf(shown), await rowsOf(data));
+    } finally {
+      await client.unshare(grouped);
+    }
   });
 
   test("writes the two-step recipe's ref for the Python journey", async (t) => {
