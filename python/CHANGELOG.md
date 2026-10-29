@@ -31,4 +31,4 @@ The first release of `development-finance`, the Python client for the Developmen
 - `dfo.pin(data)` keeps a dataset's versions fetchable with no time limit.
 - `dfo.cards` stores `line`, `bar`, `table`, `stat` and `source` cards of a Dataset. `stat(change="percent")` is a percentage where 25.0 is a 25% rise.
 - `dfo.share(cards, latest=...)` publishes cards at a public URL that follows new data or keeps today's versions, and returns its `shw_` write token. `replace=`, `dfo.snapshot` and `dfo.unshare` change it with the token, and `dfo.history` lists what each slot served.
-- `dfo.fetch(share, slot=..., as_of=...)` returns the data a share's slot shows, or showed on a date.
+- `dfo.fetch(share, slot=..., as_of=...)` returns the data a share's slot shows, or showed on a date. A slot whose version lists no frame-layout file, as a default fetch leaves it, reads the file the version's file selector renders from its stored frame.

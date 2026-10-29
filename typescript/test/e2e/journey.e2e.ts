@@ -7,11 +7,11 @@
 // `DFO_E2E_DIR` names a directory both clients share: this suite writes `ref-typescript.json`
 // there, and fetches `ref-python.json` when the Python suite has written it.
 //
-// Step 6 builds the spec `tests/live/long-builds.json` assigns to this run by the UTC day's parity, the
-// language and `DFO_E2E_TARGET`. Each spec there is posted every 48 hours, so its stored head is
-// past the server's 24-hour maximum age and the build runs again as an operation.
-// `DFO_E2E_SCHEDULED=true` marks a scheduled run, where a build served inline fails the step; any
-// other run skips it.
+// Step 6 builds the spec `tests/live/long-builds.json` assigns to this run by the UTC day's
+// parity, the language and `DFO_E2E_TARGET`, which is `api` or `website`. Each spec there is
+// posted every 48 hours, so its stored head is past the server's 24-hour maximum age and the
+// build runs again as an operation. `DFO_E2E_SCHEDULED=true` marks a scheduled run, where a
+// build served inline fails the step; any other run skips it.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -168,7 +168,11 @@ const operationIdOf = (json: unknown): string | undefined =>
 const sha256 = (bytes: Uint8Array): string =>
   `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
-const yearOf = (row: Row): number => Number((row["time_period"] as string).slice(0, 4));
+// The long layout gives `time_period` as an integer year; a text period starts with its year.
+const yearOf = (row: Row): number => {
+  const period = row["time_period"];
+  return typeof period === "number" ? period : Number((period as string).slice(0, 4));
+};
 
 /** The error a promise rejects with; the step fails when it resolves. */
 async function rejection(promise: Promise<unknown>): Promise<unknown> {

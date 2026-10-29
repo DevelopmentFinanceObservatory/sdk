@@ -245,6 +245,13 @@ describe(`the local-stack journey against ${baseUrl}`, { concurrency: false }, (
   });
 
   test("pin refuses a derived frame before any request", async () => {
+    // pin(undefined) is refused unsent too, so without the frame this test would prove nothing.
+    // `quotient` is unset when the quotientOf step failed, whatever its declared type says.
+    assert.ok(
+      (quotient as Dataset | undefined) !== undefined,
+      "no derived frame: the quotientOf step did not finish",
+    );
+    assert.match(derivedOf(quotient)[0], /^ops_/);
     const before = sent.length;
     const refused = await client.pin(quotient).then(
       () => assert.fail("a derived frame was pinned"),

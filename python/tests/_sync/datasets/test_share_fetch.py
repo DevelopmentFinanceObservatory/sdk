@@ -15,12 +15,14 @@ frame `analysis-rank-*` DFO computed. `scripts/gen_sync.py` derives
 import json
 from dataclasses import replace
 from datetime import UTC, date, datetime
+from pathlib import Path
 from typing import Any
 
 import httpx2
 import pytest
 
 from dfo._core.errors import (
+    ContractError,
     DfoTimeoutError,
     InvalidRequestError,
     NetworkError,
@@ -29,6 +31,7 @@ from dfo._core.errors import (
 )
 from dfo._core.refs import DatasetRef, DerivedRefMember, RefMember
 from dfo._core.types import Spec
+from dfo._datasets.cache import Cache
 from dfo._datasets.dataset import day_text
 from dfo._datasets.publication import Share
 from dfo._sync._datasets.resolve import fetch
@@ -229,6 +232,183 @@ def test_a_share_fetch_reads_the_exact_version_its_slot_shows_now(
     assert data.layout_version == "frame"
     shown = f'Shown by: share {SHARE_ID}, slot 2 "Malaria grants by year", on '
     assert any(f"{shown}{day_text(day)}" in repr(data) for day in (before, after))
+
+
+FRAME_DIGEST = "sha256:f4026e80af4b8683d3bb86645ab3aca83dff75cd03fdd4c73ec54ba638922104"
+
+
+def long_only_manifest(*, long_digest: str | None = None) -> dict[str, Any]:
+    """The stored manifest without its frame-layout files, as a long-layout
+    fetch leaves a version: long Parquet, the canonical `{format: frame}` and
+    statistics among them. `long_digest` replaces the long Parquet file's digest."""
+    manifest = stored_manifest()
+    manifest["artifacts"] = [
+        artifact
+        for artifact in manifest["artifacts"]
+        if artifact["rendering"].get("layout") != "frame"
+    ]
+    if long_digest is not None:
+        manifest["artifacts"][0]["artifact_digest"] = long_digest
+    return manifest
+
+
+def rendered_version(*, retried: bool = False) -> list[httpx2.Response]:
+    """The selector's frame file and the manifest read again, which lists it.
+    `retried` answers another file first, which the manifest does not list."""
+    first = [parquet(), json_response(200, long_only_manifest())]
+    return [
+        *(first if retried else []),
+        parquet(FRAME_FILE),
+        json_response(200, stored_manifest()),
+    ]
+
+
+def rendered_calls(*, retried: bool = False) -> list[str]:
+    stored = f"GET {BASE}/datasets/{POSTED_ID}/{VERSION}"
+    return [stored, *([f"{stored}/file", stored] * (2 if retried else 1))]
+
+
+@pytest.mark.parametrize(
+    "retried", [False, True], ids=["first-answer", "second-answer"]
+)
+def test_a_version_listing_no_frame_file_reads_the_one_the_selector_renders(
+    retried: bool,
+) -> None:
+    """The selector renders the frame file from the version's stored frame, and
+    the manifest read again lists it. A file it does not list asks once more."""
+    server = Server(
+        share_read(),
+        slot_card(dataset_frame()),
+        json_response(200, long_only_manifest()),
+        *rendered_version(retried=retried),
+        json_response(200, resubmitted(POSTED_ID)),
+    )
+    with make(server) as transport:
+        data = fetch(transport, three_slots(), slot=2)
+
+    assert server.calls() == [
+        READ,
+        f"GET {SHARES}/{SHARE_ID}/slots/2",
+        *rendered_calls(retried=retried),
+        f"POST {BASE}/search/resolve",
+    ]
+    assert dict(server.requests[3].url.params) == {
+        "format": "parquet",
+        "bundle": "false",
+        "layout": "frame",
+    }
+    (member,) = data.ref.members
+    assert isinstance(member, RefMember)
+    assert member.digest == FRAME_DIGEST
+    assert (member.rendering.layout, member.rendering.without_party_totals) == (
+        "frame",
+        True,
+    )
+    assert data.layout_version == "frame"
+
+
+def test_a_rendered_frame_file_is_read_from_the_cache_the_second_time(
+    tmp_path: Path,
+) -> None:
+    """The second read finds the file listed and cached under its digest."""
+    shown = [share_read(), slot_card(dataset_frame())]
+    sentence = json_response(200, resubmitted(POSTED_ID))
+    server = Server(
+        *shown,
+        json_response(200, long_only_manifest()),
+        *rendered_version(),
+        sentence,
+        *shown,
+        json_response(200, stored_manifest()),
+        sentence,
+    )
+    cache = Cache(tmp_path, env={})
+    with make(server) as transport:
+        first = fetch(transport, three_slots(), slot=2, cache=cache)
+        second = fetch(transport, three_slots(), slot=2, cache=cache)
+
+    files = [call for call in server.calls() if "/file" in call]
+    assert files == [f"GET {BASE}/datasets/{POSTED_ID}/{VERSION}/file"]
+    assert second.ref == first.ref
+
+
+def frame_under_another_digest() -> dict[str, Any]:
+    manifest = stored_manifest()
+    for artifact in manifest["artifacts"]:
+        if artifact["artifact_digest"] == FRAME_DIGEST:
+            artifact["artifact_digest"] = "sha256:" + "e" * 64
+    return manifest
+
+
+@pytest.mark.parametrize(
+    "reread",
+    [long_only_manifest(long_digest=FRAME_DIGEST), frame_under_another_digest()],
+    ids=["served-file-listed-long", "frame-listed-under-another-digest"],
+)
+def test_a_selector_file_the_manifest_twice_lists_as_no_frame_file_is_refused(
+    reread: dict[str, Any],
+) -> None:
+    server = Server(
+        share_read(),
+        slot_card(dataset_frame()),
+        json_response(200, long_only_manifest()),
+        *[parquet(FRAME_FILE), json_response(200, reread)] * 2,
+    )
+    with make(server) as transport:
+        with pytest.raises(ContractError) as caught:
+            fetch(transport, three_slots(), slot=2)
+    assert caught.value.code == "contract_violation"
+    assert FRAME_DIGEST in str(caught.value)
+    assert len(server.requests) == 7
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [(410, "artifact_expired"), (404, "artifact_not_found"), (404, "not_found")],
+)
+def test_a_selector_that_finds_no_file_rebuilds_then_is_unavailable(
+    status: int, code: str
+) -> None:
+    newest = "cv_" + "c" * 32
+    versions = {
+        "spec_id": POSTED_ID,
+        "versions": [
+            {
+                "content_version": newest,
+                "base_content_version": None,
+                "rendering": "plain",
+            }
+        ],
+        "next_cursor": None,
+        "complete": True,
+    }
+    server = Server(
+        share_read(),
+        slot_card(dataset_frame()),
+        json_response(200, long_only_manifest()),
+        problem(status, code),
+        problem(422, "definition_not_reproducible"),
+        json_response(200, versions),
+    )
+    with make(server) as transport:
+        with pytest.raises(VersionUnavailableError) as caught:
+            fetch(transport, three_slots(), slot=2)
+    assert caught.value.code == code
+    assert caught.value.newest_version == newest
+    stored = f"GET {BASE}/datasets/{POSTED_ID}/{VERSION}"
+    assert server.calls()[2:] == [
+        stored,
+        f"{stored}/file",
+        f"POST {BASE}/datasets",
+        f"GET {BASE}/datasets/{POSTED_ID}/versions",
+    ]
+    # The rebuild asks for the version's cut, which its long file records.
+    assert server.body(4)["options"] == {
+        "format": "parquet",
+        "bundle": False,
+        "layout": "frame",
+        "without_party_totals": True,
+    }
 
 
 @pytest.mark.parametrize(

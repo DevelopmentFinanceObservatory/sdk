@@ -19,11 +19,15 @@
  * A share fetch finds the frame a slot shows (`shownFrame` in `shares.ts`) and reads that exact
  * version in the frame layout. A `spec_` frame reads its stored manifest at
  * `GET /datasets/{spec_id}/{content_version}`, which holds the definition and lists the frame
- * artifact a ref member names, and then takes a ref's lookup order with that manifest. Once the
- * data is read, it asks Search the definition's sentence; when Search refuses, fails, or answers
- * another spec, the dataset reads as the card's title, so Search never decides whether the fetch
- * succeeds. An `ops_` frame reads through its bare derived root
- * (`fetchComputedFrame`). The dataset's text form names the share, slot, card title and day.
+ * artifact a ref member names, and then takes a ref's lookup order with that manifest. A version
+ * that lists no frame artifact, as a long-layout fetch leaves it, reads the file the file
+ * selector renders from its stored frame, and the manifest read again must list that file's
+ * digest as the frame artifact. When it does not, the selector is asked once more; a selector
+ * that finds no file rebuilds the version, as a ref member's lookup does. Once the data is read,
+ * it asks Search the definition's sentence; when Search refuses, fails, or answers another spec,
+ * the dataset reads as the card's title, so Search never decides whether the fetch succeeds. An
+ * `ops_` frame reads through its bare derived root (`fetchComputedFrame`). The dataset's text
+ * form names the share, slot, card title and day.
  *
  * The lookup reuses the build path's download, warnings and finishing steps, so this module
  * imports `fetch.ts` and `fetch.ts` imports nothing from here.
@@ -49,6 +53,7 @@ import {
   contentVersionOf,
   definitionOf,
   DIGEST_MISMATCH,
+  digestOf,
   download,
   FETCH_OPTIONS,
   fetchMembers,
@@ -275,13 +280,13 @@ async function fetchShown(
 
 /**
  * A dataset version in the frame layout, from its ids alone: the stored manifest names its
- * definition and frame artifact. Once the data is read, Search words its sentence, or else
- * `title` does.
+ * definition and frame artifact, or else the file selector renders the file (`renderedFrame`).
+ * Once the data is read, Search words its sentence, or else `title` does.
  *
  * @throws {VersionUnavailableError} DFO no longer stores the version or its file
  *   (`artifact_expired`), and the error ends with `fix`.
- * @throws {ContractError} The manifest lists no bare Parquet frame artifact
- *   (`contract_violation`).
+ * @throws {ContractError} The selector twice served a file the manifest does not list as the
+ *   frame artifact (`contract_violation`).
  */
 async function fetchFrame(
   transport: Transport,
@@ -299,31 +304,104 @@ async function fetchFrame(
     const newest = await newestVersion(transport, specId, wait);
     throw unavailable(specId, contentVersion, newest, error, fix);
   }
-  const { manifest } = found;
-  const artifact = describing(found.traceId, () => {
-    const listed = pickArtifact(manifest, FRAME);
-    if (listed === undefined) {
-      throw clientError("contract_violation", {
-        detail:
-          `The manifest of ${specId} at ${contentVersion} lists no ` +
-          `${JSON.stringify(mintOptions(FRAME))} artifact.`,
-      });
-    }
-    return listed;
-  });
+  const artifact = pickArtifact(found.manifest, FRAME);
+  const fetched =
+    artifact === undefined
+      ? await renderedFrame(transport, found.manifest, title, options, wait, fix)
+      : await fetchVersion(
+          transport,
+          frameMember(found.manifest, artifact, title),
+          "/members/0",
+          options,
+          wait,
+          found,
+          fix,
+        );
+  const sentence = await sentenceOr(transport, fetched.manifest, title, wait);
+  return Dataset.create([{ ...fetched, sentence }], { layout: "frame" });
+}
+
+/** The ref member of a version's listed frame artifact, read as `title`. */
+function frameMember(
+  manifest: Manifest,
+  artifact: Record<string, unknown>,
+  title: string,
+): RefMember {
   const rendering = artifact["rendering"];
   const cut = isRecord(rendering) && rendering["without_party_totals"] === true;
-  const member: RefMember = {
+  return {
     parts: [],
     sentence: title,
-    spec: { spec_id: specId, definition: definitionOf(manifest) },
-    contentVersion,
+    spec: { spec_id: specIdOf(manifest), definition: definitionOf(manifest) },
+    contentVersion: contentVersionOf(manifest),
     digest: String(artifact["artifact_digest"]),
     rendering: cut ? { ...FRAME, without_party_totals: true } : FRAME,
   };
-  const fetched = await fetchVersion(transport, member, "/members/0", options, wait, found, fix);
-  const sentence = await sentenceOr(transport, fetched.manifest, title, wait);
-  return Dataset.create([{ ...fetched, sentence }], { layout: "frame" });
+}
+
+/**
+ * The frame-layout file the file selector renders from a version's stored frame, for a
+ * `manifest` that lists none. The selector lists the file it renders in the version's manifest,
+ * so the manifest read again must list the served bytes' digest as the frame artifact. When it
+ * does not, the selector is asked once more, as for bytes that fail their digest. A selector or
+ * snapshot refusal that the file is gone rebuilds the version, as a ref member's lookup does.
+ *
+ * @throws {ContractError} Both answers were files the manifest does not list as the frame
+ *   artifact (`contract_violation`).
+ */
+async function renderedFrame(
+  transport: Transport,
+  manifest: Manifest,
+  title: string,
+  options: CallOptions,
+  wait: Wait,
+  fix: string,
+): Promise<FetchedMember> {
+  const specId = specIdOf(manifest);
+  const contentVersion = contentVersionOf(manifest);
+  const selector = `/datasets/${specId}/${contentVersion}/file?${selectorQuery(FRAME)}`;
+  let digest = "";
+  let traceId: string | null = null;
+  try {
+    for (let round = 0; round < 2; round += 1) {
+      // The selector serves a file the manifest does not list, so its digest is unknown until
+      // read.
+      const data = await download(transport, { path: selector }, undefined, wait);
+      digest = await digestOf(data);
+      const found = await snapshot(transport, specId, contentVersion, wait);
+      traceId = found.traceId;
+      const artifact = pickArtifact(found.manifest, FRAME, digest);
+      if (artifact !== undefined) {
+        const member = frameMember(found.manifest, artifact, title);
+        noteWarnings(transport, found, options.strict ?? false);
+        checkArtifact(data, found.manifest, member.digest);
+        return stored(member, found.manifest, data);
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof DfoError) || !FILE_GONE.has(error.code)) throw error;
+    const cut = (manifest["artifacts"] as unknown[]).some(
+      (artifact) =>
+        isRecord(artifact) &&
+        isRecord(artifact["rendering"]) &&
+        artifact["rendering"]["without_party_totals"] === true,
+    );
+    const want: Omit<RefMember, "digest"> = {
+      parts: [],
+      sentence: title,
+      spec: { spec_id: specId, definition: definitionOf(manifest) },
+      contentVersion,
+      rendering: cut ? { ...FRAME, without_party_totals: true } : FRAME,
+    };
+    return rebuilt(transport, want, error, options, wait, fix);
+  }
+  throw describing(traceId, () =>
+    clientError("contract_violation", {
+      detail:
+        `The file selector twice served ${specId} at ${contentVersion} as a file the manifest ` +
+        `does not list as its ${JSON.stringify(mintOptions(FRAME))} artifact, last ${digest}.`,
+    }),
+  );
 }
 
 /** Search's sentence for a stored version, or `fallback` when Search refuses, fails, or no
@@ -487,32 +565,49 @@ async function fetchVersion(
     refusal = file.refusal;
   }
 
+  const fetched = await rebuilt(transport, member, refusal, options, wait, fix);
+  if (fetched.digest !== member.digest) noteNewDigest(transport, member, fetched.digest);
+  return fetched;
+}
+
+/**
+ * A stored version built again in its rendering, the last step of its lookup.
+ *
+ * @throws {VersionUnavailableError} The build refused, or built another version; the error
+ *   carries `refusal`, the lookup's earlier refusal, when there was one, and ends with `fix`.
+ */
+async function rebuilt(
+  transport: Transport,
+  want: Omit<RefMember, "digest">,
+  refusal: DfoError | undefined,
+  options: CallOptions,
+  wait: Wait,
+  fix: string,
+): Promise<FetchedMember> {
   let newest: string | null;
   try {
-    const built = await build(transport, buildBody(member.spec, member.rendering), {
+    const built = await build(transport, buildBody(want.spec, want.rendering), {
       ...wait,
       onProgress: options.onProgress,
     });
     describing(built.traceId, () => {
-      const rebuilt = specIdOf(built.manifest);
-      if (rebuilt !== member.spec.spec_id) {
+      const rebuiltId = specIdOf(built.manifest);
+      if (rebuiltId !== want.spec.spec_id) {
         throw clientError("contract_violation", {
-          detail: `The server rebuilt ${capped(rebuilt)} for ${member.spec.spec_id}.`,
+          detail: `The server rebuilt ${capped(rebuiltId)} for ${want.spec.spec_id}.`,
           pointer: "/definition/spec_id",
         });
       }
     });
-    if (contentVersionOf(built.manifest) === member.contentVersion) {
+    if (contentVersionOf(built.manifest) === want.contentVersion) {
       const finishing = {
-        parts: member.parts,
-        posted: { spec: member.spec },
-        sentence: member.sentence,
-        rendering: member.rendering,
-        strict,
+        parts: want.parts,
+        posted: { spec: want.spec },
+        sentence: want.sentence,
+        rendering: want.rendering,
+        strict: options.strict ?? false,
       };
-      const fetched = await finish(transport, built, finishing, wait);
-      if (fetched.digest !== member.digest) noteNewDigest(transport, member, fetched.digest);
-      return fetched;
+      return await finish(transport, built, finishing, wait);
     }
     newest = contentVersionOf(built.manifest);
   } catch (error) {
@@ -524,9 +619,9 @@ async function fetchVersion(
       throw error;
     }
     refusal ??= error;
-    newest = await newestVersion(transport, member.spec.spec_id, wait);
+    newest = await newestVersion(transport, want.spec.spec_id, wait);
   }
-  throw unavailable(member.spec.spec_id, member.contentVersion, newest, refusal, fix);
+  throw unavailable(want.spec.spec_id, want.contentVersion, newest, refusal, fix);
 }
 
 /** Issues the client's warning that a rebuilt file differs from the ref's. The rebuild returned

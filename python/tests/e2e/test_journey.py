@@ -10,11 +10,12 @@ writes the ref it fetched there as `ref-python.json` and reads back
 `ref-typescript.json` when it exists.
 
 Step 6 builds the spec `tests/live/long-builds.json` assigns to this run by the UTC
-day's parity, the language and `DFO_E2E_TARGET`. Each spec there is posted every
-48 hours, so its stored head is past the server's 24-hour maximum age and the
-build runs again as an operation. The step posts it twice, then fetches it in a
-fresh process, and checks all three join one operation. `DFO_E2E_SCHEDULED=true` marks a scheduled
-run, where a build served inline fails the step; any other run skips it.
+day's parity, the language and `DFO_E2E_TARGET`, which is `api` or `website`.
+Each spec there is posted every 48 hours, so its stored head is past the
+server's 24-hour maximum age and the build runs again as an operation. The step
+posts it twice, then fetches it in a fresh process, and checks all three join
+one operation. `DFO_E2E_SCHEDULED=true` marks a scheduled run, where a build
+served inline fails the step; any other run skips it.
 """
 
 import json
@@ -246,11 +247,18 @@ def _long_build() -> Spec:
         pytest.fail("DFO_E2E_TARGET is unset; step 6 picks its spec by target")
     parity = int(time.time() // 86_400) % 2
     entries = json.loads(LONG_BUILDS.read_text())
-    (entry,) = [
+    found = [
         e
         for e in entries
         if (e["day_parity"], e["language"], e["target"]) == (parity, LANGUAGE, target)
     ]
+    if len(found) != 1:
+        targets = sorted({e["target"] for e in entries})
+        pytest.fail(
+            f"long-builds.json holds {len(found)} entries for parity {parity}, "
+            f"{LANGUAGE}, target {target!r}; its targets are {targets}"
+        )
+    (entry,) = found
     return Spec(entry["spec"]["spec_id"], entry["spec"]["definition"])
 
 
