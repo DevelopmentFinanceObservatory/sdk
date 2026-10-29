@@ -159,6 +159,8 @@ if again.ref != per_person.ref:
     print("DFO has newer data, and the figure was computed again")
 ```
 
+A changed ref can still hold the same numbers, after an engine release or a rebuild of a reading that moved no value. `again.ref.same_data(per_person.ref)` compares what the two refs hold: two derived results with the same rows under the same variables compare as the same data, whichever recipe made them.
+
 `dfo.fetch(per_person.ref)`, without `latest`, reads the exact version again. DFO holds a derived version until the `held until` date in its repr. After that, the fetch asks DFO to compute it again from the same versions of its readings, and returns it when the result is the same version. When it is not, the fetch raises `VersionUnavailableError`, and `latest=True` computes it on the newest data.
 
 ## Save and reload a derived result

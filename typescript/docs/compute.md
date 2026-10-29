@@ -147,6 +147,8 @@ if (!again.ref.equals(perPerson.ref)) {
 }
 ```
 
+A changed ref can still hold the same numbers, after an engine release or a rebuild of a reading that moved no value. `again.ref.sameData(perPerson.ref)` compares what the two refs hold: two derived results with the same rows under the same variables compare as the same data, whichever recipe made them.
+
 `client.fetch(ref)`, without `latest`, reads the exact version again. DFO holds a derived version until the `held until` date in its text form. After that, the fetch asks DFO to compute it again from the same versions of its readings, and returns it when the result is the same version. When it is not, the fetch raises `VersionUnavailableError`, and `{ latest: true }` computes it on the newest data.
 
 `await data.bytes()` returns the rows as one Parquet file with the ref, the steps, and the left-out series, which the Python client's `dfo.load` reads. `client.pin(data)` keeps a dataset version fetchable for good, and refuses a derived dataset before any request.
