@@ -177,6 +177,8 @@ ACTIONS: Final[dict[str, Action]] = {
     "service_unavailable": "report",
     "several_members": "fix_request",
     "shape_mismatch": "fix_request",
+    "share_id_taken": "fix_request",
+    "share_import_not_permitted": "request_scope",
     "share_not_replaceable": "fix_request",
     "share_of_grain_mismatch": "fix_request",
     "share_of_key_unknown": "fix_request",
