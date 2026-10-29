@@ -189,20 +189,28 @@ function schemaColumns(
 }
 
 /** The type of the column the schema element at `at` starts, and the index after its elements:
- *  a leaf by `columnType`, a LIST in the standard three levels by its item, and any other group
- *  as a struct of its fields. */
+ *  a leaf by `columnType`, a LIST in the standard three levels by its item, and any other
+ *  unannotated group as a struct of its fields.
+ *
+ *  Parquet's backward-compatibility rules read a LIST group's repeated field as the element
+ *  itself when it is a leaf, holds several fields, or is named `array` or `<list>_tuple`.
+ *  hyparquet assembles those layouts otherwise than pyarrow, such as a one-field `array` group as
+ *  its field's values, so they are refused. */
 function schemaType(schema: readonly SchemaElement[], at: number): [ColumnType, number] {
   const element = schema[at]!;
   if (element.repetition_type === "REPEATED") throw unsupported(element, "repeated");
   if (element.num_children === undefined) return [columnType(element), at + 1];
   if (element.converted_type === "LIST" || element.logical_type?.type === "LIST") {
     const repeated = schema[at + 1];
+    if (element.num_children !== 1 || repeated?.repetition_type !== "REPEATED") {
+      throw unsupported(element, "a LIST group with no single repeated field");
+    }
     if (
-      element.num_children !== 1 ||
-      repeated?.repetition_type !== "REPEATED" ||
-      repeated.num_children !== 1
+      repeated.num_children !== 1 ||
+      repeated.name === "array" ||
+      repeated.name === `${element.name}_tuple`
     ) {
-      throw unsupported(element, "a list of another layout than the standard three levels");
+      throw unsupported(element, "a list in a legacy layout");
     }
     const [item, after] = schemaType(schema, at + 2);
     return [{ kind: "list", item }, after];
@@ -210,6 +218,9 @@ function schemaType(schema: readonly SchemaElement[], at: number): [ColumnType, 
   const annotation = element.logical_type?.type ?? element.converted_type;
   if (annotation !== undefined) throw unsupported(element, annotation);
   const [fields, after] = schemaColumns(schema, at + 1, element.num_children);
+  if (new Set(fields.map(({ name }) => name)).size !== fields.length) {
+    throw unsupported(element, "a struct that names a field twice");
+  }
   return [{ kind: "struct", fields }, after];
 }
 
@@ -278,7 +289,7 @@ const INT_DIGITS = {
 const MAX_DECIMAL_PRECISION = 76;
 
 /** Each timestamp unit's ticks per millisecond. */
-export const TICKS_PER_MS = { MILLIS: 1n, MICROS: 1_000n, NANOS: 1_000_000n } as const;
+const TICKS_PER_MS = { MILLIS: 1n, MICROS: 1_000n, NANOS: 1_000_000n } as const;
 
 /**
  * The type two files' columns stack as, widened as pyarrow's permissive promotion widens it, or
@@ -286,7 +297,8 @@ export const TICKS_PER_MS = { MILLIS: 1n, MICROS: 1_000n, NANOS: 1_000_000n } as
  * signed and an unsigned one a signed type that holds both, up to 64 bits; an integer and a
  * float take the float, 64 bits unless a 32-bit float meets an integer of at most 16 bits;
  * timestamps in one time zone take the finer unit; a string and a binary column take binary;
- * lists widen by their items, and structs of the same fields in the same order field by field.
+ * lists widen by their items, and structs unify by field name, in the order the left one names
+ * them, then the right one's new fields, each field widened and a field one side lacks null.
  * Decimals take the larger scale and the most integer digits, up to 76 digits; a decimal and a
  * float take the float; a decimal and an integer take the decimal when its integer digits hold
  * every value of the integer's width, and are refused otherwise, as pyarrow's cast refuses them.
@@ -299,20 +311,14 @@ export function widen(left: ColumnType, right: ColumnType): ColumnType | undefin
     return item === undefined ? undefined : { kind: "list", item };
   }
   if (left.kind === "struct" && right.kind === "struct") {
-    const { fields } = right;
-    if (
-      left.fields.length !== fields.length ||
-      left.fields.some(({ name }, index) => name !== fields[index]!.name)
-    ) {
-      return undefined;
+    const fields = new Map(left.fields.map(({ name, type }) => [name, type]));
+    for (const { name, type } of right.fields) {
+      const seen = fields.get(name);
+      const widened = seen === undefined ? type : widen(seen, type);
+      if (widened === undefined) return undefined;
+      fields.set(name, widened);
     }
-    const widened = left.fields.map(({ name, type }, index) => ({
-      name,
-      type: widen(type, fields[index]!.type),
-    }));
-    return widened.every((field): field is Column => field.type !== undefined)
-      ? { kind: "struct", fields: widened }
-      : undefined;
+    return { kind: "struct", fields: [...fields].map(([name, type]) => ({ name, type })) };
   }
   if (left.kind === "decimal" || right.kind === "decimal") return widenDecimal(left, right);
   if (left.kind === "int" && right.kind === "int") {
@@ -395,7 +401,7 @@ export function stackedColumns(parts: readonly TablePart[]): Column[] {
 
 const encoder = new TextEncoder();
 
-export const DAY_MS = 86_400_000;
+const DAY_MS = 86_400_000;
 
 /** A DECIMAL's stored value as its unscaled integer: an INT32 or INT64 as read, a byte array
  *  as the big-endian two's complement it holds. */
@@ -449,7 +455,13 @@ export async function presentedOrder(parts: readonly TablePart[]): Promise<Readi
   const stacked = await decodeStacked(parts);
   const part = parts.length > 1 ? stacked.find(({ name }) => name === PART_COLUMN) : undefined;
   const { columns, rows } = readingOrder(
-    stacked.filter((column) => column !== part),
+    stacked
+      .filter((column) => column !== part)
+      .map(({ name, type, values }) => ({
+        name,
+        values,
+        nested: type.kind === "list" || type.kind === "struct",
+      })),
     memberRows(parts),
   );
   return { columns: Object.freeze(part ? [PART_COLUMN, ...columns] : [...columns]), rows };

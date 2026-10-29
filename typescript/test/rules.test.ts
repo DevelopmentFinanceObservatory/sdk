@@ -277,8 +277,12 @@ test("reading-order sorts strings by code point and NaN after every number", () 
   // UTF-16 code units put U+1F600's surrogates before U+FF5E; code points put it after.
   const order = readingOrder(
     [
-      { name: "label", values: ["\u{1F600}", "\uFF5E", null, "\u{1F600}", "\u{1F600}"] },
-      { name: "share", values: [1, 2, 3, Number.NaN, 0] },
+      {
+        name: "label",
+        values: ["\u{1F600}", "\uFF5E", null, "\u{1F600}", "\u{1F600}"],
+        nested: false,
+      },
+      { name: "share", values: [1, 2, 3, Number.NaN, 0], nested: false },
     ],
     [5],
   );

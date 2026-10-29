@@ -9,7 +9,7 @@ import * as arrow from "apache-arrow";
 
 import { datasetTable } from "./dataset.ts";
 import type { Dataset } from "./dataset.ts";
-import { DAY_MS, TICKS_PER_MS, decimalNumber, decodeStored } from "./parquet.ts";
+import { decimalNumber, decodeStored } from "./parquet.ts";
 import type { ColumnType } from "./parquet.ts";
 
 const TIME_UNITS = { MILLIS: "MILLISECOND", MICROS: "MICROSECOND", NANOS: "NANOSECOND" } as const;
@@ -43,34 +43,6 @@ function arrowType(type: ColumnType): arrow.DataType {
   }
 }
 
-/** A stored value inside a list or struct as apache-arrow's builders take it: a decimal as its
- *  nearest float, a date as a `Date`, a timestamp as milliseconds since the epoch, which drops
- *  a finer unit's sub-millisecond part, an INT64 as a `bigint`, and lists and structs item by
- *  item. */
-function builderValue(value: unknown, type: ColumnType): unknown {
-  if (value === null || value === undefined) return null;
-  switch (type.kind) {
-    case "list":
-      return (value as unknown[]).map((item) => builderValue(item, type.item));
-    case "struct": {
-      const cell = value as Record<string, unknown>;
-      return Object.fromEntries(
-        type.fields.map((field) => [field.name, builderValue(cell[field.name], field.type)]),
-      );
-    }
-    case "decimal":
-      return decimalNumber(value as bigint, type.scale);
-    case "date":
-      return new Date((value as number) * DAY_MS);
-    case "timestamp":
-      return Number(BigInt(value as bigint | number) / TICKS_PER_MS[type.unit]);
-    case "int":
-      return type.bits === 64 ? BigInt(value as bigint | number) : Number(value);
-    default:
-      return value;
-  }
-}
-
 type FixedArray =
   | Int8Array
   | Int16Array
@@ -96,30 +68,63 @@ function fixedArray(type: ColumnType, length: number): FixedArray {
   return new arrays[type.bits](length);
 }
 
-function arrowVector(type: ColumnType, values: readonly unknown[]): arrow.Vector {
+/** The validity bitmap of `values`, a bit set for each that is not null, and the null count. */
+function validityOf(values: readonly unknown[]): { nullBitmap: Uint8Array; nullCount: number } {
+  const nullBitmap = new Uint8Array(Math.ceil(values.length / 8));
+  let nullCount = 0;
+  for (const [index, value] of values.entries()) {
+    if (value === null || value === undefined) nullCount += 1;
+    else nullBitmap[index >> 3]! |= 1 << (index & 7);
+  }
+  return { nullBitmap, nullCount };
+}
+
+/** A column's values as one apache-arrow `Data` of its type. A list's items and a struct's
+ *  fields are built as columns of their own, so a nested timestamp keeps its stored unit and a
+ *  nested INT64 every bit, as a top-level one does. */
+function arrowData(type: ColumnType, values: readonly unknown[]): arrow.Data {
   const dataType = arrowType(type);
   const length = values.length;
-  if (type.kind === "null") return arrow.makeVector(arrow.makeData({ type: dataType, length }));
+  if (type.kind === "null") return arrow.makeData({ type: dataType as arrow.Null, length });
   if (type.kind === "string" || type.kind === "bool" || type.kind === "binary") {
-    return arrow.vectorFromArray(values, dataType);
+    // One chunk: vectorFromArray's default high-water mark never flushes early.
+    return arrow.vectorFromArray(values, dataType).data[0]!;
   }
-  if (type.kind === "list" || type.kind === "struct") {
-    return arrow.vectorFromArray(
-      values.map((value) => builderValue(value, type)),
-      dataType,
-    );
+  if (type.kind === "list") {
+    const valueOffsets = new Int32Array(length + 1);
+    const items: unknown[] = [];
+    for (const [index, value] of values.entries()) {
+      if (Array.isArray(value)) items.push(...(value as unknown[]));
+      valueOffsets[index + 1] = items.length;
+    }
+    return arrow.makeData({
+      type: dataType as arrow.List,
+      length,
+      ...validityOf(values),
+      valueOffsets,
+      child: arrowData(type.item, items),
+    });
+  }
+  if (type.kind === "struct") {
+    const cells = values as readonly (Record<string, unknown> | null | undefined)[];
+    return arrow.makeData({
+      type: dataType as arrow.Struct,
+      length,
+      ...validityOf(values),
+      children: type.fields.map((field) =>
+        arrowData(
+          field.type,
+          cells.map((cell) => cell?.[field.name] ?? null),
+        ),
+      ),
+    });
   }
 
   // Fixed-width values are written straight into the column buffer with a validity bitmap,
   // so int64 and timestamp values keep every bit.
   const data = fixedArray(type, length);
-  const validity = new Uint8Array(Math.ceil(length / 8));
-  let nullCount = 0;
   for (const [index, value] of values.entries()) {
-    if (value === null || value === undefined) {
-      nullCount += 1;
-      continue;
-    }
+    if (value === null || value === undefined) continue;
     if (data instanceof BigInt64Array || data instanceof BigUint64Array) {
       data[index] = BigInt(value as bigint | number);
     } else if (type.kind === "decimal") {
@@ -127,12 +132,9 @@ function arrowVector(type: ColumnType, values: readonly unknown[]): arrow.Vector
     } else {
       data[index] = Number(value);
     }
-    validity[index >> 3]! |= 1 << (index & 7);
   }
-  return arrow.makeVector(
-    // makeData has one overload per concrete type, and `data` is the typed array `type` stores.
-    arrow.makeData({ type: dataType, length, nullCount, nullBitmap: validity, data } as never),
-  );
+  // makeData has one overload per concrete type, and `data` is the typed array `type` stores.
+  return arrow.makeData({ type: dataType, length, ...validityOf(values), data } as never);
 }
 
 /**
@@ -146,7 +148,7 @@ export async function toArrow(dataset: Dataset): Promise<arrow.Table> {
   const columns = await decodeStored(datasetTable(dataset));
   // fromEntries defines each column as an own property, `__proto__` included.
   const vectors = Object.fromEntries(
-    columns.map(({ name, type, values }) => [name, arrowVector(type, values)]),
+    columns.map(({ name, type, values }) => [name, arrow.makeVector(arrowData(type, values))]),
   );
   return new arrow.Table(vectors);
 }

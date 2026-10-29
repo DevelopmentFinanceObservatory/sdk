@@ -440,31 +440,28 @@ def in_reading_order(table: pa.Table, *, member_rows: Sequence[int]) -> pa.Table
     judged over the whole table, so a stacked one's members are judged together.
 
     Two cells hold the same value when they are equal: a list cell item by item
-    in order, a struct or map cell field by field in any order, 0.0 the same as
-    -0.0, and NaN the same as NaN.
+    in order, a struct cell field by field in any order, 0.0 the same as -0.0,
+    and NaN the same as NaN.
 
     The rows of each member, its `member_rows` count of consecutive rows, sort by
     the filled slots other than `value` and `time_period`, then by the varying
     columns, then by `stat_var` when it varies, then by `time_period`: ascending,
-    nulls last, ties in the table's order. A list, struct or map column is no sort
+    nulls last, ties in the table's order. A list or struct column is no sort
     key. The members keep their order. Applied to its own result, the order
     changes nothing.
 
     Raises:
-        ContractError: A sort key holds a type the order cannot compare, such
-            as a 16-bit float, or a map cell names a key twice
-            (`contract_violation`).
+        ContractError: A column holds a type the order cannot compare, such as
+            a 16-bit float as a sort key or a map (`contract_violation`).
     """
     import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
 
     try:
         return _ordered(table, member_rows=member_rows)
-    # A map cell with a duplicate key raises KeyError as it converts to a dict.
     except (
         pa.ArrowNotImplementedError,
         pa.ArrowInvalid,
         pa.ArrowTypeError,
-        KeyError,
     ) as error:
         raise client_error(
             CONTRACT_VIOLATION, f"The dataset's table cannot be ordered: {error}"
@@ -505,7 +502,7 @@ def _ordered(table: pa.Table, *, member_rows: Sequence[int]) -> pa.Table:
             *(name for name in last if _varies(table[name])),
             *(["time_period"] if "time_period" in held else []),
         ]
-        if not pa.types.is_nested(table.schema.field(name).type)
+        if not _is_list_or_struct(table.schema.field(name).type)
     ]
     if table.num_rows < 2 or not keys:
         return table
@@ -515,30 +512,52 @@ def _ordered(table: pa.Table, *, member_rows: Sequence[int]) -> pa.Table:
     return runs[0] if len(runs) == 1 else pa.concat_tables(runs)
 
 
-def _varies(column: pa.ChunkedArray) -> bool:
-    """Whether `column` holds more than one value, null counting as one. Cells
-    compare by `_cell_key`, so 0.0 is -0.0 and every NaN is every other."""
+def _is_list_or_struct(data_type: pa.DataType) -> bool:
+    """Whether a column of `data_type` holds list or struct cells."""
     import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
 
-    if pa.types.is_nested(column.type):
-        cells = (
-            _cell_key(scalar.as_py(maps_as_pydicts="strict"))
-            for chunk in column.chunks
-            for scalar in chunk
+    return (
+        pa.types.is_list(data_type)
+        or pa.types.is_large_list(data_type)
+        or pa.types.is_struct(data_type)
+    )
+
+
+def _varies(column: pa.ChunkedArray) -> bool:
+    """Whether `column` holds more than one value, null counting as one. List and
+    struct cells compare by `_cell_key`; 0.0 is -0.0 and every NaN is every other."""
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+    import pyarrow.compute as pc  # noqa: PLC0415 - pyarrow loads on first use
+
+    if _is_list_or_struct(column.type):
+        keys = (
+            _cell_key(cell) for chunk in column.chunks for cell in chunk.to_pylist()
         )
-        first = next(cells, None)
-        return any(cell != first for cell in cells)
+        first = next(keys, None)
+        return any(key != first for key in keys)
     unique = column.unique()
     if len(unique) < 2 or not pa.types.is_floating(unique.type):
         return len(unique) > 1
-    # Arrow's unique tells 0.0 from -0.0, and one NaN payload from another.
-    return len({_cell_key(value) for value in unique.to_pylist()}) > 1
+    # Arrow's unique tells 0.0 from -0.0, and one NaN payload from another. Over
+    # the unique values, as doubles, adding 0.0 turns -0.0 into 0.0, and one NaN
+    # stands for every NaN. pyarrow generates its compute functions at import, so
+    # they are called by name.
+    values = unique.cast(pa.float64())
+    folded = pc.call_function(
+        "if_else",
+        [
+            pc.call_function("is_nan", [values]),
+            pa.scalar(math.nan),
+            pc.call_function("add", [values, pa.scalar(0.0)]),
+        ],
+    )
+    return len(folded.unique()) > 1
 
 
 def _cell_key(cell: object) -> object:
-    """A hashable stand-in for a cell, equal for two cells that hold the same
-    value: list items in order, struct fields and map entries in any order, 0.0 as
-    -0.0 and NaN as NaN."""
+    """A hashable stand-in for a list or struct cell, equal for two cells that hold
+    the same value: list items in order, struct fields in any order, 0.0 as -0.0
+    and NaN as NaN."""
     if isinstance(cell, float) and math.isnan(cell):
         return _NAN
     if isinstance(cell, list):
@@ -719,8 +738,8 @@ def _artifact_fault(table: pa.Table, manifest: Mapping[str, Any]) -> str | None:
     import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
 
     names = table.column_names
-    if len(set(names)) != len(names):
-        return "holds two columns of one name"
+    if fault := _schema_fault(table.schema):
+        return fault
     for column in REQUIRED_COLUMNS:
         if column not in names:
             return f"holds no {column} column"
@@ -736,6 +755,37 @@ def _artifact_fault(table: pa.Table, manifest: Mapping[str, Any]) -> str | None:
         or pa.types.is_null(kind)
     ):
         return f"holds a value column of {kind}, not numbers"
+    return None
+
+
+def _schema_fault(schema: pa.Schema) -> str | None:
+    """What keeps an artifact's columns from a dataset's table, or None: two
+    columns of one name, or a column `_nesting_fault` refuses."""
+    if len(set(schema.names)) != len(schema.names):
+        return "holds two columns of one name"
+    faults = ((column.name, _nesting_fault(column.type)) for column in schema)
+    return next(
+        (f"holds a column {name} {fault}" for name, fault in faults if fault), None
+    )
+
+
+def _nesting_fault(data_type: pa.DataType) -> str | None:
+    """What keeps a column of `data_type` from a dataset's table, at any depth, or
+    None: a nested type other than a list or a struct, such as a map, or a struct
+    that names a field twice."""
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+
+    if pa.types.is_list(data_type) or pa.types.is_large_list(data_type):
+        return _nesting_fault(data_type.value_type)
+    if pa.types.is_struct(data_type):
+        fields = data_type.fields
+        if len({field.name for field in fields}) != len(fields):
+            return "of structs that name a field twice"
+        return next(
+            filter(None, (_nesting_fault(field.type) for field in fields)), None
+        )
+    if pa.types.is_nested(data_type):
+        return f"of {data_type}, which is no list or struct"
     return None
 
 

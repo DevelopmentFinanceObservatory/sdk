@@ -18,8 +18,13 @@ const TIME_PERIOD = "time_period";
 /** The measure, which fills a slot and is no sort key. */
 const VALUE = "value";
 
-/** A stacked column's stored values, one per row. */
-export type ColumnValues = { readonly name: string; readonly values: readonly unknown[] };
+/** A stacked column's stored values, one per row, and whether its type is a list or a struct,
+ *  whose cells the rule gives no order. */
+export type ColumnValues = {
+  readonly name: string;
+  readonly values: readonly unknown[];
+  readonly nested: boolean;
+};
 
 /** The presented column names, and the stacked row each presented row reads. */
 export type ReadingOrder = { readonly columns: readonly string[]; readonly rows: Uint32Array };
@@ -57,8 +62,8 @@ export function readingOrder(
     ...(statVar !== undefined && varies(statVar.values) ? [statVar] : []),
     ...(filled.has(TIME_PERIOD) ? [held.get(TIME_PERIOD)!] : []),
   ]
-    .map(({ values }) => values)
-    .filter((values) => !values.some(isNested));
+    .filter(({ nested }) => !nested)
+    .map(({ values }) => values);
   const total = memberRows.reduce((sum, count) => sum + count, 0);
   const rows = Uint32Array.from({ length: total }, (_, index) => index);
   if (keys.length === 0) return { columns: names, rows };
@@ -85,9 +90,6 @@ const isStruct = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" &&
   value !== null &&
   [Object.prototype, null].includes(Object.getPrototypeOf(value) as object | null);
-
-/** Whether a stored value is a list or a struct cell, which the rule gives no order. */
-const isNested = (value: unknown): boolean => Array.isArray(value) || isStruct(value);
 
 /** Whether two stored values are the same value: null is a value like any other, NaN is NaN, a
  *  list is the same when its items are in order, and a struct when its fields are in any order. */

@@ -739,6 +739,91 @@ describe("members whose column types differ", () => {
     assert.deepEqual(await reread.toRows(), rows);
   });
 
+  test("stack struct columns by field name, a field one member lacks null", async () => {
+    const struct = (
+      fields: [string, "BYTE_ARRAY" | "DOUBLE" | "INT64" | "BOOLEAN"][],
+      cell: unknown,
+    ) =>
+      new Uint8Array(
+        parquetWriteBuffer({
+          columnData: [{ name: "s", data: [cell] }],
+          schema: [
+            { name: "root", num_children: 1 },
+            { name: "s", repetition_type: "OPTIONAL", num_children: fields.length },
+            ...fields.map(([name, type]) => ({
+              name,
+              repetition_type: "OPTIONAL" as const,
+              type,
+              ...(type === "BYTE_ARRAY" ? { converted_type: "UTF8" as const } : {}),
+            })),
+          ],
+        }),
+      );
+    // As Python's test_struct_columns_stack_by_field_name, through pyarrow's promotion.
+    const dataset = await Dataset.create(
+      [
+        member(
+          struct(
+            [
+              ["b", "BYTE_ARRAY"],
+              ["a", "INT64"],
+            ],
+            { b: "x", a: 1n },
+          ),
+          {
+            parts: ["one"],
+          },
+        ),
+        member(
+          struct(
+            [
+              ["a", "DOUBLE"],
+              ["c", "BOOLEAN"],
+            ],
+            { a: 2.5, c: true },
+          ),
+          {
+            parts: ["two"],
+            spec: { spec_id: "s2", definition: {} },
+          },
+        ),
+      ],
+      { layout: "long" },
+    );
+    const table = await toArrow(dataset);
+    assert.equal(String(table.getChild("s")?.type), "Struct<{b:Utf8, a:Float64, c:Bool}>");
+    assert.deepEqual(
+      (await dataset.toRows()).map(({ s }) => s),
+      [
+        { b: "x", a: 1, c: null },
+        { b: null, a: 2.5, c: true },
+      ],
+    );
+  });
+
+  test("convert a nested timestamp to Arrow in its stored unit", async () => {
+    const data = new Uint8Array(
+      parquetWriteBuffer({
+        columnData: [{ name: "at", data: [[1_000_001n]] }],
+        schema: [
+          { name: "root", num_children: 1 },
+          { name: "at", repetition_type: "OPTIONAL", converted_type: "LIST", num_children: 1 },
+          { name: "list", repetition_type: "REPEATED", num_children: 1 },
+          {
+            name: "element",
+            repetition_type: "OPTIONAL",
+            type: "INT64",
+            logical_type: { type: "TIMESTAMP", isAdjustedToUTC: true, unit: "MICROS" },
+          },
+        ],
+      }),
+    );
+    const table = await toArrow(await Dataset.create([member(data)], { layout: "long" }));
+    const at = table.getChild("at");
+    assert.equal(String(at?.type), "List<Timestamp<MICROSECOND, UTC>>");
+    assert.deepEqual(at?.data[0]?.children[0]?.values, BigInt64Array.from([1_000_001n]));
+  });
+
   test("raise ContractError when a column's types do not widen to one", async () => {
     const flag = file({ year: { type: "BOOLEAN", data: [true] } });
     const year = file({ year: { type: "INT32", data: [2020] } });
@@ -767,6 +852,41 @@ describe("members whose column types differ", () => {
         { name: "value", repetition_type: "OPTIONAL", type: "INT64" },
       ],
     ],
+    [
+      "a list of maps",
+      [[{ k: 1n }]],
+      [
+        { name: "x", repetition_type: "OPTIONAL", converted_type: "LIST", num_children: 1 },
+        { name: "list", repetition_type: "REPEATED", num_children: 1 },
+        { name: "element", repetition_type: "OPTIONAL", converted_type: "MAP", num_children: 1 },
+        { name: "key_value", repetition_type: "REPEATED", num_children: 2 },
+        { name: "key", repetition_type: "REQUIRED", type: "BYTE_ARRAY", converted_type: "UTF8" },
+        { name: "value", repetition_type: "OPTIONAL", type: "INT64" },
+      ],
+    ],
+    [
+      "a struct that names a field twice",
+      [{ a: 1 }],
+      [
+        { name: "x", repetition_type: "OPTIONAL", num_children: 2 },
+        { name: "a", repetition_type: "OPTIONAL", type: "INT32" },
+        { name: "a", repetition_type: "OPTIONAL", type: "INT32" },
+      ],
+    ],
+    // Parquet's backward-compatibility rules make each repeated group below the element, a
+    // struct, where hyparquet assembles its one field's values.
+    ...(["array", "x_tuple"] as const).map(
+      (repeated) =>
+        [
+          `a legacy list whose repeated group is named ${repeated}`,
+          [[1]],
+          [
+            { name: "x", repetition_type: "OPTIONAL", converted_type: "LIST", num_children: 1 },
+            { name: repeated, repetition_type: "REPEATED", num_children: 1 },
+            { name: "a", repetition_type: "OPTIONAL", type: "INT32" },
+          ],
+        ] as const,
+    ),
   ] as const) {
     test(`raise ContractError for ${name}, which the client cannot read`, async () => {
       const unreadable = new Uint8Array(

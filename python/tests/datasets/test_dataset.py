@@ -272,6 +272,49 @@ def test_member_boundaries_come_from_the_members_not_the_part_label(
         assert [list(row.values()) for row in shown.to_arrow().to_pylist()] == rows
 
 
+_DUPLICATE_FIELDS = pa.StructArray.from_arrays(
+    [pa.array([1, 2, 3, 4]), pa.array([1, 2, 3, 4])], names=["a", "a"]
+)
+
+
+@pytest.mark.parametrize(
+    "column",
+    [
+        pa.array([[("k", 1)]] * 4, pa.map_(pa.string(), pa.int64())),
+        pa.array([[[("k", 1)]]] * 4, pa.list_(pa.map_(pa.string(), pa.int64()))),
+        _DUPLICATE_FIELDS,
+    ],
+    ids=["map", "list-of-maps", "struct-naming-a-field-twice"],
+)
+def test_a_column_of_another_nesting_is_refused(column: pa.Array) -> None:
+    table = pq.read_table(PARQUET).replace_schema_metadata(None)
+    with pytest.raises(ContractError) as caught:
+        built(with_table(recorded_member(), table.append_column("nested", column)))
+    assert caught.value.code == "contract_violation"
+
+
+def test_struct_columns_stack_by_field_name() -> None:
+    """Two members' structs unify by field name, in the order the first names
+    them, a field one member lacks null in its rows."""
+    first = pa.table(
+        {"time_period": ["2020"], "value": [1.0], "s": [{"b": "x", "a": 1}]}
+    )
+    second = pa.table(
+        {"time_period": ["2021"], "value": [2.0], "s": [{"a": 2.5, "c": True}]}
+    )
+    data = built(
+        with_table(recorded_member(), first), with_table(other_member(), second)
+    )
+    table = data.to_arrow()
+    assert table.schema.field("s").type == pa.struct(
+        [("b", pa.string()), ("a", pa.float64()), ("c", pa.bool_())]
+    )
+    assert table["s"].to_pylist() == [
+        {"b": "x", "a": 1.0, "c": None},
+        {"b": None, "a": 2.5, "c": True},
+    ]
+
+
 def test_a_sort_key_the_order_cannot_compare_is_refused() -> None:
     table = pq.read_table(PARQUET).replace_schema_metadata(None)
     # Arrow sorts no 16-bit float, and a varying column is a sort key.
@@ -286,27 +329,28 @@ def test_a_sort_key_the_order_cannot_compare_is_refused() -> None:
 _OTHER_NAN = struct.unpack("<d", struct.pack("<Q", 0x7FF8000000000001))[0]
 
 
-_MAP = pa.map_(pa.string(), pa.int64())
-
-
 # A varying column comes before the varying `label`, a constant one after it.
 @pytest.mark.parametrize(
     ("share", "varies"),
     [
+        (pa.array([0.0, -0.0]).cast(pa.float16()), False),
         (pa.array([0.0, -0.0], pa.float32()), False),
         (pa.array([0.0, -0.0]), False),
         (pa.array([math.nan, _OTHER_NAN]), False),
         (pa.array([0.0, math.nan]), True),
-        (pa.array([[("k", 1), ("j", 2)], [("j", 2), ("k", 1)]], _MAP), False),
-        (pa.array([[("k", 1)], [("k", 2)]], _MAP), True),
+        (pa.array([{"a": 1, "b": -0.0}, {"a": 1, "b": 0.0}]), False),
+        (pa.array([[math.nan], [_OTHER_NAN]]), False),
+        (pa.array([[1.0], [2.0]]), True),
     ],
     ids=[
+        "float16-signed-zeros",
         "float32-signed-zeros",
         "signed-zeros",
         "nan-payloads",
         "zero-and-nan",
-        "map-entries-in-any-order",
-        "map-values-differ",
+        "struct-signed-zeros",
+        "list-nan-payloads",
+        "lists-differ",
     ],
 )
 def test_a_column_varies_by_value(share: pa.Array, varies: bool) -> None:
