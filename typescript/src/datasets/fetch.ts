@@ -419,7 +419,7 @@ export function checkedPartyTotals(partyTotals: unknown): boolean {
 }
 
 /** The SHA-256 digest of bytes, as the server names stored objects. */
-async function digestOf(data: Uint8Array<ArrayBuffer>): Promise<string> {
+export async function digestOf(data: Uint8Array<ArrayBuffer>): Promise<string> {
   const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
   return `sha256:${Array.from(hash, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
@@ -491,9 +491,9 @@ function artifactFault({ columns, rows }: ParquetFile, counted: number): string 
 }
 
 /**
- * Downloads a file through the route that redirects to it, checked against its digest. The
- * route ask is an API request, which retries as one and waits the client's timeout per attempt;
- * its failure raises. The URL it names is fetched once, bare on the storage host and with the
+ * Downloads a file through the route that redirects to it, checked against its digest, or taken
+ * as served when `digest` is undefined. The route ask is an API request, which retries as one
+ * and waits the client's timeout per attempt; its failure raises. The URL it names is fetched once, bare on the storage host and with the
  * client's headers on the API's origin, reading until the fetch's deadline, if any, while a byte
  * arrives at least every `DOWNLOAD_STALL_MS`; in a browser that
  * hid the redirect, that one fetch asks the route again with the key alone and the browser
@@ -508,7 +508,7 @@ function artifactFault({ columns, rows }: ParquetFile, counted: number): string 
 export async function download(
   transport: Transport,
   target: Target,
-  digest: string,
+  digest: string | undefined,
   wait: Wait,
   size?: unknown,
 ): Promise<Uint8Array<ArrayBuffer>> {
@@ -537,6 +537,7 @@ export async function download(
     } else {
       data = located.data;
     }
+    if (digest === undefined) return data;
     const found = await digestOf(data);
     if (found === digest) return data;
     failure = clientError(DIGEST_MISMATCH, {

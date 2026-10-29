@@ -197,6 +197,18 @@ const storedVersionCalls = [
   `POST ${BASE}/search/resolve`,
 ];
 
+/** The stored manifest without its frame-layout files, as a long-layout fetch leaves a version:
+ *  long Parquet, the canonical `{format: frame}` and statistics among them. `longDigest`
+ *  replaces the long Parquet file's digest. */
+async function longOnlyManifest(longDigest?: string): Promise<Record<string, unknown>> {
+  const manifest = (await storedManifest()) as Record<string, unknown>;
+  const artifacts = (manifest["artifacts"] as Record<string, unknown>[]).filter(
+    (artifact) => (artifact["rendering"] as Record<string, unknown>)["layout"] !== "frame",
+  );
+  if (longDigest !== undefined) artifacts[0]!["artifact_digest"] = longDigest;
+  return { ...manifest, artifacts };
+}
+
 async function computedVersion(): Promise<Handler[]> {
   return [
     json(await recordedJson("analysis-rank-ready.json")),
@@ -253,6 +265,53 @@ describe("a share fetch", () => {
       assert.ok(text.includes(shown + before) || text.includes(shown + after), text);
     });
   }
+
+  test("of a version listing no frame file reads the one the file selector renders", async () => {
+    const { transport, seen } = make(
+      await shareRead(),
+      await slotCard(datasetFrame()),
+      json(await longOnlyManifest()),
+      parquet(await scenarioBytes("fetch-spec-frame-layout.parquet")),
+      json(await storedManifest()),
+      await resubmitted(POSTED_ID),
+    );
+    const data = await fetchDataset(transport, await threeSlots(), { slot: 2 });
+
+    const stored = `GET ${BASE}/datasets/${POSTED_ID}/${VERSION}`;
+    assert.deepEqual(calls(seen), [
+      READ,
+      `GET ${SHARES}/${SHARE_ID}/slots/2`,
+      stored,
+      `${stored}/file?format=parquet&bundle=false&layout=frame`,
+      stored,
+      `POST ${BASE}/search/resolve`,
+    ]);
+    const [member] = data.ref.members;
+    assert.ok(member !== undefined && !isDerived(member));
+    assert.deepEqual(
+      [member.digest, member.rendering],
+      [
+        FRAME_DIGEST,
+        { format: "parquet", bundle: false, layout: "frame", without_party_totals: true },
+      ],
+    );
+    assert.equal(data.layoutVersion, "frame");
+  });
+
+  test("refuses a selector file the manifest lists in the long layout", async () => {
+    const { transport } = make(
+      await shareRead(),
+      await slotCard(datasetFrame()),
+      json(await longOnlyManifest()),
+      parquet(await scenarioBytes("fetch-spec-frame-layout.parquet")),
+      json(await longOnlyManifest(FRAME_DIGEST)),
+    );
+    await assert.rejects(
+      fetchDataset(transport, await threeSlots(), { slot: 2 }),
+      (error: Error & { code?: string }) =>
+        error.code === "contract_violation" && error.message.includes(FRAME_DIGEST),
+    );
+  });
 
   for (const [name, asOf, computed, day] of [
     ["an ISO date reads the newer computed frame", "2026-10-28", true, "28 October 2026"],

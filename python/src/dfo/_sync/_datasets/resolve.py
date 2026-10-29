@@ -26,7 +26,10 @@ A share fetch finds the frame a slot shows (`dfo._sync._datasets.shares.shown_fr
 and reads that exact version in the frame layout. A `spec_` frame reads its
 stored manifest at `GET /datasets/{spec_id}/{content_version}`, which holds the
 definition and lists the frame artifact a ref member names, and then takes a
-ref's lookup order. Once the data is read, it asks Search the definition's
+ref's lookup order. A version that lists no frame artifact, as a long-layout
+fetch leaves it, reads the file the file selector renders from its stored
+frame, and the manifest read again must list that file's digest as the frame
+artifact. Once the data is read, it asks Search the definition's
 sentence; when Search refuses, fails, or answers another spec, the Dataset
 reads as the card's title, so Search never decides whether the fetch
 succeeds. An `ops_` frame
@@ -87,6 +90,7 @@ from dfo._datasets.build import (
     pick_artifact,
     response_json,
 )
+from dfo._datasets.cache import sha256_digest
 from dfo._datasets.dataset import Dataset, FetchedMember, build_dataset
 from dfo._datasets.progress import ProgressRenderer
 from dfo._datasets.publication import Moment, ShareTarget, share_id_in
@@ -451,18 +455,26 @@ def _fetch_frame(
     cache: Cache | None,
 ) -> Dataset:
     """A dataset version in the frame layout, from its ids alone: the stored
-    manifest names its definition and frame artifact. Once the data is read,
-    Search words its sentence, or else `title` does. Every read ends by the
-    clock reading `deadline`, which `timeout` set.
+    manifest names its definition and frame artifact. A version that lists no
+    frame artifact, as a long-layout fetch leaves it, reads the file the
+    file selector renders from its stored frame, which the manifest read again
+    lists. Once the data is read, Search words its sentence, or else `title`
+    does. Every read ends by the clock reading `deadline`, which `timeout` set.
 
     Raises:
         VersionUnavailableError: DFO no longer stores the version or its file
             (`artifact_expired`), and the error ends with `fix`.
-        ContractError: The manifest lists no bare Parquet frame artifact
+        ContractError: The manifest lists no bare Parquet frame artifact, or
+            does not list the file the selector rendered as one
             (`contract_violation`).
     """
+    rendered: tuple[bytes, str] | None = None
     try:
         stored = _snapshot(transport, spec_id, content_version, deadline=deadline)
+        if pick_artifact(stored[0], _FRAME) is None:
+            stored, rendered = _rendered_frame(
+                transport, spec_id, content_version, deadline=deadline
+            )
     except DfoError as error:
         if error.code != _FILE_EXPIRED:
             raise
@@ -470,12 +482,15 @@ def _fetch_frame(
         raise _unavailable(spec_id, content_version, newest, error, fix=fix) from error
     manifest, trace_id = stored
     with describing(trace_id):
-        artifact = pick_artifact(manifest, _FRAME)
+        artifact = pick_artifact(
+            manifest, _FRAME, digest=None if rendered is None else rendered[1]
+        )
         if artifact is None:
+            served = "" if rendered is None else f" of the selector's {rendered[1]}"
             raise client_error(
                 CONTRACT_VIOLATION,
                 f"The manifest of {spec_id} at {content_version} lists no "
-                f"{_FRAME.to_object()} artifact",
+                f"{_FRAME.to_object()} artifact{served}",
             )
     member = RefMember(
         parts=(),
@@ -489,20 +504,27 @@ def _fetch_frame(
             is True,
         ),
     )
-    with ProgressRenderer(enabled=progress) as renderer:
-        fetched = _fetch_version(
-            transport,
-            member,
-            pointer="/members/0",
-            strict=strict,
-            on_progress=progress_hook(renderer),
-            cache=cache,
-            cache_only=False,
-            deadline=deadline,
-            timeout=timeout,
-            stored=stored,
-            fix=fix,
+    if rendered is not None:
+        note_warnings(manifest, strict=strict, trace_id=trace_id)
+        sync_offload(
+            store, cache, manifest, member.rendering, member.digest, rendered[0]
         )
+        fetched = _stored(member, manifest, rendered[0])
+    else:
+        with ProgressRenderer(enabled=progress) as renderer:
+            fetched = _fetch_version(
+                transport,
+                member,
+                pointer="/members/0",
+                strict=strict,
+                on_progress=progress_hook(renderer),
+                cache=cache,
+                cache_only=False,
+                deadline=deadline,
+                timeout=timeout,
+                stored=stored,
+                fix=fix,
+            )
     sentence = _sentence_or(transport, fetched.manifest, title, deadline=deadline)
     fetched = replace(
         fetched, sentence=sentence, spec=replace(fetched.spec, sentence=sentence)
@@ -517,6 +539,31 @@ def _fetch_frame(
         cache=cache,
         caller=transport.caller,
     )
+
+
+def _rendered_frame(
+    transport: Transport,
+    spec_id: str,
+    content_version: str,
+    *,
+    deadline: float | None,
+) -> tuple[tuple[Wire, str | None], tuple[bytes, str]]:
+    """The version's manifest, read again once the file selector has rendered
+    its frame-layout file, and that file's bytes and digest.
+
+    The selector renders the file from the version's stored frame and lists it
+    in the version's manifest, so the manifest names the file's rendering.
+    """
+    data = download(
+        transport,
+        f"/datasets/{spec_id}/{content_version}/file",
+        None,
+        params=file_params(_FRAME),
+        deadline=deadline,
+    )
+    digest = sync_offload(sha256_digest, data)
+    stored = _snapshot(transport, spec_id, content_version, deadline=deadline)
+    return stored, (data, digest)
 
 
 def _sentence_or(

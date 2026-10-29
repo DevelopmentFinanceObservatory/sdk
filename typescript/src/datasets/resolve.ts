@@ -19,8 +19,10 @@
  * A share fetch finds the frame a slot shows (`shownFrame` in `shares.ts`) and reads that exact
  * version in the frame layout. A `spec_` frame reads its stored manifest at
  * `GET /datasets/{spec_id}/{content_version}`, which holds the definition and lists the frame
- * artifact a ref member names, and then takes a ref's lookup order with that manifest. Once the
- * data is read, it asks Search the definition's sentence; when Search refuses, fails, or answers
+ * artifact a ref member names, and then takes a ref's lookup order with that manifest. A version
+ * that lists no frame artifact, as a long-layout fetch leaves it, reads the file the file
+ * selector renders from its stored frame, and the manifest read again must list that file's
+ * digest as the frame artifact. Once the data is read, it asks Search the definition's sentence; when Search refuses, fails, or answers
  * another spec, the dataset reads as the card's title, so Search never decides whether the fetch
  * succeeds. An `ops_` frame reads through its bare derived root
  * (`fetchComputedFrame`). The dataset's text form names the share, slot, card title and day.
@@ -49,6 +51,7 @@ import {
   contentVersionOf,
   definitionOf,
   DIGEST_MISMATCH,
+  digestOf,
   download,
   FETCH_OPTIONS,
   fetchMembers,
@@ -275,13 +278,14 @@ async function fetchShown(
 
 /**
  * A dataset version in the frame layout, from its ids alone: the stored manifest names its
- * definition and frame artifact. Once the data is read, Search words its sentence, or else
- * `title` does.
+ * definition and frame artifact. A version that lists no frame artifact, as a long-layout fetch
+ * leaves it, reads the file the file selector renders from its stored frame, which the manifest
+ * read again lists. Once the data is read, Search words its sentence, or else `title` does.
  *
  * @throws {VersionUnavailableError} DFO no longer stores the version or its file
  *   (`artifact_expired`), and the error ends with `fix`.
- * @throws {ContractError} The manifest lists no bare Parquet frame artifact
- *   (`contract_violation`).
+ * @throws {ContractError} The manifest lists no bare Parquet frame artifact, or does not list
+ *   the file the selector rendered as one (`contract_violation`).
  */
 async function fetchFrame(
   transport: Transport,
@@ -292,8 +296,12 @@ async function fetchFrame(
   wait: Wait,
 ): Promise<Dataset> {
   let found: Built;
+  let rendered: { data: Uint8Array<ArrayBuffer>; digest: string } | undefined;
   try {
     found = await snapshot(transport, specId, contentVersion, wait);
+    if (pickArtifact(found.manifest, FRAME) === undefined) {
+      ({ found, rendered } = await renderedFrame(transport, specId, contentVersion, wait));
+    }
   } catch (error) {
     if (!(error instanceof DfoError) || error.code !== FILE_EXPIRED) throw error;
     const newest = await newestVersion(transport, specId, wait);
@@ -301,12 +309,13 @@ async function fetchFrame(
   }
   const { manifest } = found;
   const artifact = describing(found.traceId, () => {
-    const listed = pickArtifact(manifest, FRAME);
+    const listed = pickArtifact(manifest, FRAME, rendered?.digest);
     if (listed === undefined) {
+      const served = rendered === undefined ? "" : ` of the selector's ${rendered.digest}`;
       throw clientError("contract_violation", {
         detail:
           `The manifest of ${specId} at ${contentVersion} lists no ` +
-          `${JSON.stringify(mintOptions(FRAME))} artifact.`,
+          `${JSON.stringify(mintOptions(FRAME))} artifact${served}.`,
       });
     }
     return listed;
@@ -321,9 +330,33 @@ async function fetchFrame(
     digest: String(artifact["artifact_digest"]),
     rendering: cut ? { ...FRAME, without_party_totals: true } : FRAME,
   };
-  const fetched = await fetchVersion(transport, member, "/members/0", options, wait, found, fix);
+  let fetched: FetchedMember;
+  if (rendered === undefined) {
+    fetched = await fetchVersion(transport, member, "/members/0", options, wait, found, fix);
+  } else {
+    noteWarnings(transport, found, options.strict ?? false);
+    checkArtifact(rendered.data, manifest, member.digest);
+    fetched = stored(member, manifest, rendered.data);
+  }
   const sentence = await sentenceOr(transport, fetched.manifest, title, wait);
   return Dataset.create([{ ...fetched, sentence }], { layout: "frame" });
+}
+
+/** The version's manifest, read again once the file selector has rendered its frame-layout
+ *  file, and that file's bytes and digest. The selector renders the file from the version's
+ *  stored frame and lists it in the version's manifest, so the manifest names its rendering. */
+async function renderedFrame(
+  transport: Transport,
+  specId: string,
+  contentVersion: string,
+  wait: Wait,
+): Promise<{ found: Built; rendered: { data: Uint8Array<ArrayBuffer>; digest: string } }> {
+  const selector = `/datasets/${specId}/${contentVersion}/file?${selectorQuery(FRAME)}`;
+  // The selector renders a file the manifest does not list, so its digest is unknown until read.
+  const data = await download(transport, { path: selector }, undefined, wait);
+  const digest = await digestOf(data);
+  const found = await snapshot(transport, specId, contentVersion, wait);
+  return { found, rendered: { data, digest } };
 }
 
 /** Search's sentence for a stored version, or `fallback` when Search refuses, fails, or no

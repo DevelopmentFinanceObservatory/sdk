@@ -20,5 +20,5 @@ The first release of `@developmentfinance/client`, the TypeScript client for the
 - `client.pin(data)` keeps a dataset's versions fetchable with no time limit.
 - `client.cards` stores `line`, `bar`, `table`, `stat` and `source` cards of a dataset. `stat` with `change: "percent"` is a percentage where 25 is a 25% rise.
 - `client.share(cards, { latest })` publishes cards at a public URL that follows new data or keeps today's versions, and returns its `shw_` write token. `replace`, `client.snapshot` and `client.unshare` change it with the token, and `client.history` lists what each slot served.
-- `client.fetch(share, { slot, asOf })` returns the data a share's slot shows, or showed on a date.
+- `client.fetch(share, { slot, asOf })` returns the data a share's slot shows, or showed on a date. A slot whose version lists no frame-layout file, as a default fetch leaves it, reads the file the version's file selector renders from its stored frame.
 - Errors derive from `DfoError`, one class per next step, and each message ends with its code, and with the trace id when there is one. The client retries failures that can clear, honouring `Retry-After`.

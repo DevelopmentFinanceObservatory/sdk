@@ -21,6 +21,7 @@ import httpx2
 import pytest
 
 from dfo._core.errors import (
+    ContractError,
     DfoTimeoutError,
     InvalidRequestError,
     NetworkError,
@@ -229,6 +230,77 @@ def test_a_share_fetch_reads_the_exact_version_its_slot_shows_now(
     assert data.layout_version == "frame"
     shown = f'Shown by: share {SHARE_ID}, slot 2 "Malaria grants by year", on '
     assert any(f"{shown}{day_text(day)}" in repr(data) for day in (before, after))
+
+
+FRAME_DIGEST = "sha256:f4026e80af4b8683d3bb86645ab3aca83dff75cd03fdd4c73ec54ba638922104"
+
+
+def long_only_manifest(*, long_digest: str | None = None) -> dict[str, Any]:
+    """The stored manifest without its frame-layout files, as a long-layout
+    fetch leaves a version: long Parquet, the canonical `{format: frame}` and
+    statistics among them. `long_digest` replaces the long Parquet file's digest."""
+    manifest = stored_manifest()
+    manifest["artifacts"] = [
+        artifact
+        for artifact in manifest["artifacts"]
+        if artifact["rendering"].get("layout") != "frame"
+    ]
+    if long_digest is not None:
+        manifest["artifacts"][0]["artifact_digest"] = long_digest
+    return manifest
+
+
+def test_a_version_listing_no_frame_file_reads_the_one_the_selector_renders() -> None:
+    """The selector renders the frame file from the version's stored frame, and
+    the manifest read again lists it."""
+    server = Server(
+        share_read(),
+        slot_card(dataset_frame()),
+        json_response(200, long_only_manifest()),
+        parquet(FRAME_FILE),
+        json_response(200, stored_manifest()),
+        json_response(200, resubmitted(POSTED_ID)),
+    )
+    with make(server) as transport:
+        data = fetch(transport, three_slots(), slot=2)
+
+    stored = f"GET {BASE}/datasets/{POSTED_ID}/{VERSION}"
+    assert server.calls() == [
+        READ,
+        f"GET {SHARES}/{SHARE_ID}/slots/2",
+        stored,
+        f"{stored}/file",
+        stored,
+        f"POST {BASE}/search/resolve",
+    ]
+    assert dict(server.requests[3].url.params) == {
+        "format": "parquet",
+        "bundle": "false",
+        "layout": "frame",
+    }
+    (member,) = data.ref.members
+    assert isinstance(member, RefMember)
+    assert member.digest == FRAME_DIGEST
+    assert (member.rendering.layout, member.rendering.without_party_totals) == (
+        "frame",
+        True,
+    )
+    assert data.layout_version == "frame"
+
+
+def test_a_selector_file_the_manifest_lists_in_the_long_layout_is_refused() -> None:
+    server = Server(
+        share_read(),
+        slot_card(dataset_frame()),
+        json_response(200, long_only_manifest()),
+        parquet(FRAME_FILE),
+        json_response(200, long_only_manifest(long_digest=FRAME_DIGEST)),
+    )
+    with make(server) as transport:
+        with pytest.raises(ContractError) as caught:
+            fetch(transport, three_slots(), slot=2)
+    assert caught.value.code == "contract_violation"
+    assert FRAME_DIGEST in str(caught.value)
 
 
 @pytest.mark.parametrize(
