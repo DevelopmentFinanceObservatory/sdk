@@ -47,6 +47,8 @@ NORMAL_FORM_HASH = re.compile(r"rnf_[0-9a-f]{32}")
 REPLAY_KEY = re.compile(r"rpk_[0-9a-f]{32}")
 EXECUTION_IDENTITY = re.compile(r"[0-9A-Za-z.+-]+\|[0-9A-Za-z.+-]+\|[0-9A-Za-z.+-]+")
 PERIOD = re.compile(r"[0-9]{4}")
+# The deepest level a root's groupby rolls a hierarchical axis up to.
+MAX_GROUPBY_LEVEL = 99
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +140,36 @@ class DerivedSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class Groupby:
+    """The sum a recipe read a root with, as DFO records it: one row per distinct
+    combination of the columns `by` keeps, every other summable axis summed away.
+    A breakdown or a sum over StatVars reads a root this way.
+
+    Attributes:
+        by: The columns the sum keeps, such as `("time_period", "crsPurpose")`.
+        op: `sum`.
+        levels: The depth each kept hierarchical axis it names was rolled up to
+            before the sum, 0 being the root codes, or None when none was.
+    """
+
+    by: tuple[str, ...]
+    op: Literal["sum"]
+    levels: Mapping[str, int] | None = None
+
+    @override
+    def __hash__(self) -> int:
+        levels = tuple(sorted(self.levels.items())) if self.levels else None
+        return hash((self.by, self.op, levels))
+
+    def to_object(self) -> dict[str, Any]:
+        """The groupby as a ref's root rendering holds it, `levels` only when set."""
+        obj: dict[str, Any] = {"by": list(self.by), "op": self.op}
+        if self.levels:
+            obj["levels"] = dict(self.levels)
+        return obj
+
+
+@dataclass(frozen=True, slots=True)
 class Root:
     """A dataset version a recipe ran on, with the rendering it read.
 
@@ -145,11 +177,21 @@ class Root:
         spec_id: The dataset's spec id, `spec_<hex>`.
         content_version: The version's id, `cv_<hex>`.
         rendering: The rendering the recipe read.
+        groupby: The sum the recipe read the root with, or None for a root read
+            as stored.
     """
 
     spec_id: str
     content_version: str
     rendering: Rendering
+    groupby: Groupby | None = None
+
+    def rendering_object(self) -> dict[str, Any]:
+        """The root's rendering as a ref holds it, with `groupby` when set."""
+        obj = self.rendering.to_object()
+        if self.groupby is not None:
+            obj["groupby"] = self.groupby.to_object()
+        return obj
 
 
 @dataclass(frozen=True, slots=True)
@@ -459,7 +501,7 @@ def _member_object(member: RefMember | DerivedRefMember) -> dict[str, Any]:
             {
                 "spec_id": root.spec_id,
                 "content_version": root.content_version,
-                "rendering": root.rendering.to_object(),
+                "rendering": root.rendering_object(),
             }
             for root in member.roots
         ],
@@ -659,6 +701,8 @@ def _unique_items[T](
 def _load_root(value: object, pointer: str) -> Root:
     obj = object_at(value, pointer)
     check_keys(obj, pointer, required=("spec_id", "content_version", "rendering"))
+    rendering = object_at(obj["rendering"], f"{pointer}/rendering")
+    selector = {key: item for key, item in rendering.items() if key != "groupby"}
     return Root(
         spec_id=_matching(SPEC_ID, obj["spec_id"], f"{pointer}/spec_id", "a spec id"),
         content_version=_matching(
@@ -667,7 +711,43 @@ def _load_root(value: object, pointer: str) -> Root:
             f"{pointer}/content_version",
             "a content version",
         ),
-        rendering=_load_rendering(obj["rendering"], f"{pointer}/rendering"),
+        rendering=_load_rendering(selector, f"{pointer}/rendering"),
+        groupby=(
+            _load_groupby(rendering["groupby"], f"{pointer}/rendering/groupby")
+            if "groupby" in rendering
+            else None
+        ),
+    )
+
+
+def _load_groupby(value: object, pointer: str) -> Groupby:
+    obj = object_at(value, pointer)
+    check_keys(obj, pointer, required=("by", "op"), allowed=("levels",))
+    by = obj["by"]
+    if not isinstance(by, list) or not by or not all(is_text(name) for name in by):
+        raise FormatError(
+            "format_invalid", f"{pointer}/by", "not a non-empty array of names"
+        )
+    if len(set(by)) < len(by):
+        raise FormatError("format_invalid", f"{pointer}/by", "names a column twice")
+    if obj["op"] != "sum":
+        raise FormatError("format_invalid", f"{pointer}/op", 'not "sum"')
+    if "levels" not in obj:
+        return Groupby(by=tuple(by), op="sum")
+    levels = object_at(obj["levels"], f"{pointer}/levels")
+    if not levels:
+        raise FormatError("format_invalid", f"{pointer}/levels", "empty")
+    for axis, depth in levels.items():
+        if not is_integer(depth) or not 0 <= depth <= MAX_GROUPBY_LEVEL:
+            raise FormatError(
+                "format_invalid",
+                f"{pointer}/levels/{axis}",
+                f"not an integer from 0 to {MAX_GROUPBY_LEVEL}",
+            )
+    return Groupby(
+        by=tuple(by),
+        op="sum",
+        levels={axis: int(depth) for axis, depth in levels.items()},
     )
 
 

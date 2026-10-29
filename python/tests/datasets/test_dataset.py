@@ -20,6 +20,7 @@ from dfo._core.refs import (
     DatasetRef,
     DerivedMember,
     DerivedRefMember,
+    Groupby,
     Member,
     ResolvedPeriod,
 )
@@ -780,6 +781,20 @@ def test_a_derived_dataset_saves_its_ref_left_out_series_and_steps(
     loaded = load_saved(path)
     _assert_same(loaded, data)
     assert repr(loaded) == repr(data)
+
+
+def test_a_saved_derived_dataset_keeps_its_roots_groupby(tmp_path: Path) -> None:
+    member = _derived_member()
+    groupby = Groupby(by=("time_period",), op="sum")
+    grouped = replace(member, roots=(replace(member.roots[0], groupby=groupby),))
+    data = (DATA / "analysis-chain-frame.parquet").read_bytes()
+    manifest = load("analysis-chain-manifest.json")
+    path = tmp_path / "derived.parquet"
+    derived_dataset(grouped, manifest, data).save(path)
+    (loaded,) = load_saved(path).ref.members
+    assert isinstance(loaded, DerivedRefMember)
+    assert loaded.roots[0].groupby == groupby
+    assert loaded.roots == grouped.roots
 
 
 @pytest.mark.parametrize(

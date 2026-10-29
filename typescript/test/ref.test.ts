@@ -171,6 +171,52 @@ describe("a derived ref", () => {
   });
 });
 
+const grouped = async (): Promise<{ members: Record<string, unknown>[] }> =>
+  (
+    await contractJson<{ ref: { members: Record<string, unknown>[] } }>(
+      "refs/ref-derived-grouped-root.json",
+    )
+  ).ref;
+
+describe("a grouped root", () => {
+  test("keeps its groupby as a typed field", async () => {
+    const [member] = DatasetRef.fromJSON(await grouped()).members;
+    assert.ok(member && isDerived(member));
+    const [root] = member.roots;
+    assert.ok(root?.groupby);
+    assert.deepEqual(root.groupby, {
+      by: ["time_period", "crsPurpose"],
+      op: "sum",
+      levels: { crsPurpose: 0 },
+    });
+    assert.ok(Object.isFrozen(root.groupby.levels));
+  });
+
+  // Each row breaks one check of a root's groupby that no contract record pins.
+  const cases: [path: string[], value: unknown][] = [
+    [["by"], []],
+    [["by"], [""]],
+    [["by"], ["time_period", "time_period"]],
+    [["levels"], {}],
+    [["levels", "crsPurpose"], 100],
+    [["levels", "crsPurpose"], true],
+    [["axis"], "time_period"],
+  ];
+  for (const [path, value] of cases) {
+    test(`refuses ${JSON.stringify(value)} at groupby/${path.join("/")}`, async () => {
+      const broken = structuredClone(await grouped());
+      const roots = broken.members[0]!["roots"] as { rendering: { groupby: unknown } }[];
+      let holder = roots[0]!.rendering.groupby as Record<string, unknown>;
+      for (const step of path.slice(0, -1)) holder = holder[step] as Record<string, unknown>;
+      holder[path.at(-1)!] = value;
+      assert.throws(() => DatasetRef.fromJSON(broken), {
+        reason: "format_invalid",
+        pointer: `/members/0/roots/0/rendering/groupby/${path.join("/")}`,
+      });
+    });
+  }
+});
+
 describe("a party-totals cut in a ref", () => {
   test("is written only when true, so a plain recorded ref stays byte-identical", async () => {
     const ref = await oneMember();

@@ -10,7 +10,7 @@ import pytest
 from dfo._core.errors import InvalidRequestError
 from dfo._core.json_text import JSON_MAX_DEPTH
 from dfo._core.parse import parse_citation, parse_parts
-from dfo._core.refs import DatasetRef, Member, RefMember
+from dfo._core.refs import DatasetRef, DerivedRefMember, Groupby, Member, RefMember
 from dfo._core.types import DefinitePart, FormatError, Rendering, Spec
 from tests._data import CONTRACT, load
 from tests.rule_vectors import ids, vectors
@@ -61,6 +61,10 @@ def accepted_ref() -> dict[str, Any]:
 
 def derived_ref() -> dict[str, Any]:
     return example(CONTRACT / "refs" / "ref-derived-member.json")["ref"]
+
+
+def grouped_ref() -> dict[str, Any]:
+    return example(CONTRACT / "refs" / "ref-derived-grouped-root.json")["ref"]
 
 
 def _edited(ref: dict[str, Any], pointer: str, value: object) -> dict[str, Any]:
@@ -137,6 +141,44 @@ def test_derived_refs_breaking_the_format_name_the_pointer(
     with pytest.raises(FormatError) as raised:
         DatasetRef.from_json(json.dumps(ref))
     assert (raised.value.reason, raised.value.pointer) == ("format_invalid", pointer)
+
+
+# Each row breaks one check of a root's groupby that no contract record pins.
+@pytest.mark.parametrize(
+    ("pointer", "value"),
+    [
+        ("/by", []),
+        ("/by", [""]),
+        ("/by", ["time_period", "time_period"]),
+        ("/levels", {}),
+        ("/levels/crsPurpose", 100),
+        ("/levels/crsPurpose", True),
+        ("/axis", "time_period"),
+    ],
+)
+def test_grouped_roots_breaking_the_format_name_the_pointer(
+    pointer: str, value: object
+) -> None:
+    groupby = "/members/0/roots/0/rendering/groupby"
+    ref = _edited(grouped_ref(), groupby + pointer, value)
+    with pytest.raises(FormatError) as raised:
+        DatasetRef.from_json(json.dumps(ref))
+    assert raised.value.reason == "format_invalid"
+    assert raised.value.pointer == groupby + pointer
+
+
+def test_a_grouped_root_keeps_its_groupby() -> None:
+    ref = DatasetRef.from_json(json.dumps(grouped_ref()))
+    (member,) = ref.members
+    assert isinstance(member, DerivedRefMember)
+    (root,) = member.roots
+    assert root.groupby == Groupby(
+        by=("time_period", "crsPurpose"), op="sum", levels={"crsPurpose": 0}
+    )
+    assert root.rendering.without_party_totals
+    revived = pickle.loads(pickle.dumps(ref)).members[0]
+    assert revived.roots == member.roots
+    assert len({root, *revived.roots}) == 1
 
 
 def test_a_repeated_root_is_refused() -> None:

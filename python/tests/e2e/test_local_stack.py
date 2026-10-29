@@ -17,7 +17,9 @@ or by hand, with the stack up and seeded (`just local-stack up` and
 The journey divides German ODA by Kenya's population on DFO, checks the derived
 Dataset's rows, ref, file and repr, reads it back under `latest`, saves and
 loads it, draws a line and a stat card of it, and walks a live share from create
-to unshare. The stack seeds four readings; the ids below are those its README
+to unshare. It also runs a filter on ODA read summed by recipient, as a
+data-mcp breakdown reads it, and checks that the root's groupby survives the
+ref, a save and load, a card and a share. The stack seeds four readings; the ids below are those its README
 lists, and a change to its fixture changes them.
 
 The local stack has no Search, so each seeded spec carries its sentence, and its
@@ -47,7 +49,7 @@ from dfo import Client, Dataset, DatasetRef, Spec
 from dfo._sync._datasets.fetch import Session
 from dfo._sync._http.transport import Transport
 from dfo.errors import InvalidRequestError, NotFoundError, PermissionDeniedError
-from dfo.types import Card, DerivedRefMember, Share
+from dfo.types import Card, DerivedRefMember, Groupby, Share
 
 pytestmark = [
     pytest.mark.live,
@@ -70,6 +72,8 @@ GNI = (
     "Kenya GNI (PPP), 2015 to 2024",
 )
 PAIRING = {"destination": "place"}
+# A breakdown by recipient, the sum data-mcp's `get_data` reads a frame with.
+BREAKDOWN = {"by": ["time_period", "financingRecipient"], "op": "sum"}
 SHARES = "/presentation/shares"
 WRONG_TOKEN = "shw_" + "0" * 22
 # Where `Shim` moves a download link that points off the API's origin.
@@ -484,3 +488,56 @@ def test_13_crossing_reads_the_typescript_ref(
     assert [
         {column: row[column] for column in ROW_COLUMNS} for row in written["rows"]
     ] == _rows(quotient)
+
+
+def _grouped_root(data: Dataset) -> Groupby | None:
+    (member,) = data.ref.members
+    assert isinstance(member, DerivedRefMember)
+    (root,) = member.roots
+    return root.groupby
+
+
+def test_14_a_grouped_root_survives_save_card_share_and_fetch(
+    client: Client, tmp_path: Path
+) -> None:
+    """The analysis route reads a root summed when its rendering names a groupby,
+    and the ref it answers keeps that groupby on the root. The SDK has no call
+    that sums a root, so the step posts the tree data-mcp posts."""
+    spec_id, content_version, _ = ODA
+    root = {
+        "spec_id": spec_id,
+        "content_version": content_version,
+        "rendering": {"columns": [], "groupby": BREAKDOWN},
+    }
+    keep = {
+        "kind": "category_match",
+        "column": "destination",
+        "values": ["country/KEN"],
+    }
+    tree = {
+        "verb": "filter",
+        "arguments": {"predicates": [keep]},
+        "inputs": {"data": root},
+    }
+    ready = client.request("POST", "/datasets/analysis", json={"tree": tree}).json()
+    (served,) = ready["ref"]["members"]
+    assert served["roots"][0]["rendering"]["groupby"] == BREAKDOWN
+
+    ref = DatasetRef.from_json(json.dumps(ready["ref"]))
+    assert json.loads(ref.to_json()) == ready["ref"]
+    data = client.fetch(ref)
+    expected = Groupby(by=("time_period", "financingRecipient"), op="sum")
+    assert _grouped_root(data) == expected
+
+    path = tmp_path / "grouped.parquet"
+    data.save(path)
+    assert _grouped_root(dfo.load(path)) == expected
+
+    card = client.cards.line(data, title="ODA to Kenya")
+    assert card.ref == data.ref
+    share = client.share(card, latest=False)
+    shown = client.fetch(share, slot=1)
+    assert _grouped_root(shown) == expected
+    assert shown.ref.same_data(data.ref)
+    assert _rows(shown) == _rows(data)
+    client.unshare(share)

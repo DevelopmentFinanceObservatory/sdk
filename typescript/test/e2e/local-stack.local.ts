@@ -14,7 +14,8 @@
 // The local stack has no Search, so each seeded spec carries its sentence, and its download
 // links point at the storage emulator, which the client refuses as a host other than the API
 // and Google Cloud Storage. `shim` moves those links onto the API's origin and forwards them to
-// the emulator, and records every request.
+// the emulator, and records every request. One step reads ODA summed by recipient, as a data-mcp
+// breakdown reads it, and checks the root's groupby survives the ref, a card and a share.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
@@ -25,6 +26,7 @@ import {
   Client,
   DatasetRef,
   InvalidRequestError,
+  isDerived,
   NotFoundError,
   PermissionDeniedError,
   recipe,
@@ -49,6 +51,8 @@ const POPULATION = {
   sentence: "Kenya population, 2015 to 2024",
 };
 const PAIRING = { destination: "place" };
+// A breakdown by recipient, the sum data-mcp's `get_data` reads a frame with.
+const BREAKDOWN = { by: ["time_period", "financingRecipient"], op: "sum" };
 const ROW_COLUMNS = ["time_period", "financingRecipient", "value"] as const;
 const WRONG_TOKEN = `shw_${"0".repeat(22)}`;
 // Where `shim` moves a download link that points off the API's origin.
@@ -271,6 +275,38 @@ describe(`the local-stack journey against ${baseUrl}`, { concurrency: false }, (
     const joined = await client.fetch(DatasetRef.fromJSON(written.join_ref));
     const card = await client.cards.table(joined, { title: "Kenya" });
     assert.deepEqual(withoutIds(await payloadOf(card)), written.join_card);
+  });
+
+  // The client has no call that sums a root, so the step posts the tree data-mcp posts.
+  test("a root read summed keeps its groupby through the ref, a card and a share", async () => {
+    const root = {
+      spec_id: ODA.specId,
+      content_version: ODA.contentVersion,
+      rendering: { columns: [], groupby: BREAKDOWN },
+    };
+    const keep = { kind: "category_match", column: "destination", values: ["country/KEN"] };
+    const tree = { verb: "filter", arguments: { predicates: [keep] }, inputs: { data: root } };
+    const ready = (
+      await client.request("POST", "/datasets/analysis", { json: { tree } })
+    ).json() as { ref: unknown };
+    const ref = DatasetRef.fromJSON(ready.ref);
+    assert.deepEqual(ref.toJSON(), ready.ref);
+    const groupbyOf = (data: Dataset) => {
+      const [member] = data.ref.members;
+      assert.ok(member && isDerived(member));
+      return member.roots[0]?.groupby;
+    };
+
+    const data = await client.fetch(ref);
+    assert.deepEqual(groupbyOf(data), BREAKDOWN);
+    const card = await client.cards.line(data, { title: "ODA to Kenya" });
+    assert.ok(card.ref.equals(data.ref));
+    const grouped = await client.share(card, { latest: false });
+    const shown = await client.fetch(grouped, { slot: 1 });
+    assert.deepEqual(groupbyOf(shown), BREAKDOWN);
+    assert.ok(shown.ref.sameData(data.ref));
+    assert.deepEqual(await rowsOf(shown), await rowsOf(data));
+    await client.unshare(grouped);
   });
 
   test("writes the two-step recipe's ref for the Python journey", async (t) => {

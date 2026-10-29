@@ -124,6 +124,7 @@ export type {
   DerivedRefMember,
   DerivedSpec,
   FormatErrorReason,
+  Groupby,
   Layout,
   RefMember,
   Rendering,

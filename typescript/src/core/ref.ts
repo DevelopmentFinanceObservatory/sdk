@@ -56,11 +56,23 @@ export type DerivedSpec = {
   readonly recipe: { readonly normal_form_hash: string; readonly replay_key: string };
 };
 
-/** A dataset version a recipe ran on, with the rendering it read. */
+/** The sum a recipe read a root with, as DFO records it: one row per distinct combination of the
+ *  columns `by` keeps, every other summable axis summed away. A breakdown or a sum over StatVars
+ *  reads a root this way. `levels` gives the depth each kept hierarchical axis it names was
+ *  rolled up to before the sum, 0 being the root codes, and is absent when none was. */
+export type Groupby = {
+  readonly by: readonly string[];
+  readonly op: "sum";
+  readonly levels?: Readonly<Record<string, number>>;
+};
+
+/** A dataset version a recipe ran on, with the rendering it read, and `groupby` when the recipe
+ *  read it summed. */
 export type Root = {
   readonly specId: string;
   readonly contentVersion: string;
   readonly rendering: Rendering;
+  readonly groupby?: Groupby;
 };
 
 /** A period a recipe states relative to the latest period, with the year it resolved to. */
@@ -145,6 +157,7 @@ export type DatasetRefJson =
             bundle: boolean;
             layout?: "frame";
             without_party_totals?: true;
+            groupby?: { by: string[]; op: "sum"; levels?: Record<string, number> };
           };
         }[];
         execution_identity: string;
@@ -275,7 +288,10 @@ const derivedJson = (member: DerivedRefMember) => ({
   roots: member.roots.map((root) => ({
     spec_id: root.specId,
     content_version: root.contentVersion,
-    rendering: { ...root.rendering },
+    rendering: {
+      ...root.rendering,
+      ...(root.groupby === undefined ? {} : { groupby: groupbyJson(root.groupby) }),
+    },
   })),
   execution_identity: member.executionIdentity,
   resolved_periods: member.resolvedPeriods.map(({ anchor, offset, rule, period }) => ({
@@ -285,6 +301,13 @@ const derivedJson = (member: DerivedRefMember) => ({
     period,
   })),
   artifact: { digest: member.digest, rendering: { ...member.rendering } },
+});
+
+/** A groupby in the stored format, `levels` only when set. */
+const groupbyJson = ({ by, op, levels }: Groupby) => ({
+  by: [...by],
+  op,
+  ...(levels === undefined ? {} : { levels: { ...levels } }),
 });
 
 /** Whether two members are one identity: the same spec at the same version in the same
@@ -648,6 +671,8 @@ function uniqueItems<TItem>(
 function loadRoot(value: unknown, pointer: string): Root {
   const root = objectAt(value, pointer);
   checkKeys(root, pointer, ["spec_id", "content_version", "rendering"]);
+  const rendering = objectAt(root["rendering"], `${pointer}/rendering`);
+  const { groupby, ...selector } = rendering;
   return {
     specId: matching(SPEC_ID, root["spec_id"], `${pointer}/spec_id`, "a spec id"),
     contentVersion: matching(
@@ -656,8 +681,42 @@ function loadRoot(value: unknown, pointer: string): Root {
       `${pointer}/content_version`,
       "a content version",
     ),
-    rendering: Object.freeze(loadRendering(root["rendering"], `${pointer}/rendering`)),
+    rendering: Object.freeze(loadRendering(selector, `${pointer}/rendering`)),
+    ...(Object.hasOwn(rendering, "groupby")
+      ? { groupby: loadGroupby(groupby, `${pointer}/rendering/groupby`) }
+      : {}),
   };
+}
+
+/** The deepest level a root's groupby rolls a hierarchical axis up to. */
+const MAX_GROUPBY_LEVEL = 99;
+
+function loadGroupby(value: unknown, pointer: string): Groupby {
+  const groupby = objectAt(value, pointer);
+  checkKeys(groupby, pointer, ["by", "op"], ["levels"]);
+  const by = groupby["by"];
+  if (!Array.isArray(by) || by.length === 0 || !by.every(isText)) {
+    throw invalid(`${pointer}/by`, "not a non-empty array of names");
+  }
+  if (new Set(by).size < by.length) throw invalid(`${pointer}/by`, "names a column twice");
+  if (groupby["op"] !== "sum") throw invalid(`${pointer}/op`, 'not "sum"');
+  if (!Object.hasOwn(groupby, "levels"))
+    return Object.freeze({ by: Object.freeze([...by]), op: "sum" });
+  const levels = objectAt(groupby["levels"], `${pointer}/levels`);
+  if (Object.keys(levels).length === 0) throw invalid(`${pointer}/levels`, "empty");
+  const depths: Record<string, number> = {};
+  for (const [axis, depth] of Object.entries(levels)) {
+    if (
+      typeof depth !== "number" ||
+      !Number.isInteger(depth) ||
+      depth < 0 ||
+      depth > MAX_GROUPBY_LEVEL
+    ) {
+      throw invalid(`${pointer}/levels/${axis}`, `not an integer from 0 to ${MAX_GROUPBY_LEVEL}`);
+    }
+    depths[axis] = depth;
+  }
+  return Object.freeze({ by: Object.freeze([...by]), op: "sum", levels: Object.freeze(depths) });
 }
 
 function loadResolvedPeriod(value: unknown, pointer: string): ResolvedPeriod {
