@@ -6,6 +6,7 @@
 import { clientError } from "./errors.ts";
 import { isRecord, parseJson } from "./json.ts";
 import { inline } from "./text.ts";
+import { SELECTOR_QUERY_KEYS } from "../generated/file-selector.ts";
 import type { ResolvedSpec } from "../wire.ts";
 
 /** The layouts a dataset comes in: the labelled long table, or the pipeline frame. */
@@ -131,9 +132,6 @@ export function mintOptions(rendering: Rendering): Record<string, string | boole
   if (rendering.without_party_totals === true) options["without_party_totals"] = true;
   return options;
 }
-
-/** The query keys a version's file selector reads. */
-const SELECTOR_QUERY_KEYS = ["format", "bundle", "layout"] as const;
 
 /** The file selector's query for a rendering: its build options among `SELECTOR_QUERY_KEYS`,
  *  layout only when set. The selector serves a stored version, which is already the

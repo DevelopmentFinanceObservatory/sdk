@@ -90,8 +90,8 @@ _LAST_COLUMN = "stat_var"
 # time period, which sorts after every other key.
 _NOT_SLOT_KEYS = ("value", "time_period")
 
-# What a NaN inside a list or struct cell stands as when cells are compared, so
-# that NaN is the same value as NaN.
+# What a NaN cell or item stands as when cells are compared, so that NaN is the
+# same value as NaN whatever its payload.
 _NAN = object()
 
 # The columns every artifact a dataset reads holds, in both layouts.
@@ -440,7 +440,8 @@ def in_reading_order(table: pa.Table, *, member_rows: Sequence[int]) -> pa.Table
     judged over the whole table, so a stacked one's members are judged together.
 
     Two cells hold the same value when they are equal: a list cell item by item
-    in order, a struct cell field by field, and NaN the same as NaN.
+    in order, a struct or map cell field by field in any order, 0.0 the same as
+    -0.0, and NaN the same as NaN.
 
     The rows of each member, its `member_rows` count of consecutive rows, sort by
     the filled slots other than `value` and `time_period`, then by the varying
@@ -450,14 +451,21 @@ def in_reading_order(table: pa.Table, *, member_rows: Sequence[int]) -> pa.Table
     changes nothing.
 
     Raises:
-        ContractError: A column holds a type the order cannot compare
+        ContractError: A sort key holds a type the order cannot compare, such
+            as a 16-bit float, or a map cell names a key twice
             (`contract_violation`).
     """
     import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
 
     try:
         return _ordered(table, member_rows=member_rows)
-    except (pa.ArrowNotImplementedError, pa.ArrowInvalid) as error:
+    # A map cell with a duplicate key raises KeyError as it converts to a dict.
+    except (
+        pa.ArrowNotImplementedError,
+        pa.ArrowInvalid,
+        pa.ArrowTypeError,
+        KeyError,
+    ) as error:
         raise client_error(
             CONTRACT_VIOLATION, f"The dataset's table cannot be ordered: {error}"
         ) from error
@@ -508,31 +516,32 @@ def _ordered(table: pa.Table, *, member_rows: Sequence[int]) -> pa.Table:
 
 
 def _varies(column: pa.ChunkedArray) -> bool:
-    """Whether `column` holds more than one value, null counting as one, 0.0 the
-    same as -0.0 and every NaN the same as every other."""
+    """Whether `column` holds more than one value, null counting as one. Cells
+    compare by `_cell_key`, so 0.0 is -0.0 and every NaN is every other."""
     import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
-    import pyarrow.compute as pc  # noqa: PLC0415 - pyarrow loads on first use
 
     if pa.types.is_nested(column.type):
-        return len({_cell_key(cell) for cell in column.to_pylist()}) > 1
-    if pa.types.is_float32(column.type) or pa.types.is_float64(column.type):
-        # Arrow's unique tells the zeros apart, and NaNs by their payload. Adding
-        # 0.0 turns -0.0 into 0.0, and one NaN stands for all.
-        zero, nan = pa.scalar(0.0, column.type), pa.scalar(math.nan, column.type)
-        # pyarrow generates its compute functions at import, so they are called by
-        # name.
-        is_nan = pc.call_function("is_nan", [column])
-        plus_zero = pc.call_function("add", [column, zero])
-        column = pc.call_function("if_else", [is_nan, nan, plus_zero])
-    return len(column.unique()) > 1
+        cells = (
+            _cell_key(scalar.as_py(maps_as_pydicts="strict"))
+            for chunk in column.chunks
+            for scalar in chunk
+        )
+        first = next(cells, None)
+        return any(cell != first for cell in cells)
+    unique = column.unique()
+    if len(unique) < 2 or not pa.types.is_floating(unique.type):
+        return len(unique) > 1
+    # Arrow's unique tells 0.0 from -0.0, and one NaN payload from another.
+    return len({_cell_key(value) for value in unique.to_pylist()}) > 1
 
 
 def _cell_key(cell: object) -> object:
-    """A hashable stand-in for a list, struct or map cell, equal for two cells that
-    hold the same value: items in order, fields in any order, NaN as NaN."""
+    """A hashable stand-in for a cell, equal for two cells that hold the same
+    value: list items in order, struct fields and map entries in any order, 0.0 as
+    -0.0 and NaN as NaN."""
     if isinstance(cell, float) and math.isnan(cell):
         return _NAN
-    if isinstance(cell, list | tuple):
+    if isinstance(cell, list):
         return tuple(_cell_key(item) for item in cell)
     if isinstance(cell, dict):
         return frozenset((name, _cell_key(value)) for name, value in cell.items())

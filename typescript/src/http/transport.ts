@@ -227,9 +227,10 @@ function isLoopback(hostname: string): boolean {
   );
 }
 
-/** An authority with no userinfo: a bracketed IPv6 address or a host, then the port as written
- *  after a `:`, empty when the `:` ends it. */
-const PORT_AS_WRITTEN = /^(?:\[[^\]]*\]|[^:]*)(?::(.*))?$/s;
+/** An authority as written: a bracketed IPv6 address or a host, then the port's digits after a
+ *  `:`, empty when the `:` ends it. An authority whose port holds another character does not
+ *  match. */
+const AUTHORITY = /^(\[[^\]]*\]|[^:]*)(?::(\d*))?$/;
 
 /**
  * The base URL as an absolute http or https URL. A relative one resolves against the page. The
@@ -276,21 +277,18 @@ function resolveBaseUrl(baseUrl: unknown, source: BaseUrlSource): URL {
   // The authority as written: URL reads `https:///api` and `https:/api` as host `api`, rewrites
   // an IPv4 form such as 127.1, 0x7f.1 or 2130706433 as a dotted quad, and drops an empty
   // userinfo (`https://@host`), so all three are read from the string. A relative URL in a page
-  // has no scheme, and so no authority to read.
-  const written = /^[a-z][a-z0-9+.-]*:\/\/([^/]*)/i.exec(baseUrl)?.[1];
+  // has no scheme, and so no authority to read, unless it is scheme-relative.
+  const written = /^(?:[a-z][a-z0-9+.-]*:)?\/\/([^/]*)/i.exec(baseUrl)?.[1];
   if (written === "" || (written === undefined && /^[a-z][a-z0-9+.-]*:/i.test(baseUrl))) {
     throw refuse("names no host");
   }
   if (url.username !== "" || url.password !== "" || written?.includes("@")) {
     throw refuse("carries userinfo; pass the key as apiKey");
   }
-  // URL drops an empty port and keeps 0, so the port is read as written: after the host or the
-  // bracketed IPv6 address, up to the end of the authority.
-  const port = written === undefined ? undefined : PORT_AS_WRITTEN.exec(written)?.[1];
-  if (
-    port !== undefined &&
-    !(/^[0-9]+$/.test(port) && Number(port) >= 1 && Number(port) <= 65535)
-  ) {
+  // URL drops an empty port and keeps 0, so the port is read as written.
+  const authority = written === undefined ? undefined : AUTHORITY.exec(written);
+  const port = authority?.[2];
+  if (authority === null || (port !== undefined && !(Number(port) >= 1 && Number(port) <= 65535))) {
     throw refuse("names a port that is not a number from 1 to 65535");
   }
   if (
@@ -300,7 +298,7 @@ function resolveBaseUrl(baseUrl: unknown, source: BaseUrlSource): URL {
   ) {
     throw refuse("writes an IPv4 host in a form other than four decimal octets");
   }
-  if (hasDotSegment(baseUrl.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, ""))) {
+  if (hasDotSegment(baseUrl.replace(/^(?:[a-z][a-z0-9+.-]*:)?\/\/[^/]*/i, ""))) {
     throw refuse("holds a . or .. path segment");
   }
   return url;
@@ -417,7 +415,7 @@ function onOrigin(reference: string, base: URL): URL | { fault: string } {
     }
   } else {
     const [, scheme = "", authority = "", tail = ""] = absolute;
-    const parts = /^(\[[^\]]*\]|[^:]*)(?::(\d*))?$/.exec(authority);
+    const parts = AUTHORITY.exec(authority);
     const port = parts?.[2]?.replace(/^0+(?=\d)/, "") || DEFAULT_PORTS[scheme.toLowerCase()];
     if (
       /[@%\\]|[^\p{ASCII}]/u.test(authority) ||

@@ -2,7 +2,8 @@
  * The `X-DFO-Client` header every API request carries, by the contract's client-identity rule
  * (`contract/rules/client-identity.json`): `dfo-ts/<version> (<runtime>)`, the runtime `Node`,
  * `Deno` or `Bun` with the major and minor of its version, `browser` in a browser page or
- * worker, and `other` in any other runtime, such as Cloudflare Workers.
+ * worker, and `other` in a runtime that reports none of those versions, such as Cloudflare
+ * Workers without the `nodejs_compat` flag. Workers with it report Node.
  */
 
 import { inBrowser } from "../config/keys.ts";

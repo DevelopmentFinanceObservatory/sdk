@@ -90,6 +90,7 @@ from dfo._core.refusals import (
     trace_id_of,
 )
 from dfo._core.text import (
+    authority_parts,
     control_fault,
     has_dot_segment,
     header_fault,
@@ -161,10 +162,6 @@ _RETRIES_MAX = 10
 # A host other than an IPv6 address whose last label is a number, which a URL
 # parser reads as an IPv4 address, such as `127.1`, `0x7f.1` or `2130706433`.
 _NUMERIC_HOST = re.compile(r"(?:[^:]*\.)?(?:0x[0-9a-f]*|[0-9]+)")
-
-# An authority with no userinfo: a bracketed IPv6 address or a host, then the
-# port as written after a `:`, empty when the `:` ends it.
-_AUTHORITY = re.compile(r"(?:\[[^\]]*\]|[^:]*)(?::(.*))?", re.DOTALL)
 
 # The headers that frame a message or concern one hop, lower case. httpx2 and
 # h11 set the framing and the host themselves, and a caller's value would
@@ -310,9 +307,10 @@ def _split_base_url(base_url: str, source: BaseUrlSource) -> tuple[str, str]:
         refuse("holds a . or .. path segment")
     if "\\" in base_url:
         refuse("holds a backslash")
-    authority = _AUTHORITY.fullmatch(parts.netloc)
-    port = authority.group(1) if authority else ""
-    if port is not None and not (port.isdigit() and 1 <= int(port) <= 65535):
+    authority = authority_parts(parts.netloc)
+    if authority is None:
+        refuse("names no host, or a port that is not a number")
+    if (port := authority[1]) is not None and not (port and 1 <= int(port) <= 65535):
         refuse("names a port that is not a number from 1 to 65535")
     origin = origin_of(base_url)
     if origin is None:

@@ -7,7 +7,8 @@
  * whose type differs between files widens as pyarrow's permissive promotion widens it, so a table either client stacks has the same types. A DECIMAL column
  * keeps its precision and scale. Its values are read as the unscaled integers the file stores,
  * so `bytes()` writes them exact, and `toRows()` and `toArrow()` give each the nearest 64-bit
- * float.
+ * float. A LIST column, in the standard three-level layout, reads as arrays of its items, and a
+ * struct group as objects keyed by its fields.
  */
 
 import { parquetMetadata, parquetRead } from "hyparquet";
@@ -22,9 +23,18 @@ import type { ContractError } from "../core/errors.ts";
 /**
  * One cell of `toRows()`. INT64 columns arrive as numbers, so `JSON.stringify` works on the
  * rows. A value beyond `Number.MAX_SAFE_INTEGER` raises, and `toArrow()` keeps it as a
- * `bigint`. Timestamps and dates are `Date`s, JSON columns their text.
+ * `bigint`. Timestamps and dates are `Date`s, JSON columns their text, list columns arrays of
+ * their items and struct columns objects keyed by their fields.
  */
-export type Value = string | number | boolean | Date | Uint8Array | null;
+export type Value =
+  | string
+  | number
+  | boolean
+  | Date
+  | Uint8Array
+  | null
+  | readonly Value[]
+  | { readonly [field: string]: Value };
 
 /** One row of `toRows()`, keyed by column name in reading order. */
 export type Row = Record<string, Value>;
@@ -44,7 +54,11 @@ export type ColumnType =
       readonly utc: boolean;
     }
   | { readonly kind: "string" }
-  | { readonly kind: "binary" };
+  | { readonly kind: "binary" }
+  /** A LIST column, whose cells are arrays of its item type. */
+  | { readonly kind: "list"; readonly item: ColumnType }
+  /** A struct group, whose cells are objects keyed by its fields. */
+  | { readonly kind: "struct"; readonly fields: readonly Column[] };
 
 export type Column = { readonly name: string; readonly type: ColumnType };
 
@@ -93,8 +107,8 @@ const RAW_PARSERS: Partial<ParquetParsers> = {
  * Reads a Parquet file's footer and column types.
  *
  * @throws {ContractError} The bytes are not a Parquet file the client can read
- *   (`unexpected_response`), or two columns share a name, or a column is nested or of a type the
- *   client cannot read (`contract_violation`).
+ *   (`unexpected_response`), or two columns share a name, or a column is of a type or a nesting
+ *   the client cannot read, such as a MAP (`contract_violation`).
  */
 export function readParquet(bytes: Uint8Array): ParquetFile {
   // Dataset has already copied each public input into an owned, full-span ArrayBuffer. Keep that
@@ -111,10 +125,12 @@ export function readParquet(bytes: Uint8Array): ParquetFile {
   } catch (error) {
     throw unreadable(error);
   }
-  const columns = metadata.schema.slice(1).map((element) => ({
-    name: element.name,
-    type: columnType(element),
-  }));
+  const [columns, end] = schemaColumns(metadata.schema, 1, metadata.schema[0]?.num_children ?? 0);
+  if (end !== metadata.schema.length) {
+    throw clientError("contract_violation", {
+      detail: "The Parquet schema holds elements past its root's columns.",
+    });
+  }
   const names = new Set<string>();
   for (const { name } of columns) {
     if (names.has(name)) {
@@ -149,13 +165,58 @@ function intType(bits: number, signed: boolean, element: SchemaElement): ColumnT
   return { kind: "int", bits, signed };
 }
 
-/** A column's type from its schema element. Nested columns raise, since dataset files are flat. */
+/** The `count` columns a flattened schema describes from `at`, each read whole, and the index
+ *  of the element after them. */
+function schemaColumns(
+  schema: readonly SchemaElement[],
+  at: number,
+  count: number,
+): [Column[], number] {
+  const columns: Column[] = [];
+  let next = at;
+  for (let index = 0; index < count; index += 1) {
+    const element = schema[next];
+    if (element === undefined) {
+      throw clientError("contract_violation", {
+        detail: "The Parquet schema ends inside a group.",
+      });
+    }
+    const [type, after] = schemaType(schema, next);
+    columns.push({ name: element.name, type });
+    next = after;
+  }
+  return [columns, next];
+}
+
+/** The type of the column the schema element at `at` starts, and the index after its elements:
+ *  a leaf by `columnType`, a LIST in the standard three levels by its item, and any other group
+ *  as a struct of its fields. */
+function schemaType(schema: readonly SchemaElement[], at: number): [ColumnType, number] {
+  const element = schema[at]!;
+  if (element.repetition_type === "REPEATED") throw unsupported(element, "repeated");
+  if (element.num_children === undefined) return [columnType(element), at + 1];
+  if (element.converted_type === "LIST" || element.logical_type?.type === "LIST") {
+    const repeated = schema[at + 1];
+    if (
+      element.num_children !== 1 ||
+      repeated?.repetition_type !== "REPEATED" ||
+      repeated.num_children !== 1
+    ) {
+      throw unsupported(element, "a list of another layout than the standard three levels");
+    }
+    const [item, after] = schemaType(schema, at + 2);
+    return [{ kind: "list", item }, after];
+  }
+  const annotation = element.logical_type?.type ?? element.converted_type;
+  if (annotation !== undefined) throw unsupported(element, annotation);
+  const [fields, after] = schemaColumns(schema, at + 1, element.num_children);
+  return [{ kind: "struct", fields }, after];
+}
+
+/** A leaf column's type from its schema element. */
 function columnType(element: SchemaElement): ColumnType {
   const logical = element.logical_type;
   const converted = element.converted_type;
-  if (element.num_children !== undefined || element.repetition_type === "REPEATED") {
-    throw unsupported(element, "nested");
-  }
   if (
     (logical !== undefined && UNSUPPORTED.has(logical.type)) ||
     (converted !== undefined && UNSUPPORTED.has(converted))
@@ -217,14 +278,15 @@ const INT_DIGITS = {
 const MAX_DECIMAL_PRECISION = 76;
 
 /** Each timestamp unit's ticks per millisecond. */
-const TICKS_PER_MS = { MILLIS: 1n, MICROS: 1_000n, NANOS: 1_000_000n } as const;
+export const TICKS_PER_MS = { MILLIS: 1n, MICROS: 1_000n, NANOS: 1_000_000n } as const;
 
 /**
  * The type two files' columns stack as, widened as pyarrow's permissive promotion widens it, or
  * undefined for a pair it refuses. Null takes the other type; integers take the wider width, a
  * signed and an unsigned one a signed type that holds both, up to 64 bits; an integer and a
  * float take the float, 64 bits unless a 32-bit float meets an integer of at most 16 bits;
- * timestamps in one time zone take the finer unit; a string and a binary column take binary.
+ * timestamps in one time zone take the finer unit; a string and a binary column take binary;
+ * lists widen by their items, and structs of the same fields in the same order field by field.
  * Decimals take the larger scale and the most integer digits, up to 76 digits; a decimal and a
  * float take the float; a decimal and an integer take the decimal when its integer digits hold
  * every value of the integer's width, and are refused otherwise, as pyarrow's cast refuses them.
@@ -232,6 +294,26 @@ const TICKS_PER_MS = { MILLIS: 1n, MICROS: 1_000n, NANOS: 1_000_000n } as const;
 export function widen(left: ColumnType, right: ColumnType): ColumnType | undefined {
   if (left.kind === "null") return right;
   if (right.kind === "null" || sameType(left, right)) return left;
+  if (left.kind === "list" && right.kind === "list") {
+    const item = widen(left.item, right.item);
+    return item === undefined ? undefined : { kind: "list", item };
+  }
+  if (left.kind === "struct" && right.kind === "struct") {
+    const { fields } = right;
+    if (
+      left.fields.length !== fields.length ||
+      left.fields.some(({ name }, index) => name !== fields[index]!.name)
+    ) {
+      return undefined;
+    }
+    const widened = left.fields.map(({ name, type }, index) => ({
+      name,
+      type: widen(type, fields[index]!.type),
+    }));
+    return widened.every((field): field is Column => field.type !== undefined)
+      ? { kind: "struct", fields: widened }
+      : undefined;
+  }
   if (left.kind === "decimal" || right.kind === "decimal") return widenDecimal(left, right);
   if (left.kind === "int" && right.kind === "int") {
     if (left.signed === right.signed) {
@@ -313,7 +395,7 @@ export function stackedColumns(parts: readonly TablePart[]): Column[] {
 
 const encoder = new TextEncoder();
 
-const DAY_MS = 86_400_000;
+export const DAY_MS = 86_400_000;
 
 /** A DECIMAL's stored value as its unscaled integer: an INT32 or INT64 as read, a byte array
  *  as the big-endian two's complement it holds. */
@@ -432,7 +514,26 @@ async function storedRows(file: ParquetFile): Promise<unknown[][]> {
 
 /** A stored value of a file's column type as the stacked column's type stores it. */
 function storedValue(value: unknown, own: ColumnType, type: ColumnType): unknown {
-  if (value === null) return null;
+  if (value === null || value === undefined) return null;
+  if (type.kind === "list") {
+    const item = own.kind === "list" ? own.item : NULL;
+    return (value as unknown[]).map((cell) => storedValue(cell, item, type.item));
+  }
+  if (type.kind === "struct") {
+    const cell = value as Record<string, unknown>;
+    const fields = own.kind === "struct" ? own.fields : [];
+    // fromEntries defines each field as an own property, `__proto__` included.
+    return Object.fromEntries(
+      type.fields.map(({ name, type: field }) => [
+        name,
+        storedValue(
+          Object.hasOwn(cell, name) ? cell[name] : null,
+          fields.find((owned) => owned.name === name)?.type ?? NULL,
+          field,
+        ),
+      ]),
+    );
+  }
   if (type.kind === "string" && value instanceof Uint8Array) return text(value);
   if (type.kind === "decimal") {
     const ownScale = own.kind === "decimal" ? own.scale : 0;
@@ -461,6 +562,19 @@ function rowValue(value: unknown, column: Column): Value {
       return new Date(Number(BigInt(value as bigint | number) / TICKS_PER_MS[type.unit]));
     case "binary":
       return typeof value === "string" ? encoder.encode(value) : (value as Uint8Array);
+    case "list":
+      return (value as unknown[]).map((item) =>
+        rowValue(item, { name: column.name, type: type.item }),
+      );
+    case "struct": {
+      const cell = value as Record<string, unknown>;
+      return Object.fromEntries(
+        type.fields.map((field) => [
+          field.name,
+          rowValue(cell[field.name], { name: `${column.name}.${field.name}`, type: field.type }),
+        ]),
+      );
+    }
     default:
       break;
   }
@@ -493,8 +607,29 @@ export async function decodeRows(table: Table): Promise<Row[]> {
   return rows;
 }
 
-/** The Parquet schema element a column type is written as. Every column is nullable, since a
- *  column one member lacks is null in its rows. */
+/** The Parquet schema elements a column type is written as: one for a leaf, a group and its
+ *  children for a list in the standard three levels or a struct. Every column, item and field is
+ *  nullable, since a column one member lacks is null in its rows. */
+function schemaElements(column: Column): SchemaElement[] {
+  const { name, type } = column;
+  const optional = { name, repetition_type: "OPTIONAL" } as const;
+  if (type.kind === "list") {
+    return [
+      { ...optional, converted_type: "LIST", num_children: 1 },
+      { name: "list", repetition_type: "REPEATED", num_children: 1 },
+      ...schemaElements({ name: "element", type: type.item }),
+    ];
+  }
+  if (type.kind === "struct") {
+    return [
+      { ...optional, num_children: type.fields.length },
+      ...type.fields.flatMap(schemaElements),
+    ];
+  }
+  return [schemaElement(column)];
+}
+
+/** The Parquet schema element a leaf column type is written as. */
 function schemaElement({ name, type }: Column): SchemaElement {
   const optional = { name, repetition_type: "OPTIONAL" } as const;
   switch (type.kind) {
@@ -547,7 +682,27 @@ function schemaElement({ name, type }: Column): SchemaElement {
       };
     case "binary":
       return { ...optional, type: "BYTE_ARRAY" };
+    case "list":
+    case "struct":
+      throw new TypeError(`A ${type.kind} column is written by schemaElements.`);
   }
+}
+
+/** A stored value as hyparquet-writer takes it: INT64 and timestamp values as bigints, a value
+ *  decoded as a number written as one, and lists and structs item by item. A DECIMAL holds
+ *  unscaled bigints, which hyparquet-writer writes unchanged. */
+function writtenValue(value: unknown, type: ColumnType): unknown {
+  if (value === null || value === undefined) return null;
+  if (type.kind === "list")
+    return (value as unknown[]).map((item) => writtenValue(item, type.item));
+  if (type.kind === "struct") {
+    const cell = value as Record<string, unknown>;
+    return Object.fromEntries(
+      type.fields.map((field) => [field.name, writtenValue(cell[field.name], field.type)]),
+    );
+  }
+  const wide = (type.kind === "int" && type.bits === 64) || type.kind === "timestamp";
+  return wide && typeof value === "number" ? BigInt(value) : value;
 }
 
 /** The table in reading order as one snappy Parquet file, with `metadata` as its key-value
@@ -559,18 +714,13 @@ export async function encodeStacked(
   const columns = await decodeStored(table);
   const schema: SchemaElement[] = [
     { name: "root", num_children: columns.length },
-    ...columns.map(schemaElement),
+    ...columns.flatMap(schemaElements),
   ];
   const kvMetadata: KeyValue[] = Object.entries(metadata).map(([key, value]) => ({ key, value }));
   const buffer = parquetWriteBuffer({
     columnData: columns.map(({ name, type, values }) => ({
       name,
-      // INT64 and timestamp columns hold bigints. A value decoded as a number is written as one.
-      // A DECIMAL column holds unscaled bigints, which hyparquet-writer writes unchanged.
-      data:
-        (type.kind === "int" && type.bits === 64) || type.kind === "timestamp"
-          ? values.map((value) => (typeof value === "number" ? BigInt(value) : value))
-          : values,
+      data: values.map((value) => writtenValue(value, type)),
     })),
     schema,
     kvMetadata,

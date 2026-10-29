@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
+import type { SchemaElement } from "hyparquet";
 import { parquetWriteBuffer } from "hyparquet-writer";
 
 import { credentialsPath, parseCredentialsFile } from "../src/config/credentials.ts";
@@ -200,43 +201,53 @@ describe("reading-order", async () => {
   type Cell = string | number | boolean | null | Cell[] | { [field: string]: Cell };
   type Member = { part?: string; columns: string[]; rows: Cell[][] };
   type Vector = { members: Member[]; columns: string[]; rows: Cell[][] };
-  /** A member's file as the server writes it: a number column as doubles, every other as
-   *  strings. */
-  const file = ({ columns, rows }: Member): Uint8Array =>
-    new Uint8Array(
+  /** The schema elements of a field holding `cells`, as the server writes it: a list as a
+   *  Parquet LIST of its items, a struct as a group of its fields, a number as a double, a
+   *  boolean as a boolean and any other as a string. A vector's cells of one field, nulls
+   *  aside, are of one kind. */
+  const field = (name: string, cells: Cell[]): SchemaElement[] => {
+    const held = cells.filter((cell) => cell !== null);
+    const kinds = new Set(held.map((cell) => (Array.isArray(cell) ? "list" : typeof cell)));
+    assert.ok(kinds.size <= 1, `${name} holds cells of kinds ${[...kinds].join(", ")}`);
+    const optional = { name, repetition_type: "OPTIONAL" } as const;
+    if (kinds.has("list")) {
+      return [
+        { ...optional, converted_type: "LIST", num_children: 1 },
+        { name: "list", repetition_type: "REPEATED", num_children: 1 },
+        ...field("element", (held as Cell[][]).flat()),
+      ];
+    }
+    if (kinds.has("object")) {
+      const structs = held as { [field: string]: Cell }[];
+      const names = [...new Set(structs.flatMap((struct) => Object.keys(struct)))];
+      return [
+        { ...optional, num_children: names.length },
+        ...names.flatMap((child) =>
+          field(
+            child,
+            structs.map((struct) => struct[child] ?? null),
+          ),
+        ),
+      ];
+    }
+    if (kinds.has("number")) return [{ ...optional, type: "DOUBLE" }];
+    if (kinds.has("boolean")) return [{ ...optional, type: "BOOLEAN" }];
+    return [{ ...optional, type: "BYTE_ARRAY", converted_type: "UTF8" }];
+  };
+  /** A member's file, each column typed by its cells. */
+  const file = ({ columns, rows }: Member): Uint8Array => {
+    const data = columns.map((_, at) => rows.map((row) => row[at] ?? null));
+    return new Uint8Array(
       parquetWriteBuffer({
-        columnData: columns.map((name, at) => {
-          const data = rows.map((row) => row[at] ?? null);
-          const numbers = data.some((value) => typeof value === "number");
-          return { name, data, type: numbers ? "DOUBLE" : "STRING" };
-        }),
+        columnData: columns.map((name, at) => ({ name, data: data[at]! })),
+        schema: [
+          { name: "root", num_children: columns.length },
+          ...columns.flatMap((name, at) => field(name, data[at]!)),
+        ],
       }),
     );
-  const nested = (cell: Cell): boolean => typeof cell === "object" && cell !== null;
-  // The client reads flat Parquet files only, so a vector of list or struct cells orders the
-  // cells themselves: one member's columns, as the order reads a decoded table.
-  for (const vector of (await vectors<Vector>("reading-order")).filter(({ members }) =>
-    members.some(({ rows }) => rows.flat().some(nested)),
-  )) {
-    test(vector.name, () => {
-      assert.equal(vector.members.length, 1);
-      const [{ columns, rows }] = vector.members as [Member];
-      const order = readingOrder(
-        columns.map((name, at) => ({ name, values: rows.map((row) => row[at]!) })),
-        [rows.length],
-      );
-      assert.deepEqual(order.columns, vector.columns);
-      assert.deepEqual(
-        [...order.rows].map((row) =>
-          order.columns.map((name) => rows[row]![columns.indexOf(name)]),
-        ),
-        vector.rows,
-      );
-    });
-  }
-  for (const vector of (await vectors<Vector>("reading-order")).filter(
-    ({ members }) => !members.some(({ rows }) => rows.flat().some(nested)),
-  )) {
+  };
+  for (const vector of await vectors<Vector>("reading-order")) {
     test(vector.name, async () => {
       const members = vector.members.map((member) => {
         const data = file(member);

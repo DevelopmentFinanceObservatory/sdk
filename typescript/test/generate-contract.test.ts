@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { renderReadingOrder, renderRoleKeys } from "../scripts/generate-contract.ts";
+import {
+  renderFileSelector,
+  renderReadingOrder,
+  renderRoleKeys,
+} from "../scripts/generate-contract.ts";
 
 const rule = (slots: unknown, overrides: Record<string, unknown> = {}): string =>
   JSON.stringify({
@@ -63,5 +67,28 @@ for (const [name, text] of [
 ] as const) {
   test(`the role-keys rule with ${name} is refused`, () => {
     assert.throws(() => renderRoleKeys(text));
+  });
+}
+
+const selectorRule = (keys: unknown, overrides: Record<string, unknown> = {}): string =>
+  JSON.stringify({ format_version: 1, rule: "file-selector", query_keys: keys, ...overrides });
+
+test("the file selector's keys come out as the rule's query keys", () => {
+  assert.deepEqual(renderFileSelector(selectorRule(["format", "bundle"])), {
+    SELECTOR_QUERY_KEYS: ["format", "bundle"],
+  });
+});
+
+for (const [name, text] of [
+  ["a wrong format version", selectorRule(["format"], { format_version: 2 })],
+  ["a wrong rule name", selectorRule(["format"], { rule: "role-keys" })],
+  ["no key", selectorRule([])],
+  ["keys as a string", selectorRule("format")],
+  ["an empty key", selectorRule(["format", ""])],
+  ["a key that is no name", selectorRule(["format", 1])],
+  ["a key twice", selectorRule(["format", "format"])],
+] as const) {
+  test(`the file-selector rule with ${name} is refused`, () => {
+    assert.throws(() => renderFileSelector(text));
   });
 }

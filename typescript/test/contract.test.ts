@@ -189,7 +189,7 @@ async function checkDataset(
   assert.deepEqual(Object.keys(rows[0] ?? {}), dataset.columns, `${name}: decoded columns`);
   const partRows = new Map<string, number>();
   for (const row of rows) {
-    const part = String(row["part"]);
+    const part = row["part"] as string;
     partRows.set(part, (partRows.get(part) ?? 0) + 1);
   }
   checkMembers(

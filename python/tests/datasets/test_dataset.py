@@ -272,32 +272,48 @@ def test_member_boundaries_come_from_the_members_not_the_part_label(
         assert [list(row.values()) for row in shown.to_arrow().to_pylist()] == rows
 
 
+def test_a_sort_key_the_order_cannot_compare_is_refused() -> None:
+    table = pq.read_table(PARQUET).replace_schema_metadata(None)
+    # Arrow sorts no 16-bit float, and a varying column is a sort key.
+    halves = pa.array([float(row) for row in range(table.num_rows)]).cast(pa.float16())
+    table = table.append_column("half", halves)
+    with pytest.raises(ContractError) as caught:
+        built(with_table(recorded_member(), table))
+    assert caught.value.code == "contract_violation"
+
+
 # A NaN with another payload than the one Python writes.
 _OTHER_NAN = struct.unpack("<d", struct.pack("<Q", 0x7FF8000000000001))[0]
 
 
+_MAP = pa.map_(pa.string(), pa.int64())
+
+
 # A varying column comes before the varying `label`, a constant one after it.
-@pytest.mark.parametrize("float_type", [pa.float32(), pa.float64()])
 @pytest.mark.parametrize(
-    ("cells", "columns"),
+    ("share", "varies"),
     [
-        ([0.0, -0.0], ["value", "label", "share"]),
-        ([math.nan, _OTHER_NAN], ["value", "label", "share"]),
-        ([0.0, math.nan], ["value", "share", "label"]),
+        (pa.array([0.0, -0.0], pa.float32()), False),
+        (pa.array([0.0, -0.0]), False),
+        (pa.array([math.nan, _OTHER_NAN]), False),
+        (pa.array([0.0, math.nan]), True),
+        (pa.array([[("k", 1), ("j", 2)], [("j", 2), ("k", 1)]], _MAP), False),
+        (pa.array([[("k", 1)], [("k", 2)]], _MAP), True),
     ],
-    ids=["signed-zeros", "nan-payloads", "zero-and-nan"],
+    ids=[
+        "float32-signed-zeros",
+        "signed-zeros",
+        "nan-payloads",
+        "zero-and-nan",
+        "map-entries-in-any-order",
+        "map-values-differ",
+    ],
 )
-def test_a_float_column_varies_by_value(
-    float_type: pa.DataType, cells: list[float], columns: list[str]
-) -> None:
-    table = pa.table(
-        {
-            "value": [1.0, 1.0],
-            "share": pa.array(cells, float_type),
-            "label": ["a", "b"],
-        }
-    )
-    assert in_reading_order(table, member_rows=[2]).column_names == columns
+def test_a_column_varies_by_value(share: pa.Array, varies: bool) -> None:
+    table = pa.table({"value": [1.0, 1.0], "share": share, "label": ["a", "b"]})
+    ordered = in_reading_order(table, member_rows=[2])
+    expected = ["share", "label"] if varies else ["label", "share"]
+    assert ordered.column_names == ["value", *expected]
 
 
 def test_a_list_column_varies_by_value_and_sorts_no_rows() -> None:

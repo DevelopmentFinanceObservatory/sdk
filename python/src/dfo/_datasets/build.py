@@ -34,6 +34,7 @@ from dfo._core.types import (
     Wire,
     matches,
 )
+from dfo._generated.file_selector import SELECTOR_QUERY_KEYS
 from dfo._generated.role_keys import ROLE_KEYS
 from dfo._http.hooks import Hold
 
@@ -45,8 +46,6 @@ POLL_BACKOFF_FIRST = 1.0
 POLL_BACKOFF_CAP = 8.0
 
 _LAYOUTS = ("long", "frame")
-# The query keys a version's file selector reads.
-SELECTOR_QUERY_KEYS = ("format", "bundle", "layout")
 
 # The years a window range may name. The server takes any integer JSON carries
 # exactly, and a year outside these builds an identity Search cannot resolve back.

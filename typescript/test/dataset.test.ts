@@ -678,6 +678,67 @@ describe("members whose column types differ", () => {
     ]);
   });
 
+  test("read, stack, convert and save list and struct columns, their items widened", async () => {
+    const nested = (item: "INT32" | "INT64", tags: unknown[], meta: unknown[]) =>
+      new Uint8Array(
+        parquetWriteBuffer({
+          columnData: [
+            { name: "tags", data: tags },
+            { name: "meta", data: meta },
+          ],
+          schema: [
+            { name: "root", num_children: 2 },
+            { name: "tags", repetition_type: "OPTIONAL", converted_type: "LIST", num_children: 1 },
+            { name: "list", repetition_type: "REPEATED", num_children: 1 },
+            { name: "element", repetition_type: "OPTIONAL", type: item },
+            { name: "meta", repetition_type: "OPTIONAL", num_children: 2 },
+            { name: "share", repetition_type: "OPTIONAL", type: "DOUBLE" },
+            {
+              name: "label",
+              repetition_type: "OPTIONAL",
+              type: "BYTE_ARRAY",
+              converted_type: "UTF8",
+            },
+          ],
+        }),
+      );
+    const dataset = await Dataset.create(
+      [
+        member(nested("INT32", [[1, null], null], [{ share: 0.5, label: "a" }, null]), {
+          parts: ["one"],
+        }),
+        member(nested("INT64", [[3n]], [{ share: null, label: "b" }]), {
+          parts: ["two"],
+          spec: { spec_id: "s2", definition: {} },
+        }),
+      ],
+      { layout: "long" },
+    );
+    const rows = [
+      { part: "one", tags: [1, null], meta: { share: 0.5, label: "a" } },
+      { part: "one", tags: null, meta: null },
+      { part: "two", tags: [3], meta: { share: null, label: "b" } },
+    ];
+    assert.deepEqual(await dataset.toRows(), rows);
+    const table = await toArrow(dataset);
+    assert.equal(String(table.getChild("tags")?.type), "List<Int64>");
+    assert.equal(String(table.getChild("meta")?.type), "Struct<{share:Float64, label:Utf8}>");
+    assert.deepEqual(
+      table
+        .toArray()
+        .map((row): unknown =>
+          JSON.parse(
+            JSON.stringify(row, (_, value: unknown) =>
+              typeof value === "bigint" ? Number(value) : value,
+            ),
+          ),
+        ),
+      rows,
+    );
+    const reread = await Dataset.create([member(await dataset.bytes())], { layout: "long" });
+    assert.deepEqual(await reread.toRows(), rows);
+  });
+
   test("raise ContractError when a column's types do not widen to one", async () => {
     const flag = file({ year: { type: "BOOLEAN", data: [true] } });
     const year = file({ year: { type: "INT32", data: [2020] } });
@@ -690,21 +751,36 @@ describe("members whose column types differ", () => {
     );
   });
 
-  test("raise ContractError for a column type the client cannot read", async () => {
-    const nested = new Uint8Array(
-      parquetWriteBuffer({
-        columnData: [{ name: "x", data: [new Uint8Array([0])] }],
-        schema: [
-          { name: "root", num_children: 1 },
-          { name: "x", repetition_type: "OPTIONAL", type: "BYTE_ARRAY", converted_type: "BSON" },
-        ],
-      }),
-    );
-    await assert.rejects(() => Dataset.create([member(nested)], { layout: "long" }), {
-      name: "ContractError",
-      code: "contract_violation",
+  for (const [name, data, schema] of [
+    [
+      "a BSON column",
+      [new Uint8Array([0])],
+      [{ name: "x", repetition_type: "OPTIONAL", type: "BYTE_ARRAY", converted_type: "BSON" }],
+    ],
+    [
+      "a MAP column",
+      [{ k: 1n }],
+      [
+        { name: "x", repetition_type: "OPTIONAL", converted_type: "MAP", num_children: 1 },
+        { name: "key_value", repetition_type: "REPEATED", num_children: 2 },
+        { name: "key", repetition_type: "REQUIRED", type: "BYTE_ARRAY", converted_type: "UTF8" },
+        { name: "value", repetition_type: "OPTIONAL", type: "INT64" },
+      ],
+    ],
+  ] as const) {
+    test(`raise ContractError for ${name}, which the client cannot read`, async () => {
+      const unreadable = new Uint8Array(
+        parquetWriteBuffer({
+          columnData: [{ name: "x", data: [...data] }],
+          schema: [{ name: "root", num_children: 1 }, ...schema],
+        }),
+      );
+      await assert.rejects(() => Dataset.create([member(unreadable)], { layout: "long" }), {
+        name: "ContractError",
+        code: "contract_violation",
+      });
     });
-  });
+  }
 
   test("raise ContractError when a member's file holds its own part column", async () => {
     const own = file({ part: { type: "BYTE_ARRAY", logical: { type: "STRING" }, data: ["x"] } });

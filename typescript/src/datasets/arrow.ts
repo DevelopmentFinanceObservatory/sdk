@@ -9,7 +9,7 @@ import * as arrow from "apache-arrow";
 
 import { datasetTable } from "./dataset.ts";
 import type { Dataset } from "./dataset.ts";
-import { decimalNumber, decodeStored } from "./parquet.ts";
+import { DAY_MS, TICKS_PER_MS, decimalNumber, decodeStored } from "./parquet.ts";
 import type { ColumnType } from "./parquet.ts";
 
 const TIME_UNITS = { MILLIS: "MILLISECOND", MICROS: "MICROSECOND", NANOS: "NANOSECOND" } as const;
@@ -34,6 +34,40 @@ function arrowType(type: ColumnType): arrow.DataType {
       return new arrow.Float64();
     case "int":
       return new arrow.Int(type.signed, type.bits);
+    case "list":
+      return new arrow.List(new arrow.Field("element", arrowType(type.item), true));
+    case "struct":
+      return new arrow.Struct(
+        type.fields.map((field) => new arrow.Field(field.name, arrowType(field.type), true)),
+      );
+  }
+}
+
+/** A stored value inside a list or struct as apache-arrow's builders take it: a decimal as its
+ *  nearest float, a date as a `Date`, a timestamp as milliseconds since the epoch, which drops
+ *  a finer unit's sub-millisecond part, an INT64 as a `bigint`, and lists and structs item by
+ *  item. */
+function builderValue(value: unknown, type: ColumnType): unknown {
+  if (value === null || value === undefined) return null;
+  switch (type.kind) {
+    case "list":
+      return (value as unknown[]).map((item) => builderValue(item, type.item));
+    case "struct": {
+      const cell = value as Record<string, unknown>;
+      return Object.fromEntries(
+        type.fields.map((field) => [field.name, builderValue(cell[field.name], field.type)]),
+      );
+    }
+    case "decimal":
+      return decimalNumber(value as bigint, type.scale);
+    case "date":
+      return new Date((value as number) * DAY_MS);
+    case "timestamp":
+      return Number(BigInt(value as bigint | number) / TICKS_PER_MS[type.unit]);
+    case "int":
+      return type.bits === 64 ? BigInt(value as bigint | number) : Number(value);
+    default:
+      return value;
   }
 }
 
@@ -68,6 +102,12 @@ function arrowVector(type: ColumnType, values: readonly unknown[]): arrow.Vector
   if (type.kind === "null") return arrow.makeVector(arrow.makeData({ type: dataType, length }));
   if (type.kind === "string" || type.kind === "bool" || type.kind === "binary") {
     return arrow.vectorFromArray(values, dataType);
+  }
+  if (type.kind === "list" || type.kind === "struct") {
+    return arrow.vectorFromArray(
+      values.map((value) => builderValue(value, type)),
+      dataType,
+    );
   }
 
   // Fixed-width values are written straight into the column buffer with a validity bitmap,
