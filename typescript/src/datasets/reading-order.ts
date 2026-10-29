@@ -6,7 +6,8 @@
  * included; and `stat_var`. The second and third groups keep the order the server wrote them.
  * The rows of each member are sorted by the filled slots other than the value and the time
  * period, then by the varying columns in presented order, `stat_var` after them when it varies,
- * then by the time period. The order moves columns and rows and changes no value.
+ * then by the time period. A column of lists or structs is no sort key. The order moves columns
+ * and rows and changes no value.
  */
 
 import { READING_COLUMNS } from "../generated/reading-order.ts";
@@ -55,7 +56,9 @@ export function readingOrder(
     ...varying,
     ...(statVar !== undefined && varies(statVar.values) ? [statVar] : []),
     ...(filled.has(TIME_PERIOD) ? [held.get(TIME_PERIOD)!] : []),
-  ].map(({ values }) => values);
+  ]
+    .map(({ values }) => values)
+    .filter((values) => !values.some(isNested));
   const total = memberRows.reduce((sum, count) => sum + count, 0);
   const rows = Uint32Array.from({ length: total }, (_, index) => index);
   if (keys.length === 0) return { columns: names, rows };
@@ -77,10 +80,36 @@ export function readingOrder(
 
 const isMissing = (value: unknown): boolean => value === null || value === undefined;
 
-/** Whether two stored values are the same value; null is a value like any other. */
+/** Whether a stored value is a struct cell, which Parquet decodes as a plain object. */
+const isStruct = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" &&
+  value !== null &&
+  [Object.prototype, null].includes(Object.getPrototypeOf(value) as object | null);
+
+/** Whether a stored value is a list or a struct cell, which the rule gives no order. */
+const isNested = (value: unknown): boolean => Array.isArray(value) || isStruct(value);
+
+/** Whether two stored values are the same value: null is a value like any other, NaN is NaN, a
+ *  list is the same when its items are in order, and a struct when its fields are in any order. */
 function same(left: unknown, right: unknown): boolean {
   if (left === right) return true;
   if (isMissing(left) || isMissing(right)) return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((item, index) => same(item, right[index]))
+    );
+  }
+  if (isStruct(left) || isStruct(right)) {
+    if (!isStruct(left) || !isStruct(right)) return false;
+    const names = Object.keys(left);
+    return (
+      names.length === Object.keys(right).length &&
+      names.every((name) => Object.hasOwn(right, name) && same(left[name], right[name]))
+    );
+  }
   if (left instanceof Uint8Array || right instanceof Uint8Array) {
     return compareValues(left, right) === 0;
   }

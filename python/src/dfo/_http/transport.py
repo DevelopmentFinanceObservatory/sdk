@@ -8,9 +8,10 @@ the client's headers and key on the API's origin and with a bare request on the
 storage host. Under `DFO_OFFLINE=1` every request raises `offline` before it is
 sent.
 
-The base URL is an absolute http or https URL with no userinfo, query, fragment
-or dot segment, whose host, when it reads as an IPv4 address, is four decimal
-numbers such as 127.0.0.1, not `127.1` or `2130706433` (`base_url_invalid`). A
+The base URL is an absolute http or https URL with no userinfo, query, fragment,
+dot segment or backslash, whose port, when it names one, is 1 to 65535, and
+whose host, when it reads as an IPv4 address, is four decimal numbers such as
+127.0.0.1, not `127.1` or `2130706433` (`base_url_invalid`). A
 client built with no base URL reads `DFO_BASE_URL`, and with that unset or empty
 uses the public API. Two
 URLs share an origin when their scheme, host and port match after lower-casing,
@@ -161,6 +162,10 @@ _RETRIES_MAX = 10
 # parser reads as an IPv4 address, such as `127.1`, `0x7f.1` or `2130706433`.
 _NUMERIC_HOST = re.compile(r"(?:[^:]*\.)?(?:0x[0-9a-f]*|[0-9]+)")
 
+# An authority with no userinfo: a bracketed IPv6 address or a host, then the
+# port as written after a `:`, empty when the `:` ends it.
+_AUTHORITY = re.compile(r"(?:\[[^\]]*\]|[^:]*)(?::(.*))?", re.DOTALL)
+
 # The headers that frame a message or concern one hop, lower case. httpx2 and
 # h11 set the framing and the host themselves, and a caller's value would
 # contradict the body sent or the connection used.
@@ -241,7 +246,8 @@ def resolve_base_url(
     Raises:
         InvalidRequestError: The URL is not a string, is empty, holds a
             character outside visible ASCII, is not an absolute http or https
-            URL, or carries userinfo, a query, a fragment or a dot segment
+            URL, carries userinfo, a query, a fragment, a dot segment or a
+            backslash, or names a port that is not 1 to 65535
             (`base_url_invalid`). The message names `DFO_BASE_URL` when the
             URL came from it.
     """
@@ -266,7 +272,8 @@ def _split_base_url(base_url: str, source: BaseUrlSource) -> tuple[str, str]:
     Raises:
         InvalidRequestError: `base_url` is not a string, is empty, holds a
             character outside visible ASCII, is not an absolute http or https
-            URL, or carries userinfo, a query, a fragment or a dot segment
+            URL, carries userinfo, a query, a fragment, a dot segment or a
+            backslash, or names a port that is not 1 to 65535
             (`base_url_invalid`).
     """
 
@@ -301,9 +308,15 @@ def _split_base_url(base_url: str, source: BaseUrlSource) -> tuple[str, str]:
         refuse("carries a query or a fragment")
     if has_dot_segment(parts.path):
         refuse("holds a . or .. path segment")
+    if "\\" in base_url:
+        refuse("holds a backslash")
+    authority = _AUTHORITY.fullmatch(parts.netloc)
+    port = authority.group(1) if authority else ""
+    if port is not None and not (port.isdigit() and 1 <= int(port) <= 65535):
+        refuse("names a port that is not a number from 1 to 65535")
     origin = origin_of(base_url)
     if origin is None:
-        refuse("names no host, or a port that is not a number from 0 to 65535")
+        refuse("names no host")
     host = _host(base_url)
     if _NUMERIC_HOST.fullmatch(host) and _dotted_quad(host) is None:
         refuse(

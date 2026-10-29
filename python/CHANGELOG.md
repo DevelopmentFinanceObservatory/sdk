@@ -24,3 +24,10 @@ The first release of `development-finance`, the Python client for the Developmen
 - Downloads are cached on disk, verified against their digest, and readable offline with `DFO_OFFLINE=1`. `dfo cache clear` empties the cache.
 - Errors live in `dfo.errors`, one class per next step, and each message ends with its code, and with the trace id when there is one. The client retries failures that can clear, honouring `Retry-After`.
 - `dfo.types` holds the types of what answers and datasets contain. The package ships `py.typed`.
+
+### Fixed
+
+- `dfo.fetch(ref)` for a ref whose file has expired or is no longer listed asks the version's file selector with only `format`, `bundle` and `layout`. A ref that leaves out party totals, the default, sent `without_party_totals=true` as well, which the selector refuses, so the fetch raised `InvalidRequestError` before it could build the version again.
+- A `base_url` or `DFO_BASE_URL` with a backslash, or with a port that is empty, 0 or above 65535, raises `InvalidRequestError` with `base_url_invalid`. Before, a backslash, an empty port and port 0 passed.
+- A dataset with a list, struct or map column is presented in reading order. Two such cells hold the same value when their items are the same in order and their fields the same in any order, NaN included, and such a column is no sort key. Before, the dataset raised `ContractError` (`contract_violation`).
+- A float column whose cells differ only as 0.0 and -0.0, or as NaNs with different payloads, holds one value in the reading order, so it sits among the constant columns. Before, it counted as varying.

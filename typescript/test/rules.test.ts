@@ -1,5 +1,6 @@
-// Replays the contract's rule vectors for keys, credentials, the reading order, role keys and the
-// client's identity. The cache rules have no TypeScript counterpart: this client keeps no cache on disk.
+// Replays the contract's rule vectors for keys, credentials, the reading order, role keys, the
+// file selector's query and the client's identity. The cache rules have no TypeScript
+// counterpart: this client keeps no cache on disk.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
@@ -24,6 +25,8 @@ import { Dataset } from "../src/datasets/dataset.ts";
 import type { FetchedMember } from "../src/datasets/dataset.ts";
 import { readingOrder } from "../src/datasets/reading-order.ts";
 import { fetchDataset } from "../src/datasets/resolve.ts";
+import { selectorQuery } from "../src/core/ref.ts";
+import type { Rendering } from "../src/core/ref.ts";
 import { specRoles } from "../src/core/roles.ts";
 import { FLOW_KEYS, ROLE_KEYS } from "../src/generated/role-keys.ts";
 import { contractJson, json, mockFetch, problem } from "./support.ts";
@@ -194,7 +197,7 @@ test("a profile named __proto__ is a profile like any other", () => {
 });
 
 describe("reading-order", async () => {
-  type Cell = string | number | null;
+  type Cell = string | number | boolean | null | Cell[] | { [field: string]: Cell };
   type Member = { part?: string; columns: string[]; rows: Cell[][] };
   type Vector = { members: Member[]; columns: string[]; rows: Cell[][] };
   /** A member's file as the server writes it: a number column as doubles, every other as
@@ -209,7 +212,31 @@ describe("reading-order", async () => {
         }),
       }),
     );
-  for (const vector of await vectors<Vector>("reading-order")) {
+  const nested = (cell: Cell): boolean => typeof cell === "object" && cell !== null;
+  // The client reads flat Parquet files only, so a vector of list or struct cells orders the
+  // cells themselves: one member's columns, as the order reads a decoded table.
+  for (const vector of (await vectors<Vector>("reading-order")).filter(({ members }) =>
+    members.some(({ rows }) => rows.flat().some(nested)),
+  )) {
+    test(vector.name, () => {
+      assert.equal(vector.members.length, 1);
+      const [{ columns, rows }] = vector.members as [Member];
+      const order = readingOrder(
+        columns.map((name, at) => ({ name, values: rows.map((row) => row[at]!) })),
+        [rows.length],
+      );
+      assert.deepEqual(order.columns, vector.columns);
+      assert.deepEqual(
+        [...order.rows].map((row) =>
+          order.columns.map((name) => rows[row]![columns.indexOf(name)]),
+        ),
+        vector.rows,
+      );
+    });
+  }
+  for (const vector of (await vectors<Vector>("reading-order")).filter(
+    ({ members }) => !members.some(({ rows }) => rows.flat().some(nested)),
+  )) {
     test(vector.name, async () => {
       const members = vector.members.map((member) => {
         const data = file(member);
@@ -310,6 +337,15 @@ describe("role-keys", async () => {
   }
 });
 
+describe("file-selector", async () => {
+  type Vector = { rendering: Rendering; query: string };
+  for (const vector of await vectors<Vector>("file-selector")) {
+    test(vector.name, () => {
+      assert.equal(selectorQuery(vector.rendering).toString(), vector.query);
+    });
+  }
+});
+
 describe("client-identity", async () => {
   type Vector = {
     client?: string;
@@ -332,6 +368,25 @@ describe("client-identity", async () => {
     assert.equal(ownIdentity(), clientIdentity(VERSION, currentRuntime()));
     assert.equal(currentRuntime().name, "Node");
   });
+
+  for (const [scope, globals, name] of [
+    ["a browser page", { window: { document: {} } }, "browser"],
+    ["a browser worker", { importScripts: () => undefined }, "browser"],
+    ["a runtime that is no browser, Node, Deno or Bun", {}, "other"],
+  ] as const) {
+    test(`names the runtime ${name} in ${scope}`, () => {
+      const global = globalThis as Record<string, unknown>;
+      const process = Object.getOwnPropertyDescriptor(global, "process")!;
+      Object.defineProperty(global, "process", { value: undefined, configurable: true });
+      Object.assign(global, globals);
+      try {
+        assert.deepEqual(currentRuntime(), { name });
+      } finally {
+        for (const key of Object.keys(globals)) Reflect.deleteProperty(global, key);
+        Object.defineProperty(global, "process", process);
+      }
+    });
+  }
 
   for (const vector of all.filter(({ client }) => client === "dfo-ts")) {
     test(vector.name, () => {

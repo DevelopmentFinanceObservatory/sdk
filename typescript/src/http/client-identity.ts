@@ -1,19 +1,19 @@
 /**
  * The `X-DFO-Client` header every API request carries, by the contract's client-identity rule
  * (`contract/rules/client-identity.json`): `dfo-ts/<version> (<runtime>)`, the runtime `Node`,
- * `Deno` or `Bun` with the major and minor of its version, and `browser` in any other runtime.
+ * `Deno` or `Bun` with the major and minor of its version, `browser` in a browser page or
+ * worker, and `other` in any other runtime, such as Cloudflare Workers.
  */
 
+import { inBrowser } from "../config/keys.ts";
 import { VERSION } from "../version.ts";
 
 export const CLIENT_HEADER = "X-DFO-Client";
 
-/** A runtime, with its full version unless it is a browser's. */
+/** A runtime, with its full version when it is Node, Deno or Bun. */
 export type Runtime =
   | { readonly name: "Node" | "Deno" | "Bun"; readonly version: string }
-  | {
-      readonly name: "browser";
-    };
+  | { readonly name: "browser" | "other" };
 
 /** The runtime this code runs in. Deno and Bun both report a Node version too, so they are
  *  asked first. */
@@ -27,12 +27,12 @@ export function currentRuntime(): Runtime {
   const versions = scope.process?.versions;
   if (typeof versions?.bun === "string") return { name: "Bun", version: versions.bun };
   if (typeof versions?.node === "string") return { name: "Node", version: versions.node };
-  return { name: "browser" };
+  return { name: inBrowser() ? "browser" : "other" };
 }
 
 /** The header's value for a version of the client in a runtime. */
 export function clientIdentity(version: string, runtime: Runtime): string {
-  if (runtime.name === "browser") return `dfo-ts/${version} (browser)`;
+  if (!("version" in runtime)) return `dfo-ts/${version} (${runtime.name})`;
   const [major, minor = "0"] = runtime.version.split(".");
   return `dfo-ts/${version} (${runtime.name} ${major}.${minor})`;
 }

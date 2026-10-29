@@ -2,7 +2,9 @@
 
 import copy
 import json
+import math
 import pickle
+import struct
 import sys
 from collections.abc import Callable
 from dataclasses import replace
@@ -30,7 +32,12 @@ from dfo._core.types import (
 )
 from dfo._datasets.bundle import load as load_saved
 from dfo._datasets.cache import sha256_digest
-from dfo._datasets.dataset import Dataset, FetchedMember, build_dataset
+from dfo._datasets.dataset import (
+    Dataset,
+    FetchedMember,
+    build_dataset,
+    in_reading_order,
+)
 from tests._data import load
 from tests._datasets import PARQUET, manifest, other_member, recorded_member, scenario
 from tests._fetch_support import FakeCache
@@ -265,14 +272,50 @@ def test_member_boundaries_come_from_the_members_not_the_part_label(
         assert [list(row.values()) for row in shown.to_arrow().to_pylist()] == rows
 
 
-def test_a_table_the_reading_order_cannot_compare_is_refused() -> None:
-    table = pq.read_table(PARQUET).replace_schema_metadata(None)
-    table = table.append_column(
-        "nested", pa.array([[index] for index in range(table.num_rows)])
+# A NaN with another payload than the one Python writes.
+_OTHER_NAN = struct.unpack("<d", struct.pack("<Q", 0x7FF8000000000001))[0]
+
+
+# A varying column comes before the varying `label`, a constant one after it.
+@pytest.mark.parametrize("float_type", [pa.float32(), pa.float64()])
+@pytest.mark.parametrize(
+    ("cells", "columns"),
+    [
+        ([0.0, -0.0], ["value", "label", "share"]),
+        ([math.nan, _OTHER_NAN], ["value", "label", "share"]),
+        ([0.0, math.nan], ["value", "share", "label"]),
+    ],
+    ids=["signed-zeros", "nan-payloads", "zero-and-nan"],
+)
+def test_a_float_column_varies_by_value(
+    float_type: pa.DataType, cells: list[float], columns: list[str]
+) -> None:
+    table = pa.table(
+        {
+            "value": [1.0, 1.0],
+            "share": pa.array(cells, float_type),
+            "label": ["a", "b"],
+        }
     )
-    with pytest.raises(ContractError) as caught:
-        built(with_table(recorded_member(), table))
-    assert caught.value.code == "contract_violation"
+    assert in_reading_order(table, member_rows=[2]).column_names == columns
+
+
+def test_a_list_column_varies_by_value_and_sorts_no_rows() -> None:
+    plain = pq.read_table(PARQUET).replace_schema_metadata(None)
+    # Descending items, which as a sort key would reverse the rows that tie before
+    # the time period.
+    rows = plain.num_rows
+    nested = plain.append_column(
+        "nested", pa.array([[rows - index] for index in range(rows)])
+    )
+    table = built(with_table(recorded_member(), nested)).to_arrow()
+    expected = built(with_table(recorded_member(), plain)).to_arrow()
+    assert table.drop_columns(["nested"]).equals(expected)
+    # The list column varies, so it leads the columns after the reading slots,
+    # which here are all constant.
+    after = expected.column_names.index("financingProvider")
+    names = expected.column_names
+    assert table.column_names == [*names[:after], "nested", *names[after:]]
 
 
 def test_the_preview_and_the_digest_keep_their_order() -> None:

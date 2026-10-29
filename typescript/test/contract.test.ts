@@ -96,7 +96,7 @@ async function run(
     // The client has no mint or operation call: a fetch waits. These steps drive the poller
     // under it, as `newest_version` drives the version lookup.
     case "mint":
-      return mint(transport, step.spec, step.layout);
+      return mint(transport, step.spec, step.layout, step.party_totals);
     case "operation":
       return resume(transport, step.operation_id, step.layout);
     case "result":

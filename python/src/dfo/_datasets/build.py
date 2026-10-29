@@ -45,6 +45,8 @@ POLL_BACKOFF_FIRST = 1.0
 POLL_BACKOFF_CAP = 8.0
 
 _LAYOUTS = ("long", "frame")
+# The query keys a version's file selector reads.
+SELECTOR_QUERY_KEYS = ("format", "bundle", "layout")
 
 # The years a window range may name. The server takes any integer JSON carries
 # exactly, and a year outside these builds an identity Search cannot resolve back.
@@ -183,9 +185,14 @@ def layout_of(rendering: Rendering) -> Layout:
 
 
 def file_params(rendering: Rendering) -> dict[str, Any]:
-    """The file selector's query for `rendering`, the selector a ref stores:
-    format, bundle, layout when set, and `without_party_totals` when true."""
-    return rendering.to_object()
+    """The file selector's query for `rendering`: its members among
+    `SELECTOR_QUERY_KEYS`, layout only when set.
+
+    The selector serves a stored version, which is already the party-totals cut
+    or the plain version, and refuses any other key as `request_invalid`.
+    """
+    obj = rendering.to_object()
+    return {key: obj[key] for key in SELECTOR_QUERY_KEYS if key in obj}
 
 
 def scope(

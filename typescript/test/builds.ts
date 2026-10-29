@@ -21,7 +21,8 @@ export type StartedBuild = {
 const NO_DEADLINE = { deadline: Infinity };
 
 /**
- * Posts a spec's build, as it stands, and returns it done or running.
+ * Posts a spec's build, as it stands, and returns it done or running. The build leaves party
+ * totals out, as a fetch of a spec does, unless `partyTotals` keeps them.
  *
  * @throws {InvalidRequestError} The spec is not one `checkedSpec` accepts.
  * @throws {DfoError} The server refused the build.
@@ -30,9 +31,10 @@ export async function mint(
   transport: Transport,
   spec: Spec,
   layout: Layout = "long",
+  partyTotals = false,
 ): Promise<StartedBuild> {
   checkedSpec(spec);
-  const rendering = renderingFor(layout);
+  const rendering = renderingFor(layout, !partyTotals);
   const finishing = {
     parts: [],
     posted: { spec, entityGroups: spec.resolved?.entity_groups },

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import date
@@ -88,6 +89,10 @@ _LAST_COLUMN = "stat_var"
 # The reading columns the rows do not sort by among the slots: a measure, and the
 # time period, which sorts after every other key.
 _NOT_SLOT_KEYS = ("value", "time_period")
+
+# What a NaN inside a list or struct cell stands as when cells are compared, so
+# that NaN is the same value as NaN.
+_NAN = object()
 
 # The columns every artifact a dataset reads holds, in both layouts.
 REQUIRED_COLUMNS = ("time_period", "value")
@@ -434,15 +439,19 @@ def in_reading_order(table: pa.Table, *, member_rows: Sequence[int]) -> pa.Table
     null included, each group in the table's order, and `stat_var` last. Varying is
     judged over the whole table, so a stacked one's members are judged together.
 
+    Two cells hold the same value when they are equal: a list cell item by item
+    in order, a struct cell field by field, and NaN the same as NaN.
+
     The rows of each member, its `member_rows` count of consecutive rows, sort by
     the filled slots other than `value` and `time_period`, then by the varying
     columns, then by `stat_var` when it varies, then by `time_period`: ascending,
-    nulls last, ties in the table's order. The members keep their order. Applied
-    to its own result, the order changes nothing.
+    nulls last, ties in the table's order. A list, struct or map column is no sort
+    key. The members keep their order. Applied to its own result, the order
+    changes nothing.
 
     Raises:
-        ContractError: A column holds a type the order cannot compare, such as a
-            list (`contract_violation`).
+        ContractError: A column holds a type the order cannot compare
+            (`contract_violation`).
     """
     import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
 
@@ -481,10 +490,14 @@ def _ordered(table: pa.Table, *, member_rows: Sequence[int]) -> pa.Table:
         table = table.select(presented)
 
     keys = [
-        *(name for name in filled if name not in _NOT_SLOT_KEYS),
-        *varying,
-        *(name for name in last if _varies(table[name])),
-        *(["time_period"] if "time_period" in held else []),
+        name
+        for name in [
+            *(name for name in filled if name not in _NOT_SLOT_KEYS),
+            *varying,
+            *(name for name in last if _varies(table[name])),
+            *(["time_period"] if "time_period" in held else []),
+        ]
+        if not pa.types.is_nested(table.schema.field(name).type)
     ]
     if table.num_rows < 2 or not keys:
         return table
@@ -495,8 +508,35 @@ def _ordered(table: pa.Table, *, member_rows: Sequence[int]) -> pa.Table:
 
 
 def _varies(column: pa.ChunkedArray) -> bool:
-    """Whether `column` holds more than one value, null counting as one."""
+    """Whether `column` holds more than one value, null counting as one, 0.0 the
+    same as -0.0 and every NaN the same as every other."""
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+    import pyarrow.compute as pc  # noqa: PLC0415 - pyarrow loads on first use
+
+    if pa.types.is_nested(column.type):
+        return len({_cell_key(cell) for cell in column.to_pylist()}) > 1
+    if pa.types.is_float32(column.type) or pa.types.is_float64(column.type):
+        # Arrow's unique tells the zeros apart, and NaNs by their payload. Adding
+        # 0.0 turns -0.0 into 0.0, and one NaN stands for all.
+        zero, nan = pa.scalar(0.0, column.type), pa.scalar(math.nan, column.type)
+        # pyarrow generates its compute functions at import, so they are called by
+        # name.
+        is_nan = pc.call_function("is_nan", [column])
+        plus_zero = pc.call_function("add", [column, zero])
+        column = pc.call_function("if_else", [is_nan, nan, plus_zero])
     return len(column.unique()) > 1
+
+
+def _cell_key(cell: object) -> object:
+    """A hashable stand-in for a list, struct or map cell, equal for two cells that
+    hold the same value: items in order, fields in any order, NaN as NaN."""
+    if isinstance(cell, float) and math.isnan(cell):
+        return _NAN
+    if isinstance(cell, list | tuple):
+        return tuple(_cell_key(item) for item in cell)
+    if isinstance(cell, dict):
+        return frozenset((name, _cell_key(value)) for name, value in cell.items())
+    return cell
 
 
 def _member_runs(table: pa.Table, member_rows: Sequence[int]) -> list[pa.Table]:
