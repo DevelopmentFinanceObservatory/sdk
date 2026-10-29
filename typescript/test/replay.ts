@@ -56,7 +56,7 @@ export type Step =
   | { op: "choose"; part?: number | string; option: number | string }
   | FetchStep
   | { op: "newest_version"; spec: Spec }
-  | { op: "mint"; spec: Spec; layout?: Layout }
+  | { op: "mint"; spec: Spec; layout?: Layout; party_totals?: boolean }
   | { op: "operation"; operation_id: string; layout?: Layout }
   | { op: "result" };
 

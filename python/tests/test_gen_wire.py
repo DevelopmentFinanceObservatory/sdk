@@ -217,3 +217,34 @@ def test_a_role_keys_rule_that_breaks_the_format_is_refused(
 ) -> None:
     with pytest.raises(SystemExit):
         gen_wire.render_role_keys(rule)
+
+
+def _selector_rule(keys: object) -> dict[str, Any]:
+    return {"format_version": 1, "rule": "file-selector", "query_keys": keys}
+
+
+def test_the_file_selector_keys_render_as_a_tuple() -> None:
+    source = gen_wire.render_file_selector(_selector_rule(["format", "bundle"]))
+    assert (
+        "SELECTOR_QUERY_KEYS: Final[tuple[str, ...]] = ('format', 'bundle')" in source
+    )
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        {**_selector_rule(["format"]), "format_version": 2},
+        {**_selector_rule(["format"]), "rule": "role-keys"},
+        _selector_rule([]),
+        _selector_rule("format"),
+        _selector_rule(["format", ""]),
+        _selector_rule(["format", 1]),
+        _selector_rule(["format", "format"]),
+    ],
+    ids=["format", "rule", "no-key", "not-a-list", "empty", "not-a-name", "repeated"],
+)
+def test_a_file_selector_rule_that_breaks_the_format_is_refused(
+    rule: dict[str, Any],
+) -> None:
+    with pytest.raises(SystemExit):
+        gen_wire.render_file_selector(rule)

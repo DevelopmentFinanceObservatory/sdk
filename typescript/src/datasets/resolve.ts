@@ -78,6 +78,7 @@ import {
   mintOptions,
   OPS_ID,
   sameRendering,
+  selectorQuery,
   SPEC_ID,
 } from "../core/ref.ts";
 import type { Layout, Rendering, RefMember, Spec } from "../core/ref.ts";
@@ -609,9 +610,7 @@ async function storedFile(
       refusal = error;
     }
   }
-  const query = new URLSearchParams(
-    Object.entries(mintOptions(member.rendering)).map(([name, value]) => [name, String(value)]),
-  );
+  const query = selectorQuery(member.rendering);
   const selector = `/datasets/${member.spec.spec_id}/${member.contentVersion}/file?${query}`;
   // The selector's rendering can outgrow the stored artifact, so its cap is the default one.
   try {

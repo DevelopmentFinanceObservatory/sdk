@@ -3,12 +3,14 @@
 import re
 from typing import Any
 
+import httpx2
 import pytest
 
 from dfo._core.errors import ContractError, InvalidRequestError
 from dfo._core.types import Rendering, Spec
 from dfo._datasets.build import (
     Reading,
+    file_params,
     narrowings,
     read_operation,
     rebind,
@@ -145,6 +147,12 @@ def test_the_role_keys_vectors(vector: dict[str, Any]) -> None:
     # The message names each key in the vector's order, the typed key first.
     names = "".join(f".*\\b{re.escape(name)}\\b" for name in vector["error"]["names"])
     assert re.match(names, str(caught.value), re.DOTALL)
+
+
+@pytest.mark.parametrize("vector", vectors("file-selector"), ids=ids("file-selector"))
+def test_the_file_selector_vectors(vector: dict[str, Any]) -> None:
+    params = file_params(Rendering(**vector["rendering"]))
+    assert str(httpx2.QueryParams(params)) == vector["query"]
 
 
 def test_a_spec_without_an_identity_takes_no_role() -> None:

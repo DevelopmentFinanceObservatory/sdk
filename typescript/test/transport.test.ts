@@ -1425,6 +1425,28 @@ describe("base URLs", () => {
     });
   }
 
+  // In a page, a scheme-relative base URL resolves against the page, and its authority is read
+  // as written, as an absolute one's is.
+  for (const [baseUrl, valid] of [
+    ["//api.example:8443/api", true],
+    ["//api.example:0/api", false],
+    ["//api.example:/api", false],
+    ["//api.example:65536/api", false],
+    ["//127.1/api", false],
+  ] as const) {
+    test(`${valid ? "accept" : "refuse"} ${baseUrl} in a page`, () => {
+      const global = globalThis as Record<string, unknown>;
+      global["location"] = { href: "https://page.example/app/" };
+      try {
+        const build = () => transport({ baseUrl, apiKey: false });
+        if (valid) assert.doesNotThrow(build);
+        else assert.throws(build, { name: "InvalidRequestError", code: "base_url_invalid" });
+      } finally {
+        Reflect.deleteProperty(global, "location");
+      }
+    });
+  }
+
   for (const baseUrl of [5, new Uint8Array([104]), {}]) {
     test(`refuse a base URL of ${Object.prototype.toString.call(baseUrl)}, which is no string`, () => {
       assert.throws(

@@ -1,8 +1,11 @@
 // Replays the contract's rule vectors for keys, credentials, the reading order, role keys, the
-// client's identity, the comparison of refs and the series a derived fetch leaves out. The cache rules have no TypeScript counterpart: this client keeps no cache on disk.
+// file selector's query, the client's identity, the comparison of refs and the series a derived
+// fetch leaves out. The cache rules have no TypeScript counterpart: this client keeps no cache on
+// disk.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
+import type { SchemaElement } from "hyparquet";
 import { parquetWriteBuffer } from "hyparquet-writer";
 
 import { credentialsPath, parseCredentialsFile } from "../src/config/credentials.ts";
@@ -25,6 +28,8 @@ import { Dataset } from "../src/datasets/dataset.ts";
 import type { FetchedMember } from "../src/datasets/dataset.ts";
 import { readingOrder } from "../src/datasets/reading-order.ts";
 import { fetchDataset } from "../src/datasets/resolve.ts";
+import { selectorQuery } from "../src/core/ref.ts";
+import type { Rendering } from "../src/core/ref.ts";
 import { specRoles } from "../src/core/roles.ts";
 import { FLOW_KEYS, ROLE_KEYS } from "../src/generated/role-keys.ts";
 import { SeriesLeftOutWarning } from "../src/core/warnings.ts";
@@ -197,21 +202,55 @@ test("a profile named __proto__ is a profile like any other", () => {
 });
 
 describe("reading-order", async () => {
-  type Cell = string | number | null;
+  type Cell = string | number | boolean | null | Cell[] | { [field: string]: Cell };
   type Member = { part?: string; columns: string[]; rows: Cell[][] };
   type Vector = { members: Member[]; columns: string[]; rows: Cell[][] };
-  /** A member's file as the server writes it: a number column as doubles, every other as
-   *  strings. */
-  const file = ({ columns, rows }: Member): Uint8Array =>
-    new Uint8Array(
+  /** The schema elements of a field holding `cells`, as the server writes it: a list as a
+   *  Parquet LIST of its items, a struct as a group of its fields, a number as a double, a
+   *  boolean as a boolean and any other as a string. A vector's cells of one field, nulls
+   *  aside, are of one kind. */
+  const field = (name: string, cells: Cell[]): SchemaElement[] => {
+    const held = cells.filter((cell) => cell !== null);
+    const kinds = new Set(held.map((cell) => (Array.isArray(cell) ? "list" : typeof cell)));
+    assert.ok(kinds.size <= 1, `${name} holds cells of kinds ${[...kinds].join(", ")}`);
+    const optional = { name, repetition_type: "OPTIONAL" } as const;
+    if (kinds.has("list")) {
+      return [
+        { ...optional, converted_type: "LIST", num_children: 1 },
+        { name: "list", repetition_type: "REPEATED", num_children: 1 },
+        ...field("element", (held as Cell[][]).flat()),
+      ];
+    }
+    if (kinds.has("object")) {
+      const structs = held as { [field: string]: Cell }[];
+      const names = [...new Set(structs.flatMap((struct) => Object.keys(struct)))];
+      return [
+        { ...optional, num_children: names.length },
+        ...names.flatMap((child) =>
+          field(
+            child,
+            structs.map((struct) => struct[child] ?? null),
+          ),
+        ),
+      ];
+    }
+    if (kinds.has("number")) return [{ ...optional, type: "DOUBLE" }];
+    if (kinds.has("boolean")) return [{ ...optional, type: "BOOLEAN" }];
+    return [{ ...optional, type: "BYTE_ARRAY", converted_type: "UTF8" }];
+  };
+  /** A member's file, each column typed by its cells. */
+  const file = ({ columns, rows }: Member): Uint8Array => {
+    const data = columns.map((_, at) => rows.map((row) => row[at] ?? null));
+    return new Uint8Array(
       parquetWriteBuffer({
-        columnData: columns.map((name, at) => {
-          const data = rows.map((row) => row[at] ?? null);
-          const numbers = data.some((value) => typeof value === "number");
-          return { name, data, type: numbers ? "DOUBLE" : "STRING" };
-        }),
+        columnData: columns.map((name, at) => ({ name, data: data[at]! })),
+        schema: [
+          { name: "root", num_children: columns.length },
+          ...columns.flatMap((name, at) => field(name, data[at]!)),
+        ],
       }),
     );
+  };
   for (const vector of await vectors<Vector>("reading-order")) {
     test(vector.name, async () => {
       const members = vector.members.map((member) => {
@@ -242,8 +281,12 @@ test("reading-order sorts strings by code point and NaN after every number", () 
   // UTF-16 code units put U+1F600's surrogates before U+FF5E; code points put it after.
   const order = readingOrder(
     [
-      { name: "label", values: ["\u{1F600}", "\uFF5E", null, "\u{1F600}", "\u{1F600}"] },
-      { name: "share", values: [1, 2, 3, Number.NaN, 0] },
+      {
+        name: "label",
+        values: ["\u{1F600}", "\uFF5E", null, "\u{1F600}", "\u{1F600}"],
+        nested: false,
+      },
+      { name: "share", values: [1, 2, 3, Number.NaN, 0], nested: false },
     ],
     [5],
   );
@@ -313,6 +356,15 @@ describe("role-keys", async () => {
   }
 });
 
+describe("file-selector", async () => {
+  type Vector = { rendering: Rendering; query: string };
+  for (const vector of await vectors<Vector>("file-selector")) {
+    test(vector.name, () => {
+      assert.equal(selectorQuery(vector.rendering).toString(), vector.query);
+    });
+  }
+});
+
 describe("client-identity", async () => {
   type Vector = {
     client?: string;
@@ -335,6 +387,25 @@ describe("client-identity", async () => {
     assert.equal(ownIdentity(), clientIdentity(VERSION, currentRuntime()));
     assert.equal(currentRuntime().name, "Node");
   });
+
+  for (const [scope, globals, name] of [
+    ["a browser page", { window: { document: {} } }, "browser"],
+    ["a browser worker", { importScripts: () => undefined }, "browser"],
+    ["a runtime that is no browser, Node, Deno or Bun", {}, "other"],
+  ] as const) {
+    test(`names the runtime ${name} in ${scope}`, () => {
+      const global = globalThis as Record<string, unknown>;
+      const process = Object.getOwnPropertyDescriptor(global, "process")!;
+      Object.defineProperty(global, "process", { value: undefined, configurable: true });
+      Object.assign(global, globals);
+      try {
+        assert.deepEqual(currentRuntime(), { name });
+      } finally {
+        for (const key of Object.keys(globals)) Reflect.deleteProperty(global, key);
+        Object.defineProperty(global, "process", process);
+      }
+    });
+  }
 
   for (const vector of all.filter(({ client }) => client === "dfo-ts")) {
     test(vector.name, () => {

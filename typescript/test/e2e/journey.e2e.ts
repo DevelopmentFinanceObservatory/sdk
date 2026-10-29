@@ -168,7 +168,7 @@ const operationIdOf = (json: unknown): string | undefined =>
 const sha256 = (bytes: Uint8Array): string =>
   `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
-const yearOf = (row: Row): number => Number(String(row["time_period"]).slice(0, 4));
+const yearOf = (row: Row): number => Number((row["time_period"] as string).slice(0, 4));
 
 /** The error a promise rejects with; the step fails when it resolves. */
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
