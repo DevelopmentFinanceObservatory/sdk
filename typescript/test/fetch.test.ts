@@ -302,14 +302,18 @@ describe("arguments a fetch refuses before any request", () => {
     [
       "a ref given a window",
       { window: [2020, 2021] },
-      "fetch a member's spec: client.fetch(ref.members[0].spec, { window: [2020,2021] }).",
+      "fetch a dataset member's spec: client.fetch(member.spec, { window: [2020,2021] }) for",
     ],
     [
       "a ref given the latest window and latest",
       { window: "latest", latest: true },
-      `fetch a member's spec: client.fetch(ref.members[0].spec, { window: "latest" }).`,
+      `fetch a dataset member's spec: client.fetch(member.spec, { window: "latest" }) for`,
     ],
-    ["a ref given entities", { entities: { origin: ["country/FRA"] } }, "ref.members[0].spec"],
+    [
+      "a ref given entities",
+      { entities: { origin: ["country/FRA"] } },
+      "client.fetch(member.spec, { entities }) for a member of ref.members where",
+    ],
     ["a ref given latest that is not a boolean", { latest: "yes" }, "latest is true or false"],
   ] as const) {
     test(name, async () => {

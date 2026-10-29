@@ -438,12 +438,23 @@ function retentionOf(
 export function shareIdIn(target: unknown): string | null {
   if (target instanceof Share) return target.id;
   if (typeof target !== "string") return null;
-  const path = URL.parse(target, "http://share.invalid/")?.pathname ?? "";
+  const path = pathOf(target);
   const segments = path.replace(/\/+$/, "").split("/");
   const [page, id] = segments.slice(-2);
   return segments.length >= 2 && SHARE_PAGES.has(page ?? "") && SHARE_ID.test(id ?? "")
     ? id!
     : null;
+}
+
+/** The path of `url`, read against a placeholder base so a bare path reads too, or "" when it
+ *  is no URL. `new URL` in place of the static `URL.parse`, which Node 22.0 and browsers before
+ *  2024 lack. */
+function pathOf(url: string): string {
+  try {
+    return new URL(url, "http://share.invalid/").pathname;
+  } catch {
+    return "";
+  }
 }
 
 /**

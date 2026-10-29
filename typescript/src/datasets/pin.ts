@@ -5,7 +5,9 @@
  * `{schema_version: 1, artifact_digest}`, one member after another. DFO keeps the artifact and a
  * frame that serves its version in the pinned tier, so every format of the version stays
  * fetchable by its ref. Pinning cannot be undone, and each new pin counts against a daily
- * allowance per caller, which answers 429 `allowance_exhausted` once spent.
+ * allowance per caller, which answers 429 `allowance_exhausted` once spent. A call that fails
+ * part-way leaves the members before the failing one pinned, and its error names their versions
+ * in `pinned` and in its message.
  *
  * The pin route takes dataset versions alone, so a derived dataset, whose members name `ops_`
  * frames, is refused before any request.
@@ -14,7 +16,8 @@
 import { Dataset, pinnedDataset } from "./dataset.ts";
 import type { Member } from "./dataset.ts";
 import { invalid } from "./fetch.ts";
-import { clientError } from "../core/errors.ts";
+import { clientError, DfoError, messageOf, optionsOf } from "../core/errors.ts";
+import type { DfoErrorOptions } from "../core/errors.ts";
 import { isRecord } from "../core/json.ts";
 import { isDerived } from "../core/ref.ts";
 import type { Transport } from "../http/transport.ts";
@@ -27,10 +30,34 @@ import type { Transport } from "../http/transport.ts";
  * @throws {QuotaExceededError} The caller's daily pin allowance is spent
  *   (`allowance_exhausted`).
  * @throws {ContractError} DFO answered for another version or artifact (`contract_violation`).
+ * @throws {DfoError} Whatever the failing pin threw, with `pinned` naming the versions pinned
+ *   before it, which stay pinned.
  */
 export async function pin(transport: Transport, data: Dataset): Promise<Dataset> {
-  for (const member of datasetMembers(data)) await pinMember(transport, member);
+  const members = datasetMembers(data);
+  for (const [index, member] of members.entries()) {
+    try {
+      await pinMember(transport, member);
+    } catch (error) {
+      if (index === 0 || !(error instanceof DfoError)) throw error;
+      throw partWay(error, members.slice(0, index));
+    }
+  }
   return pinnedDataset(data);
+}
+
+/** `error`, of its own class, naming the members a pin pinned before it failed. */
+function partWay(error: DfoError, pinned: readonly Member[]): DfoError {
+  const ErrorClass = error.constructor as new (options: DfoErrorOptions) => DfoError;
+  const named = pinned.map((member) => `${member.spec.spec_id} at ${member.contentVersion}`);
+  const hint = `Pinned before it failed, and still pinned: ${named.join(", ")}.`;
+  const hinted = (text: string) => `${text.replace(/[.\s]*$/, ".")} ${hint}`;
+  return new ErrorClass({
+    ...optionsOf(error),
+    detail: hinted(error.detail),
+    message: hinted(messageOf(error)),
+    pinned: pinned.map((member) => member.contentVersion),
+  });
 }
 
 function datasetMembers(data: unknown): readonly Member[] {

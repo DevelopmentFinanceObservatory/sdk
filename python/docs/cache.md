@@ -22,6 +22,7 @@ import os
 
 import dfo
 from dfo.errors import NetworkError
+from dfo.types import Member
 
 data = dfo.search(
     "ODA disbursements from Germany to Nigeria for basic health care"
@@ -33,7 +34,9 @@ try:
     saved = dfo.fetch(dfo.load("health.parquet").ref)
     print(saved)
 
-    newest = dfo.fetch(data.members[0].spec)
+    member = data.members[0]
+    assert isinstance(member, Member)  # a search fetches dataset members
+    newest = dfo.fetch(member.spec)
     print(newest.stale, newest.ref == data.ref)
 
     dfo.search("GDP of Kenya")

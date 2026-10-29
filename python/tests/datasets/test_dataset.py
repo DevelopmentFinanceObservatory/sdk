@@ -39,6 +39,8 @@ from dfo._datasets.cache import sha256_digest
 from dfo._datasets.dataset import (
     Dataset,
     FetchedMember,
+    LeftOutSeries,
+    LeftOutStep,
     build_dataset,
     derived_dataset,
 )
@@ -620,8 +622,41 @@ def test_save_then_load_returns_an_equal_dataset(tmp_path: Path) -> None:
     assert stored[b"dfo.sentence"].decode() == data.sentence
     assert data.ref is not None
     assert stored[b"dfo.ref"].decode() == data.ref.to_json()
+    assert stored[b"dfo.format_version"] == b"1"
     assert b"dfo.left_out" not in stored
     _assert_same(load_saved(path), data)
+
+
+def test_a_dataset_of_versions_loads_no_left_out_series_or_steps(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "saved.parquet"
+    _saved().save(path)
+    derived = tmp_path / "derived.parquet"
+    _derived().save(derived)
+    stored = pq.read_metadata(derived).metadata
+    table = pq.read_table(path)
+    metadata = {
+        **table.schema.metadata,
+        b"dfo.left_out": stored[b"dfo.left_out"],
+        b"dfo.steps": stored[b"dfo.steps"],
+    }
+    pq.write_table(table.replace_schema_metadata(metadata), path)
+    loaded = load_saved(path)
+    assert (loaded.left_out, loaded._steps) == ((), ())
+
+
+@pytest.mark.parametrize("version", [b"0", b"3", b"two"])
+def test_a_saved_file_of_another_format_version_is_refused(
+    tmp_path: Path, version: bytes
+) -> None:
+    path = tmp_path / "derived.parquet"
+    _derived().save(path)
+    table = pq.read_table(path)
+    metadata = {**table.schema.metadata, b"dfo.format_version": version}
+    pq.write_table(table.replace_schema_metadata(metadata), path)
+    with pytest.raises(ValueError):
+        load_saved(path)
 
 
 def _derived(name: str = "chain") -> Dataset:
@@ -735,6 +770,8 @@ def test_a_derived_dataset_saves_its_ref_left_out_series_and_steps(
     path = tmp_path / "derived.parquet"
     data.save(path)
     stored = pq.read_metadata(path).metadata
+    # A client that reads format 1 alone refuses the file as a later format.
+    assert stored[b"dfo.format_version"] == b"2"
     assert json.loads(stored[b"dfo.ref"])["format_version"] == 2
     assert json.loads(stored[b"dfo.left_out"]) == {
         "series": load("analysis-chain-manifest.json")["left_out"],
@@ -807,9 +844,29 @@ def test_a_damaged_derived_key_raises_format_error(
         ({"content_version": "ocv_" + "0" * 32}, None),
         ({"left_out": {}}, "/left_out"),
         ({"left_out": [{"step": {}}]}, "/left_out/0/coordinates"),
+        (
+            {
+                "left_out": [
+                    {
+                        "coordinates": {},
+                        "step": {"verb": "growth", "node": "0"},
+                        "side": "data",
+                        "reason": "endpoint_missing",
+                        "rows": 1,
+                    }
+                ]
+            },
+            "/left_out/0/step/node",
+        ),
         ({"left_out_complete": None}, "/left_out_complete"),
     ],
-    ids=["another-frame", "left-out-not-a-list", "series-damaged", "complete-null"],
+    ids=[
+        "another-frame",
+        "left-out-not-a-list",
+        "series-damaged",
+        "node-mistyped",
+        "complete-null",
+    ],
 )
 def test_a_derived_manifest_the_client_cannot_read_raises_contract_error(
     change: dict[str, Any], pointer: str | None
@@ -820,6 +877,48 @@ def test_a_derived_manifest_the_client_cannot_read_raises_contract_error(
         derived_dataset(_derived_member(), manifest_body, data)
     assert caught.value.code == "contract_violation"
     assert getattr(caught.value, "pointer", None) == pointer
+
+
+def test_a_derived_manifest_s_added_left_out_keys_are_ignored() -> None:
+    manifest_body = load("analysis-chain-manifest.json")
+    added = copy.deepcopy(manifest_body)
+    for series in added["left_out"]:
+        series["unit"] = "USDollar"
+        series["step"]["op_id"] = "op_1"
+    data = (DATA / "analysis-chain-frame.parquet").read_bytes()
+    assert (
+        derived_dataset(_derived_member(), added, data).left_out
+        == derived_dataset(_derived_member(), manifest_body, data).left_out
+    )
+
+
+def test_left_out_series_hash_alike_whatever_the_coordinate_order() -> None:
+    def series(coordinates: dict[str, str]) -> LeftOutSeries:
+        return LeftOutSeries(
+            coordinates, LeftOutStep("growth", 0), "data", "endpoint_missing", 1
+        )
+
+    first = series({"origin": "country/DEU", "destination": "country/NGA"})
+    second = series({"destination": "country/NGA", "origin": "country/DEU"})
+    assert first == second
+    assert len({first, second}) == 1
+
+
+def test_a_compare_lists_its_primary_input_s_steps_first() -> None:
+    def step(verb: str, parameters: dict[str, Any], **inputs: Any) -> dict[str, Any]:
+        return {"op_spec": {"verb": verb, "parameters": parameters}, "inputs": inputs}
+
+    tree = step(
+        "compare",
+        {},
+        # Compare reads `data`, its primary input, as the right frame.
+        frame_ref=step("rank", {"rank_by": ["financingSource"], "limit": 5}),
+        right_frame_ref=step("growth", {"entity_by": ["financingSource"]}),
+    )
+    manifest_body = {**load("analysis-chain-manifest.json"), "recipe": {"tree": tree}}
+    data = (DATA / "analysis-chain-frame.parquet").read_bytes()
+    dataset = derived_dataset(_derived_member(), manifest_body, data)
+    assert [step.verb for step in dataset._steps] == ["growth", "rank", "compare"]
 
 
 def test_a_manifest_without_left_out_reads_as_none_left_out() -> None:

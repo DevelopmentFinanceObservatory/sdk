@@ -243,7 +243,7 @@ A dataset an operation returns has one `DerivedMember` in `members`, and its ref
 
 ### `client.pin`
 
-`client.pin(data)` returns `Promise<Dataset>`. It keeps every version a dataset holds fetchable with no time limit and returns the dataset marked pinned. A pin cannot be undone. A derived dataset raises `InvalidRequestError` (`invalid_argument`) before any request, and a spent daily allowance raises `QuotaExceededError` (`allowance_exhausted`) with `retryAfterMs`.
+`client.pin(data)` returns `Promise<Dataset>`. It keeps every version a dataset holds fetchable with no time limit and returns the dataset marked pinned. A pin cannot be undone. A derived dataset raises `InvalidRequestError` (`invalid_argument`) before any request, and a spent daily allowance raises `QuotaExceededError` (`allowance_exhausted`) with `retryAfterMs`. A pin that fails part-way leaves the versions before the failing one pinned, and its error names them in its message and in `pinned`.
 
 ### `SeriesLeftOutWarning`
 

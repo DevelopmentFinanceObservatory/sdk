@@ -29,12 +29,14 @@ the client keeps it nowhere but on that `Share`.
   left a slot without a card.
 
 `shown_frame(share, slot=, as_of=)` finds the frame one slot shows, for
-`dfo.fetch(share)`. A `Share` holds its slot count in its data URLs; a URL reads
-it from the public `GET /presentation/shares/{id}`. Without `as_of` it reads
+`dfo.fetch(share)`. It reads the share's slot count and whether it is live from
+the public `GET /presentation/shares/{id}`, for a `Share` as for a URL, since a
+replace or a snapshot since the `Share` was returned changes both. Without `as_of` it reads
 the slot's card from `GET /presentation/shares/{id}/slots/{n}`, drawn on the
 frame the slot serves now, which its `resolved_payload.provenance.inputs` name,
 and names the day of the read in UTC. With `as_of` it reads the history, takes the newest frame the slot first
-served on or before that moment, and reads that card revision's title from
+served on or before that moment, the one the history lists first of entries
+served in one millisecond, and reads that card revision's title from
 `GET /presentation/components/{id}?revision=n`. When that entry is an empty
 slot it raises `not_found` without requesting a frame.
 
@@ -208,14 +210,11 @@ def shown_frame(
     share_id = share_id_of(target, transport.caller)
     check_slot(slot)
     asked = None if as_of is None else as_of_moment(as_of)
-    if isinstance(target, Share):
-        count, live = len(target.data_urls), target.latest
-    else:
-        path = f"{SHARES_PATH}/{share_id}"
-        response = transport.request("GET", path, deadline=deadline)
-        reply = response_json(response)
-        with describing(trace_id_of(response, reply)):
-            count, live = read_slot_count(reply, route=f"GET {path}")
+    path = f"{SHARES_PATH}/{share_id}"
+    response = transport.request("GET", path, deadline=deadline)
+    reply = response_json(response)
+    with describing(trace_id_of(response, reply)):
+        count, live = read_slot_count(reply, route=f"GET {path}")
     number = chosen_slot(slot if isinstance(slot, int) else None, count, share_id)
     if asked is None:
         path = f"{SHARES_PATH}/{share_id}/slots/{number}"
@@ -232,17 +231,19 @@ def shown_frame(
         today = datetime.now(UTC).date()
         return ShownFrame(share_id, number, title, *frame, today)
     moment, day = asked
-    # The reply's order is not relied on: the latest entry at or before the
-    # moment wins, and of equal times the one later in the reply.
-    served_by_then = sorted(
+    # The latest entry at or before the moment wins, compared to the
+    # millisecond as the TypeScript client compares them. Of entries served in
+    # one millisecond the first the history lists wins, since DFO lists a slot's
+    # entries of one moment newest first.
+    entry = max(
         (
             served
             for served in history(transport, target, deadline=deadline)
             if served.slot == number and to_millisecond(served.first_served) <= moment
         ),
         key=lambda served: to_millisecond(served.first_served),
+        default=None,
     )
-    entry = served_by_then[-1] if served_by_then else None
     if entry is None:
         raise client_error(
             INVALID_ARGUMENT,

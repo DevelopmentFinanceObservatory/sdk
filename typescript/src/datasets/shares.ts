@@ -24,11 +24,13 @@
  *   share's slots served, newest first, and each moment a replace left a slot without a card.
  *
  * `shownFrame(share, { slot, asOf })` finds the frame one slot shows, for `client.fetch(share)`.
- * A `Share` holds its slot count in its data URLs; a URL reads it from the public
- * `GET /presentation/shares/{id}`. Without `asOf` it reads the slot's card from
+ * It reads the share's slot count and whether it is live from the public
+ * `GET /presentation/shares/{id}`, for a `Share` as for a URL, since a replace or a snapshot since
+ * the `Share` was returned changes both. Without `asOf` it reads the slot's card from
  * `GET /presentation/shares/{id}/slots/{n}`, drawn on the frame the slot serves now, which its
  * `resolved_payload.provenance.inputs` name. With `asOf` it reads the history, takes the newest
- * frame the slot first served on or before that moment, and reads that card revision's title
+ * frame the slot first served on or before that moment, the one the history lists first of
+ * entries served in one millisecond, and reads that card revision's title
  * from `GET /presentation/components/{id}?revision=n`. When that entry is an empty slot it throws
  * `not_found` without requesting a frame.
  *
@@ -228,17 +230,11 @@ export async function shownFrame(
   const shareId = shareIdOf(target);
   checkSlot(slot);
   const asked = asOf === undefined || asOf === null ? undefined : asOfMoment(asOf);
-  let count: number;
-  let live: boolean;
-  if (target instanceof Share) {
-    [count, live] = [target.dataUrls.length, target.latest];
-  } else {
-    const path = `${SHARES_PATH}/${shareId}`;
-    const response = await transport.request({ path, ...within(wait) });
-    ({ count, live } = describing(response.traceId, () =>
-      readSlotCount(response.body, `GET ${path}`),
-    ));
-  }
+  const read = `${SHARES_PATH}/${shareId}`;
+  const shared = await transport.request({ path: read, ...within(wait) });
+  const { count, live } = describing(shared.traceId, () =>
+    readSlotCount(shared.body, `GET ${read}`),
+  );
   const number = chosenSlot(slot ?? undefined, count, shareId);
   if (asked === undefined) {
     const path = `${SHARES_PATH}/${shareId}/slots/${number}`;
@@ -257,13 +253,13 @@ export async function shownFrame(
   }
   const { moment, day } = asked;
   const served = await history(transport, target, wait);
-  // The reply's order is not relied on: the latest entry at or before the moment wins, and of
-  // equal times the one later in the reply.
+  // The latest entry at or before the moment wins. Of entries served in one millisecond the
+  // first the history lists wins, since DFO lists a slot's entries of one moment newest first.
   const entry = served
     .filter((frame) => frame.slot === number && frame.firstServed.getTime() <= moment.getTime())
     .reduce<Served | undefined>(
       (latest, frame) =>
-        latest === undefined || frame.firstServed.getTime() >= latest.firstServed.getTime()
+        latest === undefined || frame.firstServed.getTime() > latest.firstServed.getTime()
           ? frame
           : latest,
       undefined,

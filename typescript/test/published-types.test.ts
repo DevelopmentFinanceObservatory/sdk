@@ -21,6 +21,8 @@ import {
   Client,
   Dataset,
   InvalidRequestError,
+  isDatasetMember,
+  isDerived,
   isDfoError,
   latestYear,
   recipe,
@@ -112,6 +114,16 @@ export async function analysed(client: Client, spec: Spec): Promise<number> {
   return dropped.length + share.rowCount + (kept.pinned && loud ? 1 : 0);
 }
 
+// A member's spec is a Spec or a DerivedSpec; the guards narrow it, and only a Spec fetches.
+export async function newest(client: Client, dataset: Dataset): Promise<string> {
+  const member = dataset.members[0]!;
+  if (isDerived(member)) return member.spec.recipe.replay_key + member.citation.text;
+  const spec: Spec = member.spec;
+  const fetched: Dataset = await client.fetch(spec);
+  const ref = (await client.fetch(dataset.ref)).ref.members[0]!;
+  return isDatasetMember(ref) ? Object.keys(ref.spec.definition).join() : fetched.sentence;
+}
+
 // A card draws a dataset, a share publishes it, and history lists what it served.
 export async function published(client: Client, dataset: Dataset): Promise<number> {
   const chart: Card = await client.cards.line(dataset, {
@@ -191,6 +203,8 @@ export async function mistakes(client: Client, answer: Answer): Promise<void> {
   await client.share(await client.cards.source(dataset), {});
   // @ts-expect-error A share takes no title.
   await client.share(await client.cards.source(dataset), { latest: true, title: "Aid" });
+  // @ts-expect-error A member's spec may be a DerivedSpec, which a fetch does not take.
+  await client.fetch(dataset.members[0]!.spec);
   // @ts-expect-error A severity the contract does not list: the named unions are closed.
   const severity: Severity = "fatal";
   console.log(severity);

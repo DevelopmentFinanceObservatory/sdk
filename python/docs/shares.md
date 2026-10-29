@@ -42,7 +42,7 @@ Each card takes a slot, numbered from 1 in the order given. `share.url` is the p
 
 `latest` has no default, because it decides what the link shows over time:
 
-- `latest=True` makes a live share. Each card follows new data. A card of a Spec or a derived result draws the newest version each time DFO publishes one, and a window of `dfo.latest_year(...)` moves with it. A live share also takes new cards under the same link.
+- `latest=True` makes a live share. Each card follows new data. A card of a Dataset fetched from a Spec or a recipe draws the newest version each time DFO publishes one, and a window of `dfo.latest_year(...)` moves with it. A live share also takes new cards under the same link.
 - `latest=False` makes a snapshot. Each card keeps the version it draws today, for good.
 
 Each caller has a daily allowance of cards. Once it is spent, `dfo.cards` raises `QuotaExceededError` (`allowance_exhausted`) with `retry_after`, the seconds until it resets.

@@ -19,8 +19,10 @@
  * A share fetch finds the frame a slot shows (`shownFrame` in `shares.ts`) and reads that exact
  * version in the frame layout. A `spec_` frame reads its stored manifest at
  * `GET /datasets/{spec_id}/{content_version}`, which holds the definition and lists the frame
- * artifact a ref member names, asks Search the definition's sentence, and then takes a ref's
- * lookup order with that manifest. An `ops_` frame reads through its bare derived root
+ * artifact a ref member names, and then takes a ref's lookup order with that manifest. Once the
+ * data is read, it asks Search the definition's sentence; when Search refuses, fails, or answers
+ * another spec, the dataset reads as the card's title, so Search never decides whether the fetch
+ * succeeds. An `ops_` frame reads through its bare derived root
  * (`fetchComputedFrame`). The dataset's text form names the share, slot, card title and day.
  *
  * The lookup reuses the build path's download, warnings and finishing steps, so this module
@@ -129,7 +131,14 @@ export async function fetchDataset(
     throw invalid(`latest is true or false, not ${JSON.stringify(latest)}.`);
   }
   if (shareIdIn(target) !== null) {
-    checkShown(narrowing, rest, latest);
+    const given = [...givenOptions(narrowing, rest), ...(latest === true ? ["latest: true"] : [])];
+    if (given.length > 0) {
+      throw invalid(
+        `A share fetch reads the exact frame a slot shows and takes no ${given.join(", ")}; ` +
+          "narrow the dataset it returns with client.analysis.filter, or pick another moment " +
+          "with asOf.",
+      );
+    }
     const wait = waitFor(transport, rest);
     const shown = await shownFrame(transport, target, { slot, asOf }, wait);
     return shownDataset(await fetchShown(transport, shown, rest, wait), shownLine(shown));
@@ -144,7 +153,13 @@ export async function fetchDataset(
     target instanceof Recipe ||
     (target instanceof DatasetRef && target.members.some(isDerived))
   ) {
-    checkComputed(narrowing, rest);
+    const given = givenOptions(narrowing, rest);
+    if (given.length > 0) {
+      throw invalid(
+        `A recipe or a frame DFO computed takes no ${given.join(", ")}; set them on the ` +
+          "readings the recipe starts from.",
+      );
+    }
     if (rest.onProgress !== undefined) {
       throw invalid(
         "DFO reports no progress while it computes a recipe, so a recipe or a frame DFO " +
@@ -166,8 +181,9 @@ export async function fetchDataset(
     if (narrowing.window !== undefined) throw invalid(refWindowRefusal(narrowing.window, latest));
     if (narrows(narrowing)) {
       throw invalid(
-        "A ref fetch takes no entities or facets; narrow a member's spec instead, as " +
-          "client.fetch(ref.members[0].spec, { entities }).",
+        "A ref fetch takes no entities or facets; narrow a dataset member's spec instead: " +
+          "client.fetch(member.spec, { entities }) for a member of ref.members where " +
+          "isDatasetMember(member).",
       );
     }
     return latest === true
@@ -191,63 +207,34 @@ export async function fetchDataset(
 }
 
 /** Why a ref fetch refuses `window`, and the call that does what it asks: `latest: true` for
- *  the newest version, else a member's spec for a narrower window. */
+ *  the newest version, else a dataset member's spec for a narrower window. */
 function refWindowRefusal(window: unknown, latest: boolean | undefined): string {
   if (window === "latest" && latest !== true) {
     return "A ref fetch takes no window; for the newest version use latest: true.";
   }
   return (
-    "A ref fetch takes no window; to narrow the years, fetch a member's spec: " +
-    `client.fetch(ref.members[0].spec, { window: ${capped(JSON.stringify(window))} }).`
+    "A ref fetch takes no window; to narrow the years, fetch a dataset member's spec: " +
+    `client.fetch(member.spec, { window: ${capped(JSON.stringify(window))} }) for a member of ` +
+    "ref.members where isDatasetMember(member)."
   );
 }
 
 /**
- * Refuses the options a recipe or a derived ref does not take: DFO computes a frame in the
- * frame layout from the roots the recipe names.
- *
- * @throws {InvalidRequestError} One is given (`invalid_argument`).
+ * The options a call names that narrow or render a spec, which a share, a recipe and a frame DFO
+ * computed refuse: each reads a frame in the frame layout as DFO stored or computed it. An empty
+ * `entities` or `facets` names nothing, as for a spec or a ref, and `layout: "frame"` is the
+ * frame's own.
  */
-function checkComputed(narrowing: Narrowing, options: CallOptions): void {
-  const given = [
+function givenOptions(narrowing: Narrowing, options: CallOptions): string[] {
+  return [
     narrowing.window !== undefined && "window",
     narrows({ entities: narrowing.entities }) && "entities",
     narrows({ facets: narrowing.facets }) && "facets",
     options.partyTotals !== undefined && "partyTotals",
-    options.layout !== undefined && options.layout !== "frame" && "layout",
-  ].filter((name) => name !== false);
-  if (given.length > 0) {
-    throw invalid(
-      `A recipe or a frame DFO computed takes no ${given.join(", ")}; set them on the readings ` +
-        "the recipe starts from.",
-    );
-  }
-}
-
-/**
- * Refuses the options a share fetch does not take: it reads the exact frame a slot shows, as
- * DFO stored it.
- *
- * @throws {InvalidRequestError} One is given (`invalid_argument`).
- */
-function checkShown(narrowing: Narrowing, options: CallOptions, latest: boolean | undefined): void {
-  const given = [
-    narrowing.window !== undefined && "window",
-    narrowing.entities !== undefined && "entities",
-    narrowing.facets !== undefined && "facets",
-    options.partyTotals !== undefined && "partyTotals",
-    latest === true && "latest: true",
     options.layout !== undefined &&
       options.layout !== "frame" &&
       `layout: ${capped(JSON.stringify(options.layout))}`,
   ].filter((name) => name !== false);
-  if (given.length > 0) {
-    throw invalid(
-      `A share fetch reads the exact frame a slot shows and takes no ${given.join(", ")}; ` +
-        "narrow the dataset it returns with client.analysis.filter, or pick another moment " +
-        "with asOf.",
-    );
-  }
 }
 
 /**
@@ -275,7 +262,8 @@ async function fetchShown(
     const fix = shown.newerNow
       ? `For what the slot shows now: client.fetch(share, { slot: ${shown.slot} })`
       : `The frame is gone, so share ${shown.shareId} cannot show slot ${shown.slot}'s data`;
-    return fetchFrame(transport, shown.specId, shown.contentVersion, fix, options, wait);
+    const title = shown.title ?? `Slot ${shown.slot} of share ${shown.shareId}`;
+    return fetchFrame(transport, shown.specId, shown.contentVersion, { title, fix }, options, wait);
   }
   throw clientError("contract_violation", {
     detail:
@@ -286,10 +274,11 @@ async function fetchShown(
 
 /**
  * A dataset version in the frame layout, from its ids alone: the stored manifest names its
- * definition and frame artifact, and Search its sentence.
+ * definition and frame artifact. Once the data is read, Search words its sentence, or else
+ * `title` does.
  *
- * @throws {VersionUnavailableError} DFO no longer stores the version (`artifact_expired`), and
- *   the error ends with `fix`.
+ * @throws {VersionUnavailableError} DFO no longer stores the version or its file
+ *   (`artifact_expired`), and the error ends with `fix`.
  * @throws {ContractError} The manifest lists no bare Parquet frame artifact
  *   (`contract_violation`).
  */
@@ -297,7 +286,7 @@ async function fetchFrame(
   transport: Transport,
   specId: string,
   contentVersion: string,
-  fix: string,
+  { title, fix }: { title: string; fix: string },
   options: CallOptions,
   wait: Wait,
 ): Promise<Dataset> {
@@ -325,14 +314,32 @@ async function fetchFrame(
   const cut = isRecord(rendering) && rendering["without_party_totals"] === true;
   const member: RefMember = {
     parts: [],
-    sentence: await sentenceFor(transport, manifest, [], undefined, wait),
+    sentence: title,
     spec: { spec_id: specId, definition: definitionOf(manifest) },
     contentVersion,
     digest: String(artifact["artifact_digest"]),
     rendering: cut ? { ...FRAME, without_party_totals: true } : FRAME,
   };
-  const fetched = await fetchVersion(transport, member, "/members/0", options, wait, found);
-  return Dataset.create([fetched], { layout: "frame" });
+  const fetched = await fetchVersion(transport, member, "/members/0", options, wait, found, fix);
+  const sentence = await sentenceOr(transport, fetched.manifest, title, wait);
+  return Dataset.create([{ ...fetched, sentence }], { layout: "frame" });
+}
+
+/** Search's sentence for a stored version, or `fallback` when Search refuses, fails, or no
+ *  longer resolves the definition to its own spec: the data is already read, and the sentence
+ *  only words it. */
+async function sentenceOr(
+  transport: Transport,
+  manifest: Manifest,
+  fallback: string,
+  wait: Wait,
+): Promise<string> {
+  try {
+    return await sentenceFor(transport, manifest, [], undefined, wait);
+  } catch (error) {
+    if (!(error instanceof DfoError)) throw error;
+    return fallback;
+  }
 }
 
 /** The dataset members of a ref, which holds no derived member. */
@@ -448,7 +455,7 @@ const stored = (member: RefMember, manifest: Manifest, data: Uint8Array): Fetche
 
 /** One stored version, through the lookup order. `pointer` locates the member in the ref.
  *  `snapshotted` is the version's manifest when the caller already read it, which spares the
- *  snapshot request. */
+ *  snapshot request. `fix` ends the error when the version can no longer be fetched. */
 async function fetchVersion(
   transport: Transport,
   member: RefMember,
@@ -456,6 +463,7 @@ async function fetchVersion(
   options: CallOptions,
   wait: Wait,
   snapshotted?: Built,
+  fix = `For the newest version: ${LATEST_CALL}`,
 ): Promise<FetchedMember> {
   const strict = options.strict ?? false;
   let refusal: DfoError | undefined;
@@ -517,13 +525,7 @@ async function fetchVersion(
     refusal ??= error;
     newest = await newestVersion(transport, member.spec.spec_id, wait);
   }
-  throw unavailable(
-    member.spec.spec_id,
-    member.contentVersion,
-    newest,
-    refusal,
-    `For the newest version: ${LATEST_CALL}`,
-  );
+  throw unavailable(member.spec.spec_id, member.contentVersion, newest, refusal, fix);
 }
 
 /** Issues the client's warning that a rebuilt file differs from the ref's. The rebuild returned

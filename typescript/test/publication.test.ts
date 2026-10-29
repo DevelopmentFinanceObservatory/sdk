@@ -579,6 +579,17 @@ describe("a share's URL", () => {
     });
   }
 
+  test("names its share where URL.parse is missing, as on Node 22.0 and older browsers", () => {
+    const parse = Object.getOwnPropertyDescriptor(URL, "parse")!;
+    Object.defineProperty(URL, "parse", { value: undefined, configurable: true });
+    try {
+      assert.equal(shareIdOf("https://developmentfinance.org/s/k3Qx8vTa"), "k3Qx8vTa");
+      assert.throws(() => shareIdOf("http://[bad"), { name: "InvalidRequestError" });
+    } finally {
+      Object.defineProperty(URL, "parse", parse);
+    }
+  });
+
   for (const target of [
     "k3Qx8vTa",
     "https://developmentfinance.org/s/k3Qx8vT",

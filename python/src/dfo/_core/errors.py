@@ -52,7 +52,12 @@ class DfoError(Exception):
         docs_url: The page that documents the code, or None.
         retry_after: The wait the response's `Retry-After` header asked for, in
             seconds, or None.
+        pinned: The versions, `cv_…`, a pin call pinned before it failed, in
+            the Dataset's member order. They stay pinned. Empty for every other
+            call.
     """
+
+    pinned: tuple[str, ...] = ()
 
     def __init__(
         self,

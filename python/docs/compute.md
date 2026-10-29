@@ -273,7 +273,7 @@ A `Dataset` an operation returns has one `DerivedMember` in `members`, and its r
 
 ### `dfo.pin`
 
-`dfo.pin(data, /) -> Dataset`, also `client.pin`. Keeps every version a Dataset holds fetchable with no time limit and returns the Dataset marked pinned. A pin cannot be undone. A derived Dataset raises `InvalidRequestError` (`invalid_argument`) before any request, and a spent daily allowance raises `QuotaExceededError` (`allowance_exhausted`) with `retry_after`.
+`dfo.pin(data, /) -> Dataset`, also `client.pin`. Keeps every version a Dataset holds fetchable with no time limit and returns the Dataset marked pinned. A pin cannot be undone. A derived Dataset raises `InvalidRequestError` (`invalid_argument`) before any request, and a spent daily allowance raises `QuotaExceededError` (`allowance_exhausted`) with `retry_after`. A pin that fails part-way leaves the versions before the failing one pinned, and its error names them in its message and in `pinned`.
 
 ### `SeriesLeftOutWarning`
 

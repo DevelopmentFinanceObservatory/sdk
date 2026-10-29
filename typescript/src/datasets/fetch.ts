@@ -491,8 +491,7 @@ function artifactFault({ columns, rows }: ParquetFile, counted: number): string 
 }
 
 /**
- * Downloads a file through the route that redirects to it, checked against its digest unless
- * the digest is null, as for a derived frame's file, which DFO renders on each read. The
+ * Downloads a file through the route that redirects to it, checked against its digest. The
  * route ask is an API request, which retries as one and waits the client's timeout per attempt;
  * its failure raises. The URL it names is fetched once, bare on the storage host and with the
  * client's headers on the API's origin, reading until the fetch's deadline, if any, while a byte
@@ -509,7 +508,7 @@ function artifactFault({ columns, rows }: ParquetFile, counted: number): string 
 export async function download(
   transport: Transport,
   target: Target,
-  digest: string | null,
+  digest: string,
   wait: Wait,
   size?: unknown,
 ): Promise<Uint8Array<ArrayBuffer>> {
@@ -538,7 +537,6 @@ export async function download(
     } else {
       data = located.data;
     }
-    if (digest === null) return data;
     const found = await digestOf(data);
     if (found === digest) return data;
     failure = clientError(DIGEST_MISMATCH, {

@@ -6,6 +6,8 @@ artifact_digest}`, one member after another. DFO keeps the artifact and a frame
 that serves its version in the pinned tier, so every format of the version stays
 fetchable by its ref. Pinning cannot be undone, and each new pin counts against a
 daily allowance per caller, which answers 429 `allowance_exhausted` once spent.
+A call that fails part-way leaves the members before the failing one pinned, and
+its error names their versions in `pinned` and in its message.
 
 The pin route takes dataset versions alone, so a derived Dataset, whose members
 name `ops_` frames, is refused before any request.
@@ -15,7 +17,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 
 from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT
-from dfo._core.errors import client_error
+from dfo._core.errors import DfoError, client_error, with_hint
 from dfo._core.refs import DerivedMember, Member
 from dfo._core.refusals import trace_id_of
 from dfo._datasets.build import response_json
@@ -33,11 +35,26 @@ async def pin(transport: AsyncTransport, data: Dataset) -> Dataset:
             (`allowance_exhausted`).
         ContractError: DFO answered for another version or artifact
             (`contract_violation`).
+        DfoError: Whatever the failing pin raised, with `pinned` naming the
+            versions pinned before it, which stay pinned.
     """
     members = _dataset_members(data, transport.caller)
-    for member in members:
-        await _pin_member(transport, member)
+    for index, member in enumerate(members):
+        try:
+            await _pin_member(transport, member)
+        except DfoError as error:
+            if index == 0:
+                raise
+            raise _part_way(error, members[:index]) from error
     return replace(data, pinned=True, held_until=None)
+
+
+def _part_way(error: DfoError, pinned: tuple[Member, ...]) -> DfoError:
+    """`error`, naming the members a pin pinned before it failed."""
+    named = ", ".join(f"{m.spec.spec_id} at {m.content_version}" for m in pinned)
+    hinted = with_hint(error, f"Pinned before it failed, and still pinned: {named}.")
+    hinted.pinned = tuple(member.content_version for member in pinned)
+    return hinted
 
 
 def _dataset_members(data: object, caller: str) -> tuple[Member, ...]:

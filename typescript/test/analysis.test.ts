@@ -391,20 +391,23 @@ describe("a derived ref", () => {
   });
 });
 
-async function versions(): Promise<Dataset> {
+/** A dataset of one stored version, or of `count`, each another spec answering a part. */
+async function versions(count = 1): Promise<Dataset> {
   const data = await scenarioBytes("fetch-ref.parquet");
-  const specId = `spec_${"0".repeat(32)}`;
-  const fetched: FetchedMember = {
-    parts: [],
-    spec: { spec_id: specId, definition: { schema_version: 1, spec_id: specId, identity: {} } },
-    sentence: "A sentence.",
-    contentVersion: `cv_${"0".repeat(32)}`,
-    manifest: { retention: { pinned: false, held_until: "2026-11-27T00:00:00Z" } },
-    digest: `sha256:${createHash("sha256").update(data).digest("hex")}`,
-    rendering: { format: "parquet", bundle: false, without_party_totals: true },
-    data,
-  };
-  return Dataset.create([fetched], { layout: "long" });
+  const fetched = Array.from({ length: count }, (_, index): FetchedMember => {
+    const specId = `spec_${String(index).repeat(32)}`;
+    return {
+      parts: count === 1 ? [] : [`part ${index}`],
+      spec: { spec_id: specId, definition: { schema_version: 1, spec_id: specId, identity: {} } },
+      sentence: "A sentence.",
+      contentVersion: `cv_${String(index).repeat(32)}`,
+      manifest: { retention: { pinned: false, held_until: "2026-11-27T00:00:00Z" } },
+      digest: `sha256:${createHash("sha256").update(data).digest("hex")}`,
+      rendering: { format: "parquet", bundle: false, without_party_totals: true },
+      data,
+    };
+  });
+  return Dataset.create(fetched, { layout: "long" });
 }
 
 /** DFO's answer to a pin: the version and digest the request named. */
@@ -460,9 +463,24 @@ describe("pin", () => {
   ] as const) {
     test(`raises when DFO does not confirm it (${name})`, async () => {
       const { transport } = make(answer);
-      await assert.rejects(pin(transport, await versions()), { name: errorName });
+      await assert.rejects(pin(transport, await versions()), { name: errorName, pinned: [] });
     });
   }
+
+  test("that fails part-way names the versions it pinned", async () => {
+    const data = await versions(3);
+    const { transport, seen } = make(pinned, problem({ status: 429, code: "allowance_exhausted" }));
+    const error = await pin(transport, data).then(
+      () => assert.fail("the pin succeeded"),
+      (caught: unknown) => caught as Error & { code: string; pinned: readonly string[] },
+    );
+    assert.equal(seen.length, 2);
+    assert.deepEqual([error.name, error.code], ["QuotaExceededError", "allowance_exhausted"]);
+    const [first, second] = data.members;
+    assert.deepEqual(error.pinned, [first!.contentVersion]);
+    assert.ok(error.message.includes(`${first!.spec.spec_id} at ${first!.contentVersion}`));
+    assert.ok(!error.message.includes(second!.contentVersion), error.message);
+  });
 });
 
 test("client.analysis runs one step as a recipe of one step", async () => {

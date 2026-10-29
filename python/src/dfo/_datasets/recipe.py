@@ -25,6 +25,7 @@ a second reading:
 This module is sync and shared by both clients.
 """
 
+import copy
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -67,8 +68,7 @@ MAX_LIMIT = 1000
 _GROWTH_CHANGES: Mapping[str, str] = {"relative": "relative", "difference": "absolute"}
 
 _TIME_PERIOD = "time_period"
-# The parameters whose lists name a step's columns in the order the call named
-# its roles, as DFO stores them.
+# The parameters whose lists name the columns of a step's `by`.
 _ORDERED_BY = ("group_by", "entity_by", "rank_by")
 # The stored parameter that holds each two-reading step's `on`, its keys the
 # columns of `data` and its values those of `other`.
@@ -421,12 +421,15 @@ def _ref_object(ref: DatasetRef) -> dict[str, Any]:
 
 
 def _wire(node: _Node) -> dict[str, Any]:
+    """The tree `node` sends, a deep copy, so a change to it leaves the recipe as
+    it was."""
     if isinstance(node, _Root):
-        return dict(node.node)
+        return copy.deepcopy(dict(node.node))
     inputs = {"data": _wire(node.data)}
     if node.other is not None:
         inputs["other"] = _wire(node.other)
-    return {"verb": node.verb, "arguments": dict(node.arguments), "inputs": inputs}
+    arguments = copy.deepcopy(dict(node.arguments))
+    return {"verb": node.verb, "arguments": arguments, "inputs": inputs}
 
 
 def _call_text(node: _Node) -> str:
@@ -456,7 +459,10 @@ def column_roles(chain: Recipe, stored: Mapping[str, Any]) -> dict[str, str]:
 
     A column the call named by itself is left out, as is one two words name and
     one whose word the stored tree does not place, such as a role of a step
-    whose `by` and `on` DFO merged into one sorted list.
+    whose `by` and `on` DFO merged into one sorted list. The stored tree holds
+    columns alone, so a word pairs with a column by name or by elimination,
+    never by position: a list DFO stored in another order names no role rather
+    than the wrong one.
     """
     found: dict[str, set[str]] = {}
     _note_roles(chain._tree, stored, found)
@@ -481,10 +487,8 @@ def _note_roles(node: _Node, stored: object, found: dict[str, set[str]]) -> None
     def note(words: object, columns: object) -> None:
         if not isinstance(words, list | tuple) or not isinstance(columns, list | tuple):
             return
-        if len(words) == len(columns):
-            for word, column in zip(words, columns, strict=True):
-                if isinstance(word, str) and isinstance(column, str):
-                    found.setdefault(column, set()).add(word)
+        for word, column in _paired(words, columns):
+            found.setdefault(column, set()).add(word)
 
     arguments = node.arguments
     for name in _ORDERED_BY:
@@ -512,6 +516,24 @@ def _note_roles(node: _Node, stored: object, found: dict[str, set[str]]) -> None
         other_slots = [slot for slot in inputs if slot != data_slot]
         if len(other_slots) == 1:
             _note_roles(node.other, inputs[other_slots[0]], found)
+
+
+def _paired(
+    words: Sequence[object], columns: Sequence[object]
+) -> list[tuple[str, str]]:
+    """Each word of a step's list with the stored column it names: a word that
+    is a column names itself, and the one word left names the one column left.
+    Lists of different lengths, or of several words left, pair no more."""
+    texts = [word for word in words if isinstance(word, str)]
+    stored = [column for column in columns if isinstance(column, str)]
+    if not len(texts) == len(words) == len(stored) == len(columns):
+        return []
+    named = [(word, word) for word in texts if word in stored]
+    left = [word for word in texts if word not in stored]
+    unnamed = [column for column in stored if column not in texts]
+    if len(left) == 1 and len(unnamed) == 1:
+        named.append((left[0], unnamed[0]))
+    return named
 
 
 def _refusal(name: str, rule: str, value: object) -> InvalidRequestError:

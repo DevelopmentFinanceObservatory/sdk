@@ -5,7 +5,8 @@
  * its retention and citation, the recipe's tree, and `left_out`, every series a step dropped for
  * missing data, each `{coordinates, step: {verb, node}, side, reason, rows}`, with
  * `left_out_complete` saying whether the list holds them all. Both are null for a recipe stored
- * without them, which reads as none left out. The steps come from the tree in the order they
+ * without them, which reads as none left out. A key a series or its step holds beyond those is
+ * ignored, so a member DFO adds reads as before. The steps come from the tree in the order they
  * ran, each after its inputs, the primary input first.
  */
 
@@ -92,13 +93,13 @@ function servedLeftOut(manifest: Readonly<Record<string, unknown>>): {
 /** One dropped series as the derived manifest serves it. */
 function series(value: unknown, pointer: string): LeftOutFields {
   const item = objectAt(value, pointer);
-  checkKeys(item, pointer, SERIES_KEYS);
+  requireKeys(item, pointer, SERIES_KEYS);
   const coordinates = objectAt(item["coordinates"], `${pointer}/coordinates`);
   for (const [key, text] of Object.entries(coordinates)) {
     if (typeof text !== "string") throw violation(`${pointer}/coordinates/${key}`);
   }
   const step = objectAt(item["step"], `${pointer}/step`);
-  checkKeys(step, `${pointer}/step`, ["verb", "node"]);
+  requireKeys(step, `${pointer}/step`, ["verb", "node"]);
   const node = step["node"];
   if (!isCount(node)) throw violation(`${pointer}/step/node`);
   const rows = item["rows"];
@@ -115,23 +116,26 @@ function series(value: unknown, pointer: string): LeftOutFields {
 /** The steps of a stored recipe's tree in the order they ran. A part of the tree this client
  *  cannot read names no step, since only the text form reads them. */
 function* treeSteps(node: Readonly<Record<string, unknown>>): Generator<DerivedStep> {
+  const opSpec = node["op_spec"];
+  const verb = isRecord(opSpec) ? opSpec["verb"] : undefined;
   const inputs = node["inputs"];
   if (isRecord(inputs)) {
+    // Compare reads its primary input as the right frame, as DFO's runner places it.
+    const primary = verb === "compare" ? "right_frame_ref" : "frame_ref";
     const slots = Object.keys(inputs).sort((a, b) =>
-      a === b ? 0 : a === "frame_ref" ? -1 : b === "frame_ref" ? 1 : a < b ? -1 : 1,
+      a === b ? 0 : a === primary ? -1 : b === primary ? 1 : a < b ? -1 : 1,
     );
     for (const slot of slots) {
       const child = inputs[slot];
       if (isRecord(child)) yield* treeSteps(child);
     }
   }
-  const opSpec = node["op_spec"];
-  if (!isRecord(opSpec) || typeof opSpec["verb"] !== "string") return;
+  if (!isRecord(opSpec) || typeof verb !== "string") return;
   const parameters = isRecord(opSpec["parameters"]) ? opSpec["parameters"] : {};
   const by = BY_PARAMETERS.map((name) => parameters[name]).find(Array.isArray) ?? [];
   const limit = parameters["limit"];
   yield {
-    verb: opSpec["verb"],
+    verb,
     by: (by as unknown[]).filter((column): column is string => typeof column === "string"),
     limit: Number.isSafeInteger(limit) ? (limit as number) : null,
   };
@@ -150,12 +154,14 @@ function textAt(value: unknown, pointer: string): string {
   return value;
 }
 
-/** Refuses a missing key, or a key outside `keys`, at its pointer. */
-function checkKeys(value: Record<string, unknown>, pointer: string, keys: readonly string[]): void {
+/** Refuses a missing key of `keys` at its pointer; any other key passes. */
+function requireKeys(
+  value: Record<string, unknown>,
+  pointer: string,
+  keys: readonly string[],
+): void {
   const missing = keys.find((key) => !Object.hasOwn(value, key));
   if (missing !== undefined) throw violation(`${pointer}/${missing}`);
-  const extra = Object.keys(value).find((key) => !keys.includes(key));
-  if (extra !== undefined) throw violation(`${pointer}/${extra}`);
 }
 
 const violation = (pointer: string): ContractError =>

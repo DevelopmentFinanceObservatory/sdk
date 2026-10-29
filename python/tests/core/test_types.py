@@ -155,6 +155,12 @@ def test_a_ref_holds_one_kind_of_member() -> None:
         DatasetRef((dataset_member, derived_member))
 
 
+def test_a_ref_refuses_a_member_of_neither_kind() -> None:
+    (member,) = DatasetRef.from_json(json.dumps(accepted_ref())).members
+    with pytest.raises(TypeError, match="not Spec"):
+        DatasetRef((member.spec,))  # ty: ignore[invalid-argument-type]
+
+
 def _ref(obj: dict[str, Any]) -> DatasetRef:
     return DatasetRef.from_json(json.dumps(obj))
 

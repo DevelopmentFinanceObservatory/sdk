@@ -25,8 +25,11 @@ artifact entry naming the selector, so they count on the next fetch.
 A share fetch finds the frame a slot shows (`dfo._sync._datasets.shares.shown_frame`)
 and reads that exact version in the frame layout. A `spec_` frame reads its
 stored manifest at `GET /datasets/{spec_id}/{content_version}`, which holds the
-definition and lists the frame artifact a ref member names, asks Search the
-definition's sentence, and then takes a ref's lookup order. An `ops_` frame
+definition and lists the frame artifact a ref member names, and then takes a
+ref's lookup order. Once the data is read, it asks Search the definition's
+sentence; when Search refuses, fails, or answers another spec, the Dataset
+reads as the card's title, so Search never decides whether the fetch
+succeeds. An `ops_` frame
 reads through its bare derived root (`fetch_computed_frame`). The Dataset's repr
 names the share, slot, card title and day.
 """
@@ -202,15 +205,22 @@ def fetch(
         )
     caller = transport.caller
     if share_id_in(target) is not None:
-        _check_shown(
+        given = _given(
             window=window,
             entities=entities,
             facets=facets,
             layout=layout,
             party_totals=party_totals,
-            latest=latest,
-            caller=caller,
         )
+        if latest:
+            given.append("latest=True")
+        if given:
+            raise client_error(
+                INVALID_ARGUMENT,
+                "A share fetch reads the exact frame a slot shows and takes no "
+                f"{', '.join(given)}; narrow the Dataset it returns with "
+                f"{caller}.analysis.filter, or pick another moment with as_of",
+            )
         return _fetch_shown(
             transport,
             target,
@@ -232,13 +242,18 @@ def fetch(
         isinstance(member, DerivedRefMember) for member in target.members
     )
     if isinstance(target, Recipe) or derived:
-        _check_computed(
+        if given := _given(
             window=window,
             entities=entities,
             facets=facets,
             layout=layout,
             party_totals=party_totals,
-        )
+        ):
+            raise client_error(
+                INVALID_ARGUMENT,
+                f"A recipe or a frame DFO computed takes no {', '.join(given)}; set "
+                "them on the readings the recipe starts from",
+            )
         if progress is not None:
             raise client_error(
                 INVALID_ARGUMENT,
@@ -272,8 +287,9 @@ def fetch(
         if entities or facets:
             raise client_error(
                 INVALID_ARGUMENT,
-                "A ref fetch takes no entities or facets; narrow a member's spec "
-                f"instead, as {caller}.fetch(ref.members[0].spec, entities=...).",
+                "A ref fetch takes no entities or facets; narrow a dataset member's "
+                f"spec instead: {caller}.fetch(member.spec, entities=...) for a "
+                "RefMember in ref.members.",
             )
         layout = _checked_ref_layout(members, layout=layout, party_totals=party_totals)
         if latest:
@@ -328,42 +344,31 @@ def _named(target: object) -> str:
     return repr(target) if isinstance(target, str) else type(target).__name__
 
 
-def _check_shown(
+def _given(
     *,
     window: object,
     entities: object,
     facets: object,
     layout: object,
     party_totals: object,
-    latest: bool,
-    caller: str,
-) -> None:
-    """Refuse the options a share fetch does not take: it reads the exact frame
-    a slot shows, as DFO stored it.
-
-    Raises:
-        InvalidRequestError: One is given (`invalid_argument`).
-    """
+) -> list[str]:
+    """The options a call names that narrow or render a spec, which a share, a
+    recipe and a frame DFO computed refuse: each reads a frame in the frame
+    layout as DFO stored or computed it. An empty `entities` or `facets` names
+    nothing, as for a spec or a ref, and `layout="frame"` is the frame's own."""
     given = [
         name
         for name, value in (
             ("window", window is not None),
-            ("entities", entities is not None),
-            ("facets", facets is not None),
+            ("entities", bool(entities)),
+            ("facets", bool(facets)),
             ("party_totals", party_totals is not None),
-            ("latest=True", latest),
         )
         if value
     ]
     if layout not in (None, "frame"):
         given.append(f"layout={layout!r}")
-    if given:
-        raise client_error(
-            INVALID_ARGUMENT,
-            "A share fetch reads the exact frame a slot shows and takes no "
-            f"{', '.join(given)}; narrow the Dataset it returns with "
-            f"{caller}.analysis.filter, or pick another moment with as_of",
-        )
+    return given
 
 
 def _fetch_shown(
@@ -409,6 +414,7 @@ def _fetch_shown(
             transport,
             shown.spec_id,
             shown.content_version,
+            title=shown.title or f"Slot {shown.slot} of share {shown.share_id}",
             fix=(
                 "For what the slot shows now: "
                 f"{transport.caller}.fetch(share, slot={shown.slot})"
@@ -436,6 +442,7 @@ def _fetch_frame(
     spec_id: str,
     content_version: str,
     *,
+    title: str,
     fix: str,
     strict: bool,
     deadline: float | None,
@@ -444,11 +451,12 @@ def _fetch_frame(
     cache: Cache | None,
 ) -> Dataset:
     """A dataset version in the frame layout, from its ids alone: the stored
-    manifest names its definition and frame artifact, and Search its sentence.
-    Every read ends by the clock reading `deadline`, which `timeout` set.
+    manifest names its definition and frame artifact. Once the data is read,
+    Search words its sentence, or else `title` does. Every read ends by the
+    clock reading `deadline`, which `timeout` set.
 
     Raises:
-        VersionUnavailableError: DFO no longer stores the version
+        VersionUnavailableError: DFO no longer stores the version or its file
             (`artifact_expired`), and the error ends with `fix`.
         ContractError: The manifest lists no bare Parquet frame artifact
             (`contract_violation`).
@@ -469,11 +477,10 @@ def _fetch_frame(
                 f"The manifest of {spec_id} at {content_version} lists no "
                 f"{_FRAME.to_object()} artifact",
             )
-    sentence = built_sentence(transport, manifest, (), None, deadline=deadline)
     member = RefMember(
         parts=(),
-        sentence=sentence,
-        spec=Spec(spec_id, manifest["definition"], sentence),
+        sentence=title,
+        spec=Spec(spec_id, manifest["definition"], title),
         content_version=content_version,
         digest=artifact["artifact_digest"],
         rendering=replace(
@@ -494,7 +501,12 @@ def _fetch_frame(
             deadline=deadline,
             timeout=timeout,
             stored=stored,
+            fix=fix,
         )
+    sentence = _sentence_or(transport, fetched.manifest, title, deadline=deadline)
+    fetched = replace(
+        fetched, sentence=sentence, spec=replace(fetched.spec, sentence=sentence)
+    )
     return sync_offload(
         build_dataset,
         [fetched],
@@ -507,50 +519,29 @@ def _fetch_frame(
     )
 
 
+def _sentence_or(
+    transport: Transport, manifest: Wire, fallback: str, *, deadline: float | None
+) -> str:
+    """Search's sentence for a stored version, or `fallback` when Search refuses,
+    fails, or no longer resolves the definition to its own spec: the data is
+    already read, and the sentence only words it."""
+    try:
+        return built_sentence(transport, manifest, (), None, deadline=deadline)
+    except DfoError:
+        return fallback
+
+
 def _ref_window_refusal(window: object, latest: bool, caller: str) -> str:
     """Why a ref fetch refuses `window`, and the call that does what it asks:
-    `latest=True` for the newest version, else a member's spec for a narrower
+    `latest=True` for the newest version, else a dataset member's spec for a narrower
     window."""
     if window == "latest" and not latest:
         return "A ref fetch takes no window; for the newest version use latest=True."
     return (
-        "A ref fetch takes no window; to narrow the years, fetch a member's spec: "
-        f"{caller}.fetch(ref.members[0].spec, window={cited(window)})."
+        "A ref fetch takes no window; to narrow the years, fetch a dataset member's "
+        f"spec: {caller}.fetch(member.spec, window={cited(window)}) for a RefMember "
+        "in ref.members."
     )
-
-
-def _check_computed(
-    *,
-    window: object,
-    entities: object,
-    facets: object,
-    layout: object,
-    party_totals: object,
-) -> None:
-    """Refuse the options a recipe or a derived ref does not take: DFO computes
-    a frame in the frame layout from roots the recipe names.
-
-    Raises:
-        InvalidRequestError: One is given (`invalid_argument`).
-    """
-    given = [
-        name
-        for name, value in (
-            ("window", window is not None),
-            ("entities", bool(entities)),
-            ("facets", bool(facets)),
-            ("party_totals", party_totals is not None),
-        )
-        if value
-    ]
-    if layout not in (None, "frame"):
-        given.append("layout")
-    if given:
-        raise client_error(
-            INVALID_ARGUMENT,
-            f"A recipe or a frame DFO computed takes no {', '.join(given)}; set "
-            "them on the readings the recipe starts from",
-        )
 
 
 def _dataset_members(ref: DatasetRef) -> tuple[RefMember, ...]:
@@ -701,11 +692,13 @@ def _fetch_version(
     deadline: float | None,
     timeout: float | None,
     stored: tuple[Wire, str | None] | None = None,
+    fix: str | None = None,
 ) -> FetchedMember:
     """One stored version, through the lookup order. `pointer` locates the
     member in the ref, and `timeout` is the caller's, which set `deadline`.
     `stored` is the version's manifest and its trace id when the caller already
-    read it, which spares the snapshot request.
+    read it, which spares the snapshot request. `fix` ends the error when the
+    version can no longer be fetched; None names a ref's latest fetch.
 
     Raises:
         InvalidRequestError: The member's spec id or version is not a server id
@@ -791,7 +784,8 @@ def _fetch_version(
         version,
         newest,
         refusal,
-        fix=f"For the newest version: {transport.caller}.fetch(ref, latest=True)",
+        fix=fix
+        or f"For the newest version: {transport.caller}.fetch(ref, latest=True)",
     )
 
 

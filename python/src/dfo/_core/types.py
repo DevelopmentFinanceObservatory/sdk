@@ -648,11 +648,20 @@ def decode(text: str | bytes, pointer: str = "") -> Mapping[str, Any]:
         FormatError: The text is not JSON, nests deeper than `JSON_MAX_DEPTH`
             levels, or is not an object.
     """
+    return object_at(decode_value(text, pointer), pointer)
+
+
+def decode_value(text: str | bytes, pointer: str = "") -> object:
+    """A stored JSON value of any kind, read as `decode` reads an object.
+
+    Raises:
+        FormatError: The text is not JSON, or nests deeper than `JSON_MAX_DEPTH`
+            levels.
+    """
     try:
-        obj = loads(text)
+        return loads(text)
     except ValueError as error:  # not JSON, nested too deeply, or not UTF-8
         raise FormatError("format_invalid", pointer, f"not JSON: {error}") from error
-    return object_at(obj, pointer)
 
 
 def is_text(value: object) -> bool:

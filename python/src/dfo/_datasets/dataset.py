@@ -31,7 +31,6 @@ from typing import TYPE_CHECKING, Any, Never, override
 
 from dfo._core.codes import CONTRACT_VIOLATION, UNEXPECTED_RESPONSE
 from dfo._core.errors import ContractError, client_error, message_of
-from dfo._core.json_text import loads
 from dfo._core.parse import parse_citation, parse_notices, parse_part
 from dfo._core.refs import (
     DatasetRef,
@@ -40,6 +39,7 @@ from dfo._core.refs import (
     Member,
     RefMember,
     ResolvedPeriod,
+    derived_member,
 )
 from dfo._core.text import single_line
 from dfo._core.types import (
@@ -60,6 +60,7 @@ from dfo._core.types import (
     Spec,
     check_keys,
     decode,
+    decode_value,
     is_gap_kind,
     is_integer,
     object_at,
@@ -101,8 +102,12 @@ _NOT_SLOT_KEYS = ("value", "time_period")
 # The columns every artifact a dataset reads holds, in both layouts.
 REQUIRED_COLUMNS = ("time_period", "value")
 
-# The version of the provenance a saved file carries under `dfo.*` keys.
+# The version of the provenance a saved file carries under `dfo.*` keys. A
+# dataset of dataset versions saves format 1. A derived dataset saves format 2,
+# whose `dfo.ref` is a format 2 ref and which adds `dfo.left_out` and
+# `dfo.steps`, so a client that reads format 1 alone refuses it as a later format.
 SAVED_FORMAT_VERSION = 1
+SAVED_DERIVED_FORMAT_VERSION = 2
 
 _MONTHS = (
     "January",
@@ -231,7 +236,7 @@ class LeftOutSeries:
     def __hash__(self) -> int:
         return hash(
             (
-                tuple(self.coordinates.items()),
+                frozenset(self.coordinates.items()),
                 self.step,
                 self.side,
                 self.reason,
@@ -576,8 +581,10 @@ class Dataset:
     def _metadata(self) -> dict[bytes, bytes]:
         """The provenance as the saved file's key-value metadata, under `dfo.*` keys."""
         ref = self._ref()
+        derived = any(isinstance(member, DerivedMember) for member in self.members)
+        version = SAVED_DERIVED_FORMAT_VERSION if derived else SAVED_FORMAT_VERSION
         metadata = {
-            "dfo.format_version": str(SAVED_FORMAT_VERSION),
+            "dfo.format_version": str(version),
             "dfo.sentence": self.sentence,
             "dfo.citation": _dumps(_citation_object(self.citation)),
             "dfo.sources": _dumps(list(self.sources)),
@@ -607,7 +614,7 @@ class Dataset:
         }
         if ref is not None:
             metadata["dfo.ref"] = ref.to_json()
-        if any(isinstance(member, DerivedMember) for member in self.members):
+        if derived:
             metadata["dfo.left_out"] = _dumps(
                 {
                     "series": [_left_out_object(series) for series in self.left_out],
@@ -910,21 +917,7 @@ def derived_dataset(
     tree = recipe.get("tree") if isinstance(recipe, Mapping) else None
     return Dataset(
         sentence=member.sentence,
-        members=(
-            DerivedMember(
-                parts=member.parts,
-                sentence=member.sentence,
-                spec=member.spec,
-                content_version=member.content_version,
-                output_digest=member.output_digest,
-                roots=member.roots,
-                execution_identity=member.execution_identity,
-                resolved_periods=member.resolved_periods,
-                citation=citation,
-                digest=member.digest,
-                rendering=member.rendering,
-            ),
-        ),
+        members=(derived_member(member, citation),),
         citation=citation,
         warnings=(),
         departures=(),
@@ -988,14 +981,17 @@ def _tree_steps(node: Mapping[str, Any]) -> Iterator[DerivedStep]:
     """The steps of a stored recipe's tree in the order they ran: each step
     after its inputs, the primary input first. A part of the tree this client
     cannot read names no step, since only the repr reads them."""
+    op_spec = node.get("op_spec")
+    verb = op_spec.get("verb") if isinstance(op_spec, Mapping) else None
     inputs = node.get("inputs")
     if isinstance(inputs, Mapping):
-        slots = sorted(inputs, key=lambda slot: (slot != "frame_ref", slot))
-        for slot in slots:
+        # Compare reads its primary input as the right frame, as DFO's runner
+        # places it.
+        primary = "right_frame_ref" if verb == "compare" else "frame_ref"
+        for slot in sorted(inputs, key=lambda slot: (slot != primary, slot)):
             if isinstance(child := inputs[slot], Mapping):
                 yield from _tree_steps(child)
-    op_spec = node.get("op_spec")
-    if not isinstance(op_spec, Mapping) or not isinstance(op_spec.get("verb"), str):
+    if not isinstance(op_spec, Mapping) or not isinstance(verb, str):
         return
     parameters = op_spec.get("parameters")
     parameters = parameters if isinstance(parameters, Mapping) else {}
@@ -1009,7 +1005,7 @@ def _tree_steps(node: Mapping[str, Any]) -> Iterator[DerivedStep]:
     )
     limit = parameters.get("limit")
     yield DerivedStep(
-        verb=op_spec["verb"],
+        verb=verb,
         by=tuple(column for column in by if isinstance(column, str)),
         limit=limit if type(limit) is int else None,
     )
@@ -1090,10 +1086,11 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
             pointer starts with the key, as in `/dfo.dataset/missing`.
     """
     values = _saved_values(metadata)
-    if values.get("dfo.format_version") != str(SAVED_FORMAT_VERSION):
+    versions = (str(SAVED_FORMAT_VERSION), str(SAVED_DERIVED_FORMAT_VERSION))
+    if values.get("dfo.format_version") not in versions:
         raise ValueError(
-            "the file carries no dataset saved by this client's format version "
-            f"{SAVED_FORMAT_VERSION}"
+            "the file carries no dataset saved by this client's format versions "
+            f"{SAVED_FORMAT_VERSION} and {SAVED_DERIVED_FORMAT_VERSION}"
         )
     rest = decode(_saved_value(values, "dfo.dataset"), "/dfo.dataset")
     check_keys(rest, "/dfo.dataset", required=_SAVED_DATASET_KEYS)
@@ -1119,6 +1116,8 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
     member_rows = _load_member_rows(
         rest["member_rows"], members=len(members), rows=table.num_rows
     )
+    # Only a derived dataset carries left-out series and steps.
+    derived = any(isinstance(member, DerivedMember) for member in members)
     return Dataset(
         sentence=_saved_value(values, "dfo.sentence"),
         members=members,
@@ -1158,7 +1157,7 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
         layout_version=_string(rest["layout_version"], "/dfo.dataset/layout_version"),
         _table=table.replace_schema_metadata(None),
         _member_rows=member_rows,
-        **_load_derived(values),
+        **(_load_derived(values) if derived else {}),
     )
 
 
@@ -1176,19 +1175,7 @@ def _saved_member(
             digest=stored.digest,
             rendering=stored.rendering,
         )
-    return DerivedMember(
-        parts=stored.parts,
-        sentence=stored.sentence,
-        spec=stored.spec,
-        content_version=stored.content_version,
-        output_digest=stored.output_digest,
-        roots=stored.roots,
-        execution_identity=stored.execution_identity,
-        resolved_periods=stored.resolved_periods,
-        citation=citation,
-        digest=stored.digest,
-        rendering=stored.rendering,
-    )
+    return derived_member(stored, citation)
 
 
 def _left_out_object(series: LeftOutSeries) -> dict[str, Any]:
@@ -1206,29 +1193,21 @@ def _load_derived(values: Mapping[str, str]) -> dict[str, Any]:
     they fill; none when the file holds dataset versions."""
     loaded: dict[str, Any] = {}
     if (text := values.get("dfo.left_out")) is not None:
-        series, complete = _load_left_out(_json_value(text, "/dfo.left_out"))
+        series, complete = _load_left_out(decode(text, "/dfo.left_out"))
         loaded["left_out"] = series
         loaded["_left_out_complete"] = complete
     if (text := values.get("dfo.steps")) is not None:
         pointer = "/dfo.steps"
         loaded["_steps"] = tuple(
             _load_step(item, f"{pointer}/{index}")
-            for index, item in enumerate(_array(_json_value(text, pointer), pointer))
+            for index, item in enumerate(_array(decode_value(text, pointer), pointer))
         )
     return loaded
 
 
-def _json_value(text: str, pointer: str) -> object:
-    try:
-        return loads(text)
-    except ValueError as error:
-        raise FormatError("format_invalid", pointer, f"not JSON: {error}") from error
-
-
-def _load_left_out(value: object) -> tuple[tuple[LeftOutSeries, ...], bool]:
+def _load_left_out(obj: Mapping[str, Any]) -> tuple[tuple[LeftOutSeries, ...], bool]:
     """A saved `dfo.left_out`: the dropped series and whether they are all."""
     pointer = "/dfo.left_out"
-    obj = object_at(value, pointer)
     check_keys(obj, pointer, required=("series", "complete"))
     complete = obj["complete"]
     if not isinstance(complete, bool):
@@ -1245,18 +1224,20 @@ def _load_left_out(value: object) -> tuple[tuple[LeftOutSeries, ...], bool]:
 
 def read_left_out_series(value: object, pointer: str) -> LeftOutSeries:
     """One dropped series as the derived manifest serves it and a saved file
-    keeps it: `{coordinates, step: {verb, node}, side, reason, rows}`.
+    keeps it: `{coordinates, step: {verb, node}, side, reason, rows}`. A key
+    outside that shape is ignored, so a member DFO adds reads as before.
 
     Raises:
-        FormatError: The value breaks that shape; `pointer` locates it.
+        FormatError: A key of that shape is missing or of the wrong type;
+            `pointer` locates it.
     """
     obj = object_at(value, pointer)
-    check_keys(obj, pointer, required=("coordinates", "step", "side", "reason", "rows"))
+    _require(obj, pointer, ("coordinates", "step", "side", "reason", "rows"))
     coordinates = object_at(obj["coordinates"], f"{pointer}/coordinates")
     for key, item in coordinates.items():
         _string(item, f"{pointer}/coordinates/{key}")
     step = object_at(obj["step"], f"{pointer}/step")
-    check_keys(step, f"{pointer}/step", required=("verb", "node"))
+    _require(step, f"{pointer}/step", ("verb", "node"))
     node = step["node"]
     if not is_integer(node) or node < 0:
         raise FormatError("format_invalid", f"{pointer}/step/node", "not a node index")
@@ -1272,6 +1253,13 @@ def read_left_out_series(value: object, pointer: str) -> LeftOutSeries:
         reason=_string(obj["reason"], f"{pointer}/reason"),
         rows=int(rows),
     )
+
+
+def _require(obj: Mapping[str, Any], pointer: str, keys: Sequence[str]) -> None:
+    """Refuse a missing key of `keys`; any other key passes."""
+    for key in keys:
+        if key not in obj:
+            raise FormatError("format_invalid", f"{pointer}/{key}", "missing")
 
 
 def _load_step(value: object, pointer: str) -> DerivedStep:

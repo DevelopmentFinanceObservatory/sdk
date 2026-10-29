@@ -94,13 +94,19 @@ export type DerivedRefMember = {
   readonly rendering: Rendering;
 };
 
-/** Whether a ref member is a derived member. */
-export const isDerived = (member: RefMember | DerivedRefMember): member is DerivedRefMember =>
-  "outputDigest" in member;
+/** Whether a member of a ref or a dataset is a derived member, whose `spec` is a
+ *  `DerivedSpec`: `isDerived(data.members[0])` narrows to `DerivedMember`, and a ref's member
+ *  to `DerivedRefMember`. */
+export const isDerived = <TMember extends RefMember | DerivedRefMember>(
+  member: TMember,
+): member is Extract<TMember, DerivedRefMember> => "outputDigest" in member;
 
-/** Whether a ref member is a dataset member. */
-export const isDatasetMember = (member: RefMember | DerivedRefMember): member is RefMember =>
-  !isDerived(member);
+/** Whether a member of a ref or a dataset is a dataset member, whose `spec` is a `Spec` that
+ *  `client.fetch` takes: `isDatasetMember(data.members[0])` narrows to `Member`, and a ref's
+ *  member to `RefMember`. */
+export const isDatasetMember = <TMember extends RefMember | DerivedRefMember>(
+  member: TMember,
+): member is Exclude<TMember, DerivedRefMember> => !isDerived(member);
 
 /** A ref as JSON, in the stored format: format 1 of dataset members, or format 2 of derived
  *  members. */

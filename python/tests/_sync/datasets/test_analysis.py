@@ -20,6 +20,7 @@ import pytest
 from dfo._core import errors as _errors
 from dfo._core.errors import (
     ContractError,
+    DfoError,
     DfoTimeoutError,
     DfoWarning,
     InvalidRequestError,
@@ -40,7 +41,7 @@ from dfo._sync._datasets.pin import pin
 from dfo._sync._datasets.resolve import fetch
 from dfo._sync._http.transport import Transport
 from tests._data import DATA, load
-from tests._datasets import recorded_member
+from tests._datasets import other_member, recorded_member
 from tests._fetch_support import BASE, Server, json_response, problem
 from tests.rule_vectors import vectors
 
@@ -515,11 +516,35 @@ def test_pin_refuses_a_derived_dataset_unsent() -> None:
     ids=["another-version", "allowance-spent"],
 )
 def test_a_pin_dfo_does_not_confirm_raises(
-    answer: httpx2.Response, error_class: type[Exception]
+    answer: httpx2.Response, error_class: type[DfoError]
 ) -> None:
     data = build_dataset(
         [recorded_member()], layout="long", complete=True, missing=(), stale=False
     )
     with make(Server(answer)) as transport:
-        with pytest.raises(error_class):
+        with pytest.raises(error_class) as caught:
             pin(transport, data)
+    assert caught.value.pinned == ()
+
+
+def test_a_pin_that_fails_part_way_names_the_versions_it_pinned() -> None:
+    first, second = recorded_member(), other_member()
+    data = build_dataset(
+        [first, second], layout="long", complete=True, missing=(), stale=False
+    )
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return pinned_answer(request)
+        return problem(429, "allowance_exhausted")
+
+    with make(handler) as transport:
+        with pytest.raises(QuotaExceededError) as caught:
+            pin(transport, data)
+    assert len(requests) == 2
+    assert caught.value.code == "allowance_exhausted"
+    assert caught.value.pinned == (first.content_version,)
+    assert f"{first.spec.spec_id} at {first.content_version}" in str(caught.value)
+    assert second.content_version not in str(caught.value)

@@ -337,6 +337,15 @@ def test_recipes_that_send_the_same_tree_are_equal_and_hash_alike() -> None:
     assert recipe(AID).rank(by="origin") != recipe(POPULATION).rank(by="origin")
 
 
+def test_a_change_to_the_tree_leaves_the_recipe_as_it_was() -> None:
+    chain = recipe(AID).aggregate(by="origin").rank(by="origin")
+    sent, key = chain.tree(), hash(chain)
+    tree = chain.tree()
+    tree["arguments"]["rank_by"].append("destination")
+    tree["inputs"]["data"]["inputs"]["data"]["rendering"]["without_party_totals"] = 0
+    assert (chain.tree(), hash(chain)) == (sent, key)
+
+
 def _stored(verb: str, parameters: dict[str, Any], **inputs: Any) -> dict[str, Any]:
     return {"op_spec": {"verb": verb, "parameters": parameters}, "inputs": inputs}
 
@@ -375,8 +384,34 @@ ROOT = {"frame": {"spec_id": AID.spec_id}, "root": 0}
             _stored("rank", {"rank_by": ["financingSource"]}, frame_ref=ROOT),
             {},
         ),
+        (
+            recipe(AID).aggregate(by=["origin", "time_period"]),
+            _stored(
+                "aggregate",
+                {"group_by": ["financingSource", "time_period"]},
+                frame_ref=ROOT,
+            ),
+            {"financingSource": "origin"},
+        ),
+        (
+            # DFO may store a list in another order than the call's, so two
+            # words left over name no column rather than the wrong one.
+            recipe(AID).rank(by=["origin", "destination"]),
+            _stored(
+                "rank",
+                {"rank_by": ["financingRecipient", "financingSource"]},
+                frame_ref=ROOT,
+            ),
+            {},
+        ),
     ],
-    ids=["compare-on-pairs", "two-words-one-column", "a-column-itself"],
+    ids=[
+        "compare-on-pairs",
+        "two-words-one-column",
+        "a-column-itself",
+        "the-word-left-names-the-column-left",
+        "several-words-left",
+    ],
 )
 def test_column_roles_maps_dfos_columns_back_to_the_calls_words(
     chain: Recipe, stored: dict[str, Any], roles: dict[str, str]

@@ -17,8 +17,11 @@ import { isRecord, list, objects, text } from "../core/json.ts";
 import { inline } from "../core/text.ts";
 
 /** The version of the provenance a file from `bytes()` carries under `dfo.*` keys, the one
- *  Python's `Dataset.save` writes. */
+ *  Python's `Dataset.save` writes: 1 for a dataset of dataset versions, and 2 for a derived
+ *  dataset, whose `dfo.ref` is a format 2 ref and which adds `dfo.left_out` and `dfo.steps`, so
+ *  a client that reads format 1 alone refuses it as a later format. */
 const SAVED_FORMAT_VERSION = 1;
+const SAVED_DERIVED_FORMAT_VERSION = 2;
 
 /** How to cite the data: the citation text and the cited sources. */
 export type Citation = {
@@ -567,7 +570,8 @@ export class Dataset {
   #metadata(): Record<string, string> {
     const sources = this.citation.sources;
     const licences = [...new Set(sources.flatMap((source) => source.license ?? []))];
-    const derived = !this.members.some(isDerived)
+    const isDerivedDataset = this.members.some(isDerived);
+    const derived = !isDerivedDataset
       ? {}
       : {
           "dfo.left_out": JSON.stringify({
@@ -585,7 +589,9 @@ export class Dataset {
           ),
         };
     return {
-      "dfo.format_version": String(SAVED_FORMAT_VERSION),
+      "dfo.format_version": String(
+        isDerivedDataset ? SAVED_DERIVED_FORMAT_VERSION : SAVED_FORMAT_VERSION,
+      ),
       "dfo.sentence": this.sentence,
       "dfo.citation": JSON.stringify(savedCitation(this.citation)),
       "dfo.sources": JSON.stringify(sources.map((source) => source.label)),

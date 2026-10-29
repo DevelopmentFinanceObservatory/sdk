@@ -58,6 +58,8 @@ test("the root entry exports these values and no others", async () => {
     "Share",
     "VERSION",
     "VersionUnavailableError",
+    "isDatasetMember",
+    "isDerived",
     "isDfoError",
     "isKnownPart",
     "latestYear",

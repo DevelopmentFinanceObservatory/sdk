@@ -724,6 +724,8 @@ describe("a derived dataset", () => {
     test(`bytes() writes its format 2 ref, left-out series and steps (complete ${complete})`, async () => {
       const dataset = await derived("chain", { left_out_complete: complete });
       const metadata = await savedMetadata(dataset);
+      // A client that reads format 1 alone refuses the file as a later format.
+      assert.equal(metadata["dfo.format_version"], "2");
       const ref = JSON.parse(metadata["dfo.ref"]!) as { format_version: number };
       assert.equal(ref.format_version, 2);
       assert.ok(DatasetRef.fromJSON(ref).equals(dataset.ref));
@@ -737,6 +739,48 @@ describe("a derived dataset", () => {
       ]);
     });
   }
+
+  test("ignores keys a manifest's left-out series add", async () => {
+    const manifest = await recordedJson<{ left_out: Record<string, Record<string, unknown>>[] }>(
+      "analysis-chain-manifest.json",
+    );
+    const added = manifest.left_out.map((series) => ({
+      ...series,
+      unit: "USDollar",
+      step: { ...series["step"], op_id: "op_1" },
+    }));
+    const plain = await derived();
+    const extended = await derived("chain", { left_out: added });
+    assert.deepEqual(
+      extended.leftOut.map((series) => String(series)),
+      plain.leftOut.map((series) => String(series)),
+    );
+    assert.deepEqual(
+      extended.leftOut.map(({ step }) => ({ ...step })),
+      plain.leftOut.map(({ step }) => ({ ...step })),
+    );
+  });
+
+  test("lists a compare's primary input's steps first", async () => {
+    const step = (verb: string, parameters: Record<string, unknown>, inputs = {}) => ({
+      op_spec: { verb, parameters },
+      inputs,
+    });
+    // Compare reads `data`, its primary input, as the right frame.
+    const tree = step(
+      "compare",
+      {},
+      {
+        frame_ref: step("rank", { rank_by: ["financingSource"], limit: 5 }),
+        right_frame_ref: step("growth", { entity_by: ["financingSource"] }),
+      },
+    );
+    const metadata = await savedMetadata(await derived("chain", { recipe: { tree } }));
+    assert.deepEqual(
+      (JSON.parse(metadata["dfo.steps"]!) as { verb: string }[]).map(({ verb }) => verb),
+      ["growth", "rank", "compare"],
+    );
+  });
 
   test("reads a manifest without left_out as none left out", async () => {
     const dataset = await derived("chain", {
@@ -754,6 +798,15 @@ describe("a derived dataset", () => {
     ["another frame", { content_version: `ocv_${"0".repeat(32)}` }, null],
     ["left_out not a list", { left_out: {} }, "/left_out"],
     ["a series damaged", { left_out: [{ step: {} }] }, "/left_out/0/coordinates"],
+    [
+      "a node as text",
+      {
+        left_out: [
+          { coordinates: {}, step: { verb: "s", node: "0" }, side: "data", reason: "r", rows: 1 },
+        ],
+      },
+      "/left_out/0/step/node",
+    ],
     [
       "a node below 0",
       {
@@ -781,6 +834,7 @@ describe("a dataset of dataset versions", () => {
     const dataset = await Dataset.create([member(data)], { layout: "long" });
     assert.deepEqual(dataset.leftOut, []);
     const metadata = await savedMetadata(dataset);
+    assert.equal(metadata["dfo.format_version"], "1");
     assert.equal(metadata["dfo.left_out"], undefined);
     assert.equal(metadata["dfo.steps"], undefined);
     assert.ok(!String(dataset).includes("Derived:"));

@@ -118,7 +118,7 @@ export type { Progress, ProgressEvent, ProgressHandler } from "./datasets/operat
 export type { Row, Value } from "./datasets/parquet.ts";
 export { isKnownPart, PART_STATUSES } from "./core/parts.ts";
 export { specRoles } from "./core/roles.ts";
-export { DatasetRef, FormatError } from "./core/ref.ts";
+export { DatasetRef, FormatError, isDatasetMember, isDerived } from "./core/ref.ts";
 export type {
   DatasetRefJson,
   DerivedRefMember,

@@ -113,8 +113,7 @@ const GROWTH_CHANGES: Readonly<Record<GrowthChange, string>> = {
 };
 
 const TIME_PERIOD = "time_period";
-/** The parameters whose lists name a step's columns in the order the call named its roles, as
- *  DFO stores them. */
+/** The parameters whose lists name the columns of a step's `by`. */
 const ORDERED_BY = ["group_by", "entity_by", "rank_by"] as const;
 /** The stored parameter that holds each two-reading step's `on`, its keys the columns of `data`
  *  and its values those of `other`. */
@@ -503,7 +502,9 @@ function canonical(value: unknown): string {
  * `{ financingRecipient: "destination" }`, read step by step from the tree the client sent and
  * the tree DFO stored for it. A column the call named by itself is left out, as is one two
  * words name and one whose word the stored tree does not place, such as a role of a step whose
- * `by` and `on` DFO merged into one sorted list.
+ * `by` and `on` DFO merged into one sorted list. The stored tree holds columns alone, so a word
+ * pairs with a column by name or by elimination, never by position: a list DFO stored in another
+ * order names no role rather than the wrong one.
  */
 export function columnRoles(chain: Recipe, stored: unknown): Record<string, string> {
   const found = new Map<string, Set<string>>();
@@ -524,13 +525,9 @@ function noteRoles(node: TreeNode, stored: unknown, found: Map<string, Set<strin
   if (!isRecord(opSpec) || !isRecord(inputs) || !isRecord(opSpec["parameters"])) return;
   const parameters = opSpec["parameters"];
   const note = (words: unknown, columnsOf: unknown): void => {
-    if (!Array.isArray(words) || !Array.isArray(columnsOf)) return;
-    if (words.length !== columnsOf.length) return;
-    words.forEach((word: unknown, index) => {
-      const column: unknown = columnsOf[index];
-      if (typeof word !== "string" || typeof column !== "string") return;
+    for (const [word, column] of paired(words, columnsOf)) {
       found.set(column, (found.get(column) ?? new Set<string>()).add(word));
-    });
+    }
   };
   const args = node.arguments;
   for (const name of ORDERED_BY) note(args[name], parameters[name]);
@@ -559,6 +556,26 @@ function noteRoles(node: TreeNode, stored: unknown, found: Map<string, Set<strin
     const otherSlots = Object.keys(inputs).filter((slot) => slot !== dataSlot);
     if (otherSlots.length === 1) noteRoles(node.other, inputs[otherSlots[0]!], found);
   }
+}
+
+/** Each word of a step's list with the stored column it names: a word that is a column names
+ *  itself, and the one word left names the one column left. Lists of different lengths, or of
+ *  several words left, pair no more. */
+function paired(words: unknown, columnsOf: unknown): [string, string][] {
+  if (!Array.isArray(words) || !Array.isArray(columnsOf)) return [];
+  const texts = words.filter((word: unknown): word is string => typeof word === "string");
+  const stored = columnsOf.filter(
+    (column: unknown): column is string => typeof column === "string",
+  );
+  if (texts.length !== words.length || stored.length !== columnsOf.length) return [];
+  if (texts.length !== stored.length) return [];
+  const named: [string, string][] = texts
+    .filter((word) => stored.includes(word))
+    .map((word) => [word, word]);
+  const left = texts.filter((word) => !stored.includes(word));
+  const unnamed = stored.filter((column) => !texts.includes(column));
+  if (left.length === 1 && unnamed.length === 1) named.push([left[0]!, unnamed[0]!]);
+  return named;
 }
 
 const clipped = (text: string): string =>

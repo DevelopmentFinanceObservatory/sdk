@@ -10,7 +10,7 @@ full: the client copies every field from the server's answer and computes none.
 import json
 import re
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any, Literal, Self, override
 
 from dfo._core.codes import INVALID_ARGUMENT
@@ -250,18 +250,19 @@ class DerivedMember:
 
     def ref_member(self) -> DerivedRefMember:
         """The member as a `DatasetRef` stores it."""
-        return DerivedRefMember(
-            parts=self.parts,
-            sentence=self.sentence,
-            spec=self.spec,
-            content_version=self.content_version,
-            output_digest=self.output_digest,
-            roots=self.roots,
-            execution_identity=self.execution_identity,
-            resolved_periods=self.resolved_periods,
-            digest=self.digest,
-            rendering=self.rendering,
-        )
+        return DerivedRefMember(**_derived_fields(self))
+
+
+def derived_member(member: DerivedRefMember, citation: Citation) -> DerivedMember:
+    """A derived ref member as a dataset holds it, with its citation."""
+    return DerivedMember(**_derived_fields(member), citation=citation)
+
+
+def _derived_fields(member: DerivedRefMember | DerivedMember) -> dict[str, Any]:
+    """Every field a derived ref member holds, by name."""
+    return {
+        field.name: getattr(member, field.name) for field in fields(DerivedRefMember)
+    }
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -291,6 +292,13 @@ class DatasetRef:
     members: tuple[RefMember | DerivedRefMember, ...]
 
     def __post_init__(self) -> None:
+        for member in self.members:
+            if not isinstance(member, RefMember | DerivedRefMember):
+                raise TypeError(
+                    "A DatasetRef holds RefMember or DerivedRefMember members, not "
+                    f"{type(member).__name__}; build one from a dataset's members "
+                    "with DatasetRef.of"
+                )
         kinds = {type(member) for member in self.members}
         if len(kinds) > 1:
             raise ValueError(

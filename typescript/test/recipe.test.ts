@@ -6,7 +6,7 @@ import { describe, test } from "node:test";
 
 import { Dataset } from "../src/datasets/dataset.ts";
 import type { FetchedMember } from "../src/datasets/dataset.ts";
-import { Recipe, recipe } from "../src/datasets/recipe.ts";
+import { columnRoles, Recipe, recipe } from "../src/datasets/recipe.ts";
 import { LatestYear, latestYear } from "../src/core/periods.ts";
 import { DatasetRef, isDerived } from "../src/core/ref.ts";
 import type { Rendering, Spec } from "../src/core/ref.ts";
@@ -231,6 +231,44 @@ test("a recipe is immutable: each step is a new recipe and tree() a new object",
   (tree.arguments as Record<string, unknown>)["rank_by"] = ["changed"];
   assert.deepEqual((ranked.tree() as Tree).arguments, { rank_by: ["origin"] });
   assert.ok(Object.isFrozen(ranked));
+});
+
+describe("columnRoles maps DFO's columns back to the call's words", () => {
+  const stored = (verb: string, parameters: Record<string, unknown>, inputs = {}) => ({
+    op_spec: { verb, parameters },
+    inputs,
+  });
+  const root = { frame: { spec_id: AID.spec_id }, root: 0 };
+  for (const [name, chain, tree, roles] of [
+    [
+      "compare-on-pairs",
+      recipe(AID).compare(POPULATION, { on: { destination: "place" } }),
+      stored(
+        "compare",
+        { on: { financingRecipient: "observationAbout" } },
+        { frame_ref: root, right_frame_ref: root },
+      ),
+      { financingRecipient: "destination", observationAbout: "place" },
+    ],
+    [
+      "the-word-left-names-the-column-left",
+      recipe(AID).aggregate({ by: ["origin", "time_period"] }),
+      stored("aggregate", { group_by: ["financingSource", "time_period"] }, { frame_ref: root }),
+      { financingSource: "origin" },
+    ],
+    [
+      // DFO may store a list in another order than the call's, so two words left over name no
+      // column rather than the wrong one.
+      "several-words-left",
+      recipe(AID).rank({ by: ["origin", "destination"] }),
+      stored("rank", { rank_by: ["financingRecipient", "financingSource"] }, { frame_ref: root }),
+      {},
+    ],
+  ] as const) {
+    test(name, () => {
+      assert.deepEqual(columnRoles(chain, tree), roles);
+    });
+  }
 });
 
 describe("a malformed step is refused when it is added", () => {

@@ -19,7 +19,7 @@
  */
 
 import { Dataset, datasetTable } from "./dataset.ts";
-import { decodeStored } from "./parquet.ts";
+import { columnValues } from "./parquet.ts";
 import { CARD_TYPES, readCard } from "./publication.ts";
 import type { Card, CardKind } from "./publication.ts";
 import { Recipe } from "./recipe.ts";
@@ -156,8 +156,8 @@ async function variables(
 ): Promise<string | string[]> {
   let found: string[];
   if (data instanceof Dataset && data.columns.includes(STAT_VAR)) {
-    const column = (await decodeStored(datasetTable(data))).find(({ name }) => name === STAT_VAR);
-    found = [...new Set(column?.values ?? [])].filter((value) => typeof value === "string");
+    const values = await columnValues(datasetTable(data), STAT_VAR);
+    found = values.filter((value): value is string => typeof value === "string");
   } else {
     const path = `/presentation/frames/${frame.spec_id}/${frame.content_version}`;
     const response = await transport.request({ path, query: { dimension: STAT_VAR } });

@@ -639,14 +639,13 @@ def note_warnings(manifest: Wire, *, strict: bool, trace_id: str | None) -> None
 def download(
     transport: Transport,
     target: str,
-    digest: str | None,
+    digest: str,
     *,
     params: Mapping[str, Any] | None = None,
     size: object = None,
     deadline: float | None,
 ) -> bytes:
-    """Fetch a file through the route that redirects to it, checked on `digest`
-    unless it is None.
+    """Fetch a file through the route that redirects to it, checked on `digest`.
 
     The route answers 200, whose body is the file, or a 302, whose `Location`
     resolves against the route's URL and is fetched once, with a bare request on
@@ -707,8 +706,6 @@ def download(
                 status=response.status_code,
                 trace_id=trace_id_of(response),
             )
-        if digest is None:
-            return data
         if (found := sync_offload(sha256_digest, data)) == digest:
             return data
         failure = client_error(

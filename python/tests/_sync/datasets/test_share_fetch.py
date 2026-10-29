@@ -85,6 +85,18 @@ def three_slots() -> Share:
     )
 
 
+def share_read(*, live: bool = True, slots: int = 3) -> httpx2.Response:
+    """The recorded read of the three-card share, live or a snapshot, cut to
+    its first `slots` slots."""
+    body = load("share-three-read.json")["body"]
+    body["mode"] = "live" if live else "snapshot"
+    body["slots"] = body["slots"][:slots]
+    return recorded("share-three-read", body)
+
+
+READ = f"GET {SHARES}/{SHARE_ID}"
+
+
 def dataset_frame() -> dict[str, str]:
     return {"spec_id": POSTED_ID, "content_version": VERSION}
 
@@ -126,22 +138,31 @@ def emptied_history(*, shuffled: bool = False) -> httpx2.Response:
     return recorded("share-three-emptied-history", body)
 
 
-def stored_version() -> list[httpx2.Response]:
-    """The dataset version's manifest, Search's sentence, and its frame file."""
+def stored_manifest() -> dict[str, Any]:
     scenario = json.loads((CONTRACT / "scenarios" / "fetch-ref.json").read_text())
+    return scenario["exchanges"][0]["response"]["json"]
+
+
+def stored_version(
+    sentence: httpx2.Response | Exception | None = None,
+) -> list[httpx2.Response | Exception]:
+    """The dataset version's manifest, its frame file, and Search's sentence,
+    or `sentence` in its place."""
     return [
-        json_response(200, scenario["exchanges"][0]["response"]["json"]),
-        json_response(200, resubmitted(POSTED_ID)),
+        json_response(200, stored_manifest()),
         parquet(FRAME_FILE),
+        json_response(200, resubmitted(POSTED_ID)) if sentence is None else sentence,
     ]
 
 
+FILES = f"{ORIGIN}/api/datasets/{POSTED_ID}/{VERSION}/files/sha256:f4026e80af4b8683d3bb86645ab3aca83dff75cd03fdd4c73ec54ba638922104"
+
+
 def stored_version_calls() -> list[str]:
-    files = f"{ORIGIN}/api/datasets/{POSTED_ID}/{VERSION}/files/sha256:f4026e80af4b8683d3bb86645ab3aca83dff75cd03fdd4c73ec54ba638922104"
     return [
         f"GET {BASE}/datasets/{POSTED_ID}/{VERSION}",
+        f"GET {FILES}",
         f"POST {BASE}/search/resolve",
-        f"GET {files}",
     ]
 
 
@@ -154,25 +175,25 @@ def computed_version() -> list[httpx2.Response]:
 
 
 @pytest.mark.parametrize(
-    ("target", "read"),
+    "target",
     [
-        (three_slots(), []),
-        (f"https://site.example/s/{SHARE_ID}", [recorded("share-three-read")]),
-        (f"https://site.example/embed/{SHARE_ID}/?x=1", [recorded("share-three-read")]),
+        three_slots(),
+        f"https://site.example/s/{SHARE_ID}",
+        f"https://site.example/embed/{SHARE_ID}/?x=1",
     ],
     ids=["share", "url", "embed-url"],
 )
 def test_a_share_fetch_reads_the_exact_version_its_slot_shows_now(
-    target: Share | str, read: list[httpx2.Response]
+    target: Share | str,
 ) -> None:
-    server = Server(*read, slot_card(dataset_frame()), *stored_version())
+    server = Server(share_read(), slot_card(dataset_frame()), *stored_version())
     with make(server) as transport:
         before = datetime.now(UTC).date()
         data = fetch(transport, target, slot=2)
         after = datetime.now(UTC).date()
 
     assert server.calls() == [
-        *([f"GET {SHARES}/{SHARE_ID}"] if read else []),
+        READ,
         f"GET {SHARES}/{SHARE_ID}/slots/2",
         *stored_version_calls(),
     ]
@@ -227,16 +248,17 @@ def test_a_share_fetch_reads_the_exact_version_its_slot_shows_now(
 def test_as_of_reads_the_newest_frame_the_slot_first_served_by_then(
     as_of: object, version: list[httpx2.Response], calls: list[str], day: str
 ) -> None:
-    server = Server(slot_history(), recorded("card-read"), *version)
+    server = Server(share_read(), slot_history(), recorded("card-read"), *version)
     with make(server) as transport:
         data = fetch(transport, three_slots(), slot=2, as_of=as_of)
 
     assert server.calls() == [
+        READ,
         f"GET {SHARES}/{SHARE_ID}/history",
         f"GET {BASE}/presentation/components/{SLOT_2_CARD}",
         *calls,
     ]
-    assert server.requests[1].url.params["revision"] == "1"
+    assert server.requests[2].url.params["revision"] == "1"
     (member,) = data.ref.members
     shown = computed_frame() if "derived" in calls[1] else dataset_frame()
     assert (member.spec.spec_id, member.content_version) == (
@@ -244,7 +266,7 @@ def test_as_of_reads_the_newest_frame_the_slot_first_served_by_then(
         shown["content_version"],
     )
     if isinstance(member, DerivedRefMember):
-        assert server.body(2) == {"tree": shown, "latest": False}
+        assert server.body(3) == {"tree": shown, "latest": False}
     assert f'slot 2 "Malaria grants by year", on {day}' in repr(data)
 
 
@@ -257,9 +279,13 @@ def test_as_of_reads_the_newest_frame_the_slot_first_served_by_then(
     ],
     ids=["now", "as-of-live", "as-of-snapshot"],
 )
+@pytest.mark.parametrize("gone", ["version", "file"])
 def test_a_slot_whose_dataset_frame_expired_is_unavailable_naming_the_newest(
-    latest: bool, as_of: datetime | None, hinted: bool
+    latest: bool, as_of: datetime | None, hinted: bool, gone: str
 ) -> None:
+    """`version`: the snapshot route refuses the version. `file`: it answers
+    the manifest, the file routes refuse the file, and the version does not
+    rebuild."""
     newest = "cv_" + "c" * 32
     versions = {
         "spec_id": POSTED_ID,
@@ -278,12 +304,21 @@ def test_a_slot_whose_dataset_frame_expired_is_unavailable_naming_the_newest(
         if as_of is None
         else [slot_history(), recorded("card-read")]
     )
-    server = Server(
-        *shown,
-        problem(410, "artifact_expired"),
-        json_response(200, versions),
+    lost = (
+        [problem(410, "artifact_expired")]
+        if gone == "version"
+        else [
+            json_response(200, stored_manifest()),
+            problem(410, "artifact_expired"),
+            problem(404, "not_found"),
+            problem(422, "definition_not_reproducible"),
+        ]
     )
-    share = replace(three_slots(), latest=latest)
+    server = Server(
+        share_read(live=latest), *shown, *lost, json_response(200, versions)
+    )
+    # The Share says the opposite of the share read, which decides.
+    share = replace(three_slots(), latest=not latest)
     with make(server) as transport:
         with pytest.raises(VersionUnavailableError) as caught:
             fetch(transport, share, slot=2, as_of=as_of)
@@ -293,12 +328,15 @@ def test_a_slot_whose_dataset_frame_expired_is_unavailable_naming_the_newest(
     # other read of what the slot shows now would fail the same way.
     assert ("fetch(share, slot=2)" in str(caught.value)) is hinted
     assert ("cannot show slot 2" in str(caught.value)) is not hinted
+    assert "latest=True" not in str(caught.value)
     assert server.calls()[-1] == f"GET {BASE}/datasets/{POSTED_ID}/versions"
 
 
 def test_a_share_fetch_ends_its_reads_at_the_calls_timeout() -> None:
     now = [1000.0]
-    stalled = Server(slot_history(), recorded("card-read"), *computed_version())
+    stalled = Server(
+        share_read(), slot_history(), recorded("card-read"), *computed_version()
+    )
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         now[0] += 6.0
@@ -314,17 +352,17 @@ def test_a_share_fetch_ends_its_reads_at_the_calls_timeout() -> None:
         with pytest.raises(DfoTimeoutError) as caught:
             fetch(transport, three_slots(), slot=2, as_of="2026-10-28", timeout=5)
     assert caught.value.code == "deadline_exceeded"
-    assert stalled.calls() == [f"GET {SHARES}/{SHARE_ID}/history"]
+    assert stalled.calls() == [READ]
 
 
 def test_as_of_before_the_slot_first_served_is_refused_naming_history() -> None:
-    server = Server(slot_history())
+    server = Server(share_read(), slot_history())
     with make(server) as transport:
         with pytest.raises(InvalidRequestError) as caught:
             fetch(transport, three_slots(), slot=2, as_of=date(2026, 10, 27))
     assert caught.value.code == "invalid_argument"
     assert "history(share)" in str(caught.value)
-    assert server.calls() == [f"GET {SHARES}/{SHARE_ID}/history"]
+    assert server.calls() == [READ, f"GET {SHARES}/{SHARE_ID}/history"]
 
 
 @pytest.mark.parametrize(
@@ -347,11 +385,17 @@ def test_as_of_before_the_slot_first_served_is_refused_naming_history() -> None:
 def test_as_of_reads_the_frames_either_side_of_an_emptied_slot(
     as_of: str, version: list[httpx2.Response], calls: list[str], shuffled: bool
 ) -> None:
-    server = Server(emptied_history(shuffled=shuffled), recorded("card-read"), *version)
+    server = Server(
+        share_read(),
+        emptied_history(shuffled=shuffled),
+        recorded("card-read"),
+        *version,
+    )
     with make(server) as transport:
         data = fetch(transport, three_slots(), slot=2, as_of=as_of)
 
     assert server.calls() == [
+        READ,
         f"GET {SHARES}/{SHARE_ID}/history",
         f"GET {BASE}/presentation/components/{SLOT_2_CARD}",
         *calls,
@@ -368,62 +412,129 @@ def test_as_of_reads_the_frames_either_side_of_an_emptied_slot(
 def test_as_of_while_a_slot_showed_no_card_is_not_found_naming_the_slot(
     shuffled: bool,
 ) -> None:
-    server = Server(emptied_history(shuffled=shuffled))
+    server = Server(share_read(), emptied_history(shuffled=shuffled))
     with make(server) as transport:
         with pytest.raises(NotFoundError) as caught:
             fetch(transport, three_slots(), slot=2, as_of="2026-10-29")
     assert caught.value.code == "not_found"
     assert "Slot 2" in str(caught.value)
     assert "no card" in str(caught.value)
-    assert server.calls() == [f"GET {SHARES}/{SHARE_ID}/history"]
+    assert server.calls() == [READ, f"GET {SHARES}/{SHARE_ID}/history"]
 
 
 @pytest.mark.parametrize(
-    ("target", "slot", "read"),
+    ("target", "slot"),
     [
-        (three_slots(), None, False),
-        (three_slots(), 4, False),
-        (f"https://site.example/s/{SHARE_ID}", None, True),
-        (f"https://site.example/s/{SHARE_ID}", 4, True),
+        (three_slots(), None),
+        (three_slots(), 4),
+        (replace(three_slots(), data_urls=three_slots().data_urls * 2), 4),
+        (f"https://site.example/s/{SHARE_ID}", None),
+        (f"https://site.example/s/{SHARE_ID}", 4),
     ],
-    ids=["share-no-slot", "share-slot-4", "url-no-slot", "url-slot-4"],
+    ids=[
+        "share-no-slot",
+        "share-slot-4",
+        "share-of-six-slot-4",
+        "url-no-slot",
+        "url-slot-4",
+    ],
 )
 def test_a_slot_the_share_cannot_name_is_refused_with_its_numbering(
-    target: Share | str, slot: int | None, read: bool
+    target: Share | str, slot: int | None
 ) -> None:
-    server = Server(recorded("share-three-read"))
+    server = Server(share_read())
     with make(server) as transport:
         with pytest.raises(InvalidRequestError) as caught:
             fetch(transport, target, slot=slot)
     assert caught.value.code == "invalid_argument"
     assert "slot=1 to slot=3" in str(caught.value)
-    assert server.calls() == ([f"GET {SHARES}/{SHARE_ID}"] if read else [])
+    assert server.calls() == [READ]
+
+
+def test_a_share_reads_a_slot_a_replace_added_since_it_was_returned() -> None:
+    """The Share holds two slots, and a replace has given the share a third."""
+    held = replace(three_slots(), data_urls=three_slots().data_urls[:2])
+    server = Server(share_read(), slot_card(dataset_frame()), *stored_version())
+    with make(server) as transport:
+        data = fetch(transport, held, slot=3)
+    assert server.calls()[:2] == [READ, f"GET {SHARES}/{SHARE_ID}/slots/3"]
+    assert data.ref.members[0].content_version == VERSION
 
 
 @pytest.mark.parametrize(
-    ("target", "read"),
-    [
-        (three_slots(), []),
-        (f"https://site.example/s/{SHARE_ID}", [recorded("share-emptied-read")]),
-    ],
+    "target",
+    [three_slots(), f"https://site.example/s/{SHARE_ID}"],
     ids=["share", "url"],
 )
 def test_a_slot_a_replacement_left_empty_is_not_found_naming_the_slot(
-    target: Share | str, read: list[httpx2.Response]
+    target: Share | str,
 ) -> None:
     """The reply is the share read after the contract's
     `live-replace-with-fewer-cards` replacement: slot 1 holds a card, slots 2
     and 3 are listed with `card: null` and keep their URLs."""
-    server = Server(*read, recorded("share-slot-empty"))
+    server = Server(recorded("share-emptied-read"), recorded("share-slot-empty"))
     with make(server) as transport:
         with pytest.raises(NotFoundError) as caught:
             fetch(transport, target, slot=2)
     assert caught.value.code == "not_found"
     assert "slot 2" in str(caught.value)
-    assert server.calls() == [
-        *([f"GET {SHARES}/{SHARE_ID}"] if read else []),
+    assert server.calls() == [READ, f"GET {SHARES}/{SHARE_ID}/slots/2"]
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        json_response(200, resubmitted("spec_" + "9" * 32)),
+        problem(400, "request_invalid"),
+        httpx2.ConnectError("Search is down"),
+    ],
+    ids=["another-spec", "refused", "down"],
+)
+def test_a_share_fetch_reads_its_version_whatever_search_answers(
+    sentence: httpx2.Response | Exception,
+) -> None:
+    """Search words the sentence once the data is read; when it cannot, the
+    Dataset reads as the card's title."""
+    retries = [sentence] * 3 if isinstance(sentence, Exception) else []
+    server = Server(
+        share_read(),
+        slot_card(dataset_frame()),
+        *stored_version(sentence),
+        *retries,
+    )
+    with make(server) as transport:
+        data = fetch(transport, three_slots(), slot=2)
+    assert server.calls()[:5] == [
+        READ,
         f"GET {SHARES}/{SHARE_ID}/slots/2",
+        *stored_version_calls(),
     ]
+    (member,) = data.ref.members
+    assert (member.content_version, member.sentence) == (
+        VERSION,
+        "Malaria grants by year",
+    )
+    assert repr(data).startswith("<Dataset Malaria grants by year\n")
+
+
+def test_as_of_takes_the_entry_the_history_lists_first_of_one_millisecond() -> None:
+    """A replace empties slot 2 and a later one fills it again within one
+    millisecond; the history lists the filled entry first."""
+    body = load("share-three-emptied-history.json")["body"]
+    later, empty, _, first = body["served"]
+    later["frame"], first["frame"] = computed_frame(), dataset_frame()
+    later["first_served_at"] = "2026-10-29T10:00:00.100900+00:00"
+    empty["first_served_at"] = "2026-10-29T10:00:00.100400+00:00"
+    server = Server(
+        share_read(),
+        recorded("share-three-emptied-history", body),
+        recorded("card-read"),
+        *computed_version(),
+    )
+    with make(server) as transport:
+        data = fetch(transport, three_slots(), slot=2, as_of="2026-10-29T10:00:00.100Z")
+    (member,) = data.ref.members
+    assert member.content_version == computed_frame()["content_version"]
 
 
 @pytest.mark.parametrize(
@@ -436,7 +547,7 @@ def test_a_slot_a_replacement_left_empty_is_not_found_naming_the_slot(
         {"as_of": 20261028},
         {"window": "latest"},
         {"entities": {"recipient": ["country/ETH"]}},
-        {"facets": {}},
+        {"facets": {"unit": None}},
         {"party_totals": False},
         {"layout": "long"},
         {"latest": True},
@@ -466,6 +577,17 @@ def test_an_option_a_share_does_not_take_is_refused_unsent(
     assert server.requests == []
 
 
+def test_an_empty_entities_or_facets_names_nothing_on_a_share() -> None:
+    """As on a spec, a ref and a recipe, an empty map narrows nothing, so the
+    fetch goes on to read the share."""
+    server = Server(share_read())
+    with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            fetch(transport, three_slots(), slot=4, entities={}, facets={})
+    assert "slot=1 to slot=3" in str(caught.value)
+    assert server.calls() == [READ]
+
+
 @pytest.mark.parametrize(
     ("target", "options"),
     [
@@ -491,12 +613,12 @@ def test_a_share_option_or_a_bare_id_without_a_share_is_refused_unsent(
 
 def test_a_slot_showing_a_note_is_refused_after_its_card_is_read() -> None:
     one = Share(SHARE_ID, "u", "e", (f"{SHARES}/{SHARE_ID}/slots/1/data",), 1, True)
-    server = Server(recorded("share-note-slot-card"))
+    server = Server(share_read(slots=1), recorded("share-note-slot-card"))
     with make(server) as transport:
         with pytest.raises(InvalidRequestError) as caught:
             fetch(transport, one)
     assert caught.value.code == "invalid_argument"
-    assert server.calls() == [f"GET {SHARES}/{SHARE_ID}/slots/1"]
+    assert server.calls() == [READ, f"GET {SHARES}/{SHARE_ID}/slots/1"]
 
 
 def test_a_share_fetch_offline_is_refused_unsent(
