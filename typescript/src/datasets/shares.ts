@@ -21,7 +21,9 @@
  * - `unshare(share)` sends `DELETE /presentation/shares/{id}`, which answers 204, and answers 204
  *   again to a token holder who deletes it once more.
  * - `history(share)` reads the public `GET /presentation/shares/{id}/history`: every frame the
- *   share's slots served, newest first, and each moment a replace left a slot without a card.
+ *   share's slots served, newest first, and each moment a replace left a slot without a card. It
+ *   follows the reply's `next` cursor, passed as `before`, until it is null, so a long history is
+ *   read whole.
  *
  * `shownFrame(share, { slot, asOf })` finds the frame one slot shows, for `client.fetch(share)`.
  * It reads the share's slot count and whether it is live from the public
@@ -31,7 +33,8 @@
  * `resolved_payload.provenance.inputs` name. With `asOf` it reads the history, takes the newest
  * frame the slot first served on or before that moment, the one the history lists first of
  * entries served in one millisecond, and reads that card revision's title
- * from `GET /presentation/components/{id}?revision=n`. When that entry is an empty slot it throws
+ * from `GET /presentation/components/{id}?revision=n`. It reads history pages only until one
+ * holds that entry. When that entry is an empty slot it throws
  * `not_found` without requesting a frame.
  *
  * A share id that names no share, or one taken down, refuses 404 `not_found`.
@@ -42,6 +45,7 @@ import {
   asOfMoment,
   Card,
   cardTitle,
+  checkCursor,
   checkSlot,
   chosenSlot,
   readHistory,
@@ -195,20 +199,44 @@ export async function unshare(
 }
 
 /**
- * Every frame the share `target` names served, newest first.
+ * Every frame the share `target` names served, newest first. A long history is read page by page.
  *
  * @throws {InvalidRequestError} `target` is malformed (`invalid_argument`), and no request is
  *   sent.
  * @throws {NotFoundError} No share has that id, or it was taken down (`not_found`).
+ * @throws {ContractError} A page repeats a cursor, or is empty and names a next page
+ *   (`contract_violation`).
  */
 export async function history(
   transport: Transport,
   target: unknown,
   wait?: Wait,
 ): Promise<readonly Served[]> {
+  const served: Served[] = [];
+  for await (const page of historyPages(transport, target, wait)) served.push(...page);
+  return Object.freeze(served);
+}
+
+/** The pages of a share's history, newest first, read one request at a time, so a caller that
+ *  has what it needs stops asking. */
+async function* historyPages(
+  transport: Transport,
+  target: unknown,
+  wait: Wait | undefined,
+): AsyncGenerator<readonly Served[]> {
   const path = `${SHARES_PATH}/${shareIdOf(target)}/history`;
-  const response = await transport.request({ path, ...within(wait) });
-  return describing(response.traceId, () => readHistory(response.body, `GET ${path}`));
+  const read = new Set<string>();
+  let before: string | undefined;
+  do {
+    const response = await transport.request({ path, query: { before }, ...within(wait) });
+    const { served, next } = describing(response.traceId, () => {
+      const page = readHistory(response.body, `GET ${path}`);
+      if (page.next !== null) checkCursor(page.next, read, `GET ${path}`);
+      return page;
+    });
+    yield served;
+    before = next ?? undefined;
+  } while (before !== undefined);
 }
 
 /**
@@ -252,18 +280,23 @@ export async function shownFrame(
     return { shareId, slot: number, title, ...frame, on: today(), newerNow: false };
   }
   const { moment, day } = asked;
-  const served = await history(transport, target, wait);
   // The latest entry at or before the moment wins. Of entries served in one millisecond the
   // first the history lists wins, since DFO lists a slot's entries of one moment newest first.
-  const entry = served
-    .filter((frame) => frame.slot === number && frame.firstServed.getTime() <= moment.getTime())
-    .reduce<Served | undefined>(
-      (latest, frame) =>
-        latest === undefined || frame.firstServed.getTime() > latest.firstServed.getTime()
-          ? frame
-          : latest,
-      undefined,
-    );
+  // Pages are newest first too, so the first page with an entry at or before the moment holds
+  // the winner.
+  let entry: Served | undefined;
+  for await (const page of historyPages(transport, target, wait)) {
+    entry = page
+      .filter((frame) => frame.slot === number && frame.firstServed.getTime() <= moment.getTime())
+      .reduce<Served | undefined>(
+        (latest, frame) =>
+          latest === undefined || frame.firstServed.getTime() > latest.firstServed.getTime()
+            ? frame
+            : latest,
+        undefined,
+      );
+    if (entry !== undefined) break;
+  }
   if (entry === undefined) {
     throw clientError("invalid_argument", {
       detail:

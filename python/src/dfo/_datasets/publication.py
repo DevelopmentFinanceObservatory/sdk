@@ -337,21 +337,42 @@ def read_share(reply: object, *, route: str, write_token: str | None) -> Share:
     )
 
 
-def read_history(reply: object, *, route: str) -> tuple[Served, ...]:
-    """The frames a history reply lists, newest first, with the moments a replace
-    left a slot without a card.
+def read_history(reply: object, *, route: str) -> tuple[tuple[Served, ...], str | None]:
+    """One page of a history reply: its frames, newest first, with the moments a
+    replace left a slot without a card, and the cursor of the next page, or None
+    on the last. A reply from before paging has no cursor and is one page.
 
     Raises:
-        ContractError: An entry lacks a member it is read from
+        ContractError: An entry lacks a member it is read from, the cursor is
+            not text, or a page with no entries names a next one
             (`contract_violation`).
     """
-    served = _object(reply, route, "").get("served")
+    body = _object(reply, route, "")
+    served = body.get("served")
     if not isinstance(served, list):
         raise _violation(route, "/served")
-    return tuple(
+    cursor = body.get("next")
+    if cursor is not None and (not isinstance(cursor, str) or not cursor):
+        raise _violation(route, "/next", "is not a cursor string or null")
+    if cursor is not None and not served:
+        raise _violation(route, "/next", "names another page after an empty one")
+    entries = tuple(
         _served(_object(entry, route, f"/served/{index}"), route, f"/served/{index}")
         for index, entry in enumerate(served)
     )
+    return entries, cursor
+
+
+def check_cursor(cursor: str, read: set[str], *, route: str) -> None:
+    """Record `cursor` as read.
+
+    Raises:
+        ContractError: `cursor` was read already, so the pages would loop
+            (`contract_violation`).
+    """
+    if cursor in read:
+        raise _violation(route, "/next", "repeats a cursor already read")
+    read.add(cursor)
 
 
 def _served(entry: Mapping[str, Any], route: str, pointer: str) -> Served:

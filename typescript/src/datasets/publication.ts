@@ -362,20 +362,47 @@ export function readShare(reply: unknown, route: string, writeToken: string | nu
 }
 
 /**
- * The frames a history reply lists, newest first, with the moments a replace left a slot without
- * a card.
+ * One page of a history reply: its frames, newest first, with the moments a replace left a slot
+ * without a card, and the cursor of the next page, or null on the last. A reply from before
+ * paging has no cursor and is one page.
  *
- * @throws {ContractError} An entry lacks a member it is read from (`contract_violation`).
+ * @throws {ContractError} An entry lacks a member it is read from, the cursor is not text, or a
+ *   page with no entries names a next one (`contract_violation`).
  */
-export function readHistory(reply: unknown, route: string): readonly Served[] {
-  const served = object(reply, route, "")["served"];
+export function readHistory(
+  reply: unknown,
+  route: string,
+): { served: readonly Served[]; next: string | null } {
+  const body = object(reply, route, "");
+  const served = body["served"];
   if (!Array.isArray(served)) throw violation(route, "/served");
-  return Object.freeze(
-    served.map((entry: unknown, index) => {
-      const pointer = `/served/${index}`;
-      return servedEntry(object(entry, route, pointer), route, pointer);
-    }),
-  );
+  const next = body["next"] ?? null;
+  if (next !== null && (typeof next !== "string" || next === "")) {
+    throw violation(route, "/next", "is not a cursor string or null");
+  }
+  if (next !== null && served.length === 0) {
+    throw violation(route, "/next", "names another page after an empty one");
+  }
+  return {
+    served: Object.freeze(
+      served.map((entry: unknown, index) => {
+        const pointer = `/served/${index}`;
+        return servedEntry(object(entry, route, pointer), route, pointer);
+      }),
+    ),
+    next,
+  };
+}
+
+/**
+ * Records `cursor` as read.
+ *
+ * @throws {ContractError} `cursor` was read already, so the pages would loop
+ *   (`contract_violation`).
+ */
+export function checkCursor(cursor: string, read: Set<string>, route: string): void {
+  if (read.has(cursor)) throw violation(route, "/next", "repeats a cursor already read");
+  read.add(cursor);
 }
 
 function servedEntry(entry: Record<string, unknown>, route: string, pointer: string): Served {

@@ -132,6 +132,26 @@ async function slotHistory(): Promise<Handler> {
   return answered(recorded);
 }
 
+/** The `slotHistory` entries cut into pages of `sizes`, each naming the next page by its cursor,
+ *  the last naming none. */
+async function pagedHistory(...sizes: number[]): Promise<Handler[]> {
+  const entries = ((await reply("share-three-history")).body as { served: unknown[] }).served;
+  const [newer, , first] = entries as Record<string, unknown>[];
+  newer!["frame"] = await computedFrame();
+  first!["frame"] = datasetFrame();
+  assert.equal(
+    sizes.reduce((total, size) => total + size, 0),
+    entries.length,
+  );
+  let start = 0;
+  return sizes.map((size, index) => {
+    const page = entries.slice(start, start + size);
+    start += size;
+    const next = index === sizes.length - 1 ? null : `cursor-${index + 1}`;
+    return json({ id: SHARE_ID, served: page, next }, 200);
+  });
+}
+
 /** Slot 2 serves a dataset frame, then a replace leaves it without a card, then a later replace
  *  fills it with the computed frame. `shuffled` serves the entries in no order of time. */
 async function emptiedHistory(shuffled = false): Promise<Handler> {
@@ -466,6 +486,51 @@ describe("a share fetch", () => {
       assert.ok(String(data).startsWith(`<Dataset ${TITLE}\n`), String(data));
     });
   }
+
+  test("asOf finds the entry on a later history page", async () => {
+    // The newer entry sits on page one, past the moment; the entry at the moment is the only
+    // one on page two.
+    const { transport, seen } = make(
+      await shareRead(),
+      ...(await pagedHistory(1, 2)),
+      answered(await reply("card-read")),
+      ...(await storedVersion()),
+    );
+    const data = await fetchDataset(transport, await threeSlots(), {
+      slot: 2,
+      asOf: "2026-10-28T17:13:42.427Z",
+    });
+
+    assert.deepEqual(calls(seen), [
+      READ,
+      `GET ${SHARES}/${SHARE_ID}/history`,
+      `GET ${SHARES}/${SHARE_ID}/history?before=cursor-1`,
+      `GET ${BASE}/presentation/components/${SLOT_2_CARD}?revision=1`,
+      ...storedVersionCalls,
+    ]);
+    assert.equal(data.ref.members[0]?.contentVersion, VERSION);
+  });
+
+  test("asOf stops paging after the page that settles it", async () => {
+    const [firstPage] = await pagedHistory(1, 2);
+    const { transport, seen } = make(
+      await shareRead(),
+      firstPage!,
+      answered(await reply("card-read")),
+      ...(await computedVersion()),
+    );
+    const data = await fetchDataset(transport, await threeSlots(), {
+      slot: 2,
+      asOf: "2026-10-28",
+    });
+
+    assert.deepEqual(calls(seen).slice(0, 3), [
+      READ,
+      `GET ${SHARES}/${SHARE_ID}/history`,
+      `GET ${BASE}/presentation/components/${SLOT_2_CARD}?revision=1`,
+    ]);
+    assert.equal(data.ref.members[0]?.contentVersion, (await computedFrame()).content_version);
+  });
 
   test("asOf takes the entry the history lists first of one millisecond", async () => {
     // A replace empties slot 2 and a later one fills it again within one millisecond; the

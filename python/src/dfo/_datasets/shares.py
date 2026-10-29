@@ -25,7 +25,8 @@ the client keeps it nowhere but on that `Share`.
   and answers 204 again to a token holder who deletes it once more.
 - `history(share)` reads the public `GET /presentation/shares/{id}/history`:
   every frame the share's slots served, newest first, and each moment a replace
-  left a slot without a card.
+  left a slot without a card. It follows the reply's `next` cursor, passed as
+  `before`, until it is null, so a long history is read whole.
 
 `shown_frame(share, slot=, as_of=)` finds the frame one slot shows, for
 `dfo.fetch(share)`. It reads the share's slot count and whether it is live from
@@ -36,14 +37,15 @@ frame the slot serves now, which its `resolved_payload.provenance.inputs` name,
 and names the day of the read in UTC. With `as_of` it reads the history, takes the newest frame the slot first
 served on or before that moment, the one the history lists first of entries
 served in one millisecond, and reads that card revision's title from
-`GET /presentation/components/{id}?revision=n`. When that entry is an empty
+`GET /presentation/components/{id}?revision=n`. It reads history pages only
+until one holds that entry. When that entry is an empty
 slot it raises `not_found` without requesting a frame.
 
 A share id that names no share, or one taken down, refuses 404 `not_found`.
 """
 
 import secrets
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
 
 import httpx2
@@ -59,6 +61,7 @@ from dfo._datasets.publication import (
     ShownFrame,
     as_of_moment,
     card_title,
+    check_cursor,
     check_slot,
     chosen_slot,
     read_history,
@@ -174,18 +177,46 @@ async def history(
     transport: AsyncTransport, target: object, *, deadline: float | None = None
 ) -> tuple[Served, ...]:
     """Every frame the share `target` names served, newest first, read by the
-    clock reading `deadline` when one is given.
+    clock reading `deadline` when one is given. A long history is read page by
+    page.
 
     Raises:
         InvalidRequestError: `target` is malformed (`invalid_argument`), and no
             request is sent.
         NotFoundError: No share has that id, or it was taken down (`not_found`).
+        ContractError: A page repeats a cursor, or is empty and names a next
+            page (`contract_violation`).
     """
+    return tuple(
+        [
+            served
+            async for page in _history_pages(transport, target, deadline)
+            for served in page
+        ]
+    )
+
+
+async def _history_pages(
+    transport: AsyncTransport, target: object, deadline: float | None
+) -> AsyncIterator[tuple[Served, ...]]:
+    """The pages of the share's history, newest first, read one request at a
+    time, so a caller that has what it needs stops asking."""
     path = f"{SHARES_PATH}/{share_id_of(target, transport.caller)}/history"
-    response = await transport.request("GET", path, deadline=deadline)
-    reply = response_json(response)
-    with describing(trace_id_of(response, reply)):
-        return read_history(reply, route=f"GET {path}")
+    read: set[str] = set()
+    cursor: str | None = None
+    while True:
+        params = None if cursor is None else {"before": cursor}
+        response = await transport.request(
+            "GET", path, params=params, deadline=deadline
+        )
+        reply = response_json(response)
+        with describing(trace_id_of(response, reply)):
+            page, cursor = read_history(reply, route=f"GET {path}")
+            if cursor is not None:
+                check_cursor(cursor, read, route=f"GET {path}")
+        yield page
+        if cursor is None:
+            return
 
 
 async def shown_frame(
@@ -235,16 +266,22 @@ async def shown_frame(
     # The latest entry at or before the moment wins, compared to the
     # millisecond as the TypeScript client compares them. Of entries served in
     # one millisecond the first the history lists wins, since DFO lists a slot's
-    # entries of one moment newest first.
-    entry = max(
-        (
-            served
-            for served in await history(transport, target, deadline=deadline)
-            if served.slot == number and to_millisecond(served.first_served) <= moment
-        ),
-        key=lambda served: to_millisecond(served.first_served),
-        default=None,
-    )
+    # entries of one moment newest first. Pages are newest first too, so the
+    # first page with an entry at or before the moment holds the winner.
+    entry = None
+    async for page in _history_pages(transport, target, deadline):
+        entry = max(
+            (
+                served
+                for served in page
+                if served.slot == number
+                and to_millisecond(served.first_served) <= moment
+            ),
+            key=lambda served: to_millisecond(served.first_served),
+            default=None,
+        )
+        if entry is not None:
+            break
     if entry is None:
         raise client_error(
             INVALID_ARGUMENT,

@@ -493,6 +493,53 @@ describe("a share", () => {
     assert.ok(served[0]!.firstServed > served[1]!.firstServed);
   });
 
+  /** The first recorded entries, one to a page, page n naming `cursors[n]`. */
+  async function historyPages(...cursors: unknown[]): Promise<Handler[]> {
+    const { body } = await recordedJson<Recorded>("share-three-history.json");
+    const entries = (body as { served: unknown[] }).served;
+    return cursors.map((next, index) =>
+      json({ id: SHARE_ID, served: [entries[index]], next }, 200),
+    );
+  }
+
+  test("history follows next until it is null", async () => {
+    const { transport, seen } = make(...(await historyPages("c1", "c2", null)));
+    const served = await history(transport, await heldShare());
+
+    assert.deepEqual(calls(seen), [
+      `GET ${SHARES}/${SHARE_ID}/history`,
+      `GET ${SHARES}/${SHARE_ID}/history?before=c1`,
+      `GET ${SHARES}/${SHARE_ID}/history?before=c2`,
+    ]);
+    assert.deepEqual(
+      served.map((entry) => entry.firstServed.getUTCMilliseconds()),
+      [429, 426, 425],
+    );
+  });
+
+  for (const [name, pages, pointer] of [
+    ["repeats the last cursor", () => historyPages("c1", "c1"), "/next"],
+    ["repeats an earlier cursor", () => historyPages("c1", "c2", "c1"), "/next"],
+    [
+      "names a page after an empty one",
+      async () => [
+        ...(await historyPages("c1")),
+        json({ id: SHARE_ID, served: [], next: "c2" }, 200),
+      ],
+      "/next",
+    ],
+    ["is not text", () => historyPages(7), "/next"],
+  ] as const) {
+    test(`history refuses paging that would not end: ${name}`, async () => {
+      const { transport } = make(...(await pages()));
+      await assert.rejects(history(transport, await heldShare()), {
+        name: "ContractError",
+        code: "contract_violation",
+        pointer,
+      });
+    });
+  }
+
   for (const [reply, name, code] of [
     ["write-token-required", "InvalidRequestError", "write_token_required"],
     ["write-token-invalid", "PermissionDeniedError", "write_token_invalid"],

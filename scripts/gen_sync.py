@@ -76,6 +76,7 @@ SUBS: tuple[tuple[str, str], ...] = (
     ("AsyncLookup", "Lookup"),
     ("AsyncAnalysis", "Analysis"),
     ("AsyncCards", "Cards"),
+    ("AsyncIterator", "Iterator"),
     ("AsyncBaseTransport", "BaseTransport"),
     ("AsyncHTTPTransport", "HTTPTransport"),
     ("AsyncNetworkBackend", "NetworkBackend"),

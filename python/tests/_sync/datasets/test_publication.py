@@ -445,6 +445,61 @@ def test_history_lists_each_frame_served_newest_first() -> None:
     assert served[0].first_served > served[1].first_served
 
 
+def history_pages(*cursors: object) -> list[httpx2.Response]:
+    """The first recorded entries, one to a page, page n naming `cursors[n]`."""
+    entries = load("share-three-history.json")["body"]["served"][: len(cursors)]
+    return [
+        json_response(200, {"id": SHARE_ID, "served": [entry], "next": cursor})
+        for entry, cursor in zip(entries, cursors, strict=True)
+    ]
+
+
+def test_history_follows_next_until_it_is_null() -> None:
+    server = Server(*history_pages("c1", "c2", None))
+    with make(server) as transport:
+        served = history(transport, held_share())
+
+    path = f"GET {SHARES}/{SHARE_ID}/history"
+    assert server.calls() == [path] * 3
+    assert [request.url.params.get("before") for request in server.requests] == [
+        None,
+        "c1",
+        "c2",
+    ]
+    assert all("limit" not in request.url.params for request in server.requests)
+    assert [entry.first_served.microsecond for entry in served] == [
+        429958,
+        426722,
+        425715,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("pages", "pointer"),
+    [
+        (history_pages("c1", "c1"), "/next"),
+        (history_pages("c1", "c2", "c1"), "/next"),
+        (
+            [
+                *history_pages("c1"),
+                json_response(200, {"id": SHARE_ID, "served": [], "next": "c2"}),
+            ],
+            "/next",
+        ),
+        (history_pages(7), "/next"),
+    ],
+    ids=["repeats-the-last", "repeats-an-earlier", "empty-page-with-next", "not-text"],
+)
+def test_history_refuses_paging_that_would_not_end(
+    pages: list[httpx2.Response], pointer: str
+) -> None:
+    server = Server(*pages)
+    with make(server) as transport:
+        with pytest.raises(ContractError) as caught:
+            history(transport, held_share())
+    assert (caught.value.code, caught.value.pointer) == ("contract_violation", pointer)
+
+
 @pytest.mark.parametrize(
     ("reply", "error_class", "code"),
     [

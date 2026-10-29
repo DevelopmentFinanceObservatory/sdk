@@ -124,6 +124,24 @@ def slot_history() -> httpx2.Response:
     return recorded("share-three-history", body)
 
 
+def paged_history(*sizes: int) -> list[httpx2.Response]:
+    """The `slot_history` entries cut into pages of `sizes`, each naming the
+    next page by its cursor, the last naming none."""
+    entries = json.loads(slot_history().content)["served"]
+    assert sum(sizes) == len(entries)
+    pages, start = [], 0
+    for index, size in enumerate(sizes):
+        last = index == len(sizes) - 1
+        body = {
+            "id": SHARE_ID,
+            "served": entries[start : start + size],
+            "next": None if last else f"cursor-{index + 1}",
+        }
+        pages.append(json_response(200, body))
+        start += size
+    return pages
+
+
 def emptied_history(*, shuffled: bool = False) -> httpx2.Response:
     """Slot 2 serves a dataset frame, then a replace leaves it without a card,
     then a later replace fills it with the computed frame. `shuffled` serves
@@ -268,6 +286,49 @@ def test_as_of_reads_the_newest_frame_the_slot_first_served_by_then(
     if isinstance(member, DerivedRefMember):
         assert server.body(3) == {"tree": shown, "latest": False}
     assert f'slot 2 "Malaria grants by year", on {day}' in repr(data)
+
+
+def test_as_of_finds_the_entry_on_a_later_history_page() -> None:
+    """The newer entry sits on page one, past the moment; the entry at the
+    moment is the only one on page two."""
+    server = Server(
+        share_read(), *paged_history(1, 2), recorded("card-read"), *stored_version()
+    )
+    with make(server) as transport:
+        data = fetch(transport, three_slots(), slot=2, as_of="2026-10-28T17:13:42.427Z")
+
+    history = f"GET {SHARES}/{SHARE_ID}/history"
+    assert server.calls() == [
+        READ,
+        history,
+        history,
+        f"GET {BASE}/presentation/components/{SLOT_2_CARD}",
+        *stored_version_calls(),
+    ]
+    assert server.requests[1].url.params.get("before") is None
+    assert server.requests[2].url.params.get("before") == "cursor-1"
+    (member,) = data.ref.members
+    assert member.content_version == VERSION
+
+
+def test_as_of_stops_paging_after_the_page_that_settles_it() -> None:
+    server = Server(
+        share_read(),
+        *paged_history(1, 2)[:1],
+        recorded("card-read"),
+        *computed_version(),
+    )
+    with make(server) as transport:
+        data = fetch(transport, three_slots(), slot=2, as_of="2026-10-28")
+
+    history = f"GET {SHARES}/{SHARE_ID}/history"
+    assert server.calls()[:3] == [
+        READ,
+        history,
+        f"GET {BASE}/presentation/components/{SLOT_2_CARD}",
+    ]
+    (member,) = data.ref.members
+    assert member.content_version == computed_frame()["content_version"]
 
 
 @pytest.mark.parametrize(
