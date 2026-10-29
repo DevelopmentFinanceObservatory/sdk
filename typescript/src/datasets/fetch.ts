@@ -493,15 +493,15 @@ function artifactFault({ columns, rows }: ParquetFile, counted: number): string 
 /**
  * Downloads a file through the route that redirects to it, checked against its digest, or taken
  * as served when `digest` is undefined. The route ask is an API request, which retries as one
- * and waits the client's timeout per attempt; its failure raises. The URL it names is fetched once, bare on the storage host and with the
- * client's headers on the API's origin, reading until the fetch's deadline, if any, while a byte
- * arrives at least every `DOWNLOAD_STALL_MS`; in a browser that
- * hid the redirect, that one fetch asks the route again with the key alone and the browser
- * follows the redirect. A retryable failure of that fetch, or bytes that do not hash to the
- * digest, ask the route again and fetch once more, with no wait of their own, and a second
- * failure raises: `download_failed` for a refused signed URL, `digest_mismatch` for the bytes.
- * Reading stops once the decoded file passes `size`, the manifest's `bytes` for the artifact,
- * or `DEFAULT_MAX_BYTES` when that is smaller or `size` is not a byte count, and raises
+ * and waits the client's timeout per attempt; its failure raises. The URL it names is fetched
+ * once, bare on the storage host and with the client's headers on the API's origin, reading
+ * until the fetch's deadline, if any, while a byte arrives at least every `DOWNLOAD_STALL_MS`;
+ * in a browser that hid the redirect, that one fetch asks the route again with the key alone
+ * and the browser follows the redirect. A retryable failure of that fetch, or bytes that do not
+ * hash to the digest, ask the route again and fetch once more, with no wait of their own, and a
+ * second failure raises: `download_failed` for a refused signed URL, `digest_mismatch` for the
+ * bytes. Reading stops once the decoded file passes `size`, the manifest's `bytes` for the
+ * artifact, or `DEFAULT_MAX_BYTES` when that is smaller or `size` is not a byte count, and raises
  * `response_too_large`. The limit bounds the response that carries the file; a redirect or a
  * refusal is read under `JSON_BODY_MAX_BYTES`, as on any other route.
  */

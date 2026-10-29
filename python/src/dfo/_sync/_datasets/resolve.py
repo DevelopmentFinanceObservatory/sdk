@@ -29,12 +29,13 @@ definition and lists the frame artifact a ref member names, and then takes a
 ref's lookup order. A version that lists no frame artifact, as a long-layout
 fetch leaves it, reads the file the file selector renders from its stored
 frame, and the manifest read again must list that file's digest as the frame
-artifact. Once the data is read, it asks Search the definition's
-sentence; when Search refuses, fails, or answers another spec, the Dataset
-reads as the card's title, so Search never decides whether the fetch
-succeeds. An `ops_` frame
-reads through its bare derived root (`fetch_computed_frame`). The Dataset's repr
-names the share, slot, card title and day.
+artifact. When it does not, the selector is asked once more; a selector that
+finds no file rebuilds the version, as a ref member's lookup does. Once the data
+is read, it asks Search the definition's sentence; when Search refuses, fails,
+or answers another spec, the Dataset reads as the card's title, so Search never
+decides whether the fetch succeeds. An `ops_` frame reads through its bare
+derived root (`fetch_computed_frame`). The Dataset's repr names the share, slot,
+card title and day.
 """
 
 from collections.abc import Mapping
@@ -455,66 +456,42 @@ def _fetch_frame(
     cache: Cache | None,
 ) -> Dataset:
     """A dataset version in the frame layout, from its ids alone: the stored
-    manifest names its definition and frame artifact. A version that lists no
-    frame artifact, as a long-layout fetch leaves it, reads the file the
-    file selector renders from its stored frame, which the manifest read again
-    lists. Once the data is read, Search words its sentence, or else `title`
-    does. Every read ends by the clock reading `deadline`, which `timeout` set.
+    manifest names its definition and frame artifact, or else the file
+    selector renders the file (`_rendered_frame`). Once the data is read,
+    Search words its sentence, or else `title` does. Every read ends by the
+    clock reading `deadline`, which `timeout` set.
 
     Raises:
         VersionUnavailableError: DFO no longer stores the version or its file
             (`artifact_expired`), and the error ends with `fix`.
-        ContractError: The manifest lists no bare Parquet frame artifact, or
-            does not list the file the selector rendered as one
-            (`contract_violation`).
+        ContractError: The selector twice served a file the manifest does not
+            list as the frame artifact (`contract_violation`).
     """
-    rendered: tuple[bytes, str] | None = None
     try:
         stored = _snapshot(transport, spec_id, content_version, deadline=deadline)
-        if pick_artifact(stored[0], _FRAME) is None:
-            stored, rendered = _rendered_frame(
-                transport, spec_id, content_version, deadline=deadline
-            )
     except DfoError as error:
         if error.code != _FILE_EXPIRED:
             raise
         newest = _newest(transport, spec_id, deadline=deadline)
         raise _unavailable(spec_id, content_version, newest, error, fix=fix) from error
-    manifest, trace_id = stored
-    with describing(trace_id):
-        artifact = pick_artifact(
-            manifest, _FRAME, digest=None if rendered is None else rendered[1]
-        )
+    artifact = pick_artifact(stored[0], _FRAME)
+    with ProgressRenderer(enabled=progress) as renderer:
         if artifact is None:
-            served = "" if rendered is None else f" of the selector's {rendered[1]}"
-            raise client_error(
-                CONTRACT_VIOLATION,
-                f"The manifest of {spec_id} at {content_version} lists no "
-                f"{_FRAME.to_object()} artifact{served}",
+            fetched = _rendered_frame(
+                transport,
+                stored[0],
+                title=title,
+                fix=fix,
+                strict=strict,
+                on_progress=progress_hook(renderer),
+                cache=cache,
+                deadline=deadline,
+                timeout=timeout,
             )
-    member = RefMember(
-        parts=(),
-        sentence=title,
-        spec=Spec(spec_id, manifest["definition"], title),
-        content_version=content_version,
-        digest=artifact["artifact_digest"],
-        rendering=replace(
-            _FRAME,
-            without_party_totals=artifact["rendering"].get("without_party_totals")
-            is True,
-        ),
-    )
-    if rendered is not None:
-        note_warnings(manifest, strict=strict, trace_id=trace_id)
-        sync_offload(
-            store, cache, manifest, member.rendering, member.digest, rendered[0]
-        )
-        fetched = _stored(member, manifest, rendered[0])
-    else:
-        with ProgressRenderer(enabled=progress) as renderer:
+        else:
             fetched = _fetch_version(
                 transport,
-                member,
+                _frame_member(stored[0], artifact, title),
                 pointer="/members/0",
                 strict=strict,
                 on_progress=progress_hook(renderer),
@@ -541,29 +518,98 @@ def _fetch_frame(
     )
 
 
+def _frame_member(manifest: Wire, artifact: Wire, title: str) -> RefMember:
+    """The ref member of a version's listed frame artifact, read as `title`."""
+    return RefMember(
+        parts=(),
+        sentence=title,
+        spec=Spec(manifest["definition"]["spec_id"], manifest["definition"], title),
+        content_version=manifest["content_version"],
+        digest=artifact["artifact_digest"],
+        rendering=replace(
+            _FRAME,
+            without_party_totals=artifact["rendering"].get("without_party_totals")
+            is True,
+        ),
+    )
+
+
 def _rendered_frame(
     transport: Transport,
-    spec_id: str,
-    content_version: str,
+    manifest: Wire,
     *,
+    title: str,
+    fix: str,
+    strict: bool,
+    on_progress: ProgressHook,
+    cache: Cache | None,
     deadline: float | None,
-) -> tuple[tuple[Wire, str | None], tuple[bytes, str]]:
-    """The version's manifest, read again once the file selector has rendered
-    its frame-layout file, and that file's bytes and digest.
+    timeout: float | None,
+) -> FetchedMember:
+    """The frame-layout file the file selector renders from a version's stored
+    frame, for a `manifest` that lists none.
 
-    The selector renders the file from the version's stored frame and lists it
-    in the version's manifest, so the manifest names the file's rendering.
+    The selector lists the file it renders in the version's manifest, so the
+    manifest read again must list the served bytes' digest as the frame
+    artifact. When it does not, the selector is asked once more, as for bytes
+    that fail their digest. A selector or snapshot refusal that the file is
+    gone rebuilds the version, as a ref member's lookup does.
+
+    Raises:
+        ContractError: Both answers were files the manifest does not list as the
+            frame artifact (`contract_violation`).
     """
-    data = download(
-        transport,
-        f"/datasets/{spec_id}/{content_version}/file",
-        None,
-        params=file_params(_FRAME),
-        deadline=deadline,
-    )
-    digest = sync_offload(sha256_digest, data)
-    stored = _snapshot(transport, spec_id, content_version, deadline=deadline)
-    return stored, (data, digest)
+    spec_id = manifest["definition"]["spec_id"]
+    content_version = manifest["content_version"]
+    try:
+        for _ in range(2):
+            data = download(
+                transport,
+                f"/datasets/{spec_id}/{content_version}/file",
+                None,
+                params=file_params(_FRAME),
+                deadline=deadline,
+            )
+            digest = sync_offload(sha256_digest, data)
+            listed, trace_id = _snapshot(
+                transport, spec_id, content_version, deadline=deadline
+            )
+            artifact = pick_artifact(listed, _FRAME, digest=digest)
+            if artifact is not None:
+                break
+    except DfoError as error:
+        if error.code not in _FILE_GONE:
+            raise
+        cut = any(
+            isinstance(artifact["rendering"], Mapping)
+            and artifact["rendering"].get("without_party_totals") is True
+            for artifact in manifest["artifacts"]
+        )
+        return _rebuilt(
+            transport,
+            Reading((), Spec(spec_id, manifest["definition"], title), title),
+            replace(_FRAME, without_party_totals=cut),
+            content_version,
+            error,
+            strict=strict,
+            on_progress=on_progress,
+            cache=cache,
+            deadline=deadline,
+            timeout=timeout,
+            fix=fix,
+        )
+    if artifact is None:
+        raise client_error(
+            CONTRACT_VIOLATION,
+            f"The file selector twice served {spec_id} at {content_version} as a "
+            f"file the manifest does not list as its {_FRAME.to_object()} "
+            f"artifact, last {digest}",
+            trace_id=trace_id,
+        )
+    member = _frame_member(listed, artifact, title)
+    note_warnings(listed, strict=strict, trace_id=trace_id)
+    sync_offload(store, cache, listed, member.rendering, member.digest, data)
+    return _stored(member, listed, data)
 
 
 def _sentence_or(
@@ -793,10 +839,51 @@ def _fetch_version(
                 )
                 return _stored(member, manifest, data)
 
+    fetched = _rebuilt(
+        transport,
+        Reading(member.parts, member.spec, member.sentence),
+        member.rendering,
+        version,
+        refusal,
+        strict=strict,
+        on_progress=on_progress,
+        cache=cache,
+        deadline=deadline,
+        timeout=timeout,
+        fix=fix
+        or f"For the newest version: {transport.caller}.fetch(ref, latest=True)",
+    )
+    if fetched.digest != member.digest:
+        warn(_digest_changed(member, fetched.digest))
+    return fetched
+
+
+def _rebuilt(
+    transport: Transport,
+    want: Reading,
+    rendering: Rendering,
+    content_version: str,
+    refusal: DfoError | None,
+    *,
+    strict: bool,
+    on_progress: ProgressHook,
+    cache: Cache | None,
+    deadline: float | None,
+    timeout: float | None,
+    fix: str,
+) -> FetchedMember:
+    """A stored version built again in `rendering`, the last step of its lookup.
+
+    Raises:
+        VersionUnavailableError: The build refused, or built another version;
+            the error carries `refusal`, the lookup's earlier refusal, when
+            there was one, and ends with `fix`.
+    """
+    spec_id = want.spec.spec_id
     try:
         built = build_version(
             transport,
-            build_body(member.spec, member.rendering),
+            build_body(want.spec, rendering),
             deadline=deadline,
             timeout=timeout,
             on_progress=on_progress,
@@ -807,33 +894,23 @@ def _fetch_version(
     else:
         with describing(built.trace_id):
             check_built(built.manifest, spec_id)
-        if built.manifest["content_version"] == version:
+        if built.manifest["content_version"] == content_version:
             with finishing(transport, built, deadline, timeout=timeout) as (
                 finisher,
                 bound,
             ):
-                fetched = finish_member(
+                return finish_member(
                     finisher,
                     built.manifest,
                     built.trace_id,
-                    want=Reading(member.parts, member.spec, member.sentence),
-                    rendering=member.rendering,
+                    want=want,
+                    rendering=rendering,
                     strict=strict,
                     cache=cache,
                     deadline=bound,
                 )
-            if fetched.digest != member.digest:
-                warn(_digest_changed(member, fetched.digest))
-            return fetched
         newest = built.manifest["content_version"]
-    raise _unavailable(
-        spec_id,
-        version,
-        newest,
-        refusal,
-        fix=fix
-        or f"For the newest version: {transport.caller}.fetch(ref, latest=True)",
-    )
+    raise _unavailable(spec_id, content_version, newest, refusal, fix=fix)
 
 
 def _cached_version(
