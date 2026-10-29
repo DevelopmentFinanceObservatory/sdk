@@ -173,7 +173,7 @@ def test_a_grouped_root_keeps_its_groupby() -> None:
     assert isinstance(member, DerivedRefMember)
     (root,) = member.roots
     assert root.groupby == Groupby(
-        by=("time_period", "crsPurpose"), op="sum", levels={"crsPurpose": 0}
+        by=("crsPurpose", "time_period"), op="sum", levels={"crsPurpose": 0}
     )
     assert root.rendering.without_party_totals
     revived = pickle.loads(pickle.dumps(ref)).members[0]

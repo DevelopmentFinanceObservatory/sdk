@@ -185,7 +185,7 @@ describe("a grouped root", () => {
     const [root] = member.roots;
     assert.ok(root?.groupby);
     assert.deepEqual(JSON.parse(JSON.stringify(root.groupby)), {
-      by: ["time_period", "crsPurpose"],
+      by: ["crsPurpose", "time_period"],
       op: "sum",
       levels: { crsPurpose: 0 },
     });
