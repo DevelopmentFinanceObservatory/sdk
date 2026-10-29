@@ -7,6 +7,7 @@
 //   src/generated/proxy-codes.ts   from proxy-codes.json, checked against actions.json
 //   src/generated/reading-order.ts from rules/reading-order.json
 //   src/generated/role-keys.ts     from rules/role-keys.json
+//   src/generated/file-selector.ts from rules/file-selector.json
 //
 //   node scripts/generate-contract.ts           rewrite every file
 //   node scripts/generate-contract.ts --check   exit 1 when a committed file differs
@@ -331,6 +332,28 @@ export function renderRoleKeys(ruleText: string): Record<string, unknown> {
   return { ROLE_KEYS: keys, FLOW_KEYS: flowKeys };
 }
 
+/** The query keys a version's file selector reads, in the order a query lists them. */
+export function renderFileSelector(ruleText: string): Record<string, unknown> {
+  const rule = JSON.parse(ruleText) as {
+    format_version?: unknown;
+    rule?: unknown;
+    query_keys?: unknown;
+  };
+  if (rule.format_version !== 1 || rule.rule !== "file-selector") {
+    throw new Error("rules/file-selector.json is not format version 1 of the file-selector rule");
+  }
+  const keys = rule.query_keys;
+  if (
+    !Array.isArray(keys) ||
+    keys.length === 0 ||
+    new Set(keys).size !== keys.length ||
+    !keys.every((key) => typeof key === "string" && key !== "")
+  ) {
+    throw new Error("rules/file-selector.json lists no query_keys, or one twice or not a name");
+  }
+  return { SELECTOR_QUERY_KEYS: keys };
+}
+
 async function module(
   source: string,
   tables: Record<string, unknown>,
@@ -400,6 +423,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         "contract/rules/role-keys.json",
         renderRoleKeys(await read("rules/role-keys.json")),
         output("role-keys.ts"),
+      ),
+    ],
+    [
+      output("file-selector.ts"),
+      await module(
+        "contract/rules/file-selector.json",
+        renderFileSelector(await read("rules/file-selector.json")),
+        output("file-selector.ts"),
       ),
     ],
   ];

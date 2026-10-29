@@ -227,6 +227,11 @@ function isLoopback(hostname: string): boolean {
   );
 }
 
+/** An authority as written: a bracketed IPv6 address or a host, then the port's digits after a
+ *  `:`, empty when the `:` ends it. An authority whose port holds another character does not
+ *  match. */
+const AUTHORITY = /^(\[[^\]]*\]|[^:]*)(?::(\d*))?$/;
+
 /**
  * The base URL as an absolute http or https URL. A relative one resolves against the page. The
  * errors leave the URL out, since it may carry a password, and name `DFO_BASE_URL` when the URL
@@ -234,8 +239,8 @@ function isLoopback(hostname: string): boolean {
  *
  * @throws {InvalidRequestError} The base URL is not a string, is empty, holds a character
  *   outside visible ASCII, does not resolve to an absolute http or https URL, carries userinfo,
- *   a query, a fragment or a dot segment, or writes an IPv4 host other than as four decimal
- *   octets (`base_url_invalid`).
+ *   a query, a fragment, a dot segment or a backslash, names a port that is not 1 to 65535, or
+ *   writes an IPv4 host other than as four decimal octets (`base_url_invalid`).
  */
 function resolveBaseUrl(baseUrl: unknown, source: BaseUrlSource): URL {
   const fromEnv = source === BASE_URL_VARIABLE;
@@ -253,6 +258,7 @@ function resolveBaseUrl(baseUrl: unknown, source: BaseUrlSource): URL {
   const fault = keyFault(baseUrl);
   if (fault !== null) throw refuse(`holds ${fault}`);
   if (/[?#]/.test(baseUrl)) throw refuse("carries a query or a fragment");
+  if (baseUrl.includes("\\")) throw refuse("holds a backslash");
   const page = (globalThis as { location?: { href?: string } }).location?.href;
   let url: URL;
   try {
@@ -271,13 +277,19 @@ function resolveBaseUrl(baseUrl: unknown, source: BaseUrlSource): URL {
   // The authority as written: URL reads `https:///api` and `https:/api` as host `api`, rewrites
   // an IPv4 form such as 127.1, 0x7f.1 or 2130706433 as a dotted quad, and drops an empty
   // userinfo (`https://@host`), so all three are read from the string. A relative URL in a page
-  // has no scheme, and so no authority to read.
-  const written = /^[a-z][a-z0-9+.-]*:[/\\]{2}([^/\\]*)/i.exec(baseUrl)?.[1];
+  // has no scheme, and so no authority to read, unless it is scheme-relative.
+  const written = /^(?:[a-z][a-z0-9+.-]*:)?\/\/([^/]*)/i.exec(baseUrl)?.[1];
   if (written === "" || (written === undefined && /^[a-z][a-z0-9+.-]*:/i.test(baseUrl))) {
     throw refuse("names no host");
   }
   if (url.username !== "" || url.password !== "" || written?.includes("@")) {
     throw refuse("carries userinfo; pass the key as apiKey");
+  }
+  // URL drops an empty port and keeps 0, so the port is read as written.
+  const authority = written === undefined ? undefined : AUTHORITY.exec(written);
+  const port = authority?.[2];
+  if (authority === null || (port !== undefined && !(Number(port) >= 1 && Number(port) <= 65535))) {
+    throw refuse("names a port that is not a number from 1 to 65535");
   }
   if (
     written !== undefined &&
@@ -286,7 +298,7 @@ function resolveBaseUrl(baseUrl: unknown, source: BaseUrlSource): URL {
   ) {
     throw refuse("writes an IPv4 host in a form other than four decimal octets");
   }
-  if (hasDotSegment(baseUrl.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, ""))) {
+  if (hasDotSegment(baseUrl.replace(/^(?:[a-z][a-z0-9+.-]*:)?\/\/[^/]*/i, ""))) {
     throw refuse("holds a . or .. path segment");
   }
   return url;
@@ -403,7 +415,7 @@ function onOrigin(reference: string, base: URL): URL | { fault: string } {
     }
   } else {
     const [, scheme = "", authority = "", tail = ""] = absolute;
-    const parts = /^(\[[^\]]*\]|[^:]*)(?::(\d*))?$/.exec(authority);
+    const parts = AUTHORITY.exec(authority);
     const port = parts?.[2]?.replace(/^0+(?=\d)/, "") || DEFAULT_PORTS[scheme.toLowerCase()];
     if (
       /[@%\\]|[^\p{ASCII}]/u.test(authority) ||

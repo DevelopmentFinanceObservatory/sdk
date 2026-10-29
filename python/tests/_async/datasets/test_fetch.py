@@ -1067,16 +1067,13 @@ async def test_a_ref_with_an_unknown_version_raises_at_the_snapshot() -> None:
     assert len(server.requests) == 1
 
 
-# The selector's query is the ref's rendering, the cut's flag included.
+# The selector's query holds only the keys the selector reads: a cut's version is
+# already the cut, and the selector refuses `without_party_totals`.
 @pytest.mark.parametrize(
     ("rendering", "data", "query"),
     [
         (LONG, DATA, {"format": "parquet", "bundle": "false"}),
-        (
-            CUT,
-            CUT_DATA,
-            {"format": "parquet", "bundle": "false", "without_party_totals": "true"},
-        ),
+        (CUT, CUT_DATA, {"format": "parquet", "bundle": "false"}),
     ],
 )
 async def test_an_expired_file_is_rendered_again_by_the_file_selector(
@@ -1460,6 +1457,10 @@ async def test_bytes_the_file_selector_served_are_a_cache_hit_online_and_offline
         offline = await fetch(transport, DatasetRef((member,)), cache=cache)
     assert len(server.requests) == 3
     assert server.requests[1].url.path.endswith(f"/{NARROWED_CV}/file")
+    assert dict(server.requests[1].url.params) == {
+        "format": "parquet",
+        "bundle": "false",
+    }
     assert first.members[0].manifest == served
     assert again.members[0].digest == offline.members[0].digest == member.digest
     assert offline.stale is True

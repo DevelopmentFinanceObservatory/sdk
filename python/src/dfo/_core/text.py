@@ -273,23 +273,39 @@ def same_origin_url(reference: str, origin: str, /) -> str | None:
     return origin + (rest if rest.startswith("/") else "/" + rest)
 
 
-def _authority_origin(scheme: str, authority: str) -> str | None:
-    """The origin `scheme://authority` names, as `origin_of` writes one, or None
-    when the authority holds `@`, `%`, `\\` or a character outside ASCII, names
-    no host, or gives a port that is not a number up to 65535."""
-    if not authority.isascii() or any(char in authority for char in "@%\\"):
+def authority_parts(authority: str, /) -> tuple[str, str | None] | None:
+    """The host and the port an authority writes, or None.
+
+    An IPv6 host takes its compressed form in brackets. The port is the digits
+    after the host's `:`, empty when the `:` ends the authority, and None when no
+    `:` follows the host. An authority that holds a character outside ASCII,
+    names no host, or writes a port with another character names neither.
+    """
+    if not authority.isascii():
         return None
     if authority.startswith("["):
-        literal, bracket, port = authority[1:].partition("]")
-        if not bracket or (port and not port.startswith(":")):
+        literal, bracket, rest = authority[1:].partition("]")
+        if not bracket or (rest and not rest.startswith(":")):
             return None
         if (address := _ipv6(literal)) is None:
             return None
-        host, port = f"[{address}]", port[1:]
+        host, colon, port = f"[{address}]", rest[:1], rest[1:]
     else:
-        host, _, port = authority.partition(":")
+        host, colon, port = authority.partition(":")
     if not host or not _PORT.fullmatch(port):
         return None
+    return host, port if colon else None
+
+
+def _authority_origin(scheme: str, authority: str) -> str | None:
+    """The origin `scheme://authority` names, as `origin_of` writes one, or None
+    when the authority holds `@`, `%` or `\\`, `authority_parts` reads no host
+    and port from it, or its port is past 65535."""
+    if any(char in authority for char in "@%\\"):
+        return None
+    if (parts := authority_parts(authority)) is None:
+        return None
+    host, port = parts
     scheme = scheme.lower()
     number = int(port) if port else _DEFAULT_PORTS[scheme]
     if number > 65535:

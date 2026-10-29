@@ -6,6 +6,7 @@
 import { clientError } from "./errors.ts";
 import { isRecord, parseJson } from "./json.ts";
 import { inline } from "./text.ts";
+import { SELECTOR_QUERY_KEYS } from "../generated/file-selector.ts";
 import type { ResolvedSpec } from "../wire.ts";
 
 /** The layouts a dataset comes in: the labelled long table, or the pipeline frame. */
@@ -120,9 +121,8 @@ export function renderingFor(layout: Layout, withoutPartyTotals: boolean = false
 export const layoutOf = (rendering: Rendering): Layout =>
   rendering.layout === "frame" ? "frame" : "long";
 
-/** A rendering as the server takes it, both as a build request's `options` and as the file
- *  selector's query: format, bundle, layout, and `without_party_totals`, sent only when true,
- *  as the server records it. */
+/** A rendering as a build request's `options` take it: format, bundle, layout, and
+ *  `without_party_totals`, sent only when true, as the server records it. */
 export function mintOptions(rendering: Rendering): Record<string, string | boolean> {
   const options: Record<string, string | boolean> = {
     format: rendering.format,
@@ -131,6 +131,16 @@ export function mintOptions(rendering: Rendering): Record<string, string | boole
   if (rendering.layout !== undefined) options["layout"] = rendering.layout;
   if (rendering.without_party_totals === true) options["without_party_totals"] = true;
   return options;
+}
+
+/** The file selector's query for a rendering: its build options among `SELECTOR_QUERY_KEYS`,
+ *  layout only when set. The selector serves a stored version, which is already the
+ *  party-totals cut or the plain version, and refuses any other key as `request_invalid`. */
+export function selectorQuery(rendering: Rendering): URLSearchParams {
+  const options = mintOptions(rendering);
+  return new URLSearchParams(
+    SELECTOR_QUERY_KEYS.filter((key) => key in options).map((key) => [key, String(options[key])]),
+  );
 }
 
 /** Whether a manifest artifact's rendering object is this rendering. The server's object

@@ -34,6 +34,7 @@ from dfo._core.types import (
     Wire,
     matches,
 )
+from dfo._generated.file_selector import SELECTOR_QUERY_KEYS
 from dfo._generated.role_keys import ROLE_KEYS
 from dfo._http.hooks import Hold
 
@@ -183,9 +184,14 @@ def layout_of(rendering: Rendering) -> Layout:
 
 
 def file_params(rendering: Rendering) -> dict[str, Any]:
-    """The file selector's query for `rendering`, the selector a ref stores:
-    format, bundle, layout when set, and `without_party_totals` when true."""
-    return rendering.to_object()
+    """The file selector's query for `rendering`: its members among
+    `SELECTOR_QUERY_KEYS`, layout only when set.
+
+    The selector serves a stored version, which is already the party-totals cut
+    or the plain version, and refuses any other key as `request_invalid`.
+    """
+    obj = rendering.to_object()
+    return {key: obj[key] for key in SELECTOR_QUERY_KEYS if key in obj}
 
 
 def scope(

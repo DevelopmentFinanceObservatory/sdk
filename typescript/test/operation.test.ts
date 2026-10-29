@@ -756,9 +756,9 @@ describe("a stored version's lookup order", () => {
         ...download(parquet),
       );
       const dataset = await fetchDataset(client(fetch).transport, ref);
-      // The selector takes the ref's rendering as its query.
-      const cut = isCut ? "&without_party_totals=true" : "";
-      assert.equal(seen[2]!.url, `${version}/file?format=parquet&bundle=false${cut}`);
+      // The selector's query holds only the keys the selector reads: a cut's version is
+      // already the cut, and the selector refuses `without_party_totals`.
+      assert.equal(seen[2]!.url, `${version}/file?format=parquet&bundle=false`);
       assert.equal(dataset.rowCount, 30);
     });
 
@@ -859,10 +859,7 @@ describe("a stored version's lookup order", () => {
       assert.ok(error.message.includes("client.fetch(ref, { latest: true }) ["), error.message);
       return true;
     });
-    assert.equal(
-      seen[2]!.url,
-      `${version}/file?format=parquet&bundle=false&without_party_totals=true`,
-    );
+    assert.equal(seen[2]!.url, `${version}/file?format=parquet&bundle=false`);
   });
 
   test("refuses a build whose content_version is not a version id", async () => {

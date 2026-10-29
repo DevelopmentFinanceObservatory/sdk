@@ -100,7 +100,7 @@ STEP_KEYS = {
     },
     "fetch-ref": {"op", "ref"},
     "newest_version": {"op", "spec"},
-    "mint": {"op", "spec", "layout"},
+    "mint": {"op", "spec", "layout", "party_totals"},
     "operation": {"op", "operation_id", "layout"},
     "result": {"op"},
 }
@@ -350,7 +350,12 @@ def _run(
                 deadline=None,
             )
         case "mint":
-            started = _mint(client, _spec(step["spec"]), step.get("layout", "long"))
+            started = _mint(
+                client,
+                _spec(step["spec"]),
+                step.get("layout", "long"),
+                party_totals=step.get("party_totals", False),
+            )
         case "operation":
             started = _resume(client, step["operation_id"], step.get("layout", "long"))
         case _:
@@ -395,11 +400,13 @@ def _quiet(*_: object) -> None:
     """A progress hook that shows nothing."""
 
 
-async def _mint(client: AsyncClient | Client, spec: Spec, layout: str) -> LongBuild:
+async def _mint(
+    client: AsyncClient | Client, spec: Spec, layout: str, *, party_totals: bool
+) -> LongBuild:
     operation, _ = _engine(client)
     transport = client._session.transport
-    # A mint posts the plain rendering.
-    rendering = rendering_for(layout, party_totals=True)
+    # A mint leaves party totals out, as a fetch of a spec does, unless the step keeps them.
+    rendering = rendering_for(layout, party_totals=party_totals)
     body = build_body(spec, rendering)
     reply = await _settle(operation.post_build(transport, body, deadline=None))
     poller = operation.Poller(transport, reply, body=body, on_progress=_quiet)
