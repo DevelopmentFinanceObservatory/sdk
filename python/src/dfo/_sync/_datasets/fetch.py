@@ -488,7 +488,7 @@ def finish_member(
     parts = () if want is None else want.parts
     sentence = None if want is None else want.sentence or want.spec.sentence
     if want is None or spec_id != want.spec.spec_id or sentence is None:
-        sentence = _sentence(
+        sentence = built_sentence(
             transport,
             manifest,
             parts,
@@ -715,7 +715,7 @@ def download(
     raise failure
 
 
-def _sentence(
+def built_sentence(
     transport: Transport,
     manifest: Wire,
     parts: tuple[str, ...],

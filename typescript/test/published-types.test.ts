@@ -17,8 +17,24 @@ const PACKAGE = fileURLToPath(new URL("..", import.meta.url));
 const TSC = join(PACKAGE, "node_modules", "typescript", "bin", "tsc");
 
 const CONSUMER = `
-import { Client, Dataset, InvalidRequestError, isDfoError } from "@developmentfinance/client";
+import {
+  Client,
+  Dataset,
+  InvalidRequestError,
+  isDatasetMember,
+  isDerived,
+  isDfoError,
+  latestYear,
+  recipe,
+  SeriesLeftOutWarning,
+} from "@developmentfinance/client";
 import type {
+  Card,
+  CardKind,
+  LeftOutSeries,
+  Recipe,
+  Served,
+  Share,
   Alternative,
   Answer,
   AnswerKind,
@@ -83,6 +99,64 @@ export function loud(answer: Answer, dataset: Dataset): boolean {
   return notices.some((notice) => notice.severity === severe) || unseen === "closest_match";
 }
 
+// A recipe chains steps without I/O; a fetch runs it, and the analysis calls run one step.
+export async function analysed(client: Client, spec: Spec): Promise<number> {
+  const chain: Recipe = recipe(spec)
+    .growth({ by: "origin", window: [latestYear(-4), latestYear()] })
+    .rank({ by: "origin", limit: 10 });
+  const fastest: Dataset = await client.fetch(chain, { strict: true });
+  const top = await client.analysis.rank(fastest, { by: "origin", window: [2020, latestYear()] });
+  const share = await client.analysis.shareOf(top, { by: "origin" });
+  const newest = await client.fetch(top.ref, { latest: true });
+  const dropped: readonly LeftOutSeries[] = newest.leftOut;
+  const kept = await client.pin(await client.fetch(spec));
+  const loud = new SeriesLeftOutWarning("series_left_out", "x").code === "series_left_out";
+  return dropped.length + share.rowCount + (kept.pinned && loud ? 1 : 0);
+}
+
+// A member's spec is a Spec or a DerivedSpec; the guards narrow it, and only a Spec fetches.
+export async function newest(client: Client, dataset: Dataset): Promise<string> {
+  const member = dataset.members[0]!;
+  if (isDerived(member)) return member.spec.recipe.replay_key + member.citation.text;
+  const spec: Spec = member.spec;
+  const fetched: Dataset = await client.fetch(spec);
+  const ref = (await client.fetch(dataset.ref)).ref.members[0]!;
+  return isDatasetMember(ref) ? Object.keys(ref.spec.definition).join() : fetched.sentence;
+}
+
+// A card draws a dataset, a share publishes it, and history lists what it served.
+export async function published(client: Client, dataset: Dataset): Promise<number> {
+  const chart: Card = await client.cards.line(dataset, {
+    window: [latestYear(-9), latestYear()],
+    title: "German ODA",
+  });
+  const kind: CardKind = chart.kind;
+  const tile: Share = await client.share(chart, { latest: true });
+  const token: string | null = tile.writeToken;
+  const stat = await client.cards.stat(dataset.ref, {
+    year: latestYear(),
+    compareTo: latestYear(-1),
+    change: "percent",
+  });
+  const swapped = await client.share([stat], { latest: true, replace: tile });
+  const fixed = await client.snapshot(swapped.url, { writeToken: token ?? "" });
+  const embedded: Served[] = [...(await client.history(fixed.embedUrl))];
+  const served: readonly Served[] = await client.history(fixed);
+  const shown: Dataset = await client.fetch(fixed, { slot: 1, asOf: "2026-10-28" });
+  await client.unshare(fixed);
+  const series: number = chart.series + chart.seriesCut;
+  const timed = await client.analysis.rank(shown, { by: "origin", timeout: 5_000, strict: true });
+  return (
+    served.length +
+    embedded.length +
+    kind.length +
+    shown.rowCount +
+    series +
+    timed.rowCount +
+    (chart.heldUntil?.getTime() ?? 0)
+  );
+}
+
 // The mistakes a type check should catch, each of which fails to compile.
 export async function mistakes(client: Client, answer: Answer): Promise<void> {
   const spec = answer.specs[0]!;
@@ -96,8 +170,8 @@ export async function mistakes(client: Client, answer: Answer): Promise<void> {
   await client.fetch(spec, { entities: { recipient: "country/NGA" } });
   // @ts-expect-error Options as a positional string.
   await client.fetch(spec, "all");
-  // @ts-expect-error A spec id where the fetch takes a spec.
-  await client.fetch("spec_123");
+  // @ts-expect-error A slot as text.
+  await client.fetch("https://developmentfinance.org/s/k3Qx8vTa", { slot: "2" });
   // @ts-expect-error A timeout as a string.
   await client.search("x", { timeout: "30" });
   const dataset = await client.fetch(spec);
@@ -111,6 +185,26 @@ export async function mistakes(client: Client, answer: Answer): Promise<void> {
   new Client({ maxRetries: "3" });
   // @ts-expect-error A Date where a node takes a YYYY-MM-DD date.
   await client.lookup.node("country/NGA", { asOf: new Date() });
+  // @ts-expect-error An aggregation the operations do not name.
+  recipe(spec).aggregate({ how: "median" });
+  // @ts-expect-error A limit as a string.
+  recipe(spec).rank({ by: "origin", limit: "10" });
+  // @ts-expect-error A window of one year.
+  await client.analysis.growth(spec, { window: [2020] });
+  // @ts-expect-error A spec id where a recipe starts from a spec.
+  recipe("spec_123");
+  // @ts-expect-error A growth change in the stat card's word.
+  recipe(spec).growth({ window: [2020, 2024], change: "percent" });
+  // @ts-expect-error A stat card change in growth's word.
+  await client.cards.stat(dataset, { change: "relative" });
+  // @ts-expect-error A spec id where the fetch takes a spec or a share's URL.
+  await client.fetch("spec_123");
+  // @ts-expect-error A share without latest.
+  await client.share(await client.cards.source(dataset), {});
+  // @ts-expect-error A share takes no title.
+  await client.share(await client.cards.source(dataset), { latest: true, title: "Aid" });
+  // @ts-expect-error A member's spec may be a DerivedSpec, which a fetch does not take.
+  await client.fetch(dataset.members[0]!.spec);
   // @ts-expect-error A severity the contract does not list: the named unions are closed.
   const severity: Severity = "fatal";
   console.log(severity);

@@ -1,0 +1,115 @@
+{
+ "spec_id": "ops_7526280154d308431afff61e4bd583f3",
+ "content_version": "ocv_a1aabb31aad7f86f3e3d83df9ecec8bd",
+ "retention": {
+  "pinned": false,
+  "held_until": "2026-11-27T15:17:02.394240Z"
+ },
+ "citation": {
+  "text": "",
+  "sources": []
+ },
+ "recipe": {
+  "normal_form_hash": "rnf_90cb5fb6024604ad39de573e093449aa",
+  "replay_key": "rpk_6cdf5cb6e4cfd293f502699ffe4da857",
+  "execution_identity": "0.9.0|1.1.0|0.2.0",
+  "tree": {
+   "frame": {
+    "spec_id": "ops_7526280154d308431afff61e4bd583f3",
+    "content_version": "ocv_a1aabb31aad7f86f3e3d83df9ecec8bd"
+   },
+   "op_spec": {
+    "frame_ref": {
+     "content_version": "cv_11111111111111111111111111111111",
+     "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "identity_version": "ops1",
+    "parameters": {
+     "aggregation": "sum",
+     "ascending": false,
+     "limit": 2,
+     "per_period": false,
+     "rank_by": [
+      "financingRecipient"
+     ],
+     "rolling": {
+      "population": [
+       {
+        "bindings": {},
+        "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+       }
+      ],
+      "window_end": {
+       "anchor": "latest",
+       "offset": 0,
+       "rule": "half1"
+      },
+      "window_start": {
+       "anchor": "latest",
+       "offset": 0,
+       "rule": "half1"
+      }
+     },
+     "unit": null,
+     "window_end": "2022",
+     "window_start": "2022"
+    },
+    "verb": "rank"
+   },
+   "inputs": {
+    "frame_ref": {
+     "frame": {
+      "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "content_version": "cv_11111111111111111111111111111111"
+     },
+     "root": 0
+    }
+   }
+  },
+  "roots": [
+   {
+    "schema_version": 1,
+    "frame": {
+     "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "content_version": "cv_11111111111111111111111111111111"
+    },
+    "dataset": {
+     "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "content_version": "cv_11111111111111111111111111111111"
+    },
+    "options": {
+     "format": "parquet",
+     "bundle": false,
+     "layout": "frame"
+    },
+    "scope": {}
+   }
+  ]
+ },
+ "roots": [
+  {
+   "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "content_version": "cv_11111111111111111111111111111111",
+   "rendering": {
+    "format": "parquet",
+    "bundle": false,
+    "layout": "frame"
+   }
+  }
+ ],
+ "resolved_periods": [
+  {
+   "anchor": "latest",
+   "offset": 0,
+   "rule": "half1",
+   "period": "2022"
+  }
+ ],
+ "anchor": {
+  "period": "2022",
+  "rule": "half1",
+  "left_out": []
+ },
+ "left_out": [],
+ "left_out_complete": true
+}

@@ -1,0 +1,20 @@
+{
+ "status": 202,
+ "headers": {
+  "cache-control": "no-store",
+  "retry-after": "2",
+  "content-length": "125",
+  "content-type": "application/json",
+  "server-timing": "total;dur=0.1",
+  "strict-transport-security": "max-age=31536000; includeSubDomains",
+  "x-dfo-commit": "unknown",
+  "x-dfo-trace-id": "781de5f9b9c74f708211e43cd63c7748"
+ },
+ "body": {
+  "status": "pending",
+  "retry_after_s": 2.0,
+  "operations": [
+   "op_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  ]
+ }
+}

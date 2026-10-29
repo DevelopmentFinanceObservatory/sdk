@@ -52,7 +52,12 @@ class DfoError(Exception):
         docs_url: The page that documents the code, or None.
         retry_after: The wait the response's `Retry-After` header asked for, in
             seconds, or None.
+        pinned: The versions, `cv_…`, a pin call pinned before it failed, in
+            the Dataset's member order. They stay pinned. Empty for every other
+            call.
     """
+
+    pinned: tuple[str, ...] = ()
 
     def __init__(
         self,
@@ -251,6 +256,15 @@ class SearchWarning(DfoWarning):
     Attributes:
         code: The warning or departure code, or None when the readings differ
             from the question in several ways.
+    """
+
+
+class SeriesLeftOutWarning(DfoWarning):
+    """An operation behind a Dataset dropped series for missing data.
+
+    Each fetch of a derived Dataset that left series out issues one, and
+    `Dataset.left_out` lists them. `warnings.filterwarnings("error",
+    category=SeriesLeftOutWarning)` turns it into a raise, as `strict=True` does.
     """
 
 

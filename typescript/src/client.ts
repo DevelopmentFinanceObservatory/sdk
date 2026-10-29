@@ -6,6 +6,13 @@ import type { Dataset } from "./datasets/dataset.ts";
 import { clientError, DfoError, InvalidRequestError, messageOf, optionsOf } from "./core/errors.ts";
 import { present } from "./core/json.ts";
 import { checkOptions, declareOptions } from "./core/options.ts";
+import { Analysis } from "./datasets/analysis.ts";
+import { Cards } from "./datasets/cards.ts";
+import type { Card, Served, Share, ShareUrl } from "./datasets/publication.ts";
+import { history, share, snapshot, unshare } from "./datasets/shares.ts";
+import type { ShareOptions, WriteTokenOptions } from "./datasets/shares.ts";
+import { pin } from "./datasets/pin.ts";
+import type { Recipe } from "./datasets/recipe.ts";
 import { fetchDataset } from "./datasets/resolve.ts";
 import type { FetchOptions } from "./datasets/fetch.ts";
 import type { ApiKeyOption } from "./config/keys.ts";
@@ -96,6 +103,12 @@ export class Client {
   /** Names to graph nodes, a node by its dcid, a code's registry entry, and what Search holds
    *  data on. */
   readonly lookup: Lookup;
+  /** DFO's operations, each run at once on DFO: `filter`, `aggregate`, `growth`, `rank`,
+   *  `quotientOf`, `shareOf`, `join`, `sumOf` and `compare`. */
+  readonly analysis: Analysis;
+  /** Charts, tables, headline numbers and source notes DFO stores and draws: `line`, `bar`,
+   *  `table`, `stat` and `source`, each from one Dataset or ref. */
+  readonly cards: Cards;
   readonly #transport: Transport;
   readonly #answers: AnswerContext;
 
@@ -128,6 +141,8 @@ export class Client {
     };
     registerClient(this, this.#answers);
     this.lookup = new Lookup(this.#transport);
+    this.analysis = new Analysis(this.#transport);
+    this.cards = new Cards(this.#transport);
   }
 
   /** The API's base URL, less any trailing slashes. */
@@ -167,21 +182,122 @@ export class Client {
   /**
    * Fetches a spec's latest version, narrowed by `window`, `entities` and `facets`, or the exact
    * versions a ref names, or with `latest: true` the newest versions of a ref's specs in the
-   * ref's rendering. It waits as long as a build takes, reporting a long build's progress
-   * to `onProgress`. A `timeout` or an aborted `signal` stops the wait and leaves the build
-   * running on the server, and the same fetch joins it.
+   * ref's rendering; runs a recipe from `recipe(start)` on DFO in one request; or fetches the
+   * exact version a share's slot shows. It waits as
+   * long as a build takes, reporting a long build's progress to `onProgress`. A `timeout` or an
+   * aborted `signal` stops the wait and leaves the build running on the server, and the same
+   * fetch joins it.
+   *
+   * A ref of a frame DFO computed reads that frame, and with `latest: true` DFO computes its
+   * recipe again on the newest versions of its datasets. A recipe or a computed frame takes
+   * `latest`, `strict`, `timeout` and `signal`, and refuses `onProgress`, which DFO does not
+   * report while it computes, and the options that narrow or render a spec. A fetch that left
+   * series out for missing data issues one `SeriesLeftOutWarning`, which
+   * `strict: true` raises.
+   *
+   * A share, or the URL of its page or embed such as `https://developmentfinance.org/s/k3Qx8vTa`,
+   * reads the frame its slot shows now, or with `asOf` the one it showed then, in the frame
+   * layout, and the dataset's text form names the share, slot, card title and day. It takes
+   * `asOf`, `slot`, `strict`, `timeout`, `signal` and `onProgress`, and refuses the options that
+   * narrow or render a spec and `latest: true`; `client.history(share)` lists what each slot
+   * showed.
    *
    * @throws {InvalidRequestError} `options` holds a key outside `FetchOptions`, a window year
    *   falls outside 1000 to 2200, `entities` names a role outside `specRoles(spec)`, the target is neither a ref nor a spec with its `spec_id` and
    *   `definition`, a ref is narrowed or given another layout or `partyTotals`, or
-   *   `latest` is given a spec or a ref whose members differ in rendering.
+   *   `latest` is given a spec or a ref whose members differ in rendering; a share is given a
+   *   narrowing, `partyTotals`, `latest: true` or a layout other than `frame`, `slot` is not a
+   *   number from 1, or `asOf` is malformed, all before any request; a share of several slots
+   *   is given no `slot`, or one past its last; or `asOf` is before the slot first served data.
+   * @throws {NotFoundError} A share is unknown, its slot is empty, or with `asOf` the slot showed no
+   *   card then (`not_found`).
    * @throws {VersionUnavailableError} A ref's version can no longer be fetched.
    * @throws {DataWarning} `strict` is true and a manifest carries a warning above `info`.
+   * @throws {SeriesLeftOutWarning} `strict` is true and a recipe left series out.
    * @throws {DfoTimeoutError} The `timeout` passed (`deadline_exceeded`); the build carries on.
    * @throws {DfoError} The server refused a request.
    */
-  fetch(target: Spec | DatasetRef, options: FetchOptions = {}): Promise<Dataset> {
+  fetch(
+    target: Spec | DatasetRef | Recipe | Share | ShareUrl,
+    options: FetchOptions = {},
+  ): Promise<Dataset> {
     return fetchDataset(this.#transport, target, options);
+  }
+
+  /**
+   * Keeps `data`'s exact versions fetchable by its ref with no time limit, and returns the same
+   * dataset, now pinned. Pinning cannot be undone, and each new pin counts against a daily
+   * allowance. `data.bytes()` keeps the rows in a file of your own instead.
+   *
+   * @throws {InvalidRequestError} `data` is not a Dataset, or holds a frame DFO computed, which
+   *   the pin route does not take (`invalid_argument`); no request is sent.
+   * @throws {QuotaExceededError} The daily pin allowance is spent (`allowance_exhausted`);
+   *   `retryAfterMs` says when it resets.
+   */
+  pin(data: Dataset): Promise<Dataset> {
+    return pin(this.#transport, data);
+  }
+
+  /**
+   * Publishes cards from `client.cards` under one link, one card per numbered slot, as
+   * `client.share(card, { latest: true })`: a live share (`latest: true`) follows new data, and a
+   * snapshot (`latest: false`) keeps the versions its cards draw now. The `Share` carries the
+   * page, embed and data URLs and the `shw_` write token that changes it. DFO returns the token
+   * only here and the client saves it nowhere else, so keep `share.writeToken` on your server
+   * beside `share.url`, and pass both to `unshare` or `snapshot` later. With `replace`, the live share it names shows these cards under its URLs instead.
+   * Each new share counts against a daily allowance.
+   *
+   * @throws {InvalidRequestError} `cards` is not a Card or a non-empty list of them, `latest`
+   *   is not a boolean, `replace` goes with `latest: false`, `writeToken` goes without
+   *   `replace`, or `replace` is neither a Share nor a share's URL (`invalid_argument`), and no
+   *   request is sent; or the change carried no token (`write_token_required`) or `replace`
+   *   names a snapshot (`share_not_replaceable`).
+   * @throws {PermissionDeniedError} The token is not the share's (`write_token_invalid`).
+   * @throws {QuotaExceededError} The daily share allowance is spent (`allowance_exhausted`);
+   *   `retryAfterMs` says when it resets.
+   */
+  share(cards: Card | readonly Card[], options: ShareOptions): Promise<Share> {
+    return share(this.#transport, cards, options);
+  }
+
+  /**
+   * Fixes a live share as a snapshot under the same URLs, each slot keeping the frame it serves
+   * now. It sends the `writeToken` given, else the `Share`'s own.
+   *
+   * @throws {InvalidRequestError} `target` is neither a Share nor a share's URL
+   *   (`invalid_argument`), and no request is sent; or no token was sent
+   *   (`write_token_required`).
+   * @throws {PermissionDeniedError} The token is not the share's (`write_token_invalid`).
+   */
+  snapshot(target: Share | ShareUrl, options: WriteTokenOptions = {}): Promise<Share> {
+    return snapshot(this.#transport, target, options);
+  }
+
+  /**
+   * Takes a share down. It sends the `writeToken` given, else the `Share`'s own. Taking it down
+   * again with its token succeeds, so a retry after a lost reply is safe.
+   *
+   * @throws {InvalidRequestError} `target` is neither a Share nor a share's URL
+   *   (`invalid_argument`), and no request is sent; or no token was sent
+   *   (`write_token_required`), and the message says to pass `writeToken`.
+   * @throws {PermissionDeniedError} The token is not the share's (`write_token_invalid`).
+   * @throws {NotFoundError} No share has that id (`not_found`).
+   */
+  unshare(target: Share | ShareUrl, options: WriteTokenOptions = {}): Promise<void> {
+    return unshare(this.#transport, target, options);
+  }
+
+  /**
+   * Every frame a share's slots served, newest first, each saying whether it can still be
+   * fetched. It needs no token. `client.fetch(share, { slot, asOf })` reads one. An entry whose
+   * `cardId` is null marks a replace that left the slot without a card.
+   *
+   * @throws {InvalidRequestError} `target` is neither a Share nor a share's URL
+   *   (`invalid_argument`), and no request is sent.
+   * @throws {NotFoundError} No share has that id, or it was taken down (`not_found`).
+   */
+  history(target: Share | ShareUrl): Promise<readonly Served[]> {
+    return history(this.#transport, target);
   }
 
   /**

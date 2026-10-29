@@ -5,8 +5,12 @@ import { inspect } from "node:util";
 import { clientOver } from "../src/client.ts";
 import { DfoError, NotFoundError, serverCode } from "../src/core/errors.ts";
 import { describing } from "../src/core/trace.ts";
-import { DataWarning, DfoWarning } from "../src/core/warnings.ts";
-import { Dataset } from "../src/datasets/dataset.ts";
+import { DataWarning, DfoWarning, SeriesLeftOutWarning } from "../src/core/warnings.ts";
+import { Dataset, LeftOutSeries } from "../src/datasets/dataset.ts";
+import { Card, Served, Share } from "../src/datasets/publication.ts";
+import type { ShareUrl } from "../src/datasets/publication.ts";
+import { recipe } from "../src/datasets/recipe.ts";
+import { latestYear } from "../src/core/periods.ts";
 import { RawResponse, Transport } from "../src/http/transport.ts";
 import { Answer, answerFromBody, SearchWarning } from "../src/search/answer.ts";
 import { Catalogue, Code, Match, Node } from "../src/search/lookup-results.ts";
@@ -94,6 +98,31 @@ const catalogueOf = (version: string, example: string): CatalogueResponse => ({
 
 // Each row builds the object and gives what it prints: the whole text when `whole` is set, which
 // holds at most two lines of at most 200 characters, else the start of the text.
+const cardOf = (title: string): Card =>
+  new Card({
+    id: "cmp_ad956b407b1623ec17cfcd55",
+    revision: 1,
+    kind: "line",
+    ref: dataset.ref,
+    title,
+    heldUntil: null,
+    pinned: false,
+    writeToken: "cmw_secret",
+    series: 40,
+    seriesCut: 28,
+  });
+
+const shareOf = (url: ShareUrl): Share =>
+  new Share({
+    id: "k3Qx8vTa",
+    url,
+    embedUrl: "https://developmentfinance.org/embed/k3Qx8vTa",
+    dataUrls: ["https://developmentfinance.org/api/v1/presentation/shares/k3Qx8vTa/slots/1/data"],
+    revision: 2,
+    latest: true,
+    writeToken: "shw_secret",
+  });
+
 const ROWS: [string, () => { toString(): string }, string, boolean][] = [
   ["answer", () => answer, String(answer).split("\n")[0]!, false],
   ["dataset", () => dataset, "<Dataset Germany's gross ODA disbursements to Nigeria.\n", false],
@@ -193,6 +222,106 @@ const ROWS: [string, () => { toString(): string }, string, boolean][] = [
     "RawResponse(204, 1 byte)",
     true,
   ],
+  ["latest-year", () => latestYear(-4), "latestYear(-4)", true],
+  [
+    "recipe",
+    () => recipe({ spec_id: SPEC_ID, definition: {} }).rank({ by: "origin", limit: 10 }),
+    `recipe(${SPEC_ID}).rank({ by: "origin", limit: 10 })`,
+    true,
+  ],
+  [
+    "left-out-series-named-by-role",
+    () =>
+      new LeftOutSeries(
+        {
+          coordinates: {
+            stat_var: `dcid:ops_${"f72f".repeat(8)}`,
+            financingRecipient: "country/NGA",
+          },
+          step: { verb: "growth", node: 0 },
+          side: "data",
+          reason: "endpoint_missing",
+          rows: 1,
+        },
+        { financingRecipient: "destination" },
+      ),
+    "LeftOutSeries(destination=country/NGA: growth dropped 1 row from data, endpoint_missing)",
+    true,
+  ],
+  [
+    "left-out-series-long-entity",
+    () =>
+      new LeftOutSeries({
+        coordinates: { donor: `dcid:${"a".repeat(70)}`, stat_var: "dcid:MalariaGrants" },
+        step: { verb: "quotient_of", node: 1 },
+        side: "other",
+        reason: "unmatched_key",
+        rows: 2,
+      }),
+    `LeftOutSeries(donor=dcid:${"a".repeat(70)}, stat_var=dcid:MalariaGrants: quotient_of ` +
+      "dropped 2 rows from other, unmatched_key)",
+    true,
+  ],
+  [
+    "analysis",
+    () => clientOver(new Transport({ baseUrl: "https://api.example", apiKey: false })).analysis,
+    "<Analysis: filter, aggregate, growth, rank, quotientOf, shareOf, join, sumOf, compare>",
+    true,
+  ],
+  [
+    "cards",
+    () => clientOver(new Transport({ baseUrl: "https://api.example", apiKey: false })).cards,
+    "<Cards: line, bar, table, stat, source>",
+    true,
+  ],
+  [
+    "card",
+    () => cardOf("German ODA, last ten years"),
+    `Card(line cmp_ad956b407b1623ec17cfcd55, "German ODA, last ten years", 40 series, draws ` +
+      `${SPEC_ID} at ${VERSION})`,
+    true,
+  ],
+  [
+    "share",
+    () => shareOf("https://developmentfinance.org/s/k3Qx8vTa"),
+    "Share(live https://developmentfinance.org/s/k3Qx8vTa, 1 slot, revision 2)",
+    true,
+  ],
+  [
+    "served",
+    () =>
+      new Served({
+        slot: 1,
+        cardId: "cmp_ad956b407b1623ec17cfcd55",
+        cardRevision: 1,
+        specId: `ops_${"a".repeat(32)}`,
+        contentVersion: `ocv_${"b".repeat(32)}`,
+        firstServed: new Date("2026-09-24T08:00:00Z"),
+        pinned: false,
+        heldUntil: new Date("2026-11-23T00:00:00Z"),
+        fetchable: true,
+      }),
+    `Served(slot 1 cmp_ad956b407b1623ec17cfcd55 from 24 Sep 2026: ops_${"a".repeat(32)} at ` +
+      `ocv_${"b".repeat(32)} · fetchable until 23 Nov 2026)`,
+    true,
+  ],
+  [
+    "served-no-card",
+    () =>
+      new Served({
+        slot: 2,
+        cardId: null,
+        cardRevision: null,
+        specId: null,
+        contentVersion: null,
+        firstServed: new Date("2026-09-24T08:00:00Z"),
+        pinned: false,
+        heldUntil: null,
+        fetchable: false,
+      }),
+    "Served(slot 2 showed no card from 24 Sep 2026)",
+    true,
+  ],
 ];
 
 test("a match cuts its text, each name and its line, and counts the candidates it leaves out", () => {
@@ -272,6 +401,12 @@ for (const [name, build, message] of [
     "Differs:\n  shows 2022\n[closest_match]",
   ],
   ["a warning with no code", () => new DfoWarning(null, "Differs."), "Differs."],
+  [
+    "a series-left-out warning",
+    () =>
+      new SeriesLeftOutWarning("series_left_out", "3 series left out for missing data by growth"),
+    "3 series left out for missing data by growth [series_left_out]",
+  ],
   [
     "an error whose trace id holds terminal controls",
     () => new DfoError({ code: "invalid_argument", detail: "Bad.", traceId: "x\u001b[31mRED" }),
@@ -391,6 +526,8 @@ const TAINTED_ROWS: [string, (taint: string) => { toString(): string }][] = [
   ],
   ["a catalogue", (taint) => new Catalogue(catalogueOf("cat_1", `GDP${taint}`))],
   ["a dataset ref", (taint) => DATASETS.get(taint)!.ref],
+  ["a card", (taint) => cardOf(`German ODA${taint}`)],
+  ["a share", (taint) => shareOf(`https://developmentfinance.org/s/k3Qx8vTa${taint}`)],
   [
     "a raw response",
     // A header value holds no line break, so the response's taint stops at the controls.

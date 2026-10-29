@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { readdir } from "node:fs/promises";
 import { describe, test } from "node:test";
 
-import { DatasetRef, FormatError, renderingFor, renderingMatches } from "../src/core/ref.ts";
+import {
+  DatasetRef,
+  FormatError,
+  isDerived,
+  renderingFor,
+  renderingMatches,
+} from "../src/core/ref.ts";
 import { contractJson } from "./support.ts";
 
 type RefRecord = {
@@ -67,7 +73,7 @@ describe("DatasetRef.fromJSON", () => {
     spec.definition.identity["entities"] = { origin: ["country/XXX"] };
     assert.equal(JSON.stringify(loaded), written);
     const [member] = loaded.members;
-    assert.ok(member);
+    assert.ok(member && !isDerived(member));
     const definition = member.spec.definition as { identity: Record<string, unknown> };
     assert.throws(() => {
       definition.identity["entities"] = {};
@@ -107,6 +113,144 @@ describe("DatasetRef.fromJSON", () => {
       });
     }
   });
+});
+
+/** The stored ref of the contract's derived-member record. */
+const derived = async (): Promise<{ members: Record<string, unknown>[] }> =>
+  (
+    await contractJson<{ ref: { members: Record<string, unknown>[] } }>(
+      "refs/ref-derived-member.json",
+    )
+  ).ref;
+
+describe("a derived ref", () => {
+  // Each row breaks one check of a derived member that no contract record pins.
+  const cases: [path: (string | number)[], value: unknown][] = [
+    [["spec", "spec_id"], `spec_${"0".repeat(32)}`],
+    [["spec", "recipe", "replay_key"], `rnf_${"0".repeat(32)}`],
+    [["content_version"], `cv_${"0".repeat(32)}`],
+    [["output_digest"], `sha256:${"0".repeat(64)}`],
+    [["roots"], []],
+    [["roots", 0, "content_version"], `ocv_${"0".repeat(32)}`],
+    [["execution_identity"], "0.9.0|1.1.0"],
+    [["resolved_periods", 0, "offset"], -1.5],
+    [["resolved_periods", 0, "period"], "20x0"],
+    [["resolved_periods", 1], { anchor: "latest", offset: -3, rule: "half1", period: "2020" }],
+  ];
+  for (const [path, value] of cases) {
+    test(`refuses ${JSON.stringify(value)} at ${path.join("/")}`, async () => {
+      const broken = structuredClone(await derived());
+      let holder: Record<string | number, unknown> = broken.members[0]!;
+      for (const step of path.slice(0, -1)) {
+        holder = holder[step] as Record<string | number, unknown>;
+      }
+      holder[path.at(-1)!] = value;
+      assert.throws(() => DatasetRef.fromJSON(broken), {
+        reason: "format_invalid",
+        pointer: `/members/0/${path.join("/")}`,
+      });
+    });
+  }
+
+  test("holds no dataset member beside a derived one", async () => {
+    const [datasetMember] = DatasetRef.fromJSON(await oneMember()).members;
+    const [derivedMember] = DatasetRef.fromJSON(await derived()).members;
+    assert.ok(datasetMember && derivedMember && isDerived(derivedMember));
+    assert.throws(() => new DatasetRef([datasetMember, derivedMember]), TypeError);
+  });
+
+  test("compares its data with a ref alone", async () => {
+    const ref = DatasetRef.fromJSON(await derived());
+    // The ref's JSON in place of the ref, the mistake the check names.
+    const stored: unknown = ref.toJSON();
+    assert.throws(() => ref.sameData(stored as DatasetRef), {
+      name: "InvalidRequestError",
+      code: "invalid_argument",
+    });
+    assert.equal(ref.sameData(ref), true);
+  });
+});
+
+const grouped = async (): Promise<{ members: Record<string, unknown>[] }> =>
+  (
+    await contractJson<{ ref: { members: Record<string, unknown>[] } }>(
+      "refs/ref-derived-grouped-root.json",
+    )
+  ).ref;
+
+describe("a grouped root", () => {
+  test("keeps its groupby as a typed field", async () => {
+    const [member] = DatasetRef.fromJSON(await grouped()).members;
+    assert.ok(member && isDerived(member));
+    const [root] = member.roots;
+    assert.ok(root?.groupby);
+    assert.deepEqual(JSON.parse(JSON.stringify(root.groupby)), {
+      by: ["crsPurpose", "time_period"],
+      op: "sum",
+      levels: { crsPurpose: 0 },
+    });
+    assert.ok(Object.isFrozen(root.groupby.levels));
+  });
+
+  test("refuses a second root whose levels differ only in key order", async () => {
+    const ref = structuredClone(await grouped());
+    const roots = ref.members[0]!["roots"] as { rendering: { groupby: { levels: object } } }[];
+    roots[0]!.rendering.groupby.levels = { crsPurpose: 0, time_period: 1 };
+    const again = structuredClone(roots[0]!);
+    again.rendering.groupby.levels = { time_period: 1, crsPurpose: 0 };
+    roots.push(again);
+    assert.throws(() => DatasetRef.fromJSON(ref), {
+      reason: "format_invalid",
+      pointer: "/members/0/roots/1",
+    });
+  });
+
+  test("keeps a __proto__ level and writes a ref that loads again", async () => {
+    const ref = structuredClone(await grouped());
+    const roots = ref.members[0]!["roots"] as { rendering: { groupby: { levels: unknown } } }[];
+    roots[0]!.rendering.groupby.levels = JSON.parse('{"__proto__": 1}');
+    const loaded = DatasetRef.fromJSON(JSON.stringify(ref));
+    const again = DatasetRef.fromJSON(JSON.stringify(loaded)).members[0];
+    assert.ok(again && isDerived(again));
+    assert.deepEqual(Object.keys(again.roots[0]!.groupby!.levels!), ["__proto__"]);
+  });
+
+  test("writes a hand-built groupby with empty levels without them", async () => {
+    const [member] = DatasetRef.fromJSON(await grouped()).members;
+    assert.ok(member && isDerived(member));
+    const root = {
+      ...member.roots[0]!,
+      groupby: { by: ["time_period"], op: "sum" as const, levels: {} },
+    };
+    const written = new DatasetRef([{ ...member, roots: [root] }]);
+    const [loaded] = DatasetRef.fromJSON(JSON.stringify(written)).members;
+    assert.ok(loaded && isDerived(loaded));
+    assert.deepEqual(loaded.roots[0]!.groupby, { by: ["time_period"], op: "sum" });
+  });
+
+  // Each row breaks one check of a root's groupby that no contract record pins.
+  const cases: [path: string[], value: unknown][] = [
+    [["by"], []],
+    [["by"], [""]],
+    [["by"], ["time_period", "time_period"]],
+    [["levels"], {}],
+    [["levels", "crsPurpose"], 100],
+    [["levels", "crsPurpose"], true],
+    [["axis"], "time_period"],
+  ];
+  for (const [path, value] of cases) {
+    test(`refuses ${JSON.stringify(value)} at groupby/${path.join("/")}`, async () => {
+      const broken = structuredClone(await grouped());
+      const roots = broken.members[0]!["roots"] as { rendering: { groupby: unknown } }[];
+      let holder = roots[0]!.rendering.groupby as Record<string, unknown>;
+      for (const step of path.slice(0, -1)) holder = holder[step] as Record<string, unknown>;
+      holder[path.at(-1)!] = value;
+      assert.throws(() => DatasetRef.fromJSON(broken), {
+        reason: "format_invalid",
+        pointer: `/members/0/roots/0/rendering/groupby/${path.join("/")}`,
+      });
+    });
+  }
 });
 
 describe("a party-totals cut in a ref", () => {

@@ -1,6 +1,7 @@
 // Replays the contract's rule vectors for keys, credentials, the reading order, role keys, the
-// file selector's query and the client's identity. The cache rules have no TypeScript
-// counterpart: this client keeps no cache on disk.
+// file selector's query, the client's identity, the comparison of refs and the series a derived
+// fetch leaves out. The cache rules have no TypeScript counterpart: this client keeps no cache on
+// disk.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
@@ -22,6 +23,7 @@ import {
 } from "../src/http/client-identity.ts";
 import type { Runtime } from "../src/http/client-identity.ts";
 import { VERSION } from "../src/version.ts";
+import { DatasetRef } from "../src/core/ref.ts";
 import { Dataset } from "../src/datasets/dataset.ts";
 import type { FetchedMember } from "../src/datasets/dataset.ts";
 import { readingOrder } from "../src/datasets/reading-order.ts";
@@ -30,7 +32,9 @@ import { selectorQuery } from "../src/core/ref.ts";
 import type { Rendering } from "../src/core/ref.ts";
 import { specRoles } from "../src/core/roles.ts";
 import { FLOW_KEYS, ROLE_KEYS } from "../src/generated/role-keys.ts";
-import { contractJson, json, mockFetch, problem } from "./support.ts";
+import { SeriesLeftOutWarning } from "../src/core/warnings.ts";
+import type { DfoWarning } from "../src/core/warnings.ts";
+import { contractJson, json, mockFetch, problem, recordedBytes, recordedJson } from "./support.ts";
 
 type Suite<T> = { rule: string; vectors: (T & { name: string })[] };
 
@@ -432,6 +436,79 @@ describe("client-identity", async () => {
         await send();
         assert.equal(seen[0]?.headers.get(CLIENT_HEADER), ownIdentity());
       }
+    });
+  }
+});
+
+describe("output-comparison", async () => {
+  type Vector = { left: unknown; right: unknown; equal: boolean; same_data: boolean };
+  for (const vector of await vectors<Vector>("output-comparison")) {
+    test(vector.name, () => {
+      const left = DatasetRef.fromJSON(vector.left);
+      const right = DatasetRef.fromJSON(vector.right);
+      for (const [mine, theirs] of [
+        [left, right],
+        [right, left],
+      ] as const) {
+        assert.equal(mine.equals(theirs), vector.equal);
+        assert.equal(mine.sameData(theirs), vector.same_data);
+      }
+    });
+  }
+});
+
+describe("series-left-out", async () => {
+  type Vector = {
+    members: { left_out: unknown; left_out_complete: boolean | null }[];
+    strict: boolean;
+    warnings?: string[];
+    raises?: string;
+  };
+  const { ref } = await recordedJson<{ ref: unknown }>("analysis-chain-ready.json");
+  const chain = await recordedJson("analysis-chain-manifest.json");
+  const file = await recordedBytes("analysis-chain-frame.parquet");
+  // A fetch reads one derived member, so the vectors that fetch several are not replayable
+  // through this client.
+  const replayable = (await vectors<Vector>("series-left-out")).filter(
+    (vector) => vector.members.length === 1,
+  );
+  assert.ok(replayable.length > 0);
+  for (const vector of replayable) {
+    test(vector.name, async () => {
+      const [served] = vector.members;
+      const issued: DfoWarning[] = [];
+      const { fetch } = mockFetch(
+        json({ ...chain, ...served }),
+        () =>
+          new Response(file, {
+            status: 200,
+            headers: { "content-type": "application/vnd.apache.parquet" },
+          }),
+      );
+      const transport = new Transport({
+        baseUrl: "https://api.example/api",
+        apiKey: false,
+        env: envFrom({}),
+        readCredentialsFile: () => null,
+        fetch,
+        onWarning: (warning) => issued.push(warning),
+      });
+      const fetching = fetchDataset(transport, DatasetRef.fromJSON(ref), {
+        strict: vector.strict,
+      });
+      if (vector.raises !== undefined) {
+        await assert.rejects(fetching, (error) => {
+          assert.ok(error instanceof SeriesLeftOutWarning);
+          assert.equal(error.code, vector.raises);
+          return true;
+        });
+      } else {
+        await fetching;
+      }
+      assert.deepEqual(
+        issued.map((warning) => warning.code),
+        vector.warnings ?? [],
+      );
     });
   }
 });

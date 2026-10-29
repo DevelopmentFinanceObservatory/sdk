@@ -1,0 +1,17 @@
+{
+ "status": 403,
+ "headers": {
+  "content-type": "application/problem+json",
+  "x-dfo-trace-id": "f5a44e0bdf2f4451aecba250b1237da3"
+ },
+ "body": {
+  "type": "/codes/write_token_invalid",
+  "title": "Write Token Invalid",
+  "status": 403,
+  "detail": "the x-dfo-write-token sent does not grant changing share 'lBm1RKBw'; send the write_token its create returned",
+  "code": "write_token_invalid",
+  "trace_id": "f5a44e0bdf2f4451aecba250b1237da3",
+  "capability_version": "pres_f18e767e3235f78e",
+  "retryable": false
+ }
+}

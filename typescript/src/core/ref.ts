@@ -1,6 +1,9 @@
 /**
  * The `DatasetRef` format every DFO client writes and reads, fixed by
- * `contract/dataset-ref.schema.json`, so a ref saved by one language loads in another.
+ * `contract/dataset-ref.schema.json`, so a ref saved by one language loads in another. Format 1
+ * holds dataset members, each a version of a built spec. Format 2 holds derived members, each the
+ * frame an analysis recipe computed, which DFO describes in full: the client copies every field
+ * from the server's answer and computes none.
  */
 
 import { clientError } from "./errors.ts";
@@ -46,25 +49,131 @@ export type RefMember = {
   readonly rendering: Rendering;
 };
 
-/** A ref as JSON, in the stored format. */
-export type DatasetRefJson = {
-  format_version: 1;
-  members: {
-    parts: string[];
-    sentence: string;
-    spec: { spec_id: string; definition: Readonly<Record<string, unknown>> };
-    content_version: string;
-    artifact: {
-      digest: string;
-      rendering: {
-        format: string;
-        bundle: boolean;
-        layout?: "frame";
-        without_party_totals?: true;
-      };
-    };
-  }[];
+/** The recipe a derived member's frame comes from, as DFO names it: its `ops_` id, and the
+ *  recipe's two hashes. `normal_form_hash` names the computation whatever data it ran on, and
+ *  `replay_key` names it on these roots under this execution identity. */
+export type DerivedSpec = {
+  readonly spec_id: string;
+  readonly recipe: { readonly normal_form_hash: string; readonly replay_key: string };
 };
+
+/** The sum a recipe read a root with, as DFO records it: one row per distinct combination of the
+ *  columns `by` keeps, every other summable axis summed away. A breakdown or a sum over StatVars
+ *  reads a root this way. `levels` gives the depth each kept hierarchical axis it names was
+ *  rolled up to before the sum, 0 being the root codes, and is absent when none was. */
+export type Groupby = {
+  readonly by: readonly string[];
+  readonly op: "sum";
+  readonly levels?: Readonly<Record<string, number>>;
+};
+
+/** A dataset version a recipe ran on, with the rendering it read, and `groupby` when the recipe
+ *  read it summed. */
+export type Root = {
+  readonly specId: string;
+  readonly contentVersion: string;
+  readonly rendering: Rendering;
+  readonly groupby?: Groupby;
+};
+
+/** A period a recipe states relative to the latest period, with the year it resolved to. */
+export type ResolvedPeriod = {
+  readonly anchor: "latest";
+  /** Periods before the anchor, 0 or below. */
+  readonly offset: number;
+  /** How the latest period was settled: the newest period at least half the series hold. */
+  readonly rule: "half1";
+  readonly period: string;
+};
+
+/** One derived member of a ref: the frame an analysis recipe computed. DFO computes every field;
+ *  a client copies them from the server's answer. */
+export type DerivedRefMember = {
+  /** Empty for a derived member, which no answer part names. */
+  readonly parts: readonly string[];
+  /** The server's sentence for the derived frame. */
+  readonly sentence: string;
+  readonly spec: DerivedSpec;
+  /** The frame's version, `ocv_…`. */
+  readonly contentVersion: string;
+  /** The digest of the frame's output alone, `out_…`, which `sameData` compares. */
+  readonly outputDigest: string;
+  readonly roots: readonly Root[];
+  /** The engine, frame grammar and reduction policy versions that ran the recipe, joined by `|`. */
+  readonly executionIdentity: string;
+  /** Each period the recipe states relative to the latest, resolved; empty when it states none. */
+  readonly resolvedPeriods: readonly ResolvedPeriod[];
+  readonly digest: string;
+  readonly rendering: Rendering;
+};
+
+/** Whether a member of a ref or a dataset is a derived member, whose `spec` is a
+ *  `DerivedSpec`: `isDerived(data.members[0])` narrows to `DerivedMember`, and a ref's member
+ *  to `DerivedRefMember`. */
+export const isDerived = <TMember extends RefMember | DerivedRefMember>(
+  member: TMember,
+): member is Extract<TMember, DerivedRefMember> => "outputDigest" in member;
+
+/** Whether a member of a ref or a dataset is a dataset member, whose `spec` is a `Spec` that
+ *  `client.fetch` takes: `isDatasetMember(data.members[0])` narrows to `Member`, and a ref's
+ *  member to `RefMember`. */
+export const isDatasetMember = <TMember extends RefMember | DerivedRefMember>(
+  member: TMember,
+): member is Exclude<TMember, DerivedRefMember> => !isDerived(member);
+
+/** A ref as JSON, in the stored format: format 1 of dataset members, or format 2 of derived
+ *  members. */
+export type DatasetRefJson =
+  | {
+      format_version: 1;
+      members: {
+        parts: string[];
+        sentence: string;
+        spec: { spec_id: string; definition: Readonly<Record<string, unknown>> };
+        content_version: string;
+        artifact: {
+          digest: string;
+          rendering: {
+            format: string;
+            bundle: boolean;
+            layout?: "frame";
+            without_party_totals?: true;
+          };
+        };
+      }[];
+    }
+  | {
+      format_version: 2;
+      members: {
+        parts: string[];
+        sentence: string;
+        spec: { spec_id: string; recipe: { normal_form_hash: string; replay_key: string } };
+        content_version: string;
+        output_digest: string;
+        roots: {
+          spec_id: string;
+          content_version: string;
+          rendering: {
+            format: string;
+            bundle: boolean;
+            layout?: "frame";
+            without_party_totals?: true;
+            groupby?: { by: string[]; op: "sum"; levels?: Record<string, number> };
+          };
+        }[];
+        execution_identity: string;
+        resolved_periods: { anchor: "latest"; offset: number; rule: "half1"; period: string }[];
+        artifact: {
+          digest: string;
+          rendering: {
+            format: string;
+            bundle: boolean;
+            layout?: "frame";
+            without_party_totals?: true;
+          };
+        };
+      }[];
+    };
 
 /** Why stored JSON is not a ref: it breaks the format's shape, a member's definition names
  *  another spec, or two members hold one spec. */
@@ -89,8 +198,18 @@ Object.defineProperty(FormatError.prototype, "name", { value: "FormatError", con
 const invalid = (pointer: string, detail: string): FormatError =>
   new FormatError("format_invalid", pointer, detail);
 
-const FORMAT_VERSION = 1;
-const SPEC_ID = /^spec_[0-9a-f]{32}$/;
+/** The ref format of dataset members, and the one of derived members. */
+const DATASET_FORMAT = 1;
+const DERIVED_FORMAT = 2;
+/** A dataset spec's id, and the id of a recipe's frame DFO computed. */
+export const SPEC_ID = /^spec_[0-9a-f]{32}$/;
+export const OPS_ID = /^ops_[0-9a-f]{32}$/;
+const DERIVED_VERSION = /^ocv_[0-9a-f]{32}$/;
+const OUTPUT_DIGEST = /^out_[0-9a-f]{32}$/;
+const NORMAL_FORM_HASH = /^rnf_[0-9a-f]{32}$/;
+const REPLAY_KEY = /^rpk_[0-9a-f]{32}$/;
+const EXECUTION_IDENTITY = /^[0-9A-Za-z.+-]+\|[0-9A-Za-z.+-]+\|[0-9A-Za-z.+-]+$/;
+const PERIOD = /^[0-9]{4}$/;
 /** A version's id, as the ref format and the server write it. */
 export const CONTENT_VERSION = /^cv_[0-9a-f]{32}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -163,33 +282,132 @@ export const sameRendering = (a: Rendering, b: Rendering): boolean =>
   layoutOf(a) === layoutOf(b) &&
   (a.without_party_totals === true) === (b.without_party_totals === true);
 
+/** A derived member in the stored format, its keys in the schema's order. */
+const derivedJson = (member: DerivedRefMember) => ({
+  parts: [...member.parts],
+  sentence: member.sentence,
+  spec: {
+    spec_id: member.spec.spec_id,
+    recipe: {
+      normal_form_hash: member.spec.recipe.normal_form_hash,
+      replay_key: member.spec.recipe.replay_key,
+    },
+  },
+  content_version: member.contentVersion,
+  output_digest: member.outputDigest,
+  roots: member.roots.map((root) => ({
+    spec_id: root.specId,
+    content_version: root.contentVersion,
+    rendering: {
+      ...root.rendering,
+      ...(root.groupby === undefined ? {} : { groupby: groupbyJson(root.groupby) }),
+    },
+  })),
+  execution_identity: member.executionIdentity,
+  resolved_periods: member.resolvedPeriods.map(({ anchor, offset, rule, period }) => ({
+    anchor,
+    offset,
+    rule,
+    period,
+  })),
+  artifact: { digest: member.digest, rendering: { ...member.rendering } },
+});
+
+/** A groupby in the stored format, `levels` only when it names an axis, its axes sorted. */
+const groupbyJson = (groupby: Groupby) => {
+  const { by, op, levels } = normalGroupby(groupby);
+  return { by: [...by], op, ...(levels === undefined ? {} : { levels: { ...levels } }) };
+};
+
+/** A groupby frozen with `levels` only when it names an axis, its axes sorted on an object with
+ *  no prototype, so key order leaves the JSON alone and a `__proto__` axis stays an axis. */
+function normalGroupby({ by, levels = {} }: Groupby): Groupby {
+  const axes = Object.keys(levels).sort();
+  if (axes.length === 0) return Object.freeze({ by: Object.freeze([...by]), op: "sum" });
+  const depths: Record<string, number> = Object.create(null) as Record<string, number>;
+  for (const axis of axes) depths[axis] = levels[axis]!;
+  return Object.freeze({ by: Object.freeze([...by]), op: "sum", levels: Object.freeze(depths) });
+}
+
+/** Whether two members are one identity: the same spec at the same version in the same
+ *  rendering, and for derived members the same recipe. */
+function sameIdentity(a: RefMember | DerivedRefMember, b: RefMember | DerivedRefMember): boolean {
+  if (
+    a.spec.spec_id !== b.spec.spec_id ||
+    a.contentVersion !== b.contentVersion ||
+    !sameRendering(a.rendering, b.rendering) ||
+    isDerived(a) !== isDerived(b)
+  ) {
+    return false;
+  }
+  if (!isDerived(a) || !isDerived(b)) return true;
+  return (
+    a.spec.recipe.normal_form_hash === b.spec.recipe.normal_form_hash &&
+    a.spec.recipe.replay_key === b.spec.recipe.replay_key
+  );
+}
+
+/** Whether two members hold the same output: derived members with one output digest, or dataset
+ *  members at one version with the same party-totals cut. */
+function sameOutput(a: RefMember | DerivedRefMember, b: RefMember | DerivedRefMember): boolean {
+  if (isDerived(a) && isDerived(b)) return a.outputDigest === b.outputDigest;
+  if (isDerived(a) || isDerived(b)) return false;
+  return (
+    a.contentVersion === b.contentVersion &&
+    (a.rendering.without_party_totals === true) === (b.rendering.without_party_totals === true)
+  );
+}
+
 /** The exact versions a dataset holds. `JSON.stringify(ref)` writes the stored format,
  *  `DatasetRef.fromJSON` reads one written by any DFO client, `client.fetch(ref)` fetches those
- *  versions, and `client.fetch(ref, { latest: true })` the newest versions of its specs. */
+ *  versions, and `client.fetch(ref, { latest: true })` the newest versions of its specs. A ref
+ *  holds dataset members or derived members, one kind per ref. `client.fetch` reads a ref of one
+ *  derived member as the exact frame it names. When DFO no longer stores that frame, it computes
+ *  the recipe again on the root versions the ref names. `client.fetch(ref, { latest: true })`
+ *  computes the recipe on its datasets' newest versions. */
 export class DatasetRef {
-  readonly members: readonly RefMember[];
+  readonly members: readonly (RefMember | DerivedRefMember)[];
 
-  constructor(members: readonly RefMember[]) {
+  /** @throws {TypeError} The members mix dataset members and derived members. */
+  constructor(members: readonly (RefMember | DerivedRefMember)[]) {
+    if (new Set(members.map(isDerived)).size > 1) {
+      throw new TypeError("A DatasetRef holds dataset members or derived members, not both.");
+    }
     this.members = Object.freeze([...members]);
   }
 
   /**
    * Whether `other` is a ref to the same specs at the same versions in the same renderings, in
-   * order. Digests, sentences and part labels are left out, since a version rendered again
-   * holds the same data under another digest.
+   * order, and for derived members the same recipes. Digests, sentences and part labels are left
+   * out, since a version rendered again holds the same data under another digest.
    */
   equals(other: unknown): boolean {
     if (!(other instanceof DatasetRef) || other.members.length !== this.members.length) {
       return false;
     }
-    return this.members.every((member, index) => {
-      const theirs = other.members[index]!;
-      return (
-        member.spec.spec_id === theirs.spec.spec_id &&
-        member.contentVersion === theirs.contentVersion &&
-        sameRendering(member.rendering, theirs.rendering)
-      );
-    });
+    return this.members.every((member, index) => sameIdentity(member, other.members[index]!));
+  }
+
+  /**
+   * Whether `other` holds the same output: as many members, and at each position derived members
+   * with the same output digest, or dataset members at the same version with the same
+   * party-totals cut. Recipes, roots, execution identities, layouts and file formats are left
+   * out, so an engine release or an upstream rebuild that moves no number keeps it true.
+   *
+   * @throws {InvalidRequestError} `other` is not a `DatasetRef` (`invalid_argument`).
+   */
+  sameData(other: DatasetRef): boolean {
+    const given: unknown = other;
+    if (!(given instanceof DatasetRef)) {
+      const kind = given === null ? "null" : Array.isArray(given) ? "an array" : typeof given;
+      throw clientError("invalid_argument", {
+        detail:
+          `sameData compares two DatasetRefs, not ${kind}; read a saved ref with ` +
+          "DatasetRef.fromJSON first.",
+      });
+    }
+    if (other.members.length !== this.members.length) return false;
+    return this.members.every((member, index) => sameOutput(member, other.members[index]!));
   }
 
   /** The specs and the exact versions the ref names, as `DatasetRef(1 member: spec_… at cv_…,
@@ -209,11 +427,15 @@ export class DatasetRef {
     return this.toString();
   }
 
-  /** The ref in the stored format. */
+  /** The ref in the stored format: format 1 for dataset members, format 2 for derived ones. */
   toJSON(): DatasetRefJson {
+    const derived = this.members.filter(isDerived);
+    if (derived.length > 0) {
+      return { format_version: DERIVED_FORMAT, members: derived.map(derivedJson) };
+    }
     return {
-      format_version: FORMAT_VERSION,
-      members: this.members.map((member) => ({
+      format_version: DATASET_FORMAT,
+      members: this.members.filter(isDatasetMember).map((member) => ({
         parts: [...member.parts],
         sentence: member.sentence,
         spec: { spec_id: member.spec.spec_id, definition: member.spec.definition },
@@ -240,14 +462,16 @@ export class DatasetRef {
     }
     const ref = objectAt(parsed, "");
     checkKeys(ref, "", ["format_version", "members"]);
-    if (ref["format_version"] !== FORMAT_VERSION) {
-      throw invalid("/format_version", `not ${FORMAT_VERSION}`);
+    const version = ref["format_version"];
+    if (version !== DATASET_FORMAT && version !== DERIVED_FORMAT) {
+      throw invalid("/format_version", `not ${DATASET_FORMAT} or ${DERIVED_FORMAT}`);
     }
     const members = ref["members"];
     if (!Array.isArray(members) || members.length === 0) {
       throw invalid("/members", "not a non-empty array");
     }
-    const loaded = members.map((member: unknown, index) => loadMember(member, `/members/${index}`));
+    const load = version === DATASET_FORMAT ? loadMember : loadDerivedMember;
+    const loaded = members.map((member: unknown, index) => load(member, `/members/${index}`));
     const seen = new Set<string>();
     for (const [index, member] of loaded.entries()) {
       if (seen.has(member.spec.spec_id)) {
@@ -295,21 +519,36 @@ function matching(pattern: RegExp, value: unknown, pointer: string, what: string
   return value;
 }
 
-function loadMember(value: unknown, pointer: string): RefMember {
-  const member = objectAt(value, pointer);
-  checkKeys(member, pointer, ["parts", "sentence", "spec", "content_version", "artifact"]);
+/** A member's `parts` and `sentence`. */
+function loadText(
+  member: Record<string, unknown>,
+  pointer: string,
+): { parts: readonly string[]; sentence: string } {
   const parts = member["parts"];
   if (!Array.isArray(parts) || !parts.every(isText)) {
-    throw new FormatError(
-      "format_invalid",
-      `${pointer}/parts`,
-      "not an array of non-empty strings",
-    );
+    throw invalid(`${pointer}/parts`, "not an array of non-empty strings");
   }
   const sentence = member["sentence"];
   if (!isText(sentence)) {
     throw invalid(`${pointer}/sentence`, "not a non-empty string");
   }
+  return { parts: Object.freeze([...parts]), sentence };
+}
+
+/** A member's artifact digest and rendering. */
+function loadArtifact(value: unknown, pointer: string): { digest: string; rendering: Rendering } {
+  const artifact = objectAt(value, pointer);
+  checkKeys(artifact, pointer, ["digest", "rendering"]);
+  return {
+    digest: matching(DIGEST, artifact["digest"], `${pointer}/digest`, "a digest"),
+    rendering: Object.freeze(loadRendering(artifact["rendering"], `${pointer}/rendering`)),
+  };
+}
+
+function loadMember(value: unknown, pointer: string): RefMember {
+  const member = objectAt(value, pointer);
+  checkKeys(member, pointer, ["parts", "sentence", "spec", "content_version", "artifact"]);
+  const { parts, sentence } = loadText(member, pointer);
 
   const spec = objectAt(member["spec"], `${pointer}/spec`);
   checkKeys(spec, `${pointer}/spec`, ["spec_id", "definition"]);
@@ -344,20 +583,173 @@ function loadMember(value: unknown, pointer: string): RefMember {
     `${pointer}/content_version`,
     "a content version",
   );
-  const artifact = objectAt(member["artifact"], `${pointer}/artifact`);
-  checkKeys(artifact, `${pointer}/artifact`, ["digest", "rendering"]);
-  const digest = matching(DIGEST, artifact["digest"], `${pointer}/artifact/digest`, "a digest");
   return Object.freeze({
-    parts: Object.freeze([...parts]),
+    parts,
     sentence,
     spec: Object.freeze({
       spec_id: specId,
       definition: frozenCopy(definition, `${pointer}/spec/definition`),
     }),
     contentVersion,
-    digest,
-    rendering: Object.freeze(loadRendering(artifact["rendering"], `${pointer}/artifact/rendering`)),
+    ...loadArtifact(member["artifact"], `${pointer}/artifact`),
   });
+}
+
+const DERIVED_KEYS = [
+  "parts",
+  "sentence",
+  "spec",
+  "content_version",
+  "output_digest",
+  "roots",
+  "execution_identity",
+  "resolved_periods",
+  "artifact",
+];
+
+function loadDerivedMember(value: unknown, pointer: string): DerivedRefMember {
+  const member = objectAt(value, pointer);
+  checkKeys(member, pointer, DERIVED_KEYS);
+  const { parts, sentence } = loadText(member, pointer);
+  if (parts.length > 0) throw invalid(`${pointer}/parts`, "not empty");
+  const spec = objectAt(member["spec"], `${pointer}/spec`);
+  checkKeys(spec, `${pointer}/spec`, ["spec_id", "recipe"]);
+  const recipe = objectAt(spec["recipe"], `${pointer}/spec/recipe`);
+  checkKeys(recipe, `${pointer}/spec/recipe`, ["normal_form_hash", "replay_key"]);
+  return Object.freeze({
+    parts,
+    sentence,
+    spec: Object.freeze({
+      spec_id: matching(OPS_ID, spec["spec_id"], `${pointer}/spec/spec_id`, "a recipe id"),
+      recipe: Object.freeze({
+        normal_form_hash: matching(
+          NORMAL_FORM_HASH,
+          recipe["normal_form_hash"],
+          `${pointer}/spec/recipe/normal_form_hash`,
+          "a normal form hash",
+        ),
+        replay_key: matching(
+          REPLAY_KEY,
+          recipe["replay_key"],
+          `${pointer}/spec/recipe/replay_key`,
+          "a replay key",
+        ),
+      }),
+    }),
+    contentVersion: matching(
+      DERIVED_VERSION,
+      member["content_version"],
+      `${pointer}/content_version`,
+      "a derived version",
+    ),
+    outputDigest: matching(
+      OUTPUT_DIGEST,
+      member["output_digest"],
+      `${pointer}/output_digest`,
+      "an output digest",
+    ),
+    roots: uniqueItems(member["roots"], `${pointer}/roots`, loadRoot, true),
+    executionIdentity: matching(
+      EXECUTION_IDENTITY,
+      member["execution_identity"],
+      `${pointer}/execution_identity`,
+      "an execution identity",
+    ),
+    resolvedPeriods: uniqueItems(
+      member["resolved_periods"],
+      `${pointer}/resolved_periods`,
+      loadResolvedPeriod,
+      false,
+    ),
+    ...loadArtifact(member["artifact"], `${pointer}/artifact`),
+  });
+}
+
+/** The items of a stored array, each loaded, frozen, and none repeated. Items compare by their
+ *  JSON, which holds the same keys in the same order for every item one loader returns. */
+function uniqueItems<TItem>(
+  value: unknown,
+  pointer: string,
+  load: (item: unknown, pointer: string) => TItem,
+  nonEmpty: boolean,
+): readonly TItem[] {
+  if (!Array.isArray(value) || (nonEmpty && value.length === 0)) {
+    throw invalid(pointer, nonEmpty ? "not a non-empty array" : "not an array");
+  }
+  const seen = new Set<string>();
+  const items = value.map((item: unknown, index) => {
+    const loaded = load(item, `${pointer}/${index}`);
+    const key = JSON.stringify(loaded);
+    if (seen.has(key)) throw invalid(`${pointer}/${index}`, "repeated");
+    seen.add(key);
+    return Object.freeze(loaded);
+  });
+  return Object.freeze(items);
+}
+
+function loadRoot(value: unknown, pointer: string): Root {
+  const root = objectAt(value, pointer);
+  checkKeys(root, pointer, ["spec_id", "content_version", "rendering"]);
+  const rendering = objectAt(root["rendering"], `${pointer}/rendering`);
+  const { groupby, ...selector } = rendering;
+  return {
+    specId: matching(SPEC_ID, root["spec_id"], `${pointer}/spec_id`, "a spec id"),
+    contentVersion: matching(
+      CONTENT_VERSION,
+      root["content_version"],
+      `${pointer}/content_version`,
+      "a content version",
+    ),
+    rendering: Object.freeze(loadRendering(selector, `${pointer}/rendering`)),
+    ...(Object.hasOwn(rendering, "groupby")
+      ? { groupby: loadGroupby(groupby, `${pointer}/rendering/groupby`) }
+      : {}),
+  };
+}
+
+/** The deepest level a root's groupby rolls a hierarchical axis up to. */
+const MAX_GROUPBY_LEVEL = 99;
+
+function loadGroupby(value: unknown, pointer: string): Groupby {
+  const groupby = objectAt(value, pointer);
+  checkKeys(groupby, pointer, ["by", "op"], ["levels"]);
+  const by = groupby["by"];
+  if (!Array.isArray(by) || by.length === 0 || !by.every(isText)) {
+    throw invalid(`${pointer}/by`, "not a non-empty array of names");
+  }
+  if (new Set(by).size < by.length) throw invalid(`${pointer}/by`, "names a column twice");
+  if (groupby["op"] !== "sum") throw invalid(`${pointer}/op`, 'not "sum"');
+  if (!Object.hasOwn(groupby, "levels")) return normalGroupby({ by, op: "sum" });
+  const levels = objectAt(groupby["levels"], `${pointer}/levels`);
+  if (Object.keys(levels).length === 0) throw invalid(`${pointer}/levels`, "empty");
+  for (const [axis, depth] of Object.entries(levels)) {
+    if (
+      typeof depth !== "number" ||
+      !Number.isInteger(depth) ||
+      depth < 0 ||
+      depth > MAX_GROUPBY_LEVEL
+    ) {
+      throw invalid(`${pointer}/levels/${axis}`, `not an integer from 0 to ${MAX_GROUPBY_LEVEL}`);
+    }
+  }
+  return normalGroupby({ by, op: "sum", levels: levels as Record<string, number> });
+}
+
+function loadResolvedPeriod(value: unknown, pointer: string): ResolvedPeriod {
+  const period = objectAt(value, pointer);
+  checkKeys(period, pointer, ["anchor", "offset", "rule", "period"]);
+  if (period["anchor"] !== "latest") throw invalid(`${pointer}/anchor`, 'not "latest"');
+  const offset = period["offset"];
+  if (typeof offset !== "number" || !Number.isInteger(offset) || offset > 0) {
+    throw invalid(`${pointer}/offset`, "not an integer of 0 or below");
+  }
+  if (period["rule"] !== "half1") throw invalid(`${pointer}/rule`, 'not "half1"');
+  return {
+    anchor: "latest",
+    offset,
+    rule: "half1",
+    period: matching(PERIOD, period["period"], `${pointer}/period`, "a year"),
+  };
 }
 
 /** A deep copy of a definition, frozen at every level, so a later change to the value the ref

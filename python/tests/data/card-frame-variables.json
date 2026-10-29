@@ -1,0 +1,13 @@
+{
+ "status": 200,
+ "headers": {
+  "content-type": "application/json"
+ },
+ "body": {
+  "dimension": "stat_var",
+  "values": [
+   "dcid:MalariaGrantDisbursements"
+  ],
+  "total_count": 1
+ }
+}

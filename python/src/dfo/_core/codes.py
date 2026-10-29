@@ -21,6 +21,7 @@ from dfo._core.errors import (
     IncompleteAnswerError,
     InvalidRequestError,
     NetworkError,
+    SeriesLeftOutWarning,
     ServerError,
     VersionUnavailableError,
     WarningCode,
@@ -73,4 +74,5 @@ KEY_NOT_BASE62: Final = _warning("key_not_base62", DfoWarning)
 KEY_UNKNOWN_PREFIX: Final = _warning("key_unknown_prefix", DfoWarning)
 REF_DIGEST_CHANGED: Final = _warning("ref_digest_changed", DfoWarning)
 ROUTE_DEPRECATED: Final = _warning("route_deprecated", DfoDeprecationWarning)
+SERIES_LEFT_OUT: Final = _warning("series_left_out", SeriesLeftOutWarning)
 SERVER_WARNING: Final = _warning("server_warning", DfoWarning)

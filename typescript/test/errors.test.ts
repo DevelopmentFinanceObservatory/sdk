@@ -46,6 +46,11 @@ test("a code maps on its action before its HTTP status", () => {
   assert.equal(errorClassFor("entity_ambiguous", 422), IncompleteAnswerError);
 });
 
+test("a write token that does not fit stops the caller with a PermissionDeniedError", () => {
+  assert.equal(actionFor("write_token_invalid"), "stop");
+  assert.equal(errorClassFor("write_token_invalid", 400), PermissionDeniedError);
+});
+
 for (const [status, expected] of [
   [400, InvalidRequestError],
   [401, AuthenticationError],

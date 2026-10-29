@@ -1,0 +1,17 @@
+{
+ "status": 404,
+ "headers": {
+  "content-type": "application/problem+json",
+  "x-dfo-trace-id": "5b92e4c07d1a48f3a6e0c9d2f8b31e75"
+ },
+ "body": {
+  "type": "/codes/not_found",
+  "title": "Not Found",
+  "status": 404,
+  "detail": "share 'CJmD6XzG' shows no card in slot 2",
+  "code": "not_found",
+  "trace_id": "5b92e4c07d1a48f3a6e0c9d2f8b31e75",
+  "capability_version": "pres_f18e767e3235f78e",
+  "retryable": false
+ }
+}

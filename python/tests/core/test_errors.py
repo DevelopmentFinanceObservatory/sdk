@@ -54,6 +54,7 @@ ACTION_CLASSES = {
     "take_newest_version": VersionUnavailableError,
     "log_in": AuthenticationError,
     "request_scope": PermissionDeniedError,
+    "stop": PermissionDeniedError,
     "wait": RateLimitError,
     "wait_for_reset": QuotaExceededError,
     "report": ServerError,
@@ -76,6 +77,13 @@ def test_every_contract_code_has_its_class(row: dict[str, str]) -> None:
 
 def test_the_map_holds_exactly_the_contract_codes() -> None:
     assert {row["code"]: row["action"] for row in _ROWS} == ACTIONS
+
+
+def test_a_write_token_that_does_not_fit_stops_the_caller() -> None:
+    body = {"code": "write_token_invalid", "detail": "Refused."}
+    error = problem_error(403, body, reason="Forbidden", origin=ORIGIN)
+    assert type(error) is PermissionDeniedError
+    assert ACTIONS["write_token_invalid"] == "stop"
 
 
 def test_every_contract_action_maps_to_a_class() -> None:
@@ -257,7 +265,8 @@ def test_every_client_raise_names_a_contract_code() -> None:
 
     `client_error` takes a `dfo._core.codes` constant, never a string. A class built by
     name outside `dfo._core.errors` must carry a refusal's code (`code=<error>.code`),
-    so no raise can set a code the contract lacks, or none at all.
+    or a code the contract maps to that class in `actions.json`, so no raise can set
+    a code the contract lacks, or none at all.
     """
     problems = []
     for where, callee, call in _raises():
@@ -268,6 +277,10 @@ def test_every_client_raise_names_a_contract_code() -> None:
         if where.startswith("_core/errors.py:"):
             continue
         code = next((kw.value for kw in call.keywords if kw.arg == "code"), None)
+        if isinstance(code, ast.Constant) and isinstance(code.value, str):
+            mapped = error_class(code.value, None)
+            if code.value in ACTIONS and mapped.__name__ == callee:
+                continue
         if not (isinstance(code, ast.Attribute) and code.attr == "code"):
             problems.append(f"{where}: {callee} built without client_error")
     assert problems == []
@@ -410,3 +423,48 @@ def test_a_proxy_refusal_keeps_its_code_and_takes_its_status_class(
         row["code"],
         True,
     )
+
+
+_ERRORS_DOC = Path(__file__).parents[2] / "docs" / "errors.md"
+
+
+def _doc_table(heading: str) -> list[list[str]]:
+    """The cells of the first table under `heading` in docs/errors.md, header and
+    rule left out, each cell stripped of its backticks."""
+    text = _ERRORS_DOC.read_text(encoding="utf-8").split(f"\n{heading}\n", 1)[1]
+    lines = text.splitlines()
+    first = next(index for index, line in enumerate(lines) if line.startswith("|"))
+    rows = []
+    for line in lines[first + 2 :]:
+        if not line.startswith("|"):
+            break
+        rows.append(
+            [cell.strip().replace("`", "") for cell in line.strip("|").split("|")]
+        )
+    return rows
+
+
+def test_the_errors_doc_lists_each_server_code_under_its_class() -> None:
+    documented = {
+        cls: set(codes.split(", ")) for cls, codes in _doc_table("### Server codes")
+    }
+    mapped: dict[str, set[str]] = {}
+    for code in {*ACTIONS, *(row["code"] for row in _PROXY_ROWS)}:
+        mapped.setdefault(error_class(code, None).__name__, set()).add(code)
+    assert documented == mapped
+
+
+def test_the_errors_doc_lists_each_client_and_warning_code() -> None:
+    client = {
+        code: (cls, retryable)
+        for code, cls, retryable, _ in _doc_table("### Client codes")
+    }
+    assert client == {
+        row["code"]: (
+            "by status" if row["class"] == "by_status" else row["class"],
+            {True: "yes", False: "no", "by_status": "by status"}[row["retryable"]],
+        )
+        for row in _CLIENT_ROWS
+    }
+    warnings_ = {code: cls for code, cls, _ in _doc_table("### Warnings")}
+    assert warnings_ == {row["code"]: row["class"] for row in _WARNING_ROWS}

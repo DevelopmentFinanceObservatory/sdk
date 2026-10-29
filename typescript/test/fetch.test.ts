@@ -10,7 +10,7 @@ import { envFrom } from "../src/config/env.ts";
 import { download, fetchMembers } from "../src/datasets/fetch.ts";
 import { fetchDataset } from "../src/datasets/resolve.ts";
 import type { FetchOptions } from "../src/datasets/fetch.ts";
-import { DatasetRef, renderingFor } from "../src/core/ref.ts";
+import { DatasetRef, isDerived, renderingFor } from "../src/core/ref.ts";
 import { specRoles } from "../src/core/roles.ts";
 import type { DatasetRefJson, Spec } from "../src/core/ref.ts";
 import { DEFAULT_MAX_BYTES, Transport } from "../src/http/transport.ts";
@@ -163,15 +163,16 @@ describe("a ref fetched with latest", () => {
         ...(step.party_totals === undefined ? {} : { partyTotals: step.party_totals }),
       });
       const [member] = fetched.ref.members;
-      assert.equal(member!.rendering.without_party_totals === true, cut);
+      assert.ok(member && !isDerived(member));
+      assert.equal(member.rendering.without_party_totals === true, cut);
       // The latest fetch posts the built spec with no narrowing, and knows its sentence.
       const [built, , ...download] = record.exchanges;
       const rebuild = structuredClone(built!);
       rebuild.request.json = {
         input: {
           kind: "spec_id",
-          spec_id: member!.spec.spec_id,
-          definition: member!.spec.definition,
+          spec_id: member.spec.spec_id,
+          definition: member.spec.definition,
         },
         options: {
           format: "parquet",
@@ -301,14 +302,18 @@ describe("arguments a fetch refuses before any request", () => {
     [
       "a ref given a window",
       { window: [2020, 2021] },
-      "fetch a member's spec: client.fetch(ref.members[0].spec, { window: [2020,2021] }).",
+      "fetch a dataset member's spec: client.fetch(member.spec, { window: [2020,2021] }) for",
     ],
     [
       "a ref given the latest window and latest",
       { window: "latest", latest: true },
-      `fetch a member's spec: client.fetch(ref.members[0].spec, { window: "latest" }).`,
+      `fetch a dataset member's spec: client.fetch(member.spec, { window: "latest" }) for`,
     ],
-    ["a ref given entities", { entities: { origin: ["country/FRA"] } }, "ref.members[0].spec"],
+    [
+      "a ref given entities",
+      { entities: { origin: ["country/FRA"] } },
+      "client.fetch(member.spec, { entities }) for a member of ref.members where",
+    ],
     ["a ref given latest that is not a boolean", { latest: "yes" }, "latest is true or false"],
   ] as const) {
     test(name, async () => {
@@ -320,6 +325,15 @@ describe("arguments a fetch refuses before any request", () => {
     });
   }
 
+  test("a derived ref given a window", async () => {
+    const { ref } = await contractJson<{ ref: unknown }>("refs/ref-derived-member.json");
+    await assert.rejects(fetchDataset(transport, DatasetRef.fromJSON(ref), { window: "all" }), {
+      name: "InvalidRequestError",
+      code: "invalid_argument",
+      message: /A recipe or a frame DFO computed takes no window/,
+    });
+  });
+
   test("a spec given latest", async () => {
     await assert.rejects(fetchDataset(transport, spec("spec_1"), { latest: true }), {
       name: "InvalidRequestError",
@@ -330,22 +344,19 @@ describe("arguments a fetch refuses before any request", () => {
 
   test("a latest fetch of a ref whose members differ in rendering", async () => {
     const [held] = (await storedRef()).members;
+    assert.ok(held && !isDerived(held));
     const specId = `spec_${"0".repeat(32)}`;
-    assert.equal(held!.rendering.without_party_totals, true);
+    assert.equal(held.rendering.without_party_totals, true);
     const plain = {
-      ...held!,
-      spec: { spec_id: specId, definition: { ...held!.spec.definition, spec_id: specId } },
+      ...held,
+      spec: { spec_id: specId, definition: { ...held.spec.definition, spec_id: specId } },
       rendering: renderingFor("long"),
     };
-    await assert.rejects(
-      fetchDataset(transport, new DatasetRef([held!, plain]), { latest: true }),
-      {
-        name: "InvalidRequestError",
-        code: "invalid_argument",
-        message:
-          /client\.fetch\(ref\.members\[1\]\.spec, \{ layout: "long", partyTotals: true \}\)/,
-      },
-    );
+    await assert.rejects(fetchDataset(transport, new DatasetRef([held, plain]), { latest: true }), {
+      name: "InvalidRequestError",
+      code: "invalid_argument",
+      message: /client\.fetch\(ref\.members\[1\]\.spec, \{ layout: "long", partyTotals: true \}\)/,
+    });
   });
 
   test("entities for a spec whose definition holds no identity", async () => {

@@ -29,6 +29,7 @@ from dfo._core.errors import (
     InvalidRequestError,
     NetworkError,
     NotFoundError,
+    QuotaExceededError,
     RateLimitError,
     ServerError,
 )
@@ -964,9 +965,9 @@ async def test_retry_after_as_seconds_a_date_or_unreadable(
         ),
         (problem(404, code="spec_not_found", detail="No spec."), "spec_not_found"),
     ],
-    ids=["not-json", "no-route", "unknown-id"],
+    ids=["not-json", "route-answered-not-found", "unknown-id"],
 )
-async def test_a_404_that_matched_no_route_names_the_request(
+async def test_only_a_404_without_a_code_names_the_request_as_unmatched(
     response: httpx2.Response, code: str
 ) -> None:
     async with make(Recorder(response)) as transport:
@@ -974,7 +975,7 @@ async def test_a_404_that_matched_no_route_names_the_request(
             await transport.request("GET", "/datasets/spec_1")
     named = f"GET {BASE}/datasets/spec_1 matched no route; check base_url"
     assert caught.value.code == code
-    assert (named in str(caught.value)) == (code != "spec_not_found")
+    assert (named in str(caught.value)) == (code == "refusal_without_code")
     assert named not in (caught.value.detail or "")
 
 
@@ -1281,6 +1282,30 @@ async def test_a_retry_after_past_the_ceiling_raises_at_once(retry_after: str) -
     assert timeline.sleeps == []
     assert caught.value.retry_after is not None
     assert caught.value.retry_after > 60
+
+
+# The action `wait_for_reset` outranks the document's `retryable` and the status.
+@pytest.mark.parametrize("status", [429, 503], ids=["429", "503"])
+@pytest.mark.parametrize("retry_after", ["30", "61"], ids=["30s", "61s"])
+async def test_a_refusal_that_waits_for_reset_is_never_retried(
+    status: int, retry_after: str
+) -> None:
+    timeline = Timeline()
+    spent = problem(
+        status,
+        code="allowance_exhausted",
+        retryable=True,
+        headers={"Retry-After": retry_after},
+    )
+    recorder = Recorder(spent, httpx2.Response(200))
+    async with make(recorder, timeline) as transport:
+        with pytest.raises(QuotaExceededError) as caught:
+            await transport.request("POST", "/presentation/shares", json={})
+    assert caught.value.code == "allowance_exhausted"
+    assert caught.value.retry_after == float(retry_after)
+    assert caught.value.retryable is False
+    assert len(recorder.requests) == 1
+    assert timeline.sleeps == []
 
 
 @pytest.mark.parametrize(

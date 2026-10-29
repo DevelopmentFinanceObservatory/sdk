@@ -1,5 +1,6 @@
-"""The module functions `dfo.search`, `dfo.fetch` and `dfo.configure`, and the
-lookups of `dfo.lookup`, over a default client.
+"""The module functions `dfo.search`, `dfo.fetch`, `dfo.pin`, `dfo.share`,
+`dfo.snapshot`, `dfo.unshare`, `dfo.history` and `dfo.configure`, and the lookups
+of `dfo.lookup`, over a default client.
 
 The default client is built on first use, under a lock, so importing `dfo` reads
 neither the environment nor the network. `configure` replaces it. An answer from
@@ -26,6 +27,8 @@ from dfo._core.lookup_results import Catalogue, Code, Match, Node
 from dfo._core.refs import DatasetRef
 from dfo._core.types import Layout, Spec, Window
 from dfo._datasets.dataset import Dataset
+from dfo._datasets.publication import Card, Moment, Served, Share, ShareTarget
+from dfo._datasets.recipe import Recipe
 from dfo._generated.wire import ResolveKind
 from dfo._http.hooks import HeaderProvider
 from dfo._search.answer import SEARCH_TIMEOUT
@@ -138,9 +141,11 @@ def search(question: str, /, *, timeout: float | None = SEARCH_TIMEOUT) -> Answe
 
 
 def fetch(
-    target: Spec | DatasetRef,
+    target: Spec | DatasetRef | Recipe | ShareTarget,
     /,
     *,
+    as_of: Moment | None = None,
+    slot: int | None = None,
     window: Window | None = None,
     entities: Mapping[str, list[str] | tuple[str, ...] | None] | None = None,
     facets: Mapping[str, str | None] | None = None,
@@ -152,21 +157,26 @@ def fetch(
     progress: bool | None = None,
 ) -> Dataset:
     """Fetch a spec's latest version, the exact versions a ref names, or with
-    `latest=True` the newest versions of a ref's specs, with the default client.
+    `latest=True` the newest versions of a ref's specs; run a recipe on DFO; or
+    fetch the exact version a share's slot shows, with the default client.
 
     Takes `Client.fetch`'s arguments, including its timeout behavior: platform
     name resolution can run past a synchronous deadline, while the asynchronous
     client can cancel it.
 
     Raises:
-        InvalidRequestError: The target is neither a `Spec` nor a `DatasetRef`,
-            such as a spec id, and no request is sent; a ref is narrowed or
-            given another layout or `party_totals`; `latest` is not a
-            bool, is given a spec, or is given a ref whose members differ in
-            rendering; `window`, `entities`, `facets` or `layout` is
-            malformed; `entities` names a role the spec does not declare; or
-            `timeout` is not
-            None or a finite number above 0 (`invalid_argument`).
+        InvalidRequestError: The target is not a `Spec`, a `DatasetRef`, a
+            `Recipe`, or a `Share` or its URL, such as a spec id, and no request
+            is sent; a ref is narrowed or given another layout or
+            `party_totals`; `latest` is not a bool, is given a spec, or is
+            given a ref whose members differ in rendering; a share is given a
+            narrowing, `party_totals`, `latest=True` or a layout other than
+            `frame`, `slot` is 0, or `as_of` is malformed, all before any
+            request; a share of several slots is given no `slot`, or one past
+            its last; `as_of` is before the slot first served data; `window`,
+            `entities`, `facets` or `layout` is malformed; `entities` names a
+            role the spec does not declare; or `timeout` is not None or a
+            finite number above 0 (`invalid_argument`).
         VersionUnavailableError: A ref's version can no longer be fetched.
         ContractError: An artifact is not Parquet (`unexpected_response`), or
             lacks a `time_period` or numeric `value` column
@@ -177,6 +187,8 @@ def fetch(
     """
     return default_client().fetch(
         target,
+        as_of=as_of,
+        slot=slot,
         window=window,
         entities=entities,
         facets=facets,
@@ -187,6 +199,88 @@ def fetch(
         timeout=timeout,
         progress=progress,
     )
+
+
+def pin(data: Dataset, /) -> Dataset:
+    """Keep `data`'s exact versions fetchable by its ref with no time limit, with
+    the default client, and return the same Dataset, now pinned.
+
+    Takes `Client.pin`'s argument.
+
+    Raises:
+        InvalidRequestError: `data` is not a Dataset, names no version, or holds
+            a frame DFO computed, which the pin route does not take
+            (`invalid_argument`); no request is sent.
+        QuotaExceededError: The daily pin allowance is spent (`allowance_exhausted`).
+    """
+    return default_client().pin(data)
+
+
+def share(
+    cards: Card | Sequence[Card],
+    /,
+    *,
+    latest: bool,
+    replace: ShareTarget | None = None,
+    write_token: str | None = None,
+) -> Share:
+    """Publish cards as a link, or give a live share new cards under the same
+    URLs, with the default client.
+
+    Takes `Client.share`'s arguments. `latest` has no default: True follows new
+    data, False keeps today's versions for good.
+
+    Raises:
+        InvalidRequestError: An argument is malformed (`invalid_argument`), and
+            no request is sent; DFO refused a replace without a token
+            (`write_token_required`) or of a snapshot (`share_not_replaceable`).
+        PermissionDeniedError: The token is not the share's (`write_token_invalid`).
+        QuotaExceededError: The daily share allowance is spent (`allowance_exhausted`).
+    """
+    return default_client().share(
+        cards, latest=latest, replace=replace, write_token=write_token
+    )
+
+
+def snapshot(share: ShareTarget, /, *, write_token: str | None = None) -> Share:
+    """Fix a live share as a snapshot under the same URLs, with the default
+    client.
+
+    Takes `Client.snapshot`'s arguments.
+
+    Raises:
+        InvalidRequestError: `share` is not a Share or a share URL
+            (`invalid_argument`); or no token was given (`write_token_required`).
+        PermissionDeniedError: The token is not the share's (`write_token_invalid`).
+    """
+    return default_client().snapshot(share, write_token=write_token)
+
+
+def unshare(share: ShareTarget, /, *, write_token: str | None = None) -> None:
+    """Take a share's link down, with the default client. Taking it down again
+    with its token succeeds, so a retry is safe.
+
+    Takes `Client.unshare`'s arguments: a share given as a URL needs
+    `write_token=share.write_token`, from the `Share` that `dfo.share` returned.
+
+    Raises:
+        InvalidRequestError: `share` is not a Share or a share URL
+            (`invalid_argument`); or no token was given (`write_token_required`).
+        PermissionDeniedError: The token is not the share's (`write_token_invalid`).
+        NotFoundError: No share has that id (`not_found`).
+    """
+    default_client().unshare(share, write_token=write_token)
+
+
+def history(share: ShareTarget, /) -> tuple[Served, ...]:
+    """What each card of a share served, newest first, with the default client.
+
+    Raises:
+        InvalidRequestError: `share` is not a Share or a share URL
+            (`invalid_argument`).
+        NotFoundError: No share has that id, or it was taken down (`not_found`).
+    """
+    return default_client().history(share)
 
 
 def resolve(

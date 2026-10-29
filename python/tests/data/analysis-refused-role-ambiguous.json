@@ -1,0 +1,33 @@
+{
+ "status": 422,
+ "headers": {
+  "cache-control": "no-store",
+  "content-length": "494",
+  "content-type": "application/problem+json",
+  "server-timing": "total;dur=1.1, materialise_wait;dur=0.0, permit_wait_ms;desc=0",
+  "strict-transport-security": "max-age=31536000; includeSubDomains",
+  "x-dfo-commit": "unknown",
+  "x-dfo-trace-id": "32ae48d92bb24c4388a3944d3a75fa56"
+ },
+ "body": {
+  "type": "/codes/role_ambiguous",
+  "title": "Role Ambiguous",
+  "status": 422,
+  "detail": "rank_by names column(s) this frame has no grain for: ['nope']. Available: ['financingRecipient', 'financingRecipient_party_kind'].",
+  "code": "role_ambiguous",
+  "trace_id": "32ae48d92bb24c4388a3944d3a75fa56",
+  "capability_version": "dset_5d3d776f7e05d422",
+  "retryable": false,
+  "retry_mode": "correct_and_retry",
+  "fix": {
+   "parameter": "rank_by",
+   "columns": [
+    "nope"
+   ],
+   "available": [
+    "financingRecipient",
+    "financingRecipient_party_kind"
+   ]
+  }
+ }
+}

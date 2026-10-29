@@ -1,0 +1,17 @@
+{
+ "status": 200,
+ "headers": {
+  "content-type": "application/json",
+  "x-dfo-trace-id": "95e8b147c98646d59c4f083a3049a105"
+ },
+ "body": {
+  "id": "lBm1RKBw",
+  "url": "https://site.example/s/lBm1RKBw",
+  "embed_url": "https://site.example/embed/lBm1RKBw",
+  "data_urls": [
+   "https://site.example/api/v1/presentation/shares/lBm1RKBw/slots/1/data"
+  ],
+  "revision": 2,
+  "latest": true
+ }
+}

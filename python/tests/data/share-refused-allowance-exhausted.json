@@ -1,0 +1,18 @@
+{
+ "status": 429,
+ "headers": {
+  "retry-after": "54000",
+  "content-type": "application/problem+json",
+  "x-dfo-trace-id": "3dd89780a0c642899bb4c8678de833c5"
+ },
+ "body": {
+  "type": "/codes/allowance_exhausted",
+  "title": "Allowance Exhausted",
+  "status": 429,
+  "detail": "this caller has spent today's share allowance of 1; it resets at the next UTC midnight",
+  "code": "allowance_exhausted",
+  "trace_id": "3dd89780a0c642899bb4c8678de833c5",
+  "capability_version": "pres_f18e767e3235f78e",
+  "retryable": true
+ }
+}

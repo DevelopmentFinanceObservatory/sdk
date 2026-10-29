@@ -1,0 +1,251 @@
+{
+ "status": "ready",
+ "ref": {
+  "format_version": 2,
+  "members": [
+   {
+    "parts": [],
+    "sentence": "Computed by DFO: rank.",
+    "spec": {
+     "spec_id": "ops_7526280154d308431afff61e4bd583f3",
+     "recipe": {
+      "normal_form_hash": "rnf_90cb5fb6024604ad39de573e093449aa",
+      "replay_key": "rpk_6cdf5cb6e4cfd293f502699ffe4da857"
+     }
+    },
+    "content_version": "ocv_a1aabb31aad7f86f3e3d83df9ecec8bd",
+    "output_digest": "out_ca691439323e4cf3aa172ee19b2bab32",
+    "roots": [
+     {
+      "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "content_version": "cv_11111111111111111111111111111111",
+      "rendering": {
+       "format": "parquet",
+       "bundle": false,
+       "layout": "frame"
+      }
+     }
+    ],
+    "execution_identity": "0.9.0|1.1.0|0.2.0",
+    "resolved_periods": [
+     {
+      "anchor": "latest",
+      "offset": 0,
+      "rule": "half1",
+      "period": "2022"
+     }
+    ],
+    "artifact": {
+     "digest": "sha256:4cd350dceb0c3e3aee2960d90793d875958683879bfcfd29c5c5cb24e7b9986c",
+     "rendering": {
+      "format": "parquet",
+      "bundle": false,
+      "layout": "frame"
+     }
+    }
+   }
+  ]
+ },
+ "frame_content_version": "cv_31bf12b10d4f538baaca6695aa582776",
+ "output_digest": "out_ca691439323e4cf3aa172ee19b2bab32",
+ "summary": {
+  "verb": "rank",
+  "spec_id": "ops_7526280154d308431afff61e4bd583f3",
+  "content_version": "ocv_a1aabb31aad7f86f3e3d83df9ecec8bd",
+  "frame_content_version": "cv_31bf12b10d4f538baaca6695aa582776",
+  "rows": 3,
+  "role_keys": [
+   "financingRecipient",
+   "financingRecipient_party_kind"
+  ],
+  "stat_var_count": 1,
+  "dropped_key_count": 0,
+  "right_dropped_key_count": 0,
+  "ranked_before_limit": 3,
+  "exclusions": [
+   {
+    "reason": "outside_window",
+    "rows": 3,
+    "entities": {
+     "financingRecipient": [
+      "country/GHA",
+      "country/KEN",
+      "country/NGA"
+     ],
+     "financingRecipient_party_kind": [
+      "party"
+     ]
+    },
+    "entities_truncated": false,
+    "side": null
+   }
+  ],
+  "time": {
+   "kind": "observation"
+  },
+  "parameters": {
+   "aggregation": "sum",
+   "ascending": false,
+   "limit": 2,
+   "per_period": false,
+   "rank_by": [
+    "financingRecipient"
+   ],
+   "rolling": {
+    "population": [
+     {
+      "bindings": {},
+      "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     }
+    ],
+    "window_end": {
+     "anchor": "latest",
+     "offset": 0,
+     "rule": "half1"
+    },
+    "window_start": {
+     "anchor": "latest",
+     "offset": 0,
+     "rule": "half1"
+    }
+   },
+   "unit": null,
+   "window_end": "2022",
+   "window_start": "2022"
+  },
+  "execution_identity": {
+   "engine_version": "0.9.0",
+   "frame_grammar_version": "1.1.0",
+   "reduction_policy_version": "0.2.0"
+  },
+  "derived": null,
+  "result": {
+   "resolved_unit": "USDollar",
+   "facet_selections": [
+    {
+     "axis": "provenance",
+     "ref": "dcid:dc/base/OECD_CRS"
+    }
+   ],
+   "warnings": [],
+   "aggregation": "sum",
+   "window_start": "2022",
+   "window_end": "2022",
+   "periods_in_window": [
+    "2022"
+   ],
+   "expected_cell_count": 3,
+   "present_cell_count": 3,
+   "overall_coverage_fraction": 1.0,
+   "entity_ranks": [
+    {
+     "entity_key": [
+      [
+       "financingRecipient",
+       "country/GHA"
+      ]
+     ],
+     "value": 10.0,
+     "rank": 1,
+     "row_count": 1,
+     "coverage_fraction": 1.0,
+     "time_period": "2022",
+     "period_count": 1
+    },
+    {
+     "entity_key": [
+      [
+       "financingRecipient",
+       "country/KEN"
+      ]
+     ],
+     "value": 10.0,
+     "rank": 1,
+     "row_count": 1,
+     "coverage_fraction": 1.0,
+     "time_period": "2022",
+     "period_count": 1
+    },
+    {
+     "entity_key": [
+      [
+       "financingRecipient",
+       "country/NGA"
+      ]
+     ],
+     "value": 10.0,
+     "rank": 1,
+     "row_count": 1,
+     "coverage_fraction": 1.0,
+     "time_period": "2022",
+     "period_count": 1
+    }
+   ],
+   "per_period": false,
+   "limit": 2,
+   "exclusions": {
+    "records": [
+     {
+      "reason": "outside_window",
+      "row_count": 3,
+      "entities": {
+       "financingRecipient": [
+        "country/GHA",
+        "country/KEN",
+        "country/NGA"
+       ],
+       "financingRecipient_party_kind": [
+        "party"
+       ]
+      },
+      "entities_truncated": false,
+      "side": null,
+      "parties": null
+     }
+    ]
+   },
+   "window_period_count": 1,
+   "private_parties": []
+  }
+ },
+ "rows": 3,
+ "role_keys": [
+  "financingRecipient",
+  "financingRecipient_party_kind"
+ ],
+ "stat_var_count": 1,
+ "exclusions": [
+  {
+   "reason": "outside_window",
+   "rows": 3,
+   "entities": {
+    "financingRecipient": [
+     "country/GHA",
+     "country/KEN",
+     "country/NGA"
+    ],
+    "financingRecipient_party_kind": [
+     "party"
+    ]
+   },
+   "entities_truncated": false,
+   "side": null
+  }
+ ],
+ "time": {
+  "kind": "observation"
+ },
+ "execution_identity": {
+  "engine_version": "0.9.0",
+  "frame_grammar_version": "1.1.0",
+  "reduction_policy_version": "0.2.0"
+ },
+ "resolved_periods": [
+  {
+   "anchor": "latest",
+   "offset": 0,
+   "rule": "half1",
+   "period": "2022"
+  }
+ ]
+}

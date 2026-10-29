@@ -82,9 +82,6 @@ CODE = re.compile(rf"[a-z][a-z0-9_]{{0,{CODE_MAX_LENGTH - 1}}}")
 # Statuses worth another attempt when the body does not say `retryable`.
 _RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 
-# The codes of a 404 that matched no route, the API's own and a body without one.
-_NO_ROUTE = frozenset({"not_found", REFUSAL_WITHOUT_CODE})
-
 # The code of a refusal of the request's method. The contract maps it to
 # "upgrade", which holds for a route the client wraps. On a raw request the
 # caller chose the method.
@@ -120,7 +117,7 @@ def _class_for_action(action: Action) -> type[DfoError]:  # noqa: PLR0911
             return VersionUnavailableError
         case "log_in":
             return AuthenticationError
-        case "request_scope":
+        case "request_scope" | "stop":
             return PermissionDeniedError
         case "wait":
             return RateLimitError
@@ -243,15 +240,17 @@ def problem_error(
             used when the body carries no trace id.
         fallback_code: The code of a body that carries none, such as a failed
             operation's; None takes `refusal_without_code`.
-        route: The method and URL refused. A 404 that matched no route names
-            it and points at `base_url`, the likely fault.
+        route: The method and URL refused. A 404 whose body carries no code
+            matched no route; the message names it and points at `base_url`,
+            the likely fault. A 404 with a code answered from a route.
         key: The client's key, replaced by `[redacted]` wherever the server's
             text quotes it.
 
     Returns:
         The error, of the class the code or else the status maps to. A problem
-        document's `retryable` outranks the status, and its `pointer` is named
-        in the message. The website proxy answers its own refusals with
+        document's `retryable` outranks the status, except for a code whose
+        action is `wait_for_reset`, which is never retryable, and its `pointer`
+        is named in the message. The website proxy answers its own refusals with
         problem documents too. The body's text is its string `detail`, else
         `title`, else `error`. A body without a code, or with text that is not
         a code in the code's place, takes `fallback_code`, else
@@ -285,6 +284,9 @@ def problem_error(
     if text is not None:
         text = redacted(text, key)
     code = code or fallback_code
+    if ACTIONS.get(code or "") == "wait_for_reset":
+        # The allowance resets on its own schedule; a retry only spends it.
+        retryable = False
     if code is None:
         lead = f"HTTP {status} with no refusal code"
         detail = f"{lead}: {text}" if text else f"{lead}."
@@ -294,11 +296,7 @@ def problem_error(
         # The key goes before the cut, which could otherwise leave part of it.
         shown = capped(redacted(text or reason or f"HTTP {status}", key))
     message = _at_pointer(shown, pointer and capped(pointer))
-    if (
-        route is not None
-        and status == 404
-        and (code or REFUSAL_WITHOUT_CODE) in _NO_ROUTE
-    ):
+    if route is not None and status == 404 and code in (None, REFUSAL_WITHOUT_CODE):
         message = f"{message.rstrip('.')}. {route} matched no route; check base_url"
     message = redacted(message, key)
     error = error_class(code, status)(

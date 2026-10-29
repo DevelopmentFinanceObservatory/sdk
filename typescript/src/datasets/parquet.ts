@@ -503,15 +503,36 @@ async function decodeStacked(parts: readonly TablePart[]): Promise<StoredColumn[
   });
 }
 
-/** A file's rows as stored, each an array in the file's column order, so a column named like an
- *  `Object.prototype` member reads as any other. */
-async function storedRows(file: ParquetFile): Promise<unknown[][]> {
+/** The values column `name` holds across the table's files, in file order, without reading
+ *  any other column; none from a file that lacks it.
+ *
+ * @throws {ContractError} A file's pages cannot be decoded (`unexpected_response`).
+ */
+export async function columnValues({ parts }: Table, name: string): Promise<unknown[]> {
+  const values: unknown[] = [];
+  for (const { file } of parts) {
+    const column = file.columns.find((own) => own.name === name);
+    if (column === undefined) continue;
+    for (const [value] of await storedRows(file, [column])) {
+      values.push(storedValue(value ?? null, column.type, column.type));
+    }
+  }
+  return values;
+}
+
+/** A file's rows as stored, each an array of `columns`' values, every column of the file by
+ *  default, in the file's column order, so a column named like an `Object.prototype` member
+ *  reads as any other. */
+async function storedRows(
+  file: ParquetFile,
+  columns: readonly Column[] = file.columns,
+): Promise<unknown[][]> {
   let rows: unknown[][] = [];
   try {
     await parquetRead({
       file: file.buffer,
       metadata: physicalDecimals(file.metadata),
-      columns: file.columns.map((column) => column.name),
+      columns: columns.map((column) => column.name),
       parsers: RAW_PARSERS,
       utf8: false,
       onComplete: (read) => {

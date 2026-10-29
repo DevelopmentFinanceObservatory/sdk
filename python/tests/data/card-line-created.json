@@ -1,0 +1,151 @@
+{
+ "status": 201,
+ "headers": {
+  "content-type": "application/json",
+  "x-dfo-trace-id": "00840c4f141544d2bb60fd7d59c4c5aa"
+ },
+ "body": {
+  "component_id": "cmp_ad956b407b1623ec17cfcd55",
+  "revision": 1,
+  "catalog_version": "2026.10.0",
+  "composition_id": null,
+  "composition_revision": null,
+  "changed": [],
+  "fact_summary": {
+   "changed": [],
+   "series": [
+    {
+     "id": "s_ce9b06a2b19fe8f7",
+     "label": "Ethiopia",
+     "coordinates": {
+      "measurementMethod": null,
+      "provenance": "src_oecd_dac",
+      "recipient": "country/ETH",
+      "stat_var": "dcid:MalariaGrantDisbursements",
+      "unit": null
+     },
+     "point_count": 9,
+     "first_value": "412",
+     "last_value": "442"
+    }
+   ],
+   "series_cut": 0,
+   "window": {
+    "start": "2015",
+    "end": "2024"
+   },
+   "unit": null,
+   "change": null,
+   "source_refs": null,
+   "defaults": []
+  },
+  "resolved_payload": {
+   "schema_version": 1,
+   "catalog_version": "2026.10.0",
+   "component_id": "cmp_ad956b407b1623ec17cfcd55",
+   "revision": 1,
+   "provenance": {
+    "inputs": [
+     {
+      "spec_id": "spec_9f2e41a7c03b58d2a4c1f6b2e8d35790",
+      "content_version": "cv_f4a81c22d9075e3ba61c2ee98f83b405"
+     }
+    ],
+    "execution_ref": null,
+    "sources": [
+     {
+      "id": "src_oecd_dac",
+      "name": "src_oecd_dac",
+      "url": "",
+      "licence": "Not stated",
+      "retrieved": "2026-10-06",
+      "ref": "src_oecd_dac"
+     }
+    ],
+    "freshness": {
+     "data_through": null,
+     "last_refreshed": null,
+     "next_expected": null,
+     "partial_period": false
+    },
+    "warnings": [],
+    "generated_at": "2026-10-28T16:07:47.370547Z",
+    "citation": "src_oecd_dac (2026), via the Development Finance Observatory",
+    "refreshed_from": null
+   },
+   "component": {
+    "type": "line_chart",
+    "title": {
+     "text": "Malaria grants to Ethiopia",
+     "authorship": "model"
+    },
+    "series": [
+     {
+      "id": "s_ce9b06a2b19fe8f7",
+      "label": "Ethiopia",
+      "unit": null,
+      "source_ref": "src_oecd_dac",
+      "points": [
+       {
+        "period": "2015",
+        "value": 412.3
+       },
+       {
+        "period": "2016",
+        "value": 455.1
+       },
+       {
+        "period": "2017",
+        "value": 431.8
+       },
+       {
+        "period": "2018",
+        "status": "missing"
+       },
+       {
+        "period": "2019",
+        "value": 410.0
+       },
+       {
+        "period": "2020",
+        "value": 398.2
+       },
+       {
+        "period": "2021",
+        "value": 405.6
+       },
+       {
+        "period": "2022",
+        "value": 420.1
+       },
+       {
+        "period": "2023",
+        "value": 433.7
+       },
+       {
+        "period": "2024",
+        "value": 441.9
+       }
+      ]
+     }
+    ],
+    "x_axis": {
+     "window": {
+      "start": "2015",
+      "end": "2024"
+     }
+    },
+    "y_axis": {
+     "label": "dcid:MalariaGrantDisbursements",
+     "scale": "linear",
+     "range": {
+      "min": null,
+      "max": null
+     }
+    }
+   }
+  },
+  "affordance": "Revise this component with PATCH /api/presentation/components/cmp_ad956b407b1623ec17cfcd55, sending only the fields to change and this reply's write_token as x-dfo-write-token, or read it back with GET /api/presentation/components/cmp_ad956b407b1623ec17cfcd55.",
+  "write_token": "cmw_AAAAAAAAAAAAAAAAAAAAAA"
+ }
+}

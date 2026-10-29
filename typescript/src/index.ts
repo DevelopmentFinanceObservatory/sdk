@@ -70,8 +70,31 @@ export type {
   UnknownPart,
   UnsupportedPart,
 } from "./wire.ts";
-export { Dataset } from "./datasets/dataset.ts";
-export type { Citation, Member } from "./datasets/dataset.ts";
+export { Dataset, LeftOutSeries } from "./datasets/dataset.ts";
+export type { Citation, DerivedMember, LeftOutStep, Member } from "./datasets/dataset.ts";
+export { Analysis } from "./datasets/analysis.ts";
+export type { RunOptions } from "./datasets/analysis.ts";
+export { Cards } from "./datasets/cards.ts";
+export type { CardOptions, StatChange, StatOptions } from "./datasets/cards.ts";
+export { Card, Served, Share } from "./datasets/publication.ts";
+export type { CardKind, ShareUrl } from "./datasets/publication.ts";
+export type { ShareOptions, WriteTokenOptions } from "./datasets/shares.ts";
+export { Recipe, recipe } from "./datasets/recipe.ts";
+export type {
+  AggregateOptions,
+  Aggregation,
+  Columns,
+  FilterOptions,
+  GrowthChange,
+  GrowthOptions,
+  PairOptions,
+  Pairing,
+  RankOptions,
+  ShareOfOptions,
+  Start,
+  Year,
+} from "./datasets/recipe.ts";
+export { LatestYear, latestYear } from "./core/periods.ts";
 export type {
   CallOptions,
   EntityGroups,
@@ -95,17 +118,27 @@ export type { Progress, ProgressEvent, ProgressHandler } from "./datasets/operat
 export type { Row, Value } from "./datasets/parquet.ts";
 export { isKnownPart, PART_STATUSES } from "./core/parts.ts";
 export { specRoles } from "./core/roles.ts";
-export { DatasetRef, FormatError } from "./core/ref.ts";
+export { DatasetRef, FormatError, isDatasetMember, isDerived } from "./core/ref.ts";
 export type {
   DatasetRefJson,
+  DerivedRefMember,
+  DerivedSpec,
   FormatErrorReason,
+  Groupby,
   Layout,
   RefMember,
   Rendering,
+  ResolvedPeriod,
+  Root,
   Spec,
 } from "./core/ref.ts";
 export { RawResponse } from "./http/transport.ts";
 export type { HeaderProvider } from "./http/transport.ts";
 export { VERSION } from "./version.ts";
-export { DataWarning, DfoDeprecationWarning, DfoWarning } from "./core/warnings.ts";
+export {
+  DataWarning,
+  DfoDeprecationWarning,
+  DfoWarning,
+  SeriesLeftOutWarning,
+} from "./core/warnings.ts";
 export type { WarningHandler } from "./core/warnings.ts";

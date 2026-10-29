@@ -62,6 +62,8 @@ export type DfoErrorOptions = {
   /** The parsed problem document. */
   problem?: Readonly<Record<string, unknown>> | null;
   docsUrl?: string | null;
+  /** The versions a pin call pinned before it failed. */
+  pinned?: readonly string[];
   cause?: unknown;
 };
 
@@ -87,6 +89,9 @@ export class DfoError extends Error {
   readonly retryAfterMs: number | null;
   readonly problem: Readonly<Record<string, unknown>> | null;
   readonly docsUrl: string | null;
+  /** The versions, `cv_…`, a pin call pinned before it failed, in the dataset's member order.
+   *  They stay pinned. Empty for every other call. */
+  readonly pinned: readonly string[];
 
   constructor(options: DfoErrorOptions) {
     const detail = printable(options.detail ?? options.code);
@@ -102,6 +107,7 @@ export class DfoError extends Error {
     this.retryAfterMs = options.retryAfterMs ?? null;
     this.problem = options.problem ?? null;
     this.docsUrl = options.docsUrl ?? null;
+    this.pinned = options.pinned ?? [];
     TEXTS.set(this, this.message);
     this.message = bracketed(this.message, labelsOf(this));
   }
@@ -251,6 +257,7 @@ const CLASS_BY_ACTION: Record<Action, ErrorClass> = {
   take_newest_version: VersionUnavailableError,
   log_in: AuthenticationError,
   request_scope: PermissionDeniedError,
+  stop: PermissionDeniedError,
   wait: RateLimitError,
   wait_for_reset: QuotaExceededError,
   report: ServerError,
@@ -292,8 +299,8 @@ export function actionFor(code: string): Action | undefined {
 /** A server refusal's message: its detail, cut to `MESSAGE_TEXT_MAX` characters after the
  *  client's own `lead`, if any, naming the field its problem document's `pointer` names unless
  *  the pointer is empty or the detail names it already, as in
- *  `Field required at /input/definition`. With `unmatched`, the request of a 404 that matched
- *  no route, the message names that request, as in
+ *  `Field required at /input/definition`. With `unmatched`, the request of a 404 with no
+ *  refusal code, which matched no route, the message names that request, as in
  *  `Not found. GET https://… matched no route; check baseUrl`. The error's constructor adds the
  *  bracket that names the code. */
 export function refusalMessage(

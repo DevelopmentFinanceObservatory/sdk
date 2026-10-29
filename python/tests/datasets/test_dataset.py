@@ -18,7 +18,14 @@ import pytest
 
 from dfo._core.errors import ContractError
 from dfo._core.parse import parse_parts
-from dfo._core.refs import DatasetRef
+from dfo._core.refs import (
+    DatasetRef,
+    DerivedMember,
+    DerivedRefMember,
+    Groupby,
+    Member,
+    ResolvedPeriod,
+)
 from dfo._core.types import (
     Assumption,
     CandidatesPart,
@@ -35,10 +42,13 @@ from dfo._datasets.cache import sha256_digest
 from dfo._datasets.dataset import (
     Dataset,
     FetchedMember,
+    LeftOutSeries,
+    LeftOutStep,
     build_dataset,
+    derived_dataset,
     in_reading_order,
 )
-from tests._data import load
+from tests._data import DATA, load
 from tests._datasets import PARQUET, manifest, other_member, recorded_member, scenario
 from tests._fetch_support import FakeCache
 from tests.rule_vectors import ids, vectors
@@ -712,7 +722,330 @@ def test_save_then_load_returns_an_equal_dataset(tmp_path: Path) -> None:
     assert stored[b"dfo.sentence"].decode() == data.sentence
     assert data.ref is not None
     assert stored[b"dfo.ref"].decode() == data.ref.to_json()
+    assert stored[b"dfo.format_version"] == b"1"
+    assert b"dfo.left_out" not in stored
     _assert_same(load_saved(path), data)
+
+
+def test_a_dataset_of_versions_loads_no_left_out_series_or_steps(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "saved.parquet"
+    _saved().save(path)
+    derived = tmp_path / "derived.parquet"
+    _derived().save(derived)
+    stored = pq.read_metadata(derived).metadata
+    table = pq.read_table(path)
+    metadata = {
+        **table.schema.metadata,
+        b"dfo.left_out": stored[b"dfo.left_out"],
+        b"dfo.steps": stored[b"dfo.steps"],
+    }
+    pq.write_table(table.replace_schema_metadata(metadata), path)
+    loaded = load_saved(path)
+    assert (loaded.left_out, loaded._steps) == ((), ())
+
+
+@pytest.mark.parametrize("version", [b"0", b"3", b"two"])
+def test_a_saved_file_of_another_format_version_is_refused(
+    tmp_path: Path, version: bytes
+) -> None:
+    path = tmp_path / "derived.parquet"
+    _derived().save(path)
+    table = pq.read_table(path)
+    metadata = {**table.schema.metadata, b"dfo.format_version": version}
+    pq.write_table(table.replace_schema_metadata(metadata), path)
+    with pytest.raises(ValueError):
+        load_saved(path)
+
+
+def _derived(name: str = "chain") -> Dataset:
+    """The derived dataset of a recorded analysis: aid per person, then its
+    growth, which dropped three series over its two steps."""
+    member = _derived_member(name)
+    data = (DATA / f"analysis-{name}-frame.parquet").read_bytes()
+    return derived_dataset(member, load(f"analysis-{name}-manifest.json"), data)
+
+
+def _derived_member(name: str = "chain") -> DerivedRefMember:
+    ready = load(f"analysis-{name}-ready.json")
+    (member,) = DatasetRef.from_json(json.dumps(ready["ref"])).members
+    assert isinstance(member, DerivedRefMember)
+    return member
+
+
+def test_a_derived_dataset_reads_the_left_out_series_the_manifest_serves() -> None:
+    data = _derived()
+    served = load("analysis-chain-manifest.json")["left_out"]
+    assert [
+        (s.step.verb, s.step.node, s.side, s.reason, s.rows, dict(s.coordinates))
+        for s in data.left_out
+    ] == [
+        (
+            row["step"]["verb"],
+            row["step"]["node"],
+            row["side"],
+            row["reason"],
+            row["rows"],
+            row["coordinates"],
+        )
+        for row in served
+    ]
+    assert data.ref == DatasetRef((_derived_member(),))
+    assert (data.held_until, data.pinned, data.layout_version) == (
+        date(2026, 11, 27),
+        False,
+        "frame",
+    )
+
+
+def test_a_derived_dataset_prints_its_steps_period_and_left_out_series() -> None:
+    chain, ranked = _derived(), _derived("rank")
+    assert repr(chain).splitlines()[1:] == [
+        "  Derived: quotient_of by financingRecipient, then growth by "
+        "financingRecipient, from 2 readings",
+        "  Missing data: 3 series left out · data.left_out",
+        "  Version: ocv_422e3d46d9e05f9ea8027c97c0c2f58b (exact), held until 27 "
+        "November 2026, not pinned",
+        # A frame holds time_period as text, which a filter on 2022 would miss.
+        '  Rows: 1, time_period as text, such as "2022" or "2021/2022"',
+        "  Keep: data.save(path) · newest later: dfo.fetch(data.ref, latest=True)>",
+    ]
+    assert repr(ranked).splitlines()[1:3] == [
+        "  Derived: rank by financingRecipient, limit 2, from 1 reading",
+        "  Period: 2022, the newest year at least half the series hold",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("periods", "line"),
+    [
+        ([(0, "2024")], "Period: 2024, the newest year at least half the series hold"),
+        (
+            [(-4, "2020"), (0, "2024")],
+            "Period: 2020 to 2024, counted back from 2024, the newest year at least "
+            "half the series hold",
+        ),
+        (
+            [(-1, "2023")],
+            "Period: 2023, counted back from 2024, the newest year at least half the "
+            "series hold",
+        ),
+    ],
+    ids=["latest", "window", "before-latest"],
+)
+def test_the_period_line_counts_back_from_the_newest_year(
+    periods: list[tuple[int, str]], line: str
+) -> None:
+    resolved = tuple(
+        ResolvedPeriod("latest", offset, "half1", period) for offset, period in periods
+    )
+    data = _derived("rank")
+    (member,) = data.members
+    assert isinstance(member, DerivedMember)
+    changed = replace(data, members=(replace(member, resolved_periods=resolved),))
+    assert f"  {line}" in repr(changed).splitlines()
+
+
+def test_a_derived_dataset_pickles() -> None:
+    data = _derived()
+    loaded = pickle.loads(pickle.dumps(data))
+    _assert_same(loaded, data)
+    assert repr(loaded) == repr(data)
+
+
+def test_an_incomplete_left_out_list_prints_at_least() -> None:
+    data = replace(_derived(), _left_out_complete=False)
+    assert (
+        "  Missing data: at least 3 series left out · data.left_out"
+        in repr(data).splitlines()
+    )
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_a_derived_dataset_saves_its_ref_left_out_series_and_steps(
+    tmp_path: Path, *, complete: bool
+) -> None:
+    data = replace(_derived(), _left_out_complete=complete)
+    path = tmp_path / "derived.parquet"
+    data.save(path)
+    stored = pq.read_metadata(path).metadata
+    # A client that reads format 1 alone refuses the file as a later format.
+    assert stored[b"dfo.format_version"] == b"2"
+    assert json.loads(stored[b"dfo.ref"])["format_version"] == 2
+    assert json.loads(stored[b"dfo.left_out"]) == {
+        "series": load("analysis-chain-manifest.json")["left_out"],
+        "complete": complete,
+    }
+    loaded = load_saved(path)
+    _assert_same(loaded, data)
+    assert repr(loaded) == repr(data)
+
+
+def test_a_saved_derived_dataset_keeps_its_roots_groupby(tmp_path: Path) -> None:
+    member = _derived_member()
+    groupby = Groupby(by=("time_period",), op="sum")
+    grouped = replace(member, roots=(replace(member.roots[0], groupby=groupby),))
+    data = (DATA / "analysis-chain-frame.parquet").read_bytes()
+    manifest = load("analysis-chain-manifest.json")
+    path = tmp_path / "derived.parquet"
+    derived_dataset(grouped, manifest, data).save(path)
+    (loaded,) = load_saved(path).ref.members
+    assert isinstance(loaded, DerivedRefMember)
+    assert loaded.roots[0].groupby == groupby
+    assert loaded.roots == grouped.roots
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "pointer"),
+    [
+        (b"dfo.left_out", b"{garbage", "/dfo.left_out"),
+        (b"dfo.left_out", b"[]", "/dfo.left_out"),
+        (b"dfo.left_out", b'{"series": []}', "/dfo.left_out/complete"),
+        (
+            b"dfo.left_out",
+            b'{"series": [{"coordinates": {"origin": 1}}], "complete": true}',
+            "/dfo.left_out/series/0/step",
+        ),
+        (
+            b"dfo.left_out",
+            b'{"series": [{"coordinates": {"origin": 1}, "step": {"verb": "s", '
+            b'"node": 0}, "side": "data", "reason": "r", "rows": 1}], '
+            b'"complete": true}',
+            "/dfo.left_out/series/0/coordinates/origin",
+        ),
+        (
+            b"dfo.left_out",
+            b'{"series": [{"coordinates": {}, "step": {"verb": "s", "node": -1}, '
+            b'"side": "data", "reason": "r", "rows": 1}], "complete": true}',
+            "/dfo.left_out/series/0/step/node",
+        ),
+        (
+            b"dfo.left_out",
+            b'{"series": [{"coordinates": {}, "step": {"verb": "s", "node": 0}, '
+            b'"side": "data", "reason": "r", "rows": -1}], "complete": true}',
+            "/dfo.left_out/series/0/rows",
+        ),
+        (b"dfo.steps", b'[{"verb": "rank", "by": []}]', "/dfo.steps/0/limit"),
+    ],
+    ids=[
+        "not-json",
+        "not-an-object",
+        "complete-missing",
+        "step-missing",
+        "value-not-text",
+        "node-negative",
+        "rows-negative",
+        "step-limit-missing",
+    ],
+)
+def test_a_damaged_derived_key_raises_format_error(
+    tmp_path: Path, key: bytes, value: bytes, pointer: str
+) -> None:
+    path = tmp_path / "derived.parquet"
+    _derived().save(path)
+    table = pq.read_table(path)
+    metadata = {**table.schema.metadata, key: value}
+    pq.write_table(table.replace_schema_metadata(metadata), path)
+    with pytest.raises(FormatError) as caught:
+        load_saved(path)
+    assert (caught.value.reason, caught.value.pointer) == ("format_invalid", pointer)
+
+
+@pytest.mark.parametrize(
+    ("change", "pointer"),
+    [
+        ({"content_version": "ocv_" + "0" * 32}, None),
+        ({"left_out": {}}, "/left_out"),
+        ({"left_out": [{"step": {}}]}, "/left_out/0/coordinates"),
+        (
+            {
+                "left_out": [
+                    {
+                        "coordinates": {},
+                        "step": {"verb": "growth", "node": "0"},
+                        "side": "data",
+                        "reason": "endpoint_missing",
+                        "rows": 1,
+                    }
+                ]
+            },
+            "/left_out/0/step/node",
+        ),
+        ({"left_out_complete": None}, "/left_out_complete"),
+    ],
+    ids=[
+        "another-frame",
+        "left-out-not-a-list",
+        "series-damaged",
+        "node-mistyped",
+        "complete-null",
+    ],
+)
+def test_a_derived_manifest_the_client_cannot_read_raises_contract_error(
+    change: dict[str, Any], pointer: str | None
+) -> None:
+    manifest_body = {**load("analysis-chain-manifest.json"), **change}
+    data = (DATA / "analysis-chain-frame.parquet").read_bytes()
+    with pytest.raises(ContractError) as caught:
+        derived_dataset(_derived_member(), manifest_body, data)
+    assert caught.value.code == "contract_violation"
+    assert getattr(caught.value, "pointer", None) == pointer
+
+
+def test_a_derived_manifest_s_added_left_out_keys_are_ignored() -> None:
+    manifest_body = load("analysis-chain-manifest.json")
+    added = copy.deepcopy(manifest_body)
+    for series in added["left_out"]:
+        series["unit"] = "USDollar"
+        series["step"]["op_id"] = "op_1"
+    data = (DATA / "analysis-chain-frame.parquet").read_bytes()
+    assert (
+        derived_dataset(_derived_member(), added, data).left_out
+        == derived_dataset(_derived_member(), manifest_body, data).left_out
+    )
+
+
+def test_left_out_series_hash_alike_whatever_the_coordinate_order() -> None:
+    def series(coordinates: dict[str, str]) -> LeftOutSeries:
+        return LeftOutSeries(
+            coordinates, LeftOutStep("growth", 0), "data", "endpoint_missing", 1
+        )
+
+    first = series({"origin": "country/DEU", "destination": "country/NGA"})
+    second = series({"destination": "country/NGA", "origin": "country/DEU"})
+    assert first == second
+    assert len({first, second}) == 1
+
+
+def test_a_compare_lists_its_primary_input_s_steps_first() -> None:
+    def step(verb: str, parameters: dict[str, Any], **inputs: Any) -> dict[str, Any]:
+        return {"op_spec": {"verb": verb, "parameters": parameters}, "inputs": inputs}
+
+    tree = step(
+        "compare",
+        {},
+        # Compare reads `data`, its primary input, as the right frame.
+        frame_ref=step("rank", {"rank_by": ["financingSource"], "limit": 5}),
+        right_frame_ref=step("growth", {"entity_by": ["financingSource"]}),
+    )
+    manifest_body = {**load("analysis-chain-manifest.json"), "recipe": {"tree": tree}}
+    data = (DATA / "analysis-chain-frame.parquet").read_bytes()
+    dataset = derived_dataset(_derived_member(), manifest_body, data)
+    assert [step.verb for step in dataset._steps] == ["growth", "rank", "compare"]
+
+
+def test_a_manifest_without_left_out_reads_as_none_left_out() -> None:
+    manifest_body = {
+        **load("analysis-chain-manifest.json"),
+        "left_out": None,
+        "left_out_complete": None,
+        "recipe": None,
+    }
+    data = (DATA / "analysis-chain-frame.parquet").read_bytes()
+    dataset = derived_dataset(_derived_member(), manifest_body, data)
+    assert dataset.left_out == ()
+    assert "  Derived: from 2 readings" in repr(dataset).splitlines()
 
 
 def _saved() -> Dataset:
@@ -848,7 +1181,8 @@ def test_repr_leads_with_the_sentence() -> None:
     assert text.startswith("<Dataset " + EXPECTED["members"][0]["sentence"])
     assert "Source: OECD Creditor Reporting System (CRS)" in text
     assert "Version: cv_bf242138f8d0a892c97da9373d1626f4" in text
-    assert "Rows: 4" in text
+    # The long layout holds time_period as integers, which the Rows line names.
+    assert "  Rows: 4, time_period as integer years\n" in text
     assert "(exact)" in text
     assert text.splitlines()[-1].startswith("  Keep: data.save(")
 
@@ -934,12 +1268,17 @@ def _assert_same(loaded: Dataset, data: Dataset) -> None:
         "sources",
         "licence",
         "ref",
+        "left_out",
     ):
         assert getattr(loaded, name) == getattr(data, name), name
     assert len(loaded) == len(data)
     assert [gap.part.raw for gap in loaded.missing] == [
         gap.part.raw for gap in data.missing
     ]
-    assert [member.spec.definition for member in loaded.members] == [
-        member.spec.definition for member in data.members
+    assert [
+        member.spec.definition
+        for member in loaded.members
+        if isinstance(member, Member)
+    ] == [
+        member.spec.definition for member in data.members if isinstance(member, Member)
     ]

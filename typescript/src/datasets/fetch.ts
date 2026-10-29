@@ -118,6 +118,14 @@ export type FetchOptions = CallOptions &
     /** For a ref, build the newest version of each member's spec in the ref's rendering, in
      *  place of the exact versions it names. A spec always fetches its newest version. */
     latest?: boolean;
+    /** For a share, a `Date`, a date such as `"2026-10-28"` or an RFC 3339 date-time such as
+     *  `"2026-10-28T10:00:00Z"`: the newest version the slot first served on or before it. A
+     *  date string reads as the last millisecond of that day in UTC. Unset reads what the slot
+     *  shows now. */
+    asOf?: Date | string | null | undefined;
+    /** For a share, the slot to read, numbered from 1 as the share's data URLs are. Unset reads
+     *  a share of one slot, and a share of several refuses it. */
+    slot?: number | null | undefined;
   };
 
 /** The keys `client.fetch` takes. */
@@ -132,6 +140,8 @@ export const FETCH_OPTIONS = declareOptions<FetchOptions>("client.fetch", {
   entities: true,
   facets: true,
   latest: true,
+  asOf: true,
+  slot: true,
 });
 
 export type FetchMembersOptions = CallOptions & {
@@ -208,7 +218,8 @@ export function checkedSpec(spec: unknown): Spec {
     return spec as Spec;
   }
   throw invalid(
-    `A fetch takes a spec or a DatasetRef, not ${described(spec)}. Fetch an answer with ` +
+    `A fetch takes a spec, a DatasetRef, a Recipe, or a Share or its URL, not ${described(spec)}. ` +
+      "Fetch an answer with " +
       "answer.fetch(), or one of its readings with client.fetch(answer.specs[0]).",
   );
 }
@@ -438,7 +449,21 @@ function countedRows(manifest: Manifest): number {
  *   (`contract_violation`).
  */
 export function checkArtifact(data: Uint8Array, manifest: Manifest, digest: string): void {
-  const name = `The artifact ${capped(digest)} of ${capped(specIdOf(manifest))}`;
+  checkTable(
+    data,
+    `The artifact ${capped(digest)} of ${capped(specIdOf(manifest))}`,
+    countedRows(manifest),
+  );
+}
+
+/**
+ * Checks that a file is a dataset's table, as `checkArtifact` does, `name` naming the file in
+ * a refusal and `counted` the rows its manifest counts.
+ *
+ * @throws {ContractError} The bytes do not decode as Parquet (`unexpected_response`), or the
+ *   file is not such a table (`contract_violation`).
+ */
+export function checkTable(data: Uint8Array, name: string, counted: number): void {
   let file: ParquetFile;
   try {
     file = readParquet(data);
@@ -446,7 +471,7 @@ export function checkArtifact(data: Uint8Array, manifest: Manifest, digest: stri
     if (!(error instanceof DfoError) || error.code !== UNEXPECTED_RESPONSE) throw error;
     throw clientError(UNEXPECTED_RESPONSE, { detail: `${name}: ${error.detail}`, cause: error });
   }
-  const fault = artifactFault(file, countedRows(manifest));
+  const fault = artifactFault(file, counted);
   if (fault !== undefined) {
     throw clientError("contract_violation", { detail: `${name} ${fault}.` });
   }
@@ -521,7 +546,7 @@ export async function download(
   throw failure!;
 }
 
-function definitionOf(manifest: Manifest): Readonly<Record<string, unknown>> {
+export function definitionOf(manifest: Manifest): Readonly<Record<string, unknown>> {
   // readManifest has checked the definition is an object with a spec_id.
   return manifest["definition"] as Record<string, unknown>;
 }
@@ -597,7 +622,7 @@ function keptEntityGroups(
  * @throws {ContractError} Search did not answer with one definite part of the same `spec_id`
  *   and a sentence, or, for a build that counts no rows, one `no_data` part with a sentence.
  */
-async function sentenceFor(
+export async function sentenceFor(
   transport: Transport,
   manifest: Manifest,
   parts: readonly string[],

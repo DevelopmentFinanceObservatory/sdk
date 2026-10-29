@@ -1,0 +1,43 @@
+{
+ "status": 200,
+ "headers": {
+  "content-type": "application/json",
+  "x-dfo-trace-id": "a9433132e90849e1bd886029bbec803f"
+ },
+ "body": {
+  "id": "lBm1RKBw",
+  "served": [
+   {
+    "slot": 1,
+    "component_id": "cmp_ad956b407b1623ec17cfcd55",
+    "revision": 1,
+    "frame": {
+     "spec_id": "spec_9f2e41a7c03b58d2a4c1f6b2e8d35790",
+     "content_version": "cv_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "rendering": null,
+    "first_served_at": "2026-10-28T16:07:47.404686+00:00",
+    "retention": {
+     "pinned": false,
+     "held_until": "2026-11-27T09:00:00+00:00"
+    },
+    "fetchable": true
+   },
+   {
+    "slot": 1,
+    "component_id": "cmp_ad956b407b1623ec17cfcd55",
+    "revision": 1,
+    "frame": {
+     "spec_id": "spec_9f2e41a7c03b58d2a4c1f6b2e8d35790",
+     "content_version": "cv_f4a81c22d9075e3ba61c2ee98f83b405"
+    },
+    "rendering": null,
+    "first_served_at": "2026-10-28T16:07:47.399030+00:00",
+    "retention": {
+     "pinned": true
+    },
+    "fetchable": true
+   }
+  ]
+ }
+}

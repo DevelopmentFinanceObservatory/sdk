@@ -3,11 +3,18 @@
 import json
 import unicodedata
 from collections.abc import Callable
+from datetime import UTC, date, datetime
 
 import pytest
 
 import dfo
-from dfo._core.errors import DataWarning, DfoWarning, NotFoundError, SearchWarning
+from dfo._core.errors import (
+    DataWarning,
+    DfoWarning,
+    NotFoundError,
+    SearchWarning,
+    SeriesLeftOutWarning,
+)
 from dfo._core.lookup_results import (
     Catalogue,
     Code,
@@ -17,6 +24,7 @@ from dfo._core.lookup_results import (
     read_matches,
 )
 from dfo._core.parse import parse_parts
+from dfo._core.periods import latest_year
 from dfo._core.refs import DatasetRef, Member, RefMember
 from dfo._core.types import (
     Assumption,
@@ -36,8 +44,12 @@ from dfo._core.types import (
     UnknownPart,
     UnsupportedPart,
 )
+from dfo._datasets.analysis import AsyncAnalysis
 from dfo._datasets.bundle import BundleLimits
-from dfo._datasets.dataset import Dataset, build_dataset
+from dfo._datasets.cards import AsyncCards
+from dfo._datasets.dataset import Dataset, LeftOutSeries, LeftOutStep, build_dataset
+from dfo._datasets.publication import Card, Served, Share
+from dfo._datasets.recipe import recipe
 from dfo._search.lookups import AsyncLookup
 from dfo._sync._search.answer import Answer
 from tests._data import load
@@ -346,6 +358,141 @@ ROWS: list[tuple[str, Callable[[], object], str, bool]] = [
         "SearchWarning('Shows 2022. [closest_match]')",
         True,
     ),
+    ("latest-year", lambda: latest_year(-4), "latest_year(-4)", True),
+    (
+        "recipe",
+        lambda: recipe(Spec(SPEC_ID, {})).rank(by="origin", limit=10),
+        f"recipe({SPEC_ID}).rank(by='origin', limit=10)",
+        True,
+    ),
+    (
+        "left-out-series",
+        lambda: LeftOutSeries(
+            {"financingRecipient": "country/NGA"},
+            LeftOutStep("growth", 0),
+            "data",
+            "endpoint_missing",
+            1,
+        ),
+        "LeftOutSeries(financingRecipient=country/NGA: growth dropped 1 row from "
+        "data, endpoint_missing)",
+        True,
+    ),
+    (
+        "left-out-series-named-by-role",
+        lambda: LeftOutSeries(
+            {
+                "stat_var": "dcid:ops_" + "f72f" * 8,
+                "financingRecipient": "country/NGA",
+            },
+            LeftOutStep("growth", 0),
+            "data",
+            "endpoint_missing",
+            1,
+            {"financingRecipient": "destination"},
+        ),
+        "LeftOutSeries(destination=country/NGA: growth dropped 1 row from data, "
+        "endpoint_missing)",
+        True,
+    ),
+    (
+        "left-out-series-long-entity",
+        lambda: LeftOutSeries(
+            {"donor": "dcid:" + "a" * 70, "stat_var": "dcid:MalariaGrants"},
+            LeftOutStep("quotient_of", 1),
+            "other",
+            "unmatched_key",
+            2,
+        ),
+        f"LeftOutSeries(donor=dcid:{'a' * 70}, stat_var=dcid:MalariaGrants: "
+        "quotient_of dropped 2 rows from other, unmatched_key)",
+        True,
+    ),
+    (
+        "async-analysis",
+        lambda: object.__new__(AsyncAnalysis),
+        "<AsyncAnalysis: filter, aggregate, growth, rank, quotient_of, share_of, "
+        "join, sum_of, compare>",
+        True,
+    ),
+    (
+        "card",
+        lambda: Card(
+            "cmp_ad956b407b1623ec17cfcd55",
+            1,
+            "line",
+            _dataset().ref,
+            "German ODA, last ten years",
+            "cmw_secret",
+            series=40,
+            series_cut=28,
+        ),
+        'Card(line cmp_ad956b407b1623ec17cfcd55, "German ODA, last ten years", 40 '
+        f"series, draws {_dataset().members[0].spec.spec_id} at "
+        f"{_dataset().members[0].content_version})",
+        True,
+    ),
+    (
+        "share",
+        lambda: Share(
+            "k3Qx8vTa",
+            "https://developmentfinance.org/s/k3Qx8vTa",
+            "https://developmentfinance.org/embed/k3Qx8vTa",
+            (
+                "https://developmentfinance.org/api/v1/presentation/shares/k3Qx8vTa/slots/1/data",
+            ),
+            2,
+            True,
+            "shw_secret",
+        ),
+        "Share(live https://developmentfinance.org/s/k3Qx8vTa, 1 slot, revision 2)",
+        True,
+    ),
+    (
+        "served",
+        lambda: Served(
+            1,
+            "cmp_ad956b407b1623ec17cfcd55",
+            1,
+            "ops_" + "a" * 32,
+            "ocv_" + "b" * 32,
+            datetime(2026, 9, 24, 8, 0, tzinfo=UTC),
+            False,
+            date(2026, 11, 23),
+            True,
+        ),
+        f"Served(slot 1 cmp_ad956b407b1623ec17cfcd55 from 24 Sep 2026: ops_{'a' * 32} "
+        f"at ocv_{'b' * 32} · fetchable until 23 Nov 2026)",
+        True,
+    ),
+    (
+        "served-no-card",
+        lambda: Served(
+            2,
+            None,
+            None,
+            None,
+            None,
+            datetime(2026, 9, 24, 8, 0, tzinfo=UTC),
+            False,
+            None,
+            False,
+        ),
+        "Served(slot 2 showed no card from 24 Sep 2026)",
+        True,
+    ),
+    (
+        "async-cards",
+        lambda: object.__new__(AsyncCards),
+        "<AsyncCards: line, bar, table, stat, source>",
+        True,
+    ),
+    (
+        "series-left-out-warning",
+        lambda: SeriesLeftOutWarning("3 series left out."),
+        "SeriesLeftOutWarning('3 series left out.')",
+        True,
+    ),
     (
         "data-warning",
         lambda: DataWarning("No rows.", code="empty_result", severity="warn"),
@@ -473,6 +620,15 @@ HOSTILE_ROWS: list[tuple[str, Callable[[], str], bool]] = [
     ("error-code", lambda: str(NotFoundError("No entry.", code=HOSTILE)), False),
     ("error-trace", lambda: str(NotFoundError("No entry.", trace_id=HOSTILE)), False),
     ("warning-code", lambda: str(DfoWarning("No rows.", code=HOSTILE)), False),
+    (
+        "left-out-series",
+        lambda: repr(
+            LeftOutSeries(
+                {HOSTILE: HOSTILE}, LeftOutStep(HOSTILE, 0), HOSTILE, HOSTILE, 1
+            )
+        ),
+        False,
+    ),
     (
         "data-warning",
         lambda: str(DataWarning("No rows.", code=HOSTILE, severity="warn")),

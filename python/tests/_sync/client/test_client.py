@@ -30,6 +30,7 @@ from dfo._datasets.cache import Cache
 from dfo._sync._client.client import Client
 from dfo._sync._datasets.fetch import Session
 from dfo._sync._http.transport import Transport
+from tests._data import DATA, load
 from tests._fetch_support import (
     BASE,
     ORIGIN,
@@ -77,6 +78,52 @@ def test_a_clients_hints_name_client_and_so_do_its_copies() -> None:
             with pytest.raises(InvalidRequestError) as caught:
                 each.fetch(spec, latest=True)
             assert "drop it: client.fetch(spec)." in str(caught.value)
+
+
+def test_client_analysis_runs_through_the_clients_transport() -> None:
+    ready = load("analysis-rank-ready.json")
+    server = Server(
+        json_response(200, ready),
+        json_response(200, load("analysis-rank-manifest.json")),
+        httpx2.Response(
+            200, content=(DATA / "analysis-rank-frame.parquet").read_bytes()
+        ),
+    )
+    with client_over(server) as client:
+        data = client.analysis.rank(
+            Spec("spec_" + "a" * 32, {}), by="destination", limit=2
+        )
+        with pytest.raises(InvalidRequestError) as caught:
+            client.pin(data)
+    assert server.body(0)["tree"]["arguments"] == {
+        "rank_by": ["destination"],
+        "limit": 2,
+    }
+    assert "newest later: client.fetch(data.ref, latest=True)" in repr(data)
+    assert "client.fetch(data.ref, latest=True) computes it again" in str(caught.value)
+    assert len(server.requests) == 3
+
+
+def test_client_cards_and_shares_run_through_the_clients_transport() -> None:
+    ref = DatasetRef.from_json(json.dumps(load("analysis-rank-ready.json")["ref"]))
+    server = Server(
+        json_response(201, load("card-line-created.json")["body"]),
+        json_response(201, load("share-created.json")["body"]),
+        json_response(200, load("share-history.json")["body"]),
+    )
+    with client_over(server) as client:
+        card = client.cards.source(ref)
+        tile = client.share(card, latest=True)
+        served = client.history(tile.url)
+        with pytest.raises(InvalidRequestError) as caught:
+            client.share([], latest=True)
+    assert [request.url.path for request in server.requests] == [
+        "/api/v1/presentation/components",
+        "/api/v1/presentation/shares",
+        f"/api/v1/presentation/shares/{tile.id}/history",
+    ]
+    assert len(served) == 2
+    assert "client.cards.line(data)" in str(caught.value)
 
 
 def test_offline_search_raises_before_any_request(

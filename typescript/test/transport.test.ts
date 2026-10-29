@@ -13,6 +13,7 @@ import {
   NetworkError,
   NotFoundError,
   problemAt200,
+  QuotaExceededError,
   RateLimitError,
   ServerError,
 } from "../src/core/errors.ts";
@@ -196,6 +197,29 @@ describe("refusals", () => {
       assert.deepEqual(waits, []);
       assert.equal(seen.length, 1);
     });
+  }
+
+  // The action `wait_for_reset` outranks the document's `retryable` and the status.
+  for (const status of [429, 503]) {
+    for (const header of ["30", "61"]) {
+      test(`raise a spent allowance at once at HTTP ${status} with a Retry-After of ${header}`, async () => {
+        const { sleep, waits } = recordingSleep();
+        const spent = problem(
+          { code: "allowance_exhausted", status, retryable: true },
+          { "retry-after": header },
+        );
+        const { fetch, seen } = mockFetch(spent, json({ ok: true }));
+        const error = await transport({ fetch, sleep })
+          .request({ path: "/x" })
+          .catch((e: unknown) => e);
+        assert.ok(error instanceof QuotaExceededError);
+        assert.equal(error.code, "allowance_exhausted");
+        assert.equal(error.retryAfterMs, Number(header) * 1000);
+        assert.equal(error.retryable, false);
+        assert.deepEqual(waits, []);
+        assert.equal(seen.length, 1);
+      });
+    }
   }
 
   test("back off without Retry-After and give up after maxRetries", async () => {
@@ -1889,8 +1913,7 @@ describe("server text", () => {
     [
       "not_found",
       problem({ code: "not_found", status: 404, detail: noRoute }),
-      `${noRoute} POST https://api.example/search/resolve matched no route; check baseUrl ` +
-        "[not_found · trace trace-1]",
+      `${noRoute} [not_found · trace trace-1]`,
       noRoute,
     ],
     [
@@ -1907,7 +1930,7 @@ describe("server text", () => {
       "HTTP 404 with no refusal code.",
     ],
   ] as const) {
-    test(`name the request in the message of a 404 ${code} only when no route matched`, async () => {
+    test(`name the request in the message of a 404 ${code} only when it carries no code`, async () => {
       const { fetch } = mockFetch(answer);
       const error = await transport({ baseUrl: "https://api.example", fetch })
         .request({ path: "/search/resolve", json: {} })

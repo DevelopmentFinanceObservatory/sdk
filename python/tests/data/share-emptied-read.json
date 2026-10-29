@@ -1,0 +1,40 @@
+{
+ "status": 200,
+ "headers": {
+  "content-type": "application/json",
+  "x-dfo-trace-id": "3d1b7a6f0c8e4f5a9b2c7e41d6a85f03"
+ },
+ "body": {
+  "id": "CJmD6XzG",
+  "kind": "card",
+  "mode": "live",
+  "title": null,
+  "revision": 1,
+  "slots": [
+   {
+    "slot": 1,
+    "card": {
+     "component_id": "cmp_c3567755d1cde0ea4e9283e3",
+     "revision": 1,
+     "frame": {
+      "spec_id": "spec_9f2e41a7c03b58d2a4c1f6b2e8d35790",
+      "content_version": "cv_f4a81c22d9075e3ba61c2ee98f83b405"
+     }
+    },
+    "data_url": "https://site.example/api/v1/presentation/shares/CJmD6XzG/slots/1/data"
+   },
+   {
+    "slot": 2,
+    "card": null,
+    "data_url": "https://site.example/api/v1/presentation/shares/CJmD6XzG/slots/2/data"
+   },
+   {
+    "slot": 3,
+    "card": null,
+    "data_url": "https://site.example/api/v1/presentation/shares/CJmD6XzG/slots/3/data"
+   }
+  ],
+  "payload": null,
+  "created_at": "2026-10-28T17:13:42.421816+00:00"
+ }
+}

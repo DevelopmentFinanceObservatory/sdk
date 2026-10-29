@@ -2,6 +2,7 @@ import type { CredentialsFileReader } from "../config/credentials.ts";
 import { readProcessEnv } from "../config/env.ts";
 import type { EnvReader } from "../config/env.ts";
 import {
+  actionFor,
   capped,
   clientError,
   DfoError,
@@ -1423,8 +1424,8 @@ export class Transport {
   /**
    * The error a refusal stands for, read from its problem document when it carries one, as
    * `problemError` builds it. The body is read whatever its media type, and the key sent reads
-   * as `[redacted]` in it. A 404 that matched no route, `not_found` or no code, names the request
-   * in the message, since the base URL is the likely fault. A body that passed
+   * as `[redacted]` in it. A 404 with no refusal code matched no route and names the request in
+   * the message, since the base URL is the likely fault; a 404 with a code answered from a route. A body that passed
    * `JSON_BODY_MAX_BYTES`, read as null, raises `refusal_without_code`, of the class and
    * retryable flag its status gives.
    */
@@ -1451,7 +1452,7 @@ export class Transport {
       untold: `HTTP ${status}`,
       retryAfterMs: retryAfterMs(response.headers) ?? null,
       unmatched: (code) =>
-        status === 404 && (code === "not_found" || code === "refusal_without_code")
+        status === 404 && code === "refusal_without_code"
           ? `${sent.method} ${sent.url.href}`
           : undefined,
       cause,
@@ -1481,19 +1482,22 @@ export class Transport {
       /** The code of a document that carries none; else `refusal_without_code`. */
       fallbackCode?: "operation_failed";
       retryAfterMs?: number | null;
-      /** The request a 404 that matched no route names, given the error's code. */
+      /** The request a 404 with no refusal code names, given the error's code. */
       unmatched?: (code: string) => string | undefined;
       cause?: unknown;
     },
   ): DfoError {
     const { status, fallbackCode, cause } = refused;
     const traceId = traceIdFrom(problem?.["trace_id"]) ?? refused.traceId;
-    const retryable = isRetryable(status, problem);
     const retryAfter = refused.retryAfterMs ?? null;
     const docsUrl = this.#docsUrl(problem?.["type"]);
     const given = problem?.["code"];
     const code = typeof given === "string" && REFUSAL_CODE.test(given) ? given : null;
     const raised = code ?? fallbackCode;
+    // A refusal that waits for a reset is never retried: a retry only spends the allowance.
+    const retryable =
+      (raised === undefined || actionFor(raised) !== "wait_for_reset") &&
+      isRetryable(status, problem);
     // A codeless document's text falls back to its code that is no refusal code.
     const text =
       problemText(problem) ??

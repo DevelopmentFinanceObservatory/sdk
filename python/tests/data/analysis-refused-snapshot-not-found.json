@@ -1,0 +1,28 @@
+{
+ "status": 404,
+ "headers": {
+  "cache-control": "no-store",
+  "content-length": "570",
+  "content-type": "application/problem+json",
+  "server-timing": "total;dur=0.2",
+  "strict-transport-security": "max-age=31536000; includeSubDomains",
+  "x-dfo-commit": "unknown",
+  "x-dfo-trace-id": "f532a41e8e4744c591020c7032806f7c"
+ },
+ "body": {
+  "type": "/codes/snapshot_not_found",
+  "title": "Snapshot Not Found",
+  "status": 404,
+  "detail": "the frame spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, cv_11111111111111111111111111111111 cannot be read: not held. Run the analysis with latest=True to read its dataset's current version",
+  "code": "snapshot_not_found",
+  "trace_id": "f532a41e8e4744c591020c7032806f7c",
+  "capability_version": "dset_5d3d776f7e05d422",
+  "retryable": false,
+  "retry_mode": "correct_and_retry",
+  "fix": {
+   "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "content_version": "cv_11111111111111111111111111111111",
+   "latest": true
+  }
+ }
+}

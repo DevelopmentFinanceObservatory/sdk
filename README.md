@@ -29,6 +29,8 @@ The Python package imports as `dfo`. Its [README](python/README.md) has a recipe
 - [Refresh later and tell if the data changed](python/README.md#refresh-later-and-tell-if-the-data-changed)
 - [Share an answer](python/README.md#share-an-answer)
 - [Look up a place code](python/README.md#look-up-a-place-code)
+- [Compute a figure on DFO](python/docs/compute.md), such as growth, a ranking, or aid per person
+- [Publish cards as a share](python/docs/shares.md) at a public link
 
 ## TypeScript
 
@@ -36,7 +38,7 @@ The Python package imports as `dfo`. Its [README](python/README.md) has a recipe
 npm install @developmentfinance/client
 ```
 
-The client has the search, choose, fetch, ref, and lookup calls under TypeScript names, and no CLI or disk cache. It runs in Node, Bun, Deno, Workers, and browsers. The API's CORS admits only the origins it lists, so a page on another origin calls your own server route, or a same-origin proxy of the API with `baseUrl: "/api/v1"`. Its [README](typescript/README.md) covers the quickstart and a web-app route.
+The client has the search, choose, fetch, ref, lookup, analysis, card, and share calls under TypeScript names, and no CLI or disk cache. It runs in Node, Bun, Deno, Workers, and browsers. The API's CORS admits only the origins it lists, so a page on another origin calls your own server route, or a same-origin proxy of the API with `baseUrl: "/api/v1"`. Its [README](typescript/README.md) covers the quickstart and a web-app route.
 
 ## The contract
 

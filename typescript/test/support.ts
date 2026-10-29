@@ -113,3 +113,14 @@ export function firstLogged<T>(
     check();
   });
 }
+
+/** A recorded reply the Python client's tests share, under python/tests/data/: the analysis
+ *  runner's answers, derived manifests and frames, recorded once for both clients. */
+const recordedUrl = (name: string): URL =>
+  new URL(`../../python/tests/data/${name}`, import.meta.url);
+
+export const recordedJson = async <T = Record<string, unknown>>(name: string): Promise<T> =>
+  JSON.parse(await readFile(recordedUrl(name), "utf8")) as T;
+
+export const recordedBytes = async (name: string): Promise<Uint8Array<ArrayBuffer>> =>
+  new Uint8Array(await readFile(recordedUrl(name)));

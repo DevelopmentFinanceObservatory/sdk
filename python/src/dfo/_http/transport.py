@@ -1254,7 +1254,7 @@ class AsyncTransport:
         `RETRY_AFTER_MAX_S`, or past the deadline, raises the refusal at once with
         its `retry_after` set. A 401 resolves the key again and, when the key
         changed, sends once more. When that lookup fails, the 401 raises with the
-        failure as its cause. A 404 that matched no route names the request,
+        failure as its cause. A 404 with no refusal code names the request,
         since the base URL is the likely fault. A refusal's body is read as a
         problem document when it parses as a JSON object, whatever its media
         type, and its trace id falls back to the `x-dfo-trace-id` header. A
