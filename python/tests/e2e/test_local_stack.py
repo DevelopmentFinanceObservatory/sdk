@@ -282,7 +282,7 @@ def test_02_derived_ref_file_and_repr(
 
     lines = repr(quotient).splitlines()
     assert lines[0] == "<Dataset Computed by DFO: quotient_of."
-    assert "  Derived: quotient_of by financingRecipient, from 2 readings" in lines
+    assert "  Derived: quotient_of by destination, from 2 readings" in lines
     assert "  Missing data: 3 series left out · data.left_out" in lines
     assert any(
         line.startswith(f"  Version: {content_version} (exact)") for line in lines
@@ -336,8 +336,10 @@ def test_06_cards_draw_the_derived_frame(
     ).json()
     labels = [source["label"] for source in cited["citation"]["sources"]]
     for card in cards:
-        provenance = _payload(client, card.id)["provenance"]
-        assert [source["name"] for source in provenance["sources"]] == labels
+        payload = _payload(client, card.id)
+        described = payload["description"]["sources"]
+        assert sorted(source["label"] for source in described) == sorted(labels)
+        provenance = payload["provenance"]
         assert provenance["inputs"] == [
             {"spec_id": spec_id, "content_version": content_version}
         ]

@@ -168,7 +168,7 @@ describe(`the local-stack journey against ${baseUrl}`, { concurrency: false }, (
     assert.ok(DatasetRef.fromJSON(quotient.ref.toJSON()).equals(quotient.ref));
     const lines = String(quotient).split("\n");
     assert.equal(lines[0], "<Dataset Computed by DFO: quotient_of.");
-    assert.ok(lines.includes("  Derived: quotient_of by financingRecipient, from 2 readings"));
+    assert.ok(lines.includes("  Derived: quotient_of by destination, from 2 readings"));
 
     const file = await client.request("GET", `/datasets/derived/${specId}/${contentVersion}/file`, {
       params: { format: "parquet", bundle: "false", layout: "frame" },
