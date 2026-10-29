@@ -86,6 +86,8 @@ const STAT_DERIVATIONS: Readonly<Record<StatChange, string | null>> = {
  * @throws {InvalidRequestError} `data` is not a Dataset or ref of one version with rows
  *   (`invalid_argument`), and no request is sent; or DFO refused the intent.
  * @throws {NotFoundError} The version's frame has aged out (`frame_unavailable`).
+ * @throws {QuotaExceededError} The daily card allowance is spent (`allowance_exhausted`);
+ *   `retryAfterMs` says when it resets.
  */
 async function createCard(
   transport: Transport,
@@ -274,6 +276,8 @@ export class Cards {
    *   a ref, or an option is malformed (`invalid_argument`), and no request is sent; or DFO
    *   refused the card, such as one whose series vary along two roles.
    * @throws {NotFoundError} The version's frame has aged out (`frame_unavailable`).
+   * @throws {QuotaExceededError} The daily card allowance is spent (`allowance_exhausted`);
+   *   `retryAfterMs` says when it resets.
    */
   async line(data: Dataset | DatasetRef, options: CardOptions = {}): Promise<Card> {
     return this.#windowed("line", data, options);
@@ -296,6 +300,8 @@ export class Cards {
    * @throws {InvalidRequestError} `compareTo` is given without `year`, or `change: "percent"`
    *   without `compareTo` (`invalid_argument`), and no request is sent; or DFO refused the
    *   card, such as one whose years hold no value.
+   * @throws {QuotaExceededError} The daily card allowance is spent (`allowance_exhausted`);
+   *   `retryAfterMs` says when it resets.
    */
   async stat(data: Dataset | DatasetRef, options: StatOptions = {}): Promise<Card> {
     const intent = statIntent(checkOptions(STAT_OPTIONS, options));
@@ -307,6 +313,8 @@ export class Cards {
    *
    * @throws {InvalidRequestError} `data` holds several versions or no rows, or is not a Dataset
    *   or a ref (`invalid_argument`), and no request is sent.
+   * @throws {QuotaExceededError} The daily card allowance is spent (`allowance_exhausted`);
+   *   `retryAfterMs` says when it resets.
    */
   async source(data: Dataset | DatasetRef): Promise<Card> {
     return createCard(this.#transport, "source", data, {});

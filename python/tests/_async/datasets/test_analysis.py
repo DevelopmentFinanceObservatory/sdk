@@ -41,6 +41,7 @@ from dfo._http.transport import AsyncTransport
 from tests._data import DATA, load
 from tests._datasets import recorded_member
 from tests._fetch_support import BASE, Server, json_response, problem
+from tests.rule_vectors import vectors
 
 pytestmark = pytest.mark.anyio
 
@@ -195,6 +196,35 @@ async def test_strict_raises_the_left_out_warning() -> None:
     async with make(server) as transport:
         with pytest.raises(SeriesLeftOutWarning):
             await fetch(transport, CHAIN, strict=True)
+
+
+# A fetch reads one derived member, so the vectors that fetch several are not
+# replayable through this client.
+LEFT_OUT_VECTORS = [
+    vector for vector in vectors("series-left-out") if len(vector["members"]) == 1
+]
+
+
+@pytest.mark.parametrize(
+    "vector", LEFT_OUT_VECTORS, ids=[vector["name"] for vector in LEFT_OUT_VECTORS]
+)
+async def test_the_series_left_out_vectors(vector: dict[str, Any]) -> None:
+    (served,) = vector["members"]
+    left_out = json_response(200, {**load("analysis-chain-manifest.json"), **served})
+    server = Server(left_out, frame())
+    async with make(server) as transport:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            if "raises" in vector:
+                with pytest.raises(SeriesLeftOutWarning) as raised:
+                    await fetch(
+                        transport, DatasetRef((member(),)), strict=vector["strict"]
+                    )
+                assert raised.value.code == vector["raises"]
+            else:
+                await fetch(transport, DatasetRef((member(),)), strict=vector["strict"])
+    issued = [w.message.code for w in caught if isinstance(w.message, DfoWarning)]
+    assert issued == vector.get("warnings", [])
 
 
 async def test_a_recipe_that_leaves_nothing_out_warns_nothing() -> None:

@@ -13,6 +13,7 @@ import {
   NetworkError,
   NotFoundError,
   problemAt200,
+  QuotaExceededError,
   RateLimitError,
   ServerError,
 } from "../src/core/errors.ts";
@@ -196,6 +197,29 @@ describe("refusals", () => {
       assert.deepEqual(waits, []);
       assert.equal(seen.length, 1);
     });
+  }
+
+  // The action `wait_for_reset` outranks the document's `retryable` and the status.
+  for (const status of [429, 503]) {
+    for (const header of ["30", "61"]) {
+      test(`raise a spent allowance at once at HTTP ${status} with a Retry-After of ${header}`, async () => {
+        const { sleep, waits } = recordingSleep();
+        const spent = problem(
+          { code: "allowance_exhausted", status, retryable: true },
+          { "retry-after": header },
+        );
+        const { fetch, seen } = mockFetch(spent, json({ ok: true }));
+        const error = await transport({ fetch, sleep })
+          .request({ path: "/x" })
+          .catch((e: unknown) => e);
+        assert.ok(error instanceof QuotaExceededError);
+        assert.equal(error.code, "allowance_exhausted");
+        assert.equal(error.retryAfterMs, Number(header) * 1000);
+        assert.equal(error.retryable, false);
+        assert.deepEqual(waits, []);
+        assert.equal(seen.length, 1);
+      });
+    }
   }
 
   test("back off without Retry-After and give up after maxRetries", async () => {

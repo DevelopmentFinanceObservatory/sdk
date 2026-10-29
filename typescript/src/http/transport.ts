@@ -2,6 +2,7 @@ import type { CredentialsFileReader } from "../config/credentials.ts";
 import { readProcessEnv } from "../config/env.ts";
 import type { EnvReader } from "../config/env.ts";
 import {
+  actionFor,
   capped,
   clientError,
   DfoError,
@@ -1476,12 +1477,15 @@ export class Transport {
   ): DfoError {
     const { status, fallbackCode, cause } = refused;
     const traceId = traceIdFrom(problem?.["trace_id"]) ?? refused.traceId;
-    const retryable = isRetryable(status, problem);
     const retryAfter = refused.retryAfterMs ?? null;
     const docsUrl = this.#docsUrl(problem?.["type"]);
     const given = problem?.["code"];
     const code = typeof given === "string" && REFUSAL_CODE.test(given) ? given : null;
     const raised = code ?? fallbackCode;
+    // A refusal that waits for a reset is never retried: a retry only spends the allowance.
+    const retryable =
+      (raised === undefined || actionFor(raised) !== "wait_for_reset") &&
+      isRetryable(status, problem);
     // A codeless document's text falls back to its code that is no refusal code.
     const text =
       problemText(problem) ??

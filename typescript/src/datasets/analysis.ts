@@ -343,20 +343,27 @@ async function read(
   const tree = isRecord(recipeObject) ? recipeObject["tree"] : undefined;
   const roles = chain === undefined ? {} : columnRoles(chain, tree);
   const { dataset, facts } = await derivedDataset(member, manifest, data, response.traceId, roles);
-  if (facts.leftOut.length > 0) noteLeftOut(transport, facts, strict);
+  if (facts.leftOut.length > 0 || !facts.leftOutComplete) noteLeftOut(transport, facts, strict);
   return dataset;
+}
+
+/** The warning's text. The list can be empty when DFO says it is incomplete. */
+function leftOutText(facts: DerivedFacts): string {
+  if (facts.leftOut.length === 0) {
+    return "Series were left out for missing data, and the dataset's leftOut lists none";
+  }
+  const count = facts.leftOut.length.toLocaleString("en-GB");
+  const least = facts.leftOutComplete ? "" : "at least ";
+  const steps = [...new Set(facts.leftOut.map((series) => series.step.verb))].join(", ");
+  return (
+    `${least}${count} series left out for missing data by ${steps}; the dataset's leftOut ` +
+    "lists each with its step and reason"
+  );
 }
 
 /** Issues the one warning that the recipe dropped series, or raises it under `strict`. */
 function noteLeftOut(transport: Transport, facts: DerivedFacts, strict: boolean): void {
-  const count = facts.leftOut.length.toLocaleString("en-GB");
-  const least = facts.leftOutComplete ? "" : "at least ";
-  const steps = [...new Set(facts.leftOut.map((series) => series.step.verb))].join(", ");
-  const warning = clientWarning(
-    "series_left_out",
-    `${least}${count} series left out for missing data by ${steps}; the dataset's leftOut ` +
-      "lists each with its step and reason",
-  );
+  const warning = clientWarning("series_left_out", leftOutText(facts));
   if (strict) throw warning;
   transport.warn(warning);
 }

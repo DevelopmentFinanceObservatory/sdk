@@ -563,6 +563,7 @@ function loadDerivedMember(value: unknown, pointer: string): DerivedRefMember {
   const member = objectAt(value, pointer);
   checkKeys(member, pointer, DERIVED_KEYS);
   const { parts, sentence } = loadText(member, pointer);
+  if (parts.length > 0) throw invalid(`${pointer}/parts`, "not empty");
   const spec = objectAt(member["spec"], `${pointer}/spec`);
   checkKeys(spec, `${pointer}/spec`, ["spec_id", "recipe"]);
   const recipe = objectAt(spec["recipe"], `${pointer}/spec/recipe`);

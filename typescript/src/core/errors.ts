@@ -251,6 +251,7 @@ const CLASS_BY_ACTION: Record<Action, ErrorClass> = {
   take_newest_version: VersionUnavailableError,
   log_in: AuthenticationError,
   request_scope: PermissionDeniedError,
+  stop: PermissionDeniedError,
   wait: RateLimitError,
   wait_for_reset: QuotaExceededError,
   report: ServerError,

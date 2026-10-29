@@ -54,6 +54,7 @@ ACTION_CLASSES = {
     "take_newest_version": VersionUnavailableError,
     "log_in": AuthenticationError,
     "request_scope": PermissionDeniedError,
+    "stop": PermissionDeniedError,
     "wait": RateLimitError,
     "wait_for_reset": QuotaExceededError,
     "report": ServerError,
@@ -76,6 +77,13 @@ def test_every_contract_code_has_its_class(row: dict[str, str]) -> None:
 
 def test_the_map_holds_exactly_the_contract_codes() -> None:
     assert {row["code"]: row["action"] for row in _ROWS} == ACTIONS
+
+
+def test_a_write_token_that_does_not_fit_stops_the_caller() -> None:
+    body = {"code": "write_token_invalid", "detail": "Refused."}
+    error = problem_error(403, body, reason="Forbidden", origin=ORIGIN)
+    assert type(error) is PermissionDeniedError
+    assert ACTIONS["write_token_invalid"] == "stop"
 
 
 def test_every_contract_action_maps_to_a_class() -> None:

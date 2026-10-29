@@ -64,6 +64,8 @@ def create_card(
             with rows (`invalid_argument`), and no request is sent; or DFO
             refused the intent.
         NotFoundError: The version's frame has aged out (`frame_unavailable`).
+        QuotaExceededError: The daily card allowance is spent
+            (`allowance_exhausted`); `retry_after` says when it resets.
     """
     ref = _one_version(data, transport.caller)
     (member,) = ref.members
@@ -247,6 +249,8 @@ class Cards:
                 or an argument is malformed (`invalid_argument`), and no request
                 is sent; or DFO refused the card, such as one whose series vary
                 along two roles.
+            QuotaExceededError: The daily card allowance is spent
+                (`allowance_exhausted`); `retry_after` says when it resets.
         """
         intent = {**_windowed(window), **_titled(title)}
         return create_card(self._transport, "line", data, intent)
@@ -310,6 +314,8 @@ class Cards:
                 `change` without `compare_to` (`invalid_argument`), and no
                 request is sent; or DFO refused the card, such as one whose
                 years hold no value.
+            QuotaExceededError: The daily card allowance is spent
+                (`allowance_exhausted`); `retry_after` says when it resets.
         """
         intent = stat_intent(
             year=year, compare_to=compare_to, change=change, title=title
@@ -322,5 +328,7 @@ class Cards:
         Raises:
             InvalidRequestError: `data` holds no version, several, or no rows
                 (`invalid_argument`), and no request is sent.
+            QuotaExceededError: The daily card allowance is spent
+                (`allowance_exhausted`); `retry_after` says when it resets.
         """
         return create_card(self._transport, "source", data, {})

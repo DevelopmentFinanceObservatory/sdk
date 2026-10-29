@@ -30,6 +30,7 @@ from dfo._core.errors import (
     InvalidRequestError,
     NetworkError,
     NotFoundError,
+    QuotaExceededError,
     RateLimitError,
     ServerError,
 )
@@ -1268,6 +1269,30 @@ def test_a_retry_after_past_the_ceiling_raises_at_once(retry_after: str) -> None
     assert timeline.sleeps == []
     assert caught.value.retry_after is not None
     assert caught.value.retry_after > 60
+
+
+# The action `wait_for_reset` outranks the document's `retryable` and the status.
+@pytest.mark.parametrize("status", [429, 503], ids=["429", "503"])
+@pytest.mark.parametrize("retry_after", ["30", "61"], ids=["30s", "61s"])
+def test_a_refusal_that_waits_for_reset_is_never_retried(
+    status: int, retry_after: str
+) -> None:
+    timeline = Timeline()
+    spent = problem(
+        status,
+        code="allowance_exhausted",
+        retryable=True,
+        headers={"Retry-After": retry_after},
+    )
+    recorder = Recorder(spent, httpx2.Response(200))
+    with make(recorder, timeline) as transport:
+        with pytest.raises(QuotaExceededError) as caught:
+            transport.request("POST", "/presentation/shares", json={})
+    assert caught.value.code == "allowance_exhausted"
+    assert caught.value.retry_after == float(retry_after)
+    assert caught.value.retryable is False
+    assert len(recorder.requests) == 1
+    assert timeline.sleeps == []
 
 
 @pytest.mark.parametrize(

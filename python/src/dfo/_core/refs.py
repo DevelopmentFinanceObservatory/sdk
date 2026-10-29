@@ -569,6 +569,8 @@ def _load_derived_member(value: object, pointer: str) -> DerivedRefMember:
         ),
     )
     parts, sentence = _load_text(obj, pointer)
+    if parts:
+        raise FormatError("format_invalid", f"{pointer}/parts", "not empty")
     digest, rendering = _load_artifact(obj["artifact"], f"{pointer}/artifact")
     return DerivedRefMember(
         parts=parts,

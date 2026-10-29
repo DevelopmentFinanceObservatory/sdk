@@ -8,6 +8,7 @@ export const ACTIONS = [
   "take_newest_version",
   "log_in",
   "request_scope",
+  "stop",
   "wait",
   "wait_for_reset",
   "report",
@@ -165,7 +166,7 @@ export const CODE_ACTIONS = {
   upstream_version_changed: "report",
   variable_not_resolved: "ask_data_question",
   write_refused: "request_scope",
-  write_token_invalid: "request_scope",
+  write_token_invalid: "stop",
   write_token_required: "fix_request",
 } as const;
 

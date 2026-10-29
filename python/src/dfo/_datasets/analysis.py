@@ -439,21 +439,27 @@ async def _read(
             caller=transport.caller,
             roles=roles,
         )
-    if dataset.left_out:
+    if dataset.left_out or not dataset._left_out_complete:
         _left_out(dataset, strict=strict)
     return dataset
 
 
 def _left_out(dataset: Dataset, *, strict: bool) -> None:
-    """Issue the one warning that the recipe dropped series, or raise it."""
+    """Issue the one warning that the recipe dropped series, or raise it. The
+    list can be empty when DFO says it is incomplete."""
     count = len(dataset.left_out)
-    least = "" if dataset._left_out_complete else "at least "
-    steps = ", ".join(dict.fromkeys(series.step.verb for series in dataset.left_out))
-    warning = client_warning(
-        SERIES_LEFT_OUT,
-        f"{least}{count:,} series left out for missing data by {steps}; the "
-        "Dataset's left_out lists each with its step and reason",
-    )
+    if count == 0:
+        text = "Series were left out for missing data, and the Dataset's left_out lists none"
+    else:
+        least = "" if dataset._left_out_complete else "at least "
+        steps = ", ".join(
+            dict.fromkeys(series.step.verb for series in dataset.left_out)
+        )
+        text = (
+            f"{least}{count:,} series left out for missing data by {steps}; the "
+            "Dataset's left_out lists each with its step and reason"
+        )
+    warning = client_warning(SERIES_LEFT_OUT, text)
     if strict:
         raise warning
     warn(warning)

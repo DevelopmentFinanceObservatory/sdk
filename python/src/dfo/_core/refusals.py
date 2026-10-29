@@ -117,7 +117,7 @@ def _class_for_action(action: Action) -> type[DfoError]:  # noqa: PLR0911
             return VersionUnavailableError
         case "log_in":
             return AuthenticationError
-        case "request_scope":
+        case "request_scope" | "stop":
             return PermissionDeniedError
         case "wait":
             return RateLimitError
@@ -248,8 +248,9 @@ def problem_error(
 
     Returns:
         The error, of the class the code or else the status maps to. A problem
-        document's `retryable` outranks the status, and its `pointer` is named
-        in the message. The website proxy answers its own refusals with
+        document's `retryable` outranks the status, except for a code whose
+        action is `wait_for_reset`, which is never retryable, and its `pointer`
+        is named in the message. The website proxy answers its own refusals with
         problem documents too. The body's text is its string `detail`, else
         `title`, else `error`. A body without a code, or with text that is not
         a code in the code's place, takes `fallback_code`, else
@@ -283,6 +284,9 @@ def problem_error(
     if text is not None:
         text = redacted(text, key)
     code = code or fallback_code
+    if ACTIONS.get(code or "") == "wait_for_reset":
+        # The allowance resets on its own schedule; a retry only spends it.
+        retryable = False
     if code is None:
         lead = f"HTTP {status} with no refusal code"
         detail = f"{lead}: {text}" if text else f"{lead}."
