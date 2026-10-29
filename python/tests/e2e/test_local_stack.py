@@ -287,7 +287,7 @@ def test_02_derived_ref_file_and_repr(
     assert any(
         line.startswith(f"  Version: {content_version} (exact)") for line in lines
     )
-    assert "  Rows: 6" in lines
+    assert '  Rows: 6, time_period as text, such as "2022" or "2021/2022"' in lines
 
 
 def test_03_a_two_step_recipe_gives_the_same_rows(
@@ -331,19 +331,21 @@ def test_06_cards_draw_the_derived_frame(
     assert stat.kind == "stat"
     assert line.ref == stat.ref == quotient.ref
     spec_id, content_version = _derived(quotient)
-    cited = client.request(
+    manifest = client.request(
         "GET", f"/datasets/derived/{spec_id}/{content_version}"
     ).json()
-    labels = [source["label"] for source in cited["citation"]["sources"]]
+    roots = sorted(root["spec_id"] for root in manifest["roots"])
+    assert roots == sorted([ODA[0], POPULATION[0]])
     for card in cards:
         payload = _payload(client, card.id)
         described = payload["description"]["sources"]
-        assert sorted(source["label"] for source in described) == sorted(labels)
+        # The description names the root readings the card draws, one source each.
+        assert sorted(source["ref"] for source in described) == roots
+        assert all(source["label"] for source in described)
         provenance = payload["provenance"]
         assert provenance["inputs"] == [
             {"spec_id": spec_id, "content_version": content_version}
         ]
-    assert "Unattributed source" not in labels
 
 
 def test_07_share_fetch_replace_snapshot_history(
