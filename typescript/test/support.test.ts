@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { firstLogged } from "./support.ts";
+import { firstLogged, idTokenHeaders } from "./support.ts";
 
 const timers = () => process.getActiveResourcesInfo().filter((kind) => kind === "Timeout").length;
 
@@ -49,4 +49,11 @@ test("a wait for a logged item gives the first match logged from its start on", 
   log.push(1, 7, 9);
   assert.equal(await waiting, 7);
   assert.equal(timers(), before);
+});
+
+// Only the live run sends the header, so this pins its shape and the empty case
+// the `website` target relies on.
+test("an empty ID token sends no header", () => {
+  assert.deepEqual(idTokenHeaders(""), {});
+  assert.deepEqual(idTokenHeaders("signed"), { "X-Serverless-Authorization": "Bearer signed" });
 });

@@ -17,6 +17,9 @@ import time
 
 import httpx2
 
+# This file runs as a script, so its own directory is on `sys.path`.
+from cloud_run import id_token_headers
+
 from dfo._core.types import Spec
 from dfo._sync._client.client import Client
 from dfo._sync._datasets.fetch import Session
@@ -68,7 +71,12 @@ def main(base_url: str) -> None:
         waits.append(seconds)
         time.sleep(seconds)
 
-    transport = Transport(base_url=base_url, http_transport=recording, sleep=sleep)
+    transport = Transport(
+        base_url=base_url,
+        headers=id_token_headers(),
+        http_transport=recording,
+        sleep=sleep,
+    )
     with Client._over(Session(transport, None)) as client:
         data = client.fetch(Spec(given["spec_id"], given["definition"]), progress=False)
     member = data.members[0]

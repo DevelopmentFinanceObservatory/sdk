@@ -1,8 +1,11 @@
 name: E2E
 
-# The live journeys (python/tests/e2e, typescript/test/e2e) against the dev
-# API, once directly on its Cloud Run URL and once through the dev website's
-# /api/v1 proxy. Each target keeps the refs its journeys wrote under
+# The live journeys (python/tests/e2e/test_journey.py,
+# typescript/test/e2e/journey.e2e.ts) against the dev API, once directly on its
+# Cloud Run URL and once through the dev website's /api/v1 proxy. The direct
+# target gets a Google ID token minted as dfo-dev-sdk-e2e, sent as DFO_E2E_ID_TOKEN.
+# That identity accepts only runs on main, so a run from a branch fails on the direct
+# target. Each target keeps the refs its journeys wrote under
 # .live-refs/<target>/ and uploads them, so the TypeScript job for the same target
 # reads ref-python.json and writes ref-typescript.json for step 10. Step 6
 # builds the spec tests/live/long-builds.json assigns to the UTC day's parity, the
@@ -15,6 +18,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: e2e
@@ -24,6 +28,7 @@ jobs:
   python:
     name: python (${{ matrix.target.name }})
     runs-on: ubuntu-latest
+    # The ID token has to outlive the job. It lasts 3600 s and the job mints it after starting.
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -46,6 +51,33 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The api target is private. The token's identity accepts only runs on main.
+      - name: Authenticate to Google Cloud
+        id: auth
+        if: matrix.target.name == 'api'
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/41292283861/locations/global/workloadIdentityPools/github-pool/providers/github
+          service_account: dfo-dev-sdk-e2e@dev-fin-observatory.iam.gserviceaccount.com
+          token_format: id_token
+          id_token_audience: https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
+          id_token_include_email: true
+
+      - name: Check that the ID token outlives the job
+        if: matrix.target.name == 'api'
+        env:
+          DFO_E2E_ID_TOKEN: ${{ steps.auth.outputs.id_token }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, sys
+
+          payload = os.environ["DFO_E2E_ID_TOKEN"].split(".")[1]
+          claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+          lifetime = claims["exp"] - claims["iat"]
+          if lifetime < 3600:
+              sys.exit(f"The ID token lasts {lifetime} s; the job can run for 3600 s.")
+          PY
+
       - name: Install uv
         uses: astral-sh/setup-uv@v10.0.0
 
@@ -55,9 +87,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --python 3.12
 
-      # -rs lists each skipped step with what the server served instead.
+      # -rs lists each skipped step with what the server served instead. The other
+      # live modules under tests/e2e need the local stack.
       - name: Run the live journey
-        run: uv run pytest -m live --no-cov -rs tests/e2e
+        env:
+          DFO_E2E_ID_TOKEN: ${{ steps.auth.outputs.id_token }}
+        run: uv run pytest -m live --no-cov -rs tests/e2e/test_journey.py
 
       - name: Upload the refs
         if: always()
@@ -77,6 +112,7 @@ jobs:
     # A failed Python job still leaves the TypeScript journey to run.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    # The ID token has to outlive the job. It lasts 3600 s and the job mints it after starting.
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -95,6 +131,33 @@ jobs:
       DFO_PROGRESS: "0"
     steps:
       - uses: actions/checkout@v7
+
+      # The api target is private. The token's identity accepts only runs on main.
+      - name: Authenticate to Google Cloud
+        id: auth
+        if: matrix.target.name == 'api'
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/41292283861/locations/global/workloadIdentityPools/github-pool/providers/github
+          service_account: dfo-dev-sdk-e2e@dev-fin-observatory.iam.gserviceaccount.com
+          token_format: id_token
+          id_token_audience: https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
+          id_token_include_email: true
+
+      - name: Check that the ID token outlives the job
+        if: matrix.target.name == 'api'
+        env:
+          DFO_E2E_ID_TOKEN: ${{ steps.auth.outputs.id_token }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, sys
+
+          payload = os.environ["DFO_E2E_ID_TOKEN"].split(".")[1]
+          claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+          lifetime = claims["exp"] - claims["iat"]
+          if lifetime < 3600:
+              sys.exit(f"The ID token lasts {lifetime} s; the job can run for 3600 s.")
+          PY
 
       # A missing artifact leaves step 10 of the TypeScript journey to skip
       # with the reason.
@@ -127,6 +190,8 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run the live journey
+        env:
+          DFO_E2E_ID_TOKEN: ${{ steps.auth.outputs.id_token }}
         working-directory: typescript
         run: pnpm test:e2e
 
@@ -143,8 +208,10 @@ jobs:
       # Python's step 10 alone: it fetches the ref-typescript.json written above.
       - name: Fetch the TypeScript ref from Python
         if: ${{ !cancelled() }}
+        env:
+          DFO_E2E_ID_TOKEN: ${{ steps.auth.outputs.id_token }}
         working-directory: python
-        run: uv run pytest -m live --no-cov -rs tests/e2e -k test_10
+        run: uv run pytest -m live --no-cov -rs tests/e2e/test_journey.py -k test_10
 
       - name: Upload the refs
         if: always()
