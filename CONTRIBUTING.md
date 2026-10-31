@@ -131,11 +131,17 @@ The async modules are the source of both clients, and `scripts/gen_sync.py` deri
 
 ## Docs examples
 
-`scripts/check_docs_examples.py` runs every `python` block in `README.md`, `python/README.md`, and `python/docs/*.md`, and every `ts` or `typescript` block in `typescript/README.md` and `typescript/docs/*.md`, against the API `DFO_BASE_URL` names. It needs the network and spends Search calls, so CI leaves it out. Run it against dev after a docs change:
+`scripts/check_docs_examples.py` runs every `python` block in `README.md`, `python/README.md`, and `python/docs/*.md`, and every `ts` or `typescript` block in `typescript/README.md` and `typescript/docs/*.md`, against the API `DFO_BASE_URL` names. It needs the network and spends Search calls, so CI leaves it out. Run it against dev after a docs change. The dev API is private, so start a local proxy that signs each request as your gcloud account, which needs `run.routes.invoke` on the service:
+
+```bash
+gcloud run services proxy dfo-dev-apis --region northamerica-northeast1 --project dev-fin-observatory --port 8083
+```
+
+Then, in a second terminal:
 
 ```bash
 cd python
-DFO_BASE_URL=https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app/api \
+DFO_BASE_URL=http://localhost:8083/api \
   uv run python ../scripts/check_docs_examples.py --report docs-check.md
 ```
 

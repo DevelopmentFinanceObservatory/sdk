@@ -16,6 +16,9 @@ server's 24-hour maximum age and the build runs again as an operation. The step
 posts it twice, then fetches it in a fresh process, and checks all three join
 one operation. `DFO_E2E_SCHEDULED=true` marks a scheduled run, where a build
 served inline fails the step; any other run skips it.
+
+`DFO_E2E_ID_TOKEN`, when set, is a Google ID token every client sends, including the
+one in step 6's fresh process, for a target Cloud Run keeps private.
 """
 
 import json
@@ -41,6 +44,7 @@ from dfo._datasets.build import (
 )
 from dfo.errors import IncompleteAnswerError, InvalidRequestError, NotFoundError
 from dfo.types import Member
+from tests.e2e.cloud_run import id_token_headers
 
 pytestmark = pytest.mark.live
 
@@ -76,7 +80,7 @@ def base_url() -> str:
 
 @pytest.fixture(scope="module")
 def client(base_url: str) -> Iterator[Client]:
-    with Client(base_url=base_url, cache=False) as client:
+    with Client(base_url=base_url, cache=False, headers=id_token_headers()) as client:
         yield client
 
 
@@ -175,10 +179,15 @@ def test_02_fetch_reads_back_by_ref_and_offline(
     assert _versions(again.members) == _versions(dataset.members)
     assert (len(again), again.stale) == (len(dataset), False)
 
-    with Client(base_url=client.base_url, cache_dir=tmp_path) as cached:
+    headers = id_token_headers()
+    with Client(
+        base_url=client.base_url, cache_dir=tmp_path, headers=headers
+    ) as cached:
         cached.fetch(ref, progress=False)
     monkeypatch.setenv("DFO_OFFLINE", "1")
-    with Client(base_url=client.base_url, cache_dir=tmp_path) as offline:
+    with Client(
+        base_url=client.base_url, cache_dir=tmp_path, headers=headers
+    ) as offline:
         stored = offline.fetch(ref, progress=False)
     assert _versions(stored.members) == _versions(dataset.members)
     assert (len(stored), stored.stale) == (len(dataset), True)

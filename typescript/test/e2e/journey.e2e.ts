@@ -12,6 +12,9 @@
 // posted every 48 hours, so its stored head is past the server's 24-hour maximum age and the
 // build runs again as an operation. `DFO_E2E_SCHEDULED=true` marks a scheduled run, where a
 // build served inline fails the step; any other run skips it.
+//
+// `DFO_E2E_ID_TOKEN`, when set, is a Google ID token every client sends, including the one in
+// step 6's second process, for a target Cloud Run keeps private.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -28,7 +31,7 @@ import {
   NotFoundError,
 } from "../../src/index.ts";
 import type { Answer, Dataset, Row, Spec } from "../../src/index.ts";
-import { firstLogged } from "../support.ts";
+import { firstLogged, idTokenHeaders } from "../support.ts";
 
 const baseUrl = process.env["DFO_BASE_URL"];
 if (baseUrl === undefined || baseUrl === "") {
@@ -75,7 +78,7 @@ const recording: typeof fetch = async (input, init) => {
   return response;
 };
 
-const client = new Client({ baseUrl, fetch: recording });
+const client = new Client({ baseUrl, fetch: recording, headers: idTokenHeaders() });
 
 type LongBuild = { day_parity: number; language: string; target: string; spec: Spec };
 
@@ -474,8 +477,10 @@ async function fetchElsewhere(spec: Spec): Promise<{
   rows: number;
 }> {
   const entry = new URL("../../src/index.ts", import.meta.url).href;
+  const support = new URL("../support.ts", import.meta.url).href;
   const code = `
     const { Client } = await import(${JSON.stringify(entry)});
+    const { idTokenHeaders } = await import(${JSON.stringify(support)});
     let operationId;
     const recording = async (input, init) => {
       const response = await fetch(input, init);
@@ -485,7 +490,11 @@ async function fetchElsewhere(spec: Spec): Promise<{
       }
       return response;
     };
-    const client = new Client({ baseUrl: ${JSON.stringify(baseUrl)}, fetch: recording });
+    const client = new Client({
+      baseUrl: ${JSON.stringify(baseUrl)},
+      fetch: recording,
+      headers: idTokenHeaders(),
+    });
     const dataset = await client.fetch(${JSON.stringify(spec)});
     process.stdout.write(JSON.stringify({
       operation_id: operationId ?? undefined,

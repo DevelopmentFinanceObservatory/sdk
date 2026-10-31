@@ -114,6 +114,12 @@ export function firstLogged<T>(
   });
 }
 
+/** The header that carries `token`, a Google ID token, to a private Cloud Run service, which
+ *  reads it in preference to `Authorization`. An unset or empty token sends no header, as on the
+ *  E2E workflow's `website` target and in a local run. */
+export const idTokenHeaders = (token = process.env["DFO_E2E_ID_TOKEN"]): Record<string, string> =>
+  token ? { "X-Serverless-Authorization": `Bearer ${token}` } : {};
+
 /** A recorded reply the Python client's tests share, under python/tests/data/: the analysis
  *  runner's answers, derived manifests and frames, recorded once for both clients. */
 const recordedUrl = (name: string): URL =>
