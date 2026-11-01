@@ -6,7 +6,8 @@
 //
 // Three transforms run during generation. Every string `enum` becomes an open union, so a value
 // added by the server still typechecks. `const` members stay closed, since they discriminate
-// unions. The enums in `NAMED_ENUMS` are also declared as closed unions of their own, which the
+// unions, and so does an enum holding any value other than a string or null, such as an integer
+// `format_version`, which reads as its literal union, as the Python client's `Literal` does. The enums in `NAMED_ENUMS` are also declared as closed unions of their own, which the
 // wire fields name and the client's options take. Every array of parts discriminated on `status`
 // gains the hand-written `UnknownPart`, so a part status added by the server narrows to it.
 import { readFile, writeFile } from "node:fs/promises";
@@ -125,9 +126,11 @@ const namedUnions = (named: Map<object, { name: string; values: readonly string[
 const OTHER_STRING = "x-dfo-other-string";
 
 /** Rewrites every string `enum` in the served document as the union of that enum and any other
- *  string, in place. openapi-typescript replaces the property a union discriminates on with an
- *  `enum` of its own after this runs, so discriminators stay closed. An enum in `names` becomes
- *  its named union and any other string. */
+ *  string, in place, and returns how many it rewrote. openapi-typescript replaces the property a
+ *  union discriminates on with an `enum` of its own after this runs, so discriminators stay
+ *  closed. An enum in `names` becomes its named union and any other string. An enum holding a
+ *  value other than a string or null is left for openapi-typescript to write as its closed
+ *  literal union. */
 function openEnums(node: unknown, names: ReadonlyMap<object, { name: string }>): number {
   if (Array.isArray(node))
     return node.reduce((count: number, child) => count + openEnums(child, names), 0);
@@ -140,11 +143,7 @@ function openEnums(node: unknown, names: ReadonlyMap<object, { name: string }>):
     const values: unknown[] = node.enum;
     const strings = values.filter((value): value is string => typeof value === "string");
     const nullable = values.includes(null);
-    if (strings.length + (nullable ? 1 : 0) !== values.length) {
-      throw new Error(
-        `an enum holds a value other than a string or null: ${JSON.stringify(values)}`,
-      );
-    }
+    if (strings.length + (nullable ? 1 : 0) !== values.length) return count;
     const schema = node as Record<string, unknown>;
     const name = names.get(node)?.name;
     delete schema["enum"];
@@ -168,13 +167,17 @@ const OTHER_STRING_TYPE = ts.factory.createIntersectionTypeNode([
   ts.factory.createTypeLiteralNode([]),
 ]);
 
+/** A component schema's public alias: its name in PascalCase, with the prefix `Field` on a name
+ *  that starts with an underscore, as the Python client's wire types name it, so `_ExportFrame`
+ *  is `FieldExportFrame` beside `ExportFrame`. */
 const aliasName = (schema: string): string =>
   RENAMED[schema] ??
-  schema
-    .split(/[^A-Za-z0-9]+/)
-    .filter(Boolean)
-    .map((word) => word[0]!.toUpperCase() + word.slice(1))
-    .join("");
+  (schema.startsWith("_") ? "Field" : "") +
+    schema
+      .split(/[^A-Za-z0-9]+/)
+      .filter(Boolean)
+      .map((word) => word[0]!.toUpperCase() + word.slice(1))
+      .join("");
 
 /** The component schemas with no properties of their own that refer to themselves, such as a
  *  JSON-like value. Their `components` entry would refer to itself, which TypeScript refuses, so
