@@ -115,7 +115,7 @@ describe("IncompleteAnswerError", () => {
     assert.deepEqual(error.message.split("\n"), [
       "Search answered 0 of 1 part of your question.",
       `  missing  "mortality": 2 readings`,
-      "    [0] Kenya's deaths rate per capita, 2013 to 2022 · World Development Indicators",
+      "    [0] Kenya's deaths rate per 1,000 people, 2013 to 2022 · World Development Indicators",
       "    [1] Kenya's number of deaths, 2018 to 2022 · Kenya Census",
       "  Choose: (await answer.choose(0)).fetch()",
       "[answer_incomplete]",
@@ -196,7 +196,7 @@ describe("gaps", () => {
         assumptions: candidate.assumptions,
       },
       {
-        label: "Kenya's deaths rate per capita, 2013 to 2022.",
+        label: "Kenya's deaths rate per 1,000 people, 2013 to 2022.",
         source: "World Development Indicators",
         unit,
         assumptions: [ASSUMED],
