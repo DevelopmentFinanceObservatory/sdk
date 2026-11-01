@@ -332,6 +332,89 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/datasets/analysis": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Post Analysis
+     * @description Compute a recipe tree and store its frame. Answers the stored frame's format 2 ref,
+     *     `pending` while a root builds, or the refusal with its fix.
+     */
+    post: operations["datasets_post_analysis"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/datasets/analysis/anchor": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Post Analysis Anchor
+     * @description The latest period of the roots over the populations, and the series it leaves
+     *     out. Stores nothing.
+     */
+    post: operations["datasets_post_analysis_anchor"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/datasets/derived/{id}/{content_version}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get Derived
+     * @description A derived frame's retention, recipe, roots, citation, resolved periods and the
+     *     series its steps left out for missing data.
+     */
+    get: operations["datasets_get_derived"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/datasets/derived/{id}/{content_version}/file": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get Derived File
+     * @description The derived frame's rows as a file in the format and bundle the query names.
+     */
+    get: operations["datasets_get_derived_file"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/datasets/frames/{spec_id}/{content_version}/recipe": {
     parameters: {
       query?: never;
@@ -502,7 +585,7 @@ export interface paths {
     put?: never;
     /**
      * Post Pin
-     * @description Pin an artifact of a version, and the first frame its files can render from that survives, servable or aged: the version's own frame, else, for a derived version, its base version's frame. Every format then stays fetchable and the version reports `retention.pinned`. When no such frame's bytes survive, the named artifact still pins, and `retention` keeps the frames' `held_until`. Only the named artifact's copy waits on the daily pin budget; the frame copy skips it and counts toward later calls, so one pin can add up to two copies to the count.
+     * @description Pin an artifact of a version, and the first frame its files can render from that survives, servable or aged: the version's own frame, else, for a derived version, its base version's frame. Every format then stays fetchable and the version reports `retention.pinned`. When no such frame's bytes survive, the named artifact still pins, and `retention` keeps the frames' `held_until`. Only the named artifact's copy spends the daily pin budget, and the frame copy spends none. A caller without the pin grant also spends one unit of its daily pin allowance on a new copy, within a daily budget shared by every such caller; a repeat pin of an artifact already pinned spends nothing.
      */
     post: operations["datasets_post_pin"];
     delete?: never;
@@ -525,6 +608,50 @@ export interface paths {
      * @description Publish a validated body under the permit the route class took for this request.
      */
     post: operations["datasets_post_publish"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/datasets/exports": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Post Export
+     * @description Prepare one exact frame version as a file in the pinned tier and answer its facts
+     *     and its link's path. A frame of a dataset id alone exports that dataset's newest
+     *     version, which the answer's `frame` names. A repeat request answers the same facts and
+     *     spends nothing. A new pinned copy spends one unit of the caller's daily pin
+     *     allowance.
+     */
+    post: operations["datasets_post_export"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/datasets/exports/{export_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get Export
+     * @description Redirect to the export's file, signed for five minutes. Renders nothing.
+     */
+    get: operations["datasets_get_export"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -844,6 +971,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/presentation/frames/{spec_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Newest Frame */
+    get: operations["presentation_get_newest_frame"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/presentation/release": {
     parameters: {
       query?: never;
@@ -853,6 +997,154 @@ export interface paths {
     };
     /** Get Release */
     get: operations["presentation_get_release"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/presentation/shares": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Create Share
+     * @description Publish cards as a share: one slot per card, a live link (latest=true) that follows new data or a snapshot (latest=false) that keeps the versions its cards draw now. Every card's frame is pinned. Spends one unit of the caller's daily share allowance, and one unit of its daily pin allowance and of the shared pin budgets for each new pinned copy. The reply's write_token grants replacing and deleting the share.
+     */
+    post: operations["presentation_create_share"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/presentation/shares/{share_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read Share
+     * @description Read a share: its kind, mode, title, latest revision, slots and the website's payload. Any origin may read it. It omits the write token.
+     */
+    get: operations["presentation_read_share"];
+    /**
+     * Replace Share
+     * @description Give a live share new cards under the same URLs, as its next revision. Slot n shows the nth card, and slots past the last card stay empty. Needs the share's write token in x-dfo-write-token. A snapshot refuses share_not_replaceable. Each new pinned copy spends one unit of the caller's daily pin allowance and of the shared pin budgets.
+     */
+    put: operations["presentation_replace_share"];
+    post?: never;
+    /**
+     * Delete Share
+     * @description Take a share down. Needs the share's write token in x-dfo-write-token.
+     */
+    delete: operations["presentation_delete_share"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/presentation/shares/{share_id}/snapshot": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Post Share Snapshot
+     * @description Turn a live share into a snapshot under the same URLs. Each slot keeps the frame it serves now, pinned. Needs the share's write token in x-dfo-write-token. A snapshot answers as it is. No route turns a snapshot live. Each new pinned copy spends one unit of the caller's daily pin allowance and of the shared pin budgets.
+     */
+    post: operations["presentation_post_share_snapshot"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/presentation/shares/{share_id}/import": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /**
+     * Put Share Import
+     * @description Store one of the website's shares under its own id, for the website's share migration job. Admits the share import principal alone. The body is the share's export line less its id, plus write_token_sha256. Pins the frames the share shows, spending no allowance. 201 when stored, 200 when an earlier import stored it.
+     */
+    put: operations["presentation_put_share_import"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/presentation/shares/{share_id}/history": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read Share History
+     * @description What each of the share's slots showed, newest first, a page of up to limit entries (default 100) at a time: every frame it served, with its retention counted from when DFO stored it and whether it is still fetchable, and an entry with a null card and frame from when a replace left the slot empty. next names the following page's cursor, to send as before, and is null on the last page. Any origin may read it.
+     */
+    get: operations["presentation_read_share_history"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/presentation/shares/{share_id}/slots/{slot}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read Share Slot Card
+     * @description Read the card a share's slot shows, drawn on the frame the slot serves. That is a snapshot's recorded frame, or a live slot's newest data, checked at most every 15 minutes, as the slot's data route chooses it.
+     */
+    get: operations["presentation_read_share_slot_card"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/presentation/shares/{share_id}/slots/{slot}/data": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read Share Slot Data
+     * @description Read the rows a share's slot serves. The frame is a snapshot's recorded frame, or a live slot's newest data, checked at most every 15 minutes.
+     */
+    get: operations["presentation_read_share_slot_data"];
     put?: never;
     post?: never;
     delete?: never;
@@ -1030,6 +1322,135 @@ export interface components {
        * @description the admitted sources this wording names, two or more: provenances first, then datasets and sources
        */
       candidates: components["schemas"]["AmbiguousSourceCandidate"][];
+    };
+    /** AnalysisPendingBody */
+    AnalysisPendingBody: {
+      /**
+       * Status
+       * @default pending
+       * @constant
+       */
+      status?: "pending";
+      /** Retry After S */
+      retry_after_s: number;
+      /**
+       * Operations
+       * @description the queued rebuilds the run waits on
+       */
+      operations: string[];
+    };
+    /**
+     * AnalysisReady
+     * @description The stored frame of a computed tree.
+     */
+    AnalysisReady: {
+      /**
+       * Status
+       * @default ready
+       * @constant
+       */
+      status?: "ready";
+      /**
+       * Ref
+       * @description the format 2 DatasetRef naming the frame
+       */
+      ref: {
+        [key: string]: components["schemas"]["JsonValue"];
+      };
+      /** Frame Content Version */
+      frame_content_version: string;
+      /** Output Digest */
+      output_digest: string;
+      /**
+       * Summary
+       * @description the facts of the tree's top step: the verb, its canonical parameters, the result's shape and exclusions, and the engine result's own fields
+       */
+      summary: {
+        [key: string]: components["schemas"]["JsonValue"];
+      };
+      /** Rows */
+      rows: number;
+      /** Role Keys */
+      role_keys: string[];
+      /** Stat Var Count */
+      stat_var_count: number;
+      /** Exclusions */
+      exclusions: {
+        [key: string]: components["schemas"]["JsonValue"];
+      }[];
+      /** Time */
+      time: {
+        [key: string]: components["schemas"]["JsonValue"];
+      };
+      /** Execution Identity */
+      execution_identity: {
+        [key: string]: string;
+      };
+      /**
+       * Resolved Periods
+       * @description each period the recipe states relative to the latest, with its period
+       */
+      resolved_periods: {
+        [key: string]: components["schemas"]["JsonValue"];
+      }[];
+    };
+    /**
+     * AnalysisRequest
+     * @description `POST /api/datasets/analysis`: the tree to compute, and whether its roots follow their
+     *     datasets' newest versions. A `tree` that is a derived root alone computes that frame's
+     *     stored recipe again, so `latest` reads it on its datasets' newest versions under the
+     *     recipe's own ids. `rolling` `"tree"` takes the populations and the latest period of every
+     *     rolling overlay a derived root's recipe holds from the whole tree, so derived rolling inputs
+     *     are computed again under one latest period. Left out, each keeps its stored populations and
+     *     periods.
+     */
+    AnalysisRequest: {
+      /** Tree */
+      tree: components["schemas"]["StepNode"] | components["schemas"]["DerivedRoot"];
+      /**
+       * Latest
+       * @default false
+       */
+      latest?: boolean;
+      /** Rolling */
+      rolling?: "tree" | null;
+      /** Anchor Roots */
+      anchor_roots?:
+        (components["schemas"]["SpecRoot"] | components["schemas"]["DatasetRoot"])[] | null;
+    };
+    /** AnchorAnswer */
+    AnchorAnswer: {
+      /** Period */
+      period: string;
+      /** Rule */
+      rule: string;
+      /** Left Out */
+      left_out: components["schemas"]["LeftOutSeriesBody"][];
+      /**
+       * Roots
+       * @description the dataset versions the period was taken over
+       */
+      roots: {
+        [key: string]: string;
+      }[];
+    };
+    /**
+     * AnchorRequest
+     * @description `POST /api/datasets/analysis/anchor`: the roots and populations a latest period is
+     *     taken over.
+     */
+    AnchorRequest: {
+      /** Roots */
+      roots: (components["schemas"]["SpecRoot"] | components["schemas"]["DatasetRoot"])[];
+      /** Populations */
+      populations: {
+        [key: string]: components["schemas"]["JsonValue"];
+      }[];
+      /**
+       * Latest
+       * @default false
+       */
+      latest?: boolean;
     };
     /**
      * AppliedDefaultModel
@@ -1222,6 +1643,15 @@ export interface components {
       sources: number;
       /** Facets */
       facets: number;
+    };
+    /**
+     * BareExportFrame
+     * @description A dataset named by its id alone, which stands for its newest version
+     *     (`resolve_export_frame`).
+     */
+    BareExportFrame: {
+      /** Spec Id */
+      spec_id: string;
     };
     /**
      * BaseIdentity
@@ -1458,7 +1888,7 @@ export interface components {
       operations?: components["schemas"]["Operation"][];
       /**
        * Departures
-       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, direction_inferred, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
+       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, member_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, direction_inferred, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
        */
       departures?: components["schemas"]["Departure"][];
       /**
@@ -1659,8 +2089,9 @@ export interface components {
      * Cause
      * @description The `cause` extension: why a refusal fired, beneath its own top-level
      *     `code` -- present only on a refusal that carries one (`recipe_not_declared`,
-     *     `rate_coverage_gap`, `operation_failed`). On `operation_failed`, `code` is
-     *     the failed operation's refusal code. Mirrors `alternatives`/`truncated`'s
+     *     `rate_coverage_gap`, `operation_failed`, or a Presentation refusal of a frame). On
+     *     `operation_failed`, `code` is the failed operation's refusal code, and on a
+     *     frame's refusal the reason the frame does not load. Mirrors `alternatives`/`truncated`'s
      *     own extension style: `entities` names what the cause concerns (entity or
      *     `entity@year` keys), capped, with `truncated` set when the cap cut items
      *     short.
@@ -1668,7 +2099,7 @@ export interface components {
     Cause: {
       /**
        * Code
-       * @description the cause code: a sub-cause such as nominal_undeclared, recipe_undeclared, or rate_missing, or on operation_failed the failed operation's own refusal code
+       * @description the cause code: a sub-cause such as nominal_undeclared, recipe_undeclared, or rate_missing, on operation_failed the failed operation's own refusal code, or on a Presentation refusal of a frame the reason the frame does not load
        */
       code: string;
       /**
@@ -1749,6 +2180,22 @@ export interface components {
       others: components["schemas"]["StepRef"][];
       /** Ranking */
       ranking: string[];
+    };
+    /**
+     * ChoiceOrigin
+     * @description The scope choice an entry was switched on.
+     */
+    ChoiceOrigin: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "choice";
+      /**
+       * Choice Id
+       * @description the ScopeChoice.id the switch was made on
+       */
+      choice_id: string;
     };
     /** CitationModel */
     CitationModel: {
@@ -2119,6 +2566,57 @@ export interface components {
       distinct?: number | null;
     };
     /**
+     * CompiledScope
+     * @description The identity the active options compile to.
+     */
+    CompiledScope: {
+      /**
+       * Spec Id
+       * @description the spec_id of `identity`
+       */
+      spec_id: string;
+      /** @description the compiled identity */
+      identity: components["schemas"]["BaseIdentity"];
+      /**
+       * Components
+       * @description one for a plain Spec, one per series of a composite
+       */
+      components: components["schemas"]["Component"][];
+    };
+    /**
+     * Component
+     * @description One series the compiled identity is served from.
+     */
+    Component: {
+      /**
+       * Role
+       * @description what the component holds
+       */
+      role: ("whole" | "bilateral" | "imputed" | "headline_net" | "headline_ge") | (string & {});
+      /**
+       * Periods
+       * @description the years the component serves; None for every year
+       */
+      periods?: [number, number][] | null;
+      /**
+       * Provenance
+       * @description the component's provenance dcid; None when unbound
+       */
+      provenance?: string | null;
+      /**
+       * Content Version
+       * @description the content version of the component's frame; None until it is minted
+       */
+      content_version?: string | null;
+      /**
+       * Stat Vars
+       * @description how many StatVars a mint of the component serves, whose rows the composite sums with the other components'; None for a plain Spec, or where the code index does not settle the component's members
+       */
+      stat_vars?: number | null;
+      /** @description the component's own identity */
+      identity: components["schemas"]["BaseIdentity"];
+    };
+    /**
      * ComponentBody
      * @description The create and revise routes' shared request body. `extra="forbid"`
      *     is what refuses a body carrying `session`/`caller`. An undeclared
@@ -2183,6 +2681,8 @@ export interface components {
       resolved_payload: {
         [key: string]: unknown;
       };
+      /** @description how long the frame this reply draws can still be fetched, counted from when DFO stored it. It is the stored frame on a read and the named frame on a render. A card's frame stays in the 30-day working tier until a share first includes the card. Once `held_until` has passed the frame can refuse `frame_unavailable`. Fetch the card's data with latest=True to draw from current data. Null for a card that draws no frame, or one whose frame DFO holds no version record of */
+      retention?: components["schemas"]["RetentionModel"] | null;
     };
     /**
      * ComposedUnit
@@ -2398,8 +2898,12 @@ export interface components {
     /**
      * CountedRefsModel
      * @description The things of one kind a warning counts: how many, and the `dcid:` refs of the first
-     *     five, or ten for a conversion's left-out entities (`materialise.codes.CountedRefs`). The message states the count and names none, so a
-     *     reader labels the refs.
+     *     five of them (the first ten for a conversion's left-out `omitted_entities`;
+     *     `materialise.codes.CountedRefs`). A message states the count and may name none, so a
+     *     reader labels the refs. A group's members come in request order and entities sorted;
+     *     for `withheld_by_registry`, `unserved_entities` come in the order the request names them
+     *     and `withheld_provenances` in the order they first occur across those places; for
+     *     `un_system_unavailable`, `unserved_entities` come in the order the UN reads recorded them.
      */
     CountedRefsModel: {
       /**
@@ -2409,7 +2913,7 @@ export interface components {
       count: number;
       /**
        * Refs
-       * @description the `dcid:` refs of the first five of them, ten for omitted_entities: a group's members in request order, entities sorted
+       * @description the `dcid:` refs of the first five of them, ten for omitted_entities, in the order the field's warning states
        */
       refs: string[];
     };
@@ -2708,6 +3212,43 @@ export interface components {
        * @description the cpw_ token that grants creating components into the composition this create started with composition_id "new", sent back as the x-dfo-write-token header. Present only on that create.
        */
       composition_write_token?: string | null;
+      /** @description how long the frame the new card draws can still be fetched, as a read states it. The frame is held for 30 days from when DFO stored it, until a share first includes the card. Null for a card that draws no frame, or one whose frame DFO holds no version record of */
+      retention?: components["schemas"]["RetentionModel"] | null;
+    };
+    /**
+     * CreateShareBody
+     * @description A create's body. `latest` has no default, because a live link and a fixed one answer
+     *     different questions under a public URL.
+     */
+    CreateShareBody: {
+      /**
+       * Cards
+       * @description the cards in slot order. Two entries may name the same revision. A card share takes at least one, a canvas any number, a search or conversation share none
+       */
+      cards?: components["schemas"]["ShareCardBody"][];
+      /**
+       * Latest
+       * @description true for a live share that follows new data and takes replacements, false for a snapshot that keeps the versions its cards draw now, for good
+       */
+      latest: boolean;
+      /**
+       * Title
+       * @description the share's title
+       */
+      title?: string | null;
+      /**
+       * Kind
+       * @description what the share publishes. The website renders a canvas, search or conversation share from its payload. A conversation share is a snapshot
+       * @default card
+       */
+      kind?: ("card" | "canvas" | "search" | "conversation") | (string & {});
+      /** @description website-owned JSON stored with the share as given and read back on GET, at most 10485760 bytes as compact UTF-8 */
+      payload?: components["schemas"]["JsonValue"];
+      /**
+       * Write Token
+       * @description a shw_ token this client minted for the new share: "shw_" + secrets.token_urlsafe(16) or an equivalent CSPRNG, 22 url-safe base64 characters after the prefix. It becomes the share's write token and keys the create. A retry with the same write_token and body answers the first share, spending no allowance, and a different body with it is refused as request_invalid. Mint a new one for each create.
+       */
+      write_token?: string | null;
     };
     /**
      * GraphDataBuilds
@@ -2861,6 +3402,17 @@ export interface components {
        */
       raw_query?: string | null;
     };
+    /**
+     * DatasetRoot
+     * @description A dataset version, as a ref member names it.
+     */
+    DatasetRoot: {
+      /** Spec Id */
+      spec_id: string;
+      /** Content Version */
+      content_version: string;
+      rendering?: components["schemas"]["RootRendering"];
+    };
     /** DatasetVersion */
     DatasetVersion: {
       /** Content Version */
@@ -3012,7 +3564,7 @@ export interface components {
       operations?: components["schemas"]["Operation"][];
       /**
        * Departures
-       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, direction_inferred, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
+       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, member_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, direction_inferred, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
        */
       departures?: components["schemas"]["Departure"][];
       /**
@@ -3113,12 +3665,12 @@ export interface components {
     Departure: {
       /**
        * Code
-       * @description what kind of departure this is. 'closest_match': the answer shows the nearest measure the graph holds, not the one asked; a client draws a muted 'Closest match:' lead before the heading, and on a candidates part, whose readings stand in for a measure with no data, once before the first reading. 'measure_not_applied': a named measure qualifier was not applied. 'operation_not_applied': an operation the request named (a share, a ranking) was not run, so the amounts behind it are shown. 'breakdown_not_applied': a breakdown the request named was not applied, so the total is shown. 'entity_unavailable': an entity the request named holds no values in the series the answer reads, one departure per role; for a role the request named as a group, asked is the request's words for the group and the text counts the members without values; the text names any source holding values there that Search does not read. 'year_unavailable': a named year or range falls outside the years served. 'modelled_values': the served values are modelled or estimated. 'group_read_as_members': a named group was read as its member entities; on a flow role the text names the amounts the group's published total counts that no member holds, and, for a group whose published total is not its members' sum, says the source publishes its own figure for the group. 'whole_total_read': a flow side is read as its whole population, the total its source publishes for every party of that side (official donors (DAC) for 'official donors' or a donor side the request named nothing on or summed over; official and private donors (DAC) for 'all donors'); the text says what the total holds and how to list the side's members: in the question's words ('by donor') on the raw_text door, with open_roles on the others. 'whole_total_unpublished': the request named a whole population ('all donors', 'all recipients') on a side whose dataset publishes no total of it and holds no party outside it, so the side is left unnamed and the answer covers every party the dataset holds there; asked is the request's words, and the text names the dataset. 'direction_discarded': a flow direction the request's own words named was not applied. 'direction_inferred': a place the request named without a direction is read on the one direction that holds data, which over names. 'scope_limited': a no_data answer's check covered only values the engine chose, which the request did not name; its text names only what the check covered ('This check covered only ODA.')
+       * @description what kind of departure this is. 'closest_match': the answer shows the nearest measure the graph holds, not the one asked; a client draws a muted 'Closest match:' lead before the heading, and on a candidates part, whose readings stand in for a measure with no data, once before the first reading. 'measure_not_applied': a named measure qualifier was not applied. 'operation_not_applied': an operation the request named (a share, a ranking) was not run, so the amounts behind it are shown. 'breakdown_not_applied': a breakdown the request named was not applied, so the total is shown. 'entity_unavailable': an entity the request named holds no values in the series the answer reads, one departure per role; for a role the request named as a group, asked is the request's words for the group and the text counts the members without values; the text names any source holding values there that Search does not read. 'member_unavailable': a variable of the answer holds no values under the source, unit and method a reading reads, so it shows none; asked names those variables and shown the source read, and the text names that source and its unit, so each reading of a candidates part states its own; editing the source or the set binding that names the variables clears it. 'year_unavailable': a named year or range falls outside the years served. 'modelled_values': the served values are modelled or estimated. 'group_read_as_members': a named group was read as its member entities; on a flow role the text names the amounts the group's published total counts that no member holds, and, for a group whose published total is not its members' sum, says the source publishes its own figure for the group. 'whole_total_read': a flow side is read as its whole population, the total its source publishes for every party of that side (official donors (DAC) for 'official donors' or a donor side the request named nothing on or summed over; official and private donors (DAC) for 'all donors'); the text says what the total holds and how to list the side's members: in the question's words ('by donor') on the raw_text door, with open_roles on the others. 'whole_total_unpublished': the request named a whole population ('all donors', 'all recipients') on a side whose dataset publishes no total of it and holds no party outside it, so the side is left unnamed and the answer covers every party the dataset holds there; asked is the request's words, and the text names the dataset. 'direction_discarded': a flow direction the request's own words named was not applied. 'direction_inferred': a place the request named without a direction is read on the one direction that holds data, which over names. 'scope_limited': a no_data answer's check covered only values the engine chose, which the request did not name; its text names only what the check covered ('This check covered only ODA.')
        */
       code: DepartureCode | (string & {});
       /**
        * Binding Ref
-       * @description the identity binding whose edit clears this departure ('when:' for a year, 'how:<property dcid>' for a measure value, 'where:' or 'origin:' for a role's entities, 'unit:' for the price basis); null for a departure no binding edit clears, such as an operation the engine does not run. A client links the departure to the sentence token carrying the same binding_ref when the plan has one; a candidates or no_data plan, and a how slot the heading leaves silent, may carry no such token
+       * @description the identity binding whose edit clears this departure ('when:' for a year, 'how:<property dcid>' for a measure value, 'where:' or 'origin:' for a role's entities, 'unit:' for the price basis, 'source:' for the source); null for a departure no binding edit clears, such as an operation the engine does not run. A client links the departure to the sentence token carrying the same binding_ref when the plan has one; a candidates or no_data plan, and a how slot the heading leaves silent, may carry no such token
        */
       binding_ref?: string | null;
       /**
@@ -3154,6 +3706,87 @@ export interface components {
        * @description the policy id's own version
        */
       version: string;
+    };
+    /**
+     * DerivedManifest
+     * @description What a client builds a derived Dataset from. See the module docstring.
+     */
+    DerivedManifest: {
+      /** Spec Id */
+      spec_id: string;
+      /** Content Version */
+      content_version: string;
+      retention: components["schemas"]["RetentionModel"];
+      /** @description the sources of every root, each once */
+      citation: components["schemas"]["CitationModel"];
+      /** @description null for a frame stored without a recipe */
+      recipe: components["schemas"]["DerivedRecipe"] | null;
+      /**
+       * Roots
+       * @description each root dataset version once, in order
+       */
+      roots: components["schemas"]["DerivedManifestRoot"][];
+      /**
+       * Resolved Periods
+       * @description each period the recipe states relative to the latest, with its period
+       */
+      resolved_periods: {
+        [key: string]: components["schemas"]["JsonValue"];
+      }[];
+      /** @description the latest period of the rolling anchor and the series without a row at it */
+      anchor: components["schemas"]["RecipeAnchor"] | null;
+      /**
+       * Left Out
+       * @description every series a step of the recipe dropped for a data gap, step by step; null for a recipe stored without them
+       */
+      left_out: components["schemas"]["RecipeDroppedSeries"][] | null;
+      /**
+       * Left Out Complete
+       * @description false when the steps dropped more series than `left_out` lists
+       */
+      left_out_complete: boolean | null;
+    };
+    /** DerivedManifestRoot */
+    DerivedManifestRoot: {
+      /** Spec Id */
+      spec_id: string;
+      /** Content Version */
+      content_version: string;
+      /** Rendering */
+      rendering: {
+        [key: string]: components["schemas"]["JsonValue"];
+      };
+    };
+    /** DerivedRecipe */
+    DerivedRecipe: {
+      /** Normal Form Hash */
+      normal_form_hash: string;
+      /** Replay Key */
+      replay_key: string;
+      /** Execution Identity */
+      execution_identity: string;
+      /**
+       * Tree
+       * @description the recipe's op-spec tree
+       */
+      tree: {
+        [key: string]: components["schemas"]["JsonValue"];
+      };
+      /**
+       * Roots
+       * @description how the recipe read each root dataset
+       */
+      roots: components["schemas"]["JsonValue"][];
+    };
+    /**
+     * DerivedRoot
+     * @description A frame an earlier analysis stored.
+     */
+    DerivedRoot: {
+      /** Spec Id */
+      spec_id: string;
+      /** Content Version */
+      content_version: string;
     };
     /**
      * DescribedProperty
@@ -3232,7 +3865,7 @@ export interface components {
       timing_ms?: components["schemas"]["Timing"] | null;
       /**
        * Llm Usage
-       * @description per-request LLM token counts {input_tokens, output_tokens, cached_tokens}, plus {jev_input_tokens, jev_output_tokens} when Jev answered a call
+       * @description per-request LLM token counts {input_tokens, output_tokens, cached_tokens}, plus {jev_input_tokens, jev_output_tokens} when Jev answered a call, and uncounted_calls, the calls sent whose tokens no response reported
        */
       llm_usage?: {
         [key: string]: number;
@@ -3341,6 +3974,26 @@ export interface components {
        */
       label: string;
     };
+    /**
+     * DroppedEntry
+     * @description An entry left out because it cannot apply to this part: a carried entry, or on a
+     *     fresh search an entry the request's words stated.
+     */
+    DroppedEntry: {
+      /** @description the entry left out */
+      entry: components["schemas"]["Entry"];
+      /**
+       * Code
+       * @description carried_choice_not_applied for a carried entry, stated_choice_not_applied for an entry the request's words stated
+       * @default carried_choice_not_applied
+       */
+      code?: ("carried_choice_not_applied" | "stated_choice_not_applied") | (string & {});
+      /**
+       * Cause
+       * @description why the entry cannot apply: entry_on_axis (another entry settles the axis), axis_absent, option_unknown, the option's unavailability reason (a ScopeReasonCode), not_served when the option is available but the answer serves another, or, where compile weighs the entry, option_unavailable, conflicts_with_entry or the conflict that blocks it
+       */
+      cause: string;
+    };
     /** EnrichmentCoverageCountsModel */
     EnrichmentCoverageCountsModel: {
       /** Entities */
@@ -3373,6 +4026,30 @@ export interface components {
        * @default false
        */
       truncated?: boolean;
+      /**
+       * In Long Layout
+       * @description true when a long-layout download writes this information with no columns token, so naming the token there adds nothing: {role}_label, and the party fields of a role on a flow axis, which its {role}_kind column reads in words. Pivot output and the frame layout write the column only when the token asks for it
+       * @default false
+       */
+      in_long_layout?: boolean;
+    };
+    /**
+     * EntitiesBinding
+     * @description An option that adds entities to one role of the identity, beside its members.
+     */
+    EntitiesBinding: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "entities";
+      /** @description the role the entities join */
+      role: components["schemas"]["RoleAxis"];
+      /**
+       * Add
+       * @description the entity dcids the option adds, sorted; [] for the members alone
+       */
+      add: string[];
     };
     /**
      * GraphAvailabilityEntityCounts
@@ -3431,12 +4108,17 @@ export interface components {
      *     type. `entity_type` is informational, and the reading keys on `ref`. When
      *     the role binds the total its dataset publishes
      *     for the group ("Africa (DAC)") in place of the members, `total` names that
-     *     party and the role's one dcid is it. A role read as the whole population of
+     *     party and the role's one dcid is it, and `members` lists the group's members as the
+     *     membership registry holds them, so a caller can tell whether a party sits inside the
+     *     total. A role read as the whole population of
      *     its side, the source's total of every party there ("Official Donors, Total")
      *     or a union of such totals ("all donors including private"), states the
      *     classes of party that population covers in `whole_of`, and the classes the answer's
      *     dataset publishes on that side in `side_classes`; a resubmit derives both from the
-     *     identity and the code index, whatever it posts. A Spec serves its groups on
+     *     identity and the code index, whatever it posts. A role read as the group's members states
+     *     the residuals the group's total counts that the members leave out in `left_out`, and
+     *     whether the source publishes its own figure for the group in `sum_differs`
+     *     (`spec_build.with_members_left_out`). A Spec serves its groups on
      *     `ResolvedSpec.entity_groups`, and a resubmit posts them beside the identity
      *     (`ResubmitIdentityEntry.entity_groups`, `ResubmitCandidate.entity_groups`).
      */
@@ -3467,15 +4149,35 @@ export interface components {
        */
       group_id?: string | null;
       /**
+       * Members
+       * @description for a role that binds the group's published total (total), the group's members as the membership registry lists them, sorted, e.g. the 32 DAC member countries for DAC countries, total; the residuals a regional total counts beside them are not listed. Absent when the role binds the members or the registry lists none for the group. Derived on every answer; a posted value is ignored
+       */
+      members?: string[] | null;
+      /**
        * Whole Of
        * @description the classes of party the role's whole population covers, sorted: official, private or residual, e.g. ["official"] for Official Donors, Total, which holds every official donor and no private one; absent for any other group
        */
       whole_of?: (("official" | "private" | "residual") | (string & {}))[] | null;
       /**
+       * Holds Multilaterals
+       * @description for a donor role that binds a published total (total) or reads as its whole population (whole_of), whether that population holds a multilateral organisation (see ResolvedEntity.multilateral): false for DAC countries, total, whose members are countries, true for Official Donors, Total in DAC2a. Absent for any other group and for a total whose members the registry does not list. Derived on every answer; a posted value is ignored
+       */
+      holds_multilaterals?: boolean | null;
+      /**
        * Side Classes
        * @description for a role read as its whole population, the classes of party, totals aside, the answer's dataset publishes on that side, sorted, e.g. ["official", "private", "residual"] for donors in DAC2a; a class here and not in whole_of, such as "private", is outside the total. Absent for any other group. Derived from the identity on every answer; a posted value is ignored
        */
       side_classes?: (("official" | "private" | "residual") | (string & {}))[] | null;
+      /**
+       * Left Out
+       * @description for a group the role reads as its members, the labels of the residuals the group's published total counts beside the members that the answer leaves out and its dataset publishes on the role's side, in the total's order, e.g. ["Africa, unallocated by country (DAC)"] for Africa read as its countries. Absent when the members leave nothing out, for a group the role reads as its total or whole population, and on a role outside a flow. Derived on every answer; a posted value is ignored
+       */
+      left_out?: string[] | null;
+      /**
+       * Sum Differs
+       * @description for a group the role reads as its members, true when the dataset publishes its own figure for the group's total and that figure is not the members' sum, so it can differ from one built from them. Absent otherwise. Derived on every answer; a posted value is ignored
+       */
+      sum_differs?: boolean | null;
     };
     /**
      * EntityOptions
@@ -3558,7 +4260,7 @@ export interface components {
       text: string;
       /**
        * Refs
-       * @description the refs the part's answer binds for `text`: a place gives its node; a group, continent or subregion bound as itself gives its own node, or the total its dataset publishes for it (G7 bound as GroupOfSeven); one bound as its members gives the set's own ref first (its node, else that total, else its registry id) and then the members, sorted. [] for an ambiguous text, one that resolved to no node or a node the answer does not bind, and every text of a part refused before its places were bound
+       * @description the refs the part's answer binds for `text`: a place gives its node; a group, continent or subregion bound as itself gives its own node, or the total its dataset publishes for it (G7 bound as GroupOfSeven); one bound as its members gives the set's own ref first (its node, else that total, else its registry id) and then the members, sorted. In a part refused before its places were bound, a text that resolved to one node gives that node, and a group or a set read as its members gives []. [] for an ambiguous text and one that resolved to no node or a node the answer does not bind
        */
       refs: string[];
     };
@@ -3578,6 +4280,37 @@ export interface components {
        * @description the years left out, as runs of consecutive years, `1990-2001` or `2004`
        */
       years: string[];
+    };
+    /**
+     * Entry
+     * @description One explicit or carried scope entry: an option the user asked for on one axis.
+     */
+    Entry: {
+      /**
+       * Axis
+       * @description the axis the entry settles
+       */
+      axis: ("sector" | "region" | "measure_basis" | "provider") | (string & {});
+      /**
+       * Option Id
+       * @description the option asked for; its prefix is `axis`
+       */
+      option_id: string;
+      /**
+       * Provenance
+       * @description explicit: the request's own words or a switch; carried: a choice the conversation settled on an earlier part, attached by axis and concept
+       */
+      provenance: ("explicit" | "carried") | (string & {});
+      /**
+       * Concept
+       * @description the concept the entry was made for ('health'), so a carried entry attaches only to a part asking for that concept; None when the axis has no concept
+       */
+      concept?: string | null;
+      /**
+       * Origin
+       * @description where the entry was read or switched
+       */
+      origin: components["schemas"]["TextOrigin"] | components["schemas"]["ChoiceOrigin"];
     };
     /**
      * Exclusion
@@ -3613,6 +4346,111 @@ export interface components {
        * @description descendant codes admitted beyond the slot's own bound value(s), in the code index's descendant-walk order. Never empty -- a slot whose expansion added nothing carries no Expansion at all (Slot.expansion is None), rather than one with added=[]
        */
       added: components["schemas"]["GraphRef"][];
+    };
+    ExportFormat: ("csv" | "xlsx" | "parquet") | (string & {});
+    /**
+     * ExportFrame
+     * @description One exact frame version: a dataset's `spec_` id or a derived frame's `ops_` id, and its
+     *     content version.
+     */
+    ExportFrame: {
+      /** Spec Id */
+      spec_id: string;
+      /** Content Version */
+      content_version: string;
+    };
+    /** ExportLicence */
+    ExportLicence: {
+      /**
+       * Source
+       * @description the source's ref, the key of the licence deny-list
+       */
+      source: string;
+      /** Label */
+      label: string;
+      /**
+       * Licence
+       * @description the licence's label; null where none is declared
+       */
+      licence: string | null;
+      /**
+       * Url
+       * @description the licence's terms page; null where none is declared
+       */
+      url: string | null;
+    };
+    /**
+     * ExportRequestBody
+     * @description `POST /api/datasets/exports`'s body: an `ExportRequest` whose frame may name a dataset id
+     *     alone.
+     */
+    ExportRequestBody: {
+      /**
+       * Frame
+       * @description the frame version to export, or `{spec_id}` alone for a dataset's newest version, which the answer's `frame` names
+       */
+      frame: components["schemas"]["ExportFrame"] | components["schemas"]["BareExportFrame"];
+      /**
+       * @description the file format
+       * @default csv
+       */
+      format?: components["schemas"]["ExportFormat"];
+      /**
+       * Bundle
+       * @description true for a zip bundle of the file beside its README, datapackage.json and CITATION.cff
+       * @default false
+       */
+      bundle?: boolean;
+    };
+    /**
+     * ExportResponse
+     * @description The facts of a prepared export. A repeat prepare answers the same facts.
+     */
+    ExportResponse: {
+      /** Export Id */
+      export_id: string;
+      /**
+       * Url Path
+       * @description the export link's path, relative to the public site's origin. It needs no key and does not expire: each request answers 302 to a URL signed for five minutes
+       */
+      url_path: string;
+      /** File Name */
+      file_name: string;
+      /** Media Type */
+      media_type: string;
+      format: components["schemas"]["ExportFormat"];
+      /** Bundle */
+      bundle: boolean;
+      /** Bytes */
+      bytes: number;
+      /**
+       * Rows
+       * @description rows in the file's data table, header excluded
+       */
+      rows: number;
+      /**
+       * Columns
+       * @description columns in the file's data table
+       */
+      columns: number;
+      /**
+       * Sha256
+       * @description the hex SHA-256 of the file's bytes
+       */
+      sha256: string;
+      frame: components["schemas"]["ExportFrame"];
+      /** Citation */
+      citation: string;
+      /**
+       * Licences
+       * @description each source of the frame once
+       */
+      licences: components["schemas"]["ExportLicence"][];
+      /**
+       * Pinned
+       * @description true: the file is held in the pinned tier, kept for good
+       */
+      pinned: boolean;
     };
     /**
      * GraphFacetItem
@@ -4585,6 +5423,29 @@ export interface components {
     };
     JsonValue: unknown;
     /**
+     * LedgerStep
+     * @description One switch: the entry it replaced and the entry it applied.
+     *
+     *     Search answers with `ledger: []`. A client that records its switches fills it, and can
+     *     undo one by posting the prior entry back.
+     */
+    LedgerStep: {
+      /**
+       * Axis
+       * @description the axis switched
+       */
+      axis: ("sector" | "region" | "measure_basis" | "provider") | (string & {});
+      /** @description the entry the switch replaced; None for a default */
+      prior: components["schemas"]["Entry"] | null;
+      /** @description the entry the switch applied */
+      applied: components["schemas"]["Entry"];
+      /**
+       * Revision
+       * @description the plan revision the switch was made on
+       */
+      revision: number;
+    };
+    /**
      * LeftOut
      * @description One data gap: why some data was left out, how many, and of what. The caller's own
      *     selection is a parameter and never appears here.
@@ -4603,10 +5464,23 @@ export interface components {
       /** Role */
       role?: string;
     };
+    /** LeftOutSeriesBody */
+    LeftOutSeriesBody: {
+      /**
+       * Root
+       * @description the population the series belongs to, by position
+       */
+      root: number;
+      /** Coordinates */
+      coordinates: {
+        [key: string]: string;
+      };
+    };
     /**
      * Manifest
-     * @description `trace` stays a plain dict, since `materialise.trace.ManifestTrace.to_dict()`
-     *     is already this field's exact wire shape.
+     * @description `trace` is a plain dict at run time, since `materialise.trace.ManifestTrace.to_dict()`
+     *     is already this field's wire shape. Its type (`TraceModel`) fixes the shape of
+     *     `party_totals_left_out` and leaves every other key open.
      *
      *     `series_count` is the number of distinct series this definition
      *     resolves, as the version's description counts them (`statistics.SeriesFigures.series`): a
@@ -4641,10 +5515,7 @@ export interface components {
       prepared_at: string;
       coverage: components["schemas"]["CoverageModel"];
       citation: components["schemas"]["CitationModel"];
-      /** Trace */
-      trace: {
-        [key: string]: unknown;
-      };
+      trace: components["schemas"]["TraceModel"];
       /** Warnings */
       warnings?: components["schemas"]["WarningModel"][];
       /**
@@ -4858,6 +5729,11 @@ export interface components {
      *     as it does for pivot output. It refuses with `bundle: true`, a `pivot`,
      *     or a format other than parquet.
      *
+     *     `enrichment: "default"` asks for the version's default enrichment columns
+     *     (`datasets_api.default_enrichment`), resolved once the version is built: they join `columns`,
+     *     or are `columns` when it names none, and the option is dropped before the rendering is keyed,
+     *     rendered or recorded, so the answer is that of a request naming the resolved columns.
+     *
      *     `without_party_totals: true` leaves out the rows whose party, on a flow party role the
      *     served identity binds no entity on, the code index declares a group total
      *     (`datasets_api.party_totals`). It runs on the frame before any reshape, so a `groupby`
@@ -4884,6 +5760,11 @@ export interface components {
        * @default false
        */
       without_party_totals?: boolean;
+      /**
+       * Enrichment
+       * @description "default" adds the version's default enrichment columns, chosen once it is built from the roles its frame holds: each of observationAbout, financingProvider and financingRecipient it holds takes its _type column, and a flow party role adds party_kind, party_class and party_whole. They join `columns`, or are the columns when it names none, so the result is the request that names them
+       */
+      enrichment?: "default" | null;
       /** Layout */
       layout?: "frame" | null;
     };
@@ -4939,6 +5820,107 @@ export interface components {
       resolved: components["schemas"]["ResolvedSpec"];
       /** @description the definition part this suggestion relaxed, and the value(s) it dropped */
       relaxation: components["schemas"]["Relaxation"];
+    };
+    /**
+     * NewestFrameDimensionValuesResponse
+     * @description `GET /api/presentation/frames/{spec_id}?dimension=`'s body: one dimension's values in
+     *     the frame it resolved, and that frame's pair.
+     */
+    NewestFrameDimensionValuesResponse: {
+      /**
+       * Spec Id
+       * @description the served id of the dataset read, which differs from the requested id when that id now serves under another
+       */
+      spec_id: string;
+      /**
+       * Content Version
+       * @description the version of the dataset read, its newest
+       */
+      content_version: string;
+      /**
+       * Dimension
+       * @description the dimension this response reports
+       */
+      dimension: string;
+      /**
+       * Values
+       * @description every value this dimension carries, uncapped, or only the values matching `query` when it is given
+       */
+      values: string[];
+      /**
+       * Total Count
+       * @description how many values this dimension carries, or how many match `query` when it is given
+       */
+      total_count: number;
+    };
+    /**
+     * NewestFrameFilteredViewResponse
+     * @description `GET /api/presentation/frames/{spec_id}?query=`'s body: the filtered view of the frame
+     *     it resolved, and that frame's pair.
+     */
+    NewestFrameFilteredViewResponse: {
+      /**
+       * Spec Id
+       * @description the served id of the dataset read, which differs from the requested id when that id now serves under another
+       */
+      spec_id: string;
+      /**
+       * Content Version
+       * @description the version of the dataset read, its newest
+       */
+      content_version: string;
+      /**
+       * Dimensions
+       * @description every dimension this frame declares, filtered
+       */
+      dimensions: components["schemas"]["FrameDimensionMatch"][];
+      /**
+       * Period Grain
+       * @description this frame's own period grain
+       */
+      period_grain: string;
+      /**
+       * Coverage
+       * @description this frame's own [start, end] period coverage, null if it has none
+       */
+      coverage: [string, string] | null;
+    };
+    /**
+     * NewestFrameStructuralViewResponse
+     * @description `GET /api/presentation/frames/{spec_id}`'s body with neither `dimension` nor `query`
+     *     given: the structural view of the frame it resolved, and that frame's pair.
+     */
+    NewestFrameStructuralViewResponse: {
+      /**
+       * Spec Id
+       * @description the served id of the dataset read, which differs from the requested id when that id now serves under another
+       */
+      spec_id: string;
+      /**
+       * Content Version
+       * @description the version of the dataset read, its newest
+       */
+      content_version: string;
+      /**
+       * Dimensions
+       * @description every dimension this frame declares
+       */
+      dimensions: components["schemas"]["FrameDimensionSummary"][];
+      /**
+       * Period Grain
+       * @description this frame's own period grain
+       */
+      period_grain: string;
+      /**
+       * Coverage
+       * @description this frame's own [start, end] period coverage, null if it has none
+       */
+      coverage: [string, string] | null;
+      /**
+       * Series Count
+       * @description how many distinct series this frame resolves
+       */
+      series_count: number;
     };
     /**
      * NoData
@@ -5111,7 +6093,7 @@ export interface components {
       operations?: components["schemas"]["Operation"][];
       /**
        * Departures
-       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, direction_inferred, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
+       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, member_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, direction_inferred, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
        */
       departures?: components["schemas"]["Departure"][];
       /**
@@ -5567,6 +6549,76 @@ export interface components {
       } | null;
     };
     /**
+     * Option
+     * @description One value a scope choice can take.
+     */
+    Option: {
+      /**
+       * Option Id
+       * @description the option's id
+       */
+      option_id: string;
+      /**
+       * Label
+       * @description the option for a reader
+       */
+      label: string;
+      /**
+       * Binding
+       * @description what the option binds in the identity
+       */
+      binding:
+        | components["schemas"]["SlotBinding"]
+        | components["schemas"]["EntitiesBinding"]
+        | components["schemas"]["ShapeBinding"]
+        | components["schemas"]["ProviderBinding"];
+      /** @description whether a switch to it can be served */
+      availability: components["schemas"]["OptionAvailability"];
+    };
+    /**
+     * OptionAvailability
+     * @description Whether an option can be served, and why not.
+     */
+    OptionAvailability: {
+      /**
+       * Status
+       * @description available, partial or unavailable
+       */
+      status: ("available" | "partial" | "unavailable") | (string & {});
+      /**
+       * Years
+       * @description the years a partial option covers, as closed spans; None otherwise
+       */
+      years?: [number, number][] | null;
+      /**
+       * Code
+       * @description why the option is partial or unavailable; None when available
+       */
+      code?:
+        | (
+            | (
+                | "provider_not_offered"
+                | "imputed_coverage"
+                | "basis_not_published"
+                | "residuals_need_summed_region"
+                | "conflicts_with"
+                | "carried_choice_not_applied"
+                | "stated_choice_not_applied"
+                | "option_not_covered"
+                | "contributions_counted"
+              )
+            | (string & {})
+          )
+        | null;
+      /**
+       * Detail
+       * @description the code's parameters: `why` for provider_not_offered, `dataset` for basis_not_published and contributions_counted, `entry` and `cause` for conflicts_with
+       */
+      detail?: {
+        [key: string]: string;
+      };
+    };
+    /**
      * OptionsEnvelope
      * @description `GET /api/datasets/{id}/options`'s response. It is the projection
      *     of a materialising door's manifest onto the fields this route's callers
@@ -5588,10 +6640,7 @@ export interface components {
       output_options?: components["schemas"]["OutputOptionsModel"] | null;
       /** Warnings */
       warnings?: components["schemas"]["WarningModel"][];
-      /** Trace */
-      trace: {
-        [key: string]: unknown;
-      };
+      trace: components["schemas"]["TraceModel"];
     };
     /**
      * OptionsFor
@@ -5858,7 +6907,7 @@ export interface components {
       dcid?: string | null;
       /**
        * Members
-       * @description true asks for the members of the set `text` names, each as its own series: the countries of a continent or UN subregion, or the members of a group. It has no effect on a single place. Text whose wording names members, such as 'EU member states', reads as true without the flag. With a pinned `dcid` it is honoured for a continent or subregion that the membership policy holds or omits, whatever the node's graph type, and refuses request_invalid for a group's own node, whose members a pin cannot supply. One part names a set once: the same entity posted with both values refuses request_invalid
+       * @description true asks for the members of the set `text` names, each as its own series: the countries of a continent or UN subregion, or the members of a group. It has no effect on a single place. Text whose wording names members, such as 'EU member states', reads as true without the flag. With a pinned `dcid` it is honoured for a continent or subregion that the membership policy holds or omits, whatever the node's graph type, and refuses request_invalid for a group's own node, whose members a pin cannot supply. One part names a set once on each flow end its `role_text` gives, so one entity can be asked for as its members on one end and whole on the other; the same entity posted with both values on one end, or with both values and a row with no recognised `role_text`, refuses request_invalid
        */
       members?: boolean | null;
     };
@@ -5883,6 +6932,16 @@ export interface components {
        * @description original query text, for echo only; does not affect resolution
        */
       raw_query?: string | null;
+      /**
+       * User Message
+       * @description the user's own message for the turn, as written. On a request of one part, the scope words it states ('bilateral', 'excluding multilateral', 'net', 'gross', 'grant equivalent', 'commitments') become explicit scope entries and 'total' a total intent, read in place of the part's variable_text. A request of several parts reads each part's own variable_text, so one part's words never reach another. None reads the part's variable_text
+       */
+      user_message?: string | null;
+      /**
+       * Carried Entries
+       * @description the scope entries earlier searches of the conversation settled, each with provenance carried, from their resolved.scope_choices. Each attaches to the parts that settle its axis, and an entry made for a concept only to a part asking for that concept. An explicit entry on the same axis wins; a carried entry a part cannot take is reported in that part's resolved.scope_choices.dropped_entries. None carries none
+       */
+      carried_entries?: components["schemas"]["Entry"][] | null;
     };
     /**
      * ParsedPart
@@ -5947,6 +7006,47 @@ export interface components {
       separate?: boolean;
     };
     /**
+     * PartScope
+     * @description Every scope choice of one part, the entries that settled them and the identity they
+     *     compile to.
+     */
+    PartScope: {
+      /**
+       * Id
+       * @description the scope's id: the spec_id of `base`
+       */
+      id: string;
+      /** @description the identity the part resolved; its bindings carry the constraints */
+      base: components["schemas"]["SpecDefinition"];
+      /**
+       * Rule Version
+       * @description the hash of the declaration tables compiled against
+       */
+      rule_version: string;
+      /**
+       * Entries
+       * @description the explicit and carried entries applied, the input a switch posts back
+       */
+      entries: components["schemas"]["Entry"][];
+      /**
+       * Dropped Entries
+       * @description the entries left out, each with its code and cause: carried entries the part cannot take, and on a fresh search the stated entries it cannot serve
+       */
+      dropped_entries?: components["schemas"]["DroppedEntry"][];
+      /**
+       * Choices
+       * @description one per axis the part settles
+       */
+      choices: components["schemas"]["ScopeChoice"][];
+      /** @description what the active options compile to */
+      compiled: components["schemas"]["CompiledScope"];
+      /**
+       * Ledger
+       * @description the switches made, newest last; the server keeps none, so [] on the wire
+       */
+      ledger?: components["schemas"]["LedgerStep"][];
+    };
+    /**
      * GraphPartyBlock
      * @description An organisation's or aggregate's detail block.
      */
@@ -5956,6 +7056,30 @@ export interface components {
        * @description the role properties a node of these types can fill, by the role ranges the graph declares (rangeIncludes and its subClassOf closure); null when that read failed
        */
       roles: string[] | null;
+    };
+    /**
+     * PartyTotalsLeftOutModel
+     * @description One role's group totals a `without_party_totals` cut left out of one provenance's rows
+     *     (`datasets_api.party_totals.PartyTotalsCut.trace_entries`). An entry without a
+     *     `provenance`, which a version recorded before the trace named the provenance holds, left its
+     *     parties out of the rows of every dataset.
+     */
+    PartyTotalsLeftOutModel: {
+      /**
+       * Role
+       * @description the party role whose rows lost the totals
+       */
+      role: string;
+      /**
+       * Provenance
+       * @description the dataset whose rows lost the totals, null for rows with no provenance. Absent on a version recorded before the trace named the provenance, whose totals left the rows of every dataset
+       */
+      provenance?: string | null;
+      /**
+       * Entities
+       * @description the dcid refs of the totals left out, in ref order
+       */
+      entities: string[];
     };
     /**
      * PeriodCoverage
@@ -6244,6 +7368,32 @@ export interface components {
        */
       documentation?: string;
     };
+    /**
+     * ProviderBinding
+     * @description An option that sets whose spending the answer counts.
+     */
+    ProviderBinding: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "provider";
+      /**
+       * Scope
+       * @description bilateral flows alone, with imputed shares of multilateral spending, with core contributions to multilaterals, or the core contributions alone, as a published donor total counts them
+       */
+      scope: ("bilateral" | "inclusive" | "contributions" | "multilateral") | (string & {});
+      /**
+       * Window
+       * @description the years the option sets as the requested window, first and last: the latest run of years both tables of the inclusive scope cover, when they cover fewer than the part asks for, or the one latest year both cover for a part asking for the latest year; None when the option keeps the part's window
+       */
+      window?: [number, number] | null;
+      /**
+       * Provenance
+       * @description the composite provenance the inclusive scope binds as the identity's source, which stacks the part's bilateral flows on the imputed multilateral line of its own table; None for every other scope
+       */
+      provenance?: string | null;
+    };
     /** PublishFrameRequest */
     PublishFrameRequest: {
       /**
@@ -6405,6 +7555,8 @@ export interface components {
       roots: components["schemas"]["JsonValue"][];
       /** @description the rolling anchor, or null for a recipe with no rolling period */
       anchor?: components["schemas"]["RecipeAnchor"] | null;
+      /** @description the series each step dropped for a data gap, as the run that stored the recipe computed them; null for a recipe stored without them */
+      left_out?: components["schemas"]["RecipeLeftOut"] | null;
     };
     /**
      * RecipeAnchor
@@ -6424,6 +7576,50 @@ export interface components {
       rule: "half1";
       /** Left Out */
       left_out: components["schemas"]["RecipeLeftOutSeries"][];
+    };
+    /**
+     * RecipeDroppedSeries
+     * @description One series a step of the recipe dropped for missing or unusable data (a data gap, such
+     *     as a growth endpoint the series lacks or a key the other side holds no partner for).
+     */
+    RecipeDroppedSeries: {
+      /**
+       * Coordinates
+       * @description the series' dimension values, column name to value, as the step read them
+       */
+      coordinates: {
+        [key: string]: string;
+      };
+      step: components["schemas"]["RecipeStepRef"];
+      /**
+       * Side
+       * @description the step input the series came from, in the analysis call's words
+       */
+      side: ("data" | "other") | (string & {});
+      /**
+       * Reason
+       * @description the engine's exclusion reason
+       */
+      reason: string;
+      /**
+       * Rows
+       * @description the rows of the series the step left out
+       */
+      rows: number;
+    };
+    /**
+     * RecipeLeftOut
+     * @description Every series the recipe's steps dropped for a data gap, at most
+     *     `MAX_RECIPE_LEFT_OUT_SERIES`, and whether that is all of them.
+     */
+    RecipeLeftOut: {
+      /** Series */
+      series: components["schemas"]["RecipeDroppedSeries"][];
+      /**
+       * Complete
+       * @description false when the steps dropped more series than listed
+       */
+      complete: boolean;
     };
     /**
      * RecipeLeftOutSeries
@@ -6454,6 +7650,17 @@ export interface components {
        */
       label?: string | null;
     };
+    /**
+     * RecipeStepRef
+     * @description A derived node of a recipe's `tree`: its verb and its index in depth-first order, the
+     *     tree's top node first and each node before its inputs, slots in the tree's order.
+     */
+    RecipeStepRef: {
+      /** Verb */
+      verb: string;
+      /** Node */
+      node: number;
+    };
     /** RecipeWriteResponse */
     RecipeWriteResponse: {
       /** Spec Id */
@@ -6465,6 +7672,13 @@ export interface components {
        * @description true when this call stored the recipe; false when the frame already held a recipe with the same normal_form_hash and replay_key
        */
       created: boolean;
+    };
+    /**
+     * RefRoot
+     * @description A DatasetRef, read as its one member.
+     */
+    RefRoot: {
+      ref: components["schemas"]["_Ref"];
     };
     /**
      * RefreshFrameRequest
@@ -6867,6 +8081,11 @@ export interface components {
        */
       role: ("observationAbout" | "origin" | "destination") | (string & {});
       /**
+       * Multilateral
+       * @description true for an origin entity that is a multilateral organisation, an official organisation such as IDA or the EU institutions, whose outflows spend the core contributions its funders made to it, so a donor total counting those contributions already holds them; absent for every other entity
+       */
+      multilateral?: boolean | null;
+      /**
        * Confidence
        * @description the engine's confidence in this entity resolution; None when not assessed -- no entity-resolution confidence signal exists yet, so this ships None on every entity today
        */
@@ -6879,11 +8098,11 @@ export interface components {
      *
      *     basis is always present. ref/label are present when one distinct value
      *     served every carried series; selection carries "per_series" in their
-     *     place when the carried series select different values on this axis --
-     *     never alongside ref/label. request_basis joins either shape, present
-     *     only on the unit axis, only when unit was bound through the request form
-     *     (currency/prices/base_year), one basis value per member the request
-     *     named.
+     *     place when the carried series select different values on this axis, and
+     *     the two never appear together. On the unit axis, refs lists those units.
+     *     request_basis joins either shape, present only on the unit axis, only
+     *     when unit was bound through the request form (currency/prices/base_year),
+     *     one basis value per member the request named.
      *
      *     Fields are flat and optional, validated by a model validator, rather
      *     than a discriminated ref/selection union. basis and request_basis are
@@ -6934,6 +8153,11 @@ export interface components {
        */
       selection?: "per_series" | null;
       /**
+       * Refs
+       * @description unit axis only, alongside selection 'per_series': the distinct unit dcids the carried series select, in series order; a series selecting no unit adds none
+       */
+      refs?: string[] | null;
+      /**
        * Request Basis
        * @description per-member basis (currency/prices/base_year) for a unit axis bound through the request form; present only on the unit axis, alongside either ref/label or selection
        */
@@ -6960,11 +8184,18 @@ export interface components {
       refs: components["schemas"]["GraphRef"][];
       /**
        * Provenance
-       * @description whether the bind call's own election produced this value, a code row recognised in the query's own text forced it, or the measure-family election forced it on an axis the binder left open
+       * @description whether the bind call's own election produced this value, a code row recognised in the query's own text forced it, a sector concept the text named bound its declared grouping of codes, or the measure-family election forced it on an axis the binder left open
        * @default binder
        */
       provenance?:
-        ("binder" | "text_recognized" | "measure_elected" | "declared_default") | (string & {});
+        | (
+            | "binder"
+            | "text_recognized"
+            | "measure_elected"
+            | "declared_default"
+            | "declared_grouping"
+          )
+        | (string & {});
     };
     /**
      * ResolvedQualifier
@@ -7246,6 +8477,16 @@ export interface components {
        * @description each axis in measure_label_axes with the value the served partition holds on it, in the same order, including values the query never named (a declared default such as Gross or Nominal). Labels come from the measure index. Always [] when measure_label is None. Never a member of BaseIdentity, never hashed.
        */
       measure_axis_values?: components["schemas"]["MeasureAxisValue"][];
+      /**
+       * Concept Label
+       * @description what this Spec's series count, in a reader's words, with no measure basis, codes, provider scope or dataset: the sector the identity binds where it binds one ('health' for CRS 120 and 130 together, ONE's grouping; 'basic health' for CRS 122), else the values the served members share outside the measure axes, which shape.label states in brackets after measure_label ('official development assistance'). A composite carries its table identity's concept label. None when the shape has no measure partition and binds no sector. Never a member of BaseIdentity, never hashed.
+       */
+      concept_label?: string | null;
+      /**
+       * Published Tables
+       * @description the names of the tables this Spec's figures are published in, with no provider scope: the elected dataset's label ('OECD Creditor Reporting System (CRS)'), or for a composite the labels of the tables its components read, joined ('OECD Creditor Reporting System (CRS) and ONE Imputed Multilateral Sectors'). None when no provenance was elected. Never a member of BaseIdentity, never hashed.
+       */
+      published_tables?: string | null;
       /** @description the StatVarGroup related_measures come from: the smallest group this Spec's one StatVar belongs to that holds 2 to 40 members, ties broken by group dcid. None when related_measures is None or [] */
       related_group?: components["schemas"]["GraphRef"] | null;
       /**
@@ -7265,6 +8506,8 @@ export interface components {
       role_axis_facts?: components["schemas"]["RoleAxisFact"][] | null;
       /** @description the currencies and price bases a unit request can convert this answer to. Null when the served members' unit is no currency, no conversion recipe converts them (a stock, a series not in nominal prices, or a provenance that declares no recipe), the recipe's tables lack the native currency's rate in a served year, so nothing converts, or no conversion catalogue is loaded, which the part's unit_conversion_unavailable warning states. Never a member of BaseIdentity, never hashed. */
       unit_conversion?: components["schemas"]["UnitConversion"] | null;
+      /** @description how the part this Spec answers was counted: one ScopeChoice per axis a declared rule or the request settled (sector, region, measure basis, provider scope), with its options and their availability, the explicit and carried entries applied, and the identity they compile to (see PartScope). To switch an option, post base.identity as identity on a dataset_resubmit identity entry, with entries as scope_entries, the entry on the switched axis replaced by the switch: one entry per axis. None when no axis was settled and no scope entries were posted. Never a member of BaseIdentity, never hashed. */
+      scope_choices?: components["schemas"]["PartScope"] | null;
     };
     /**
      * ResolvedStatVars
@@ -7438,6 +8681,11 @@ export interface components {
        * @description the assumptions of the part this entry rebuilds, echoed as the response gave them. For a definite part these are its assumptions. For a reading picked from a candidates part they are that part's reading_assumptions under the reading's spec_id. The rebuilt part states the echoed items that still hold, each worded from the rebuilt answer: a declared_default whose slot (binding_ref) still binds the echoed refs, an open_role whose axis the answer still reads across every member with no entity of the identity's, and a place_scope on an answer that still names no place. An item the echo lacks is not stated, since the posted identity or its edit asked for it. An edit of a defaulted slot to another value therefore drops that default, and [], the echo of a part that stated none, states none. None, the default, means the client echoes nothing, and the part states what a fresh request would: no declared default, since the posted identity binds every slot, and the open roles and place scope the answer reads. The engine cannot tell an echoed default from one the caller writes for a slot it chose itself, and states such an item while the slot binds its refs. An echo shapes only the caller's own response
        */
       assumptions?: components["schemas"]["Assumption"][] | null;
+      /**
+       * Scope Entries
+       * @description the part's explicit and carried scope entries, one per axis: the entries of its resolved.scope_choices, with the entry on a switched axis replaced by the switch, an explicit entry whose origin names the choice, posted with that scope's base.identity as identity. An entry posted with no concept on an axis asked for a concept takes that concept, which the response's entries echo. The engine compiles them over identity and resolves the result, whose resolved.scope_choices states every choice, the entries applied and the carried entries left out. Refuses requested_option_unavailable (422) for an explicit entry this part cannot serve and conflicting_requested_options (422) for two that cannot hold together. None, the default, resolves identity as posted
+       */
+      scope_entries?: components["schemas"]["Entry"][] | null;
     };
     /**
      * ResubmitParsedEntry
@@ -7575,6 +8823,11 @@ export interface components {
        * @description whether the member list this count summarises is itself known and could be enumerated (e.g. through entity_options or the options door), not just counted. False exactly when member_count is None
        */
       members_available: boolean;
+      /**
+       * Holds Multilaterals
+       * @description for the origin axis, whether its open population holds a multilateral organisation (see ResolvedEntity.multilateral), read from the member list where it is known and otherwise from the parties the served datasets publish on the axis: true for the CRS's donors. Absent for the destination axis
+       */
+      holds_multilaterals?: boolean | null;
     };
     /**
      * GraphRootEntry
@@ -7590,6 +8843,22 @@ export interface components {
        * @description codes for a code system, members under the default projection for a group or region, Datasets for a source
        */
       count: number;
+    };
+    /**
+     * RootRendering
+     * @description How a dataset root's frame is read. `columns` left out takes the enrichment its
+     *     dataset's roles need (`default_enrichment`); `[]` reads the stored frame
+     *     alone. `groupby` reads the frame summed as a mint with that `options.groupby` sums it.
+     */
+    RootRendering: {
+      /**
+       * Without Party Totals
+       * @default false
+       */
+      without_party_totals?: boolean;
+      /** Columns */
+      columns?: string[] | null;
+      groupby?: components["schemas"]["GroupbyOptions"] | null;
     };
     /**
      * GraphRoots
@@ -7685,6 +8954,42 @@ export interface components {
       granularity: string | null;
       /** Currencies */
       currencies: string[];
+    };
+    /**
+     * ScopeChoice
+     * @description How one axis of the part was counted, and the options it could take.
+     */
+    ScopeChoice: {
+      /**
+       * Id
+       * @description '<PartScope.id>:<axis>'
+       */
+      id: string;
+      /**
+       * Axis
+       * @description the axis
+       */
+      axis: ("sector" | "region" | "measure_basis" | "provider") | (string & {});
+      /**
+       * Rule
+       * @description the declared rule that settled the axis
+       */
+      rule: string;
+      /**
+       * Provenance
+       * @description what settled the active option
+       */
+      provenance: ("explicit" | "carried" | "default") | (string & {});
+      /**
+       * Active
+       * @description the option the compiled identity holds
+       */
+      active: string;
+      /**
+       * Options
+       * @description every option, in declared order
+       */
+      options: components["schemas"]["Option"][];
     };
     /**
      * SentenceToken
@@ -7985,6 +9290,32 @@ export interface components {
       upstream?: components["schemas"]["ShapeUpstream"] | null;
     };
     /**
+     * ShapeBinding
+     * @description An option that sets the identity's measure and netting basis.
+     */
+    ShapeBinding: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "shape";
+      /**
+       * Measured Property
+       * @description the measured property dcid
+       */
+      measured_property: string;
+      /**
+       * Netting Basis
+       * @description the netting basis code dcid; None when the measure carries none
+       */
+      netting_basis: string | null;
+      /**
+       * Provenance
+       * @description the composite provenance the option binds as the identity's source, which serves the measure from its declared components (the OECD headline: net flows to 2017, grant equivalents from 2018); None for a measure served from one table
+       */
+      provenance?: string | null;
+    };
+    /**
      * ShapeUpstream
      * @description The one source, and the Data Commons serving it, behind every member of
      *     an upstream shape.
@@ -7994,6 +9325,432 @@ export interface components {
       source: components["schemas"]["SourceRef"];
       /** @description the Data Commons serving that data */
       data_commons: components["schemas"]["search__models__grammar__DataCommonsRef"];
+    };
+    /**
+     * ShareCardBody
+     * @description One card revision a share shows.
+     */
+    ShareCardBody: {
+      /**
+       * Component Id
+       * @description the card's cmp_ id
+       */
+      component_id: string;
+      /**
+       * Revision
+       * @description the card revision the slot shows
+       */
+      revision: number;
+    };
+    /**
+     * ShareCardModel
+     * @description The card revision a slot shows.
+     */
+    ShareCardModel: {
+      /**
+       * Component Id
+       * @description the card's cmp_ id
+       */
+      component_id: string;
+      /**
+       * Revision
+       * @description the card revision the slot shows
+       */
+      revision: number;
+      /** @description the frame the card revision draws, null for a card that draws none or an imported slot whose frame was not recorded */
+      frame: components["schemas"]["ShareFrameModel"] | null;
+    };
+    /**
+     * ShareCardsBody
+     * @description A replace's body: the cards the share's next revision shows, slot 1 first. The share's
+     *     kind sets how many it takes, as on create.
+     */
+    ShareCardsBody: {
+      /**
+       * Cards
+       * @description the cards in slot order. Two entries may name the same revision. A card share takes at least one, a canvas any number, a search or conversation share none
+       */
+      cards: components["schemas"]["ShareCardBody"][];
+    };
+    /**
+     * ShareFrameModel
+     * @description The frame a slot's card revision draws.
+     */
+    ShareFrameModel: {
+      /**
+       * Spec Id
+       * @description the frame's spec_ or ops_ id
+       */
+      spec_id: string;
+      /**
+       * Content Version
+       * @description the frame's cv_ or ocv_ content version
+       */
+      content_version: string;
+    };
+    /**
+     * ShareHistoryResponse
+     * @description `GET /api/presentation/shares/{share_id}/history`'s 200 body.
+     */
+    ShareHistoryResponse: {
+      /**
+       * Id
+       * @description the share's id
+       */
+      id: string;
+      /**
+       * Served
+       * @description what each slot showed, newest first, an entry each time it changed, up to the page's limit
+       */
+      served: components["schemas"]["ShareServedModel"][];
+      /**
+       * Next
+       * @description the cursor of the next page, to send as before, or null on the last page
+       */
+      next: string | null;
+    };
+    /**
+     * ShareImport
+     * @description One website share as its export line states it, less the id, with the digest of the
+     *     write token the website holds for it.
+     */
+    ShareImport: {
+      /** Kind */
+      kind: ("card" | "canvas" | "search" | "conversation") | (string & {});
+      /** Mode */
+      mode: ("live" | "snapshot") | (string & {});
+      /** Owner */
+      owner: string | null;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Title */
+      title: string | null;
+      /** Slots */
+      slots: components["schemas"]["_ExportSlot"][];
+      payload: components["schemas"]["JsonValue"];
+      /**
+       * Write Token Sha256
+       * @description the lowercase hex SHA-256 of the share's shw_ write token, null for a guest's share. A digest needs an owner
+       */
+      write_token_sha256: string | null;
+    };
+    /**
+     * ShareImportResponse
+     * @description `PUT /api/presentation/shares/{share_id}/import`'s 201 and 200 body.
+     */
+    ShareImportResponse: {
+      /**
+       * Id
+       * @description the share's id, 8 letters and digits, as the path names it
+       */
+      id: string;
+      /**
+       * Imported
+       * @description true when this call stored the share, false when an earlier import had
+       */
+      imported: boolean;
+    };
+    /**
+     * ShareReadResponse
+     * @description `GET /api/presentation/shares/{share_id}`'s 200 body. It omits the write token.
+     */
+    ShareReadResponse: {
+      /**
+       * Id
+       * @description the share's id, 8 letters and digits
+       */
+      id: string;
+      /**
+       * Kind
+       * @description what the share publishes
+       */
+      kind: ("card" | "canvas" | "search" | "conversation") | (string & {});
+      /**
+       * Mode
+       * @description live follows new data, snapshot keeps the versions its cards drew when it was made
+       */
+      mode: ("live" | "snapshot") | (string & {});
+      /**
+       * Title
+       * @description the share's title, null when it has none
+       */
+      title: string | null;
+      /**
+       * Revision
+       * @description the share's latest revision
+       */
+      revision: number;
+      /**
+       * Slots
+       * @description every slot the share has had, in order. Search and conversation shares have none
+       */
+      slots: components["schemas"]["ShareSlotModel"][];
+      /**
+       * Payload
+       * @description website-owned JSON stored with the share as given, null when there is none
+       */
+      payload: unknown;
+      /**
+       * Created At
+       * @description when the share was made, as an ISO 8601 timestamp
+       */
+      created_at: string;
+    };
+    /**
+     * ShareRetentionModel
+     * @description How long a served frame can still be fetched.
+     */
+    ShareRetentionModel: {
+      /**
+       * Pinned
+       * @description whether the frame is in the pinned tier, with no expiry
+       */
+      pinned: boolean;
+      /**
+       * Held Until
+       * @description when a working-tier frame stops being guaranteed, 30 days after DFO stored it, and absent when pinned
+       */
+      held_until?: string | null;
+    };
+    /**
+     * ShareServedModel
+     * @description One entry of what a share's slot showed: a frame it served, or no card.
+     */
+    ShareServedModel: {
+      /**
+       * Slot
+       * @description the slot, from 1
+       */
+      slot: number;
+      /**
+       * Component Id
+       * @description the card the slot showed, null when a replace left the slot empty
+       */
+      component_id: string | null;
+      /**
+       * Revision
+       * @description the card revision the slot showed, null when the slot was empty
+       */
+      revision: number | null;
+      /** @description the frame served, null when the slot was empty */
+      frame: components["schemas"]["ShareFrameModel"] | null;
+      /**
+       * Rendering
+       * @description the rendering the card revision recorded for its frame, null when unrecorded or when the slot was empty
+       */
+      rendering: {
+        [key: string]: unknown;
+      } | null;
+      /**
+       * First Served At
+       * @description when the slot began to show this, ISO 8601: the write or the first read that served it
+       */
+      first_served_at: string;
+      /** @description the frame's retention, null when DFO holds no record of it or the slot was empty */
+      retention: components["schemas"]["ShareRetentionModel"] | null;
+      /**
+       * Fetchable
+       * @description whether the frame's retention still holds, false when the slot was empty
+       */
+      fetchable: boolean;
+    };
+    /**
+     * ShareSlotCardResponse
+     * @description `GET /api/presentation/shares/{share_id}/slots/{slot}`'s body: the slot's card as a
+     *     component read states it, drawn on the frame the slot serves.
+     */
+    ShareSlotCardResponse: {
+      /**
+       * Component Id
+       * @description the read component's own id
+       */
+      component_id: string;
+      /**
+       * Revision
+       * @description the revision this read reports
+       */
+      revision: number;
+      /**
+       * Catalog Version
+       * @description the catalogue release this revision minted under
+       */
+      catalog_version: string;
+      /**
+       * Composition Id
+       * @description the composition this component belongs to, null outside one
+       */
+      composition_id: string | null;
+      /**
+       * Composition Revision
+       * @description the composition's current head revision, null outside one
+       */
+      composition_revision: number | null;
+      /**
+       * Stored Intent
+       * @description this revision's own stored intent, exactly as minted
+       */
+      stored_intent: {
+        [key: string]: unknown;
+      };
+      /** @description the closed, token-capped fact summary this revision reports */
+      fact_summary: components["schemas"]["FactSummaryModel"];
+      /**
+       * Resolved Payload
+       * @description the revision's stored resolved payload, verbatim: the catalogue envelope {schema_version, catalog_version, component_id, revision, provenance, component}, validated against the catalogue release's envelope schema (dfo-spec-kit envelope.schema.json) when minted. GET /api/presentation/release serves the pinned release's envelope_schema and the component_schemas its component field $refs by $id; every payload this door serves carries that pinned catalog_version.
+       */
+      resolved_payload: {
+        [key: string]: unknown;
+      };
+      /** @description how long the frame the card is drawn on can still be fetched, counted from when DFO stored it. Null for a card that draws no frame, or one whose frame DFO holds no version record of */
+      retention?: components["schemas"]["RetentionModel"] | null;
+      /**
+       * Freshness
+       * @description as the slot's data route states it: current, the newest data DFO found at its last check or a snapshot's own frame; pending, newer data is building and the card is drawn on the last check's frame; stale, DFO could not check, or the card cannot be drawn on the newer data, and the card is drawn on an older frame
+       */
+      freshness: ("current" | "stale" | "pending") | (string & {});
+    };
+    /**
+     * ShareSlotDataResponse
+     * @description `GET /api/presentation/shares/{share_id}/slots/{slot}/data`'s JSON body.
+     */
+    ShareSlotDataResponse: {
+      /**
+       * Share Id
+       * @description the share's id
+       */
+      share_id: string;
+      /**
+       * Slot
+       * @description the slot's number, from 1
+       */
+      slot: number;
+      /**
+       * Mode
+       * @description the share's mode
+       */
+      mode: ("live" | "snapshot") | (string & {});
+      /**
+       * Freshness
+       * @description current: the newest data DFO found at its last check, at most 15 minutes ago, or a snapshot's own rows; pending: newer data is building and these rows are the last check's; stale: DFO could not check, or the card cannot be drawn on the newer data, and these rows are older
+       */
+      freshness: ("current" | "stale" | "pending") | (string & {});
+      /**
+       * Component Id
+       * @description the card the slot shows
+       */
+      component_id: string;
+      /**
+       * Revision
+       * @description the card revision the slot shows
+       */
+      revision: number;
+      /** @description the frame these rows come from */
+      frame: components["schemas"]["ShareFrameModel"];
+      /**
+       * Rows
+       * @description the rows behind every value the card shows, one object per row, keyed by the columns of the card's data file
+       */
+      rows: {
+        [key: string]: unknown;
+      }[];
+    };
+    /**
+     * ShareSlotModel
+     * @description One numbered slot of a share.
+     */
+    ShareSlotModel: {
+      /**
+       * Slot
+       * @description the slot's number, from 1
+       */
+      slot: number;
+      /** @description the card the slot shows, null for a slot a replacement with fewer cards left empty */
+      card: components["schemas"]["ShareCardModel"] | null;
+      /**
+       * Data Url
+       * @description the slot's JSON data URL
+       */
+      data_url: string;
+    };
+    /**
+     * ShareWriteResponse
+     * @description `PUT /api/presentation/shares/{share_id}`'s 200 body: where the replaced share lives.
+     */
+    ShareWriteResponse: {
+      /**
+       * Id
+       * @description the share's id, 8 letters and digits
+       */
+      id: string;
+      /**
+       * Url
+       * @description the share's page on the public website, /s/<id>
+       */
+      url: string;
+      /**
+       * Embed Url
+       * @description the share's embeddable page, /embed/<id>
+       */
+      embed_url: string;
+      /**
+       * Data Urls
+       * @description one JSON data URL per slot, in slot order. A slot keeps its URL across replacements, so data_urls[0] always reads the share's first slot
+       */
+      data_urls: string[];
+      /**
+       * Revision
+       * @description the share revision this write made, 1 on a create
+       */
+      revision: number;
+      /**
+       * Latest
+       * @description true for a live share, which follows new data, false for a snapshot, which keeps the versions its cards drew when it was made
+       */
+      latest: boolean;
+    };
+    /**
+     * SharedResponse
+     * @description `POST /api/presentation/shares`'s 201 body.
+     */
+    SharedResponse: {
+      /**
+       * Id
+       * @description the share's id, 8 letters and digits
+       */
+      id: string;
+      /**
+       * Url
+       * @description the share's page on the public website, /s/<id>
+       */
+      url: string;
+      /**
+       * Embed Url
+       * @description the share's embeddable page, /embed/<id>
+       */
+      embed_url: string;
+      /**
+       * Data Urls
+       * @description one JSON data URL per slot, in slot order. A slot keeps its URL across replacements, so data_urls[0] always reads the share's first slot
+       */
+      data_urls: string[];
+      /**
+       * Revision
+       * @description the share revision this write made, 1 on a create
+       */
+      revision: number;
+      /**
+       * Latest
+       * @description true for a live share, which follows new data, false for a snapshot, which keeps the versions its cards drew when it was made
+       */
+      latest: boolean;
+      /**
+       * Write Token
+       * @description the shw_ token that grants replacing and deleting this share, sent back as the x-dfo-write-token header. It appears only in this reply, so keep it secret
+       */
+      write_token: string;
     };
     /**
      * SimpleUnit
@@ -8075,6 +9832,38 @@ export interface components {
        */
       summable?: boolean;
     };
+    /**
+     * SlotBinding
+     * @description An option that binds one what/how slot of the identity.
+     */
+    SlotBinding: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "slot";
+      /**
+       * Slot
+       * @description the slot's constraint property dcid
+       */
+      slot: string;
+      /**
+       * State
+       * @description one code, or a set of codes
+       */
+      state: ("value" | "set") | (string & {});
+      /**
+       * Refs
+       * @description the bound code dcids, sorted
+       */
+      refs: string[];
+      /**
+       * Window
+       * @description the years the option sets as the requested window, first and last: on a published donor total over a range or every year, the latest run of years every donor holds the other total in, when they hold fewer than the part asks for; on one asking for the latest year, the one year the pool's read of the other total elects, whether or not it is the part's own; None when the option keeps the part's window
+       */
+      window?: [number, number] | null;
+    };
+    SlotFormat: ("json" | "csv" | "xlsx" | "parquet") | (string & {});
     /**
      * SlotKey
      * @description A slot's typed identity: axis, constraint property, and human label.
@@ -8683,6 +10472,15 @@ export interface components {
       order?: (("ranked" | "fixed") | (string & {})) | null;
     };
     /**
+     * SpecRoot
+     * @description A Spec, read at its dataset's newest version.
+     */
+    SpecRoot: {
+      /** Spec Id */
+      spec_id: string;
+      rendering?: components["schemas"]["RootRendering"];
+    };
+    /**
      * GraphStatVarBlock
      * @description A variable's detail block: what it measures and where DFO holds observations of it.
      */
@@ -8814,6 +10612,39 @@ export interface components {
       /** Unit */
       unit?: components["schemas"]["SimpleUnit"] | components["schemas"]["ComposedUnit"] | null;
     };
+    /** StepInputs */
+    StepInputs: {
+      /** Data */
+      data:
+        | components["schemas"]["StepNode"]
+        | components["schemas"]["RefRoot"]
+        | components["schemas"]["DerivedRoot"]
+        | components["schemas"]["DatasetRoot"]
+        | components["schemas"]["SpecRoot"];
+      /** Other */
+      other?:
+        | (
+            | components["schemas"]["StepNode"]
+            | components["schemas"]["RefRoot"]
+            | components["schemas"]["DerivedRoot"]
+            | components["schemas"]["DatasetRoot"]
+            | components["schemas"]["SpecRoot"]
+          )
+        | null;
+    };
+    /**
+     * StepNode
+     * @description One verb over its inputs. `arguments` are the verb's op-spec parameters in the caller's
+     *     vocabulary (see the module docstring).
+     */
+    StepNode: {
+      verb: components["schemas"]["Verb"];
+      /** Arguments */
+      arguments?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      };
+      inputs: components["schemas"]["StepInputs"];
+    };
     /**
      * StepRef
      * @description A reference: the dcid or id it names, and optionally the words for it.
@@ -8888,6 +10719,35 @@ export interface components {
       count: number;
       /** Variables */
       variables: components["schemas"]["StepRef"][];
+    };
+    /**
+     * TextOrigin
+     * @description The words an explicit entry was read from, and where they lie in the text the part's
+     *     scope was read from: the user's message on a request of one part, or the part's own
+     *     variable text on a request of several, with its whitespace collapsed. Words that text
+     *     does not hold have an empty span at its start.
+     */
+    TextOrigin: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "text";
+      /**
+       * Text
+       * @description the words, as written
+       */
+      text: string;
+      /**
+       * Start
+       * @description the offset of the first character in the text read
+       */
+      start: number;
+      /**
+       * End
+       * @description the offset past the last character in the text read
+       */
+      end: number;
     };
     /**
      * TimeWindow
@@ -8976,6 +10836,20 @@ export interface components {
        * @description the StatVar dcids the default reading removed; empty when it removed none
        */
       removed_stat_vars?: string[];
+    };
+    /**
+     * TraceModel
+     * @description A manifest's `trace` (`materialise.trace.ManifestTrace.to_dict()`, plus the keys each
+     *     door attaches). It types `party_totals_left_out` and keeps every other key open.
+     */
+    TraceModel: {
+      /**
+       * Party Totals Left Out
+       * @description the parties whose total rows a without_party_totals rendering left out of this version's frame: one entry per open party role and provenance that lost rows, in role order and then provenance order (null first). Absent when the rendering left nothing out or was not asked to
+       */
+      party_totals_left_out?: components["schemas"]["PartyTotalsLeftOutModel"][];
+    } & {
+      [key: string]: unknown;
     };
     /**
      * TransformationLogEntry
@@ -9291,7 +11165,7 @@ export interface components {
       operations?: components["schemas"]["Operation"][];
       /**
        * Departures
-       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, direction_inferred, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
+       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, member_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, direction_inferred, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
        */
       departures?: components["schemas"]["Departure"][];
       /**
@@ -9391,6 +11265,23 @@ export interface components {
       distinct: number;
     };
     /**
+     * Verb
+     * @description The closed verb set of nine. No synonym, no free-text escape hatch.
+     */
+    Verb:
+      | (
+          | "aggregate"
+          | "compare"
+          | "growth"
+          | "rank"
+          | "share_of"
+          | "join"
+          | "filter"
+          | "sum_of"
+          | "quotient_of"
+        )
+      | (string & {});
+    /**
      * VersionHistoryEntry
      * @description One release of the pipeline's changelog, newest first.
      */
@@ -9434,8 +11325,8 @@ export interface components {
      * @description A run-health signal. Note: this name shadows the Python builtin Warning.
      *
      *     Only `observations_series_truncated`, `elected_shape_no_data`, `un_system_unavailable`,
-     *     `whole_total_available`, `currency_unmapped_omitted` and `deflator_missing_omitted` set
-     *     `params`. A `None` `params` is left out of every dump, so other codes' warnings stay
+     *     `whole_total_available`, `currency_unmapped_omitted`, `deflator_missing_omitted` and
+     *     `deflator_projected` set `params`. A `None` `params` is left out of every dump, so other codes' warnings stay
      *     exactly `{code, severity, message}` plus `spec_id` where one applies.
      */
     Warning: {
@@ -9461,7 +11352,7 @@ export interface components {
       spec_id?: string | null;
       /**
        * Params
-       * @description the counts and labels the message states, for a client to compose its own text. observations_series_truncated: {shown, total, order}, the series shown, the confirmed series behind them, and how the shown series were chosen: 'ranked' (the most recent and largest) or 'fixed' (a selection made before values were read, not ranked by value). elected_shape_no_data: {no_data, elected}, the labels of the readings with no data and of the readings answered instead. un_system_unavailable: {places, variables, variable_labels}, the place dcids the UN front door refused, the variables of the UN reads that failed, each empty when none, and each variable's graph name, in variables order, '' where the graph holds none; a warning without params says the UN search itself was unavailable. whole_total_available: {total, total_label, whole_of}, the dcid and label of the total the source publishes for the side the answer lists member by member, and the classes of party it covers, comma-joined (official, private, residual). currency_unmapped_omitted: {count, entities, entity_labels}, how many entities the conversion left out, the dcids of the first ten, sorted, and each one's name, in entities order, '' where the conversion tables hold none, which is usual here, since an entity no currency names, such as a regional aggregate, is rarely in those tables; its dcid stays in entities. deflator_missing_omitted: the same with entity_years, the years each entity's rows were left out, as runs of consecutive years ('1990-2001, 2004'), in entities order; a warning without params says the loaded tables cannot tell which entities. Omitted for every other code
+       * @description the counts and labels the message states, for a client to compose its own text. observations_series_truncated: {shown, total, order}, the series shown, the confirmed series behind them, and how the shown series were chosen: 'ranked' (the most recent and largest) or 'fixed' (a selection made before values were read, not ranked by value). elected_shape_no_data: {no_data, elected}, the labels of the readings with no data and of the readings answered instead. un_system_unavailable: {places, variables, variable_labels}, the place dcids the UN front door refused, the variables of the UN reads that failed, each empty when none, and each variable's graph name, in variables order, '' where the graph holds none; a warning without params says the UN search itself was unavailable. whole_total_available: {total, total_label, whole_of}, the dcid and label of the total the source publishes for the side the answer lists member by member, and the classes of party it covers, comma-joined (official, private, residual). currency_unmapped_omitted: {count, entities, entity_labels}, how many entities the conversion left out, the dcids of the first ten, sorted, and each one's name, in entities order, '' where the conversion tables hold none, which is usual here, since an entity no currency names, such as a regional aggregate, is rarely in those tables; its dcid stays in entities. deflator_missing_omitted: the same with entity_years, the years each entity's rows were left out, as runs of consecutive years ('1990-2001, 2004'), in entities order; a warning without params says the loaded tables cannot tell which entities. deflator_projected: {count, examples}, how many rows took a projected rate or deflator, and at most ten distinct entity@year keys among them, sorted; count counts rows, not keys, and examples may leave keys out. Omitted for every other code
        */
       params?: {
         [key: string]: number | string | string[];
@@ -9470,11 +11361,14 @@ export interface components {
     /**
      * WarningModel
      * @description One manifest warning. Only `stat_vars_summed` sets its three structured fields, a
-     *     group's `coverage_below_scope` its three member fields, `coverage_below_scope`
+     *     group's `coverage_below_scope` its four member fields, `coverage_below_scope`
      *     `unserved_entities`, `requested_years` and `served_years`, `currency_unmapped_omitted`
-     *     `omitted_entities`, and
-     *     `deflator_missing_omitted` `omitted_entity_years`. A `None` field is left out of every dump, so other codes' warnings, on
-     *     the wire and in stored version bodies, stay exactly `{code, severity, message}`.
+     *     `omitted_entities`, `deflator_missing_omitted` `omitted_entity_years`, and
+     *     `withheld_by_registry` `unserved_entities`, `withheld_members` and `withheld_provenances`, and
+     *     `un_system_unavailable` `unserved_entities`. A stored warning can lack a field its code carries: a `withheld_by_registry` warning can
+     *     withhold with none of its three. A `None` field is left out of every dump, so other codes'
+     *     warnings, on the wire and in stored version bodies, stay exactly `{code, severity,
+     *     message}`.
      */
     WarningModel: {
       /** Code */
@@ -9507,12 +11401,18 @@ export interface components {
       off_cadence_members?: components["schemas"]["CountedRefsModel"] | null;
       /** @description coverage_below_scope only: the group members holding no observation in the requested years; absent when there are none, and when the served provenance reads an absent member as zero */
       out_of_window_members?: components["schemas"]["CountedRefsModel"] | null;
-      /** @description coverage_below_scope only: the entities the request binds that served no observation, sorted; absent when there are none */
+      /** @description coverage_below_scope only: the group members holding no observation under the source, unit and method the group serves, which the figures leave out; absent when there are none */
+      unserved_members?: components["schemas"]["CountedRefsModel"] | null;
+      /** @description coverage_below_scope: the entities the request binds that served no observation, sorted; withheld_by_registry: the places among them at which the registry withholds data, in the order the request names them; un_system_unavailable: the places the UN System Data Commons could not serve, in the order its reads recorded them; absent when there are none */
       unserved_entities?: components["schemas"]["CountedRefsModel"] | null;
       /** @description coverage_below_scope only: the year range the request asked for, when the data covers fewer of its years; absent otherwise */
       requested_years?: components["schemas"]["YearRangeModel"] | null;
       /** @description coverage_below_scope only: the years the data covers, both bounds set, beside requested_years; absent otherwise */
       served_years?: components["schemas"]["YearRangeModel"] | null;
+      /** @description withheld_by_registry only: the series the finding read, that of the first request that left a subject entity without rows, so one; absent when there are none or the stored warning does not carry them */
+      withheld_members?: components["schemas"]["CountedRefsModel"] | null;
+      /** @description withheld_by_registry only: the provenances the registry withholds that hold data for that series at those places, in the order they first occur across the places; absent when there are none or the stored warning does not carry them */
+      withheld_provenances?: components["schemas"]["CountedRefsModel"] | null;
       /** @description currency_unmapped_omitted only: the entities whose rows the conversion left out, sorted */
       omitted_entities?: components["schemas"]["CountedRefsModel"] | null;
       /** @description deflator_missing_omitted only: the entities whose rows the conversion left out for a missing deflator, sorted, each with the years of those rows */
@@ -9650,6 +11550,60 @@ export interface components {
        */
       end?: number | null;
     };
+    _ContentVersion: string;
+    /** _ExportFrame */
+    _ExportFrame: {
+      /** Spec Id */
+      spec_id: string;
+      content_version: components["schemas"]["_ContentVersion"];
+    };
+    /** _ExportSlot */
+    _ExportSlot: {
+      /** Component Id */
+      component_id: string;
+      /** Revision */
+      revision: number;
+      frame: components["schemas"]["_ExportFrame"] | null;
+    };
+    /** _Ref */
+    _Ref: {
+      /**
+       * Format Version
+       * @enum {integer}
+       */
+      format_version: 1 | 2;
+      /** Members */
+      members: components["schemas"]["_RefMember"][];
+    };
+    /** _RefArtifact */
+    _RefArtifact: {
+      rendering?: components["schemas"]["_RefRendering"];
+    };
+    /**
+     * _RefMember
+     * @description A ref member, held to the pair a root of its kind takes (`DatasetRoot`, `DerivedRoot`),
+     *     so a malformed member refuses as the request does.
+     */
+    _RefMember: {
+      spec: components["schemas"]["_RefSpec"];
+      /** Content Version */
+      content_version: string;
+      artifact?: components["schemas"]["_RefArtifact"] | null;
+    };
+    /** _RefRendering */
+    _RefRendering: {
+      /**
+       * Without Party Totals
+       * @default false
+       */
+      without_party_totals?: boolean;
+      groupby?: components["schemas"]["GroupbyOptions"] | null;
+    };
+    /** _RefSpec */
+    _RefSpec: {
+      /** Spec Id */
+      spec_id: string;
+    };
     /**
      * Capabilities
      * @description The full `GET /api/datasets/capabilities` document.
@@ -9778,6 +11732,11 @@ export interface components {
        * @description cap on a pivot's total output cell count (rows x columns) before pivot_over_cell_cap
        */
       pivot_max_output_cells: number;
+      /**
+       * Groupby Fold Max Rows
+       * @description cap on the frame rows a groupby that sums the frame folds; a larger frame refuses over_ceiling (ceiling_kind rows). A version stored as a frame1 document folds row by row under a lower cap
+       */
+      groupby_fold_max_rows: number;
       /**
        * Operation Retention Days
        * @description how long a terminal (done/failed) operation stays guaranteed pollable (contract, 'The operation envelope'). A done operation's own manifest is guaranteed servable for exactly this long, since it is bounded by the same working-tier artifact clock every other mint/definition response is (dataset_store.snapshot.WORKING_TIER_RETENTION) -- pinning it extends that the same way pinning any other snapshot does. A daily maintenance job deletes done and failed operations last updated more than this many days ago, so a poll after that answers operation_not_found
@@ -10285,7 +12244,7 @@ export interface components {
        */
       issues?: components["schemas"]["ProblemIssue"][] | null;
       /**
-       * @description why the refusal fired, for the two codes that carry one -- omitted otherwise
+       * @description why the refusal fired, for the codes that carry one -- omitted otherwise
        * @default null
        */
       cause?: components["schemas"]["Cause"] | null;
@@ -11133,6 +13092,188 @@ export interface operations {
       };
     };
   };
+  datasets_post_analysis: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AnalysisRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AnalysisReady"];
+        };
+      };
+      /** @description Accepted */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AnalysisPendingBody"];
+        };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  datasets_post_analysis_anchor: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AnchorRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AnchorAnswer"];
+        };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  datasets_get_derived: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+        content_version: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DerivedManifest"];
+        };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  datasets_get_derived_file: {
+    parameters: {
+      query?: {
+        /** @description the file format; csv when absent */
+        format?: ("csv" | "xlsx" | "parquet") | (string & {});
+        /** @description true for a zip bundle with its documentation; true when absent */
+        bundle?: boolean;
+        /** @description frame for a bare parquet file in the frame layout; needs format=parquet and bundle=false */
+        layout?: "frame" | (string & {});
+      };
+      header?: never;
+      path: {
+        id: string;
+        content_version: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description the file's bytes */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/octet-stream": string;
+        };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
   datasets_get_recipe: {
     parameters: {
       query?: never;
@@ -11637,6 +13778,88 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["PublishFrameResponse"];
         };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  datasets_post_export: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ExportRequestBody"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ExportResponse"];
+        };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  datasets_get_export: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        export_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description a redirect to the artifact's bytes */
+      302: {
+        headers: {
+          /** @description a GET URL signed for at most five minutes */
+          Location?: string;
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description the request body or parameters failed validation (request_invalid) */
       400: {
@@ -12414,6 +14637,52 @@ export interface operations {
       };
     };
   };
+  presentation_get_newest_frame: {
+    parameters: {
+      query?: {
+        dimension?: string | null;
+        query?: string | null;
+      };
+      header?: never;
+      path: {
+        spec_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Neither `dimension` nor `query` given returns the frame's structural view. `dimension` alone returns that one dimension's full value list. `query` alone returns every dimension filtered to values matching the query. `dimension` and `query` together return that one dimension's values filtered to the query. The frame is the newest version of the dataset `spec_id` names, the version the analysis runner reads for a Spec root; `spec_id` and `content_version` name it. The view reads that version's canonical frame, as the pair route does, so it holds no default enrichment column, and a `dimension` naming one refuses `binding_invalid`. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["NewestFrameStructuralViewResponse"]
+            | components["schemas"]["NewestFrameDimensionValuesResponse"]
+            | components["schemas"]["NewestFrameFilteredViewResponse"];
+        };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
   presentation_get_release: {
     parameters: {
       query?: never;
@@ -12430,6 +14699,421 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ReleaseDocumentResponse"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  presentation_create_share: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CreateShareBody"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SharedResponse"];
+        };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  presentation_read_share: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        share_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ShareReadResponse"];
+        };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  presentation_replace_share: {
+    parameters: {
+      query?: never;
+      header?: {
+        "x-dfo-write-token"?: string | null;
+      };
+      path: {
+        share_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ShareCardsBody"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ShareWriteResponse"];
+        };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  presentation_delete_share: {
+    parameters: {
+      query?: never;
+      header?: {
+        "x-dfo-write-token"?: string | null;
+      };
+      path: {
+        share_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  presentation_post_share_snapshot: {
+    parameters: {
+      query?: never;
+      header?: {
+        "x-dfo-write-token"?: string | null;
+      };
+      path: {
+        share_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ShareWriteResponse"];
+        };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  presentation_put_share_import: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        share_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ShareImport"];
+      };
+    };
+    responses: {
+      /** @description An earlier import stored this share, which is left as it is. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ShareImportResponse"];
+        };
+      };
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ShareImportResponse"];
+        };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  presentation_read_share_history: {
+    parameters: {
+      query?: {
+        /** @description the most entries the page holds, 1 to 500 */
+        limit?: number;
+        /** @description the `next` cursor of the previous page; the page continues after that page's last entry */
+        before?: string | null;
+      };
+      header?: never;
+      path: {
+        share_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ShareHistoryResponse"];
+        };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  presentation_read_share_slot_card: {
+    parameters: {
+      query?: never;
+      header?: {
+        "if-none-match"?: string | null;
+      };
+      path: {
+        share_id: string;
+        slot: number;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The slot's card as a component read states it, drawn on the frame the slot's data route serves, with that frame's retention and the freshness. x-dfo-freshness and a live slot's x-dfo-checked-at are the data route's. A strong ETag answers If-None-Match with 304. Any origin may read it. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ShareSlotCardResponse"];
+        };
+      };
+      /** @description The If-None-Match ETag still names this card. */
+      304: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  presentation_read_share_slot_data: {
+    parameters: {
+      query?: {
+        format?: components["schemas"]["SlotFormat"];
+        bundle?: boolean;
+      };
+      header?: {
+        "if-none-match"?: string | null;
+      };
+      path: {
+        share_id: string;
+        slot: number;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The rows behind the slot's card. JSON (the default) states the slot, its card and frame and the freshness beside the rows; csv, xlsx and parquet are the card's data file, and bundle=true serves the components data route's zip around it. x-dfo-freshness states current, stale or pending, and a live slot's x-dfo-checked-at when DFO last checked for newer data. A strong ETag answers If-None-Match with 304. Any origin may read it. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/zip": unknown;
+          "text/csv": unknown;
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": unknown;
+          "application/vnd.apache.parquet": unknown;
+          "application/json": components["schemas"]["ShareSlotDataResponse"];
+        };
+      };
+      /** @description The If-None-Match ETag still names these rows. */
+      304: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
         };
       };
       /** @description any non-2xx response uses this envelope */
@@ -12491,6 +15175,11 @@ export type AmbiguousEntityCandidate = components["schemas"]["AmbiguousEntityCan
 export type AmbiguousEntityGroup = components["schemas"]["AmbiguousEntityGroup"];
 export type AmbiguousSourceCandidate = components["schemas"]["AmbiguousSourceCandidate"];
 export type AmbiguousSourceGroup = components["schemas"]["AmbiguousSourceGroup"];
+export type AnalysisPendingBody = components["schemas"]["AnalysisPendingBody"];
+export type AnalysisReady = components["schemas"]["AnalysisReady"];
+export type AnalysisRequest = components["schemas"]["AnalysisRequest"];
+export type AnchorAnswer = components["schemas"]["AnchorAnswer"];
+export type AnchorRequest = components["schemas"]["AnchorRequest"];
 export type AppliedDefaultModel = components["schemas"]["AppliedDefaultModel"];
 export type ArtifactEntryModel = components["schemas"]["ArtifactEntryModel"];
 export type Assumption = components["schemas"]["Assumption"];
@@ -12499,6 +15188,7 @@ export type Availability = components["schemas"]["Availability"];
 export type AvailabilityDefault = components["schemas"]["AvailabilityDefault"];
 export type AvailabilitySource = components["schemas"]["AvailabilitySource"];
 export type AvailabilitySummary = components["schemas"]["AvailabilitySummary"];
+export type BareExportFrame = components["schemas"]["BareExportFrame"];
 export type BaseIdentity = components["schemas"]["BaseIdentity"];
 export type Binding = components["schemas"]["Binding"];
 export type BindingSet = components["schemas"]["BindingSet"];
@@ -12521,6 +15211,7 @@ export type ChangeEntry = components["schemas"]["ChangeEntry"];
 export type ChangeModel = components["schemas"]["ChangeModel"];
 export type ChangedFieldModel = components["schemas"]["ChangedFieldModel"];
 export type Choice = components["schemas"]["Choice"];
+export type ChoiceOrigin = components["schemas"]["ChoiceOrigin"];
 export type CitationModel = components["schemas"]["CitationModel"];
 export type CitationSource = components["schemas"]["CitationSource"];
 export type CitedDataCommons = components["schemas"]["CitedDataCommons"];
@@ -12535,6 +15226,8 @@ export type CodeSystemBlock = components["schemas"]["CodeSystemBlock"];
 export type CodeSystemDeclarations = components["schemas"]["CodeSystemDeclarations"];
 export type CodeSystemNode = components["schemas"]["CodeSystemNode"];
 export type ColumnOptionModel = components["schemas"]["ColumnOptionModel"];
+export type CompiledScope = components["schemas"]["CompiledScope"];
+export type Component = components["schemas"]["Component"];
 export type ComponentBody = components["schemas"]["ComponentBody"];
 export type ComponentReadResponse = components["schemas"]["ComponentReadResponse"];
 export type ComposedUnit = components["schemas"]["ComposedUnit"];
@@ -12556,10 +15249,12 @@ export type CoverageExact = components["schemas"]["CoverageExact"];
 export type CoverageModel = components["schemas"]["CoverageModel"];
 export type CreateComponentBody = components["schemas"]["CreateComponentBody"];
 export type CreateReplyResponse = components["schemas"]["CreateReplyResponse"];
+export type CreateShareBody = components["schemas"]["CreateShareBody"];
 export type DataBuilds = components["schemas"]["DataBuilds"];
 export type DatasetEntry = components["schemas"]["DatasetEntry"];
 export type DatasetNode = components["schemas"]["DatasetNode"];
 export type DatasetResubmitInput = components["schemas"]["DatasetResubmitInput"];
+export type DatasetRoot = components["schemas"]["DatasetRoot"];
 export type DatasetVersion = components["schemas"]["DatasetVersion"];
 export type DatasetVersionsPage = components["schemas"]["DatasetVersionsPage"];
 export type DateRange = components["schemas"]["DateRange"];
@@ -12572,6 +15267,10 @@ export type DefinitionResponse = components["schemas"]["DefinitionResponse"];
 export type DefinitionText = components["schemas"]["DefinitionText"];
 export type Departure = components["schemas"]["Departure"];
 export type DeploymentFacetPolicy = components["schemas"]["DeploymentFacetPolicy"];
+export type DerivedManifest = components["schemas"]["DerivedManifest"];
+export type DerivedManifestRoot = components["schemas"]["DerivedManifestRoot"];
+export type DerivedRecipe = components["schemas"]["DerivedRecipe"];
+export type DerivedRoot = components["schemas"]["DerivedRoot"];
 export type DescribedProperty = components["schemas"]["DescribedProperty"];
 export type DescribedValue = components["schemas"]["DescribedValue"];
 export type DescriptionValuesPage = components["schemas"]["DescriptionValuesPage"];
@@ -12581,8 +15280,10 @@ export type DimensionNoun = components["schemas"]["DimensionNoun"];
 export type DocumentErrorEntry = components["schemas"]["DocumentErrorEntry"];
 export type DownloadFacts = components["schemas"]["DownloadFacts"];
 export type DownloadLicence = components["schemas"]["DownloadLicence"];
+export type DroppedEntry = components["schemas"]["DroppedEntry"];
 export type EnrichmentCoverageCountsModel = components["schemas"]["EnrichmentCoverageCountsModel"];
 export type EnrichmentOptionModel = components["schemas"]["EnrichmentOptionModel"];
+export type EntitiesBinding = components["schemas"]["EntitiesBinding"];
 export type EntityCounts = components["schemas"]["EntityCounts"];
 export type EntityCoverage = components["schemas"]["EntityCoverage"];
 export type EntityGroup = components["schemas"]["EntityGroup"];
@@ -12590,8 +15291,14 @@ export type EntityOptions = components["schemas"]["EntityOptions"];
 export type EntityRef = components["schemas"]["EntityRef"];
 export type EntityRefs = components["schemas"]["EntityRefs"];
 export type EntityYearsModel = components["schemas"]["EntityYearsModel"];
+export type Entry = components["schemas"]["Entry"];
 export type Exclusion = components["schemas"]["Exclusion"];
 export type Expansion = components["schemas"]["Expansion"];
+export type ExportFormat = components["schemas"]["ExportFormat"];
+export type ExportFrame = components["schemas"]["ExportFrame"];
+export type ExportLicence = components["schemas"]["ExportLicence"];
+export type ExportRequestBody = components["schemas"]["ExportRequestBody"];
+export type ExportResponse = components["schemas"]["ExportResponse"];
 export type FacetItem = components["schemas"]["FacetItem"];
 export type FacetNationalCurrencyBinding = components["schemas"]["FacetNationalCurrencyBinding"];
 export type FacetOptions = components["schemas"]["FacetOptions"];
@@ -12636,7 +15343,9 @@ export type IdentityWindowAll = components["schemas"]["IdentityWindowAll"];
 export type IdentityWindowLatest = components["schemas"]["IdentityWindowLatest"];
 export type IdentityWindowRange = components["schemas"]["IdentityWindowRange"];
 export type JsonValue = components["schemas"]["JsonValue"];
+export type LedgerStep = components["schemas"]["LedgerStep"];
 export type LeftOut = components["schemas"]["LeftOut"];
+export type LeftOutSeriesBody = components["schemas"]["LeftOutSeriesBody"];
 export type Manifest = components["schemas"]["Manifest"];
 export type Matched = components["schemas"]["Matched"];
 export type Measure = components["schemas"]["Measure"];
@@ -12651,6 +15360,12 @@ export type MintRequest = components["schemas"]["MintRequest"];
 export type MissingEntityModel = components["schemas"]["MissingEntityModel"];
 export type NationalCurrency = components["schemas"]["NationalCurrency"];
 export type NearestRealSpec = components["schemas"]["NearestRealSpec"];
+export type NewestFrameDimensionValuesResponse =
+  components["schemas"]["NewestFrameDimensionValuesResponse"];
+export type NewestFrameFilteredViewResponse =
+  components["schemas"]["NewestFrameFilteredViewResponse"];
+export type NewestFrameStructuralViewResponse =
+  components["schemas"]["NewestFrameStructuralViewResponse"];
 export type NoData = components["schemas"]["NoData"];
 export type NoDataDenominator = components["schemas"]["NoDataDenominator"];
 export type NoDataOption = components["schemas"]["NoDataOption"];
@@ -12669,6 +15384,8 @@ export type RequestedOperation = components["schemas"]["Operation"];
 export type OperationEnvelope = components["schemas"]["OperationEnvelope"];
 export type OperationProgress = components["schemas"]["OperationProgress"];
 export type OperationResource = components["schemas"]["OperationResource"];
+export type Option = components["schemas"]["Option"];
+export type OptionAvailability = components["schemas"]["OptionAvailability"];
 export type OptionsEnvelope = components["schemas"]["OptionsEnvelope"];
 export type OptionsFor = components["schemas"]["OptionsFor"];
 export type OptionsRequest = components["schemas"]["OptionsRequest"];
@@ -12680,7 +15397,9 @@ export type OutputOptionsModel = components["schemas"]["OutputOptionsModel"];
 export type ParsedEntity = components["schemas"]["ParsedEntity"];
 export type ParsedInput = components["schemas"]["ParsedInput"];
 export type ParsedPart = components["schemas"]["ParsedPart"];
+export type PartScope = components["schemas"]["PartScope"];
 export type PartyBlock = components["schemas"]["PartyBlock"];
+export type PartyTotalsLeftOutModel = components["schemas"]["PartyTotalsLeftOutModel"];
 export type PeriodCoverage = components["schemas"]["PeriodCoverage"];
 export type PinRequest = components["schemas"]["PinRequest"];
 export type PinResponse = components["schemas"]["PinResponse"];
@@ -12696,6 +15415,7 @@ export type ProjectionCount = components["schemas"]["ProjectionCount"];
 export type ProvenanceEntry = components["schemas"]["ProvenanceEntry"];
 export type ProvenanceNode = components["schemas"]["ProvenanceNode"];
 export type ProvenanceRef = components["schemas"]["ProvenanceRef"];
+export type ProviderBinding = components["schemas"]["ProviderBinding"];
 export type PublishFrameRequest = components["schemas"]["PublishFrameRequest"];
 export type PublishFrameResponse = components["schemas"]["PublishFrameResponse"];
 export type PublishedFrameCoordinates = components["schemas"]["PublishedFrameCoordinates"];
@@ -12703,8 +15423,12 @@ export type QueryEcho = components["schemas"]["QueryEcho"];
 export type RawTextInput = components["schemas"]["RawTextInput"];
 export type Recipe = components["schemas"]["Recipe"];
 export type RecipeAnchor = components["schemas"]["RecipeAnchor"];
+export type RecipeDroppedSeries = components["schemas"]["RecipeDroppedSeries"];
+export type RecipeLeftOut = components["schemas"]["RecipeLeftOut"];
 export type RecipeLeftOutSeries = components["schemas"]["RecipeLeftOutSeries"];
+export type RecipeStepRef = components["schemas"]["RecipeStepRef"];
 export type RecipeWriteResponse = components["schemas"]["RecipeWriteResponse"];
+export type RefRoot = components["schemas"]["RefRoot"];
 export type RefreshFrameRequest = components["schemas"]["RefreshFrameRequest"];
 export type RegisterRequest = components["schemas"]["RegisterRequest"];
 export type RelatedMeasure = components["schemas"]["RelatedMeasure"];
@@ -12735,10 +15459,12 @@ export type RetentionModel = components["schemas"]["RetentionModel"];
 export type RoleAxis = components["schemas"]["RoleAxis"];
 export type RoleAxisFact = components["schemas"]["RoleAxisFact"];
 export type RootEntry = components["schemas"]["RootEntry"];
+export type RootRendering = components["schemas"]["RootRendering"];
 export type Roots = components["schemas"]["Roots"];
 export type ScopeInput = components["schemas"]["Scope-Input"];
 export type ScopeOutput = components["schemas"]["Scope-Output"];
 export type ScopeAndUnits = components["schemas"]["ScopeAndUnits"];
+export type ScopeChoice = components["schemas"]["ScopeChoice"];
 export type SentenceToken = components["schemas"]["SentenceToken"];
 export type Series = components["schemas"]["Series"];
 export type SeriesAxisRef = components["schemas"]["SeriesAxisRef"];
@@ -12749,10 +15475,28 @@ export type SeriesFacetRef = components["schemas"]["SeriesFacetRef"];
 export type SeriesStatVarRef = components["schemas"]["SeriesStatVarRef"];
 export type ServedMember = components["schemas"]["ServedMember"];
 export type Shape = components["schemas"]["Shape"];
+export type ShapeBinding = components["schemas"]["ShapeBinding"];
 export type ShapeUpstream = components["schemas"]["ShapeUpstream"];
+export type ShareCardBody = components["schemas"]["ShareCardBody"];
+export type ShareCardModel = components["schemas"]["ShareCardModel"];
+export type ShareCardsBody = components["schemas"]["ShareCardsBody"];
+export type ShareFrameModel = components["schemas"]["ShareFrameModel"];
+export type ShareHistoryResponse = components["schemas"]["ShareHistoryResponse"];
+export type ShareImport = components["schemas"]["ShareImport"];
+export type ShareImportResponse = components["schemas"]["ShareImportResponse"];
+export type ShareReadResponse = components["schemas"]["ShareReadResponse"];
+export type ShareRetentionModel = components["schemas"]["ShareRetentionModel"];
+export type ShareServedModel = components["schemas"]["ShareServedModel"];
+export type ShareSlotCardResponse = components["schemas"]["ShareSlotCardResponse"];
+export type ShareSlotDataResponse = components["schemas"]["ShareSlotDataResponse"];
+export type ShareSlotModel = components["schemas"]["ShareSlotModel"];
+export type ShareWriteResponse = components["schemas"]["ShareWriteResponse"];
+export type SharedResponse = components["schemas"]["SharedResponse"];
 export type SimpleUnit = components["schemas"]["SimpleUnit"];
 export type Skill = components["schemas"]["Skill"];
 export type Slot = components["schemas"]["Slot"];
+export type SlotBinding = components["schemas"]["SlotBinding"];
+export type SlotFormat = components["schemas"]["SlotFormat"];
 export type SlotKey = components["schemas"]["SlotKey"];
 export type SlotOption = components["schemas"]["SlotOption"];
 export type SlotOptions = components["schemas"]["SlotOptions"];
@@ -12774,17 +15518,22 @@ export type SpecAlternativeMeasure = components["schemas"]["SpecAlternativeMeasu
 export type SpecDefinition = components["schemas"]["SpecDefinition"];
 export type SpecIdInput = components["schemas"]["SpecIdInput"];
 export type SpecObservations = components["schemas"]["SpecObservations"];
+export type SpecRoot = components["schemas"]["SpecRoot"];
 export type StatVarBlock = components["schemas"]["StatVarBlock"];
 export type StatVarNode = components["schemas"]["StatVarNode"];
 export type StatVarSetInput = components["schemas"]["StatVarSetInput"];
 export type Step = components["schemas"]["Step"];
+export type StepInputs = components["schemas"]["StepInputs"];
+export type StepNode = components["schemas"]["StepNode"];
 export type StepRef = components["schemas"]["StepRef"];
 export type SubregionNode = components["schemas"]["SubregionNode"];
 export type Summed = components["schemas"]["Summed"];
+export type TextOrigin = components["schemas"]["TextOrigin"];
 export type TimeWindow = components["schemas"]["TimeWindow"];
 export type Timing = components["schemas"]["Timing"];
 export type TraceConversion = components["schemas"]["TraceConversion"];
 export type TraceDefaultReading = components["schemas"]["TraceDefaultReading"];
+export type TraceModel = components["schemas"]["TraceModel"];
 export type TransformationLogEntry = components["schemas"]["TransformationLogEntry"];
 export type TransformationStepModel = components["schemas"]["TransformationStepModel"];
 export type UnavailableFormatModel = components["schemas"]["UnavailableFormatModel"];
@@ -12807,6 +15556,7 @@ export type UsageEntry = components["schemas"]["UsageEntry"];
 export type VariableDefinition = components["schemas"]["VariableDefinition"];
 export type VariableSide = components["schemas"]["VariableSide"];
 export type VaryingColumnModel = components["schemas"]["VaryingColumnModel"];
+export type Verb = components["schemas"]["Verb"];
 export type VersionHistoryEntry = components["schemas"]["VersionHistoryEntry"];
 export type VersionRef = components["schemas"]["VersionRef"];
 export type Warning = components["schemas"]["Warning"];
@@ -12819,6 +15569,14 @@ export type WriteReplyResponse = components["schemas"]["WriteReplyResponse"];
 export type YearCoverage = components["schemas"]["YearCoverage"];
 export type YearRange = components["schemas"]["YearRange"];
 export type YearRangeModel = components["schemas"]["YearRangeModel"];
+export type FieldContentVersion = components["schemas"]["_ContentVersion"];
+export type FieldExportFrame = components["schemas"]["_ExportFrame"];
+export type FieldExportSlot = components["schemas"]["_ExportSlot"];
+export type FieldRef = components["schemas"]["_Ref"];
+export type FieldRefArtifact = components["schemas"]["_RefArtifact"];
+export type FieldRefMember = components["schemas"]["_RefMember"];
+export type FieldRefRendering = components["schemas"]["_RefRendering"];
+export type FieldRefSpec = components["schemas"]["_RefSpec"];
 export type DatasetsApiCapabilitiesCapabilities =
   components["schemas"]["datasets_api__capabilities__Capabilities"];
 export type DatasetsApiCapabilitiesCapabilityCaps =
@@ -12864,6 +15622,7 @@ export type DepartureCode =
   | "operation_not_applied"
   | "breakdown_not_applied"
   | "entity_unavailable"
+  | "member_unavailable"
   | "year_unavailable"
   | "modelled_values"
   | "group_read_as_members"

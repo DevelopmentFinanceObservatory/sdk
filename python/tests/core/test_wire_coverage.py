@@ -135,6 +135,9 @@ COVERAGE: list[tuple[type, type, dict[str, str | None]]] = [
             "served_years": None,
             "omitted_entities": None,
             "omitted_entity_years": None,
+            "unserved_members": None,
+            "withheld_members": None,
+            "withheld_provenances": None,
         },
     ),
     (

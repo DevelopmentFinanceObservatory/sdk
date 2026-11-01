@@ -11,7 +11,7 @@
       {
         "variable_text": "mortality",
         "warnings": [],
-        "rendered_sentence": "3 readings. Deaths rate per capita in the 48 countries in Sub-Saharan Africa. World Development Indicators · 2013 to 2022. Number of deaths in the 48 countries in Sub-Saharan Africa. Kenya Census · 2018 to 2022. Count of mortality event (as fraction of count birth event live birth) in the 48 countries in Sub-Saharan Africa. Nigeria Statistics · 2014.",
+        "rendered_sentence": "3 readings. Deaths rate per 1,000 people in the 48 countries in Sub-Saharan Africa. World Development Indicators · 2013 to 2022. Number of deaths in the 48 countries in Sub-Saharan Africa. Kenya Census · 2018 to 2022. Count of mortality event (as fraction of count birth event live birth) in the 48 countries in Sub-Saharan Africa. Nigeria Statistics · 2014.",
         "restatement": {
           "variable_text": "mortality",
           "entities": [
@@ -129,7 +129,7 @@
                     "label": "World Development Indicators"
                   }
                 },
-                "rendered_sentence": "Deaths rate per capita in the 48 countries in Sub-Saharan Africa, 2013 to 2022. World Development Indicators.",
+                "rendered_sentence": "Deaths rate per 1,000 people in the 48 countries in Sub-Saharan Africa, 2013 to 2022. World Development Indicators.",
                 "sentence_plan": [
                   {
                     "kind": "slot",
@@ -144,7 +144,7 @@
                   },
                   {
                     "kind": "slot",
-                    "text": "per capita",
+                    "text": "per 1,000 people",
                     "axis": "unit",
                     "segment": "heading"
                   },
@@ -858,8 +858,8 @@
         }
       }
     ],
-    "rendered_sentence": "Answered 1 of 2 parts. Mortality has 3 readings. Deaths rate per capita in the 48 countries in Sub-Saharan Africa. World Development Indicators · 2013 to 2022. Number of deaths in the 48 countries in Sub-Saharan Africa. Kenya Census · 2018 to 2022. Count of mortality event (as fraction of count birth event live birth) in the 48 countries in Sub-Saharan Africa. Nigeria Statistics · 2014. GDP in the 48 countries in Sub-Saharan Africa, 2013 to 2022. Current US dollars · World Development Indicators. The data holds no values for 1 of the 48 countries in Sub-Saharan Africa. You asked for sub-Saharan Africa. This shows the countries in it, each on its own.",
+    "rendered_sentence": "Answered 1 of 2 parts. Mortality has 3 readings. Deaths rate per 1,000 people in the 48 countries in Sub-Saharan Africa. World Development Indicators · 2013 to 2022. Number of deaths in the 48 countries in Sub-Saharan Africa. Kenya Census · 2018 to 2022. Count of mortality event (as fraction of count birth event live birth) in the 48 countries in Sub-Saharan Africa. Nigeria Statistics · 2014. GDP in the 48 countries in Sub-Saharan Africa, 2013 to 2022. Current US dollars · World Development Indicators. The data holds no values for 1 of the 48 countries in Sub-Saharan Africa. You asked for sub-Saharan Africa. This shows the countries in it, each on its own.",
     "status": "mixed",
-    "trace_id": "94058d9236554b299cad827b56912349"
+    "trace_id": "f6547394c0934d9a84db20459acc4b96"
   }
 }

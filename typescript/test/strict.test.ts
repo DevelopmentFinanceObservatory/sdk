@@ -63,11 +63,16 @@ test("a part checks against its status's schema, and an unknown status passes", 
 
 test("a nested spec the client never reads passes without its strict fields", async () => {
   const definite = structuredClone(await recorded("answer-definite-fetch"));
-  const [part] = definite["parts"] as { spec: { resolved: Record<string, unknown> } }[];
-  const [alternative] = part!.spec.resolved["alternative_measures"] as {
-    definition: Record<string, unknown>;
+  const [part] = definite["parts"] as {
+    spec: { definition: Record<string, unknown>; resolved: Record<string, unknown> };
   }[];
-  delete alternative!.definition["spec_id"];
+  // A recording need not hold an alternative measure, so the part's own definition, without its
+  // spec_id, stands in for one.
+  const definition = structuredClone(part!.spec.definition);
+  delete definition["spec_id"];
+  part!.spec.resolved["alternative_measures"] = [
+    { definition, label: "Another measure", axis: "what", measure_axis_values: {} },
+  ];
   checkStrict("Resolution", definite);
 
   const folded = structuredClone(await recorded("answer-several-readings-folded"));

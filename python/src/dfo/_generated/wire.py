@@ -32,6 +32,12 @@ class AmbiguousSourceGroup(TypedDict):
     candidates: list[AmbiguousSourceCandidate]
 
 
+class AnalysisPendingBody(TypedDict):
+    status: NotRequired[Literal["pending"]]
+    retry_after_s: float
+    operations: list[str]
+
+
 class AppliedDefaultModel(TypedDict):
     pointer: str
     detail: str
@@ -68,6 +74,10 @@ class AvailabilitySource(TypedDict):
     ref: str
     label: str | None
     documentation: str
+
+
+class BareExportFrame(TypedDict):
+    spec_id: str
 
 
 type Entity = str
@@ -151,6 +161,11 @@ class ChangedFieldModel(TypedDict):
 
 
 type RankingItem = str
+
+
+class ChoiceOrigin(TypedDict):
+    kind: NotRequired[Literal["choice"]]
+    choice_id: str
 
 
 class CitedDataCommons(TypedDict):
@@ -268,6 +283,7 @@ class Departure(TypedDict):
         "operation_not_applied",
         "breakdown_not_applied",
         "entity_unavailable",
+        "member_unavailable",
         "year_unavailable",
         "modelled_values",
         "group_read_as_members",
@@ -286,6 +302,11 @@ class Departure(TypedDict):
 class DeploymentFacetPolicy(TypedDict):
     policy: str
     version: str
+
+
+class DerivedRoot(TypedDict):
+    spec_id: str
+    content_version: str
 
 
 class DescribedProperty(TypedDict):
@@ -364,14 +385,21 @@ class EntityCounts(TypedDict):
     unclassified: int
 
 
+type Member = str
+
+
 class EntityGroup(TypedDict):
     ref: NotRequired[str | None]
     label: str
     entity_type: NotRequired[str | None]
     total: NotRequired[str | None]
     group_id: NotRequired[str | None]
+    members: NotRequired[list[Member] | None]
     whole_of: NotRequired[list[Literal["official", "private", "residual"]] | None]
+    holds_multilaterals: NotRequired[bool | None]
     side_classes: NotRequired[list[Literal["official", "private", "residual"]] | None]
+    left_out: NotRequired[list[str] | None]
+    sum_differs: NotRequired[bool | None]
 
 
 class EntityRef(TypedDict):
@@ -413,6 +441,44 @@ class EntityYearsModel(TypedDict):
 class Exclusion(TypedDict):
     ref: str
     reason: Literal["superseded_by_dfo", "superseded_by_un_system"]
+
+
+type ExportFormat = Literal["csv", "xlsx", "parquet"]
+
+
+class ExportFrame(TypedDict):
+    spec_id: str
+    content_version: str
+
+
+class ExportLicence(TypedDict):
+    source: str
+    label: str
+    licence: str | None
+    url: str | None
+
+
+class ExportRequestBody(TypedDict):
+    frame: ExportFrame | BareExportFrame
+    format: NotRequired[ExportFormat]
+    bundle: NotRequired[bool]
+
+
+class ExportResponse(TypedDict):
+    export_id: str
+    url_path: str
+    file_name: str
+    media_type: str
+    format: ExportFormat
+    bundle: bool
+    bytes: int
+    rows: int
+    columns: int
+    sha256: str
+    frame: ExportFrame
+    citation: str
+    licences: list[ExportLicence]
+    pinned: bool
 
 
 class FacetRefBinding(TypedDict):
@@ -617,6 +683,11 @@ class LeftOut(TypedDict):
     role: NotRequired[str]
 
 
+class LeftOutSeriesBody(TypedDict):
+    root: int
+    coordinates: dict[str, str]
+
+
 Matched = TypedDict(
     "Matched",
     {
@@ -661,6 +732,31 @@ class MissingEntityModel(TypedDict):
 class NationalCurrency(TypedDict):
     currencies: int
     places: int
+
+
+class NewestFrameDimensionValuesResponse(TypedDict):
+    spec_id: str
+    content_version: str
+    dimension: str
+    values: list[str]
+    total_count: int
+
+
+class NewestFrameFilteredViewResponse(TypedDict):
+    spec_id: str
+    content_version: str
+    dimensions: list[FrameDimensionMatch]
+    period_grain: str
+    coverage: tuple[str, str] | None
+
+
+class NewestFrameStructuralViewResponse(TypedDict):
+    spec_id: str
+    content_version: str
+    dimensions: list[FrameDimensionSummary]
+    period_grain: str
+    coverage: tuple[str, str] | None
+    series_count: int
 
 
 class NoDataDenominator(TypedDict):
@@ -743,6 +839,26 @@ class OperationProgress(TypedDict):
     estimate_rows: int
 
 
+class OptionAvailability(TypedDict):
+    status: Literal["available", "partial", "unavailable"]
+    years: NotRequired[list[tuple[int, int]] | None]
+    code: NotRequired[
+        Literal[
+            "provider_not_offered",
+            "imputed_coverage",
+            "basis_not_published",
+            "residuals_need_summed_region",
+            "conflicts_with",
+            "carried_choice_not_applied",
+            "stated_choice_not_applied",
+            "option_not_covered",
+            "contributions_counted",
+        ]
+        | None
+    ]
+    detail: NotRequired[dict[str, str]]
+
+
 class OptionsFor(TypedDict):
     role: str
     scope: NotRequired[Literal["peers", "children"] | None]
@@ -785,6 +901,12 @@ type OpenRole = str
 
 class PartyBlock(TypedDict):
     roles: list[str] | None
+
+
+class PartyTotalsLeftOutModel(TypedDict):
+    role: str
+    provenance: NotRequired[str | None]
+    entities: list[str]
 
 
 class PeriodCoverage(TypedDict):
@@ -830,6 +952,13 @@ class ProvenanceEntry(TypedDict):
     label: str
 
 
+class ProviderBinding(TypedDict):
+    kind: NotRequired[Literal["provider"]]
+    scope: Literal["bilateral", "inclusive", "contributions", "multilateral"]
+    window: NotRequired[tuple[int, int] | None]
+    provenance: NotRequired[str | None]
+
+
 type RoleKey = str
 
 
@@ -859,6 +988,11 @@ class RecipeLeftOutSeries(TypedDict):
     root: int
     coordinates: dict[str, str]
     label: NotRequired[str | None]
+
+
+class RecipeStepRef(TypedDict):
+    verb: str
+    node: int
 
 
 class RecipeWriteResponse(TypedDict):
@@ -935,6 +1069,7 @@ class ResolvedEntity(TypedDict):
     label: NotRequired[str | None]
     entity_type: NotRequired[str | None]
     role: Literal["observationAbout", "origin", "destination"]
+    multilateral: NotRequired[bool | None]
     confidence: NotRequired[Literal["high", "medium", "low"] | None]
 
 
@@ -1006,12 +1141,19 @@ class RoleAxisFact(TypedDict):
     role: RoleAxis
     member_count: int | None
     members_available: bool
+    holds_multilaterals: NotRequired[bool | None]
 
 
 class RootEntry(TypedDict):
     ref: str
     label: str | None
     count: int
+
+
+class RootRendering(TypedDict):
+    without_party_totals: NotRequired[bool]
+    columns: NotRequired[list[Column] | None]
+    groupby: NotRequired[GroupbyOptions | None]
 
 
 class Roots(TypedDict):
@@ -1084,6 +1226,78 @@ class ServedMember(TypedDict):
     constraints: dict[str, str | None]
 
 
+class ShapeBinding(TypedDict):
+    kind: NotRequired[Literal["shape"]]
+    measured_property: str
+    netting_basis: str | None
+    provenance: NotRequired[str | None]
+
+
+class ShareCardBody(TypedDict):
+    component_id: str
+    revision: int
+
+
+class ShareCardsBody(TypedDict):
+    cards: list[ShareCardBody]
+
+
+class ShareFrameModel(TypedDict):
+    spec_id: str
+    content_version: str
+
+
+class ShareImportResponse(TypedDict):
+    id: str
+    imported: bool
+
+
+class ShareRetentionModel(TypedDict):
+    pinned: bool
+    held_until: NotRequired[str | None]
+
+
+class ShareServedModel(TypedDict):
+    slot: int
+    component_id: str | None
+    revision: int | None
+    frame: ShareFrameModel | None
+    rendering: dict[str, Any] | None
+    first_served_at: str
+    retention: ShareRetentionModel | None
+    fetchable: bool
+
+
+class ShareSlotDataResponse(TypedDict):
+    share_id: str
+    slot: int
+    mode: Literal["live", "snapshot"]
+    freshness: Literal["current", "stale", "pending"]
+    component_id: str
+    revision: int
+    frame: ShareFrameModel
+    rows: list[dict[str, Any]]
+
+
+class ShareWriteResponse(TypedDict):
+    id: str
+    url: str
+    embed_url: str
+    data_urls: list[str]
+    revision: int
+    latest: bool
+
+
+class SharedResponse(TypedDict):
+    id: str
+    url: str
+    embed_url: str
+    data_urls: list[str]
+    revision: int
+    latest: bool
+    write_token: str
+
+
 class SimpleUnit(TypedDict):
     ref: NotRequired[str]
     currency: NotRequired[str]
@@ -1098,6 +1312,17 @@ class Skill(TypedDict):
     name: str
     description: str
     content_version: str
+
+
+class SlotBinding(TypedDict):
+    kind: NotRequired[Literal["slot"]]
+    slot: str
+    state: Literal["value", "set"]
+    refs: list[str]
+    window: NotRequired[tuple[int, int] | None]
+
+
+type SlotFormat = Literal["json", "csv", "xlsx", "parquet"]
 
 
 class SlotKey(TypedDict):
@@ -1136,6 +1361,11 @@ class SourceRef(TypedDict):
     label: str
 
 
+class SpecRoot(TypedDict):
+    spec_id: str
+    rendering: NotRequired[RootRendering]
+
+
 type Statvar = str
 
 
@@ -1148,6 +1378,13 @@ class StepRef(TypedDict):
 class Summed(TypedDict):
     count: int
     variables: list[StepRef]
+
+
+class TextOrigin(TypedDict):
+    kind: NotRequired[Literal["text"]]
+    text: str
+    start: int
+    end: int
 
 
 class TimeWindow(TypedDict):
@@ -1168,6 +1405,10 @@ class TraceConversion(TypedDict):
 class TraceDefaultReading(TypedDict):
     applied: bool
     removed_stat_vars: NotRequired[list[str]]
+
+
+class TraceModel(TypedDict):
+    party_totals_left_out: NotRequired[list[PartyTotalsLeftOutModel]]
 
 
 class TransformationLogEntry(TypedDict):
@@ -1239,6 +1480,19 @@ class VaryingColumnModel(TypedDict):
     distinct: int
 
 
+type Verb = Literal[
+    "aggregate",
+    "compare",
+    "growth",
+    "rank",
+    "share_of",
+    "join",
+    "filter",
+    "sum_of",
+    "quotient_of",
+]
+
+
 class VersionHistoryEntry(TypedDict):
     date: str
     title: str
@@ -1295,6 +1549,29 @@ class YearRangeModel(TypedDict):
     end: NotRequired[int | None]
 
 
+type FieldContentVersion = str
+
+
+class FieldExportFrame(TypedDict):
+    spec_id: str
+    content_version: FieldContentVersion
+
+
+class FieldExportSlot(TypedDict):
+    component_id: str
+    revision: int
+    frame: FieldExportFrame | None
+
+
+class FieldRefRendering(TypedDict):
+    without_party_totals: NotRequired[bool]
+    groupby: NotRequired[GroupbyOptions | None]
+
+
+class FieldRefSpec(TypedDict):
+    spec_id: str
+
+
 class DatasetsApiCapabilitiesCapabilityCaps(TypedDict):
     definition_candidate_cap: int
     definition_subject_ceiling: int
@@ -1303,6 +1580,7 @@ class DatasetsApiCapabilitiesCapabilityCaps(TypedDict):
     async_max_rows: int
     async_max_requests: int
     pivot_max_output_cells: int
+    groupby_fold_max_rows: int
     operation_retention_days: int
 
 
@@ -1436,6 +1714,28 @@ class AidCounts(TypedDict):
     donors: int
     recipients: int
     years: YearRange | None
+
+
+class AnalysisReady(TypedDict):
+    status: NotRequired[Literal["ready"]]
+    ref: dict[str, JsonValue]
+    frame_content_version: str
+    output_digest: str
+    summary: dict[str, JsonValue]
+    rows: int
+    role_keys: list[str]
+    stat_var_count: int
+    exclusions: list[dict[str, JsonValue]]
+    time: dict[str, JsonValue]
+    execution_identity: dict[str, str]
+    resolved_periods: list[dict[str, JsonValue]]
+
+
+class AnchorAnswer(TypedDict):
+    period: str
+    rule: str
+    left_out: list[LeftOutSeriesBody]
+    roots: list[dict[str, str]]
 
 
 class AvailabilityDefault(TypedDict):
@@ -1619,6 +1919,15 @@ class CoverageModel(TypedDict):
     fullest_year: NotRequired[YearCoverage | None]
 
 
+class CreateShareBody(TypedDict):
+    cards: NotRequired[list[ShareCardBody]]
+    latest: bool
+    title: NotRequired[str | None]
+    kind: NotRequired[Literal["card", "canvas", "search", "conversation"]]
+    payload: NotRequired[JsonValue]
+    write_token: NotRequired[str | None]
+
+
 class DatasetEntry(TypedDict):
     ref: str
     label: str
@@ -1628,6 +1937,12 @@ class DatasetEntry(TypedDict):
     update_cadence: str | None
     years_covered: str | None
     source_url: str | None
+
+
+class DatasetRoot(TypedDict):
+    spec_id: str
+    content_version: str
+    rendering: NotRequired[RootRendering]
 
 
 class DatasetVersion(TypedDict):
@@ -1651,6 +1966,20 @@ class DatasetVersionsPage(TypedDict):
 class DefinitionText(TypedDict):
     of: NodeRef
     text: str
+
+
+class DerivedManifestRoot(TypedDict):
+    spec_id: str
+    content_version: str
+    rendering: dict[str, JsonValue]
+
+
+class DerivedRecipe(TypedDict):
+    normal_form_hash: str
+    replay_key: str
+    execution_identity: str
+    tree: dict[str, JsonValue]
+    roots: list[JsonValue]
 
 
 class Diagnostics(TypedDict):
@@ -1679,12 +2008,27 @@ class EnrichmentOptionModel(TypedDict):
     coverage: EnrichmentCoverageCountsModel
     missing: NotRequired[list[MissingEntityModel]]
     truncated: NotRequired[bool]
+    in_long_layout: NotRequired[bool]
+
+
+class EntitiesBinding(TypedDict):
+    kind: NotRequired[Literal["entities"]]
+    role: RoleAxis
+    add: list[str]
 
 
 class EntityCoverage(TypedDict):
     entity: StepRef
     periods: int
     of: int
+
+
+class Entry(TypedDict):
+    axis: Literal["sector", "region", "measure_basis", "provider"]
+    option_id: str
+    provenance: Literal["explicit", "carried"]
+    concept: NotRequired[str | None]
+    origin: TextOrigin | ChoiceOrigin
 
 
 class Expansion(TypedDict):
@@ -1745,6 +2089,13 @@ class IdentityFacetValueRequest(TypedDict):
     request: IdentityUnitRequest
 
 
+class LedgerStep(TypedDict):
+    axis: Literal["sector", "region", "measure_basis", "provider"]
+    prior: Entry | None
+    applied: Entry
+    revision: int
+
+
 class MembersEnvelope(TypedDict):
     schema_version: Literal[1]
     spec_id: str
@@ -1785,6 +2136,7 @@ class MintOptions(TypedDict):
     pivot: NotRequired[PivotOptions | None]
     columns: NotRequired[Columns | Columns1]
     without_party_totals: NotRequired[bool]
+    enrichment: NotRequired[Literal["default"] | None]
     layout: NotRequired[Literal["frame"] | None]
 
 
@@ -1800,6 +2152,13 @@ class OperationResource(TypedDict):
     operation: OperationEnvelope
     manifest: NotRequired[dict[str, Any] | None]
     error: NotRequired[dict[str, Any] | None]
+
+
+class Option(TypedDict):
+    option_id: str
+    label: str
+    binding: SlotBinding | EntitiesBinding | ShapeBinding | ProviderBinding
+    availability: OptionAvailability
 
 
 class OrganisationNode(TypedDict):
@@ -1912,6 +2271,19 @@ class RecipeAnchor(TypedDict):
     left_out: list[RecipeLeftOutSeries]
 
 
+class RecipeDroppedSeries(TypedDict):
+    coordinates: dict[str, str]
+    step: RecipeStepRef
+    side: Literal["data", "other"]
+    reason: str
+    rows: int
+
+
+class RecipeLeftOut(TypedDict):
+    series: list[RecipeDroppedSeries]
+    complete: bool
+
+
 class RenderBody(TypedDict):
     frame: RenderFrame
 
@@ -1930,6 +2302,7 @@ class ResolvedFacet(TypedDict):
     documentation: NotRequired[str | None]
     account: NotRequired[FlowAccount | None]
     selection: NotRequired[Literal["per_series"] | None]
+    refs: NotRequired[list[str] | None]
     request_basis: NotRequired[
         dict[str, Literal["bound", "declared_default", "fallback"]] | None
     ]
@@ -1940,7 +2313,13 @@ class ResolvedFilter(TypedDict):
     binding_kind: Literal["value", "set", "unbound"]
     refs: list[GraphRef]
     provenance: NotRequired[
-        Literal["binder", "text_recognized", "measure_elected", "declared_default"]
+        Literal[
+            "binder",
+            "text_recognized",
+            "measure_elected",
+            "declared_default",
+            "declared_grouping",
+        ]
     ]
 
 
@@ -1955,6 +2334,15 @@ class ResolvedStatVars(TypedDict):
 class ResubmitParsedEntry(TypedDict):
     entry_kind: NotRequired[Literal["parsed"]]
     part: ParsedPart
+
+
+class ScopeChoice(TypedDict):
+    id: str
+    axis: Literal["sector", "region", "measure_basis", "provider"]
+    rule: str
+    provenance: Literal["explicit", "carried", "default"]
+    active: str
+    options: list[Option]
 
 
 class Series(TypedDict):
@@ -1980,6 +2368,48 @@ class SeriesFacetRef(TypedDict):
 class ShapeUpstream(TypedDict):
     source: SourceRef
     data_commons: SearchModelsGrammarDataCommonsRef
+
+
+class ShareCardModel(TypedDict):
+    component_id: str
+    revision: int
+    frame: ShareFrameModel | None
+
+
+class ShareHistoryResponse(TypedDict):
+    id: str
+    served: list[ShareServedModel]
+    next: str | None
+
+
+class ShareImport(TypedDict):
+    kind: Literal["card", "canvas", "search", "conversation"]
+    mode: Literal["live", "snapshot"]
+    owner: str | None
+    created_at: str
+    title: str | None
+    slots: list[FieldExportSlot]
+    payload: JsonValue
+    write_token_sha256: str | None
+
+
+class ShareSlotCardResponse(TypedDict):
+    component_id: str
+    revision: int
+    catalog_version: str
+    composition_id: str | None
+    composition_revision: int | None
+    stored_intent: dict[str, Any]
+    fact_summary: FactSummaryModel
+    resolved_payload: dict[str, Any]
+    retention: NotRequired[RetentionModel | None]
+    freshness: Literal["current", "stale", "pending"]
+
+
+class ShareSlotModel(TypedDict):
+    slot: int
+    card: ShareCardModel | None
+    data_url: str
 
 
 class SlotValue(TypedDict):
@@ -2194,9 +2624,12 @@ class WarningModel(TypedDict):
     member_count: NotRequired[int | None]
     off_cadence_members: NotRequired[CountedRefsModel | None]
     out_of_window_members: NotRequired[CountedRefsModel | None]
+    unserved_members: NotRequired[CountedRefsModel | None]
     unserved_entities: NotRequired[CountedRefsModel | None]
     requested_years: NotRequired[YearRangeModel | None]
     served_years: NotRequired[YearRangeModel | None]
+    withheld_members: NotRequired[CountedRefsModel | None]
+    withheld_provenances: NotRequired[CountedRefsModel | None]
     omitted_entities: NotRequired[CountedRefsModel | None]
     omitted_entity_years: NotRequired[CountedEntityYearsModel | None]
 
@@ -2210,6 +2643,16 @@ class WriteReplyResponse(TypedDict):
     changed: list[ChangedFieldModel]
     fact_summary: FactSummaryModel
     resolved_payload: dict[str, Any]
+
+
+class FieldRefArtifact(TypedDict):
+    rendering: NotRequired[FieldRefRendering]
+
+
+class FieldRefMember(TypedDict):
+    spec: FieldRefSpec
+    content_version: str
+    artifact: NotRequired[FieldRefArtifact | None]
 
 
 class DatasetsApiCapabilitiesCapabilities(TypedDict):
@@ -2317,6 +2760,12 @@ class ProblemDetails(TypedDict):
     retryable: bool
 
 
+class AnchorRequest(TypedDict):
+    roots: list[SpecRoot | DatasetRoot]
+    populations: list[dict[str, JsonValue]]
+    latest: NotRequired[bool]
+
+
 class Availability(TypedDict):
     scope: Literal["dfo"]
     summary: AvailabilitySummary
@@ -2382,6 +2831,15 @@ class CitationSource(TypedDict):
     documentation: NotRequired[CitedDocumentation | None]
 
 
+class Component(TypedDict):
+    role: Literal["whole", "bilateral", "imputed", "headline_net", "headline_ge"]
+    periods: NotRequired[list[tuple[int, int]] | None]
+    provenance: NotRequired[str | None]
+    content_version: NotRequired[str | None]
+    stat_vars: NotRequired[int | None]
+    identity: BaseIdentity
+
+
 class ComponentReadResponse(TypedDict):
     component_id: str
     revision: int
@@ -2391,6 +2849,7 @@ class ComponentReadResponse(TypedDict):
     stored_intent: dict[str, Any]
     fact_summary: FactSummaryModel
     resolved_payload: dict[str, Any]
+    retention: NotRequired[RetentionModel | None]
 
 
 class ContinentNode(TypedDict):
@@ -2480,6 +2939,7 @@ class CreateReplyResponse(TypedDict):
     affordance: str
     write_token: str
     composition_write_token: NotRequired[str | None]
+    retention: NotRequired[RetentionModel | None]
 
 
 class DatasetNode(TypedDict):
@@ -2514,6 +2974,14 @@ class DeclinedAnswer(TypedDict):
     kind: Literal["declined"]
     reason: Literal["out_of_scope", "requires_analysis"]
     scope: ScopeOutput
+
+
+class DroppedEntry(TypedDict):
+    entry: Entry
+    code: NotRequired[
+        Literal["carried_choice_not_applied", "stated_choice_not_applied"]
+    ]
+    cause: str
 
 
 class GroupNode(TypedDict):
@@ -2579,6 +3047,8 @@ class ParsedInput(TypedDict):
     kind: NotRequired[Literal["parsed"]]
     parts: list[ParsedPart]
     raw_query: NotRequired[str | None]
+    user_message: NotRequired[str | None]
+    carried_entries: NotRequired[list[Entry] | None]
 
 
 class ProvenanceNode(TypedDict):
@@ -2614,6 +3084,7 @@ class Recipe(TypedDict):
     tree: dict[str, JsonValue]
     roots: list[JsonValue]
     anchor: NotRequired[RecipeAnchor | None]
+    left_out: NotRequired[RecipeLeftOut | None]
 
 
 class ResolutionTrace(TypedDict):
@@ -2658,6 +3129,7 @@ class ResubmitIdentityEntry(TypedDict):
     separate: NotRequired[bool]
     operations: NotRequired[list[Operation]]
     assumptions: NotRequired[list[Assumption] | None]
+    scope_entries: NotRequired[list[Entry] | None]
 
 
 class ScopeInput(TypedDict):
@@ -2690,6 +3162,17 @@ class Shape(TypedDict):
     refine_supported: NotRequired[bool]
     data_commons: NotRequired[list[SearchModelsGrammarDataCommonsRef]]
     upstream: NotRequired[ShapeUpstream | None]
+
+
+class ShareReadResponse(TypedDict):
+    id: str
+    kind: Literal["card", "canvas", "search", "conversation"]
+    mode: Literal["live", "snapshot"]
+    title: str | None
+    revision: int
+    slots: list[ShareSlotModel]
+    payload: Any
+    created_at: str
 
 
 class Slot(TypedDict):
@@ -2783,9 +3266,20 @@ class StatVarSetInput(TypedDict):
     scope: NotRequired[ScopeInput | None]
 
 
+class FieldRef(TypedDict):
+    format_version: Literal[1, 2]
+    members: list[FieldRefMember]
+
+
 class CitationModel(TypedDict):
     text: str
     sources: list[CitationSource]
+
+
+class CompiledScope(TypedDict):
+    spec_id: str
+    identity: BaseIdentity
+    components: list[Component]
 
 
 type Entries = (
@@ -2800,6 +3294,19 @@ class DatasetResubmitInput(TypedDict):
     kind: NotRequired[Literal["dataset_resubmit"]]
     entries: list[Entries]
     raw_query: NotRequired[str | None]
+
+
+class DerivedManifest(TypedDict):
+    spec_id: str
+    content_version: str
+    retention: RetentionModel
+    citation: CitationModel
+    recipe: DerivedRecipe | None
+    roots: list[DerivedManifestRoot]
+    resolved_periods: list[dict[str, JsonValue]]
+    anchor: RecipeAnchor | None
+    left_out: list[RecipeDroppedSeries] | None
+    left_out_complete: bool | None
 
 
 class EntityOptions(TypedDict):
@@ -2824,7 +3331,7 @@ class Manifest(TypedDict):
     prepared_at: str
     coverage: CoverageModel
     citation: CitationModel
-    trace: dict[str, Any]
+    trace: TraceModel
     warnings: NotRequired[list[WarningModel]]
     diagnostics: NotRequired[list[DiagnosticModel]]
     artifacts: list[ArtifactEntryModel]
@@ -2887,12 +3394,23 @@ class OptionsEnvelope(TypedDict):
     coverage: CoverageModel
     output_options: NotRequired[OutputOptionsModel | None]
     warnings: NotRequired[list[WarningModel]]
-    trace: dict[str, Any]
+    trace: TraceModel
 
 
 class OptionsSet(TypedDict):
     items: list[SlotOption]
     truncated: bool
+
+
+class PartScope(TypedDict):
+    id: str
+    base: SpecDefinition
+    rule_version: str
+    entries: list[Entry]
+    dropped_entries: NotRequired[list[DroppedEntry]]
+    choices: list[ScopeChoice]
+    compiled: CompiledScope
+    ledger: NotRequired[list[LedgerStep]]
 
 
 class PublishFrameRequest(TypedDict):
@@ -2915,6 +3433,10 @@ class PublishFrameRequest(TypedDict):
     input_content_versions: list[InputContentVersion]
     recipe: NotRequired[Recipe | None]
     steps: NotRequired[list[Step] | None]
+
+
+class RefRoot(TypedDict):
+    ref: FieldRef
 
 
 class RelatedMeasure(TypedDict):
@@ -2954,6 +3476,13 @@ OptionsResponse = TypedDict(
         "options": OptionsSet,
     },
 )
+
+
+class AnalysisRequest(TypedDict):
+    tree: StepNode | DerivedRoot
+    latest: NotRequired[bool]
+    rolling: NotRequired[Literal["tree"] | None]
+    anchor_roots: NotRequired[list[SpecRoot | DatasetRoot] | None]
 
 
 class CandidateSet(TypedDict):
@@ -3116,17 +3645,31 @@ class ResolvedSpec(TypedDict):
     measure_label: NotRequired[str | None]
     measure_label_axes: NotRequired[list[str]]
     measure_axis_values: NotRequired[list[MeasureAxisValue]]
+    concept_label: NotRequired[str | None]
+    published_tables: NotRequired[str | None]
     related_group: NotRequired[GraphRef | None]
     related_measures: NotRequired[list[RelatedMeasure] | None]
     open_axis_facts: NotRequired[list[OpenConstraintAxisFact] | None]
     role_axis_facts: NotRequired[list[RoleAxisFact] | None]
     unit_conversion: NotRequired[UnitConversion | None]
+    scope_choices: NotRequired[PartScope | None]
 
 
 class Spec(TypedDict):
     spec_id: str
     definition: SpecDefinition
     resolved: ResolvedSpec
+
+
+class StepInputs(TypedDict):
+    data: StepNode | RefRoot | DerivedRoot | DatasetRoot | SpecRoot
+    other: NotRequired[StepNode | RefRoot | DerivedRoot | DatasetRoot | SpecRoot | None]
+
+
+class StepNode(TypedDict):
+    verb: Verb
+    arguments: NotRequired[dict[str, JsonValue]]
+    inputs: StepInputs
 
 
 type Severity = Literal["info", "warn", "degraded"]
@@ -3151,6 +3694,7 @@ type DepartureCode = Literal[
     "operation_not_applied",
     "breakdown_not_applied",
     "entity_unavailable",
+    "member_unavailable",
     "year_unavailable",
     "modelled_values",
     "group_read_as_members",
