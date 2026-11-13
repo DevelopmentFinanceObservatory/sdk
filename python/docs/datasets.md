@@ -82,6 +82,8 @@ print(totals.nlargest(3, "value")[["financingProvider_label", "value"]])
 
 The 15 extra rows are group totals worth 18.3 billion dollars, and each one counts donors that the other 95 rows already hold. The cut applies to the party roles a spec leaves open, and a role the spec binds keeps what it binds. `answer.fetch(party_totals=True)` keeps the totals for every reading in an answer.
 
+`data.party_totals_left_out` names the totals a fetch left out. It holds one `dfo.types.PartyTotalsLeftOut` per member, party role and provenance that lost rows, with the role's column name, such as `financingProvider`, and the dcids of the totals, such as `DACCountriesTotal`. The repr counts them on its `Party totals left out` line, and `data.save` keeps them. The tuple is empty after `party_totals=True` and when the cut found no totals to drop.
+
 ## Read the columns
 
 Every table leads with the columns a reader looks at, in this order:

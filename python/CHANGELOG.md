@@ -4,6 +4,21 @@ All notable changes to this package are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `data.party_totals_left_out` names the group totals a fetch left out of each member, as `dfo.types.PartyTotalsLeftOut` entries of spec id, party role, dcids and provenance, and the repr counts them. `data.save` writes them under a new `dfo.party_totals_left_out` key, which 0.1.0 ignores, and `dfo.load` reads a file without it.
+
+### Changed
+
+- `development-finance` installs beside any `httpx2` and `httpcore2` from 2.15 on. The transport builds its connection pools through their public interfaces, so a new minor release of either needs no new client release.
+- The `polars` extra needs `polars>=1.3`, the first release whose `DataFrame` reads a `Dataset` through the Arrow stream. A CI job installs every floor and runs the suite.
+
+### Fixed
+
+- `answer.timed_out` is true when a part's own no-data reason is `timed_out`, as well as when Search's diagnostics say so, and `Answer.from_json` works it out again.
+
 ## [0.1.0] - 2026-11-13
 
 The first release of `development-finance`, the Python client for the Development Finance Observatory APIs. It imports as `dfo` and runs on Python 3.12 or later.

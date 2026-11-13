@@ -29,7 +29,7 @@ import type { InvalidRequestError } from "../core/errors.ts";
 import { isRecord } from "../core/json.ts";
 import { checkOptions, declareOptions } from "../core/options.ts";
 import { periodObject } from "../core/periods.ts";
-import { quoted } from "../core/text.ts";
+import { quoted, trimEnd } from "../core/text.ts";
 import { DatasetRef } from "../core/ref.ts";
 import { describing } from "../core/trace.ts";
 import type { Transport } from "../http/transport.ts";
@@ -114,7 +114,7 @@ async function createCard(
 export function mintToken(prefix: string): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   const base64 = btoa(String.fromCharCode(...bytes));
-  return prefix + base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return prefix + trimEnd(base64.replace(/\+/g, "-").replace(/\//g, "_"), "=");
 }
 
 /** The ref of the one version `data` holds. */

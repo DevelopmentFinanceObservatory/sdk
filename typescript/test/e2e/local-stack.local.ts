@@ -50,6 +50,8 @@ const POPULATION = {
   contentVersion: "cv_3f610869372f93965119e3c0221847f6",
   sentence: "Kenya population, 2015 to 2024",
 };
+// The codes a server without the seed answers a seeded reading with.
+const NOT_FOUND_CODES = new Set(["spec_not_found", "snapshot_not_found"]);
 const PAIRING = { destination: "place" };
 // A breakdown by recipient, the sum data-mcp's `get_data` reads a frame with.
 const BREAKDOWN = { by: ["time_period", "financingRecipient"], op: "sum" };
@@ -152,6 +154,26 @@ async function fromPython(): Promise<FromPython | string> {
     return `${path} is absent; the Python journey writes it`;
   }
 }
+
+// Stops the file once, before any step is registered, when the server lacks the seed. Only the
+// not-found codes count as missing, and any other error propagates as itself.
+await (async () => {
+  const missing: string[] = [];
+  for (const { specId, contentVersion } of [ODA, POPULATION]) {
+    try {
+      await client.request("GET", `/datasets/${specId}/${contentVersion}`);
+    } catch (error) {
+      if (!(error instanceof NotFoundError) || !NOT_FOUND_CODES.has(error.code)) throw error;
+      missing.push(`${specId} at ${contentVersion}`);
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `The server lacks the local-stack seed; missing readings: ${missing.join(", ")}. ` +
+        "Run `just local-stack seed` in dfo-apis.",
+    );
+  }
+})();
 
 // State the later steps read from the earlier ones.
 let quotient: Dataset;

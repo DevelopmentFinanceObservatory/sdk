@@ -320,7 +320,7 @@ describe("arguments a fetch refuses before any request", () => {
       await assert.rejects(fetchDataset(transport, await storedRef(), options as FetchOptions), {
         name: "InvalidRequestError",
         code: "invalid_argument",
-        message: new RegExp(named.replace(/[.[\](){}]/g, "\\$&")),
+        message: new RegExp(named.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
       });
     });
   }

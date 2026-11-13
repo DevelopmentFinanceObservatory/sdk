@@ -26,7 +26,7 @@ import { isRecord } from "../core/json.ts";
 import { nearest } from "../core/nearest.ts";
 import { assumptionsReadOf, operationsOf, parsedPartOf } from "../core/parse.ts";
 import { isKnownPart, partText } from "../core/parts.ts";
-import { inline } from "../core/text.ts";
+import { inline, trimEnd } from "../core/text.ts";
 import type {
   Assumption,
   DatasetResubmitInput,
@@ -122,7 +122,7 @@ const labelFold = (label: string): string => label.trim().toLowerCase();
 /** Option text as an answer prints it: on one line, trimmed, without a closing full stop. The
  *  printout and the label match both read it, so a label copied from `String(answer)` names its
  *  option. */
-const shownText = (text: string): string => inline(text).trim().replace(/\.+$/, "");
+const shownText = (text: string): string => trimEnd(inline(text).trim(), ".");
 
 /** An option as `String(answer)` prints it: a candidate's label, source and unit joined by
  *  ` · `, as `Kenya's GDP, 1960 to 2024 · World Development Indicators`, its sentence standing

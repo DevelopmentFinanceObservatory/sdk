@@ -18,8 +18,9 @@ file and line:
   at the sync twin;
 - a token in `SUBS` that no source uses, so a renamed async name in httpx2 or in
   this package fails here;
-- an async name left in the output (`async`, `await`, `Async*`, `__aenter__`,
-  `aclose`, ...), which means `SUBS` lacks a token;
+- an async name left in the output (a name holding `async` or `Async`, such
+  as `handle_async_request`, `await`, `AnyIOBackend`, `__aenter__`, `aclose`,
+  ...), which means `SUBS` lacks a token;
 - a sync directory without its hand-written `__init__.py`, without which the
   sync tests collide with the async ones of the same name.
 """
@@ -77,11 +78,17 @@ SUBS: tuple[tuple[str, str], ...] = (
     ("AsyncAnalysis", "Analysis"),
     ("AsyncCards", "Cards"),
     ("AsyncIterator", "Iterator"),
+    ("AsyncIterable", "Iterable"),
     ("AsyncBaseTransport", "BaseTransport"),
-    ("AsyncHTTPTransport", "HTTPTransport"),
+    # httpx2's byte streams and httpcore2's backends take other names in sync code.
+    ("AsyncByteStream", "SyncByteStream"),
+    ("AnyIOBackend", "SyncBackend"),
     ("AsyncNetworkBackend", "NetworkBackend"),
     ("AsyncNetworkStream", "NetworkStream"),
     ("AsyncConnectionPool", "ConnectionPool"),
+    ("AsyncHTTPProxy", "HTTPProxy"),
+    ("AsyncSOCKSProxy", "SOCKSProxy"),
+    ("handle_async_request", "handle_request"),
     ("AsyncHeaderProvider", "HeaderProvider"),
     ("AsyncSleep", "Sleep"),
     ("async_sleep", "sync_sleep"),
@@ -92,14 +99,18 @@ SUBS: tuple[tuple[str, str], ...] = (
     ("aread", "read"),
     ("aiter_bytes", "iter_bytes"),
     ("__aenter__", "__enter__"),
+    ("__aiter__", "__iter__"),
     ("__aexit__", "__exit__"),
     ("pytestmark = pytest.mark.anyio", ""),
 )
 
 FORBIDDEN_IMPORTS = frozenset({"asyncio", "anyio", "trio"})
 
+# A name left in the output that only async code uses: one holding `async` or
+# `Async`, `await`, an anyio backend, or an async dunder or method.
 ASYNC_NAME = re.compile(
-    r"async|await|Async[A-Z]\w*|__a(enter|exit|iter|next)__|a(close|read|send|iter\w*)"
+    r"\w*async\w*|await|\w*Async[A-Z]\w*|AnyIO\w*|__a(enter|exit|iter|next)__"
+    r"|a(close|read|send|iter\w*)"
 )
 
 

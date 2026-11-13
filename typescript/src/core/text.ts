@@ -106,3 +106,19 @@ export function quoted(value: unknown): string {
     return "a value JSON cannot hold";
   }
 }
+
+/** The characters a regular expression's `\s` matches. */
+export const WHITESPACE =
+  "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff";
+
+/** `text` without the trailing characters that appear in `chars`, found by one scan from the
+ *  end. A pattern such as `/x+$/` rescans every run of `x` that is not at the end, which takes
+ *  quadratic time. */
+export function trimEnd(text: string, chars: string): string {
+  let end = text.length;
+  while (end > 0 && chars.includes(text.charAt(end - 1))) end -= 1;
+  return text.slice(0, end);
+}
+
+/** `text` without its trailing slashes. */
+export const trimTrailingSlashes = (text: string): string => trimEnd(text, "/");

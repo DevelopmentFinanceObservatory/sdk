@@ -10,13 +10,8 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    # `_keep_to_deadlines` in src/dfo/_http/transport.py reads the pool's private
-    # layout and raises a RuntimeError naming both versions when a release moves it.
-    # The `<2.16` bounds are the one exception to the no-upper-bound policy in
-    # CONTRIBUTING.md. A minor release may move that private layout, so each new
-    # minor is tested before the bound moves.
-    "httpcore2>=2.15,<2.16; sys_platform != 'emscripten'",
-    "httpx2>=2.15,<2.16",
+    "httpcore2>=2.15; sys_platform != 'emscripten'",
+    "httpx2>=2.15",
     "pyarrow>=15",
     "typing-extensions>=4.12",
 ]
@@ -45,7 +40,7 @@ pandas = [
     "pandas>=2.2",
 ]
 polars = [
-    "polars>=1.0",
+    "polars>=1.3",
 ]
 xlsx = [
     "openpyxl>=3.1",

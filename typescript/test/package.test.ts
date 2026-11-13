@@ -63,6 +63,7 @@ test("the root entry exports these values and no others", async () => {
     "isDfoError",
     "isKnownPart",
     "latestYear",
+    "partFacts",
     "recipe",
     "specRoles",
   ]);
