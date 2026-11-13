@@ -29,6 +29,7 @@ import type {
 import { CODE_GAP_KINDS } from "../generated/actions.ts";
 import type { GAP_KINDS } from "../generated/actions.ts";
 import { parsedInputOf, partFacts, warningsOf } from "../core/parse.ts";
+import type { PartFacts } from "../core/parse.ts";
 import { definiteParts, isKnownPart, partSentence, partText } from "../core/parts.ts";
 import { checkOptions, declareOptions } from "../core/options.ts";
 import { checkStrict } from "../core/strict.ts";
@@ -239,7 +240,8 @@ export class Answer {
   readonly reason: DeclinedReason | (string & {}) | null;
   /** Search's warnings for the whole answer. */
   readonly warnings: readonly Notice[];
-  /** Whether Search stopped at its time limit. */
+  /** Whether Search stopped at its time limit: its diagnostics say so, or a part's own no-data
+   *  reason is `timed_out`. */
   readonly timedOut: boolean;
   /** Search's timing, token counts and build for the response; empty when it sent none. An
    *  answer read by `Answer.fromJSON` holds only `timed_out` and `warnings`. */
@@ -250,6 +252,7 @@ export class Answer {
    *  body it held. */
   readonly raw: Readonly<Record<string, unknown>>;
   readonly #context: AnswerContext;
+  #facts: readonly PartFacts[] | undefined;
   /** The members `fetch` builds, one per distinct spec. */
   readonly #members: readonly MemberRequest[];
 
@@ -275,6 +278,18 @@ export class Answer {
     const members = membersOf(this.parts);
     this.#members = members;
     this.specs = members.map((member) => member.spec);
+  }
+
+  /**
+   * What each part states beside its reading, one entry per part in the order of `parts`: its
+   * `assumptions`, `departures`, requested `operations` and `warnings`, and a candidates part's
+   * `readingAssumptions` by `spec_id`. A part whose member has the wrong type reads as absent
+   * (`[]`, or undefined for `assumptions` when the part holds no list), and an item that lacks a
+   * required member is dropped, as in the Python client's `Part` attributes.
+   */
+  get facts(): readonly PartFacts[] {
+    this.#facts ??= Object.freeze(this.parts.map(partFacts));
+    return this.#facts;
   }
 
   /**
@@ -502,12 +517,18 @@ export function answerFromBody(
     parts: typed,
     question,
     warnings,
-    timedOut: diagnostics["timed_out"] === true,
+    // Search can stop at its time limit on one part without setting the flag.
+    timedOut: diagnostics["timed_out"] === true || typed.some(partTimedOut),
     diagnostics,
     traceId,
     raw: body,
     context,
   });
+}
+
+/** Whether a part's own no-data reason says Search stopped at its time limit. */
+function partTimedOut(part: Part): boolean {
+  return isKnownPart(part) && part.status === "no_data" && part.no_data.reason === "timed_out";
 }
 
 /** A part, once it passes the checks the client makes beyond the strict fields: that it is an

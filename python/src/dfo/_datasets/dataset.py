@@ -104,6 +104,12 @@ _NOT_SLOT_KEYS = ("value", "time_period")
 # same value as NaN whatever its payload.
 _NAN = object()
 
+# The pyarrow major versions from which Arrow itself stacks struct columns whose
+# fields differ by name, order or type, and finds the unique 16-bit floats.
+# Below them the cells go through Python.
+_NATIVE_STRUCT_PROMOTION = 21
+_NATIVE_HALF_FLOAT_UNIQUE = 26
+
 # The columns every artifact a dataset reads holds, in both layouts.
 REQUIRED_COLUMNS = ("time_period", "value")
 
@@ -269,6 +275,32 @@ class LeftOutSeries:
 
 
 @dataclass(frozen=True, slots=True)
+class PartyTotalsLeftOut:
+    """Group totals on one party role that a fetch left out of one member's rows.
+
+    A fetch leaves party totals out by default, so a sum over `value` counts each
+    flow once. `party_totals=True` keeps them. DFO names what the cut dropped in
+    the version's manifest, one entry per party role and provenance that lost
+    rows, and the Dataset gathers those entries in member order.
+
+    Attributes:
+        spec_id: The spec of the member whose rows lost the totals.
+        role: The party role, by DFO's column name, such as `financingProvider`.
+        entities: The dcids of the totals left out, such as `DACCountriesTotal`.
+        provenance: The dataset whose rows lost the totals, or None for rows with
+            no provenance, or when `every_provenance` is true.
+        every_provenance: Whether the totals left the rows of every dataset, as
+            on a version DFO recorded before it named the provenance.
+    """
+
+    spec_id: str
+    role: str
+    entities: tuple[str, ...]
+    provenance: str | None = None
+    every_provenance: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class DerivedStep:
     """One step of a recipe, as a derived Dataset's repr names it.
 
@@ -340,6 +372,10 @@ class Dataset:
             dropped for missing data, at any step, each naming its step. Empty
             for a Dataset of dataset versions. DFO lists at most 2,000; the repr
             says "at least" when it dropped more.
+        party_totals_left_out: The group totals a fetch left out of each
+            member's rows, one entry per member, party role and provenance that
+            lost rows. Empty when nothing was left out, when the fetch passed
+            `party_totals=True`, and for a derived Dataset.
     """
 
     sentence: str
@@ -363,6 +399,7 @@ class Dataset:
     # client's `client` or `dfo`, and `dfo` for a dataset `dfo.load` read.
     _caller: str = field(default="dfo", repr=False)
     left_out: tuple[LeftOutSeries, ...] = ()
+    party_totals_left_out: tuple[PartyTotalsLeftOut, ...] = ()
     # Whether `left_out` lists every series the recipe dropped.
     _left_out_complete: bool = field(default=True, repr=False)
     # The recipe's steps in the order they ran, for the repr's derived line.
@@ -506,6 +543,8 @@ class Dataset:
         if self.sources:
             lines.append("Source: " + "; ".join(self.sources))
         lines.extend(self._derived_summary())
+        if totals := _party_totals_line(self.party_totals_left_out):
+            lines.append(totals)
         if self._shown_by is not None:
             lines.append(f"Shown by: {self._shown_by}")
         versions = [member.content_version for member in self.members]
@@ -627,7 +666,26 @@ class Dataset:
                 }
             )
             metadata["dfo.steps"] = _dumps([asdict(step) for step in self._steps])
+        if self.party_totals_left_out:
+            # A key of its own, since the 0.1.0 loader refuses any key in
+            # `dfo.dataset` it does not know, and reads only the `dfo.*` keys it names.
+            metadata["dfo.party_totals_left_out"] = _dumps(
+                [_party_totals_object(entry) for entry in self.party_totals_left_out]
+            )
         return {key.encode(): value.encode() for key, value in metadata.items()}
+
+
+def _party_totals_line(entries: Sequence[PartyTotalsLeftOut]) -> str | None:
+    """The repr's line counting the totals left out on each role, as
+    `Party totals left out: 15 on financingProvider · data.party_totals_left_out`,
+    or None when none were."""
+    by_role: dict[str, set[str]] = {}
+    for entry in entries:
+        by_role.setdefault(entry.role, set()).update(entry.entities)
+    if not by_role:
+        return None
+    counts = ", ".join(f"{len(dcids):,} on {role}" for role, dcids in by_role.items())
+    return f"Party totals left out: {counts} · data.party_totals_left_out"
 
 
 def _period_line(periods: Sequence[ResolvedPeriod]) -> str | None:
@@ -754,6 +812,14 @@ def _varies(column: pa.ChunkedArray) -> bool:
         )
         first = next(keys, None)
         return any(key != first for key in keys)
+    if (
+        pa.types.is_float16(column.type)
+        and _pyarrow_major() < _NATIVE_HALF_FLOAT_UNIQUE
+    ):
+        # Arrow has no unique kernel for 16-bit floats here, and casts them only
+        # from pyarrow 16, so they go through Python floats, which hold them exactly.
+        halves = [None if cell is None else float(cell) for cell in column.to_pylist()]
+        column = pa.chunked_array([pa.array(halves, pa.float64())])
     unique = column.unique()
     if len(unique) < 2 or not pa.types.is_floating(unique.type):
         return len(unique) > 1
@@ -858,8 +924,12 @@ def build_dataset(
     layouts: list[str] = []
     retentions: list[Mapping[str, Any] | None] = []
     warnings: list[Notice] = []
+    party_totals: list[PartyTotalsLeftOut] = []
     for fetched in members:
         layouts.append(_layout_version(fetched, layout))
+        party_totals.extend(
+            served_party_totals(fetched.manifest, spec_id=fetched.spec.spec_id)
+        )
         built.append(
             Member(
                 parts=fetched.parts,
@@ -894,8 +964,13 @@ def build_dataset(
         # widen to the others' types.
         tables = [table for table in tables if table.num_rows] or tables[:1]
         try:
+            if _pyarrow_major() < _NATIVE_STRUCT_PROMOTION:
+                tables = _with_unified_structs(tables)
             table = pa.concat_tables(tables, promote_options="permissive")
-        except (pa.ArrowTypeError, pa.ArrowInvalid) as error:
+        # ValueError covers pyarrow's ArrowInvalid and the refusal of a nanosecond
+        # cell as a Python value without pandas. OverflowError covers a cell too
+        # large for the unified type.
+        except (pa.ArrowTypeError, ValueError, OverflowError) as error:
             raise client_error(
                 CONTRACT_VIOLATION,
                 f"The members' tables cannot stack into one: {error}",
@@ -926,6 +1001,7 @@ def build_dataset(
         _table=table.replace_schema_metadata(None),
         _member_rows=member_rows,
         _caller=caller,
+        party_totals_left_out=tuple(party_totals),
     )
 
 
@@ -1030,6 +1106,94 @@ def _served_left_out(
     if not isinstance(complete, bool):
         raise _manifest_violation("/left_out_complete")
     return series, complete
+
+
+def served_party_totals(
+    manifest: Mapping[str, Any], *, spec_id: str
+) -> tuple[PartyTotalsLeftOut, ...]:
+    """The totals a manifest's `trace.party_totals_left_out` names for the
+    member of `spec_id`, or none when the trace names none. A key an entry holds
+    beyond `role`, `entities` and `provenance` is ignored.
+
+    Raises:
+        ContractError: The trace or an entry breaks the served shape
+            (`contract_violation`).
+    """
+    trace = manifest.get("trace")
+    if trace is None:
+        return ()
+    pointer = "/trace/party_totals_left_out"
+    try:
+        served = object_at(trace, "/trace").get("party_totals_left_out")
+        if served is None:
+            return ()
+        return tuple(
+            read_party_totals(item, f"{pointer}/{index}", spec_id=spec_id)
+            for index, item in enumerate(_array(served, pointer))
+        )
+    except FormatError as error:
+        violation = client_error(
+            CONTRACT_VIOLATION,
+            f"The manifest's {error.pointer} breaks the shape this client reads",
+        )
+        violation.pointer = error.pointer
+        raise violation from error
+
+
+def read_party_totals(
+    value: object, pointer: str, *, spec_id: str
+) -> PartyTotalsLeftOut:
+    """One entry of `party_totals_left_out` as the manifest's trace serves it
+    and a saved file keeps it: `{role, entities, provenance}`, where an absent
+    `provenance` means every dataset's rows.
+
+    Raises:
+        FormatError: A key of that shape is missing or of the wrong type.
+            `pointer` locates it.
+    """
+    obj = object_at(value, pointer)
+    _require(obj, pointer, ("role", "entities"))
+    entities = tuple(
+        _string(item, f"{pointer}/entities/{index}")
+        for index, item in enumerate(_array(obj["entities"], f"{pointer}/entities"))
+    )
+    provenance = obj.get("provenance")
+    if provenance is not None:
+        _string(provenance, f"{pointer}/provenance")
+    return PartyTotalsLeftOut(
+        spec_id=spec_id,
+        role=_string(obj["role"], f"{pointer}/role"),
+        entities=entities,
+        provenance=provenance,
+        every_provenance="provenance" not in obj,
+    )
+
+
+def _party_totals_object(entry: PartyTotalsLeftOut) -> dict[str, Any]:
+    """An entry as a saved file keeps it: the served shape with its spec id."""
+    obj: dict[str, Any] = {
+        "spec_id": entry.spec_id,
+        "role": entry.role,
+        "entities": list(entry.entities),
+    }
+    if not entry.every_provenance:
+        obj["provenance"] = entry.provenance
+    return obj
+
+
+def _load_party_totals(text: str) -> tuple[PartyTotalsLeftOut, ...]:
+    """A saved file's `dfo.party_totals_left_out`."""
+    pointer = "/dfo.party_totals_left_out"
+    loaded: list[PartyTotalsLeftOut] = []
+    for index, item in enumerate(_array(decode_value(text, pointer), pointer)):
+        at = f"{pointer}/{index}"
+        obj = object_at(item, at)
+        check_keys(
+            obj, at, required=("spec_id", "role", "entities"), allowed=("provenance",)
+        )
+        spec_id = _string(obj["spec_id"], f"{at}/spec_id")
+        loaded.append(read_party_totals(obj, at, spec_id=spec_id))
+    return tuple(loaded)
 
 
 def _manifest_violation(pointer: str) -> ContractError:
@@ -1165,7 +1329,7 @@ def _nesting_fault(data_type: pa.DataType) -> str | None:
     if pa.types.is_list(data_type) or pa.types.is_large_list(data_type):
         return _nesting_fault(data_type.value_type)
     if pa.types.is_struct(data_type):
-        fields = data_type.fields
+        fields = [data_type.field(index) for index in range(data_type.num_fields)]
         if len({field.name for field in fields}) != len(fields):
             return "of structs that name a field twice"
         return next(
@@ -1256,6 +1420,11 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
         layout_version=_string(rest["layout_version"], "/dfo.dataset/layout_version"),
         _table=table.replace_schema_metadata(None),
         _member_rows=member_rows,
+        party_totals_left_out=(
+            _load_party_totals(text)
+            if (text := values.get("dfo.party_totals_left_out")) is not None
+            else ()
+        ),
         **(_load_derived(values) if derived else {}),
     )
 
@@ -1530,6 +1699,47 @@ def _layout_version(fetched: FetchedMember, layout: Layout) -> str:
     raise client_error(
         CONTRACT_VIOLATION, f"the manifest lists no artifact {fetched.digest}"
     )
+
+
+def _pyarrow_major() -> int:
+    """The major version of the Arrow C++ library pyarrow runs on, which is
+    pyarrow's own."""
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+
+    return pa.cpp_version_info.major
+
+
+def _with_unified_structs(tables: list[pa.Table]) -> list[pa.Table]:
+    """`tables` with each column that holds structs and differs from the unified
+    type rebuilt as that type, structs unifying by field name in the order they are
+    first named. Before pyarrow `_NATIVE_STRUCT_PROMOTION` Arrow casts no struct to
+    one with more or reordered fields, so the cells go through Python, and the
+    rebuilt column drops field nullability and metadata."""
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+
+    schema = pa.unify_schemas(
+        [table.schema for table in tables], promote_options="permissive"
+    )
+    result = []
+    for table in tables:
+        unified = table
+        for index, column_field in enumerate(table.schema):
+            target = schema.field(column_field.name).type
+            if _holds_struct(target) and not column_field.type.equals(target):
+                cells = unified.column(index).to_pylist()
+                column = pa.array(cells, type=target)
+                unified = unified.set_column(index, column_field.name, column)
+        result.append(unified)
+    return result
+
+
+def _holds_struct(data_type: pa.DataType) -> bool:
+    """Whether `data_type` is a struct, or a list of them at any depth."""
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+
+    if pa.types.is_list(data_type) or pa.types.is_large_list(data_type):
+        return _holds_struct(data_type.value_type)
+    return pa.types.is_struct(data_type)
 
 
 def _with_part(table: pa.Table, label: str) -> pa.Table:

@@ -4,13 +4,17 @@
 the sync transport passes the same tests.
 """
 
+import contextlib
 import gzip
 import json
 import math
+import socket
 import ssl
+import threading
 import time
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import httpcore2
@@ -43,7 +47,6 @@ from dfo._http.transport import (
     AsyncTransport,
     BaseUrl,
     _DeadlineBackend,
-    _keep_to_deadlines,
     attempt_deadline,
     resolve_base_url,
 )
@@ -391,22 +394,70 @@ async def test_a_body_that_stalls_after_its_first_chunk_raises_at_the_attempt_en
     assert 0.55 < elapsed < 0.85
 
 
-@pytest.mark.parametrize("attribute", ["_pool", "_network_backend"])
-async def test_a_pool_layout_the_pins_do_not_cover_raises_naming_the_versions(
-    attribute: str,
+async def test_a_body_that_stalls_through_an_environment_proxy_raises_at_the_attempt_end(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async with httpx2.AsyncClient() as client:
-        transport = client._transport
-        assert isinstance(transport, httpx2.AsyncHTTPTransport)
-        holder = transport._pool if attribute == "_network_backend" else transport
-        held = getattr(holder, attribute)
-        delattr(holder, attribute)
-        with pytest.raises(RuntimeError) as caught:
-            _keep_to_deadlines(client)
-        # The client's close needs the attribute back.
-        setattr(holder, attribute, held)
-    assert f"httpx2 {httpx2.__version__}" in str(caught.value)
-    assert f"httpcore2 {httpcore2.__version__}" in str(caught.value)
+    # The stalling server stands in for the proxy, so the request crosses the
+    # proxy pool the environment names.
+    for name in ("NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy", "REQUEST_METHOD"):
+        monkeypatch.delenv(name, raising=False)
+    with stalling_server(first_chunk_after=0.4) as proxy:
+        monkeypatch.setenv("HTTP_PROXY", proxy)
+        monkeypatch.setenv("http_proxy", proxy)
+        async with AsyncTransport(
+            api_key=False,
+            base_url="http://api.example.org/api/v1",
+            timeout=0.6,
+            max_retries=0,
+        ) as transport:
+            start = time.monotonic()
+            with pytest.raises(DfoTimeoutError) as caught:
+                await transport.request("GET", "/datasets/schema")
+            elapsed = time.monotonic() - start
+    assert (caught.value.code, caught.value.retryable) == ("deadline_exceeded", True)
+    assert 0.55 < elapsed < 0.85
+
+
+@contextmanager
+def keep_alive_server() -> Iterator[tuple[str, list[int]]]:
+    """Serve `{}` to every request over HTTP/1.1, keeping each connection open.
+
+    Yields:
+        The server's `http://127.0.0.1:<port>`, and a list that gains a 1 for
+        each connection it accepts.
+    """
+    accepted: list[int] = []
+    listener = socket.create_server(("127.0.0.1", 0))
+    listener.settimeout(5)
+
+    def serve(connection: socket.socket) -> None:
+        with connection:
+            while connection.recv(65536):
+                connection.sendall(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}")
+
+    def accept() -> None:
+        with contextlib.suppress(OSError):
+            while True:
+                connection, _ = listener.accept()
+                accepted.append(1)
+                threading.Thread(target=serve, args=(connection,), daemon=True).start()
+
+    threading.Thread(target=accept, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{listener.getsockname()[1]}", accepted
+    finally:
+        listener.close()
+
+
+async def test_a_read_response_returns_its_connection_to_the_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NO_PROXY", "*")
+    with keep_alive_server() as (origin, accepted):
+        async with AsyncTransport(api_key=False, base_url=origin) as transport:
+            for _ in range(3):
+                await transport.request("GET", "/datasets/schema")
+    assert len(accepted) == 1
 
 
 class Stream(httpcore2.AsyncNetworkStream):

@@ -19,6 +19,7 @@ import { invalid } from "./fetch.ts";
 import { clientError, DfoError, messageOf, optionsOf } from "../core/errors.ts";
 import type { DfoErrorOptions } from "../core/errors.ts";
 import { isRecord } from "../core/json.ts";
+import { trimEnd, WHITESPACE } from "../core/text.ts";
 import { isDerived } from "../core/ref.ts";
 import type { Transport } from "../http/transport.ts";
 
@@ -51,7 +52,7 @@ function partWay(error: DfoError, pinned: readonly Member[]): DfoError {
   const ErrorClass = error.constructor as new (options: DfoErrorOptions) => DfoError;
   const named = pinned.map((member) => `${member.spec.spec_id} at ${member.contentVersion}`);
   const hint = `Pinned before it failed, and still pinned: ${named.join(", ")}.`;
-  const hinted = (text: string) => `${text.replace(/[.\s]*$/, ".")} ${hint}`;
+  const hinted = (text: string) => `${trimEnd(text, `.${WHITESPACE}`)}. ${hint}`;
   return new ErrorClass({
     ...optionsOf(error),
     detail: hinted(error.detail),

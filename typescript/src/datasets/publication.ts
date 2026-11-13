@@ -18,7 +18,7 @@ import { clientError } from "../core/errors.ts";
 import type { ContractError } from "../core/errors.ts";
 import { isRecord } from "../core/json.ts";
 import type { DatasetRef } from "../core/ref.ts";
-import { inline, quoted } from "../core/text.ts";
+import { inline, quoted, trimTrailingSlashes } from "../core/text.ts";
 
 /** What a card draws: a line chart, a bar chart, a table, a headline number, or the source and
  *  citation of its data. */
@@ -466,7 +466,7 @@ export function shareIdIn(target: unknown): string | null {
   if (target instanceof Share) return target.id;
   if (typeof target !== "string") return null;
   const path = pathOf(target);
-  const segments = path.replace(/\/+$/, "").split("/");
+  const segments = trimTrailingSlashes(path).split("/");
   const [page, id] = segments.slice(-2);
   return segments.length >= 2 && SHARE_PAGES.has(page ?? "") && SHARE_ID.test(id ?? "")
     ? id!

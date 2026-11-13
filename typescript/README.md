@@ -34,7 +34,9 @@ const table = await toArrow(data);
 console.log(table.numRows);
 
 const growth = await client.analysis.growth(data, { window: [2015, 2024] });
-const chart = await client.cards.line(data, { title: "German aid to Nigeria for basic health care" });
+const chart = await client.cards.line(data, {
+  title: "German aid to Nigeria for basic health care",
+});
 const share = await client.share(chart, { latest: true });
 console.log(share.url);
 ```
@@ -71,6 +73,18 @@ console.log(data.sentence);
 ```
 
 `choose` takes the option's index, its label, or its line as `String(answer)` prints it, such as `"Kenya's percent of nominal GDP spent on education, 1971 to 2024 · World Development Indicators"`, and returns Search's answer for that reading. When several parts await a choice, name the part: `answer.choose(0, { part: "education spending" })`. A label or part that names nothing raises `InvalidRequestError` with the code `choice_invalid`, the nearest match and the valid choices. `answer.gaps` holds the same choices as data, for a page that draws its own buttons. Each gap's `options` carry a `label`.
+
+Search states more about each part than its reading. `answer.facts` holds one entry per part, in the order of `answer.parts`, and each has typed fields:
+
+```ts
+const [facts] = answer.facts;
+console.log(facts.assumptions?.map((item) => item.text));
+console.log(facts.departures.map((item) => item.code));
+console.log(facts.operations.map((item) => item.phrase));
+console.log(facts.warnings.map((item) => item.message));
+```
+
+`assumptions` lists what Search assumed to read the part, and is undefined when the part holds no list. `departures` lists how the reading differs from the question, `operations` the computations the question asked for that Search does not run, and `warnings` the part's own. A candidates part also has `readingAssumptions`, a map from each reading's `spec_id` to its assumptions. An item that lacks a required member is dropped. `partFacts(part)` reads a single part and gives the same result.
 
 ## Narrow a fetch
 
@@ -130,6 +144,8 @@ const members = await answer.fetch();
 const withTotals = await answer.fetch({ partyTotals: true });
 console.log(members.rowCount, withTotals.rowCount);
 ```
+
+`data.partyTotalsLeftOut` names the totals a fetch left out. It holds one `PartyTotalsLeftOut` per member, party role and provenance that lost rows, with the role's column name, such as `financingProvider`, and the dcids of the totals, such as `DACCountriesTotal`. `String(data)` counts them on its `Party totals left out` line, and `data.bytes()` keeps them. The array is empty after `partyTotals: true` and when the cut found no totals to drop.
 
 ## Stop a call
 

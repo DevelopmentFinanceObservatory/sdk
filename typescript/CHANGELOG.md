@@ -4,6 +4,18 @@ All notable changes to this package are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `data.partyTotalsLeftOut` names the group totals a fetch left out of each member, as `PartyTotalsLeftOut` entries of spec id, party role, dcids and provenance, and `String(data)` counts them. `data.bytes()` writes them under a new `dfo.party_totals_left_out` key, which Python's `dfo.load` reads and its 0.1.0 release ignores.
+
+- `answer.facts` gives each part's assumptions, departures, requested operations and warnings as typed `PartFacts`, one entry per part in the order of `answer.parts`, with a candidates part's `readingAssumptions` by spec id. `partFacts(part)` reads one part, and `PartFacts` is exported from the package root.
+
+### Fixed
+
+- `answer.timedOut` is true when a part's own no-data reason is `timed_out`, as well as when Search's diagnostics say so, and `Answer.fromJSON` works it out again.
+
 ## [0.1.0] - 2026-11-13
 
 The first release of `@developmentfinance/client`, the TypeScript client for the Development Finance Observatory APIs. It is ESM only and runs on Node 22.18 or later, Bun, Deno, Workers, and browsers.

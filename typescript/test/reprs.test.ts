@@ -534,7 +534,7 @@ const TAINTED_ROWS: [string, (taint: string) => { toString(): string }][] = [
     (taint) =>
       new RawResponse(
         200,
-        new Headers({ "content-type": `application/json${taint.replace("\n", " ")}` }),
+        new Headers({ "content-type": `application/json${taint.replaceAll("\n", " ")}` }),
         new Uint8Array([123, 125]),
       ),
   ],

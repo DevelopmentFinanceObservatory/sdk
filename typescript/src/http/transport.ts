@@ -30,6 +30,7 @@ import {
   inline,
   keyFault,
   secretPattern,
+  trimTrailingSlashes,
 } from "../core/text.ts";
 
 /** The public API's base URL. */
@@ -922,7 +923,7 @@ export class Transport {
     if (target.path === undefined) {
       url = new URL(target.url, this.baseUrl.origin);
     } else {
-      const base = this.baseUrl.pathname.replace(/\/+$/, "");
+      const base = trimTrailingSlashes(this.baseUrl.pathname);
       const fault = controlFault(target.path);
       if (fault !== null) {
         throw clientError("invalid_argument", { detail: `The path holds ${fault}.` });

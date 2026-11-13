@@ -5,6 +5,7 @@ import json
 import math
 import pickle
 import struct
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import replace
@@ -37,6 +38,7 @@ from dfo._core.types import (
     Rendering,
     RequestedOperation,
 )
+from dfo._datasets import dataset as dataset_module
 from dfo._datasets.bundle import load as load_saved
 from dfo._datasets.cache import sha256_digest
 from dfo._datasets.dataset import (
@@ -44,6 +46,7 @@ from dfo._datasets.dataset import (
     FetchedMember,
     LeftOutSeries,
     LeftOutStep,
+    PartyTotalsLeftOut,
     build_dataset,
     derived_dataset,
     in_reading_order,
@@ -51,6 +54,15 @@ from dfo._datasets.dataset import (
 from tests._data import DATA, load
 from tests._datasets import PARQUET, manifest, other_member, recorded_member, scenario
 from tests._fetch_support import FakeCache
+from tests.contract.test_replay import (
+    BASE_URLS,
+    SCENARIOS,
+    Clock,
+    Exchanges,
+    Pollers,
+    _client,
+    _run,
+)
 from tests.rule_vectors import ids, vectors
 
 EXPECTED = scenario()["expect"][0]["dataset"]
@@ -303,14 +315,41 @@ def test_a_column_of_another_nesting_is_refused(column: pa.Array) -> None:
     assert caught.value.code == "contract_violation"
 
 
+@pytest.fixture(params=["native", "python"])
+def stacking(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Stack struct columns through Arrow, where the installed pyarrow can, or
+    through Python cells, as older pyarrow does."""
+    if request.param == "python":
+        monkeypatch.setattr(dataset_module, "_pyarrow_major", lambda: 15)
+    elif dataset_module._pyarrow_major() < dataset_module._NATIVE_STRUCT_PROMOTION:
+        pytest.skip("this pyarrow stacks struct columns through Python")
+    return request.param
+
+
+@pytest.mark.usefixtures("stacking")
 def test_struct_columns_stack_by_field_name() -> None:
     """Two members' structs unify by field name, in the order the first names
     them, a field one member lacks null in its rows."""
+    # Typed in full, since older pyarrow sorts the keys of an inferred struct.
     first = pa.table(
-        {"time_period": ["2020"], "value": [1.0], "s": [{"b": "x", "a": 1}]}
+        {
+            "time_period": ["2020"],
+            "value": [1.0],
+            "s": pa.array(
+                [{"b": "x", "a": 1}],
+                pa.struct([("b", pa.string()), ("a", pa.int64())]),
+            ),
+        }
     )
     second = pa.table(
-        {"time_period": ["2021"], "value": [2.0], "s": [{"a": 2.5, "c": True}]}
+        {
+            "time_period": ["2021"],
+            "value": [2.0],
+            "s": pa.array(
+                [{"a": 2.5, "c": True}],
+                pa.struct([("a", pa.float64()), ("c", pa.bool_())]),
+            ),
+        }
     )
     data = built(
         with_table(recorded_member(), first), with_table(other_member(), second)
@@ -325,14 +364,92 @@ def test_struct_columns_stack_by_field_name() -> None:
     ]
 
 
+def _struct_member(base: FetchedMember, column: pa.Array) -> FetchedMember:
+    """`base` holding one row whose `s` column holds `column`."""
+    table = pa.table({"time_period": ["2020"], "value": [1.0], "s": column})
+    return with_table(base, table)
+
+
+@pytest.mark.usefixtures("stacking")
+def test_a_struct_field_too_large_to_unify_raises_a_contract_error() -> None:
+    """A uint64 above 2**63 unified with an int64 fits neither."""
+    members = [
+        _struct_member(
+            recorded_member(),
+            pa.array([{"a": 2**63 + 5}], pa.struct([("a", pa.uint64())])),
+        ),
+        _struct_member(
+            other_member(),
+            pa.array(
+                [{"a": -1, "c": True}],
+                pa.struct([("a", pa.int64()), ("c", pa.bool_())]),
+            ),
+        ),
+    ]
+    with pytest.raises(ContractError) as caught:
+        built(*members)
+    assert caught.value.code == "contract_violation"
+
+
+# Stacks a sub-microsecond timestamp in a struct through Python cells with pandas
+# unimportable, since pandas would hold the cell as a Timestamp.
+_NANOSECOND_STACK = """
+import sys
+
+class HidePandas:
+    def find_spec(self, name, path=None, target=None):
+        if name.partition(".")[0] == "pandas":
+            raise ModuleNotFoundError(name)
+
+sys.meta_path.insert(0, HidePandas())
+import pyarrow as pa
+from dfo._core.errors import ContractError
+from dfo._datasets import dataset
+from tests._datasets import other_member, recorded_member
+from tests.datasets.test_dataset import _struct_member, built
+
+dataset._pyarrow_major = lambda: 15
+nanosecond = pa.struct([("t", pa.timestamp("ns"))])
+try:
+    built(
+        _struct_member(recorded_member(), pa.array([{"t": 1}], nanosecond)),
+        _struct_member(other_member(), pa.array([{"u": 2}])),
+    )
+except ContractError as error:
+    print(error.code)
+"""
+
+
+def test_a_nanosecond_struct_field_python_cannot_hold_raises_a_contract_error() -> None:
+    """Without pandas, pyarrow refuses a sub-microsecond timestamp as a Python
+    value. A fresh interpreter hides pandas, since this process has loaded it."""
+    result = subprocess.run(
+        [sys.executable, "-c", _NANOSECOND_STACK],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=Path(__file__).parents[2],
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["contract_violation"]
+
+
 def test_a_sort_key_the_order_cannot_compare_is_refused() -> None:
     table = pq.read_table(PARQUET).replace_schema_metadata(None)
     # Arrow sorts no 16-bit float, and a varying column is a sort key.
-    halves = pa.array([float(row) for row in range(table.num_rows)]).cast(pa.float16())
+    halves = _halves([float(row) for row in range(table.num_rows)])
     table = table.append_column("half", halves)
     with pytest.raises(ContractError) as caught:
         built(with_table(recorded_member(), table))
     assert caught.value.code == "contract_violation"
+
+
+def _halves(values: list[float]) -> pa.Array:
+    """A 16-bit float array. pyarrow casts to one only from 16 on, so it is built
+    from numpy, which pandas brings in."""
+    import numpy as np  # noqa: PLC0415 - pandas, a test dependency, requires it
+
+    return pa.array(np.array(values, dtype=np.float16))
 
 
 # A NaN with another payload than the one Python writes.
@@ -343,7 +460,7 @@ _OTHER_NAN = struct.unpack("<d", struct.pack("<Q", 0x7FF8000000000001))[0]
 @pytest.mark.parametrize(
     ("share", "varies"),
     [
-        (pa.array([0.0, -0.0]).cast(pa.float16()), False),
+        (_halves([0.0, -0.0]), False),
         (pa.array([0.0, -0.0], pa.float32()), False),
         (pa.array([0.0, -0.0]), False),
         (pa.array([math.nan, _OTHER_NAN]), False),
@@ -698,7 +815,7 @@ def test_polars_reads_the_arrow_stream() -> None:
 def test_duckdb_reads_the_arrow_stream() -> None:
     duckdb = pytest.importorskip("duckdb")
     data = built()  # noqa: F841 - DuckDB finds it by name
-    assert duckdb.sql("select count(*) from data").fetchone() == (4,)
+    assert duckdb.sql("select count(*) from data").fetchall() == [(4,)]
 
 
 def test_a_dataset_pickles() -> None:
@@ -1048,6 +1165,137 @@ def test_a_manifest_without_left_out_reads_as_none_left_out() -> None:
     assert "  Derived: from 2 readings" in repr(dataset).splitlines()
 
 
+# The keys the 0.1.0 loader requires in `dfo.dataset` and refuses beyond.
+DATASET_KEYS_0_1_0 = {
+    "member_citations",
+    "warnings",
+    "departures",
+    "requested_operations",
+    "assumptions",
+    "complete",
+    "missing",
+    "held_until",
+    "pinned",
+    "stale",
+    "layout_version",
+    "member_rows",
+}
+
+
+def test_a_fetch_that_left_party_totals_out_names_them_and_saves_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = SCENARIOS["fetch-spec-party-totals-left-out"]
+    exchanges = Exchanges(record, BASE_URLS["api-path"])
+    clock = Clock(Pollers(monkeypatch).poll_waits)
+    client = _client("sync", BASE_URLS["api-path"], exchanges, clock)
+    (step,) = record["call"]
+    data = _run(step, client, None, None)
+    (served,) = record["exchanges"][0]["response"]["json"]["trace"][
+        "party_totals_left_out"
+    ]
+    assert "provenance" not in served
+    assert data.party_totals_left_out == (
+        PartyTotalsLeftOut(
+            spec_id=data.members[0].spec.spec_id,
+            role="financingProvider",
+            entities=tuple(served["entities"]),
+            every_provenance=True,
+        ),
+    )
+    count = len(served["entities"])
+    assert (
+        f"  Party totals left out: {count} on financingProvider · "
+        "data.party_totals_left_out"
+    ) in repr(data).splitlines()
+
+    path = tmp_path / "saved.parquet"
+    data.save(path)
+    stored = pq.read_metadata(path).metadata
+    assert set(json.loads(stored[b"dfo.dataset"])) == DATASET_KEYS_0_1_0
+    assert b"dfo.party_totals_left_out" in stored
+    _assert_same(load_saved(path), data)
+
+
+@pytest.mark.parametrize(
+    ("served", "provenance", "every"),
+    [
+        ({"provenance": "provenance/OECD_DAC2a"}, "provenance/OECD_DAC2a", False),
+        ({"provenance": None}, None, False),
+        ({}, None, True),
+    ],
+    ids=["named", "rows-without-provenance", "every-provenance"],
+)
+def test_party_totals_keep_the_provenance_through_save_and_load(
+    tmp_path: Path, served: dict[str, Any], provenance: str | None, *, every: bool
+) -> None:
+    body = manifest()
+    entry = {"role": "financingRecipient", "entities": ["AfricaTotal"], **served}
+    body["trace"] = {"party_totals_left_out": [entry], "other": 1}
+    data = built(recorded_member(manifest=body))
+    (read,) = data.party_totals_left_out
+    assert (read.provenance, read.every_provenance) == (provenance, every)
+    path = tmp_path / "saved.parquet"
+    data.save(path)
+    assert load_saved(path).party_totals_left_out == data.party_totals_left_out
+
+
+def test_a_dataset_without_party_totals_left_out_saves_no_key(tmp_path: Path) -> None:
+    data = built()
+    assert data.party_totals_left_out == ()
+    assert not any("Party totals" in line for line in repr(data).splitlines())
+    path = tmp_path / "saved.parquet"
+    data.save(path)
+    assert b"dfo.party_totals_left_out" not in pq.read_metadata(path).metadata
+
+
+@pytest.mark.parametrize(
+    ("trace", "pointer"),
+    [
+        ([], "/trace"),
+        ({"party_totals_left_out": {}}, "/trace/party_totals_left_out"),
+        ({"party_totals_left_out": [[]]}, "/trace/party_totals_left_out/0"),
+        (
+            {"party_totals_left_out": [{"entities": []}]},
+            "/trace/party_totals_left_out/0/role",
+        ),
+        (
+            {"party_totals_left_out": [{"role": "financingProvider"}]},
+            "/trace/party_totals_left_out/0/entities",
+        ),
+        (
+            {"party_totals_left_out": [{"role": "financingProvider", "entities": [1]}]},
+            "/trace/party_totals_left_out/0/entities/0",
+        ),
+        (
+            {
+                "party_totals_left_out": [
+                    {"role": "financingProvider", "entities": [], "provenance": 2}
+                ]
+            },
+            "/trace/party_totals_left_out/0/provenance",
+        ),
+    ],
+    ids=[
+        "trace-not-object",
+        "list-not-array",
+        "entry-not-object",
+        "role-missing",
+        "entities-missing",
+        "entity-not-text",
+        "provenance-not-text",
+    ],
+)
+def test_a_malformed_party_totals_trace_raises_contract_error(
+    trace: object, pointer: str
+) -> None:
+    body = manifest()
+    body["trace"] = trace
+    with pytest.raises(ContractError) as caught:
+        built(recorded_member(manifest=body))
+    assert (caught.value.code, caught.value.pointer) == ("contract_violation", pointer)
+
+
 def _saved() -> Dataset:
     """A dataset of two members and two gaps, with every provenance member filled."""
     (part,) = parse_parts(load("search-1.json"))
@@ -1139,6 +1387,16 @@ def _dataset_edit(
             _dataset_edit(lambda d: d.update(member_rows=[9, -1])),
             "/dfo.dataset/member_rows",
         ),
+        (
+            lambda m: m.update({b"dfo.party_totals_left_out": b"{}"}),
+            "/dfo.party_totals_left_out",
+        ),
+        (
+            lambda m: m.update(
+                {b"dfo.party_totals_left_out": b'[{"role": "r", "entities": []}]'}
+            ),
+            "/dfo.party_totals_left_out/0/spec_id",
+        ),
     ],
     ids=[
         "citation-removed",
@@ -1160,6 +1418,8 @@ def _dataset_edit(
         "member-rows-not-summing-to-the-rows",
         "member-rows-not-one-per-member",
         "member-rows-negative",
+        "party-totals-not-array",
+        "party-totals-without-spec-id",
     ],
 )
 def test_a_damaged_saved_file_raises_format_error(
@@ -1269,6 +1529,7 @@ def _assert_same(loaded: Dataset, data: Dataset) -> None:
         "licence",
         "ref",
         "left_out",
+        "party_totals_left_out",
     ):
         assert getattr(loaded, name) == getattr(data, name), name
     assert len(loaded) == len(data)

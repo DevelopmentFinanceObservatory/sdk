@@ -15,6 +15,7 @@ import type { PartFacts } from "../core/parse.ts";
 import type { Assumption, CitationSource, Departure, Notice, RequestedOperation } from "../wire.ts";
 import { isRecord, list, objects, text } from "../core/json.ts";
 import { inline } from "../core/text.ts";
+import { clientError } from "../core/errors.ts";
 
 /** The version of the provenance a file from `bytes()` carries under `dfo.*` keys, the one
  *  Python's `Dataset.save` writes: 1 for a dataset of dataset versions, and 2 for a derived
@@ -161,6 +162,92 @@ const stepText = ({ verb, by, limit }: DerivedStep): string =>
 export function stepsText(steps: readonly DerivedStep[], source: string): string {
   const done = steps.map(stepText).join(", then ");
   return done === "" ? `from ${source}` : `${done}, from ${source}`;
+}
+
+/**
+ * Group totals on one party role that a fetch left out of one member's rows. A fetch leaves
+ * party totals out by default, so a sum over `value` counts each flow once. `partyTotals: true`
+ * keeps them. DFO names what the cut dropped in the version's manifest, one entry per party role
+ * and provenance that lost rows, and the dataset gathers those entries in member order.
+ */
+export type PartyTotalsLeftOut = {
+  /** The spec of the member whose rows lost the totals. */
+  readonly specId: string;
+  /** The party role, by DFO's column name, such as `financingProvider`. */
+  readonly role: string;
+  /** The dcids of the totals left out, such as `DACCountriesTotal`. */
+  readonly entities: readonly string[];
+  /** The dataset whose rows lost the totals, or null for rows with no provenance, or when
+   *  `everyProvenance` is true. */
+  readonly provenance: string | null;
+  /** Whether the totals left the rows of every dataset, as on a version DFO recorded before it
+   *  named the provenance. */
+  readonly everyProvenance: boolean;
+};
+
+/** The pointer of the served list of party totals left out. */
+const PARTY_TOTALS_POINTER = "/trace/party_totals_left_out";
+
+/** A manifest's `trace` breaks the served shape at `pointer`. */
+const traceViolation = (pointer: string) =>
+  clientError("contract_violation", {
+    detail: `The manifest's ${pointer} breaks the shape this client reads.`,
+    pointer,
+  });
+
+/**
+ * The totals a manifest's `trace.party_totals_left_out` names for the member of `specId`, each
+ * `{role, entities, provenance}`, where an absent `provenance` means every dataset's rows. The
+ * list is empty when the trace names none. Other keys in an entry are ignored.
+ *
+ * @throws {ContractError} The trace or an entry breaks the served shape (`contract_violation`).
+ */
+function partyTotalsOf(
+  manifest: Readonly<Record<string, unknown>>,
+  specId: string,
+): PartyTotalsLeftOut[] {
+  const trace = manifest["trace"];
+  if (trace === undefined || trace === null) return [];
+  if (!isRecord(trace)) throw traceViolation("/trace");
+  const served = trace["party_totals_left_out"];
+  if (served === undefined || served === null) return [];
+  if (!Array.isArray(served)) throw traceViolation(PARTY_TOTALS_POINTER);
+  return served.map((entry: unknown, index): PartyTotalsLeftOut => {
+    const pointer = `${PARTY_TOTALS_POINTER}/${index}`;
+    if (!isRecord(entry)) throw traceViolation(pointer);
+    const { role, entities, provenance } = entry;
+    if (typeof role !== "string") throw traceViolation(`${pointer}/role`);
+    if (!Array.isArray(entities)) throw traceViolation(`${pointer}/entities`);
+    entities.forEach((entity: unknown, at) => {
+      if (typeof entity !== "string") throw traceViolation(`${pointer}/entities/${at}`);
+    });
+    if (provenance !== undefined && provenance !== null && typeof provenance !== "string") {
+      throw traceViolation(`${pointer}/provenance`);
+    }
+    return Object.freeze({
+      specId,
+      role,
+      entities: Object.freeze([...(entities as string[])]),
+      provenance: provenance ?? null,
+      everyProvenance: !Object.hasOwn(entry, "provenance"),
+    });
+  });
+}
+
+/** The text form's line counting the totals left out on each role, as
+ *  `Party totals left out: 15 on financingProvider · data.partyTotalsLeftOut`. */
+function partyTotalsLine(entries: readonly PartyTotalsLeftOut[]): string | undefined {
+  const byRole = new Map<string, Set<string>>();
+  for (const { role, entities } of entries) {
+    const dcids = byRole.get(role) ?? new Set<string>();
+    for (const entity of entities) dcids.add(entity);
+    byRole.set(role, dcids);
+  }
+  if (byRole.size === 0) return undefined;
+  const counts = [...byRole]
+    .map(([role, dcids]) => `${dcids.size.toLocaleString("en-GB")} on ${role}`)
+    .join(", ");
+  return `Party totals left out: ${counts} · data.partyTotalsLeftOut`;
 }
 
 /** What a derived dataset adds to its member: every series its recipe left out, whether that
@@ -346,6 +433,10 @@ export class Dataset {
   readonly leftOut: readonly LeftOutSeries[];
   /** Whether `leftOut` lists every series the recipe dropped. */
   readonly #leftOutComplete: boolean;
+  /** The group totals a fetch left out of each member's rows, one entry per member, party role
+   *  and provenance that lost rows. Empty when nothing was left out, when the fetch passed
+   *  `partyTotals: true`, and for a derived dataset. */
+  readonly partyTotalsLeftOut: readonly PartyTotalsLeftOut[];
   /** The recipe's steps in the order they ran, for the text form's derived line. */
   readonly #steps: readonly DerivedStep[];
   /** The members and options the dataset was made from, less their bytes, for a copy. */
@@ -443,6 +534,11 @@ export class Dataset {
       (derived?.leftOut ?? []).map((series) => new LeftOutSeries(series, roles)),
     );
     this.#leftOutComplete = derived?.leftOutComplete ?? true;
+    this.partyTotalsLeftOut = Object.freeze(
+      members.flatMap((member) =>
+        isDerived(member) ? [] : partyTotalsOf(member.manifest, member.spec.spec_id),
+      ),
+    );
     this.#steps = Object.freeze(
       (derived?.steps ?? []).map((step) =>
         Object.freeze({ ...step, by: step.by.map((column) => roles[column] ?? column) }),
@@ -503,6 +599,8 @@ export class Dataset {
     const sources = this.citation.sources.map((source) => source.label);
     if (sources.length > 0) lines.push(`Source: ${sources.join("; ")}`);
     lines.push(...this.#derivedSummary());
+    const totals = partyTotalsLine(this.partyTotalsLeftOut);
+    if (totals !== undefined) lines.push(totals);
     if (this.#inputs.options.shownBy !== undefined) {
       lines.push(`Shown by: ${this.#inputs.options.shownBy}`);
     }
@@ -630,6 +728,22 @@ export class Dataset {
       }),
       "dfo.ref": JSON.stringify(this.ref),
       ...derived,
+      // A key of its own, since Python 0.1.0's loader refuses any key in `dfo.dataset` it does
+      // not know and reads only the `dfo.*` keys it names.
+      ...(this.partyTotalsLeftOut.length === 0
+        ? {}
+        : {
+            "dfo.party_totals_left_out": JSON.stringify(
+              this.partyTotalsLeftOut.map(
+                ({ specId, role, entities, provenance, everyProvenance }) => ({
+                  spec_id: specId,
+                  role,
+                  entities,
+                  ...(everyProvenance ? {} : { provenance }),
+                }),
+              ),
+            ),
+          }),
     };
   }
 }

@@ -69,9 +69,16 @@ export type {
   Severity,
   UnknownPart,
   UnsupportedPart,
+  Warning,
 } from "./wire.ts";
 export { Dataset, LeftOutSeries } from "./datasets/dataset.ts";
-export type { Citation, DerivedMember, LeftOutStep, Member } from "./datasets/dataset.ts";
+export type {
+  Citation,
+  DerivedMember,
+  LeftOutStep,
+  Member,
+  PartyTotalsLeftOut,
+} from "./datasets/dataset.ts";
 export { Analysis } from "./datasets/analysis.ts";
 export type { RunOptions } from "./datasets/analysis.ts";
 export { Cards } from "./datasets/cards.ts";
@@ -116,6 +123,8 @@ export { Catalogue, Code, Entity, Match, Node } from "./search/lookup-results.ts
 export type { GraphNode } from "./search/lookup-results.ts";
 export type { Progress, ProgressEvent, ProgressHandler } from "./datasets/operation.ts";
 export type { Row, Value } from "./datasets/parquet.ts";
+export { partFacts } from "./core/parse.ts";
+export type { PartFacts } from "./core/parse.ts";
 export { isKnownPart, PART_STATUSES } from "./core/parts.ts";
 export { specRoles } from "./core/roles.ts";
 export { DatasetRef, FormatError, isDatasetMember, isDerived } from "./core/ref.ts";
