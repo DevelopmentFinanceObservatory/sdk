@@ -3,7 +3,8 @@
 Ask the Development Finance Observatory (DFO) a question about aid, debt, or development indicators in your own words, and get a versioned table back.
 
 ```bash
-pip install "development-finance[pandas]"
+uv add "development-finance[pandas]"        # in a uv project
+pip install "development-finance[pandas]"   # with pip
 ```
 
 ```python
