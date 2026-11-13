@@ -4,7 +4,7 @@ All notable changes to this package are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-11-13
 
 The first release of `@developmentfinance/client`, the TypeScript client for the Development Finance Observatory APIs. It is ESM only and runs on Node 22.18 or later, Bun, Deno, Workers, and browsers.
 
