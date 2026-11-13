@@ -10,6 +10,7 @@ from dfo._core.errors import ContractError, InvalidRequestError
 from dfo._core.types import Rendering, Spec
 from dfo._datasets.build import (
     Reading,
+    dcid_entities,
     file_params,
     narrowings,
     read_operation,
@@ -248,7 +249,7 @@ def test_each_layout_builds_bare_parquet() -> None:
     )
     for layout, party_totals in (("wide", True), ("long", 1)):
         with pytest.raises(InvalidRequestError) as caught:
-            rendering_for(layout, party_totals=party_totals)  # ty: ignore[invalid-argument-type]
+            rendering_for(layout, party_totals=party_totals)
         assert caught.value.code == "invalid_argument"
 
 
@@ -272,3 +273,16 @@ def test_an_operation_reads_its_pacing_and_progress() -> None:
 def test_a_done_operation_without_a_manifest_raises() -> None:
     with pytest.raises(ContractError):
         read_operation(operation("done"))
+
+
+@pytest.mark.parametrize("listed", [False, True], ids=["bare", "in-a-list"])
+def test_an_unawaited_resolve_in_entities_is_refused(listed: bool) -> None:
+    async def resolve() -> list[str]:
+        return ["country/NGA"]
+
+    pending = resolve()
+    entities: Any = {"destination": [pending] if listed else pending}
+    with pytest.raises(InvalidRequestError) as caught:
+        dcid_entities(entities)
+    assert caught.value.code == "invalid_argument"
+    assert pending.cr_frame is None  # closed, so Python does not warn it never ran

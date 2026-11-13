@@ -30,6 +30,27 @@ import {
 import type { Exchange } from "./replay.ts";
 import type { Dataset } from "../src/datasets/dataset.ts";
 import { contractJson, json, mockFetch, problem } from "./support.ts";
+import { Entity, Match } from "../src/search/lookup-results.ts";
+
+/** A `Match` as `client.lookup.resolve` returns it, for `status`. */
+const matchOf = (
+  status: string,
+  entity: { ref: string; label: string } | null = null,
+  nearMatches: { ref: string; label: string }[] | null = null,
+) =>
+  new Match({
+    input: entity?.label ?? "Congo",
+    status,
+    entity: entity === null ? null : { ...entity, kind: "country" },
+    candidates:
+      status === "ambiguous"
+        ? [
+            { ref: "country/COD", label: "DR Congo", kind: "country" },
+            { ref: "country/COG", label: "Congo", kind: "country" },
+          ]
+        : null,
+    near_matches: nearMatches?.map((near) => ({ ...near, kind: "country" })) ?? null,
+  } as ConstructorParameters<typeof Match>[0]);
 
 /** The error a promise rejects with; the test fails when it resolves. */
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
@@ -87,9 +108,10 @@ describe("two specs whose narrowed builds are one spec", () => {
         { parts: ["health ODA"], spec },
         { parts: ["basic health"], spec: other, answerParts: [asked] },
       ],
-      { narrowing: { window } },
+      { narrowing: { window }, question: "Health aid" },
     );
     assert.deepEqual(remaining(), []);
+    assert.equal(dataset.question, "Health aid");
     assert.deepEqual(
       dataset.members.map((member) => member.parts),
       [["health ODA", "basic health"]],
@@ -134,6 +156,7 @@ describe("a ref fetched with latest", () => {
     const client = clientOver(replay(record).transport);
     const answer = await client.search(stepOf(record, 0, "search").question);
     const fetched = await answer.fetch();
+    assert.equal(fetched.question, answer.question);
     const builds = { ...record, exchanges: record.exchanges.slice(1) };
     const { transport, remaining } = replay(builds);
     const newest = await fetchDataset(transport, fetched.ref, { latest: true });
@@ -145,6 +168,8 @@ describe("a ref fetched with latest", () => {
     );
     assert.deepEqual(newest.columns, fetched.columns);
     assert.deepEqual(await newest.toRows(), await fetched.toRows());
+    // A ref keeps no question, so a dataset fetched from one has none.
+    assert.equal(newest.question, null);
   });
 
   // A ref records the rendering its fetch posted, so a latest fetch of a cut ref posts the cut
@@ -439,6 +464,37 @@ describe("arguments a fetch refuses before any request", () => {
   }
 });
 
+describe("a fetch's entities from client.lookup.resolve", () => {
+  const { transport } = replay(NO_EXCHANGES);
+  const identified: Spec = {
+    spec_id: "spec_1",
+    definition: { spec_id: "spec_1", identity: { entities: { origin: ["country/DEU"] } } },
+  };
+  for (const [name, match, named] of [
+    ["an ambiguous Match", matchOf("ambiguous"), "country/COD"],
+    ["a Match not found", matchOf("not_found"), null],
+    [
+      "a Match not found with near matches",
+      matchOf("not_found", null, [{ ref: "country/DEU", label: "Germany" }]),
+      "country/DEU",
+    ],
+    [
+      "a Match the graph does not hold",
+      matchOf("not_held", { ref: "country/XXX", label: "Atlantis" }),
+      null,
+    ],
+  ] as const) {
+    test(`refuse a role bound to ${name} before any request, naming the nearest dcid`, async () => {
+      const error = await rejection(
+        clientOver(transport).fetch(identified, { entities: { origin: [match] } }),
+      );
+      assert.ok(error instanceof InvalidRequestError);
+      assert.equal(error.code, "invalid_argument");
+      if (named !== null) assert.ok(error.detail.includes(JSON.stringify(named)), error.detail);
+    });
+  }
+});
+
 describe("a fetch's roles", () => {
   const { transport } = replay(NO_EXCHANGES);
   const top5 = (async () => {
@@ -575,6 +631,17 @@ describe("a fetch's entities", () => {
       { destination: WEST },
     ],
     [
+      "post the dcids of a resolved Match and of an Entity, with no request of their own",
+      {
+        entities: {
+          origin: [matchOf("resolved", { ref: "country/FRA", label: "France" })],
+          destination: [new Entity({ ref: "country/GHA", label: "Ghana", kind: "country" })],
+        },
+      },
+      { entities: { origin: ["country/FRA"], destination: ["country/GHA"] } },
+      undefined,
+    ],
+    [
       "post no entities for a map that names no role",
       { window: "latest", entities: {} },
       { window: { kind: "latest" } },
@@ -650,7 +717,7 @@ describe("a fetch's entities", () => {
         ),
         error.message,
       );
-      assert.ok(error.message.endsWith(" [invalid_role_ref · trace trace-1]"), error.message);
+      assert.ok(error.message.endsWith(" [invalid_role_ref trace=trace-1]"), error.message);
       assert.equal(
         error.message.includes(`client.lookup.resolve(${JSON.stringify(origin)})`),
         lookup,
@@ -784,7 +851,7 @@ describe("a download", async () => {
     assert.deepEqual(waits, [500, 1000]);
   });
 
-  test("times a hung files route ask out at the client's timeout and asks again", async () => {
+  test("times a hung files route ask out at the client's attemptTimeout and asks again", async () => {
     const record = await scenario("fetch-spec-known-sentence");
     const [build, route] = record.exchanges;
     const bytes = await scenarioBytes("fetch-spec-known-sentence.parquet");
@@ -807,7 +874,7 @@ describe("a download", async () => {
       baseUrl: REPLAY_BASE_URL,
       apiKey: REPLAY_KEY,
       fetch,
-      timeout: 50,
+      attemptTimeout: 50,
       sleep: () => Promise.resolve(),
       env: envFrom({}),
       readCredentialsFile: () => null,

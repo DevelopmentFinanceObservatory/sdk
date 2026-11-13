@@ -217,14 +217,16 @@ def test_a_repeated_root_is_refused() -> None:
 def test_a_ref_holds_one_kind_of_member() -> None:
     (dataset_member,) = DatasetRef.from_json(json.dumps(accepted_ref())).members
     (derived_member,) = DatasetRef.from_json(json.dumps(derived_ref())).members
-    with pytest.raises(ValueError, match="not both"):
+    with pytest.raises(InvalidRequestError) as caught:
         DatasetRef((dataset_member, derived_member))
+    assert caught.value.code == "invalid_argument"
 
 
 def test_a_ref_refuses_a_member_of_neither_kind() -> None:
     (member,) = DatasetRef.from_json(json.dumps(accepted_ref())).members
-    with pytest.raises(TypeError, match="not Spec"):
+    with pytest.raises(InvalidRequestError, match="not Spec") as caught:
         DatasetRef((member.spec,))
+    assert caught.value.code == "invalid_argument"
 
 
 def _ref(obj: dict[str, Any]) -> DatasetRef:

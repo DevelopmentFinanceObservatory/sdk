@@ -9,7 +9,6 @@ import type { Layout, Spec } from "../src/core/ref.ts";
 import { CLIENT_HEADER, ownIdentity } from "../src/http/client-identity.ts";
 import { Transport } from "../src/http/transport.ts";
 import type { TransportOptions } from "../src/http/transport.ts";
-import type { ResolvedSpec } from "../src/wire.ts";
 
 /** The base URL a replay serves its scenario at when its options name none. */
 export const REPLAY_BASE_URL = "https://api.replay.test/api";
@@ -135,7 +134,7 @@ function wireSpec({ sentence, entity_groups, ...spec }: ScenarioSpec): Spec {
     resolved: {
       ...(sentence === undefined ? {} : { rendered_sentence: sentence }),
       ...(entity_groups === undefined ? {} : { entity_groups }),
-    } as ResolvedSpec,
+    },
   };
 }
 

@@ -32,9 +32,10 @@ new process builds a fresh connection pool over the proxies the parent read, and
 keeps the inherited pool open and untouched, since its connections belong to the
 parent.
 
-The client's `timeout` bounds one whole attempt, body included, and a call's
-deadline bounds the whole call. A signed download's attempt runs to the call's
-deadline, and fails retryably (`network_error`) once no byte arrives for
+The client's `attempt_timeout` bounds one whole attempt, body included, and a
+call's deadline bounds the whole call. The client's `timeout` sets that deadline
+for a call that names none, such as a lookup. A signed download's attempt runs to
+the call's deadline, and fails retryably (`network_error`) once no byte arrives for
 `DOWNLOAD_STALL_S`. The asynchronous transport can cancel platform
 name resolution at those limits. Its generated synchronous form cannot: blocking
 platform name resolution may run past a timeout or deadline. After name
@@ -101,6 +102,12 @@ from dfo._core.text import (
     redacted,
     same_origin_url,
 )
+from dfo._core.timeouts import (
+    CLIENT_TIMEOUT,
+    CallTimeout,
+    ClientSeconds,
+    ClientTimeout,
+)
 from dfo._http.hooks import (
     Clock,
     HeaderProvider,
@@ -156,6 +163,9 @@ DOWNLOAD_MAX_BYTES = 2 * 2**30
 # included, or for its next byte, in seconds. A download that waits this long
 # fails retryably (`network_error`).
 DOWNLOAD_STALL_S = 30.0
+
+# What an attempt that the call's deadline cut short ran out of.
+_CALL_BOUND = "the call's timeout passed"
 
 # The decoded bytes an API response's body may hold, the larger of 16 MiB and ten
 # times the largest JSON body recorded, rounded. That body is `/search/schema` in
@@ -412,8 +422,9 @@ def _checked_headers(headers: Mapping[str, str], source: str) -> Mapping[str, st
     return headers
 
 
-def _checked_timeout(timeout: float) -> float:
-    """Return `timeout` once it is a finite number of seconds above 0.
+def _checked_timeout(timeout: float, option: str = "timeout") -> float:
+    """Return `timeout` once it is a finite number of seconds above 0. The
+    refusal names `option`, the argument that took it.
 
     Raises:
         InvalidRequestError: It is not (`invalid_argument`).
@@ -426,7 +437,7 @@ def _checked_timeout(timeout: float) -> float:
     ):
         raise client_error(
             INVALID_ARGUMENT,
-            f"timeout is a finite number of seconds above 0, not {timeout!r}",
+            f"{option} is a finite number of seconds above 0, not {timeout!r}",
         )
     return float(timeout)
 
@@ -659,7 +670,8 @@ def _connection_pool(proxy_url: str | None) -> httpcore2.ConnectionPool:
     proxy needs `socksio` installed.
 
     Raises:
-        ValueError: `proxy_url`'s scheme is not http, https, socks5 or socks5h.
+        InvalidRequestError: `proxy_url`'s scheme is not http, https, socks5 or
+            socks5h (`invalid_argument`).
     """
     ssl_context = httpx2.create_ssl_context(verify=True, trust_env=True)
     # httpcore2 declares a stand-in class when anyio or socksio is missing, so
@@ -676,8 +688,15 @@ def _connection_pool(proxy_url: str | None) -> httpcore2.ConnectionPool:
         return httpcore2.ConnectionPool(
             ssl_context=ssl_context, network_backend=backend, **limits
         )
+    scheme = urlsplit(proxy_url).scheme
+    if scheme not in ("http", "https", "socks5", "socks5h"):
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"A proxy URL's scheme is http, https, socks5 or socks5h, not {scheme!r}",
+            builtin=ValueError,
+        )
     proxy = httpx2.Proxy(proxy_url)
-    if proxy.url.scheme in ("http", "https"):
+    if scheme in ("http", "https"):
         return httpcore2.HTTPProxy(
             proxy_url=core_url(proxy.url),
             proxy_auth=proxy.raw_auth,
@@ -687,20 +706,15 @@ def _connection_pool(proxy_url: str | None) -> httpcore2.ConnectionPool:
             network_backend=backend,
             **limits,
         )
-    if proxy.url.scheme in ("socks5", "socks5h"):
-        pool = httpcore2.SOCKSProxy(
-            proxy_url=core_url(proxy.url),
-            proxy_auth=proxy.raw_auth,
-            ssl_context=ssl_context,
-            network_backend=backend,
-            **limits,
-        )
-        assert isinstance(pool, httpcore2.ConnectionPool)
-        return pool
-    raise ValueError(
-        f"A proxy URL's scheme is http, https, socks5 or socks5h, not "
-        f"{proxy.url.scheme!r}"
+    pool = httpcore2.SOCKSProxy(
+        proxy_url=core_url(proxy.url),
+        proxy_auth=proxy.raw_auth,
+        ssl_context=ssl_context,
+        network_backend=backend,
+        **limits,
     )
+    assert isinstance(pool, httpcore2.ConnectionPool)
+    return pool
 
 
 class _DeadlineTransport(httpx2.BaseTransport):
@@ -849,7 +863,8 @@ class Transport:
         *,
         base_url: str | None = None,
         api_key: ApiKeyArgument = None,
-        timeout: float = 30.0,
+        timeout: float | None = None,
+        attempt_timeout: float = 30.0,
         max_retries: int = 2,
         headers: Mapping[str, str] | None = None,
         header_provider: HeaderProvider | None = None,
@@ -865,7 +880,9 @@ class Transport:
                 reads `DFO_BASE_URL`, then takes the public API.
             api_key: The key, an `ApiKey`, a callable returning one, False for
                 anonymous use, or None to look one up.
-            timeout: The longest one attempt waits, in seconds.
+            timeout: The longest a call takes, in seconds, when it names no
+                bound of its own; None leaves each call its own default.
+            attempt_timeout: The longest one attempt waits, in seconds.
             max_retries: Further attempts after a retryable failure.
             headers: Headers sent with every API request.
             header_provider: Called before every API request for more headers,
@@ -884,12 +901,14 @@ class Transport:
                 header's name is not an HTTP token or names `X-DFO-Client`, or its
                 value not visible ASCII, spaces and tabs (`header_invalid`), the key would
                 travel over plain http to a host that is not loopback
-                (`insecure_transport`), the timeout is not a finite number above
-                0, or the retry count not an integer from 0 to 10
+                (`insecure_transport`), `timeout` is not None or a finite
+                number above 0, `attempt_timeout` not a finite number above 0,
+                or the retry count not an integer from 0 to 10
                 (`invalid_argument`).
             AuthenticationError: The key lookup failed.
         """
-        timeout = _checked_timeout(timeout)
+        call_timeout = None if timeout is None else _checked_timeout(timeout)
+        attempt_timeout = _checked_timeout(attempt_timeout, "attempt_timeout")
         max_retries = _checked_retries(max_retries)
         resolved = resolve_base_url(base_url)
         self._base_url, self._origin = resolved.url, resolved.origin
@@ -897,10 +916,11 @@ class Transport:
         self._in_clear = resolved.in_clear
         self._keys = KeyState(api_key)
         self._authorization()
-        self._timeout = timeout
+        self._call_timeout = call_timeout
+        self._attempt_timeout = attempt_timeout
         self._max_retries = max_retries
         # A signed download's attempt runs until the deadline unless a
-        # `single_attempt` copy bounds it by the timeout. Either way each read
+        # `single_attempt` copy bounds it by the attempt timeout. Either way each read
         # waits at most `DOWNLOAD_STALL_S`.
         self._download_timeout = math.inf
         self._fixed_headers = dict(_checked_headers(headers or {}, "headers"))
@@ -938,9 +958,15 @@ class Transport:
         return self._keys.resolved
 
     @property
-    def timeout(self) -> float:
+    def timeout(self) -> float | None:
+        """The longest a call that names no bound takes, in seconds, or None to
+        leave each call its own default."""
+        return self._call_timeout
+
+    @property
+    def attempt_timeout(self) -> float:
         """The longest one attempt waits, in seconds."""
-        return self._timeout
+        return self._attempt_timeout
 
     @property
     def max_retries(self) -> int:
@@ -948,32 +974,59 @@ class Transport:
         return self._max_retries
 
     def with_options(
-        self, *, timeout: float | None = None, max_retries: int | None = None
+        self,
+        *,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
+        attempt_timeout: float | None = None,
+        max_retries: int | None = None,
     ) -> Self:
-        """Return a copy with other limits that shares the pool and the key.
+        """Return a copy with other limits that shares the pool and the key. A
+        limit left out keeps this transport's.
 
         Raises:
-            InvalidRequestError: The timeout is not a finite number above 0, or
-                the retry count not an integer from 0 to 10 (`invalid_argument`).
+            InvalidRequestError: `timeout` is not None or a finite number above
+                0, `attempt_timeout` not a finite number above 0, or the retry
+                count not an integer from 0 to 10 (`invalid_argument`).
         """
         clone = copy.copy(self)
         clone._owner = False
-        if timeout is not None:
-            clone._timeout = _checked_timeout(timeout)
+        if timeout is not CLIENT_TIMEOUT:
+            clone._call_timeout = None if timeout is None else _checked_timeout(timeout)
+        if attempt_timeout is not None:
+            clone._attempt_timeout = _checked_timeout(
+                attempt_timeout, "attempt_timeout"
+            )
         if max_retries is not None:
             clone._max_retries = _checked_retries(max_retries)
         return clone
 
     def single_attempt(self) -> Self:
         """Return a copy that sends each request once, for one attempt of the
-        timeout, the signed download included."""
+        attempt timeout, the signed download included."""
         clone = self.with_options(max_retries=0)
-        clone._download_timeout = clone._timeout
+        clone._download_timeout = clone._attempt_timeout
         return clone
 
     def now(self) -> float:
         """Return the transport's clock reading, in seconds."""
         return self._clock()
+
+    def call_timeout(
+        self, timeout: CallTimeout, /, *, default: float | None = None
+    ) -> float | None:
+        """The bound on one call, in seconds, or None for none: `timeout` when
+        the call names one, else the transport's `timeout` as `ClientSeconds`,
+        else `default`.
+
+        Raises:
+            InvalidRequestError: `timeout` is not None, `CLIENT_TIMEOUT` or a
+                finite number above 0 (`invalid_argument`).
+        """
+        if timeout is CLIENT_TIMEOUT:
+            if self._call_timeout is None:
+                return default
+            return ClientSeconds(self._call_timeout)
+        return None if timeout is None else _checked_timeout(timeout)
 
     def deadline(self, seconds: float | None) -> float | None:
         """Return the clock reading `seconds` from now, or None for no deadline.
@@ -1044,29 +1097,38 @@ class Transport:
             raise client_error(
                 INVALID_ARGUMENT,
                 f"The request path holds {fault}; a path holds no control character",
+                builtin=ValueError,
             )
         parts = urlsplit(target)
         if parts.scheme or parts.netloc:
             if origin_of(target) != self._origin:
-                raise ValueError(
+                raise client_error(
+                    INVALID_ARGUMENT,
                     f"{target} is outside the API at {self._origin}; "
-                    "fetch a signed URL with download()"
+                    "fetch a signed URL with download()",
+                    builtin=ValueError,
                 )
             return target
         if not target.startswith("/"):
-            raise ValueError(f"A request path starts with '/': {target!r}")
+            raise client_error(
+                INVALID_ARGUMENT,
+                f"A request path starts with '/': {target!r}",
+                builtin=ValueError,
+            )
         if has_dot_segment(parts.path):
             raise client_error(
                 INVALID_ARGUMENT,
                 f"The request path {target!r} holds a . or .. segment, which "
                 "would leave the API's base path",
+                builtin=ValueError,
             )
         return self._base_url + target
 
     def _attempt_bounds(
         self, timeout: float | None, deadline: float | None
-    ) -> tuple[float | None, float | None]:
-        """One attempt's timeout for httpx2, and its post-resolution end time.
+    ) -> tuple[float | None, float | None, str]:
+        """One attempt's timeout for httpx2, its post-resolution end time, and
+        what an attempt that runs out of it says ran out.
 
         The limit is clamped to the time left before `deadline`, so the attempt
         ends by the earlier of the deadline and now plus the limit after platform
@@ -1074,18 +1136,24 @@ class Transport:
         blocking platform resolver; its asynchronous source can. Both are None
         for an infinite `timeout` and no deadline.
         """
-        limit = self._timeout if timeout is None else timeout
+        limit = self._attempt_timeout if timeout is None else timeout
+        bound = (
+            f"one attempt ran past the client's attempt_timeout of {limit:g} s"
+            if timeout is None
+            else ""
+        )
         now = self._clock()
         if deadline is not None:
             remaining = deadline - now
             if remaining <= 0:
                 raise client_error(
-                    DEADLINE_EXCEEDED, "The call's deadline passed before it finished"
+                    DEADLINE_EXCEEDED, "The call's timeout passed before it finished"
                 )
-            limit = min(limit, remaining)
+            if remaining < limit:
+                limit, bound = remaining, _CALL_BOUND
         if math.isinf(limit):
-            return None, None
-        return limit, now + limit
+            return None, None, ""
+        return limit, now + limit, bound
 
     def _send(
         self,
@@ -1094,6 +1162,7 @@ class Transport:
         what: str,
         limit: int,
         *,
+        bound: str = "",
         stall: float | None = None,
     ) -> httpx2.Response:
         """Send `request` and read its body by `deadline`, after name resolution.
@@ -1108,7 +1177,8 @@ class Transport:
         that takes a 2xx body past `limit` bytes, or any other body past
         `JSON_BODY_MAX_BYTES`, so a redirect or a refusal reads as on any route.
         A redirect or refusal past its limit keeps an empty body, so a refusal
-        raises the class of its status.
+        raises the class of its status. `bound` names the limit an attempt
+        that times out ran out of, for its message.
 
         Raises:
             DfoTimeoutError: The attempt timed out, or `deadline` passed while
@@ -1142,7 +1212,8 @@ class Transport:
                     NETWORK_ERROR,
                     f"The download from {request.url.host} {waited} for {stall:g} s.",
                 ) from exc
-            raise client_error(DEADLINE_EXCEEDED, f"{what} timed out") from exc
+            ran_out = f"; {bound}" if bound else ""
+            raise client_error(DEADLINE_EXCEEDED, f"{what} timed out{ran_out}") from exc
         except httpx2.TransportError as exc:
             if self._pool.closed:
                 raise client_error(
@@ -1320,7 +1391,7 @@ class Transport:
         json: Any = None,
         headers: Mapping[str, str] | None = None,
         timeout: float | None = None,
-        deadline: float | None = None,
+        deadline: float | ClientTimeout | None = CLIENT_TIMEOUT,
         max_retries: int | None = None,
         max_bytes: int = JSON_BODY_MAX_BYTES,
     ) -> httpx2.Response:
@@ -1348,13 +1419,15 @@ class Transport:
             json: The JSON body.
             headers: Headers for this request only.
             timeout: The longest one attempt takes after platform name
-                resolution, body included. Defaults to the transport's.
+                resolution, body included. Defaults to the transport's
+                `attempt_timeout`.
                 `math.inf` lets each attempt run until the deadline, or without
                 limit when there is none. The generated synchronous transport
                 cannot interrupt blocking platform name resolution.
             deadline: A clock reading the whole call, waits included, that
                 bounds every phase after name resolution; each attempt's timeout
-                is clamped to it.
+                is clamped to it. None sets no bound. `CLIENT_TIMEOUT`, the
+                default, bounds the call by the transport's `timeout` from now.
             max_retries: Further attempts; defaults to the transport's.
             max_bytes: The most decoded bytes a 2xx response's body may hold.
                 A redirect's or a refusal's is read under `JSON_BODY_MAX_BYTES`
@@ -1373,13 +1446,13 @@ class Transport:
                 key would travel over plain http (`insecure_transport`), or
                 `target` holds a dot segment or a control character, `method` is
                 not one the API serves, `json` is not JSON or goes with a GET or
-                HEAD, or the transport is closed (`invalid_argument`).
+                HEAD, `target` is neither a path nor a URL on the API's origin,
+                or the transport is closed (`invalid_argument`).
             ServerError: A 2xx response's decoded body passed `max_bytes`
                 (`response_too_large`).
             ContractError: A body does not decode as its `Content-Encoding`
                 says, or a redirect's `Location` is not a URL
                 (`unexpected_response`).
-            ValueError: `target` is neither a path nor a URL on the API's origin.
         """
         if isinstance(method, str):
             method = method.upper()
@@ -1392,11 +1465,13 @@ class Transport:
         url = self._url(target)
         content = _json_content(json, method)
         _refuse_offline(f"{method} {url}")
+        if deadline is CLIENT_TIMEOUT:
+            deadline = self.deadline(self._call_timeout)
         retries = self._max_retries if max_retries is None else max_retries
         attempt = 0
         rekeyed = False
         while True:
-            limit, attempt_end = self._attempt_bounds(timeout, deadline)
+            limit, attempt_end, bound = self._attempt_bounds(timeout, deadline)
             request_headers = self._headers(headers, limit)
             if content is not None:
                 request_headers["Content-Type"] = "application/json"
@@ -1410,7 +1485,7 @@ class Transport:
             )
             try:
                 response = self._send(
-                    request, attempt_end, f"{method} {url}", max_bytes
+                    request, attempt_end, f"{method} {url}", max_bytes, bound=bound
                 )
             except DfoError as failure:
                 error = failure
@@ -1457,8 +1532,8 @@ class Transport:
         reads until the deadline after platform name resolution, or without limit
         when there is none, but waits at most `DOWNLOAD_STALL_S` for the
         connection, its TLS handshake, the request's write and each byte.
-        A `single_attempt` copy reads for one attempt of the timeout. The generated synchronous transport cannot interrupt
-        blocking platform name resolution. A failed fetch is not retried. A
+        A `single_attempt` copy reads until the attempt timeout. The generated
+        synchronous transport cannot interrupt blocking platform name resolution. A failed fetch is not retried. A
         signed URL can expire, so the caller asks the files route for a fresh one.
         Reading stops once the decoded file passes `max_bytes`, or once any
         other response's body passes `JSON_BODY_MAX_BYTES`.
@@ -1485,7 +1560,9 @@ class Transport:
             )
         _refuse_offline("the signed download")
         on_api = origin == self._origin
-        limit, attempt_end = self._attempt_bounds(self._download_timeout, deadline)
+        limit, attempt_end, bound = self._attempt_bounds(
+            self._download_timeout, deadline
+        )
         stall = DOWNLOAD_STALL_S if limit is None else min(limit, DOWNLOAD_STALL_S)
         request = self._pool.client.build_request(
             "GET",
@@ -1494,7 +1571,12 @@ class Transport:
             timeout=httpx2.Timeout(stall),
         )
         response = self._send(
-            request, attempt_end, "the signed download", max_bytes, stall=stall
+            request,
+            attempt_end,
+            "the signed download",
+            max_bytes,
+            bound=bound,
+            stall=stall,
         )
         if on_api:
             self._note_headers(response)

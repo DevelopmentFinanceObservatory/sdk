@@ -7,8 +7,8 @@ count, in member order, so a member's rows are known without reading the labels,
 which two members may share. Every table a dataset holds presents its
 columns and rows in the contract's reading order, `READING_COLUMNS` first and
 `stat_var` last, after the member's file was hashed, so the digest and the ref name
-the server's file. `save` writes one Parquet file whose
-key-value metadata carries the provenance and the ref, which `dfo.load` reads
+the server's file. `save` writes one Parquet file, the bytes `to_bytes` returns,
+whose key-value metadata carries the provenance and the ref, which `dfo.load` reads
 back, and, for a dataset DFO computed, the series its recipe left out. That file is
 the durable form. A dataset also pickles, for transfer between
 processes that run the same client version, as `multiprocessing` does. Another
@@ -25,12 +25,12 @@ import json
 import math
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
-from datetime import date
+from datetime import UTC, date, datetime
 from itertools import accumulate
 from os import PathLike
 from typing import TYPE_CHECKING, Any, Never, override
 
-from dfo._core.codes import CONTRACT_VIOLATION, UNEXPECTED_RESPONSE
+from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT, UNEXPECTED_RESPONSE
 from dfo._core.errors import ContractError, client_error, message_of
 from dfo._core.parse import parse_citation, parse_notices, parse_part
 from dfo._core.refs import (
@@ -144,6 +144,23 @@ def day_text(day: date) -> str:
     return f"{day.day} {_MONTHS[day.month - 1]} {day.year}"
 
 
+def fetch_time() -> datetime:
+    """The current UTC time to the second, as a dataset's `fetched_at` holds it."""
+    return datetime.now(UTC).replace(microsecond=0)
+
+
+def _time_text(moment: datetime) -> str:
+    """A UTC time as the repr prints it, such as `27 November 2026 09:14 UTC`."""
+    moment = moment.astimezone(UTC)
+    return f"{day_text(moment.date())} {moment:%H:%M} UTC"
+
+
+def _iso_time(moment: datetime) -> str:
+    """A UTC time as a saved file's `dfo.fetched_at` holds it, such as
+    `2026-11-27T09:14:05Z`."""
+    return f"{moment.astimezone(UTC):%Y-%m-%dT%H:%M:%SZ}"
+
+
 @dataclass(frozen=True, slots=True)
 class FetchedMember:
     """One built version, downloaded and ready to become part of a dataset.
@@ -167,6 +184,9 @@ class FetchedMember:
             member stores, or the one a fetch built. It names the artifact's
             layout when the manifest does not list `digest`. None reads as the
             bare Parquet rendering of the dataset's layout.
+        fetched_at: When `data` left the server, in UTC to the second; None
+            when the cache recorded no time for it.
+        from_cache: Whether `data` was read from the cache.
     """
 
     parts: tuple[str, ...]
@@ -178,6 +198,8 @@ class FetchedMember:
     data: bytes = field(repr=False)
     answer_parts: tuple[Part, ...] = field(default=(), repr=False)
     rendering: Rendering | None = None
+    fetched_at: datetime | None = None
+    from_cache: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,7 +387,16 @@ class Dataset:
             does not say.
         pinned: Whether every member's version is kept without a time limit.
         stale: Whether the data came from the cache without asking the server for
-            a newer version.
+            a newer version, as `DFO_OFFLINE=1` reads it.
+        from_cache: Whether this fetch read any member's data from the cache,
+            whether or not it asked the server for a newer version. False for a
+            dataset `dfo.load` read.
+        fetched_at: When the data left the server, in UTC to the second: the
+            earliest member's time. A cache hit keeps the time of the download
+            that stored it. None when the cache recorded no time for a member,
+            for a file saved without one, and for a website bundle.
+        question: The question the data answers, when it was fetched from an
+            answer to one; None otherwise.
         layout_version: The column set of the table: the long layout's version,
             `frame` for the pipeline frame, or a bundle's rendition.
         left_out: Every series a step of the recipe behind a derived Dataset
@@ -407,6 +438,9 @@ class Dataset:
     # The share slot a share fetch read, as the repr's "Shown by" line names it:
     # `share k3Qx8vTa, slot 2 "Malaria grants", on 3 October 2026`. None otherwise.
     _shown_by: str | None = field(default=None, repr=False)
+    from_cache: bool = False
+    fetched_at: datetime | None = None
+    question: str | None = None
 
     def __post_init__(self) -> None:
         rows = self._member_rows
@@ -427,13 +461,15 @@ class Dataset:
         """The exact versions the dataset holds, to fetch them again later.
 
         Raises:
-            ValueError: The dataset is a website bundle opened from a folder,
-                which names no version.
+            InvalidRequestError: The dataset is a website bundle opened from a
+                folder, which names no version (`invalid_argument`).
         """
         if (ref := self._ref()) is None:
-            raise ValueError(
+            raise client_error(
+                INVALID_ARGUMENT,
                 "A website bundle opened from a folder names no version, so it has "
-                "no ref; open the bundle's ZIP, or fetch the dataset with dfo.fetch"
+                "no ref; open the bundle's ZIP, or fetch the dataset with dfo.fetch",
+                builtin=ValueError,
             )
         return ref
 
@@ -517,12 +553,27 @@ class Dataset:
     def save(self, path: str | PathLike[str], /) -> None:
         """Write the table to one Parquet file that carries the provenance and the ref.
 
-        `dfo.load(path)` reads it back into a dataset with the same table,
-        provenance and ref.
+        `path` is a local path, or a URI such as `s3://bucket/data.parquet` that
+        pyarrow's filesystems reach. The file holds the bytes `to_bytes` returns.
+        `dfo.load(path)` reads a local file back into a dataset with the same
+        table, provenance and ref.
         """
         import pyarrow.parquet as pq  # noqa: PLC0415 - pyarrow loads on first use
 
         pq.write_table(self.to_arrow(), path)
+
+    def to_bytes(self) -> bytes:
+        """The Parquet file `save` writes, as bytes, to store where a path cannot
+        reach, such as a database column or an HTTP upload.
+
+        `dfo.load(data)` reads the bytes back as it reads the file.
+        """
+        import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
+        import pyarrow.parquet as pq  # noqa: PLC0415 - pyarrow loads on first use
+
+        sink = pa.BufferOutputStream()
+        pq.write_table(self.to_arrow(), sink)
+        return sink.getvalue().to_pybytes()
 
     def __repr__(self) -> str:
         lines = [self.sentence, *(f"  {line}" for line in self._summary())]
@@ -558,15 +609,27 @@ class Dataset:
         lines.append(f"Rows: {len(self):,}{self._period_type()}")
         if not self.complete:
             lines.append(f"Incomplete: {len(self.missing)} part(s) left out")
-        if self.stale:
-            lines.append(
-                "Stale: read from the cache without asking for a newer version"
-            )
+        if self.from_cache or self.stale:
+            lines.append(self._cache_line())
         keep = "Keep: data.save(path)"
         if versions:
             keep += f" · newest later: {self._caller}.fetch(data.ref, latest=True)"
         lines.append(keep)
         return lines
+
+    def _cache_line(self) -> str:
+        """The repr's line for data read from the cache, with its fetch time."""
+        fetched = (
+            "fetch time unknown"
+            if self.fetched_at is None
+            else f"fetched {_time_text(self.fetched_at)}"
+        )
+        if self.stale:
+            return (
+                "Stale: read from the cache without asking for a newer version, "
+                + fetched
+            )
+        return f"Cached: read from the cache, {fetched}"
 
     def _period_type(self) -> str:
         """The type `time_period` holds, as the Rows line names it."""
@@ -658,6 +721,11 @@ class Dataset:
         }
         if ref is not None:
             metadata["dfo.ref"] = ref.to_json()
+        # Keys of their own, as for the party totals below.
+        if self.question is not None:
+            metadata["dfo.question"] = _dumps(self.question)
+        if self.fetched_at is not None:
+            metadata["dfo.fetched_at"] = _dumps(_iso_time(self.fetched_at))
         if derived:
             metadata["dfo.left_out"] = _dumps(
                 {
@@ -873,6 +941,7 @@ def build_dataset(
     stale: bool,
     cache: Cache | None = None,
     caller: str = "dfo",
+    question: str | None = None,
 ) -> Dataset:
     """Make one dataset from the members a fetch built and downloaded.
 
@@ -901,6 +970,7 @@ def build_dataset(
         cache: The cache the members' bytes were read from or stored in, or None.
         caller: The fetching client's hint name, `client` or `dfo`, which the
             repr's newest-versions line names.
+        question: The question of the answer the members answer, or None.
 
     Raises:
         ValueError: No members, or several members in the frame layout.
@@ -1002,7 +1072,18 @@ def build_dataset(
         _member_rows=member_rows,
         _caller=caller,
         party_totals_left_out=tuple(party_totals),
+        from_cache=any(fetched.from_cache for fetched in members),
+        fetched_at=_earliest(fetched.fetched_at for fetched in members),
+        question=question,
     )
+
+
+def _earliest(times: Iterable[datetime | None]) -> datetime | None:
+    """The earliest of `times`, or None when any is unknown."""
+    known = list(times)
+    if any(moment is None for moment in known):
+        return None
+    return min(moment for moment in known if moment is not None)
 
 
 def derived_dataset(
@@ -1013,6 +1094,8 @@ def derived_dataset(
     cache: Cache | None = None,
     caller: str = "dfo",
     roles: Mapping[str, str] | None = None,
+    fetched_at: datetime | None = None,
+    from_cache: bool = False,
 ) -> Dataset:
     """Make a dataset from a derived frame: its ref member, the derived manifest
     DFO serves for it and its stored frame, the bare Parquet file whose digest
@@ -1024,6 +1107,8 @@ def derived_dataset(
     the role word the call named it by, which the repr's steps and left-out
     series print in its place. The file reads through `read_artifact`, as a
     dataset version's does, and leaves `cache` when it does not read.
+    `fetched_at` is when the file left the server, None when unknown, and
+    `from_cache` whether it was read from the cache.
 
     Raises:
         ContractError: The manifest names another frame, or its `left_out` or
@@ -1081,6 +1166,8 @@ def derived_dataset(
             replace(step, by=tuple(roles.get(column, column) for column in step.by))
             for step in (_tree_steps(tree) if isinstance(tree, Mapping) else ())
         ),
+        from_cache=from_cache,
+        fetched_at=fetched_at,
     )
 
 
@@ -1344,16 +1431,20 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
     """Rebuild a dataset from a file `Dataset.save` wrote.
 
     Raises:
-        ValueError: The metadata is not a saved dataset's, or of a later format.
-        FormatError: A `dfo.*` key is missing or breaks the saved format. The
-            pointer starts with the key, as in `/dfo.dataset/missing`.
+        FormatError: The metadata is not a saved dataset's or is of a later
+            format, at `/dfo.format_version`, or a `dfo.*` key is missing or
+            breaks the saved format. The pointer starts with the key, as in
+            `/dfo.dataset/missing`.
     """
     values = _saved_values(metadata)
     versions = (str(SAVED_FORMAT_VERSION), str(SAVED_DERIVED_FORMAT_VERSION))
     if values.get("dfo.format_version") not in versions:
-        raise ValueError(
+        raise FormatError(
+            "format_invalid",
+            "/dfo.format_version",
             "the file carries no dataset saved by this client's format versions "
-            f"{SAVED_FORMAT_VERSION} and {SAVED_DERIVED_FORMAT_VERSION}"
+            f"{SAVED_FORMAT_VERSION} and {SAVED_DERIVED_FORMAT_VERSION}; a later "
+            "client reads it",
         )
     rest = decode(_saved_value(values, "dfo.dataset"), "/dfo.dataset")
     check_keys(rest, "/dfo.dataset", required=_SAVED_DATASET_KEYS)
@@ -1425,8 +1516,32 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
             if (text := values.get("dfo.party_totals_left_out")) is not None
             else ()
         ),
+        fetched_at=(
+            _load_fetched_at(text)
+            if (text := values.get("dfo.fetched_at")) is not None
+            else None
+        ),
+        question=(
+            _string(decode_value(text, "/dfo.question"), "/dfo.question")
+            if (text := values.get("dfo.question")) is not None
+            else None
+        ),
         **(_load_derived(values) if derived else {}),
     )
+
+
+def _load_fetched_at(text: str) -> datetime:
+    """A saved `dfo.fetched_at`, a JSON string holding an ISO 8601 time with a
+    zone, in UTC."""
+    pointer = "/dfo.fetched_at"
+    value = _string(decode_value(text, pointer), pointer)
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise FormatError("format_invalid", pointer, "not an ISO 8601 time") from error
+    if moment.tzinfo is None:
+        raise FormatError("format_invalid", pointer, "a time without a zone")
+    return moment.astimezone(UTC)
 
 
 def _saved_member(

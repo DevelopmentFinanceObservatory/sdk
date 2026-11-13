@@ -224,13 +224,11 @@ except SeriesLeftOutWarning as error:
     print(error.code)  # series_left_out
 ```
 
-`warnings.filterwarnings("ignore", category=SeriesLeftOutWarning)` silences the warning for a run that expects the gaps.
-
 ## Reference
 
 ### `dfo.analysis`
 
-Each function takes its readings as positional arguments and the rest by keyword. Each also takes `strict=False` and `timeout=None`, and returns a `Dataset`. `client.analysis` on a `Client` or `AsyncClient` has the same methods, less `recipe`.
+Each function takes its readings as positional arguments and the rest by keyword. Each also takes `strict=False` and `timeout`, which defaults to the client's `timeout`, and returns a `Dataset`. `client.analysis` on a `Client` or `AsyncClient` has the same methods, less `recipe`.
 
 | Name          | Signature                                                 |
 | ------------- | --------------------------------------------------------- |

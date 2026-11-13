@@ -9,14 +9,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - `data.party_totals_left_out` names the group totals a fetch left out of each member, as `dfo.types.PartyTotalsLeftOut` entries of spec id, party role, dcids and provenance, and the repr counts them. `data.save` writes them under a new `dfo.party_totals_left_out` key, which 0.1.0 ignores, and `dfo.load` reads a file without it.
+- `entities=` on `fetch` and `answer.fetch` takes the `Match` and `Entity` objects `dfo.lookup.resolve` returns beside dcids, as in `entities={"destination": dfo.lookup.resolve("Nigeria")}`. A match that is not `resolved` raises `InvalidRequestError` (`invalid_argument`) before any request, printing the match and a candidate to pass instead. An awaitable in its place, such as `client.lookup.resolve(...)` on an `AsyncClient` without `await`, raises the same error and names the missing `await`.
+- `docs/settings.md` lists every client option and environment variable with its default and which source wins.
+- `data.to_bytes()` returns the Parquet file `data.save(path)` writes, and `dfo.load` reads those bytes as it reads a path.
+- `data.from_cache` says whether a fetch read any member's file from the cache, and `data.fetched_at` when the data left the server, in UTC. The repr adds `Cached: read from the cache, fetched <time>` on a cache hit online, and the `Stale:` line under `DFO_OFFLINE=1` ends with the same time. The cache records each download's time under `fetched/sha256/<hex>`. A file 0.1.0 stored has none, and the repr says `fetch time unknown`. Eviction counts each time's bytes against the cache's size limit, removes it with its file, and removes a time whose file is gone.
+- `data.question` holds the question of the answer a dataset was fetched from. `data.save` writes it under `dfo.question` and the fetch time under `dfo.fetched_at`, each a JSON string, and leaves out either key when it has no value. 0.1.0 ignores both keys, and `dfo.load` reads a file without them.
+- `dfo.types.CLIENT_TIMEOUT` is the default of every call's `timeout` and stands for the client's `timeout`, and `dfo.types.CallTimeout` types the argument, so a function that wraps a call can pass the default on.
 
 ### Changed
 
 - `development-finance` installs beside any `httpx2` and `httpcore2` from 2.15 on. The transport builds its connection pools through their public interfaces, so a new minor release of either needs no new client release.
 - The `polars` extra needs `polars>=1.3`, the first release whose `DataFrame` reads a `Dataset` through the Arrow stream. A CI job installs every floor and runs the suite.
+- **Breaking:** `timeout` on `Client`, `AsyncClient`, `dfo.configure` and `with_options` bounds each whole call, retries, waits and downloads included, for every call that passes no `timeout` of its own, and defaults to None, which leaves `search` at 60 seconds and `fetch` and `dfo.analysis` waiting as long as the server takes. The bound on one request attempt, which `timeout` set in 0.1.0, is the new `attempt_timeout`, 30 seconds by default. `Client(timeout=60)` from 0.1.0 code now stops each call after 60 seconds with `DfoTimeoutError` (`deadline_exceeded`). Pass `attempt_timeout=60` for the old meaning. A call's `timeout=None` still waits without a bound, and a timeout's message names the option that ran out.
+- **Breaking:** `with_options(timeout=None)` returns a copy with no client bound on its calls, so each call keeps its own default. In 0.1.0 it kept the client's `timeout`. Leave `timeout` out to keep it now.
+- **Breaking:** `Client.fetch`, `AsyncClient.fetch` and `dfo.fetch` carry one overload per target, so a type checker rejects an option the target ignores: `window`, `entities`, `facets`, `layout` and `party_totals` go with a `Spec` only, `latest` with a `DatasetRef` or `Recipe`, `progress` with anything but a `Recipe`, and `as_of` and `slot` with a share. A last overload takes a target typed as the union of all four with the options every target takes, `strict` and `timeout`. The run-time checks stay.
+- **Breaking:** error messages end with `[<code> trace=<id>]`, or `[<code>]` with no trace id, in place of `[<code> · trace <id>]`. The bracket text can change in any release. `error.code` and `error.trace_id` are the stable fields.
+- **Breaking:** `dfo.errors.FormatError` and `dfo.errors.BundleError` derive from `DfoError` as well as `ValueError`, so `except DfoError` around `dfo.load(path)` catches them. Their `code` is None and `reason` names the fault. `dfo.load` of a saved file from a later format version raises `FormatError` at `/dfo.format_version`.
+- **Breaking:** calls that raised a bare `ValueError` or `TypeError` for bad input raise a `DfoError` subclass with a client code, which is still a `ValueError` or `TypeError` where it was one, so `except ValueError` and `except TypeError` keep catching it. `DatasetRef(...)` with a member of the wrong kind (also a `TypeError`) or of mixed kinds, `BundleLimits` with a limit that is not a positive integer, `data.ref` on a bundle opened from a folder, and a proxy URL whose scheme is not http, https, socks5 or socks5h raise `InvalidRequestError` (`invalid_argument`); `ApiKey("")` raises `AuthenticationError` (`key_empty`), and `ApiKey` of a non-string (also a `TypeError`) or a key the credentials file cannot store raises it with `key_invalid`; `dfo.auth.login()` with no key raises `AuthenticationError` (`key_empty`), and over a broken credentials file with `credentials_file_invalid`; `RawResponse.json()` on a body that is not JSON raises `ContractError` (`unexpected_response`).
+
+### Removed
+
+- **Breaking:** `Answer.choose` takes no second positional argument. The earlier `choose(part, option)` form now fails as any call with too many arguments does. Pass `choose(option, part=part)`.
 
 ### Fixed
 
+- `dfo.load` of a damaged Parquet file or ZIP raises `BundleError` (`not_a_bundle`), and of a bundle whose XLSX is damaged `FormatError`, each with pyarrow's or `zipfile`'s error as its cause. Both used to escape as pyarrow and `zipfile` errors.
 - `answer.timed_out` is true when a part's own no-data reason is `timed_out`, as well as when Search's diagnostics say so, and `Answer.from_json` works it out again.
 
 ## [0.1.0] - 2026-11-13

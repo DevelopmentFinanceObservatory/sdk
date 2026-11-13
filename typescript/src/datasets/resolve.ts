@@ -63,6 +63,7 @@ import {
   narrows,
   noteWarnings,
   pickArtifact,
+  resolvedOf,
   sentenceFor,
   specIdOf,
 } from "./fetch.ts";
@@ -99,7 +100,11 @@ const LATEST_CALL = "client.fetch(ref, { latest: true })";
 /** Refusals after which a stored version's lookup goes on. The version exists, but its file
  *  has expired. An unknown version (`snapshot_not_found`) ends the lookup. */
 const FILE_EXPIRED = "artifact_expired";
-const FILE_GONE = new Set([FILE_EXPIRED, "artifact_not_found", "not_found"]);
+const FILE_GONE: ReadonlySet<string | null> = new Set([
+  FILE_EXPIRED,
+  "artifact_not_found",
+  "not_found",
+]);
 /** The rendering a share fetch reads a dataset frame in: the bare Parquet frame. Whether it
  *  leaves party totals out is the listed artifact's. */
 const FRAME: Rendering = { format: "parquet", bundle: false, layout: "frame" };
@@ -203,12 +208,7 @@ export async function fetchDataset(
         "client.fetch(spec).",
     );
   }
-  const member = {
-    parts: [],
-    spec,
-    sentence: spec.resolved?.rendered_sentence,
-    entityGroups: spec.resolved?.entity_groups,
-  };
+  const member = { parts: [], spec, ...resolvedOf(spec) };
   return fetchMembers(transport, [member], { ...rest, narrowing });
 }
 

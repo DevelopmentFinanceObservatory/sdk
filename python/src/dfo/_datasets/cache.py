@@ -15,6 +15,14 @@ a FIFO or a device at an entry's path is a miss too. The citation text is read
 back as stored. A key that is not a server id, such as a malformed digest in a
 served manifest, is a miss on read and skipped on write.
 
+An artifact stored with a fetch time has a sibling entry,
+`fetched/sha256/<hex>`, holding the UTC time its bytes left the server as ISO 8601
+text. The cache-layout rule leaves the time out, so another client, or an older
+release, may store an artifact without one, and its fetch time reads as unknown.
+Eviction counts a time's bytes with its artifact's and removes the two together,
+and it removes a time whose artifact another client removed. `discard` removes
+the time with its artifact.
+
 Concurrent fetches in one process download an artifact once: `downloading`
 holds its digest while the first fetch reads the cache, downloads and stores,
 and the others then read the stored file. `merging` holds a manifest's path while
@@ -32,6 +40,7 @@ import stat
 import tempfile
 from collections.abc import Mapping
 from contextlib import nullcontext
+from datetime import UTC, datetime
 from os import PathLike
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -211,18 +220,45 @@ class Cache:
         _touch(path)
         return data
 
-    def put_bytes(self, digest: str, data: bytes, /) -> None:
+    def put_bytes(
+        self, digest: str, data: bytes, /, *, fetched_at: datetime | None = None
+    ) -> None:
         """Store an artifact under its digest, then evict down to `max_bytes`.
 
+        `fetched_at` is when the bytes left the server, an aware datetime,
+        which `fetched_at` reads back. None records no time and keeps any time
+        recorded before, since equal digests are equal bytes.
+
         Raises:
-            ValueError: `data` does not hash to `digest`.
+            ValueError: `data` does not hash to `digest`, or `fetched_at` is a
+                naive datetime.
         """
         if (path := self._file(digest)) is None:
             return
         if sha256_digest(data) != digest:
             raise ValueError(f"the bytes do not hash to {digest}")
-        if _write(path, data, digest=digest):
-            self._evict(keep=path)
+        if fetched_at is not None and fetched_at.tzinfo is None:
+            raise ValueError("fetched_at is a naive datetime; give it a time zone")
+        if not _write(path, data, digest=digest):
+            return
+        if fetched_at is not None and (times := self._fetched(digest)) is not None:
+            text = fetched_at.astimezone(UTC).isoformat(timespec="seconds")
+            _write(times, text.replace("+00:00", "Z").encode())
+        self._evict(keep=path)
+
+    def fetched_at(self, digest: str, /) -> datetime | None:
+        """When the artifact with `digest` left the server, in UTC, or None when
+        the cache recorded no time or the recorded text is not an ISO 8601 time
+        with a zone."""
+        if (path := self._fetched(digest)) is None:
+            return None
+        if (data := _read_regular(path)) is None:
+            return None
+        try:
+            fetched = datetime.fromisoformat(data.decode())
+        except (UnicodeDecodeError, ValueError):
+            return None
+        return fetched.astimezone(UTC) if fetched.tzinfo is not None else None
 
     def discard(self, digest: str, /) -> None:
         """Remove the artifact with `digest`, whose bytes hash right but do not read.
@@ -232,10 +268,9 @@ class Cache:
         """
         if (path := self._file(digest)) is None:
             return
-        try:
-            path.unlink(missing_ok=True)
-        except OSError as error:
-            logger.warning("dfo cache: could not remove %s: %s", path, error)
+        for entry in (path, self._fetched(digest)):
+            if entry is not None:
+                _remove(entry)
 
     def get_manifest(
         self, spec_id: str, content_version: str, rendering: Rendering, /
@@ -296,6 +331,13 @@ class Cache:
             logger.debug("dfo cache: %r is not a digest; skipped", digest)
             return None
 
+    def _fetched(self, digest: str) -> Path | None:
+        """The path of the artifact's fetch time, beside `files`, or None when
+        the cache is disabled or `digest` is not a sha256 digest."""
+        if (path := self._file(digest)) is None or self.directory is None:
+            return None
+        return self.directory / "fetched" / "sha256" / path.name
+
     def _manifest(
         self, spec_id: str, content_version: str, rendering: Rendering
     ) -> Path | None:
@@ -314,26 +356,58 @@ class Cache:
             return None
 
     def _evict(self, *, keep: Path) -> None:
+        """Remove the least recently used artifacts, each with its fetch time,
+        until the artifacts and their times fit `max_bytes`, keeping `keep`.
+        A fetch time whose artifact is gone, such as one another client
+        evicted, goes too."""
         if (directory := self.directory) is None:
             return
-        files = directory / "files"
+        times = directory / "fetched" / "sha256"
         entries: list[tuple[float, int, Path]] = []
-        for path in files.glob("sha256/*"):
+        held: set[str] = set()
+        for path in (directory / "files").glob("sha256/*"):
             if path.name.startswith("."):
                 continue
             try:
                 stat = path.stat()
             except FileNotFoundError:
                 continue
-            entries.append((stat.st_mtime, stat.st_size, path))
+            held.add(path.name)
+            entries.append(
+                (stat.st_mtime, stat.st_size + _size(times / path.name), path)
+            )
+        for time in times.glob("*"):
+            # Checked again, since another process may have stored the artifact
+            # after the listing above.
+            if time.name.startswith(".") or time.name in held:
+                continue
+            if not (directory / "files" / "sha256" / time.name).exists():
+                _remove(time)
         total = sum(size for _, size, _ in entries)
         for _, size, path in sorted(entries, key=lambda entry: entry[0]):
             if total <= self.max_bytes:
                 break
             if path == keep:
                 continue
-            path.unlink(missing_ok=True)
+            _remove(path)
+            _remove(times / path.name)
             total -= size
+
+
+def _size(path: Path) -> int:
+    """The bytes of the file at `path`, or 0 when there is none."""
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _remove(path: Path) -> None:
+    """Remove the file at `path`, logging a refusal."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        logger.warning("dfo cache: could not remove %s: %s", path, error)
 
 
 def _write(path: Path, data: bytes, *, digest: str | None = None) -> bool:

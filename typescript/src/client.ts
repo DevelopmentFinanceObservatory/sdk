@@ -15,9 +15,17 @@ import type { ShareOptions, WriteTokenOptions } from "./datasets/shares.ts";
 import { pin } from "./datasets/pin.ts";
 import type { Recipe } from "./datasets/recipe.ts";
 import { fetchDataset } from "./datasets/resolve.ts";
-import type { FetchOptions } from "./datasets/fetch.ts";
+import type {
+  CallOptions,
+  FetchOptions,
+  RecipeFetchOptions,
+  RefFetchOptions,
+  ShareFetchOptions,
+  SpecFetchOptions,
+} from "./datasets/fetch.ts";
 import type { ApiKeyOption } from "./config/keys.ts";
 import { Lookup } from "./search/lookups.ts";
+import { withEntityDcids } from "./search/lookup-results.ts";
 import type { LookupOptions } from "./search/lookups.ts";
 import type { DatasetRef, Spec } from "./core/ref.ts";
 import { search } from "./search/search.ts";
@@ -36,12 +44,17 @@ export type ClientOptions = {
   apiKey?: ApiKeyOption;
   /** The platform's `fetch`, or one that stands in for it. */
   fetch?: typeof globalThis.fetch;
-  /** The longest one request attempt waits, in milliseconds, a finite number above 0. 30
-   *  seconds by default. A failed attempt is retried as `maxRetries` allows. `search` also
-   *  bounds the whole call (60 s), a build's POST reads for up to 150 s, and a download fails
-   *  after 30 s with no byte. `fetch` waits as long as its build takes unless given a
-   *  `timeout`. */
+  /** The longest a whole call takes, in milliseconds, with retries, waits for a build and
+   *  downloads counted. A number above 0, or `Infinity` for no bound. A call's own `timeout`
+   *  replaces it. Unset, each call keeps its own default: `fetch` waits as long as its build takes,
+   *  `search` and `answer.choose` stop after 60 s, and every other call has no bound beyond
+   *  its attempts. Past it the call raises `DfoTimeoutError` (`deadline_exceeded`). */
   timeout?: number;
+  /** The longest one request attempt waits, in milliseconds, as a finite number above 0. The
+   *  default is 30 seconds. A failed attempt is retried as `maxRetries` allows. A build's POST
+   *  reads for up to 150 s whatever this says, a Search request reads until the call's
+   *  `timeout`, and a download fails after 30 s with no byte. */
+  attemptTimeout?: number;
   /** Further attempts after a failure the server says can clear, an integer from 0 to 10; 2 by
    *  default. */
   maxRetries?: number;
@@ -74,6 +87,7 @@ const CLIENT_OPTIONS = declareOptions<ClientOptions>("new Client", {
   apiKey: true,
   fetch: true,
   timeout: true,
+  attemptTimeout: true,
   maxRetries: true,
   headers: true,
   headerProvider: true,
@@ -81,8 +95,9 @@ const CLIENT_OPTIONS = declareOptions<ClientOptions>("new Client", {
   dangerouslyAllowBrowser: true,
 });
 
-const LIMITS = declareOptions<Pick<ClientOptions, "timeout" | "maxRetries">>("client.withOptions", {
+const LIMITS = declareOptions<Parameters<Client["withOptions"]>[0]>("client.withOptions", {
   timeout: true,
+  attemptTimeout: true,
   maxRetries: true,
 });
 
@@ -123,11 +138,11 @@ export class Client {
    *   not an absolute http or https URL, or carries userinfo, a query or a fragment
    *   (`base_url_invalid`); a key would go over plain
    *   http to a host that is not loopback (`insecure_transport`); a header value holds a control
-   *   character, or a header is named `X-DFO-Client` (`header_invalid`); `timeout` is not a finite number above 0, or `maxRetries` not
-   *   an integer from 0 to 10, or `options` holds a key outside `ClientOptions`
-   *   (`invalid_argument`).
-   * @throws {TypeError} A secret key is given in a browser page or worker without
-   *   `dangerouslyAllowBrowser`.
+   *   character, or a header is named `X-DFO-Client` (`header_invalid`); `timeout` is not a
+   *   number above 0, `attemptTimeout` not a finite number above 0, `maxRetries` not an integer
+   *   from 0 to 10, or `options` holds a key outside `ClientOptions` (`invalid_argument`).
+   * @throws {InvalidRequestError} A secret key is given in a browser page or worker without
+   *   `dangerouslyAllowBrowser` (`invalid_argument`).
    */
   constructor(options: ClientOptions = {}) {
     const { headers, ...rest } = checkOptions(CLIENT_OPTIONS, options);
@@ -164,8 +179,11 @@ export class Client {
   }
 
   /** A copy with other limits that shares this client's transport: its fetch, headers, warning
-   *  handler and key. */
-  withOptions(options: Pick<ClientOptions, "timeout" | "maxRetries">): Client {
+   *  handler and key. A limit left out keeps this client's. `timeout: null` clears this client's
+   *  `timeout`, so each call of the copy keeps its own default, as when the option is unset. */
+  withOptions(
+    options: Pick<ClientOptions, "attemptTimeout" | "maxRetries"> & { timeout?: number | null },
+  ): Client {
     return clientOver(this.#transport.withOptions(checkOptions(LIMITS, options)));
   }
 
@@ -184,10 +202,10 @@ export class Client {
    * Fetches a spec's latest version, narrowed by `window`, `entities` and `facets`, or the exact
    * versions a ref names, or with `latest: true` the newest versions of a ref's specs in the
    * ref's rendering; runs a recipe from `recipe(start)` on DFO in one request; or fetches the
-   * exact version a share's slot shows. It waits as
-   * long as a build takes, reporting a long build's progress to `onProgress`. A `timeout` or an
-   * aborted `signal` stops the wait and leaves the build running on the server, and the same
-   * fetch joins it.
+   * exact version a share's slot shows. It waits as long as a build takes, reporting a long
+   * build's progress to `onProgress`, unless the call's `timeout`, or else the client's, bounds
+   * it. A passed timeout or an aborted `signal` stops the wait and leaves the build running on
+   * the server, and the same fetch joins it.
    *
    * A ref of a frame DFO computed reads that frame, and with `latest: true` DFO computes its
    * recipe again on the newest versions of its datasets. A recipe or a computed frame takes
@@ -203,9 +221,15 @@ export class Client {
    * narrow or render a spec and `latest: true`; `client.history(share)` lists what each slot
    * showed.
    *
+   * Each target has its own options type, so a type checker refuses an option the target does
+   * not take: `SpecFetchOptions`, `RefFetchOptions`, `RecipeFetchOptions` and
+   * `ShareFetchOptions`. A target whose kind is known only at run time takes the options every
+   * target shares: `signal`, `timeout` and `strict`.
+   *
    * @throws {InvalidRequestError} `options` holds a key outside `FetchOptions`, a window year
-   *   falls outside 1000 to 2200, `entities` names a role outside `specRoles(spec)`, the target is neither a ref nor a spec with its `spec_id` and
-   *   `definition`, a ref is narrowed or given another layout or `partyTotals`, or
+   *   falls outside 1000 to 2200, `entities` names a role outside `specRoles(spec)` or holds a
+   *   `Match` that did not resolve, the target is neither a ref nor a spec with its `spec_id`
+   *   and `definition`, a ref is narrowed or given another layout or `partyTotals`, or
    *   `latest` is given a spec or a ref whose members differ in rendering; a share is given a
    *   narrowing, `partyTotals`, `latest: true` or a layout other than `frame`, `slot` is not a
    *   number from 1, or `asOf` is malformed, all before any request; a share of several slots
@@ -215,20 +239,29 @@ export class Client {
    * @throws {VersionUnavailableError} A ref's version can no longer be fetched.
    * @throws {DataWarning} `strict` is true and a manifest carries a warning above `info`.
    * @throws {SeriesLeftOutWarning} `strict` is true and a recipe left series out.
-   * @throws {DfoTimeoutError} The `timeout` passed (`deadline_exceeded`); the build carries on.
+   * @throws {DfoTimeoutError} The call's `timeout`, or else the client's, passed
+   *   (`deadline_exceeded`). The build carries on.
    * @throws {DfoError} The server refused a request.
    */
+  fetch(target: Spec, options?: SpecFetchOptions): Promise<Dataset>;
+  fetch(target: DatasetRef, options?: RefFetchOptions): Promise<Dataset>;
+  fetch(target: Recipe, options?: RecipeFetchOptions): Promise<Dataset>;
+  fetch(target: Share | ShareUrl, options?: ShareFetchOptions): Promise<Dataset>;
   fetch(
+    target: Spec | DatasetRef | Recipe | Share | ShareUrl,
+    options?: Pick<CallOptions, "signal" | "timeout" | "strict">,
+  ): Promise<Dataset>;
+  async fetch(
     target: Spec | DatasetRef | Recipe | Share | ShareUrl,
     options: FetchOptions = {},
   ): Promise<Dataset> {
-    return fetchDataset(this.#transport, target, options);
+    return fetchDataset(this.#transport, target, withEntityDcids(options));
   }
 
   /**
    * Keeps `data`'s exact versions fetchable by its ref with no time limit, and returns the same
    * dataset, now pinned. Pinning cannot be undone, and each new pin counts against a daily
-   * allowance. `data.bytes()` keeps the rows in a file of your own instead.
+   * allowance. `data.save(path)` or `data.toBytes()` keeps the rows in a file of your own instead.
    *
    * @throws {InvalidRequestError} `data` is not a Dataset, or holds a frame DFO computed, which
    *   the pin route does not take (`invalid_argument`); no request is sent.
@@ -298,7 +331,7 @@ export class Client {
    * @throws {NotFoundError} No share has that id, or it was taken down (`not_found`).
    */
   history(target: Share | ShareUrl): Promise<readonly Served[]> {
-    return history(this.#transport, target);
+    return history(this.#transport, target, { deadline: this.#transport.callDeadline() });
   }
 
   /**
@@ -333,7 +366,8 @@ export class Client {
       return await transport.requestRaw({
         method: method.toUpperCase(),
         path,
-        ...present({ query: params, json, signal, timeout }),
+        deadline: transport.callDeadline(timeout),
+        ...present({ query: params, json, signal }),
       });
     } catch (error) {
       throw callerRefusal(error);

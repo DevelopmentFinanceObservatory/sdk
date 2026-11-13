@@ -164,9 +164,9 @@ async def test_an_answer_fetches_through_the_clients_cache(tmp_path: Path) -> No
 async def test_with_options_shares_the_connections_and_only_the_owner_closes() -> None:
     server = Server(json_response(200, {"ok": True}), json_response(200, {"ok": 1}))
     client = client_over(server)
-    quick = client.with_options(timeout=5.0, max_retries=0)
+    quick = client.with_options(attempt_timeout=5.0, max_retries=0)
     assert (quick.base_url, quick._current().cache) == (BASE, None)
-    assert quick._current().transport.timeout == 5.0
+    assert quick._current().transport.attempt_timeout == 5.0
     await quick.aclose()
     assert (await client.request("GET", "/datasets/capabilities")).json() == {
         "ok": True

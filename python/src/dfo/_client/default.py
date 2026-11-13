@@ -21,19 +21,22 @@ import weakref
 from collections.abc import Mapping, Sequence
 from datetime import date
 from os import PathLike
+from typing import overload
 
 from dfo._config.keys import ApiKeyArgument
 from dfo._core.lookup_results import Catalogue, Code, Match, Node
 from dfo._core.refs import DatasetRef
+from dfo._core.timeouts import CLIENT_TIMEOUT, CallTimeout
 from dfo._core.types import Layout, Spec, Window
+from dfo._datasets.build import Entities
 from dfo._datasets.dataset import Dataset
 from dfo._datasets.publication import Card, Moment, Served, Share, ShareTarget
 from dfo._datasets.recipe import Recipe
 from dfo._generated.wire import ResolveKind
 from dfo._http.hooks import HeaderProvider
-from dfo._search.answer import SEARCH_TIMEOUT
 from dfo._sync._client.client import Client
 from dfo._sync._datasets.fetch import Session
+from dfo._sync._datasets.resolve import fetch as _fetch
 from dfo._sync._search.answer import Answer
 from dfo._sync._search.search import search as _search
 
@@ -82,7 +85,8 @@ def configure(
     *,
     api_key: ApiKeyArgument = None,
     base_url: str | None = None,
-    timeout: float = 30.0,
+    timeout: float | None = None,
+    attempt_timeout: float = 30.0,
     max_retries: int = 2,
     cache_dir: str | PathLike[str] | None = None,
     cache: bool = True,
@@ -91,9 +95,10 @@ def configure(
 ) -> None:
     """Replace the client `dfo.search` and `dfo.fetch` use.
 
-    Takes `dfo.Client`'s options. Answers already returned by `dfo.search` use
-    the new client for their next request. `cache=False` fetches without reading
-    or writing the cache.
+    Takes `dfo.Client`'s options. `timeout` bounds each whole call that passes
+    no `timeout` of its own, and `attempt_timeout` each request attempt.
+    Answers already returned by `dfo.search` use the new client for their next
+    request. `cache=False` fetches without reading or writing the cache.
 
     Raises:
         InvalidRequestError: The base URL, passed or read from `DFO_BASE_URL`,
@@ -101,8 +106,9 @@ def configure(
             header's name is not an HTTP token or names `X-DFO-Client`, or its
             value not a string of visible ASCII, spaces and tabs (`header_invalid`), the key would
             travel over plain http to a host that is not loopback
-            (`insecure_transport`), the timeout is not a finite number above 0,
-            the retry count not an integer from 0 to 10, or, with `cache` on,
+            (`insecure_transport`), `timeout` is not None or a finite number
+            above 0, `attempt_timeout` not a finite number above 0, the retry
+            count not an integer from 0 to 10, or, with `cache` on,
             `cache_dir` an empty path, one holding a NUL character, or one
             starting `~name` for a user with no home directory
             (`invalid_argument`).
@@ -112,6 +118,7 @@ def configure(
         api_key=api_key,
         base_url=base_url,
         timeout=timeout,
+        attempt_timeout=attempt_timeout,
         max_retries=max_retries,
         cache_dir=cache_dir,
         cache=cache,
@@ -122,15 +129,16 @@ def configure(
         _install(client)
 
 
-def search(question: str, /, *, timeout: float | None = SEARCH_TIMEOUT) -> Answer:
+def search(question: str, /, *, timeout: CallTimeout = CLIENT_TIMEOUT) -> Answer:
     """Ask Search what a question means, part by part, with the default client.
 
     Args:
         question: The question, in your words.
         timeout: The longest the call waits, retries included, in seconds. Each
             attempt reads until then, and None waits as long as Search takes.
-            In the synchronous client, platform name resolution can run past
-            this bound; the asynchronous client can cancel it.
+            Left out, the `timeout` given to `dfo.configure` applies, else 60
+            seconds. In the synchronous client, platform name resolution can
+            run past this bound; the asynchronous client can cancel it.
 
     Raises:
         InvalidRequestError: `question` is empty or only whitespace, or
@@ -140,6 +148,69 @@ def search(question: str, /, *, timeout: float | None = SEARCH_TIMEOUT) -> Answe
     return _search(_session, question, timeout=timeout)
 
 
+@overload
+def fetch(
+    target: Spec,
+    /,
+    *,
+    window: Window | None = None,
+    entities: Entities | None = None,
+    facets: Mapping[str, str | None] | None = None,
+    layout: Layout | None = None,
+    party_totals: bool | None = None,
+    strict: bool = False,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
+    progress: bool | None = None,
+) -> Dataset: ...
+
+
+@overload
+def fetch(
+    target: DatasetRef,
+    /,
+    *,
+    latest: bool = False,
+    strict: bool = False,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
+    progress: bool | None = None,
+) -> Dataset: ...
+
+
+@overload
+def fetch(
+    target: Recipe,
+    /,
+    *,
+    latest: bool = False,
+    strict: bool = False,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
+) -> Dataset: ...
+
+
+@overload
+def fetch(
+    target: ShareTarget,
+    /,
+    *,
+    as_of: Moment | None = None,
+    slot: int | None = None,
+    strict: bool = False,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
+    progress: bool | None = None,
+) -> Dataset: ...
+
+
+# A target typed as a union takes the options every target takes.
+@overload
+def fetch(
+    target: Spec | DatasetRef | Recipe | ShareTarget,
+    /,
+    *,
+    strict: bool = False,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
+) -> Dataset: ...
+
+
 def fetch(
     target: Spec | DatasetRef | Recipe | ShareTarget,
     /,
@@ -147,22 +218,23 @@ def fetch(
     as_of: Moment | None = None,
     slot: int | None = None,
     window: Window | None = None,
-    entities: Mapping[str, list[str] | tuple[str, ...] | None] | None = None,
+    entities: Entities | None = None,
     facets: Mapping[str, str | None] | None = None,
     layout: Layout | None = None,
     party_totals: bool | None = None,
     latest: bool = False,
     strict: bool = False,
-    timeout: float | None = None,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
     progress: bool | None = None,
 ) -> Dataset:
     """Fetch a spec's latest version, the exact versions a ref names, or with
     `latest=True` the newest versions of a ref's specs; run a recipe on DFO; or
     fetch the exact version a share's slot shows, with the default client.
 
-    Takes `Client.fetch`'s arguments, including its timeout behavior: platform
-    name resolution can run past a synchronous deadline, while the asynchronous
-    client can cancel it.
+    Takes `Client.fetch`'s arguments, including its timeout behavior: left out,
+    `timeout` is the one given to `dfo.configure`, else None, which waits as
+    long as the build takes. Platform name resolution can run past a
+    synchronous deadline, while the asynchronous client can cancel it.
 
     Raises:
         InvalidRequestError: The target is not a `Spec`, a `DatasetRef`, a
@@ -174,9 +246,11 @@ def fetch(
             `frame`, `slot` is 0, or `as_of` is malformed, all before any
             request; a share of several slots is given no `slot`, or one past
             its last; `as_of` is before the slot first served data; `window`,
-            `entities`, `facets` or `layout` is malformed; `entities` names a
-            role the spec does not declare; or `timeout` is not None or a
-            finite number above 0 (`invalid_argument`).
+            `entities`, `facets` or `layout` is malformed; `entities` holds a
+            match that did not resolve, or names a role the spec does not
+            declare; or `timeout` is not None or a finite number above 0
+            (`invalid_argument`). A type checker rejects an option the target
+            does not take.
         VersionUnavailableError: A ref's version can no longer be fetched.
         ContractError: An artifact is not Parquet (`unexpected_response`), or
             lacks a `time_period` or numeric `value` column
@@ -185,7 +259,10 @@ def fetch(
             keeps running on the server, and the same fetch joins it.
         DfoError: The server refused a request.
     """
-    return default_client().fetch(
+    # The session holds the default client open until the fetch returns.
+    session = _session()
+    return _fetch(
+        session.transport,
         target,
         as_of=as_of,
         slot=slot,
@@ -198,6 +275,7 @@ def fetch(
         strict=strict,
         timeout=timeout,
         progress=progress,
+        cache=session.cache,
     )
 
 

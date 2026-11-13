@@ -8,6 +8,7 @@ client's rendering, and paces polls.
 requests themselves.
 """
 
+import inspect
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import nullcontext
@@ -20,6 +21,7 @@ import httpx2
 from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT, UNEXPECTED_RESPONSE
 from dfo._core.errors import client_error
 from dfo._core.json_text import loads
+from dfo._core.lookup_results import Entity, Match
 from dfo._core.parse import check_manifest, check_operation, violation
 from dfo._core.refusals import sent_key, trace_id_of
 from dfo._core.text import cited, quoted, redacted_json
@@ -98,8 +100,16 @@ class Cache(Protocol):
         """
         ...
 
-    def put_bytes(self, digest: str, data: bytes, /) -> None:
-        """Store bytes already checked against `digest`."""
+    def put_bytes(
+        self, digest: str, data: bytes, /, *, fetched_at: datetime | None = None
+    ) -> None:
+        """Store bytes already checked against `digest`, which left the server
+        at `fetched_at`, an aware datetime, or at no recorded time."""
+        ...
+
+    def fetched_at(self, digest: str, /) -> datetime | None:
+        """When the bytes stored under `digest` left the server, in UTC, or None
+        when no time was recorded."""
         ...
 
     def discard(self, digest: str, /) -> None:
@@ -231,9 +241,79 @@ def scope(
     return result or None
 
 
-type Entities = Mapping[str, list[str] | tuple[str, ...] | None]
-"""A fetch's `entities`: caller role keys, such as `place`, bound to dcids, or to
-None to drop the role."""
+type Bound = str | Entity | Match
+"""What a role binds: a dcid, or an entity or match `lookup.resolve` returned."""
+
+type RoleBinding = (
+    list[str] | list[Entity] | list[Match] | list[Bound] | tuple[Bound, ...]
+)
+"""What a fetch binds one role to. A list of one kind is spelled out, since a
+`list[Match]` from `lookup.resolve` is no `list[Bound]` to a type checker."""
+
+type Entities = Mapping[str, RoleBinding | None]
+"""A fetch's `entities`: caller role keys, such as `place`, bound to dcids or to
+what `lookup.resolve` returns, or to None to drop the role."""
+
+
+type DcidEntities = Mapping[str, list[str] | tuple[str, ...] | None]
+"""`entities` once `dcid_entities` has replaced each entity and match by its dcid."""
+
+
+def dcid_entities(entities: Entities | None) -> DcidEntities | None:
+    """`entities` with each `Entity` and resolved `Match` replaced by its dcid.
+
+    A value that is not a list or tuple passes through, for `scope` to refuse.
+
+    Raises:
+        InvalidRequestError: A match did not resolve: it is ambiguous, found
+            nothing, or names a node the graph does not hold; or a role holds
+            an awaitable, such as `AsyncClient.lookup.resolve(...)` without its
+            `await` (`invalid_argument`). The message names the role, the text
+            and what to pass instead.
+    """
+    if not isinstance(entities, Mapping):
+        return entities
+    for role, bound in entities.items():
+        for each in bound if isinstance(bound, list | tuple) else (bound,):
+            if inspect.isawaitable(each):
+                if inspect.iscoroutine(each):
+                    each.close()  # it never runs, so Python need not warn
+                raise client_error(
+                    INVALID_ARGUMENT,
+                    f"entities[{role!r}] holds an awaitable, not what it returns. "
+                    "Await client.lookup.resolve(...) before passing its result.",
+                )
+    dcids: dict[str, Any] = {
+        role: (
+            [_dcid(role, each) for each in bound]
+            if isinstance(bound, list | tuple)
+            else bound
+        )
+        for role, bound in entities.items()
+    }
+    return dcids
+
+
+def _dcid(role: object, bound: object) -> Any:
+    """The dcid `bound` names when it is an `Entity` or a resolved `Match`; any
+    other value as it is."""
+    if isinstance(bound, Entity):
+        return bound.dcid
+    if not isinstance(bound, Match):
+        return bound
+    if bound.status == "resolved" and bound.entity is not None:
+        return bound.entity.dcid
+    others = bound.candidates or bound.near_matches
+    fix = (
+        f"pass the dcid you mean, such as {cited(others[0].dcid)}"
+        if others
+        else "resolve another name, or pass a dcid"
+    )
+    raise client_error(
+        INVALID_ARGUMENT,
+        f"entities[{role!r}] holds a match that did not resolve: {bound}. Bind "
+        f"the role to a resolved match only; {fix}.",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,7 +335,7 @@ NOTHING_ASKED = Asked()
 
 def asked(
     *,
-    entities: Entities | None = None,
+    entities: DcidEntities | None = None,
     facets: Mapping[str, str | None] | None = None,
 ) -> Asked:
     """The values a narrowing `scope` has accepted, for a refusal's hints."""
@@ -266,7 +346,7 @@ def asked(
     return Asked(tuple(dcids), tuple(refs))
 
 
-def rebind(spec: Spec, entities: Entities) -> dict[str, Sequence[str]]:
+def rebind(spec: Spec, entities: DcidEntities) -> dict[str, Sequence[str]]:
     """The whole entity binding a fetch posts, the spec's own with `entities` applied.
 
     The server replaces a spec's entire binding with the posted one, so the
@@ -301,7 +381,7 @@ def narrowings(
     readings: Sequence[Reading],
     *,
     window: Window | None = None,
-    entities: Entities | None = None,
+    entities: DcidEntities | None = None,
     facets: Mapping[str, str | None] | None = None,
 ) -> list[dict[str, Any] | None]:
     """Each reading's build `scope`, in reading order: one narrowing applied to

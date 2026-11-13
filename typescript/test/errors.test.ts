@@ -23,6 +23,11 @@ import type { ClientErrorCode } from "../src/core/errors.ts";
 import { CLIENT_WARNING_CODES } from "../src/generated/warning-codes.ts";
 import { clientWarning, warnOnce } from "../src/core/warnings.ts";
 import type { ClientWarningCode } from "../src/core/warnings.ts";
+import { Client, clientOver } from "../src/client.ts";
+import { DatasetRef } from "../src/core/ref.ts";
+import { RawResponse } from "../src/http/transport.ts";
+import { Answer } from "../src/search/answer.ts";
+import { NO_EXCHANGES, replay } from "./replay.ts";
 import { contractJson } from "./support.ts";
 
 test("every code in contract/actions.json maps to a class below DfoError", async () => {
@@ -151,4 +156,42 @@ test("warnOnce forgets what it has seen once it holds 1,024 keys", () => {
   once("cap:first");
   assert.equal(shown.length, 1026);
   assert.equal(shown.at(-1), "cap:first [ref_digest_changed]");
+});
+
+test("the public entry points that take caller input throw only DfoError", async () => {
+  const client = clientOver(replay(NO_EXCHANGES).transport);
+  const notJson = new RawResponse(200, new Headers(), new TextEncoder().encode("<html>"));
+  // Each row calls one entry point with input it refuses, and the code the refusal carries.
+  const rows: [string, () => unknown, string | null][] = [
+    ["DatasetRef.fromJSON", () => DatasetRef.fromJSON("{"), null],
+    ["Answer.fromJSON", () => Answer.fromJSON("{", client), null],
+    ["RawResponse.json", () => notJson.json(), "unexpected_response"],
+    ["new Client", () => new Client({ timeout: -1 }), "invalid_argument"],
+    [
+      "client.fetch",
+      () => client.fetch({ spec_id: "spec_1" } as never, 5 as never),
+      "invalid_argument",
+    ],
+  ];
+  for (const [name, call, code] of rows) {
+    await assert.rejects(
+      async () => {
+        await call();
+      },
+      (error: unknown) => {
+        assert.ok(error instanceof DfoError, name);
+        assert.equal(error.code, code, name);
+        return true;
+      },
+    );
+  }
+});
+
+test("an error with no code and no trace id ends its message without a bracket", () => {
+  assert.throws(() => DatasetRef.fromJSON("{"), {
+    name: "FormatError",
+    code: null,
+    reason: "format_invalid",
+    message: "/: not JSON",
+  });
 });

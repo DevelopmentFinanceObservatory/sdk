@@ -22,10 +22,10 @@ TypeScript fence that is indented or sits in a list or quote is a marker error.
 subdomain of it, unless `--allow-production` is passed. A client built without a
 base URL uses `DFO_BASE_URL`; each process checks that before its first block. A
 request to the public API fails, checked on its URL as the SDK sends it, so a proxy
-does not hide it. Signed downloads and other hosts pass. Prints a line per block
-and the counts, writes a Markdown report with `--report`, and exits 1 when a block
-fails, a process fails after its last block, or none ran, and 2 on a usage or
-marker error.
+does not hide it. Signed downloads and other hosts pass. Prints a line per block,
+with the first warning a passed Python block showed, and the counts, writes a
+Markdown report with `--report`, and exits 1 when a block fails, a process fails
+after its last block, or none ran, and 2 on a usage or marker error.
 """
 
 import argparse
@@ -39,6 +39,7 @@ import subprocess
 import sys
 import tempfile
 import traceback
+import warnings
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -513,7 +514,28 @@ def python_worker(payload_path: Path) -> int:
 def _exec_block(
     block: dict[str, str | int], namespace: dict[str, object]
 ) -> tuple[Outcome, str]:
+    """Run one block. A block that passes reports each warning it showed.
+
+    A warning the active filters show goes to the block's detail on one line,
+    with the docs line that caused it, so the report names a recipe that warns.
+    The filters a block sets stay set for the blocks after it, as in a notebook.
+    """
     path, line, code = str(block["path"]), int(block["line"]), str(block["code"])
+    shown: list[str] = []
+
+    def record(
+        message: Warning | str,
+        category: type[Warning],
+        filename: str,
+        lineno: int,
+        *_: object,
+    ) -> None:
+        at = f"{filename}:{lineno}: " if filename == path else ""
+        text = " ".join(str(message).split())
+        shown.append(f"{at}{category.__name__}: {text}")
+
+    showwarning = warnings.showwarning
+    warnings.showwarning = record
     try:
         # Padding puts the block's first line at its docs line in tracebacks.
         exec(compile("\n" * line + code, path, "exec"), namespace)
@@ -527,7 +549,9 @@ def _exec_block(
         ]
         at = f"{path}:{frames[-1].lineno}: " if frames else ""
         return "fail", at + "".join(traceback.format_exception_only(error)).strip()
-    return "pass", ""
+    finally:
+        warnings.showwarning = showwarning
+    return "pass", "\n".join(f"warning: {entry}" for entry in shown)
 
 
 def refused_host(host: str | None, base_host: str | None) -> bool:
@@ -637,7 +661,8 @@ def by_file(blocks: Iterable[Block]) -> dict[tuple[str, Language], list[Block]]:
 
 
 def report(results: Sequence[Result], base_url: str) -> str:
-    """Return the Markdown report: a row per block, then each failure's error."""
+    """Return the Markdown report: a row per block, then the warnings each
+    passed block showed, then each failure's error."""
     counts = {
         outcome: sum(r.outcome == outcome for r in results)
         for outcome in ("pass", "fail", "skip")
@@ -657,6 +682,18 @@ def report(results: Sequence[Result], base_url: str) -> str:
         lines.append(
             f"| {result.block.where} | {result.block.language} | {result.outcome} | {cell} |"
         )
+    warned = [r for r in results if r.outcome == "pass" and r.detail]
+    if warned:
+        lines += ["", "## Warnings"]
+        for result in warned:
+            lines += [
+                "",
+                f"### {result.block.where}",
+                "",
+                "```text",
+                result.detail,
+                "```",
+            ]
     failures = [result for result in results if result.outcome == "fail"]
     if failures:
         lines += ["", "## Failures"]
@@ -732,8 +769,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     ran = sum(result.outcome != "skip" for result in results)
     failed = sum(result.outcome == "fail" for result in results)
     skipped = len(results) - ran
+    warned = sum(result.outcome == "pass" and bool(result.detail) for result in results)
     print(
-        f"ran {ran} blocks: {ran - failed} passed, {failed} failed, {skipped} skipped"
+        f"ran {ran} blocks: {ran - failed} passed, {failed} failed, {skipped} skipped; "
+        f"{warned} passed with a warning"
     )
     if args.report:
         args.report.write_text(report(results, base_url))

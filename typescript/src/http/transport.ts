@@ -41,8 +41,9 @@ const BASE_URL_VARIABLE = "DFO_BASE_URL";
 /** Where a transport's base URL came from: the `baseUrl` option, `DFO_BASE_URL`, or the public
  *  API's by default. */
 export type BaseUrlSource = "argument" | typeof BASE_URL_VARIABLE | "default";
-/** The longest one request attempt waits, in milliseconds, unless a call sets its own. */
-const DEFAULT_TIMEOUT_MS = 30_000;
+/** The longest one request attempt waits, in milliseconds, unless the client sets
+ *  `attemptTimeout`. */
+const DEFAULT_ATTEMPT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_RETRIES = 2;
 /** The storage host the API's files route redirects a download to. */
 const STORAGE_ORIGIN = "https://storage.googleapis.com";
@@ -105,9 +106,13 @@ export type TransportOptions = {
   dangerouslyAllowBrowser?: boolean;
   /** The platform's `fetch`, or one that stands in for it. */
   fetch?: Fetch;
-  /** The longest one request attempt waits, in milliseconds, a finite number above 0. 30
-   *  seconds by default. */
-  timeout?: number;
+  /** The longest a whole call takes by default, retries, waits and downloads included, in
+   *  milliseconds. A number above 0, or `Infinity` for no bound. A call's own `timeout`
+   *  replaces it. Unset, each call keeps its own default. */
+  timeout?: number | undefined;
+  /** The longest one request attempt waits, in milliseconds, as a finite number above 0. The
+   *  default is 30 seconds. */
+  attemptTimeout?: number | undefined;
   /** Further attempts after a failure the server says can clear, an integer from 0 to 10. */
   maxRetries?: number;
   /** Headers sent with every request to the API. A signed storage URL gets none. */
@@ -134,10 +139,11 @@ export type Target = { path: string; url?: never } | { url: string; path?: never
 export type CallOptions = {
   signal?: AbortSignal | undefined;
   /** The longest one attempt waits, in milliseconds, within `deadline`; `Infinity` reads until
-   *  the deadline. The transport's `timeout` by default. */
-  timeout?: number | undefined;
-  /** The clock reading the whole call, retries and waits included, must finish by; none by
-   *  default. A passed deadline raises `DfoTimeoutError` with `deadline_exceeded`. */
+   *  the deadline. The transport's `attemptTimeout` by default. */
+  attemptTimeout?: number | undefined;
+  /** The clock reading the whole call, retries and waits included, must finish by. The
+   *  transport's `callDeadline()` by default: its `timeout` from now, else none. A passed
+   *  deadline raises `DfoTimeoutError` with `deadline_exceeded`. */
   deadline?: number;
   maxRetries?: number;
   /** The most decoded bytes a 2xx response's body may hold; `JSON_BODY_MAX_BYTES` by default,
@@ -186,9 +192,9 @@ type Received = { response: Response; body: Uint8Array<ArrayBuffer> };
  *  `JSON_BODY_MAX_BYTES`, so the refusal keeps its status. */
 type Attempted = { response: Response; body: Uint8Array<ArrayBuffer> | null };
 
-/** How long one attempt may run, and whether the call's deadline or the attempt's own timeout
- *  sets that. */
-type Limit = { ms: number; byDeadline: boolean };
+/** How long one attempt may run, whether the call's deadline or the attempt's own timeout
+ *  sets that, and whether that timeout is the client's `attemptTimeout`. */
+type Limit = { ms: number; byDeadline: boolean; byOption: boolean };
 
 const defaultSleep: Sleep = (ms, signal) =>
   new Promise((resolve, reject) => {
@@ -489,11 +495,19 @@ export class RawResponse {
   /**
    * The body decoded as JSON.
    *
-   * @throws {TypeError} The body is not UTF-8.
-   * @throws {SyntaxError} The body is not JSON, or nests arrays and objects deeper than 256 levels.
+   * @throws {ContractError} The body is not UTF-8, is not JSON, or nests arrays and objects
+   *   deeper than 256 levels (`unexpected_response`).
    */
   json(): unknown {
-    return parseBody(this.body);
+    try {
+      return parseBody(this.body);
+    } catch (error) {
+      throw clientError("unexpected_response", {
+        detail: "The response body is not JSON.",
+        traceId: traceIdOf(this.headers),
+        cause: error,
+      });
+    }
   }
 
   /** The status, the content type when the response names one, and the body's size, as
@@ -727,7 +741,10 @@ export class Transport {
   readonly baseUrl: URL;
   /** Where `baseUrl` came from. */
   readonly baseUrlSource: BaseUrlSource;
-  readonly timeout: number;
+  /** The client's default bound on a whole call, in milliseconds; undefined leaves each call
+   *  its own default. */
+  readonly timeout: number | undefined;
+  readonly attemptTimeout: number;
   readonly maxRetries: number;
   readonly #options: TransportOptions;
   readonly #fetch: Fetch;
@@ -750,10 +767,10 @@ export class Transport {
    * @throws {InvalidRequestError} The base URL, from `baseUrl` or else `DFO_BASE_URL`, is not an
    *   absolute http or https URL or carries userinfo (`base_url_invalid`); a key would go over plain http to a host that is not
    *   loopback (`insecure_transport`); a default header holds a control character
-   *   (`header_invalid`); the timeout is not a finite number above 0, or the retry count not an
-   *   integer from 0 to 10 (`invalid_argument`).
-   * @throws {TypeError} A secret key is given in a browser page or worker without
-   *   `dangerouslyAllowBrowser`.
+   *   (`header_invalid`); the timeout is not a number above 0, the attempt timeout not a finite
+   *   number above 0, or the retry count not an integer from 0 to 10 (`invalid_argument`).
+   * @throws {InvalidRequestError} A secret key is given in a browser page or worker without
+   *   `dangerouslyAllowBrowser` (`invalid_argument`).
    */
   constructor(options: TransportOptions = {}) {
     this.#options = options;
@@ -779,9 +796,11 @@ export class Transport {
     }
     setHeaders(new Headers(), Object.entries(options.defaultHeaders ?? {}), "the headers option");
     this.timeout =
-      options.timeout === undefined
-        ? DEFAULT_TIMEOUT_MS
-        : checkedTimeout(options.timeout, "timeout", false);
+      options.timeout === undefined ? undefined : checkedTimeout(options.timeout, "timeout", true);
+    this.attemptTimeout =
+      options.attemptTimeout === undefined
+        ? DEFAULT_ATTEMPT_TIMEOUT_MS
+        : checkedTimeout(options.attemptTimeout, "attemptTimeout", false);
     this.maxRetries =
       options.maxRetries === undefined ? DEFAULT_MAX_RETRIES : checkedRetries(options.maxRetries);
     this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
@@ -805,6 +824,27 @@ export class Transport {
     return this.#now() + checkedTimeout(ms, "timeout", true);
   }
 
+  /**
+   * The bound on a whole call, in milliseconds: the call's own `timeout`, else the client's,
+   * else `fallback`, the call's own default; `Infinity` for none.
+   *
+   * @throws {InvalidRequestError} The call's `timeout` is not a number above 0
+   *   (`invalid_argument`).
+   */
+  callTimeout(timeout?: number, fallback = Infinity): number {
+    return checkedTimeout(timeout ?? this.timeout ?? fallback, "timeout", true);
+  }
+
+  /**
+   * The clock reading a whole call must finish by, from `callTimeout(timeout, fallback)`.
+   *
+   * @throws {InvalidRequestError} The call's `timeout` is not a number above 0
+   *   (`invalid_argument`).
+   */
+  callDeadline(timeout?: number, fallback = Infinity): number {
+    return this.#now() + this.callTimeout(timeout, fallback);
+  }
+
   /** Waits `ms` on the transport's sleep, rejecting with the caller's reason on abort. */
   sleep(ms: number, signal?: AbortSignal): Promise<void> {
     return this.#sleep(ms, signal);
@@ -822,12 +862,18 @@ export class Transport {
 
   /**
    * A copy with other limits that shares this transport's base URL, fetch, headers, warning
-   * handler and resolved key.
+   * handler and resolved key. A limit left out keeps this transport's, and `timeout: null` clears
+   * its timeout.
    *
-   * @throws {InvalidRequestError} The timeout is not a finite number above 0, or the retry count
-   *   not an integer from 0 to 10 (`invalid_argument`).
+   * @throws {InvalidRequestError} The timeout is not a number above 0, the attempt timeout not a
+   *   finite number above 0, or the retry count not an integer from 0 to 10
+   *   (`invalid_argument`).
    */
-  withOptions(options: Pick<TransportOptions, "timeout" | "maxRetries">): Transport {
+  withOptions(
+    options: Pick<TransportOptions, "attemptTimeout" | "maxRetries"> & {
+      timeout?: number | null | undefined;
+    },
+  ): Transport {
     Transport.#sharing = {
       baseUrl: this.baseUrl,
       baseUrlSource: this.baseUrlSource,
@@ -836,7 +882,10 @@ export class Transport {
     try {
       return new Transport({
         ...this.#options,
-        timeout: options.timeout === undefined ? this.timeout : options.timeout,
+        // null clears the timeout, and undefined keeps this transport's.
+        timeout: options.timeout === undefined ? this.timeout : (options.timeout ?? undefined),
+        attemptTimeout:
+          options.attemptTimeout === undefined ? this.attemptTimeout : options.attemptTimeout,
         maxRetries: options.maxRetries === undefined ? this.maxRetries : options.maxRetries,
       });
     } finally {
@@ -1110,8 +1159,9 @@ export class Transport {
    *   (`invalid_argument`).
    * @throws {ServerError} A decoded body passed its limit (`response_too_large`).
    */
-  async #send(options: RequestOptions): Promise<Received & { key: string | undefined; url: URL }> {
-    options.signal?.throwIfAborted();
+  async #send(request: RequestOptions): Promise<Received & { key: string | undefined; url: URL }> {
+    request.signal?.throwIfAborted();
+    const options = { ...request, deadline: request.deadline ?? this.callDeadline() };
     const method = options.method ?? (options.json === undefined ? "GET" : "POST");
     if (!METHODS.has(method)) {
       throw clientError("invalid_argument", {
@@ -1122,7 +1172,7 @@ export class Transport {
     const body = options.json === undefined ? undefined : jsonText(options.json, method);
     const retries =
       options.maxRetries === undefined ? this.maxRetries : checkedRetries(options.maxRetries);
-    const deadline = options.deadline ?? Infinity;
+    const { deadline } = options;
     let reauthenticated = false;
     // A key lookup that failed after a 401, the cause of the refusal that raises.
     let failure: unknown;
@@ -1257,8 +1307,9 @@ export class Transport {
    * Sets the key, if any, as the `authorization` header of `headers`: by default a fresh set
    * holding it alone, for a request whose redirect the browser follows.
    *
-   * @throws {TypeError} The `authorization` header carries a secret key, from the key or a
-   *   header of the caller's, in a browser page or worker without `dangerouslyAllowBrowser`.
+   * @throws {InvalidRequestError} The `authorization` header carries a secret key, from the key
+   *   or a header of the caller's, in a browser page or worker without `dangerouslyAllowBrowser`
+   *   (`invalid_argument`).
    */
   async #keyHeader(
     url: URL,
@@ -1301,7 +1352,9 @@ export class Transport {
       limit.byDeadline
         ? this.#deadlinePassed(url)
         : clientError("deadline_exceeded", {
-            detail: `${name} gave nothing within ${limit.ms} ms, the attempt's timeout.`,
+            detail:
+              `${name} gave nothing within ${seconds(limit.ms)}, ` +
+              (limit.byOption ? "the client's attemptTimeout." : "the attempt's limit."),
           });
 
     let stop: (error: unknown) => void = () => undefined;
@@ -1338,11 +1391,16 @@ export class Transport {
 
   /** How long the next attempt may run: its own timeout, or the time left before the deadline
    *  when that is shorter. */
-  #limit(url: URL, { timeout, deadline }: CallOptions): Limit {
-    const own = timeout === undefined ? this.timeout : checkedTimeout(timeout, "timeout", true);
+  #limit(url: URL, { attemptTimeout, deadline }: CallOptions): Limit {
+    const byOption = attemptTimeout === undefined;
+    const own = byOption
+      ? this.attemptTimeout
+      : checkedTimeout(attemptTimeout, "attemptTimeout", true);
     const remaining = (deadline ?? Infinity) - this.#now();
     if (remaining <= 0) throw this.#deadlinePassed(url);
-    return remaining <= own ? { ms: remaining, byDeadline: true } : { ms: own, byDeadline: false };
+    return remaining <= own
+      ? { ms: remaining, byDeadline: true, byOption: false }
+      : { ms: own, byDeadline: false, byOption };
   }
 
   /**
@@ -1392,7 +1450,9 @@ export class Transport {
       if (timer?.aborted) {
         if (limit.byDeadline) return this.#deadlinePassed(url, error);
         return clientError("deadline_exceeded", {
-          detail: `One attempt at ${url.pathname} waited ${limit.ms} ms with no whole response.`,
+          detail:
+            `One attempt at ${url.pathname} waited ${seconds(limit.ms)} with no whole response` +
+            (limit.byOption ? ", the client's attemptTimeout." : "."),
           cause: error,
         });
       }
@@ -1415,7 +1475,7 @@ export class Transport {
 
   #deadlinePassed(url: URL, cause?: unknown): DfoTimeoutError {
     const error = clientError("deadline_exceeded", {
-      detail: `The call to ${url.pathname} passed its deadline.`,
+      detail: `The call to ${url.pathname} ran past its timeout.`,
       cause,
     });
     DEADLINE_PASSED.add(error);

@@ -20,13 +20,17 @@ from __future__ import annotations
 import hashlib
 import io
 import zipfile
+import zlib
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from os import PathLike
 from pathlib import Path, PureWindowsPath
 from typing import IO, TYPE_CHECKING, Any, Literal, override
 
+from dfo._core.codes import INVALID_ARGUMENT
+from dfo._core.errors import DfoError, client_error
 from dfo._core.refs import Member
 from dfo._core.types import (
     CONTENT_VERSION,
@@ -86,6 +90,10 @@ class BundleLimits:
     declared expanded content, 100,000 data rows, and 1,000,000 visited cells.
     XLSX metadata, row, and cell limits reduce workbook work but do not hard-bound
     an XLSX parser's memory or CPU use.
+
+    Raises:
+        InvalidRequestError: A limit is not a positive integer
+            (`invalid_argument`).
     """
 
     max_descriptor_bytes: int = 1 * 1024**2
@@ -113,7 +121,11 @@ class BundleLimits:
         for limit in fields(self):
             value = getattr(self, limit.name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                raise ValueError(f"{limit.name} must be a positive integer")
+                raise client_error(
+                    INVALID_ARGUMENT,
+                    f"{limit.name} is a positive integer, not {value!r}",
+                    builtin=ValueError,
+                )
 
 
 @dataclass(slots=True)
@@ -126,13 +138,20 @@ class _ByteBudget:
 
 DEFAULT_BUNDLE_LIMITS = BundleLimits()
 
+# What reading a damaged ZIP raises: a bad directory or header, a member that
+# does not inflate, or one cut short.
+_DAMAGED_ZIP = (zipfile.BadZipFile, zlib.error, EOFError)
 
-class BundleError(ValueError):
+
+class BundleError(DfoError, ValueError):
     """A path holds no dataset `dfo.load` can read.
+
+    Its `code` is None, and `reason` names the fault.
 
     Attributes:
         reason: `not_a_bundle` for a file that is neither a saved dataset nor part
-            of a bundle, `no_descriptor` for data with no `datapackage.json`,
+            of a bundle, or a Parquet file or ZIP too damaged to read,
+            `no_descriptor` for data with no `datapackage.json`,
             `no_data_resource` for a descriptor that names no data table,
             `missing_file` for a file the descriptor lists but the bundle lacks,
             `hash_mismatch` for a file whose bytes differ from its hash, or
@@ -145,13 +164,17 @@ class BundleError(ValueError):
 
 
 def load(
-    path: str | PathLike[str], /, *, limits: BundleLimits = DEFAULT_BUNDLE_LIMITS
+    path: str | PathLike[str] | bytes,
+    /,
+    *,
+    limits: BundleLimits = DEFAULT_BUNDLE_LIMITS,
 ) -> Dataset:
     """Open a dataset saved by `Dataset.save`, or a bundle downloaded from the website.
 
     Args:
         path: A Parquet file `save` wrote, a bundle's ZIP, the folder it extracts
-            to, or its `datapackage.json` or data file.
+            to, or its `datapackage.json` or data file. Bytes are the file
+            `Dataset.to_bytes` returns.
         limits: Resource limits for a website bundle. The default accepts a 1 MiB
             descriptor, 256 ZIP entries, 128 resources, a 512 MiB archive, one
             256 MiB resource, and 512 MiB total bytes read. An XLSX may contain
@@ -159,15 +182,18 @@ def load(
             data rows, and 1,000,000 visited cells.
 
     Raises:
-        BundleError: The path holds no saved dataset or bundle, a lone CSV or
-            XLSX has no descriptor beside it, or a file's bytes differ from the
-            hash its descriptor gives.
+        BundleError: The path or bytes hold no saved dataset or bundle, a Parquet
+            file or ZIP is too damaged to read, a lone CSV or XLSX has no
+            descriptor beside it, or a file's bytes differ from the hash its
+            descriptor gives.
         FormatError: The descriptor is not a JSON object, lists a file outside
             the bundle or without a SHA-256 hash, or breaks the descriptor
-            format; the data does not fit the columns its descriptor types; or
-            a saved dataset's provenance is damaged.
-        ValueError: A saved file comes from a later format version.
+            format; the data does not fit the columns its descriptor types, or
+            an XLSX is damaged; or a saved dataset's provenance is damaged or
+            comes from a later format version.
     """
+    if isinstance(path, bytes):
+        return _open_saved(path)
     target = Path(path)
     if target.is_dir():
         return _open_folder(target, limits)
@@ -187,36 +213,63 @@ def load(
     return _open_folder(folder, limits)
 
 
-def _open_saved(path: Path) -> Dataset:
+def _open_saved(path: Path | bytes) -> Dataset:
+    """A dataset from a Parquet file `Dataset.save` wrote, or its bytes."""
+    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
     import pyarrow.parquet as pq  # noqa: PLC0415 - pyarrow loads on first use
 
-    parquet = pq.ParquetFile(path)
-    metadata = parquet.schema_arrow.metadata or {}
-    if b"dfo.format_version" not in metadata:
+    if isinstance(path, bytes):
+        if path[:4] != _PARQUET_MAGIC:
+            raise BundleError(
+                "not_a_bundle",
+                "The bytes are not a Parquet file: pass the bytes "
+                "Dataset.to_bytes returned, or a path",
+            )
+        named, source = "The bytes are", pa.BufferReader(path)
+    else:
+        named, source = f"{path} is", path
+    try:
+        parquet = pq.ParquetFile(source)
+        metadata = parquet.schema_arrow.metadata or {}
+        table = parquet.read() if b"dfo.format_version" in metadata else None
+    except pa.ArrowException as error:
         raise BundleError(
             "not_a_bundle",
-            f"{path} is a Parquet file without a saved dataset's provenance: "
+            f"{named} a damaged Parquet file ({error}): save the dataset again",
+        ) from error
+    if table is None:
+        raise BundleError(
+            "not_a_bundle",
+            f"{named} a Parquet file without a saved dataset's provenance: "
             "open a file Dataset.save wrote",
         )
-    return saved_dataset(parquet.read(), metadata)
+    return saved_dataset(table, metadata)
 
 
 def _open_zip(path: Path, limits: BundleLimits) -> Dataset:
     digest = _digest_path(path, limits.max_archive_bytes)
-    with zipfile.ZipFile(path) as archive:
-        entries = archive.infolist()
-        if len(entries) > limits.max_zip_entries:
-            _limited(
-                str(path),
-                f"has {len(entries)} ZIP entries, above the limit of {limits.max_zip_entries}",
-            )
-        infos = {entry.filename: entry for entry in entries}
+    try:
+        with zipfile.ZipFile(path) as archive:
+            entries = archive.infolist()
+            if len(entries) > limits.max_zip_entries:
+                _limited(
+                    str(path),
+                    f"has {len(entries)} ZIP entries, above the limit of "
+                    f"{limits.max_zip_entries}",
+                )
+            infos = {entry.filename: entry for entry in entries}
 
-        def open_file(name: str) -> IO[bytes] | None:
-            info = infos.get(name)
-            return archive.open(info) if info is not None else None
+            def open_file(name: str) -> IO[bytes] | None:
+                info = infos.get(name)
+                return archive.open(info) if info is not None else None
 
-        return _open_descriptor(open_file, str(path), digest=digest, limits=limits)
+            return _open_descriptor(open_file, str(path), digest=digest, limits=limits)
+    # A damaged XLSX inside the archive raises `FormatError` in `_xlsx_read`.
+    except _DAMAGED_ZIP as error:
+        raise BundleError(
+            "not_a_bundle",
+            f"{path} is a damaged ZIP archive ({error}): download the bundle again",
+        ) from error
 
 
 def _open_folder(folder: Path, limits: BundleLimits) -> Dataset:
@@ -571,7 +624,8 @@ def _read_xlsx(
     import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
 
     path = str(resource["path"])
-    _check_xlsx_archive(content, path, limits)
+    with _xlsx_read(path, pointer):
+        _check_xlsx_archive(content, path, limits)
     try:
         import openpyxl  # noqa: PLC0415 - an optional extra, imported on use
     except ImportError as error:
@@ -579,7 +633,7 @@ def _read_xlsx(
             "reading an XLSX bundle needs openpyxl: "
             "pip install 'development-finance[xlsx]'"
         ) from error
-    with io.BytesIO(content) as stream:
+    with _xlsx_read(path, pointer), io.BytesIO(content) as stream:
         # Formulas stay unevaluated, so a formula cell reads as one and is refused,
         # whether or not the workbook caches its result.
         workbook = openpyxl.load_workbook(stream, read_only=True, data_only=False)
@@ -632,6 +686,18 @@ def _read_xlsx(
         ],
         names=header,
     )
+
+
+@contextmanager
+def _xlsx_read(path: str, pointer: str) -> Generator[None]:
+    """Raise a damaged XLSX's ZIP errors as `FormatError`, so the damage is
+    reported against the XLSX the bundle lists."""
+    try:
+        yield
+    except _DAMAGED_ZIP as error:
+        raise FormatError(
+            "format_invalid", pointer, f"{path} is a damaged XLSX file ({error})"
+        ) from error
 
 
 def _value(cell: Any, path: str, pointer: str) -> Any:

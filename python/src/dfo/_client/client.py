@@ -12,15 +12,18 @@ the cache, and only the client that built the pool closes it.
 
 from collections.abc import Mapping, Sequence
 from os import PathLike
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar, Self, overload
 
 from dfo._config.keys import ApiKeyArgument
 from dfo._core.codes import INVALID_ARGUMENT
 from dfo._core.errors import DfoError, client_error
+from dfo._core.raw_response import RawResponse
 from dfo._core.refs import DatasetRef
 from dfo._core.refusals import caller_refusal
-from dfo._core.types import Layout, RawResponse, Spec, Window
+from dfo._core.timeouts import CLIENT_TIMEOUT, CallTimeout
+from dfo._core.types import Layout, Spec, Window
 from dfo._datasets.analysis import AsyncAnalysis
+from dfo._datasets.build import Entities
 from dfo._datasets.cache import Cache
 from dfo._datasets.cards import AsyncCards
 from dfo._datasets.dataset import Dataset
@@ -35,7 +38,7 @@ from dfo._datasets.shares import snapshot as fix_share
 from dfo._datasets.shares import unshare as take_down
 from dfo._http.hooks import AsyncHeaderProvider
 from dfo._http.transport import AsyncTransport
-from dfo._search.answer import SEARCH_TIMEOUT, AsyncAnswer
+from dfo._search.answer import AsyncAnswer
 from dfo._search.lookups import AsyncLookup
 from dfo._search.search import search
 
@@ -63,7 +66,8 @@ class AsyncClient:
         *,
         api_key: ApiKeyArgument = None,
         base_url: str | None = None,
-        timeout: float = 30.0,
+        timeout: float | None = None,
+        attempt_timeout: float = 30.0,
         max_retries: int = 2,
         cache_dir: str | PathLike[str] | None = None,
         cache: bool = True,
@@ -79,11 +83,17 @@ class AsyncClient:
             base_url: The API's base URL; None reads `DFO_BASE_URL`, and
                 with that unset or empty takes the public API. The repr names
                 `DFO_BASE_URL` when the URL came from it.
-            timeout: The longest one request attempt waits, in seconds. A
-                search attempt and a download read until their call's
-                deadline instead, and a build request for up to 150 seconds.
-                In the synchronous client, platform name resolution can run
-                past this bound; the asynchronous client can cancel it.
+            timeout: The longest each call takes, in seconds, retries, waits
+                and downloads included, unless the call passes its own
+                `timeout`. None, the default, leaves each call its own:
+                `search` waits 60 seconds, and `fetch` and the analysis calls
+                as long as the server takes. In the synchronous client,
+                platform name resolution can run past this bound; the
+                asynchronous client can cancel it.
+            attempt_timeout: The longest one request attempt waits, in
+                seconds. A search attempt and a download read until their
+                call's timeout instead, and a build request for up to 150
+                seconds.
             max_retries: Further attempts after a failure that can clear.
             cache_dir: The cache's root directory; None follows `DFO_CACHE_DIR`,
                 then the platform's cache directory. A relative path resolves
@@ -99,8 +109,9 @@ class AsyncClient:
                 header's name is not an HTTP token or names `X-DFO-Client`, or its
                 value not a string of visible ASCII, spaces and tabs (`header_invalid`), the
                 key would travel over plain http to a host that is not loopback
-                (`insecure_transport`), the timeout is not a finite number above
-                0, the retry count not an integer from 0 to 10, or, with `cache`
+                (`insecure_transport`), `timeout` is not None or a finite
+                number above 0, `attempt_timeout` not a finite number above 0,
+                the retry count not an integer from 0 to 10, or, with `cache`
                 on, `cache_dir` an empty path, one holding a NUL character, or
                 one starting `~name` for a user with no home directory
                 (`invalid_argument`).
@@ -111,6 +122,7 @@ class AsyncClient:
             base_url=base_url,
             api_key=api_key,
             timeout=timeout,
+            attempt_timeout=attempt_timeout,
             max_retries=max_retries,
             headers=headers,
             header_provider=header_provider,
@@ -146,23 +158,30 @@ class AsyncClient:
         return f"<{type(self).__name__} {transport.base_url}{origin}>"
 
     def with_options(
-        self, *, timeout: float | None = None, max_retries: int | None = None
+        self,
+        *,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
+        attempt_timeout: float | None = None,
+        max_retries: int | None = None,
     ) -> Self:
         """A copy with other limits, sharing this client's connections and cache.
 
-        Closing the copy leaves the connections open. Close this client to close them.
+        A limit left out keeps this client's, and `timeout=None` leaves each
+        call its own default. Closing the copy leaves the connections open.
+        Close this client to close them.
 
         Raises:
-            InvalidRequestError: The timeout is not a finite number above 0, or
-                the retry count not an integer from 0 to 10 (`invalid_argument`).
+            InvalidRequestError: `timeout` is not None or a finite number above
+                0, `attempt_timeout` not a finite number above 0, or the retry
+                count not an integer from 0 to 10 (`invalid_argument`).
         """
         transport = self._session.transport.with_options(
-            timeout=timeout, max_retries=max_retries
+            timeout=timeout, attempt_timeout=attempt_timeout, max_retries=max_retries
         )
         return type(self)._over(Session(transport, self._session.cache))
 
     async def search(
-        self, question: str, /, *, timeout: float | None = SEARCH_TIMEOUT
+        self, question: str, /, *, timeout: CallTimeout = CLIENT_TIMEOUT
     ) -> AsyncAnswer:
         """Ask Search what a question means, part by part.
 
@@ -170,8 +189,9 @@ class AsyncClient:
             question: The question, in your words.
             timeout: The longest the call waits, retries included, in seconds.
                 Each attempt reads until then, and None waits as long as Search
-                takes. In the synchronous client, platform name resolution can
-                run past this bound; the asynchronous client can cancel it.
+                takes. Left out, the client's `timeout` applies, else 60
+                seconds. In the synchronous client, platform name resolution
+                can run past this bound; the asynchronous client can cancel it.
 
         Raises:
             InvalidRequestError: `question` is not text, is empty or only
@@ -181,6 +201,69 @@ class AsyncClient:
         """
         return await search(self._current, question, timeout=timeout)
 
+    @overload
+    async def fetch(
+        self,
+        target: Spec,
+        /,
+        *,
+        window: Window | None = None,
+        entities: Entities | None = None,
+        facets: Mapping[str, str | None] | None = None,
+        layout: Layout | None = None,
+        party_totals: bool | None = None,
+        strict: bool = False,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
+        progress: bool | None = None,
+    ) -> Dataset: ...
+
+    @overload
+    async def fetch(
+        self,
+        target: DatasetRef,
+        /,
+        *,
+        latest: bool = False,
+        strict: bool = False,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
+        progress: bool | None = None,
+    ) -> Dataset: ...
+
+    @overload
+    async def fetch(
+        self,
+        target: Recipe,
+        /,
+        *,
+        latest: bool = False,
+        strict: bool = False,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
+    ) -> Dataset: ...
+
+    @overload
+    async def fetch(
+        self,
+        target: ShareTarget,
+        /,
+        *,
+        as_of: Moment | None = None,
+        slot: int | None = None,
+        strict: bool = False,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
+        progress: bool | None = None,
+    ) -> Dataset: ...
+
+    # A target typed as a union takes the options every target takes.
+    @overload
+    async def fetch(
+        self,
+        target: Spec | DatasetRef | Recipe | ShareTarget,
+        /,
+        *,
+        strict: bool = False,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
+    ) -> Dataset: ...
+
     async def fetch(
         self,
         target: Spec | DatasetRef | Recipe | ShareTarget,
@@ -189,13 +272,13 @@ class AsyncClient:
         as_of: Moment | None = None,
         slot: int | None = None,
         window: Window | None = None,
-        entities: Mapping[str, list[str] | tuple[str, ...] | None] | None = None,
+        entities: Entities | None = None,
         facets: Mapping[str, str | None] | None = None,
         layout: Layout | None = None,
         party_totals: bool | None = None,
         latest: bool = False,
         strict: bool = False,
-        timeout: float | None = None,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
         progress: bool | None = None,
     ) -> Dataset:
         """Fetch a spec's latest version, the exact versions a ref names, or with
@@ -236,9 +319,12 @@ class AsyncClient:
             window: Narrow a spec to `"all"`, `"latest"` or
                 `(start_year, end_year)`.
             entities: Rebind the named roles of a spec to dcids, such as
-                `{"destination": ["country/NGA"]}`; `spec.roles` lists the
-                keys. None drops a role. The spec's other roles keep their
-                binding, and an empty map narrows nothing.
+                `{"destination": ["country/NGA"]}`, or to the matches and
+                entities `lookup.resolve` returns, such as
+                `{"destination": await client.lookup.resolve("Nigeria")}`;
+                `spec.roles` lists the keys. None drops a role. The spec's
+                other roles keep their binding, and an empty map narrows
+                nothing.
             facets: Bind a spec's provenance, measurement method or unit. An
                 empty map narrows nothing.
             layout: `long` or `frame`; None builds a spec in `long` and reads a
@@ -256,10 +342,11 @@ class AsyncClient:
             strict: Raise the first dataset warning, or the
                 `SeriesLeftOutWarning`, instead of issuing it.
             timeout: The longest the fetch takes, in seconds, downloads
-                included. None, the default, waits as long as the build takes,
-                which the server always ends. In the synchronous client,
-                platform name resolution can run past this bound; the
-                asynchronous client can cancel it.
+                included. None waits as long as the build takes, which the
+                server always ends. Left out, the client's `timeout` applies,
+                else None. In the synchronous client, platform name
+                resolution can run past this bound; the asynchronous client
+                can cancel it.
             progress: Show long-build progress; None shows it unless
                 `DFO_PROGRESS=0`.
 
@@ -275,10 +362,11 @@ class AsyncClient:
                 any request; a share of several slots is given no `slot`, or
                 one past its last; `as_of` is before the slot first served
                 data; `window`, `entities`,
-                `facets` or `layout` is malformed; `entities` names a role the
-                spec does not declare; or
-                `timeout` is not None or a finite number above 0
-                (`invalid_argument`).
+                `facets` or `layout` is malformed; `entities` holds a match
+                that did not resolve, or names a role the spec does not
+                declare; or `timeout` is not None or a finite number above 0
+                (`invalid_argument`). A type checker rejects an option the
+                target does not take.
             NotFoundError: A share is unknown, its slot is empty, or with
                 `as_of` the slot showed no card then (`not_found`).
             VersionUnavailableError: A ref's version can no longer be fetched.
@@ -432,7 +520,10 @@ class AsyncClient:
             NotFoundError: No share has that id, or it was taken down
                 (`not_found`).
         """
-        return await share_history(self._session.transport, share)
+        transport = self._session.transport
+        return await share_history(
+            transport, share, deadline=transport.deadline(transport.timeout)
+        )
 
     async def request(
         self,

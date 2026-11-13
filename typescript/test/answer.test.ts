@@ -7,7 +7,7 @@ import { parquetMetadata } from "hyparquet";
 import { Answer, answerFromBody, SearchWarning } from "../src/search/answer.ts";
 import { partFacts } from "../src/core/parse.ts";
 import { optionLine } from "../src/search/choices.ts";
-import type { AnswerContext, Candidate, Gap, QueryOption } from "../src/search/answer.ts";
+import type { AnswerContext, Candidate, Gap, Option } from "../src/search/answer.ts";
 import {
   ContractError,
   DeclinedError,
@@ -268,7 +268,7 @@ describe("gaps", () => {
       ...option,
       entity_choice: choice,
     }));
-    const options = answerFromBody(edited, offline(), null).gaps[0]!.options as QueryOption[];
+    const options = answerFromBody(edited, offline(), null).gaps[0]!.options as Option[];
     assert.deepEqual(
       options.map((each) => each.entityChoice),
       [0, 1, null, null, null, null, null],
@@ -389,13 +389,12 @@ describe("choose", () => {
     });
   });
 
-  test("refuses two positional keys with a TypeError naming the part option, with no request", async () => {
+  test("refuses options that are not an object, with no request", async () => {
     const answer = answerOf("choose-place-two-parts");
     const untyped = answer as unknown as { choose(part: string, option: string): Promise<Answer> };
-    await assert.rejects(untyped.choose("GDP", "Congo [DRC]"), (error: unknown) => {
-      assert.ok(error instanceof TypeError);
-      assert.match(error.message, /answer\.choose\("Congo \[DRC\]", \{ part: "GDP" \}\)/);
-      return true;
+    await assert.rejects(untyped.choose("GDP", "Congo [DRC]"), {
+      name: "InvalidRequestError",
+      code: "invalid_argument",
     });
   });
 
@@ -568,7 +567,7 @@ describe("candidates", () => {
 });
 
 describe("fetch", () => {
-  test("normalizes malformed optional part metadata through Search, fetch, toRows, toArrow and a bytes() reopen", async () => {
+  test("normalizes malformed optional part metadata through Search, fetch, toRows, toArrow and a toBytes() reopen", async () => {
     const scenario = structuredClone(record("answer-definite-fetch"));
     const search = scenario.exchanges[0]!.response.json as { parts: Record<string, unknown>[] };
     const [part] = search.parts;
@@ -622,7 +621,7 @@ describe("fetch", () => {
       dataset.columns,
     );
 
-    const saved = await dataset.bytes();
+    const saved = await dataset.toBytes();
     const reopened = await Dataset.create([{ ...dataset.members[0]!, manifest: {}, data: saved }], {
       layout: "long",
     });
@@ -955,7 +954,7 @@ describe("reading a Search response", () => {
         }
       },
       (answer) => {
-        assert.deepEqual((answer.gaps[0]!.options[0] as QueryOption).mentions, ["Congo"]);
+        assert.deepEqual((answer.gaps[0]!.options[0] as Option).mentions, ["Congo"]);
       },
     ],
     [
@@ -1056,7 +1055,7 @@ describe("reading a Search response", () => {
     const quick = mockFetch(slow(60));
     const context = {
       ...offline(),
-      transport: replay(NO_EXCHANGES, { fetch: quick.fetch, timeout: 20 }).transport,
+      transport: replay(NO_EXCHANGES, { fetch: quick.fetch, attemptTimeout: 20 }).transport,
     };
     assert.equal((await search(context, "q")).kind, "resolution");
     // A search past its own timeout raises once, with no retry.
