@@ -3,7 +3,8 @@
 Client libraries for the Development Finance Observatory APIs at [developmentfinance.org](https://developmentfinance.org). Ask a question about aid, debt, or development indicators in your own words, check what DFO understood, and get a versioned table back.
 
 ```bash
-pip install "development-finance[pandas]"
+uv add "development-finance[pandas]"        # in a uv project
+pip install "development-finance[pandas]"   # with pip
 ```
 
 ```python
