@@ -9,7 +9,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +17,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from dfo._core.errors import ContractError
+from dfo._core.errors import ContractError, DfoError
 from dfo._core.parse import parse_parts
 from dfo._core.refs import (
     DatasetRef,
@@ -39,6 +39,7 @@ from dfo._core.types import (
     RequestedOperation,
 )
 from dfo._datasets import dataset as dataset_module
+from dfo._datasets.bundle import BundleError
 from dfo._datasets.bundle import load as load_saved
 from dfo._datasets.cache import sha256_digest
 from dfo._datasets.dataset import (
@@ -72,6 +73,11 @@ AID_TYPE = Assumption(
     text="official development assistance",
     refs=("DAC2aAidType206",),
 )
+
+
+FETCHED = datetime(2026, 11, 13, 9, 14, 5, tzinfo=UTC)
+LATER = datetime(2026, 11, 13, 10, 0, 0, tzinfo=UTC)
+QUESTION = "Germany's \"ODA\" to Côte d'Ivoire"
 
 
 def built(*members: FetchedMember, layout: Layout = "long") -> Dataset:
@@ -841,7 +847,112 @@ def test_save_then_load_returns_an_equal_dataset(tmp_path: Path) -> None:
     assert stored[b"dfo.ref"].decode() == data.ref.to_json()
     assert stored[b"dfo.format_version"] == b"1"
     assert b"dfo.left_out" not in stored
-    _assert_same(load_saved(path), data)
+    # The earliest member's time, as a JSON string with seconds and Z.
+    assert json.loads(stored[b"dfo.fetched_at"]) == "2026-11-13T09:14:05Z"
+    assert json.loads(stored[b"dfo.question"]) == QUESTION
+    assert path.read_bytes() == data.to_bytes()
+    for loaded in (load_saved(path), load_saved(data.to_bytes())):
+        _assert_same(loaded, data)
+        assert (loaded.fetched_at, loaded.question) == (FETCHED, QUESTION)
+        assert loaded.from_cache is False
+
+
+def test_save_streams_to_pyarrow_without_building_the_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # pyarrow writes the file as it builds it, to a path or a filesystem URI.
+    data = _saved()
+    expected = data.to_bytes()
+    monkeypatch.setattr(Dataset, "to_bytes", _no_bytes)
+    path = tmp_path / "saved.parquet"
+    data.save(path.as_uri())
+    assert path.read_bytes() == expected
+
+
+def _no_bytes(_: object) -> bytes:
+    raise AssertionError("save built the whole file in memory")
+
+
+def test_a_file_saved_without_question_or_fetch_time_loads_them_as_unknown(
+    tmp_path: Path,
+) -> None:
+    data = built()
+    assert (data.question, data.fetched_at, data.from_cache) == (None, None, False)
+    path = tmp_path / "saved.parquet"
+    data.save(path)
+    stored = pq.read_metadata(path).metadata
+    assert b"dfo.question" not in stored
+    assert b"dfo.fetched_at" not in stored
+    loaded = load_saved(path)
+    assert (loaded.question, loaded.fetched_at) == (None, None)
+
+
+@pytest.mark.parametrize(
+    ("times", "cached", "fetched_at", "from_cache"),
+    [
+        ((LATER, FETCHED), (False, False), FETCHED, False),
+        ((LATER, None), (False, True), None, True),
+        ((FETCHED,), (True,), FETCHED, True),
+    ],
+    ids=["earliest", "one-unknown", "one-cached"],
+)
+def test_a_dataset_holds_its_earliest_fetch_time_and_any_cache_hit(
+    times: tuple[datetime | None, ...],
+    cached: tuple[bool, ...],
+    fetched_at: datetime | None,
+    *,
+    from_cache: bool,
+) -> None:
+    members = [recorded_member(parts=("ODA",)), other_member()][: len(times)]
+    data = built(
+        *(
+            replace(member, fetched_at=time, from_cache=hit)
+            for member, time, hit in zip(members, times, cached, strict=True)
+        )
+    )
+    assert (data.fetched_at, data.from_cache) == (fetched_at, from_cache)
+
+
+@pytest.mark.parametrize(
+    ("fetched_at", "from_cache", "stale", "line"),
+    [
+        (FETCHED, False, False, None),
+        (
+            FETCHED,
+            True,
+            False,
+            "Cached: read from the cache, fetched 13 November 2026 09:14 UTC",
+        ),
+        (None, True, False, "Cached: read from the cache, fetch time unknown"),
+        (
+            FETCHED,
+            True,
+            True,
+            "Stale: read from the cache without asking for a newer version, "
+            "fetched 13 November 2026 09:14 UTC",
+        ),
+    ],
+    ids=["fresh", "cached", "cached-unknown", "offline"],
+)
+def test_the_repr_says_when_the_data_came_from_the_cache(
+    fetched_at: datetime | None, *, from_cache: bool, stale: bool, line: str | None
+) -> None:
+    member = replace(recorded_member(), fetched_at=fetched_at, from_cache=from_cache)
+    data = build_dataset(
+        [member], layout="long", complete=True, missing=(), stale=stale
+    )
+    cached = [
+        text.strip()
+        for text in repr(data).splitlines()
+        if text.strip().startswith(("Cached:", "Stale:"))
+    ]
+    assert cached == ([] if line is None else [line])
+
+
+def test_load_refuses_bytes_that_are_not_a_parquet_file() -> None:
+    with pytest.raises(BundleError) as caught:
+        load_saved(b"PK\x03\x04 a zip")
+    assert caught.value.reason == "not_a_bundle"
 
 
 def test_a_dataset_of_versions_loads_no_left_out_series_or_steps(
@@ -872,8 +983,10 @@ def test_a_saved_file_of_another_format_version_is_refused(
     table = pq.read_table(path)
     metadata = {**table.schema.metadata, b"dfo.format_version": version}
     pq.write_table(table.replace_schema_metadata(metadata), path)
-    with pytest.raises(ValueError):
+    with pytest.raises(FormatError) as caught:
         load_saved(path)
+    assert isinstance(caught.value, DfoError)
+    assert caught.value.pointer == "/dfo.format_version"
 
 
 def _derived(name: str = "chain") -> Dataset:
@@ -1312,11 +1425,15 @@ def _saved() -> Dataset:
         {"pinned": False, "held_until": "2026-11-18T00:00:00Z"},
     )
     return build_dataset(
-        [first, other_member()],
+        [
+            replace(first, fetched_at=LATER),
+            replace(other_member(), fetched_at=FETCHED, from_cache=True),
+        ],
         layout="long",
         complete=False,
         missing=_gaps(),
         stale=False,
+        question=QUESTION,
     )
 
 
@@ -1397,6 +1514,14 @@ def _dataset_edit(
             ),
             "/dfo.party_totals_left_out/0/spec_id",
         ),
+        (lambda m: m.update({b"dfo.question": b"a bare text"}), "/dfo.question"),
+        (lambda m: m.update({b"dfo.question": b"7"}), "/dfo.question"),
+        (lambda m: m.update({b"dfo.fetched_at": b'"soon"'}), "/dfo.fetched_at"),
+        (
+            lambda m: m.update({b"dfo.fetched_at": b'"2026-11-13T09:14:05"'}),
+            "/dfo.fetched_at",
+        ),
+        (lambda m: m.update({b"dfo.fetched_at": b"1763025245"}), "/dfo.fetched_at"),
     ],
     ids=[
         "citation-removed",
@@ -1420,6 +1545,11 @@ def _dataset_edit(
         "member-rows-negative",
         "party-totals-not-array",
         "party-totals-without-spec-id",
+        "question-not-json",
+        "question-not-text",
+        "fetched-at-not-a-time",
+        "fetched-at-without-zone",
+        "fetched-at-not-text",
     ],
 )
 def test_a_damaged_saved_file_raises_format_error(
@@ -1530,6 +1660,8 @@ def _assert_same(loaded: Dataset, data: Dataset) -> None:
         "ref",
         "left_out",
         "party_totals_left_out",
+        "question",
+        "fetched_at",
     ):
         assert getattr(loaded, name) == getattr(data, name), name
     assert len(loaded) == len(data)

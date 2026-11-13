@@ -18,6 +18,7 @@ from typing import (
     override,
 )
 
+from dfo._core.base_error import DfoError
 from dfo._core.json_text import loads
 from dfo._core.text import single_line
 from dfo._generated.error_map import GapKind as SearchGapKind
@@ -111,8 +112,10 @@ type FormatErrorReason = Literal[
 ]
 
 
-class FormatError(ValueError):
+class FormatError(DfoError, ValueError):
     """Stored JSON for a `DatasetRef`, a saved dataset or a bundle breaks its format.
+
+    Its `code` is None, and `reason` names the fault.
 
     Attributes:
         reason: `format_invalid` when the JSON breaks the format's shape or a
@@ -730,44 +733,6 @@ def load_definition(value: object, pointer: str) -> Spec:
     if not matches(SPEC_ID, definition["spec_id"]):
         raise FormatError("format_invalid", f"{pointer}/spec_id", "not a spec id")
     return Spec(definition["spec_id"], definition)
-
-
-@dataclass(frozen=True, slots=True, eq=False, repr=False)
-class RawResponse:
-    """A response from `client.request`, for a route the client does not wrap.
-
-    Attributes:
-        status_code: The HTTP status, always a 2xx or 3xx since a refusal raises.
-        headers: The response headers, keyed in lower case.
-        content: The body's bytes.
-    """
-
-    status_code: int
-    headers: Mapping[str, str]
-    content: bytes
-
-    @override
-    def __repr__(self) -> str:
-        return _joined(
-            "RawResponse",
-            str(self.status_code),
-            self.headers.get("content-type"),
-            counted(len(self.content), "byte"),
-        )
-
-    @property
-    def text(self) -> str:
-        """The body decoded as UTF-8."""
-        return self.content.decode("utf-8", errors="replace")
-
-    def json(self) -> Any:
-        """The body decoded as JSON.
-
-        Raises:
-            ValueError: The body is not UTF-8 JSON, holds `NaN` or `Infinity`,
-                or nests arrays and objects deeper than `JSON_MAX_DEPTH` levels.
-        """
-        return loads(self.content)
 
 
 type GraphNode = (

@@ -40,9 +40,10 @@ def pin(transport: Transport, data: Dataset) -> Dataset:
             versions pinned before it, which stay pinned.
     """
     members = _dataset_members(data, transport.caller)
+    deadline = transport.deadline(transport.timeout)
     for index, member in enumerate(members):
         try:
-            _pin_member(transport, member)
+            _pin_member(transport, member, deadline=deadline)
         except DfoError as error:
             if index == 0:
                 raise
@@ -83,8 +84,11 @@ def _dataset_members(data: object, caller: str) -> tuple[Member, ...]:
     return tuple(member for member in data.members if isinstance(member, Member))
 
 
-def _pin_member(transport: Transport, member: Member) -> None:
-    """Pin one member's artifact.
+def _pin_member(
+    transport: Transport, member: Member, *, deadline: float | None
+) -> None:
+    """Pin one member's artifact by `deadline`, the clock reading the client's
+    `timeout` sets for the whole pin.
 
     Raises:
         ContractError: The answer names another version or artifact
@@ -92,7 +96,10 @@ def _pin_member(transport: Transport, member: Member) -> None:
     """
     path = f"/datasets/{member.spec.spec_id}/{member.content_version}/pin"
     response = transport.request(
-        "POST", path, json={"schema_version": 1, "artifact_digest": member.digest}
+        "POST",
+        path,
+        json={"schema_version": 1, "artifact_digest": member.digest},
+        deadline=deadline,
     )
     body = response_json(response)
     pinned = body.get("pinned") if isinstance(body, Mapping) else None

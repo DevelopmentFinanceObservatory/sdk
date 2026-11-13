@@ -4,7 +4,7 @@
  * operation id, each with its poller and the dataset once it is done. A fetch waits instead.
  */
 import { Dataset } from "../src/datasets/dataset.ts";
-import { buildBody, checkedSpec, finish } from "../src/datasets/fetch.ts";
+import { buildBody, checkedSpec, finish, resolvedOf } from "../src/datasets/fetch.ts";
 import type { Finishing } from "../src/datasets/fetch.ts";
 import { Poller, pollReply, postBuild } from "../src/datasets/operation.ts";
 import { renderingFor } from "../src/core/ref.ts";
@@ -37,8 +37,8 @@ export async function mint(
   const rendering = renderingFor(layout, !partyTotals);
   const finishing = {
     parts: [],
-    posted: { spec, entityGroups: spec.resolved?.entity_groups },
-    sentence: spec.resolved?.rendered_sentence,
+    posted: { spec, entityGroups: resolvedOf(spec).entityGroups },
+    sentence: resolvedOf(spec).sentence,
     rendering,
     strict: false,
   };

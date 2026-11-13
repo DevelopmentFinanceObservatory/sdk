@@ -19,21 +19,23 @@
  * item whose required members are not strings, and an optional member of another type, are left
  * out. A reading with no list posts none, and Search reads it as a fresh request.
  */
-import type { Answer, Candidate, Gap, QueryOption } from "./answer.ts";
+import type { Answer, Candidate, Gap, Option } from "./answer.ts";
 import { capped, clientError } from "../core/errors.ts";
 import type { InvalidRequestError } from "../core/errors.ts";
 import { isRecord } from "../core/json.ts";
 import { nearest } from "../core/nearest.ts";
+import { resolvedOf } from "../datasets/fetch.ts";
 import { assumptionsReadOf, operationsOf, parsedPartOf } from "../core/parse.ts";
 import { isKnownPart, partText } from "../core/parts.ts";
+import type { Part } from "../core/parts.ts";
 import { inline, trimEnd } from "../core/text.ts";
 import type {
   Assumption,
   DatasetResubmitInput,
   ParsedInput,
   ParsedPart,
-  Part,
   RequestedOperation,
+  ResubmitCandidatesEntry,
   ResubmitIdentityEntry,
 } from "../wire.ts";
 import type { Spec } from "../core/ref.ts";
@@ -127,7 +129,7 @@ const shownText = (text: string): string => trimEnd(inline(text).trim(), ".");
 /** An option as `String(answer)` prints it: a candidate's label, source and unit joined by
  *  ` · `, as `Kenya's GDP, 1960 to 2024 · World Development Indicators`, its sentence standing
  *  in for a missing label, or a place option's label. */
-export function optionLine(option: Candidate | QueryOption): string {
+export function optionLine(option: Candidate | Option): string {
   if (option.kind === "query") return shownText(option.label);
   // An empty label falls through to the sentence, as Python's `or` does.
   const label = shownText(option.label || option.sentence || "");
@@ -140,7 +142,7 @@ export function optionLine(option: Candidate | QueryOption): string {
 /** Whether `key` names an option: its label or its printed line, each read by `shownText`, so a
  *  line whose source or unit ends in a full stop pastes back. A candidate with no label matches
  *  only by its line. */
-function labels(option: Candidate | QueryOption, key: unknown): boolean {
+function labels(option: Candidate | Option, key: unknown): boolean {
   const asked = typeof key === "string" ? shownText(key) : "";
   if (asked === "") return false;
   return (
@@ -160,14 +162,14 @@ const optionList = ({ options }: Gap): string =>
     .join(", ");
 
 /** The question's words an option settles; none for a candidate. */
-export const mentionsOf = (option: Candidate | QueryOption): readonly string[] =>
+export const mentionsOf = (option: Candidate | Option): readonly string[] =>
   option.kind === "query" ? option.mentions : [];
 
 /**
  * The candidate or option a key names in a gap. A part named by a word its options settle
  * offers only the options that settle that word.
  */
-export function pick(gap: Gap, key: ChoiceKey, mention?: ChoiceKey): Candidate | QueryOption {
+export function pick(gap: Gap, key: ChoiceKey, mention?: ChoiceKey): Candidate | Option {
   const { options } = gap;
   if (options.length === 0) throw refuse(`Part ${gap.partIndex} offers no choice: ${gap.message}`);
   if (typeof key === "number") {
@@ -212,7 +214,7 @@ export function pick(gap: Gap, key: ChoiceKey, mention?: ChoiceKey): Candidate |
 export function choiceInput(
   answer: Answer,
   gap: Gap,
-  chosen: Candidate | QueryOption,
+  chosen: Candidate | Option,
 ): ParsedInput | DatasetResubmitInput {
   if (answer.parts.length === 1 && chosen.kind === "query") return onePart(chosen).query;
   return {
@@ -224,7 +226,7 @@ export function choiceInput(
 }
 
 /** A chosen option's `data_query` and the one part it holds. */
-function onePart(option: QueryOption): { query: ParsedInput; part: ParsedPart } {
+function onePart(option: Option): { query: ParsedInput; part: ParsedPart } {
   const query = option.dataQuery;
   if (query === null) {
     throw clientError("contract_violation", {
@@ -240,7 +242,7 @@ function onePart(option: QueryOption): { query: ParsedInput; part: ParsedPart } 
   return { query, part: parts[0]! };
 }
 
-function chosenEntry(part: Part, chosen: Candidate | QueryOption): Entry {
+function chosenEntry(part: Part, chosen: Candidate | Option): Entry {
   if (chosen.kind === "candidate") return identityEntry(part, chosen.spec);
   return { entry_kind: "parsed", part: onePart(chosen).part };
 }
@@ -248,11 +250,13 @@ function chosenEntry(part: Part, chosen: Candidate | QueryOption): Entry {
 function entry(part: Part): Entry {
   if (isKnownPart(part) && part.status === "definite") return identityEntry(part, part.spec);
   if (isKnownPart(part) && part.status === "candidates") {
+    // The client does not check these. They go back as Search sent them, and Search checks them.
+    const { ordering, truncated } = part.candidates;
     return {
       ...echoed(part),
       entry_kind: "candidates",
-      ordering: part.candidates.ordering,
-      truncated: part.candidates.truncated,
+      ordering: ordering as ResubmitCandidatesEntry["ordering"],
+      truncated: truncated as boolean,
       candidates: part.candidates.specs.map((spec) => identityOf(spec, readingEcho(part, spec))),
     };
   }
@@ -289,11 +293,11 @@ function identityOf(
   spec: Spec,
   assumptions: readonly Assumption[] | undefined,
 ): Pick<ResubmitIdentityEntry, "identity" | "entity_groups" | "assumptions"> {
-  const groups = spec.resolved?.entity_groups;
+  const groups = resolvedOf(spec).entityGroups;
   return {
     // The definition is the server's JSON as it sent it, so its identity posts back unchanged.
     identity: spec.definition["identity"] as ResubmitIdentityEntry["identity"],
-    ...(isRecord(groups) && Object.keys(groups).length > 0 ? { entity_groups: groups } : {}),
+    ...(groups !== null && Object.keys(groups).length > 0 ? { entity_groups: groups } : {}),
     ...(assumptions === undefined ? {} : { assumptions: [...assumptions] }),
   };
 }

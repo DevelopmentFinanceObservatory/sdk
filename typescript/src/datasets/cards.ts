@@ -96,13 +96,17 @@ async function createCard(
   intent: Readonly<Record<string, unknown>>,
 ): Promise<Card> {
   const ref = oneVersion(data);
+  const deadline = transport.callDeadline();
   const [member] = ref.members;
   const frame = { spec_id: member!.spec.spec_id, content_version: member!.contentVersion };
   const body: Record<string, unknown> = { type: CARD_TYPES[kind], frame_ref: frame, ...intent };
-  if (kind !== "source") body["select"] = { [STAT_VAR]: await variables(transport, data, frame) };
+  if (kind !== "source") {
+    body["select"] = { [STAT_VAR]: await variables(transport, data, frame, deadline) };
+  }
   const response = await transport.request({
     path: CARDS_PATH,
     json: { intent: body, write_token: mintToken("cmw_") },
+    deadline,
   });
   return describing(response.traceId, () =>
     readCard(response.body, `POST ${CARDS_PATH}`, kind, ref),
@@ -153,6 +157,7 @@ async function variables(
   transport: Transport,
   data: unknown,
   frame: { spec_id: string; content_version: string },
+  deadline: number,
 ): Promise<string | string[]> {
   let found: string[];
   if (data instanceof Dataset && data.columns.includes(STAT_VAR)) {
@@ -160,7 +165,7 @@ async function variables(
     found = values.filter((value): value is string => typeof value === "string");
   } else {
     const path = `/presentation/frames/${frame.spec_id}/${frame.content_version}`;
-    const response = await transport.request({ path, query: { dimension: STAT_VAR } });
+    const response = await transport.request({ path, query: { dimension: STAT_VAR }, deadline });
     const values = isRecord(response.body) ? response.body["values"] : undefined;
     if (!Array.isArray(values)) {
       throw clientError("contract_violation", {

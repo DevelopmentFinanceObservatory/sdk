@@ -36,9 +36,10 @@ import type { Transport } from "../http/transport.ts";
  */
 export async function pin(transport: Transport, data: Dataset): Promise<Dataset> {
   const members = datasetMembers(data);
+  const deadline = transport.callDeadline();
   for (const [index, member] of members.entries()) {
     try {
-      await pinMember(transport, member);
+      await pinMember(transport, member, deadline);
     } catch (error) {
       if (index === 0 || !(error instanceof DfoError)) throw error;
       throw partWay(error, members.slice(0, index));
@@ -69,7 +70,7 @@ function datasetMembers(data: unknown): readonly Member[] {
   if (derived !== undefined) {
     throw invalid(
       `pin keeps dataset versions, and ${derived.spec.spec_id} at ${derived.contentVersion} is ` +
-        "a frame DFO computed, which the pin route does not take. data.bytes() keeps its rows, " +
+        "a frame DFO computed, which the pin route does not take. data.toBytes() keeps its rows, " +
         "and client.fetch(data.ref, { latest: true }) computes it again.",
     );
   }
@@ -80,11 +81,12 @@ const typeName = (value: unknown): string =>
   value === null ? "null" : Array.isArray(value) ? "an array" : typeof value;
 
 /** Pins one member's artifact, once DFO's answer names its version and digest. */
-async function pinMember(transport: Transport, member: Member): Promise<void> {
+async function pinMember(transport: Transport, member: Member, deadline: number): Promise<void> {
   const path = `/datasets/${member.spec.spec_id}/${member.contentVersion}/pin`;
   const response = await transport.request({
     path,
     json: { schema_version: 1, artifact_digest: member.digest },
+    deadline,
   });
   const pinned = isRecord(response.body) ? response.body["pinned"] : undefined;
   if (

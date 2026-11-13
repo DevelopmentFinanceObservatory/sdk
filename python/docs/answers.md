@@ -122,7 +122,7 @@ The choice searches again with that place pinned. Whether Search asks or picks a
 
 ## Take the answered parts
 
-`fetch(partial=True)` builds the parts that have a reading and lists the rest in `data.missing`. In "debt service of Kenya and the price of tea in Kenya", Search finds no indicator for the price of tea:
+`fetch(partial=True)` builds the parts that have a reading and lists the rest in `data.missing`. In "debt service paid by Kenya and the price of tea in Kenya", Search finds no indicator for the price of tea:
 
 ```text
 <Dataset Kenya's external debt service owed to all creditors, 1970 to 2024. Current US dollars · World Bank International Debt Statistics (IDS).
@@ -134,7 +134,7 @@ The choice searches again with that place pinned. Whether Search asks or picks a
 ```
 
 ```python
-answer = dfo.search("debt service of Kenya and the price of tea in Kenya")
+answer = dfo.search("debt service paid by Kenya and the price of tea in Kenya")
 data = answer.fetch(partial=True)
 print(data)
 
@@ -158,17 +158,23 @@ Gross disbursements to Ethiopia from 95 providers for official development assis
   Fetch: answer.fetch()
 ```
 
-`fetch` builds the data and issues one `SearchWarning` that repeats these lines. The dataset keeps the skipped steps in `requested_operations`, so the ranking is yours to compute:
+`fetch` builds the data and issues one `SearchWarning` that repeats these lines, so a script's log shows what the table leaves undone:
+
+```text
+SearchWarning: Search's reading differs from your question:
+  Not done: rank ("top 5 donors")
+  You asked for a ranking. This shows the amounts behind it, because Search does not compute rankings.
+  Note: The answer covers official development assistance of every aid type.
+  Note: No provider was named, so the answer covers every provider with data.
+```
+
+The dataset keeps the skipped steps in `requested_operations`, so the ranking is yours to compute:
 
 ```python
-import warnings
-
 answer = dfo.search("top 5 donors to Ethiopia in 2022")
 print(answer)
 
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore", dfo.errors.SearchWarning)
-    data = answer.fetch()
+data = answer.fetch()
 
 for operation in data.requested_operations:
     print(operation.verb, operation.phrase)  # rank top 5 donors
@@ -232,7 +238,7 @@ except dfo.errors.DeclinedError as error:
 ```text
 Search declined the question: it asks for an argument and names no data to show.
   Next: ask for a figure DFO publishes; dfo.lookup.catalogue() lists example questions.
-[answer_declined · trace ebc1967a88fb4655a42b421f736a425e]
+[answer_declined trace=ebc1967a88fb4655a42b421f736a425e]
 ```
 
 `print(answer)` shows the same two lines. A catalogue answer's next line names `dfo.lookup.catalogue()` too.

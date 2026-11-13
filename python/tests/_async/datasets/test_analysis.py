@@ -365,6 +365,10 @@ async def test_a_second_read_of_a_derived_frame_takes_its_file_from_the_cache(
             again = await fetch(transport, ref, cache=cache)
     assert server.calls() == [*frame_paths(), frame_paths()[0]]
     assert again.to_arrow().equals(first.to_arrow())
+    assert first.fetched_at is not None
+    assert (first.from_cache, again.from_cache) == (False, True)
+    assert again.fetched_at == first.fetched_at
+    assert "Cached: read from the cache, fetched " in repr(again)
 
 
 async def test_a_derived_ref_with_latest_posts_its_bare_root() -> None:

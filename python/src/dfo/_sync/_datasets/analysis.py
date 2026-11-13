@@ -63,6 +63,7 @@ from dfo._core.errors import (
 )
 from dfo._core.refs import DatasetRef, DerivedRefMember
 from dfo._core.refusals import describing, trace_id_of
+from dfo._core.timeouts import CLIENT_TIMEOUT, CallTimeout, ran_out
 from dfo._core.types import FormatError
 from dfo._datasets.build import (
     BUILD_READ_TIMEOUT,
@@ -70,7 +71,7 @@ from dfo._datasets.build import (
     check_strict,
     response_json,
 )
-from dfo._datasets.dataset import Dataset, derived_dataset
+from dfo._datasets.dataset import Dataset, derived_dataset, fetch_time
 from dfo._datasets.recipe import (
     Aggregation,
     Columns,
@@ -337,10 +338,10 @@ def _analyse(
                 )
             wait = poll_interval(_pending_wait(response, answer))
             if deadline is not None and transport.now() + wait >= deadline:
-                after = "" if timeout is None else f" after {timeout:g} s"
                 raise client_error(
                     DEADLINE_EXCEEDED,
-                    f"DFO is still building the data the recipe reads{after}. "
+                    "DFO is still building the data the recipe reads"
+                    f"{ran_out(timeout)}. "
                     "The same fetch joins those builds.",
                     trace_id=trace_id,
                 )
@@ -413,12 +414,16 @@ def _read(
     digest = member.digest
     with holding(transport, cache, digest, deadline=deadline):
         data = None if cache is None else sync_offload(cache.get_bytes, digest)
-        if data is None:
+        from_cache = cache is not None and data is not None
+        if cache is not None and data is not None:
+            fetched_at = sync_offload(cache.fetched_at, digest)
+        else:
             data = download(
                 transport, f"{path}/file", digest, params=FRAME_FILE, deadline=deadline
             )
+            fetched_at = fetch_time()
             if cache is not None:
-                sync_offload(cache.put_bytes, digest, data)
+                sync_offload(cache.put_bytes, digest, data, fetched_at=fetched_at)
     recipe_object = manifest.get("recipe")
     tree = recipe_object.get("tree") if isinstance(recipe_object, Mapping) else None
     roles = (
@@ -435,6 +440,8 @@ def _read(
             cache=cache,
             caller=transport.caller,
             roles=roles,
+            fetched_at=fetched_at,
+            from_cache=from_cache,
         )
     if dataset.left_out or not dataset._left_out_complete:
         _left_out(dataset, strict=strict)
@@ -470,7 +477,7 @@ class Analysis:
     in one request. Each takes `strict` and `timeout` as `fetch` does: `strict`
     raises the `SeriesLeftOutWarning` instead of issuing it, and `timeout` is
     the longest the call takes, in seconds, the read included, while None waits
-    as long as the readings take to build.
+    as long as the readings take to build. Left out, `timeout` is the client's.
     """
 
     def __init__(self, transport: Transport, cache: Cache | None = None) -> None:
@@ -484,9 +491,13 @@ class Analysis:
             "share_of, join, sum_of, compare>"
         )
 
-    def _run(self, chain: Recipe, *, strict: bool, timeout: float | None) -> Dataset:
+    def _run(self, chain: Recipe, *, strict: bool, timeout: CallTimeout) -> Dataset:
         return run_recipe(
-            self._transport, chain, strict=strict, timeout=timeout, cache=self._cache
+            self._transport,
+            chain,
+            strict=strict,
+            timeout=self._transport.call_timeout(timeout),
+            cache=self._cache,
         )
 
     def filter(
@@ -496,7 +507,7 @@ class Analysis:
         *,
         keep: Mapping[str, str | Sequence[str]],
         strict: bool = False,
-        timeout: float | None = None,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
     ) -> Dataset:
         """Keep the rows whose role or column holds one of the values, as
         `keep={"destination": ["country/KEN"]}`.
@@ -517,7 +528,7 @@ class Analysis:
         by: Columns = (),
         how: Aggregation = "sum",
         strict: bool = False,
-        timeout: float | None = None,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
     ) -> Dataset:
         """Totals or averages the rows of each year, keeping the members of `by`
         apart.
@@ -528,7 +539,8 @@ class Analysis:
                 totals every row of each year.
             how: `sum`, `mean`, `max` or `min`.
             strict: Raise the `SeriesLeftOutWarning` instead of issuing it.
-            timeout: The longest the call takes, in seconds; None waits.
+            timeout: The longest the call takes, in seconds. None waits. Left
+                out, the client's `timeout` applies.
         """
         chain = recipe(data).aggregate(by=by, how=how)
         return self._run(chain, strict=strict, timeout=timeout)
@@ -542,7 +554,7 @@ class Analysis:
         window: tuple[Year, Year],
         change: GrowthChange = "relative",
         strict: bool = False,
-        timeout: float | None = None,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
     ) -> Dataset:
         """Change from the first to the last year of `window`, for each member of
         `by`: with `relative`, the change divided by the first year's value, a
@@ -561,7 +573,7 @@ class Analysis:
         how: Aggregation | None = None,
         limit: int | None = None,
         strict: bool = False,
-        timeout: float | None = None,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
     ) -> Dataset:
         """Order the members of `by`, largest first, and keep the top `limit`.
 
@@ -573,7 +585,8 @@ class Analysis:
             how: How each member's rows reduce to one value first.
             limit: The most members kept, from 1 to 1000.
             strict: Raise the `SeriesLeftOutWarning` instead of issuing it.
-            timeout: The longest the call takes, in seconds; None waits.
+            timeout: The longest the call takes, in seconds. None waits. Left
+                out, the client's `timeout` applies.
         """
         chain = recipe(data).rank(by=by, window=window, how=how, limit=limit)
         return self._run(chain, strict=strict, timeout=timeout)
@@ -586,7 +599,7 @@ class Analysis:
         *,
         on: Pairing | None = None,
         strict: bool = False,
-        timeout: float | None = None,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
     ) -> Dataset:
         """Divide one reading by another, pairing roles through `on`, such as
         aid per person with `on={"destination": "place"}`."""
@@ -602,7 +615,7 @@ class Analysis:
         by: Columns | None = None,
         on: Pairing | None = None,
         strict: bool = False,
-        timeout: float | None = None,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
     ) -> Dataset:
         """Each value as a percentage of the matching row of `total`, from 0 to
         100 when each value is part of its total, so 25.0 is a quarter; or of
@@ -618,7 +631,7 @@ class Analysis:
         *,
         on: Pairing | None = None,
         strict: bool = False,
-        timeout: float | None = None,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
     ) -> Dataset:
         """Both readings' matched rows in long format, told apart by
         `stat_var`."""
@@ -633,7 +646,7 @@ class Analysis:
         *,
         on: Pairing | None = None,
         strict: bool = False,
-        timeout: float | None = None,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
     ) -> Dataset:
         """The matching rows of two readings added over the years both hold."""
         chain = recipe(data).sum_of(other, on=on)
@@ -647,7 +660,7 @@ class Analysis:
         *,
         on: Pairing | None = None,
         strict: bool = False,
-        timeout: float | None = None,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
     ) -> Dataset:
         """`data` minus `other` for each matching member over the years both
         hold. DFO refuses two different units."""

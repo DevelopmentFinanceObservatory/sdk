@@ -21,8 +21,8 @@ https://developmentfinance.org/embed/7NHGA70g
 ```python
 import dfo
 
-aid = dfo.search("ODA from Germany to Kenya, Ghana and Nigeria, 2018 to 2023").fetch()
-people = dfo.search("Kenya population, 2015 to 2024").fetch()
+aid = dfo.search("ODA from Germany to Kenya, 2018 to 2023").fetch()
+people = dfo.search("Kenya population, 2018 to 2023").fetch()
 per_person = dfo.analysis.quotient_of(aid, people, on={"destination": "place"})
 
 line = dfo.cards.line(per_person, title="German aid per person in Kenya")
@@ -126,7 +126,6 @@ It sends the share's own token, or the one passed as `write_token=`.
 <Dataset Computed by DFO: quotient_of.
   Source: OECD DAC2A; World Development Indicators
   Derived: quotient_of by financingRecipient, from 2 readings
-  Missing data: 3 series left out · data.left_out
   Shown by: share 7NHGA70g, slot 1 "German aid per person in Kenya, last three years", on 28 October 2026
   Version: ocv_129d9b2f36f398bb414c5f7a97230804 (exact), pinned
   Rows: 6, time_period as text, such as "2022" or "2021/2022"
@@ -204,7 +203,7 @@ Each takes a `Share` or the URL of its page or embed, as `https://developmentfin
 
 ### Fetching a share
 
-`dfo.fetch(target, /, *, as_of=None, slot=None, strict=False, timeout=None, progress=None)` with a `Share` or its URL. `slot` counts from 1 and may be left out for a share of one slot. `as_of` takes a `date`, a `datetime`, or ISO text.
+`dfo.fetch(target, /, *, as_of=None, slot=None, strict=False, timeout=CLIENT_TIMEOUT, progress=None)` with a `Share` or its URL. `slot` counts from 1 and may be left out for a share of one slot. `as_of` takes a `date`, a `datetime`, or ISO text.
 
 ### Errors
 

@@ -365,7 +365,7 @@ for (const [name, build, message] of [
         detail: "No entry.",
         traceId: "4f2a",
       }),
-    "No entry. [code_not_found · trace 4f2a]",
+    "No entry. [code_not_found trace=4f2a]",
   ],
   [
     "an error with no trace id",
@@ -388,7 +388,7 @@ for (const [name, build, message] of [
         return error as DfoError;
       }
     },
-    "No members. [contract_violation · trace trace-9]",
+    "No members. [contract_violation trace=trace-9]",
   ],
   [
     "a data warning, whose trace id stays out",
@@ -410,7 +410,7 @@ for (const [name, build, message] of [
   [
     "an error whose trace id holds terminal controls",
     () => new DfoError({ code: "invalid_argument", detail: "Bad.", traceId: "x\u001b[31mRED" }),
-    "Bad. [invalid_argument · trace x[31mRED]",
+    "Bad. [invalid_argument trace=x[31mRED]",
   ],
   [
     "a warning whose code holds terminal controls",

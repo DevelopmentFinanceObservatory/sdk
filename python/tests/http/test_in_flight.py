@@ -32,7 +32,7 @@ def test_an_async_header_provider_is_bounded_by_the_attempts_timeout() -> None:
         transport = AsyncTransport(
             base_url=BASE,
             api_key=False,
-            timeout=TIMEOUT,
+            attempt_timeout=TIMEOUT,
             header_provider=never,
             http_transport=httpx2.MockTransport(_unsent),
         )
@@ -55,7 +55,7 @@ def test_a_header_providers_own_timeout_error_passes_through() -> None:
         transport = AsyncTransport(
             base_url=BASE,
             api_key=False,
-            timeout=TIMEOUT,
+            attempt_timeout=TIMEOUT,
             header_provider=fails,
             http_transport=httpx2.MockTransport(_unsent),
         )

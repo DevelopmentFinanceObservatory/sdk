@@ -444,12 +444,12 @@ describe("request", () => {
 describe("limits", () => {
   for (const [name, options] of [
     ["timeout NaN", { timeout: Number.NaN }],
-    ["timeout Infinity", { timeout: Infinity }],
     ["timeout 0", { timeout: 0 }],
     ["timeout -1", { timeout: -1 }],
     ["timeout as a string", { timeout: "500" }],
-    ["timeout null", { timeout: null }],
     ["timeout true", { timeout: true }],
+    ["attemptTimeout Infinity", { attemptTimeout: Infinity }],
+    ["attemptTimeout 0", { attemptTimeout: 0 }],
     ["maxRetries NaN", { maxRetries: Number.NaN }],
     ["maxRetries Infinity", { maxRetries: Infinity }],
     ["maxRetries 1.5", { maxRetries: 1.5 }],
@@ -466,13 +466,100 @@ describe("limits", () => {
     });
   }
 
+  test("refuse timeout null when the client is built; withOptions reads it as clearing", () => {
+    const { fetch } = mockFetch();
+    assert.throws(() => client(fetch, { timeout: null } as unknown as ClientOptions), {
+      name: "InvalidRequestError",
+      code: "invalid_argument",
+    });
+    assert.ok(client(fetch).withOptions({ timeout: null }) instanceof Client);
+  });
+
   test("take timeouts and retry counts in range", () => {
     const { fetch } = mockFetch();
-    const dfo = client(fetch, { timeout: 0.5, maxRetries: 0 }).withOptions({
-      timeout: 2 ** 40,
+    const dfo = client(fetch, { timeout: 0.5, attemptTimeout: 0.5, maxRetries: 0 }).withOptions({
+      timeout: Infinity,
+      attemptTimeout: 2 ** 40,
       maxRetries: 10,
     });
     assert.ok(dfo instanceof Client);
+  });
+
+  /** A request that answers nothing until its signal aborts. The timer stands in for the socket
+   *  a real hung request holds open. */
+  const hang = (_request: unknown, init: RequestInit): Promise<Response> =>
+    new Promise((_resolve, reject) => {
+      const socket = setTimeout(() => undefined, 5_000);
+      init.signal?.addEventListener("abort", () => {
+        clearTimeout(socket);
+        reject(init.signal?.reason);
+      });
+    });
+
+  for (const [name, options, call] of [
+    ["the client's timeout", { timeout: 30 }, {}],
+    ["a call's timeout over the client's", { timeout: 60_000 }, { timeout: 30 }],
+  ] as const) {
+    test(`bound a whole call, retries included, by ${name}`, async () => {
+      // Each attempt would wait 60 s, and the call has two retries, so only a bound on the whole
+      // call ends it after one attempt.
+      const { fetch, seen } = mockFetch(hang, hang, hang);
+      const dfo = client(fetch, { ...options, attemptTimeout: 60_000 });
+      await assert.rejects(dfo.lookup.code("spec_not_found", call), {
+        name: "DfoTimeoutError",
+        code: "deadline_exceeded",
+      });
+      assert.equal(seen.length, 1);
+    });
+  }
+
+  test("bound one attempt by attemptTimeout and retry it", async () => {
+    const { fetch, seen } = mockFetch(hang, json(ENTRY));
+    const { sleep } = recordingSleep();
+    const dfo = clientOver(
+      new Transport({ baseUrl: BASE, apiKey: false, fetch, sleep, attemptTimeout: 20 }),
+    );
+    assert.equal((await dfo.lookup.code("spec_not_found")).code, "spec_not_found");
+    assert.equal(seen.length, 2);
+  });
+
+  for (const [name, limits, settles] of [
+    ["clears the client's timeout with timeout: null", { timeout: null }, true],
+    ["keeps the client's timeout when timeout is left out", { maxRetries: 2 }, false],
+  ] as const) {
+    test(`withOptions ${name}`, async () => {
+      // The client's 10 ms bound ends the call during its first 20 ms attempt. Without it, the
+      // attempt times out on its own and the retry answers.
+      const { fetch, seen } = mockFetch(hang, json(ENTRY));
+      const { sleep } = recordingSleep();
+      const dfo = clientOver(
+        new Transport({
+          baseUrl: BASE,
+          apiKey: false,
+          fetch,
+          sleep,
+          timeout: 10,
+          attemptTimeout: 20,
+        }),
+      ).withOptions(limits);
+      const call = dfo.lookup.code("spec_not_found");
+      if (settles) {
+        assert.equal((await call).code, "spec_not_found");
+        assert.equal(seen.length, 2);
+      } else {
+        await assert.rejects(call, { name: "DfoTimeoutError", code: "deadline_exceeded" });
+        assert.equal(seen.length, 1);
+      }
+    });
+  }
+
+  test("bound a search by the client's timeout in place of its own 60 s", async () => {
+    const { fetch, seen } = mockFetch(hang);
+    await assert.rejects(client(fetch, { timeout: 30 }).search("aid to Kenya"), {
+      name: "DfoTimeoutError",
+      code: "deadline_exceeded",
+    });
+    assert.equal(seen.length, 1);
   });
 
   for (const timeout of [Number.NaN, 0, -5, "60000"]) {

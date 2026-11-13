@@ -1,5 +1,6 @@
 """`scripts/check_docs_examples.py` reads blocks and markers, and plans programs."""
 
+import warnings
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -208,16 +209,40 @@ def test_python_blocks_share_a_namespace_and_fail_at_their_docs_line() -> None:
     assert second == ("fail", "doc.md:11: ValueError: 6")
 
 
-def test_the_report_counts_blocks_and_lists_each_failure() -> None:
-    passed, failed = ts(1, "a"), ts(5, "b")
+def test_a_python_block_reports_its_warnings_and_keeps_its_filters() -> None:
+    namespace: dict[str, object] = {}
+    warn = "import warnings\nwarnings.warn('a\\n  b', stacklevel=1)"
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("always")
+        shown = check._exec_block(
+            {"path": "doc.md", "line": 2, "code": warn}, namespace
+        )
+        check._exec_block(
+            {"path": "doc.md", "line": 6, "code": "warnings.simplefilter('ignore')"},
+            namespace,
+        )
+        hidden = check._exec_block(
+            {"path": "doc.md", "line": 9, "code": warn}, namespace
+        )
+
+    assert shown == ("pass", "warning: doc.md:4: UserWarning: a b")
+    assert hidden == ("pass", "")
+
+
+def test_the_report_counts_blocks_and_lists_each_warning_and_failure() -> None:
+    passed, failed, warned = ts(1, "a"), ts(5, "b"), ts(9, "c")
     results = [
         Result(passed, "pass"),
         Result(failed, "fail", "doc.md:6: Error: a | b\nstack"),
+        Result(warned, "pass", "warning: doc.md:10: SearchWarning: x"),
     ]
 
     text = check.report(results, "https://dev.example/api")
 
-    assert "Ran 2 blocks: 1 passed, 1 failed, 0 skipped." in text
+    assert "Ran 3 blocks: 2 passed, 1 failed, 0 skipped." in text
+    assert "## Warnings\n\n### doc.md:9\n\n```text\nwarning: doc.md:10:" in text
+    assert "### doc.md:1\n" not in text
     assert "| doc.md:5 | typescript | fail | doc.md:6: Error: a \\| b |" in text
     assert "### doc.md:5\n\n```text\ndoc.md:6: Error: a | b\nstack\n```" in text
 
@@ -318,7 +343,7 @@ def test_the_package_subpaths_load_source_files_that_exist() -> None:
     entries = check.package_entries()
 
     assert entries.pop("") == check.NODE_ENTRY.as_uri()
-    assert sorted(entries) == ["/arrow", "/wire"]
+    assert sorted(entries) == ["/arrow", "/errors", "/types", "/wire"]
     assert all(Path(urlsplit(url).path).is_file() for url in entries.values())
 
 

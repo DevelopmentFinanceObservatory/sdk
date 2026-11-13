@@ -62,7 +62,7 @@ const EXPIRED = "artifact_expired";
 /** The refusals of a recomputation that mean DFO cannot read the expired frame's roots again,
  *  so the frame can no longer be fetched. Any other refusal, a transient one included, raises as
  *  it came. */
-const ROOTS_UNREADABLE: ReadonlySet<string> = new Set([
+const ROOTS_UNREADABLE: ReadonlySet<string | null> = new Set([
   "snapshot_not_found",
   "artifact_expired",
   "recipe_not_found",
@@ -249,7 +249,7 @@ async function analyse(
       response = await transport.request({
         path: ANALYSIS_PATH,
         json: body,
-        timeout: BUILD_READ_TIMEOUT_MS,
+        attemptTimeout: BUILD_READ_TIMEOUT_MS,
         deadline: wait.deadline,
         signal: wait.signal,
       });
@@ -300,9 +300,8 @@ function readyMember(answer: unknown): DerivedRefMember {
   try {
     ref = DatasetRef.fromJSON(isRecord(answer) ? answer["ref"] : undefined);
   } catch (error) {
-    if (!(error instanceof FormatError) && !(error instanceof TypeError)) throw error;
-    const pointer = `/ref${error instanceof FormatError ? error.pointer : ""}`;
-    throw violation(pointer, error);
+    if (!(error instanceof FormatError)) throw error;
+    throw violation(`/ref${error.pointer}`, error);
   }
   const [member, ...others] = ref.members;
   if (member === undefined || others.length > 0 || !isDerived(member)) {

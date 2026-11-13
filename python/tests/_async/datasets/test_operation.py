@@ -23,6 +23,7 @@ from dfo._core.errors import (
 )
 from dfo._core.json_text import JSON_MAX_DEPTH
 from dfo._core.parse import parse_spec
+from dfo._core.timeouts import CLIENT_TIMEOUT, CallTimeout
 from dfo._core.types import Spec
 from dfo._datasets.cache import sha256_digest
 from dfo._datasets.operation import resume
@@ -411,7 +412,7 @@ async def test_poll_failures_beyond_the_retry_count_raise(
     failure: httpx2.Response | Exception, error: type[Exception]
 ) -> None:
     server = Server(accepted(), failure, failure, failure)
-    async with make(server, max_retries=2, timeout=30.0) as transport:
+    async with make(server, max_retries=2, attempt_timeout=30.0) as transport:
         with pytest.raises(error):
             await fetch(transport, spec())
     assert len(server.requests) == 4
@@ -521,14 +522,23 @@ async def test_a_refused_operation_status_is_quoted_capped_and_redacted(
     assert len(str(caught.value)) < 1200
 
 
-async def test_the_poll_at_the_deadline_runs_for_one_attempt() -> None:
+@pytest.mark.parametrize(
+    ("client_timeout", "timeout"),
+    [(None, 1.0), (1.0, CLIENT_TIMEOUT), (100.0, 1.0)],
+    ids=["call", "client", "call-over-client"],
+)
+async def test_the_poll_at_the_deadline_runs_for_one_attempt(
+    client_timeout: float | None, timeout: CallTimeout
+) -> None:
     # The backoff's first wait of 1 s reaches the deadline, so the client waits
-    # until it and polls once more with the client's own timeout.
+    # until it and polls once more with the client's own attempt timeout.
     timeline = Timeline()
     server = Server(accepted(), json_response(200, resource("running")))
-    async with make(server, timeline, timeout=30.0) as transport:
+    async with make(
+        server, timeline, timeout=client_timeout, attempt_timeout=30.0
+    ) as transport:
         with pytest.raises(DfoTimeoutError) as caught:
-            await fetch(transport, spec(), timeout=1.0)
+            await fetch(transport, spec(), timeout=timeout)
     assert timeline.sleeps == [1.0]
     assert server.calls()[1] == POLL
     assert server.requests[1].extensions["timeout"]["read"] == 30.0
@@ -554,7 +564,7 @@ async def test_a_retryable_failure_read_at_the_deadline_raises_without_resubmitt
 ) -> None:
     timeline = Timeline()
     server = Server(accepted(), poll, accepted(), done(), redirect(), parquet())
-    async with make(server, timeline, timeout=30.0) as transport:
+    async with make(server, timeline, attempt_timeout=30.0) as transport:
         with pytest.raises(ServerError) as caught:
             await fetch(transport, spec(), timeout=1.0)
     assert (caught.value.code, caught.value.retryable) == (code, True)
@@ -578,7 +588,9 @@ async def test_a_poll_cut_by_the_deadline_spends_no_retry(finishes: bool) -> Non
             timeline.now += 4.0
         return server(request)
 
-    async with make(handler, timeline, max_retries=0, timeout=30.0) as transport:
+    async with make(
+        handler, timeline, max_retries=0, attempt_timeout=30.0
+    ) as transport:
         if finishes:
             built = await fetch(transport, spec(), timeout=5.0)
             assert built.members[0].sentence == SENTENCE
@@ -594,7 +606,7 @@ async def test_a_poll_cut_by_the_deadline_spends_no_retry(finishes: bool) -> Non
 async def test_a_build_done_at_the_deadline_downloads_one_attempt_per_request() -> None:
     timeline = Timeline()
     server = Server(accepted(), done(), redirect(), parquet())
-    async with make(server, timeline, timeout=30.0) as transport:
+    async with make(server, timeline, attempt_timeout=30.0) as transport:
         built = await fetch(transport, spec(), timeout=1.0)
     assert built.members[0].sentence == SENTENCE
     assert timeline.sleeps == [1.0]
@@ -616,16 +628,29 @@ async def test_a_download_failing_after_the_deadline_says_the_build_is_done() ->
     assert len(server.requests) == 3
 
 
-@pytest.mark.parametrize("options", [{}, {"layout": "frame"}, {"party_totals": True}])
-async def test_the_deadline_says_the_same_fetch_joins_the_build(options: dict) -> None:
+@pytest.mark.parametrize(
+    ("options", "client_options", "whose"),
+    [
+        ({"timeout": 10.0}, {}, "call's"),
+        ({"timeout": 10.0, "layout": "frame"}, {}, "call's"),
+        ({"timeout": 10.0, "party_totals": True}, {}, "call's"),
+        ({}, {"timeout": 10.0}, "client's"),
+    ],
+    ids=["long", "frame", "party-totals", "client-timeout"],
+)
+async def test_the_deadline_says_the_same_fetch_joins_the_build(
+    options: dict, client_options: dict, whose: str
+) -> None:
     timeline = Timeline()
     running = json_response(200, resource("running", retry_after_ms=8000))
     server = Server(accepted(retry_after_ms=8000), running, running)
-    async with make(server, timeline) as transport:
+    async with make(server, timeline, **client_options) as transport:
         with pytest.raises(DfoTimeoutError) as caught:
-            await fetch(transport, spec(), timeout=10.0, **options)
+            await fetch(transport, spec(), **options)
     assert (caught.value.code, caught.value.retryable) == ("deadline_exceeded", True)
-    assert "after 10 s. The same fetch joins it if one started" in str(caught.value)
+    assert f"after 10 s, the {whose} timeout. The same fetch joins it" in str(
+        caught.value
+    )
     # The last wait ends at the deadline, and the poll there still reads running.
     assert timeline.sleeps == [8.0, 2.0]
     assert len(server.requests) == 3

@@ -11,6 +11,9 @@ import tempfile
 from pathlib import Path
 from typing import Literal
 
+from dfo._core.codes import INVALID_ARGUMENT, KEY_INVALID
+from dfo._core.errors import client_error
+
 type FileErrorReason = Literal[
     "outside_table", "duplicate_table", "duplicate_key", "invalid_line"
 ]
@@ -32,6 +35,9 @@ ACCEPTED_FORMAT = (
 
 class CredentialsFileError(ValueError):
     """The credentials file breaks the format at one line.
+
+    `dfo._config.keys` and `dfo auth login` catch it and raise an
+    `AuthenticationError` (`credentials_file_invalid`).
 
     Attributes:
         reason: The contract's reason for the broken line.
@@ -93,24 +99,32 @@ def render_credentials(profiles: Profiles) -> str:
     """Return the file text for `profiles`.
 
     Raises:
-        ValueError: A profile or entry name, or a value, that the format cannot hold.
+        InvalidRequestError: A profile or entry name the format cannot hold
+            (`invalid_argument`).
+        AuthenticationError: A value the format cannot hold (`key_invalid`).
     """
     tables = []
     for profile, entries in profiles.items():
         if not re.fullmatch(_NAME, profile):
-            raise ValueError(
-                f"A profile name holds only A-Z, a-z, 0-9, _ and -: {profile!r}"
+            raise client_error(
+                INVALID_ARGUMENT,
+                f"A profile name holds only A-Z, a-z, 0-9, _ and -: {profile!r}",
+                builtin=ValueError,
             )
         lines = [f"[{profile}]"]
         for name, value in entries.items():
             if not re.fullmatch(_NAME, name):
-                raise ValueError(
-                    f"An entry name holds only A-Z, a-z, 0-9, _ and -: {name!r}"
+                raise client_error(
+                    INVALID_ARGUMENT,
+                    f"An entry name holds only A-Z, a-z, 0-9, _ and -: {name!r}",
+                    builtin=ValueError,
                 )
             if not re.fullmatch(_VALUE, value):
-                raise ValueError(
+                raise client_error(
+                    KEY_INVALID,
                     f"The value of {name!r} holds a quote, a backslash or a control "
-                    "character, which the credentials file cannot store"
+                    "character, which the credentials file cannot store",
+                    builtin=ValueError,
                 )
             lines.append(f'{name} = "{value}"')
         tables.append("\n".join(lines) + "\n")
@@ -126,7 +140,9 @@ def store_key(path: str | os.PathLike[str], profile: str, key: str) -> None:
 
     Raises:
         CredentialsFileError: The existing file breaks the format.
-        ValueError: The profile name or key cannot be stored.
+        InvalidRequestError: The profile name cannot be stored
+            (`invalid_argument`).
+        AuthenticationError: The key cannot be stored (`key_invalid`).
     """
     target = Path(path)
     profiles = read_profiles(target) or {}

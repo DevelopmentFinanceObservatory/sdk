@@ -8,6 +8,7 @@ so the sync client passes the same tests.
 import copy
 import json
 import warnings
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx2
@@ -29,6 +30,7 @@ from dfo._core.errors import (
     ServerError,
     VersionUnavailableError,
 )
+from dfo._core.lookup_results import Entity, Match
 from dfo._core.parse import parse_spec
 from dfo._core.refs import DatasetRef, RefMember
 from dfo._core.types import DefinitePart, Departure, FormatError, Rendering, Spec
@@ -132,6 +134,48 @@ def ref_member(
         digest=sha256_digest(data),
         rendering=rendering,
     )
+
+
+FRANCE = Entity("country/FRA", "France", "country")
+
+
+def match(
+    text: str,
+    status: str,
+    entity: Entity | None = None,
+    candidates: tuple[Entity, ...] = (),
+) -> Match:
+    return Match(text, status, entity, candidates, (), {})
+
+
+@pytest.mark.parametrize(
+    ("unresolved", "named"),
+    [
+        (
+            match(
+                "Congo",
+                "ambiguous",
+                None,
+                (Entity("country/COD", "Congo [DRC]", None),),
+            ),
+            "country/COD",
+        ),
+        (match("Narnia", "not_found"), "not found"),
+        (match("Atlantis", "not_held", Entity("dc/x", "Atlantis", None)), "dc/x"),
+    ],
+    ids=["ambiguous", "not-found", "not-held"],
+)
+def test_an_unresolved_match_in_entities_sends_nothing(
+    unresolved: Match, named: str
+) -> None:
+    # The refusal names the candidates, the status or the node the graph lacks.
+    server = Server()
+    with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            fetch(transport, spec(), entities={"origin": [unresolved]})
+    assert caught.value.code == "invalid_argument"
+    assert named in str(caught.value)
+    assert server.requests == []
 
 
 @pytest.mark.parametrize(
@@ -267,7 +311,16 @@ def test_a_narrowed_spec_stores_the_built_identity_and_asks_search_its_sentence(
         ({"origin": None}, {"destination": ["country/NGA"]}),
         (None, None),
         ({}, None),
+        (
+            {"origin": [FRANCE, "country/DEU"]},
+            {"destination": ["country/NGA"], "origin": ["country/FRA", "country/DEU"]},
+        ),
+        (
+            {"origin": (match("France", "resolved", FRANCE),)},
+            {"destination": ["country/NGA"], "origin": ["country/FRA"]},
+        ),
     ],
+    ids=["dcid", "stripped", "dropped", "none", "empty", "entity", "match"],
 )
 def test_entities_rebind_only_the_roles_named(
     entities: dict | None, posted: dict | None
@@ -576,8 +629,8 @@ def role_ref_refused(**problem: object) -> httpx2.Response:
             "Germany",
             {"detail": "posted entity reference(s) not found in the graph: Germany"},
             "posted entity reference(s) not found in the graph: Germany at "
-            "/input/scope/entities/origin. Entities take dcids; "
-            '{caller}.lookup.resolve("Germany") finds one.',
+            "/input/scope/entities/origin. Entities take dcids, or what "
+            '{caller}.lookup.resolve("Germany") returns.',
         ),
         (
             "country/XXX",
@@ -624,7 +677,7 @@ def test_a_refused_entity_names_the_fix_and_keeps_the_refusal(
             fetch(transport, spec(), entities={"origin": [origin]})
     error = caught.value
     message = message.format(caller=caller)
-    assert str(error) == f"{message} [invalid_role_ref · trace trace]"
+    assert str(error) == f"{message} [invalid_role_ref trace=trace]"
     assert error.alternatives == tuple(refusal.get("alternatives", ()))
     assert error.problem is not None
     assert error.problem["pointer"] == "/input/scope/entities/origin"
@@ -895,13 +948,19 @@ def test_cached_bytes_skip_the_download_and_new_ones_are_stored() -> None:
     body = manifest(POSTED_ID)
     server = Server(json_response(200, body), redirect(), parquet())
     with make(server) as transport:
-        fetch(transport, spec(SENTENCE), cache=cache)
+        first = fetch(transport, spec(SENTENCE), cache=cache)
         assert cache.files == {sha256_digest(DATA): DATA}
         assert (POSTED_ID, NARROWED_CV, LONG) in cache.manifests
         server.responses.append(json_response(200, body))
         built = fetch(transport, spec(SENTENCE), cache=cache)
     assert len(server.requests) == 4
     assert built.members[0].data == DATA
+    # The hit keeps the time the download that stored it recorded.
+    fetched_at = first.members[0].fetched_at
+    assert fetched_at is not None and fetched_at.tzinfo == UTC
+    assert cache.times == {sha256_digest(DATA): fetched_at}
+    assert (first.members[0].from_cache, built.members[0].from_cache) == (False, True)
+    assert built.members[0].fetched_at == fetched_at
     assert cache.manifests[(POSTED_ID, NARROWED_CV, LONG)]["artifacts"] == [
         body["artifacts"][1]
     ]
@@ -924,6 +983,11 @@ def test_offline_a_spec_reads_its_newest_cached_version_as_stale(
         assert built.stale is True
         assert built.members[0].content_version == NARROWED_CV
         assert built.members[0].data == DATA
+        # An entry stored without a time reads as unknown.
+        assert (built.members[0].from_cache, built.members[0].fetched_at) == (
+            True,
+            None,
+        )
         for target, options in [
             (spec(SENTENCE), {"window": "latest"}),
             (spec(SENTENCE), {"entities": {"origin": ["country/FRA"]}}),
@@ -1382,7 +1446,8 @@ def test_a_cached_ref_needs_no_request_and_offline_marks_it_stale(
 ) -> None:
     body = manifest()
     cache = FakeCache()
-    cache.put_bytes(sha256_digest(DATA), DATA)
+    fetched_at = datetime(2026, 11, 13, 9, 14, 5, tzinfo=UTC)
+    cache.put_bytes(sha256_digest(DATA), DATA, fetched_at=fetched_at)
     cache.put_manifest(NARROWED_ID, NARROWED_CV, LONG, body)
     server = Server()
     with make(server) as transport:
@@ -1391,6 +1456,11 @@ def test_a_cached_ref_needs_no_request_and_offline_marks_it_stale(
         monkeypatch.setenv("DFO_OFFLINE", "1")
         offline = fetch(transport, DatasetRef((ref_member(),)), cache=cache)
         assert offline.stale is True
+        for hit in (built, offline):
+            assert (hit.members[0].from_cache, hit.members[0].fetched_at) == (
+                True,
+                fetched_at,
+            )
         with pytest.raises(NetworkError, match="cache lacks"):
             fetch(transport, DatasetRef((ref_member(),)), cache=FakeCache())
     assert server.requests == []
@@ -1457,6 +1527,14 @@ def test_bytes_the_file_selector_served_are_a_cache_hit_online_and_offline(
     assert first.members[0].manifest == served
     assert again.members[0].digest == offline.members[0].digest == member.digest
     assert offline.stale is True
+    assert [
+        (built.members[0].from_cache, built.members[0].fetched_at)
+        for built in (first, again, offline)
+    ] == [
+        (False, first.members[0].fetched_at),
+        *[(True, first.members[0].fetched_at)] * 2,
+    ]
+    assert first.members[0].fetched_at is not None
 
 
 def test_exact_refs_merge_projected_and_plain_artifacts_for_offline_spec(

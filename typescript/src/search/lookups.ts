@@ -30,11 +30,12 @@ import type {
 import { Catalogue, Code, Match, Node } from "./lookup-results.ts";
 import type { GraphNode } from "./lookup-results.ts";
 
-/** A lookup's cancellation and attempt timeout. */
+/** A lookup's cancellation and timeout. */
 export type LookupOptions = {
   readonly signal?: AbortSignal;
-  /** The longest one request attempt waits, in milliseconds. Defaults to the client's
-   *  `timeout`. */
+  /** The longest the whole call takes, retries included, in milliseconds; `Infinity` for no
+   *  bound. The client's `timeout` by default, else none; each attempt also stops at the
+   *  client's `attemptTimeout`. */
   readonly timeout?: number;
 };
 
@@ -135,7 +136,11 @@ function checkResults({ results }: Readonly<Record<string, unknown>>): void {
   }
 }
 
-const callOptions = ({ signal, timeout }: LookupOptions) => ({ signal, timeout });
+/** A lookup's signal, and its deadline from its `timeout`, else the client's. */
+const callOptions = (transport: Transport, { signal, timeout }: LookupOptions) => ({
+  signal,
+  deadline: transport.callDeadline(timeout),
+});
 
 /** The lookups: names to graph nodes, a node by its dcid, a code's registry entry, and what
  *  Search holds data on. */
@@ -178,7 +183,7 @@ export class Lookup {
     const response = await this.#transport.request({
       path: "/graph/resolve",
       json: body,
-      ...callOptions(call),
+      ...callOptions(this.#transport, call),
     });
     const { results } = lookupBody(
       response,
@@ -203,7 +208,7 @@ export class Lookup {
     const response = await this.#transport.request({
       path,
       query: { as_of: call.asOf },
-      ...callOptions(call),
+      ...callOptions(this.#transport, call),
     });
     return new Node(
       lookupBody(response, "GraphNode", {
@@ -230,7 +235,7 @@ export class Lookup {
     }
     const response = await this.#transport.request({
       url: `/codes/${encodeURIComponent(code)}`,
-      ...callOptions(call),
+      ...callOptions(this.#transport, call),
     });
     return new Code(
       lookupBody(response, "CodeRegistryEntry", {
@@ -246,7 +251,7 @@ export class Lookup {
     const response = await this.#transport.request({
       path: "/search/catalogue",
       query: { place: call.place },
-      ...callOptions(call),
+      ...callOptions(this.#transport, call),
     });
     return new Catalogue(
       lookupBody(

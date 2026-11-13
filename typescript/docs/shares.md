@@ -21,11 +21,9 @@ https://developmentfinance.org/embed/7NHGA70g
 ```ts
 import { Client, latestYear } from "@developmentfinance/client";
 
-const client = new Client({ onWarning: () => {} });
-const aid = await (
-  await client.search("ODA from Germany to Kenya, Ghana and Nigeria, 2018 to 2023")
-).fetch();
-const people = await (await client.search("Kenya population, 2015 to 2024")).fetch();
+const client = new Client();
+const aid = await (await client.search("ODA from Germany to Kenya, 2018 to 2023")).fetch();
+const people = await (await client.search("Kenya population, 2018 to 2023")).fetch();
 const perPerson = await client.analysis.quotientOf(aid, people, { on: { destination: "place" } });
 
 const line = await client.cards.line(perPerson, { title: "German aid per person in Kenya" });
@@ -128,7 +126,6 @@ It sends the share's own token, or the one passed as `writeToken`.
 <Dataset Computed by DFO: quotient_of.
   Source: OECD DAC2A; World Development Indicators
   Derived: quotient_of by financingRecipient, from 2 readings
-  Missing data: 3 series left out · data.leftOut
   Shown by: share 7NHGA70g, slot 1 "German aid per person in Kenya, last three years", on 28 October 2026
   Version: ocv_129d9b2f36f398bb414c5f7a97230804 (exact), pinned
   Rows: 6, time_period as text, such as "2022" or "2021/2022"

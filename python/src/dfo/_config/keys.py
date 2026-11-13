@@ -80,13 +80,19 @@ class ApiKey:
         """Wrap `value`.
 
         Raises:
-            TypeError: `value` is not a string.
-            ValueError: `value` is empty.
+            AuthenticationError: `value` is not a string (`key_invalid`) or is
+                empty (`key_empty`).
         """
         if not isinstance(value, str):
-            raise TypeError(f"An API key is a string, not {type(value).__name__}")
+            raise client_error(
+                KEY_INVALID,
+                f"An API key is a string, not {type(value).__name__}",
+                builtin=TypeError,
+            )
         if not value:
-            raise ValueError("An API key cannot be empty")
+            raise client_error(
+                KEY_EMPTY, "An API key cannot be empty", builtin=ValueError
+            )
         self._value = value
 
     def reveal(self) -> str:

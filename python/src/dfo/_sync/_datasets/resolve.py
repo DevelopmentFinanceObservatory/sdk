@@ -40,6 +40,7 @@ card title and day.
 
 from collections.abc import Mapping
 from dataclasses import replace
+from datetime import datetime
 
 import httpx2
 
@@ -66,6 +67,7 @@ from dfo._core.errors import (
 from dfo._core.refs import OPS_ID, DatasetRef, DerivedRefMember, RefMember
 from dfo._core.refusals import describing, trace_id_of
 from dfo._core.text import cited
+from dfo._core.timeouts import CLIENT_TIMEOUT, CallTimeout
 from dfo._core.types import (
     CONTENT_VERSION,
     SPEC_ID,
@@ -92,7 +94,12 @@ from dfo._datasets.build import (
     response_json,
 )
 from dfo._datasets.cache import sha256_digest
-from dfo._datasets.dataset import Dataset, FetchedMember, build_dataset
+from dfo._datasets.dataset import (
+    Dataset,
+    FetchedMember,
+    build_dataset,
+    fetch_time,
+)
 from dfo._datasets.progress import ProgressRenderer
 from dfo._datasets.publication import Moment, ShareTarget, share_id_in
 from dfo._datasets.recipe import Recipe
@@ -144,7 +151,7 @@ def fetch(
     party_totals: bool | None = None,
     latest: bool = False,
     strict: bool = False,
-    timeout: float | None = None,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
     progress: bool | None = None,
     cache: Cache | None = None,
 ) -> Dataset:
@@ -166,9 +173,10 @@ def fetch(
             first served on or before it. None reads what the slot shows now.
         slot: For a share, the slot to read, from 1; None for a share of one.
         window: Narrow a spec to `"all"`, `"latest"` or `(start_year, end_year)`.
-        entities: Rebind the named roles of a spec to dcids; None drops a role.
-            The keys are the spec's role keys, `spec.roles`. The spec's other
-            roles keep their binding, and an empty map narrows nothing.
+        entities: Rebind the named roles of a spec to dcids, or to the matches
+            and entities `lookup.resolve` returns; None drops a role. The keys
+            are the spec's role keys, `spec.roles`. The spec's other roles keep
+            their binding, and an empty map narrows nothing.
         facets: Bind a spec's provenance, measurement method or unit.
         layout: `long` (the default for a spec) or `frame`. A ref holds its own
             layout; naming another raises.
@@ -181,7 +189,8 @@ def fetch(
             A spec always fetches its newest version and refuses it.
         strict: Raise the first dataset warning instead of issuing it.
         timeout: The longest the fetch takes, in seconds, downloads included;
-            None waits as long as the build takes.
+            None waits as long as the build takes, and `CLIENT_TIMEOUT` takes
+            the transport's `timeout`, else None.
         progress: False silences long-build progress.
         cache: The local cache, or None to fetch without one.
 
@@ -191,9 +200,10 @@ def fetch(
             `party_totals`; `latest` is not a bool, is given a spec, or
             is given a ref whose members differ in rendering; a recipe or a
             frame DFO computed is given `progress`; `window`,
-            `entities`, `facets`, `layout`, `strict` or `progress` is malformed;
-            `entities` names a role the spec does not declare; or `entities`
-            rebinds a spec whose definition holds no identity.
+            `entities`, `facets`, `layout`, `strict`, `progress` or `timeout` is
+            malformed; `entities` holds a match that did not resolve or names a
+            role the spec does not declare; or `entities` rebinds a spec whose
+            definition holds no identity.
             No request is sent.
         VersionUnavailableError: A ref's version can no longer be fetched.
         FormatError: A ref's stored version lists the member's digest under
@@ -208,6 +218,7 @@ def fetch(
         raise client_error(
             INVALID_ARGUMENT, f"latest is True or False, not {latest!r}."
         )
+    timeout = transport.call_timeout(timeout)
     caller = transport.caller
     if share_id_in(target) is not None:
         given = _given(
@@ -606,10 +617,19 @@ def _rendered_frame(
             f"artifact, last {digest}",
             trace_id=trace_id,
         )
+    fetched_at = fetch_time()
     member = _frame_member(listed, artifact, title)
     note_warnings(listed, strict=strict, trace_id=trace_id)
-    sync_offload(store, cache, listed, member.rendering, member.digest, data)
-    return _stored(member, listed, data)
+    sync_offload(
+        store,
+        cache,
+        listed,
+        member.rendering,
+        member.digest,
+        data,
+        fetched_at=fetched_at,
+    )
+    return _stored(member, listed, data, fetched_at=fetched_at)
 
 
 def _sentence_or(
@@ -807,9 +827,14 @@ def _fetch_version(
         )
     refusal: DfoError | None = None
     with holding(transport, cache, member.digest, deadline=deadline):
-        if (cached := _cached_version(cache, member)) is not None:
+        if cache is not None and (cached := _cached_version(cache, member)):
             note_warnings(cached[0], strict=strict, trace_id=None)
-            return _stored(member, *cached)
+            return _stored(
+                member,
+                *cached,
+                fetched_at=sync_offload(cache.fetched_at, member.digest),
+                from_cache=True,
+            )
         if cache_only:
             raise client_error(
                 OFFLINE,
@@ -829,6 +854,7 @@ def _fetch_version(
                 transport, member, pointer, manifest, trace_id, deadline=deadline
             )
             if data is not None:
+                fetched_at = fetch_time()
                 sync_offload(
                     store,
                     cache,
@@ -836,8 +862,9 @@ def _fetch_version(
                     member.rendering,
                     member.digest,
                     data,
+                    fetched_at=fetched_at,
                 )
-                return _stored(member, manifest, data)
+                return _stored(member, manifest, data, fetched_at=fetched_at)
 
     fetched = _rebuilt(
         transport,
@@ -1154,7 +1181,14 @@ def _violation(route: str, pointer: str, trace_id: str | None) -> ContractError:
     return error
 
 
-def _stored(member: RefMember, manifest: Wire, data: bytes) -> FetchedMember:
+def _stored(
+    member: RefMember,
+    manifest: Wire,
+    data: bytes,
+    *,
+    fetched_at: datetime | None,
+    from_cache: bool = False,
+) -> FetchedMember:
     return FetchedMember(
         parts=member.parts,
         spec=member.spec,
@@ -1164,6 +1198,8 @@ def _stored(member: RefMember, manifest: Wire, data: bytes) -> FetchedMember:
         digest=member.digest,
         data=data,
         rendering=member.rendering,
+        fetched_at=fetched_at,
+        from_cache=from_cache,
     )
 
 

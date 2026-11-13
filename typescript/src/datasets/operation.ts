@@ -20,14 +20,15 @@
  * `retry_after_ms`, else the last answered poll's `Retry-After` header, any of them clamped to
  * 1 to 60 seconds, else back off from 1 to 8 seconds, the backoff advancing only when a wait
  * uses it. A wait that would reach the deadline is cut to end at it, and the poll that follows
- * runs for one attempt of the client's timeout. The poll at the deadline follows a
- * poll the deadline cuts off at once, as it does a wait with no time left. The build is still running at the
- * deadline only when that poll does not read it finished. Once that poll reads the build done,
- * each request that downloads it runs for one attempt of the client's timeout, so the call
- * returns the data. A refused poll that is not retryable, or whose `Retry-After` is past 60
- * seconds, raises at once, a 429 included. A retryable 429 spends no retry. Any other
- * retryable refused poll, one that runs past the client's timeout included, spends one of the
- * transport's retries, which a poll that answers restores.
+ * runs for one attempt of the client's `attemptTimeout`. The poll at the deadline follows a
+ * poll the deadline cuts off at once, as it does a wait with no time left. The build is still
+ * running at the deadline only when that poll does not read it finished. Once that poll reads
+ * the build done, each request that downloads it runs for one attempt of the client's
+ * `attemptTimeout`, so the call returns the data. A refused poll that is not retryable, or
+ * whose `Retry-After` is past 60 seconds, raises at once, a 429 included. A retryable 429
+ * spends no retry. Any other retryable refused poll, one that runs past the client's
+ * `attemptTimeout` included, spends one of the transport's retries, which a poll that answers
+ * restores.
  *
  * An operation resource is checked as it is read: a status outside `pending`, `running`,
  * `done` and `failed`, a failed operation whose error's status is not 4xx or 5xx, or a poll
@@ -101,19 +102,20 @@ type Reply = {
   readonly traceId: string | null;
 };
 
-/** When a call must finish and the signal that aborts it. `callTimeout` is the caller's
- *  `timeout` that set the deadline, which a deadline's message names. A download after the
- *  deadline poll also sets each request's retries and attempt timeout, which otherwise are the
- *  transport's, and a file's read, which otherwise runs until the deadline. */
+/** When a call must finish and the signal that aborts it. `callTimeout` is the `timeout`, the
+ *  call's or else the client's, that set the deadline, which a deadline's message names. A
+ *  download after the deadline poll also sets each request's retries and attempt timeout, which
+ *  otherwise are the transport's, and a file's read, which otherwise runs until the deadline. */
 export type Wait = {
   readonly deadline: number;
   readonly signal?: AbortSignal | undefined;
   readonly callTimeout?: number | undefined;
   readonly maxRetries?: number;
-  readonly timeout?: number;
+  readonly attemptTimeout?: number;
 };
 
-/** A call's wait: no deadline unless the caller gives a `timeout`, in milliseconds.
+/** A call's wait: bounded by the call's `timeout`, in milliseconds, else the client's, else
+ *  none.
  *
  * @throws {InvalidRequestError} `timeout` is not a number above 0 (`invalid_argument`).
  */
@@ -121,8 +123,9 @@ export function waitFor(
   transport: Transport,
   { timeout, signal }: { timeout?: number | undefined; signal?: AbortSignal | undefined },
 ): Wait {
-  if (timeout === undefined) return { deadline: Infinity, signal };
-  return { deadline: transport.deadlineAfter(timeout), signal, callTimeout: timeout };
+  const callTimeout = transport.callTimeout(timeout);
+  if (callTimeout === Infinity) return { deadline: Infinity, signal };
+  return { deadline: transport.deadlineAfter(callTimeout), signal, callTimeout };
 }
 
 /** The opening a deadline's message gives the caller's timeout: ` after 25 s`, or nothing. */
@@ -306,7 +309,7 @@ export async function postBuild(transport: Transport, body: unknown, { deadline,
       const response = await transport.request({
         path: "/datasets",
         json: body,
-        timeout: BUILD_READ_TIMEOUT_MS,
+        attemptTimeout: BUILD_READ_TIMEOUT_MS,
         deadline,
         maxRetries: 0,
         signal,
@@ -446,9 +449,9 @@ export class Poller implements LongBuild {
     }
   }
 
-  /** Polls once, the request bounded by the wait's deadline and the client's timeout, or by the
-   *  client's timeout alone for the `last` poll, at the deadline. A resubmitted build keeps to
-   *  the wait's deadline, so the last poll resubmits none. */
+  /** Polls once, the request bounded by the wait's deadline and the client's `attemptTimeout`,
+   *  or by the client's `attemptTimeout` alone for the `last` poll, at the deadline. A
+   *  resubmitted build keeps to the wait's deadline, so the last poll resubmits none. */
   async #poll(wait: Wait, last: boolean): Promise<void> {
     const operationId = this.operationId ?? "";
     let response: JsonResponse;
@@ -514,8 +517,8 @@ export type Built = {
 
 /**
  * Runs the requests that download a done build. Once this call's poll at its deadline has read
- * the build done, each request runs for one attempt of the client's timeout, so the call returns
- * the data. A download the caller's deadline cuts off, or one of those single attempts running
+ * the build done, each request runs for one attempt of the client's `attemptTimeout`, so the
+ * call returns the data. A download the caller's deadline cuts off, or one of those single attempts running
  * out of time, raises `deadline_exceeded` saying the build is done and the same fetch downloads
  * it again.
  */
@@ -529,7 +532,7 @@ export async function downloadBuilt<T>(
   const once = {
     deadline: Infinity,
     maxRetries: 0,
-    timeout: transport.timeout,
+    attemptTimeout: transport.attemptTimeout,
     signal: wait.signal,
   };
   try {

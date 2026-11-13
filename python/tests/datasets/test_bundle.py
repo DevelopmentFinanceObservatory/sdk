@@ -16,6 +16,7 @@ import pyarrow.parquet as pq
 import pytest
 
 import dfo
+from dfo._core.errors import DfoError, InvalidRequestError
 from dfo._core.refs import DatasetRef
 from dfo._core.types import FormatError, Rendering
 from dfo._datasets.bundle import BundleError, BundleLimits, load
@@ -151,17 +152,19 @@ def test_a_folder_or_a_file_in_it_opens(tmp_path: Path, entry: str) -> None:
     data = load(folder / entry)
     assert data.to_arrow().equals(bare_table())
     assert data.members == ()
-    with pytest.raises(ValueError, match="names no version"):
+    with pytest.raises(InvalidRequestError) as caught:
         _ = data.ref
+    assert caught.value.code == "invalid_argument"
 
 
 def test_a_lone_csv_is_refused(tmp_path: Path) -> None:
     lone = tmp_path / "data.csv"
     with zipfile.ZipFile(CSV_BUNDLE) as archive:
         lone.write_bytes(archive.read(DATA_FILE))
-    with pytest.raises(BundleError, match="download the bundle") as caught:
+    with pytest.raises(DfoError, match="download the bundle") as caught:
         load(lone)
-    assert caught.value.reason == "no_descriptor"
+    assert isinstance(caught.value, BundleError)
+    assert (caught.value.reason, caught.value.code) == ("no_descriptor", None)
 
 
 def test_a_changed_file_is_refused(tmp_path: Path) -> None:
@@ -423,6 +426,69 @@ def test_a_bare_server_parquet_is_refused(tmp_path: Path) -> None:
     assert caught.value.reason == "not_a_bundle"
 
 
+def _halved(source: Path) -> bytes:
+    data = source.read_bytes()
+    return data[: len(data) // 2]
+
+
+@pytest.mark.parametrize(
+    ("source", "suffix", "as_bytes"),
+    [
+        (PARQUET, ".parquet", False),
+        (PARQUET, ".parquet", True),
+        (CSV_BUNDLE, ".zip", False),
+    ],
+    ids=["parquet", "parquet-bytes", "zip"],
+)
+def test_a_damaged_file_is_refused(
+    tmp_path: Path, source: Path, suffix: str, as_bytes: bool
+) -> None:
+    damaged = tmp_path / f"damaged{suffix}"
+    damaged.write_bytes(_halved(source))
+    with pytest.raises(BundleError) as caught:
+        load(damaged.read_bytes() if as_bytes else damaged)
+    assert caught.value.reason == "not_a_bundle"
+    assert caught.value.__cause__ is not None
+
+
+def _damaged_page() -> bytes:
+    """A saved-dataset Parquet file whose footer is intact and first page is not."""
+    table = pa.table({"x": list(range(1000))}).replace_schema_metadata(
+        {b"dfo.format_version": b"1"}
+    )
+    sink = pa.BufferOutputStream()
+    pq.write_table(table, sink)
+    data = bytearray(sink.getvalue().to_pybytes())
+    data[4:24] = b"\xff" * 20
+    return bytes(data)
+
+
+@pytest.mark.parametrize("as_bytes", [False, True], ids=["path", "bytes"])
+def test_a_damaged_page_is_refused(tmp_path: Path, as_bytes: bool) -> None:
+    damaged = tmp_path / "damaged.parquet"
+    damaged.write_bytes(_damaged_page())
+    with pytest.raises(BundleError) as caught:
+        load(damaged.read_bytes() if as_bytes else damaged)
+    assert caught.value.reason == "not_a_bundle"
+    assert isinstance(caught.value.__cause__, OSError)
+
+
+def test_a_missing_parquet_path_raises_file_not_found(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        load(tmp_path / "missing.parquet")
+
+
+def test_a_damaged_xlsx_in_a_bundle_raises_format_error(tmp_path: Path) -> None:
+    damaged = xlsx([["country"], ["KEN"]])[:200]
+    with pytest.raises(FormatError) as caught:
+        load(small_bundle(tmp_path, damaged, "xlsx", FIELDS))
+    assert (caught.value.reason, caught.value.pointer) == (
+        "format_invalid",
+        "/resources/0",
+    )
+    assert isinstance(caught.value.__cause__, zipfile.BadZipFile)
+
+
 def test_bundle_limits_are_public_immutable_and_keyword_only() -> None:
     limits = dfo.types.BundleLimits()
     assert limits == BundleLimits()
@@ -434,8 +500,9 @@ def test_bundle_limits_are_public_immutable_and_keyword_only() -> None:
 
 @pytest.mark.parametrize("value", [0, True, 1.0])
 def test_a_bundle_limit_is_a_positive_integer(value: object) -> None:
-    with pytest.raises(ValueError, match="max_xlsx_cells"):
+    with pytest.raises(InvalidRequestError, match="max_xlsx_cells") as caught:
         BundleLimits(max_xlsx_cells=value)  # ty: ignore[invalid-argument-type]
+    assert caught.value.code == "invalid_argument"
 
 
 @pytest.mark.parametrize("limit", ["max_resource_bytes", "max_descriptor_bytes"])

@@ -345,6 +345,11 @@ class DatasetRef:
 
     Attributes:
         members: One member per distinct built spec or recipe.
+
+    Raises:
+        InvalidRequestError: A member is neither a `RefMember` nor a
+            `DerivedRefMember`, or the members mix the two kinds
+            (`invalid_argument`).
     """
 
     members: tuple[RefMember | DerivedRefMember, ...]
@@ -352,15 +357,19 @@ class DatasetRef:
     def __post_init__(self) -> None:
         for member in self.members:
             if not isinstance(member, RefMember | DerivedRefMember):
-                raise TypeError(
+                raise client_error(
+                    INVALID_ARGUMENT,
                     "A DatasetRef holds RefMember or DerivedRefMember members, not "
                     f"{type(member).__name__}; build one from a dataset's members "
-                    "with DatasetRef.of"
+                    "with DatasetRef.of",
+                    builtin=TypeError,
                 )
         kinds = {type(member) for member in self.members}
         if len(kinds) > 1:
-            raise ValueError(
-                "A DatasetRef holds dataset members or derived members, not both"
+            raise client_error(
+                INVALID_ARGUMENT,
+                "A DatasetRef holds dataset members or derived members, not both",
+                builtin=ValueError,
             )
 
     def _versions(self) -> tuple[tuple[object, ...], ...]:

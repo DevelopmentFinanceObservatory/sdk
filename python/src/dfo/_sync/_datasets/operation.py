@@ -31,12 +31,12 @@ restores. A poll the deadline cut off spends no retry, since the deadline cut
 it and not the server. The poll at the deadline follows.
 
 A fetch's `timeout` sets its deadline. A wait that would pass the deadline ends
-at it, and the poll after it runs for one attempt of the transport's timeout.
-The build is still running at the deadline only when that poll does not read it
-done or failed. When it reads the build done, each request that finishes the
-build, the files route and the signed download included, runs for one attempt
-of the transport's timeout, so `fetch(timeout=t)` can run past `t` by one
-timeout for the poll and one for each of those requests. Once the deadline has
+at it, and the poll after it runs for one attempt of the transport's
+`attempt_timeout`. The build is still running at the deadline only when that
+poll does not read it done or failed. When it reads the build done, each request
+that finishes the build, the files route and the signed download included, runs
+for one attempt of `attempt_timeout`, so `fetch(timeout=t)` can run past `t` by
+one attempt for the poll and one for each of those requests. Once the deadline has
 passed, `still_running` and `finishing` raise `deadline_exceeded` saying the
 build keeps running on the server, or is done there.
 
@@ -58,6 +58,7 @@ from dfo._core.codes import DEADLINE_EXCEEDED, INVALID_ARGUMENT, UNEXPECTED_RESP
 from dfo._core.errors import DfoError, DfoTimeoutError, client_error, recast
 from dfo._core.parse import violation
 from dfo._core.refusals import describing, problem_error, sent_key, trace_id_of
+from dfo._core.timeouts import ran_out
 from dfo._core.types import OPERATION_ID, Wire, matches
 from dfo._datasets.build import (
     BUILD_READ_TIMEOUT,
@@ -308,7 +309,7 @@ class Poller:
         """Poll until the build is done and return it.
 
         A wait that would pass `deadline` ends at it, and the poll after it runs
-        for one attempt of the transport's timeout. The returned build's
+        for one attempt of the transport's `attempt_timeout`. The returned build's
         `at_deadline` says whether that poll found the build finished. It is
         False for a build already finished before this call.
 
@@ -379,8 +380,8 @@ class Poller:
 
     def _poll(self, deadline: float | None, *, last: bool = False) -> None:
         """Poll once within `deadline`, or, for the `last` poll at the deadline,
-        for one attempt of the transport's timeout. A resubmitted build keeps to
-        `deadline`."""
+        for one attempt of the transport's `attempt_timeout`. A resubmitted
+        build keeps to `deadline`."""
         operation_id = self.operation_id
         assert operation_id is not None
         bound = None if last else deadline
@@ -486,7 +487,7 @@ def still_running(
             error,
             DfoTimeoutError,
             message=(
-                f"The build is still running on the server{_after(timeout)}. "
+                f"The build is still running on the server{ran_out(timeout)}. "
                 "The same fetch joins it if one started."
             ),
         ) from error
@@ -503,8 +504,8 @@ def finishing(
     """The transport and deadline that download a done build's data.
 
     A build this call's poll at its deadline read done finishes without the
-    deadline, each request sent once for one attempt of the transport's timeout.
-    `timeout` is the caller's, in seconds, which set `deadline`.
+    deadline, each request sent once for one attempt of the transport's
+    `attempt_timeout`. `timeout` is the caller's, in seconds, which set `deadline`.
 
     Raises:
         DfoTimeoutError: The deadline passed while the build's data was
@@ -524,14 +525,9 @@ def finishing(
             DfoTimeoutError,
             message=(
                 "The build is done on the server, but its download ran out of "
-                f"time{_after(timeout)}. The same fetch downloads it again."
+                f"time{ran_out(timeout)}. The same fetch downloads it again."
             ),
         ) from error
-
-
-def _after(timeout: float | None) -> str:
-    """` after 25 s` for a 25-second timeout, or nothing when it is unknown."""
-    return "" if timeout is None else f" after {timeout:g} s"
 
 
 def resume(
