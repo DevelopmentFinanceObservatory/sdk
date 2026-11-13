@@ -451,6 +451,33 @@ def test_a_damaged_file_is_refused(
     assert caught.value.__cause__ is not None
 
 
+def _damaged_page() -> bytes:
+    """A saved-dataset Parquet file whose footer is intact and first page is not."""
+    table = pa.table({"x": list(range(1000))}).replace_schema_metadata(
+        {b"dfo.format_version": b"1"}
+    )
+    sink = pa.BufferOutputStream()
+    pq.write_table(table, sink)
+    data = bytearray(sink.getvalue().to_pybytes())
+    data[4:24] = b"\xff" * 20
+    return bytes(data)
+
+
+@pytest.mark.parametrize("as_bytes", [False, True], ids=["path", "bytes"])
+def test_a_damaged_page_is_refused(tmp_path: Path, as_bytes: bool) -> None:
+    damaged = tmp_path / "damaged.parquet"
+    damaged.write_bytes(_damaged_page())
+    with pytest.raises(BundleError) as caught:
+        load(damaged.read_bytes() if as_bytes else damaged)
+    assert caught.value.reason == "not_a_bundle"
+    assert isinstance(caught.value.__cause__, OSError)
+
+
+def test_a_missing_parquet_path_raises_file_not_found(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        load(tmp_path / "missing.parquet")
+
+
 def test_a_damaged_xlsx_in_a_bundle_raises_format_error(tmp_path: Path) -> None:
     damaged = xlsx([["country"], ["KEN"]])[:200]
     with pytest.raises(FormatError) as caught:

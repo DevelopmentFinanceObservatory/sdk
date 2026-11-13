@@ -227,12 +227,16 @@ def _open_saved(path: Path | bytes) -> Dataset:
             )
         named, source = "The bytes are", pa.BufferReader(path)
     else:
-        named, source = f"{path} is", path
+        # Opening the file here lets a missing or unreadable path raise its own
+        # OSError, so every OSError below comes from decoding.
+        named, source = f"{path} is", path.open("rb")
     try:
-        parquet = pq.ParquetFile(source)
-        metadata = parquet.schema_arrow.metadata or {}
-        table = parquet.read() if b"dfo.format_version" in metadata else None
-    except pa.ArrowException as error:
+        with source:
+            parquet = pq.ParquetFile(source)
+            metadata = parquet.schema_arrow.metadata or {}
+            table = parquet.read() if b"dfo.format_version" in metadata else None
+    # pyarrow raises a plain OSError, outside ArrowException, for a damaged page.
+    except (pa.ArrowException, OSError) as error:
         raise BundleError(
             "not_a_bundle",
             f"{named} a damaged Parquet file ({error}): save the dataset again",
