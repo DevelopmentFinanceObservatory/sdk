@@ -181,7 +181,7 @@ class CitedSourceNode(TypedDict):
 class CodeItem(TypedDict):
     ref: str
     label: str | None
-    code: str
+    code: str | None
     parent: str | None
 
 
@@ -225,6 +225,7 @@ class ConvertedUnitModel(TypedDict):
     currency: str
     prices: Literal["current", "constant"]
     base_year: NotRequired[int | None]
+    deflation_basis: NotRequired[Literal["donor", "recipient", "national"] | None]
 
 
 class CountedRefsModel(TypedDict):
@@ -290,7 +291,9 @@ class Departure(TypedDict):
         "whole_total_read",
         "whole_total_unpublished",
         "direction_discarded",
+        "organisation_read_as_source",
         "direction_inferred",
+        "organisation_read_as_party",
         "scope_limited",
     ]
     binding_ref: NotRequired[str | None]
@@ -1069,6 +1072,8 @@ class ResolvedEntity(TypedDict):
     label: NotRequired[str | None]
     entity_type: NotRequired[str | None]
     role: Literal["observationAbout", "origin", "destination"]
+    party_kind: NotRequired[Literal["party", "total", "residual"] | None]
+    party_class: NotRequired[Literal["official", "private", "residual"] | None]
     multilateral: NotRequired[bool | None]
     confidence: NotRequired[Literal["high", "medium", "low"] | None]
 
@@ -1086,6 +1091,7 @@ class ResolvedQualifier(TypedDict):
     ]
     operation: NotRequired[Literal["union", "refinement"] | None]
     selected: NotRequired[list[GraphRef]]
+    held_by: NotRequired[list[GraphRef]]
 
 
 class ResolvedScope(TypedDict):
@@ -1152,6 +1158,7 @@ class RootEntry(TypedDict):
 
 class RootRendering(TypedDict):
     without_party_totals: NotRequired[bool]
+    party_totals: NotRequired[bool]
     columns: NotRequired[list[Column] | None]
     groupby: NotRequired[GroupbyOptions | None]
 
@@ -1305,6 +1312,7 @@ class SimpleUnit(TypedDict):
     at_mint: NotRequired[Literal[True]]
     prices: NotRequired[Literal["current", "constant"]]
     base_year: NotRequired[int]
+    deflation_basis: NotRequired[Literal["donor", "recipient", "national"]]
 
 
 class Skill(TypedDict):
@@ -1565,6 +1573,7 @@ class FieldExportSlot(TypedDict):
 
 class FieldRefRendering(TypedDict):
     without_party_totals: NotRequired[bool]
+    party_totals: NotRequired[bool]
     groupby: NotRequired[GroupbyOptions | None]
 
 
@@ -1782,7 +1791,7 @@ class CitedDocumentation(TypedDict):
 class CodeBlock(TypedDict):
     code_system: NodeRef | None
     property: str
-    code: str
+    code: str | None
     parent: NodeRef | None
     synonyms: list[str]
 
@@ -1937,6 +1946,7 @@ class DatasetEntry(TypedDict):
     update_cadence: str | None
     years_covered: str | None
     source_url: str | None
+    licence_type: NotRequired[str | None]
 
 
 class DatasetRoot(TypedDict):
@@ -2136,6 +2146,7 @@ class MintOptions(TypedDict):
     pivot: NotRequired[PivotOptions | None]
     columns: NotRequired[Columns | Columns1]
     without_party_totals: NotRequired[bool]
+    party_totals: NotRequired[bool]
     enrichment: NotRequired[Literal["default"] | None]
     layout: NotRequired[Literal["frame"] | None]
 
@@ -2445,6 +2456,8 @@ class SourceBlock(TypedDict):
     freshness: Freshness
     data_commons: GraphApiOriginModelsDataCommonsRef | None
     documentation: str
+    licence: NotRequired[str | None]
+    licence_type: NotRequired[str | None]
 
 
 class SourceCatalogueEntry(TypedDict):
@@ -2555,6 +2568,7 @@ class UnitConversion(TypedDict):
     role_currencies: NotRequired[
         dict[Literal["observationAbout", "origin", "destination"], str]
     ]
+    deflation_basis: NotRequired[Literal["donor", "recipient", "national"] | None]
 
 
 class UnitNode(TypedDict):
@@ -2672,6 +2686,7 @@ class DatasetsApiCapabilitiesCapabilities(TypedDict):
     summability_declarations_live: bool
     summable_axes: list[str]
     groupby_level_axes: list[str]
+    analysis_execution_identity: dict[str, str]
     caps: DatasetsApiCapabilitiesCapabilityCaps
     code_index: DatasetsApiCapabilitiesCodeIndexStamp
 
@@ -2755,6 +2770,27 @@ class ProblemDetails(TypedDict):
     ceiling_kind: NotRequired[str | None]
     count: NotRequired[int | None]
     cap: NotRequired[int | None]
+    limit_name: NotRequired[
+        Literal[
+            "MAX_ENVELOPE_BYTES",
+            "MAX_INTENT_BYTES",
+            "MAX_LINE_CHART_SERIES",
+            "MAX_POINTS_PER_SERIES",
+            "MAX_SELECTORS",
+            "MAX_SERIES_PER_COMPONENT",
+            "MAX_TABLE_ROWS",
+        ]
+        | None
+    ]
+    retry_mode: NotRequired[
+        Literal[
+            "correct_and_retry",
+            "refresh_then_retry",
+            "retry_after_delay",
+            "do_not_retry",
+        ]
+        | None
+    ]
     trace_id: str
     capability_version: str
     retryable: bool
@@ -2829,6 +2865,9 @@ class CitationSource(TypedDict):
     source: NotRequired[CitedSourceNode | None]
     data_commons: NotRequired[CitedDataCommons | None]
     documentation: NotRequired[CitedDocumentation | None]
+    licence: NotRequired[str | None]
+    licence_type: NotRequired[str | None]
+    licence_url: NotRequired[str | None]
 
 
 class Component(TypedDict):
@@ -3215,6 +3254,7 @@ class SourceDocumentation(TypedDict):
     version_history: list[VersionHistoryEntry]
     gaps: list[str]
     document_errors: list[DocumentErrorEntry]
+    licence: NotRequired[SourceLicense]
 
 
 class SpecDefinition(TypedDict):
@@ -3701,7 +3741,9 @@ type DepartureCode = Literal[
     "whole_total_read",
     "whole_total_unpublished",
     "direction_discarded",
+    "organisation_read_as_source",
     "direction_inferred",
+    "organisation_read_as_party",
     "scope_limited",
 ]
 """How a reading differs from what the question asked.
