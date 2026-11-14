@@ -231,7 +231,7 @@ def fetch(
     `latest=True` the newest versions of a ref's specs; run a recipe on DFO; or
     fetch the exact version a share's slot shows, with the default client.
 
-    Takes `Client.fetch`'s arguments, including its timeout behavior: left out,
+    Takes `Client.fetch`'s arguments, including its timeout behaviour: left out,
     `timeout` is the one given to `dfo.configure`, else None, which waits as
     long as the build takes. Platform name resolution can run past a
     synchronous deadline, while the asynchronous client can cancel it.

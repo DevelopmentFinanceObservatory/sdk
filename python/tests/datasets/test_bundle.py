@@ -1,5 +1,6 @@
 """Opening website bundles: a ZIP, a folder or a file in one, typed and hash-checked."""
 
+import errno
 import hashlib
 import io
 import json
@@ -9,7 +10,7 @@ import zipfile
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -463,14 +464,47 @@ def _damaged_page() -> bytes:
     return bytes(data)
 
 
-@pytest.mark.parametrize("as_bytes", [False, True], ids=["path", "bytes"])
-def test_a_damaged_page_is_refused(tmp_path: Path, as_bytes: bool) -> None:
+@pytest.mark.parametrize(
+    "given",
+    [
+        lambda path: path,
+        Path.read_bytes,
+        lambda path: bytearray(path.read_bytes()),
+        lambda path: memoryview(path.read_bytes()),
+    ],
+    ids=["path", "bytes", "bytearray", "memoryview"],
+)
+def test_a_damaged_page_is_refused(
+    tmp_path: Path, given: Callable[[Path], Any]
+) -> None:
     damaged = tmp_path / "damaged.parquet"
     damaged.write_bytes(_damaged_page())
     with pytest.raises(BundleError) as caught:
-        load(damaged.read_bytes() if as_bytes else damaged)
+        load(given(damaged))
     assert caught.value.reason == "not_a_bundle"
     assert isinstance(caught.value.__cause__, OSError)
+
+
+def test_a_failed_read_of_a_saved_dataset_raises_its_own_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    saved = tmp_path / "saved.parquet"
+    content = _damaged_page()
+    saved.write_bytes(content)
+    failure = OSError(errno.EIO, "Input/output error")
+
+    class Failing(io.BytesIO):
+        @override
+        def read(self, size: int | None = -1, /) -> bytes:
+            # `load` reads the 4-byte magic number; pyarrow reads more.
+            if size is not None and size > 4:
+                raise failure
+            return super().read(size)
+
+    monkeypatch.setattr(Path, "open", lambda *_, **__: Failing(content))
+    with pytest.raises(OSError) as caught:
+        load(saved)
+    assert caught.value is failure
 
 
 def test_a_missing_parquet_path_raises_file_not_found(tmp_path: Path) -> None:

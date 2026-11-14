@@ -255,7 +255,7 @@ export class Client {
     target: Spec | DatasetRef | Recipe | Share | ShareUrl,
     options: FetchOptions = {},
   ): Promise<Dataset> {
-    return fetchDataset(this.#transport, target, withEntityDcids(options));
+    return fetchDataset(this.#transport, target, options, withEntityDcids);
   }
 
   /**

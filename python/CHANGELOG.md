@@ -11,7 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `data.party_totals_left_out` names the group totals a fetch left out of each member, as `dfo.types.PartyTotalsLeftOut` entries of spec id, party role, dcids and provenance, and the repr counts them. `data.save` writes them under a new `dfo.party_totals_left_out` key, which 0.1.0 ignores, and `dfo.load` reads a file without it.
 - `entities=` on `fetch` and `answer.fetch` takes the `Match` and `Entity` objects `dfo.lookup.resolve` returns beside dcids, as in `entities={"destination": dfo.lookup.resolve("Nigeria")}`. A match that is not `resolved` raises `InvalidRequestError` (`invalid_argument`) before any request, printing the match and a candidate to pass instead. An awaitable in its place, such as `client.lookup.resolve(...)` on an `AsyncClient` without `await`, raises the same error and names the missing `await`.
 - `docs/settings.md` lists every client option and environment variable with its default and which source wins.
-- `data.to_bytes()` returns the Parquet file `data.save(path)` writes, and `dfo.load` reads those bytes as it reads a path.
+- `data.to_bytes()` returns the Parquet file `data.save(path)` writes, and `dfo.load` reads those bytes, or any bytes-like object such as a `bytearray` or `memoryview`, as it reads a path.
 - `data.from_cache` says whether a fetch read any member's file from the cache, and `data.fetched_at` when the data left the server, in UTC. The repr adds `Cached: read from the cache, fetched <time>` on a cache hit online, and the `Stale:` line under `DFO_OFFLINE=1` ends with the same time. The cache records each download's time under `fetched/sha256/<hex>`. A file 0.1.0 stored has none, and the repr says `fetch time unknown`. Eviction counts each time's bytes against the cache's size limit, removes it with its file, and removes a time whose file is gone.
 - `data.question` holds the question of the answer a dataset was fetched from. `data.save` writes it under `dfo.question` and the fetch time under `dfo.fetched_at`, each a JSON string, and leaves out either key when it has no value. 0.1.0 ignores both keys, and `dfo.load` reads a file without them.
 - `dfo.types.CLIENT_TIMEOUT` is the default of every call's `timeout` and stands for the client's `timeout`, and `dfo.types.CallTimeout` types the argument, so a function that wraps a call can pass the default on.
@@ -33,7 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- `dfo.load` of a damaged Parquet file or ZIP raises `BundleError` (`not_a_bundle`), and of a bundle whose XLSX is damaged `FormatError`, each with pyarrow's or `zipfile`'s error as its cause. Both used to escape as pyarrow and `zipfile` errors.
+- `dfo.load` of a damaged Parquet file or ZIP raises `BundleError` (`not_a_bundle`), and of a bundle whose XLSX is damaged `FormatError`, each with pyarrow's or `zipfile`'s error as its cause. Both used to escape as pyarrow and `zipfile` errors. A read that fails at the disk, such as `EIO`, still raises its own `OSError`.
 - `answer.timed_out` is true when a part's own no-data reason is `timed_out`, as well as when Search's diagnostics say so, and `Answer.from_json` works it out again.
 
 ## [0.1.0] - 2026-11-13

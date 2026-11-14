@@ -125,6 +125,8 @@ const FRAME: Rendering = { format: "parquet", bundle: false, layout: "frame" };
  *   than `frame`, `slot` is not a number from 1, or `asOf` is malformed, all before any
  *   request; a share of several slots is given no `slot`, or one past its last; `asOf` is
  *   before the slot first served data; or `asOf` or `slot` is given another target.
+ *   `entityDcids` reads a spec's entities once those checks pass, so a ref or share given a
+ *   `Match` that did not resolve is refused for taking entities, as the Python client is.
  * @throws {VersionUnavailableError} A ref's version can no longer be fetched.
  * @throws {DfoError} The server refused a request.
  */
@@ -132,6 +134,7 @@ export async function fetchDataset(
   transport: Transport,
   target: Spec | DatasetRef | Recipe | Share | string,
   options: FetchOptions = {},
+  entityDcids: (narrowing: Narrowing) => Narrowing = (narrowing) => narrowing,
 ): Promise<Dataset> {
   const { window, entities, facets, latest, asOf, slot, ...rest } = checkOptions(
     FETCH_OPTIONS,
@@ -209,7 +212,7 @@ export async function fetchDataset(
     );
   }
   const member = { parts: [], spec, ...resolvedOf(spec) };
-  return fetchMembers(transport, [member], { ...rest, narrowing });
+  return fetchMembers(transport, [member], { ...rest, narrowing: entityDcids(narrowing) });
 }
 
 /** Why a ref fetch refuses `window`, and the call that does what it asks: `latest: true` for
