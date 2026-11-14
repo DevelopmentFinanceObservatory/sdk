@@ -98,6 +98,8 @@ def test_async_source_may_not_import_an_async_module_from_its_package(
         "x = httpx2.AsyncByteStream\n",
         "await response.aread()\n",
         "def __aiter__(self): ...\n",
+        "backend = httpcore2.AnyIOBackend()\n",
+        "pool.handle_async_request(request)\n",
     ],
 )
 def test_an_async_name_left_in_the_output_is_refused(source: str) -> None:

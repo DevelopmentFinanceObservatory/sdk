@@ -1,3 +1,4 @@
+import { trimEnd } from "../core/text.ts";
 import type { EnvReader } from "./env.ts";
 
 /** The platforms the credentials path rule distinguishes. */
@@ -56,7 +57,11 @@ export function parseCredentialsFile(text: string): ParsedCredentialsFile {
   const profiles: CredentialsProfiles = Object.create(null) as CredentialsProfiles;
   let open: Record<string, string> | undefined;
   for (const [index, raw] of text.split("\n").entries()) {
-    const line = raw.replace(/[ \t]*\r?[ \t]*$/, "").replace(/^[ \t]+/, "");
+    const bare = trimEnd(raw, " \t");
+    const line = (bare.endsWith("\r") ? trimEnd(bare.slice(0, -1), " \t") : bare).replace(
+      /^[ \t]+/,
+      "",
+    );
     if (line === "" || line.startsWith("#")) continue;
     const table = TABLE.exec(line);
     if (table !== null) {

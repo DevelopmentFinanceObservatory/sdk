@@ -25,6 +25,7 @@ import {
   isDerived,
   isDfoError,
   latestYear,
+  partFacts,
   recipe,
   SeriesLeftOutWarning,
 } from "@developmentfinance/client";
@@ -32,6 +33,7 @@ import type {
   Card,
   CardKind,
   LeftOutSeries,
+  PartyTotalsLeftOut,
   Recipe,
   Served,
   Share,
@@ -46,6 +48,7 @@ import type {
   Node,
   Notice,
   Part,
+  PartFacts,
   ProblemIssue,
   Severity,
   Spec,
@@ -81,6 +84,18 @@ export function described(answer: Answer): string {
   return [kind, status, kinds.join(), total ?? 0, tokens ?? 0].join(" ");
 }
 
+// The facts an answer's parts state are typed from the package root.
+export function stated(answer: Answer): number {
+  const facts: readonly PartFacts[] = answer.facts;
+  const first: PartFacts = partFacts(answer.parts[0]!);
+  const kinds: readonly string[] = (facts[0]?.assumptions ?? []).map((item) => item.kind);
+  const codes: readonly string[] = first.departures.map((item) => item.code);
+  const verbs: readonly string[] = first.operations.map((item) => item.verb);
+  const severities: readonly string[] = first.warnings.map((item) => item.severity);
+  const byReading = [...first.readingAssumptions.values()].flat().length;
+  return kinds.length + codes.length + verbs.length + severities.length + byReading;
+}
+
 export const known = (error: unknown): boolean => isDfoError(error);
 
 // A refusal's issues and alternatives are typed from the package root.
@@ -110,8 +125,9 @@ export async function analysed(client: Client, spec: Spec): Promise<number> {
   const newest = await client.fetch(top.ref, { latest: true });
   const dropped: readonly LeftOutSeries[] = newest.leftOut;
   const kept = await client.pin(await client.fetch(spec));
+  const totals: readonly PartyTotalsLeftOut[] = kept.partyTotalsLeftOut;
   const loud = new SeriesLeftOutWarning("series_left_out", "x").code === "series_left_out";
-  return dropped.length + share.rowCount + (kept.pinned && loud ? 1 : 0);
+  return dropped.length + totals.length + share.rowCount + (kept.pinned && loud ? 1 : 0);
 }
 
 // A member's spec is a Spec or a DerivedSpec; the guards narrow it, and only a Spec fetches.

@@ -19,7 +19,7 @@ import type {
   WarningModel,
 } from "../wire.ts";
 
-/** What one part states beside its reading. */
+/** What one part states beside its reading, as `Answer.facts` and `partFacts` give it. */
 export type PartFacts = {
   /** The part's `assumptions`, or undefined when it holds no list; `[]` states none. */
   readonly assumptions: readonly Assumption[] | undefined;
@@ -30,7 +30,7 @@ export type PartFacts = {
   readonly warnings: readonly Warning[];
 };
 
-/** A part's facts, read afresh on each call. */
+/** A part's facts, read afresh on each call. `answer.facts[i]` is `partFacts(answer.parts[i])`. */
 export function partFacts(part: Readonly<Record<string, unknown>>): PartFacts {
   const byReading = part["reading_assumptions"];
   const readings = new Map<string, readonly Assumption[]>();

@@ -1,0 +1,42 @@
+name: Python newest
+
+# The package sets no upper bound on its dependencies, so a release of httpx2,
+# pyarrow, pandas or polars can break users with no change in this repository.
+# This runs the suite against the newest of every dependency, on every pull
+# request through ci.yml and once a week on the default branch.
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  python-newest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.0
+
+      - name: Set up Python 3.14
+        run: uv python install 3.14
+
+      # Without --frozen, the resolution ignores uv.lock and takes the newest of all.
+      - name: Install the newest versions of every dependency
+        run: uv sync --upgrade --all-extras --python 3.14
+
+      - name: Show the resolved versions
+        run: uv pip list
+
+      - name: Fetch the contract at contract/SOURCE
+        run: uv run --no-sync python ../scripts/sync_contract.py
+
+      - name: Run tests
+        run: uv run --no-sync pytest --no-cov

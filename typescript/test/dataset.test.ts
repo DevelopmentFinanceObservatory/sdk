@@ -16,7 +16,8 @@ import { derivedDataset } from "../src/datasets/derived.ts";
 import { DatasetRef, isDerived } from "../src/core/ref.ts";
 import type { DerivedRefMember } from "../src/core/ref.ts";
 import type { Gap } from "../src/search/answer.ts";
-import { scenarioBytes } from "./replay.ts";
+import { replay, scenario, scenarioBytes, stepOf } from "./replay.ts";
+import { clientOver } from "../src/client.ts";
 import { recordedBytes, recordedJson } from "./support.ts";
 
 const SCENARIOS = new URL("../../contract/scenarios/", import.meta.url);
@@ -839,6 +840,111 @@ describe("a dataset of dataset versions", () => {
     assert.equal(metadata["dfo.steps"], undefined);
     assert.ok(!String(dataset).includes("Derived:"));
   });
+});
+
+describe("party totals left out", () => {
+  test("a fetch names the totals its cut left out and writes them under a key of their own", async () => {
+    const record = await scenario("fetch-spec-party-totals-left-out");
+    const { spec, window, entities } = stepOf(record, 0, "fetch");
+    assert.ok(spec);
+    const client = clientOver(replay(record).transport);
+    const dataset = await client.fetch(spec, { window, entities });
+    const trace = (record.exchanges[0]!.response.json as Record<string, unknown>)["trace"] as {
+      party_totals_left_out: { role: string; entities: string[] }[];
+    };
+    const [served] = trace.party_totals_left_out;
+    assert.ok(served !== undefined && !("provenance" in served));
+    assert.deepEqual(dataset.partyTotalsLeftOut, [
+      {
+        specId: dataset.members[0]!.spec.spec_id,
+        role: "financingProvider",
+        entities: served.entities,
+        provenance: null,
+        everyProvenance: true,
+      },
+    ]);
+    assert.ok(
+      String(dataset)
+        .split("\n")
+        .includes(
+          `  Party totals left out: ${served.entities.length} on financingProvider · ` +
+            "data.partyTotalsLeftOut",
+        ),
+    );
+    const metadata = await savedMetadata(dataset);
+    assert.deepEqual(JSON.parse(metadata["dfo.party_totals_left_out"]!), [
+      { spec_id: dataset.members[0]!.spec.spec_id, ...served },
+    ]);
+    // Python 0.1.0 refuses a `dfo.dataset` key it does not know.
+    assert.deepEqual(Object.keys(JSON.parse(metadata["dfo.dataset"]!) as object).toSorted(), [
+      "assumptions",
+      "complete",
+      "departures",
+      "held_until",
+      "layout_version",
+      "member_citations",
+      "member_rows",
+      "missing",
+      "pinned",
+      "requested_operations",
+      "stale",
+      "warnings",
+    ]);
+  });
+
+  for (const [name, served, provenance, everyProvenance] of [
+    ["a named provenance", { provenance: "provenance/OECD_DAC2a" }, "provenance/OECD_DAC2a", false],
+    ["rows without provenance", { provenance: null }, null, false],
+    ["every provenance", {}, null, true],
+  ] as const) {
+    test(`keeps ${name} through bytes()`, async () => {
+      const entry = { role: "financingRecipient", entities: ["AfricaTotal"], ...served };
+      const data = await scenarioBytes("fetch-ref.parquet");
+      const manifest = { trace: { party_totals_left_out: [entry], other: 1 } };
+      const dataset = await Dataset.create([member(data, { manifest })], { layout: "long" });
+      const [read] = dataset.partyTotalsLeftOut;
+      assert.deepEqual([read?.provenance, read?.everyProvenance], [provenance, everyProvenance]);
+      const metadata = await savedMetadata(dataset);
+      assert.deepEqual(JSON.parse(metadata["dfo.party_totals_left_out"]!), [
+        { spec_id: dataset.members[0]!.spec.spec_id, ...entry },
+      ]);
+    });
+  }
+
+  test("a dataset with none left out writes no key and no line", async () => {
+    const data = await scenarioBytes("fetch-ref.parquet");
+    const dataset = await Dataset.create([member(data)], { layout: "long" });
+    assert.deepEqual(dataset.partyTotalsLeftOut, []);
+    assert.ok(!String(dataset).includes("Party totals"));
+    assert.equal((await savedMetadata(dataset))["dfo.party_totals_left_out"], undefined);
+  });
+
+  for (const [trace, pointer] of [
+    [[], "/trace"],
+    [{ party_totals_left_out: {} }, "/trace/party_totals_left_out"],
+    [{ party_totals_left_out: [[]] }, "/trace/party_totals_left_out/0"],
+    [{ party_totals_left_out: [{ entities: [] }] }, "/trace/party_totals_left_out/0/role"],
+    [
+      { party_totals_left_out: [{ role: "financingProvider" }] },
+      "/trace/party_totals_left_out/0/entities",
+    ],
+    [
+      { party_totals_left_out: [{ role: "financingProvider", entities: [1] }] },
+      "/trace/party_totals_left_out/0/entities/0",
+    ],
+    [
+      { party_totals_left_out: [{ role: "financingProvider", entities: [], provenance: 2 }] },
+      "/trace/party_totals_left_out/0/provenance",
+    ],
+  ] as const) {
+    test(`a trace broken at ${pointer} raises ContractError`, async () => {
+      const data = await scenarioBytes("fetch-ref.parquet");
+      await assert.rejects(
+        Dataset.create([member(data, { manifest: { trace } })], { layout: "long" }),
+        { name: "ContractError", code: "contract_violation", pointer },
+      );
+    });
+  }
 });
 
 describe("members whose column types differ", () => {

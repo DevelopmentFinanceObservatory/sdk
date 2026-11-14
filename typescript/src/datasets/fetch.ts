@@ -44,6 +44,7 @@ import { mintOptions, renderingFor, renderingMatches } from "../core/ref.ts";
 import type { Layout, Rendering, Spec } from "../core/ref.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
+import { trimEnd, WHITESPACE } from "../core/text.ts";
 import { DEFAULT_MAX_BYTES, passedDeadline } from "../http/transport.ts";
 import type { Target, Transport } from "../http/transport.ts";
 import type { EntityGroup, Part } from "../wire.ts";
@@ -748,7 +749,7 @@ export async function finish(
  *  keeps the field the refusal's pointer names and the bracket with its code and trace id. */
 function withHint(error: DfoError, ...hints: readonly string[]): DfoError {
   const ErrorClass = error.constructor as new (options: DfoErrorOptions) => DfoError;
-  const hinted = (text: string) => `${text.replace(/[.\s]*$/, ".")} ${hints.join(" ")}`;
+  const hinted = (text: string) => `${trimEnd(text, `.${WHITESPACE}`)}. ${hints.join(" ")}`;
   return new ErrorClass({
     ...optionsOf(error),
     detail: hinted(error.detail),

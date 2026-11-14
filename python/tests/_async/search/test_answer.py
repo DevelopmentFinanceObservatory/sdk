@@ -34,7 +34,8 @@ from dfo._datasets.build import Reading
 from dfo._datasets.dataset import build_dataset
 from dfo._datasets.fetch import Session
 from dfo._http.transport import AsyncTransport
-from dfo._search.answer import AsyncAnswer
+from dfo._search.answer import AsyncAnswer, answer_from_body
+from dfo._search.answer_json import read_answer_json
 from dfo._search.search import search
 from tests._data import load
 from tests._datasets import recorded_member
@@ -271,6 +272,19 @@ async def test_a_timed_out_answer_keeps_each_no_data_parts_gap_kind() -> None:
         (1, "not_understood")
     ]
     assert answer.timed_out
+
+
+async def test_a_part_that_timed_out_marks_the_answer_and_its_json_timed_out() -> None:
+    wire = load("search-4.json")
+    wire["diagnostics"]["timed_out"] = False
+    wire["parts"][1]["no_data"]["reason"] = "timed_out"
+    answer, _ = await ask("debt", wire)
+    assert answer.timed_out
+    question, body, trace_id = read_answer_json(answer.to_json())
+    revived = answer_from_body(
+        body, question=question, source=answer._source, trace_id=trace_id
+    )
+    assert revived.timed_out
 
 
 async def test_unknown_and_unsupported_parts_are_gaps() -> None:

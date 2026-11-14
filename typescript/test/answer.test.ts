@@ -5,6 +5,7 @@ import { inspect } from "node:util";
 import { parquetMetadata } from "hyparquet";
 
 import { Answer, answerFromBody, SearchWarning } from "../src/search/answer.ts";
+import { partFacts } from "../src/core/parse.ts";
 import { optionLine } from "../src/search/choices.ts";
 import type { AnswerContext, Candidate, Gap, QueryOption } from "../src/search/answer.ts";
 import {
@@ -237,6 +238,17 @@ describe("gaps", () => {
       answer.gaps.map((gap) => [gap.partIndex, gap.kind, gap.options.length]),
       [[1, "not_understood", 0]],
     );
+  });
+
+  test("a part whose own reason is timed_out marks the answer and its JSON timed out", () => {
+    const edited = body("answer-mixed-fetch-raises");
+    (edited["diagnostics"] as Record<string, unknown>)["timed_out"] = false;
+    const parts = edited["parts"] as { no_data?: { reason: string } }[];
+    parts[1]!.no_data!.reason = "timed_out";
+    const answer = answerFromBody(edited, offline(), null);
+    assert.equal(answer.timedOut, true);
+    const client = clientOver(offline().transport);
+    assert.equal(Answer.fromJSON(JSON.stringify(answer), client).timedOut, true);
   });
 
   test("diagnostics holds the response's diagnostics, or nothing when it sent none", () => {
@@ -583,6 +595,16 @@ describe("fetch", () => {
       '  Not done: rank ("top 5")',
       "  Fetch: answer.fetch()",
     ]);
+    assert.deepEqual(answer.facts[0], partFacts(answer.parts[0]!));
+    assert.deepEqual(answer.facts[0].assumptions, [
+      { kind: "declared_default", binding_ref: "how:aid", text: "aid", refs: ["A"] },
+    ]);
+    assert.deepEqual(answer.facts[0].departures, [
+      { code: "operation_not_applied", text: "Not ranked." },
+    ]);
+    assert.deepEqual(answer.facts[0].operations, [{ verb: "rank", phrase: "top 5" }]);
+    assert.deepEqual(answer.facts[0].warnings, []);
+    assert.equal(answer.facts, answer.facts);
     const dataset = await answer.fetch();
     assert.deepEqual(remaining(), []);
     assert.deepEqual(dataset.assumptions, [

@@ -5,6 +5,7 @@ import type { Answer, AnswerContext, SearchOptions } from "./search/answer.ts";
 import type { Dataset } from "./datasets/dataset.ts";
 import { clientError, DfoError, InvalidRequestError, messageOf, optionsOf } from "./core/errors.ts";
 import { present } from "./core/json.ts";
+import { trimTrailingSlashes } from "./core/text.ts";
 import { checkOptions, declareOptions } from "./core/options.ts";
 import { Analysis } from "./datasets/analysis.ts";
 import { Cards } from "./datasets/cards.ts";
@@ -147,7 +148,7 @@ export class Client {
 
   /** The API's base URL, less any trailing slashes. */
   get baseUrl(): string {
-    return this.#transport.baseUrl.href.replace(/\/+$/, "");
+    return trimTrailingSlashes(this.#transport.baseUrl.href);
   }
 
   /** The client as `<Client https://…>`, naming its base URL, with `(from DFO_BASE_URL)` when

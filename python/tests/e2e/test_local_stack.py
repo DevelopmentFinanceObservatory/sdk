@@ -71,6 +71,8 @@ GNI = (
     "cv_96556e3d3e312acb219d633392cd1d05",
     "Kenya GNI (PPP), 2015 to 2024",
 )
+# The codes a server without the seed answers a seeded reading with.
+NOT_FOUND_CODES = {"spec_not_found", "snapshot_not_found"}
 PAIRING = {"destination": "place"}
 # A breakdown by recipient, the sum data-mcp's `get_data` reads a frame with.
 BREAKDOWN = {"by": ["time_period", "financingRecipient"], "op": "sum"}
@@ -172,6 +174,31 @@ def e2e_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     path = Path(given) if given else tmp_path_factory.mktemp("e2e")
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+@pytest.fixture(scope="module", autouse=True)
+def seed(client: Client) -> None:
+    """Stops the run once, before any step, when the server lacks the seed.
+
+    Each seeded reading is probed once. Only the not-found codes count as
+    missing. Any other error propagates as itself. `pytest.exit` ends the run
+    with one failure, where `pytest.fail` here would error every step.
+    """
+    missing = []
+    for spec_id, content_version, _ in (ODA, POPULATION):
+        try:
+            client.request("GET", f"/datasets/{spec_id}/{content_version}")
+        except NotFoundError as error:
+            if error.code not in NOT_FOUND_CODES:
+                raise
+            missing.append(f"{spec_id} at {content_version}")
+    if missing:
+        pytest.exit(
+            "The server lacks the local-stack seed; missing readings: "
+            + ", ".join(missing)
+            + ". Run `just local-stack seed` in dfo-apis.",
+            returncode=1,
+        )
 
 
 def _seeded(client: Client, reading: tuple[str, str, str]) -> Dataset:
@@ -345,8 +372,10 @@ def test_06_cards_draw_the_derived_frame(
     for card in cards:
         payload = _payload(client, card.id)
         described = payload["description"]["sources"]
-        # The description names the root readings the card draws, one source each.
-        assert sorted(source["ref"] for source in described) == roots
+        # The description names each root reading the card draws once, beside the
+        # publishers it credits.
+        refs = [source["ref"] for source in described]
+        assert all(refs.count(root) == 1 for root in roots), refs
         assert all(source["label"] for source in described)
         provenance = payload["provenance"]
         assert provenance["inputs"] == [

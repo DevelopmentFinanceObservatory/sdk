@@ -33,9 +33,10 @@ from dfo._core.parse import parse_assumptions
 from dfo._core.types import CandidatesPart, DefinitePart
 from dfo._datasets.build import Reading
 from dfo._datasets.dataset import build_dataset
+from dfo._search.answer_json import read_answer_json
 from dfo._sync._datasets.fetch import Session
 from dfo._sync._http.transport import Transport
-from dfo._sync._search.answer import Answer
+from dfo._sync._search.answer import Answer, answer_from_body
 from dfo._sync._search.search import search
 from tests._data import load
 from tests._datasets import recorded_member
@@ -270,6 +271,19 @@ def test_a_timed_out_answer_keeps_each_no_data_parts_gap_kind() -> None:
         (1, "not_understood")
     ]
     assert answer.timed_out
+
+
+def test_a_part_that_timed_out_marks_the_answer_and_its_json_timed_out() -> None:
+    wire = load("search-4.json")
+    wire["diagnostics"]["timed_out"] = False
+    wire["parts"][1]["no_data"]["reason"] = "timed_out"
+    answer, _ = ask("debt", wire)
+    assert answer.timed_out
+    question, body, trace_id = read_answer_json(answer.to_json())
+    revived = answer_from_body(
+        body, question=question, source=answer._source, trace_id=trace_id
+    )
+    assert revived.timed_out
 
 
 def test_unknown_and_unsupported_parts_are_gaps() -> None:

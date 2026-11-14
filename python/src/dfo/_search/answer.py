@@ -118,7 +118,8 @@ class AsyncAnswer:
         question: The question asked, when the answer came from one.
         reason: Why Search declined, for a declined answer.
         warnings: Search's warnings for the whole answer.
-        timed_out: Whether Search stopped at its time limit.
+        timed_out: Whether Search stopped at its time limit, by its diagnostics
+            or by a part's own no-data reason `timed_out`.
         trace_id: The Search response's trace id, to quote when reporting it.
         raw: The decoded response body, untouched.
     """
@@ -236,7 +237,7 @@ class AsyncAnswer:
             ContractError: The chosen option's `data_query` is not a parsed
                 input of one part; it carries the answer's trace id.
         """
-        # A caller without a type checker can still pass the earlier form.
+        # A caller without a type checker can pass the `choose(part, option)` form.
         if old_form:  # ty: ignore[redundant-condition]
             raise TypeError(
                 "answer.choose takes the option first and the part as a keyword: "
@@ -499,7 +500,10 @@ def answer_from_body(
         if isinstance(sentence, str) and sentence
         else " ".join(part.sentence for part in parts if part.sentence)
     )
-    timed_out = diagnostics.get("timed_out") is True
+    # Search can stop at its time limit on one part without setting the flag.
+    timed_out = diagnostics.get("timed_out") is True or any(
+        isinstance(part, NoDataPart) and part.reason == "timed_out" for part in parts
+    )
     gaps = tuple(
         gap
         for index, part in enumerate(parts)

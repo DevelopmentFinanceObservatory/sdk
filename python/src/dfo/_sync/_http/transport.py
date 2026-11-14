@@ -53,7 +53,7 @@ import os
 import platform
 import re
 import ssl
-from collections.abc import Generator, Iterable, Mapping
+from collections.abc import Generator, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -64,7 +64,6 @@ from urllib.parse import urlsplit
 
 import httpcore2
 import httpx2
-from httpx2._utils import get_environment_proxies
 
 from dfo._config.keys import ApiKeyArgument, KeyState, ResolvedKey
 from dfo._core.codes import (
@@ -111,6 +110,14 @@ from dfo._http.hooks import (
     monotonic,
     sync_sleep,
     sync_within,
+)
+from dfo._http.proxies import (
+    KEEPALIVE_EXPIRY_S,
+    MAX_CONNECTIONS,
+    MAX_KEEPALIVE_CONNECTIONS,
+    core_url,
+    environment_proxies,
+    httpx_errors,
 )
 from dfo._version import __version__
 
@@ -621,40 +628,115 @@ class _DeadlineBackend(httpcore2.NetworkBackend):
         self._backend.sleep(seconds)
 
 
-def _keep_to_deadlines(client: httpx2.Client) -> None:
-    """Route the connections of every pool `client` holds through `_DeadlineBackend`.
+class _ResponseStream(httpx2.SyncByteStream):
+    """A response body from httpcore2, read with httpx2's errors.
 
-    httpx2 builds the pools, its proxy pools from the environment included, and
-    takes no network backend, so the backend goes in after it builds them. A
-    transport the caller passed in that is not httpx2's own keeps its timing.
+    Closing it returns the connection to the pool.
+    """
 
-    The pools sit in private attributes of httpx2 and httpcore2, and the stall tests
-    run against the locked releases, 2.15 for both.
+    def __init__(self, stream: Iterable[bytes]) -> None:
+        self._stream = stream
+
+    def __iter__(self) -> Iterator[bytes]:
+        with httpx_errors():
+            # The generated sync loop stays a loop, as `yield from` has no async form.
+            for part in self._stream:  # noqa: RUF100, UP028
+                yield part
+
+    def close(self) -> None:
+        close = getattr(self._stream, "close", None)
+        if close is not None:
+            with httpx_errors():
+                close()
+
+
+def _connection_pool(proxy_url: str | None) -> httpcore2.ConnectionPool:
+    """An httpcore2 pool, direct or through `proxy_url`, whose connections keep to
+    the attempt's deadline through `_DeadlineBackend`.
+
+    TLS verifies against the system's trust store, or `SSL_CERT_FILE` and
+    `SSL_CERT_DIR` when set, as httpx2's own transport does. A socks5 or socks5h
+    proxy needs `socksio` installed.
 
     Raises:
-        RuntimeError: When httpx2 or httpcore2 holds its pools differently.
+        ValueError: `proxy_url`'s scheme is not http, https, socks5 or socks5h.
     """
-    try:
-        transports = (client._transport, *client._mounts.values())
-    except AttributeError as error:
-        raise _pool_layout_error() from error
-    for transport in transports:
-        if not isinstance(transport, httpx2.HTTPTransport):
-            continue
-        pool = getattr(transport, "_pool", None)
-        if not isinstance(pool, httpcore2.ConnectionPool) or not hasattr(
-            pool, "_network_backend"
-        ):
-            raise _pool_layout_error()
-        pool._network_backend = _DeadlineBackend(pool._network_backend)
-
-
-def _pool_layout_error() -> RuntimeError:
-    return RuntimeError(
-        f"httpx2 {httpx2.__version__} with httpcore2 {httpcore2.__version__} holds "
-        "its connection pools where dfo cannot route them through its deadlines; "
-        "install httpx2 and httpcore2 2.15, the series dfo is tested on"
+    ssl_context = httpx2.create_ssl_context(verify=True, trust_env=True)
+    # httpcore2 declares a stand-in class when anyio or socksio is missing, so
+    # the isinstance checks narrow its types.
+    network = httpcore2.SyncBackend()
+    assert isinstance(network, httpcore2.NetworkBackend)
+    backend = _DeadlineBackend(network)
+    limits: dict[str, Any] = {
+        "max_connections": MAX_CONNECTIONS,
+        "max_keepalive_connections": MAX_KEEPALIVE_CONNECTIONS,
+        "keepalive_expiry": KEEPALIVE_EXPIRY_S,
+    }
+    if proxy_url is None:
+        return httpcore2.ConnectionPool(
+            ssl_context=ssl_context, network_backend=backend, **limits
+        )
+    proxy = httpx2.Proxy(proxy_url)
+    if proxy.url.scheme in ("http", "https"):
+        return httpcore2.HTTPProxy(
+            proxy_url=core_url(proxy.url),
+            proxy_auth=proxy.raw_auth,
+            proxy_headers=proxy.headers.raw,
+            proxy_ssl_context=proxy.ssl_context,
+            ssl_context=ssl_context,
+            network_backend=backend,
+            **limits,
+        )
+    if proxy.url.scheme in ("socks5", "socks5h"):
+        pool = httpcore2.SOCKSProxy(
+            proxy_url=core_url(proxy.url),
+            proxy_auth=proxy.raw_auth,
+            ssl_context=ssl_context,
+            network_backend=backend,
+            **limits,
+        )
+        assert isinstance(pool, httpcore2.ConnectionPool)
+        return pool
+    raise ValueError(
+        f"A proxy URL's scheme is http, https, socks5 or socks5h, not "
+        f"{proxy.url.scheme!r}"
     )
+
+
+class _DeadlineTransport(httpx2.BaseTransport):
+    """An httpx2 transport over an httpcore2 pool whose every network operation
+    keeps to the attempt's deadline.
+
+    It sends as httpx2's own transport does: HTTP/1.1, no connection retries,
+    the request's extensions (its timeouts among them) passed to httpcore2 and
+    the response's passed back, and httpcore2's errors raised as httpx2's.
+    """
+
+    def __init__(self, proxy_url: str | None = None) -> None:
+        self._pool = _connection_pool(proxy_url)
+
+    def handle_request(self, request: httpx2.Request) -> httpx2.Response:
+        assert isinstance(request.stream, httpx2.SyncByteStream)
+        core_request = httpcore2.Request(
+            method=request.method,
+            url=core_url(request.url),
+            headers=request.headers.raw,
+            content=request.stream,
+            extensions=request.extensions,
+        )
+        with httpx_errors():
+            response = self._pool.handle_request(core_request)
+        assert isinstance(response.stream, Iterable)
+        return httpx2.Response(
+            status_code=response.status,
+            headers=response.headers,
+            stream=_ResponseStream(response.stream),
+            extensions=response.extensions,
+        )
+
+    def close(self) -> None:
+        with httpx_errors():
+            self._pool.close()
 
 
 def _check_location(response: httpx2.Response) -> None:
@@ -699,7 +781,7 @@ class _Pool:
 
     def __init__(self, http_transport: httpx2.BaseTransport | None) -> None:
         self._http_transport = http_transport
-        self._proxies = {} if http_transport is not None else get_environment_proxies()
+        self._proxies = {} if http_transport is not None else environment_proxies()
         self._pid = os.getpid()
         self._loop: object | None = None
         self._closed = False
@@ -708,17 +790,15 @@ class _Pool:
     def _build(self) -> httpx2.Client:
         # An explicit transport keeps httpx2 from looking the proxies up again.
         transport = self._http_transport
-        client = httpx2.Client(
-            transport=httpx2.HTTPTransport() if transport is None else transport,
+        return httpx2.Client(
+            transport=_DeadlineTransport() if transport is None else transport,
             mounts={
-                pattern: None if url is None else httpx2.HTTPTransport(proxy=url)
+                pattern: None if url is None else _DeadlineTransport(url)
                 for pattern, url in self._proxies.items()
             },
             follow_redirects=False,
             event_hooks={"response": [_check_location]},
         )
-        _keep_to_deadlines(client)
-        return client
 
     @property
     def client(self) -> httpx2.Client:
@@ -790,9 +870,9 @@ class Transport:
             headers: Headers sent with every API request.
             header_provider: Called before every API request for more headers,
                 such as an identity token.
-            http_transport: The httpx2 transport, for tests and proxies. An
-                `httpx2.HTTPTransport` keeps to the attempt's deadline at
-                every network operation; any other transport times itself.
+            http_transport: The httpx2 transport, for tests. A transport
+                passed in times itself, and dfo's own keeps to the attempt's
+                deadline at every network operation.
             sleep: Waits between attempts.
             clock: A monotonic clock, in seconds, for deadlines.
             caller: What a hint names the owner of a call it suggests: `client`
