@@ -272,6 +272,32 @@ def test_manifest_reads_its_citation_and_warnings() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ({"license": "old", "license_url": "old-url"}, ("old", "old-url")),
+        ({"licence": "new", "licence_url": "new-url"}, ("new", "new-url")),
+        (
+            {
+                "licence": "new",
+                "license": "old",
+                "licence_url": "n",
+                "license_url": "o",
+            },
+            ("new", "n"),
+        ),
+        ({}, (None, None)),
+    ],
+    ids=["license-only", "licence-only", "both", "neither"],
+)
+def test_citation_source_prefers_licence_and_falls_back_to_license(
+    source: dict[str, str], expected: tuple[str | None, str | None]
+) -> None:
+    citation = parse_citation({"sources": [{"ref": "r", "label": "l", **source}]})
+    (read,) = citation.sources
+    assert (read.licence, read.licence_url) == expected
+
+
 def test_operation_resource_passes_its_checks() -> None:
     check_operation(operation_resource())
 

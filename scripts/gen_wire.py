@@ -25,12 +25,15 @@ table by. The generator refuses a file that is not format version 1 of the
 `reading-order` rule, a slot that is empty or holds other than strings, a name
 listed twice, and `stat_var` or `part` in a slot.
 
-`python/src/dfo/_generated/role_keys.py` holds the `keys` and `flow_keys` of
-`contract/rules/role-keys.json`: the caller key `entities=` takes for each role,
-with the wire role a build posts it as, and the flow keys. The generator refuses a
-file that is not format version 1 of the `role-keys` rule, a key or wire role that
-is not a name, two keys for one wire role, a wire role spelled as another role's
-key, and flow keys that are empty or name a key the rule does not map to itself.
+`python/src/dfo/_generated/role_keys.py` holds the `keys`, `flow_keys` and
+`columns` of `contract/rules/role-keys.json`: the caller key `entities=` takes for
+each role, with the wire role a build posts it as, the flow keys, and the caller
+key each frame role column belongs to. The generator refuses a file that is not
+format version 1 of the `role-keys` rule, a key or wire role that is not a name,
+two keys for one wire role, a wire role spelled as another role's key, flow keys
+that are empty or name a key the rule does not map to itself, and columns that
+are empty, hold a name that is blank or a non-string, or map a column to anything
+but a caller key.
 
 `python/src/dfo/_generated/file_selector.py` holds the `query_keys` of
 `contract/rules/file-selector.json`, the only keys a version's file selector reads,
@@ -176,6 +179,11 @@ ROLE_KEYS: Final[Mapping[str, str]] = {{
 
 # The flow keys: a spec that names one takes both.
 FLOW_KEYS: Final[tuple[str, ...]] = {flow_keys!r}
+
+# Each frame role column with the caller key it belongs to.
+COLUMN_ROLE_KEYS: Final[Mapping[str, str]] = {{
+{columns}
+}}
 '''
 
 FILE_SELECTOR_TEMPLATE = '''"""The query keys a version's file selector reads, from
@@ -408,9 +416,22 @@ def render_role_keys(rule: Mapping[str, Any]) -> str:
         raise SystemExit(
             f"{where}: flow_keys is not a list of keys the rule maps to themselves"
         )
+    columns = rule.get("columns")
+    if (
+        not isinstance(columns, dict)
+        or not columns
+        or not all(
+            isinstance(column, str) and column and key in keys
+            for column, key in columns.items()
+        )
+    ):
+        raise SystemExit(
+            f"{where}: columns is not a map of column names to caller keys"
+        )
     return ROLE_KEYS_TEMPLATE.format(
         keys="\n".join(f"    {key!r}: {wire!r}," for key, wire in keys.items()),
         flow_keys=tuple(flow_keys),
+        columns="\n".join(f"    {col!r}: {key!r}," for col, key in columns.items()),
     )
 
 

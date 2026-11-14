@@ -160,21 +160,33 @@ def test_a_reading_order_rule_that_breaks_the_format_is_refused(
         gen_wire.render_reading_order(rule)
 
 
-def _role_rule(keys: object, flow_keys: object = ("origin",)) -> dict[str, Any]:
+def _role_rule(
+    keys: object,
+    flow_keys: object = ("origin",),
+    columns: object = None,
+) -> dict[str, Any]:
     return {
         "format_version": 1,
         "rule": "role-keys",
         "keys": keys,
         "flow_keys": list(flow_keys) if isinstance(flow_keys, tuple) else flow_keys,
+        "columns": {"provider": "origin"} if columns is None else columns,
     }
 
 
-def test_the_role_keys_render_as_a_map_and_the_flow_keys() -> None:
+def test_the_role_keys_render_as_maps_and_the_flow_keys() -> None:
     source = gen_wire.render_role_keys(
-        _role_rule({"place": "observationAbout", "origin": "origin"})
+        _role_rule(
+            {"place": "observationAbout", "origin": "origin"},
+            columns={"provider": "origin", "creditor": "origin"},
+        )
     )
     assert "    'place': 'observationAbout',\n    'origin': 'origin',\n" in source
     assert "FLOW_KEYS: Final[tuple[str, ...]] = ('origin',)" in source
+    assert (
+        "COLUMN_ROLE_KEYS: Final[Mapping[str, str]] = {\n"
+        "    'provider': 'origin',\n    'creditor': 'origin',\n}"
+    ) in source
 
 
 @pytest.mark.parametrize(
@@ -195,6 +207,11 @@ def test_the_role_keys_render_as_a_map_and_the_flow_keys() -> None:
         _role_rule({"origin": "origin"}, ("origin", "origin")),
         _role_rule({"origin": "origin"}, ("destination",)),
         _role_rule({"origin": "origin", "place": "observationAbout"}, ("place",)),
+        {k: v for k, v in _role_rule({"origin": "origin"}).items() if k != "columns"},
+        _role_rule({"origin": "origin"}, columns={}),
+        _role_rule({"origin": "origin"}, columns=["provider"]),
+        _role_rule({"origin": "origin"}, columns={"": "origin"}),
+        _role_rule({"origin": "origin"}, columns={"provider": "observationAbout"}),
     ],
     ids=[
         "format",
@@ -210,6 +227,11 @@ def test_the_role_keys_render_as_a_map_and_the_flow_keys() -> None:
         "flow-key-repeated",
         "flow-key-unmapped",
         "flow-key-renamed",
+        "no-columns",
+        "empty-columns",
+        "columns-not-a-map",
+        "column-not-a-name",
+        "column-not-a-caller-key",
     ],
 )
 def test_a_role_keys_rule_that_breaks_the_format_is_refused(

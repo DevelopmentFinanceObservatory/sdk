@@ -513,6 +513,27 @@ describe("provenance", async () => {
     fetchedAt,
   });
 
+  test("reads licence members and falls back to the license spelling", async () => {
+    const data = await scenarioBytes("fetch-ref.parquet");
+    const served = {
+      citation: {
+        text: "t",
+        sources: [
+          { ref: "a", label: "A", licence: "new", licence_url: "new-url", license: "old" },
+          { ref: "b", label: "B", license: "old", license_url: "old-url" },
+        ],
+      },
+    };
+    const read = await Dataset.create([member(data, { manifest: served })], { layout: "long" });
+    assert.deepEqual(
+      read.citation.sources.map((source) => [source.licence, source.licenceUrl]),
+      [
+        ["new", "new-url"],
+        ["old", "old-url"],
+      ],
+    );
+  });
+
   test("spells each source's licence as Python does, and joins the distinct licences", () => {
     assert.deepEqual(dataset.citation.sources[0], {
       ref: "dc:WDI",
@@ -899,6 +920,70 @@ describe("a derived dataset", () => {
     );
   });
 
+  test("names the totals each reading left out, under the reading's spec id", async () => {
+    const manifest = await recordedJson<{ roots: Record<string, unknown>[] }>(
+      "analysis-chain-manifest.json",
+    );
+    const [first, second] = manifest.roots;
+    assert.ok(first && second);
+    const provenance = "provenance/OECDCRS";
+    const cut = { role: "financingProvider", entities: ["DACCountriesTotal"], provenance };
+    const keptIn = [{ series: { stat_var: "dfo/grossOda", unit: null }, time_periods: ["1968"] }];
+    const kept = { ...cut, entities: ["DACOfficialDonors"], kept_in: keptIn };
+    // Served out of the ref's root order, beside roots that pair with none of the ref's.
+    const roots = [
+      { ...second, party_totals_left_out: [{ ...cut, role: "financingRecipient" }] },
+      "no root",
+      { ...first, content_version: `cv_${"0".repeat(32)}`, party_totals_left_out: [cut] },
+      { party_totals_left_out: [cut] },
+      { ...first, party_totals_left_out: [cut, { role: 1 }, kept] },
+    ];
+    const dataset = await derived("chain", { roots });
+    assert.deepEqual(
+      (await derivedMember()).roots.map(({ specId }) => specId),
+      [first["spec_id"], second["spec_id"]],
+    );
+    assert.deepEqual(
+      dataset.partyTotalsLeftOut.map(({ specId, role, roleKey, entities, keptIn }) => [
+        specId,
+        role,
+        roleKey,
+        entities,
+        keptIn.map(({ series, timePeriods }) => ({ series, time_periods: timePeriods })),
+      ]),
+      [
+        [first["spec_id"], "financingProvider", "origin", ["DACCountriesTotal"], []],
+        [first["spec_id"], "financingProvider", "origin", ["DACOfficialDonors"], keptIn],
+        [second["spec_id"], "financingRecipient", "destination", ["DACCountriesTotal"], []],
+      ],
+    );
+    assert.ok(
+      String(dataset)
+        .split("\n")
+        .includes(
+          "  Party totals left out of the readings: 2 on financingProvider (origin), " +
+            "1 on financingRecipient (destination) · data.partyTotalsLeftOut",
+        ),
+    );
+    const metadata = await savedMetadata(dataset);
+    assert.deepEqual(JSON.parse(metadata["dfo.party_totals_left_out"]!), [
+      { spec_id: first["spec_id"], ...cut },
+      { spec_id: first["spec_id"], ...kept },
+      { spec_id: second["spec_id"], ...cut, role: "financingRecipient" },
+    ]);
+    // The ref's roots keep the shape 0.1.0 reads, with no report in them.
+    assert.ok(dataset.ref.equals(new DatasetRef([await derivedMember()])));
+    const ref = JSON.parse(metadata["dfo.ref"]!) as { members: { roots: object[] }[] };
+    for (const root of ref.members[0]!.roots) assert.ok(!("party_totals_left_out" in root));
+  });
+
+  test("names no totals when its roots report none", async () => {
+    const dataset = await derived();
+    assert.deepEqual(dataset.partyTotalsLeftOut, []);
+    assert.ok(!String(dataset).includes("Party totals"));
+    assert.equal((await savedMetadata(dataset))["dfo.party_totals_left_out"], undefined);
+  });
+
   test("reads a manifest without left_out as none left out", async () => {
     const dataset = await derived("chain", {
       left_out: null,
@@ -974,16 +1059,18 @@ describe("party totals left out", () => {
       {
         specId: dataset.members[0]!.spec.spec_id,
         role: "financingProvider",
+        roleKey: "origin",
         entities: served.entities,
         provenance: null,
         everyProvenance: true,
+        keptIn: [],
       },
     ]);
     assert.ok(
       String(dataset)
         .split("\n")
         .includes(
-          `  Party totals left out: ${served.entities.length} on financingProvider · ` +
+          `  Party totals left out: ${served.entities.length} on financingProvider (origin) · ` +
             "data.partyTotalsLeftOut",
         ),
     );
@@ -1008,10 +1095,31 @@ describe("party totals left out", () => {
     ]);
   });
 
-  for (const [name, served, provenance, everyProvenance] of [
-    ["a named provenance", { provenance: "provenance/OECD_DAC2a" }, "provenance/OECD_DAC2a", false],
-    ["rows without provenance", { provenance: null }, null, false],
-    ["every provenance", {}, null, true],
+  const keptIn = [
+    { series: { stat_var: "dfo/oda", unit: null }, time_periods: ["1968"] },
+    { series: { stat_var: "dfo/oda", unit: "USD" }, time_periods: ["1968", "1969"] },
+    { series: { stat_var: "dfo/oda", unit: { b: 1, a: 2 } }, time_periods: ["1968"] },
+    { series: { stat_var: "dfo/oda", unit: { a: 3 } }, time_periods: ["\uffff", "\u{10000}"] },
+  ];
+  const timePeriods = keptIn.map(({ time_periods: periods }) => periods);
+  for (const [name, served, provenance, everyProvenance, keptPeriods] of [
+    [
+      "a named provenance",
+      { provenance: "provenance/OECD_DAC2a" },
+      "provenance/OECD_DAC2a",
+      false,
+      [],
+    ],
+    ["rows without provenance", { provenance: null }, null, false, []],
+    ["every provenance", {}, null, true, []],
+    // Units order by their JCS text, and periods by code point.
+    [
+      "the series that kept them",
+      { provenance: "provenance/OECDCRS", kept_in: keptIn },
+      "provenance/OECDCRS",
+      false,
+      timePeriods,
+    ],
   ] as const) {
     test(`keeps ${name} through toBytes()`, async () => {
       const entry = { role: "financingRecipient", entities: ["AfricaTotal"], ...served };
@@ -1019,13 +1127,58 @@ describe("party totals left out", () => {
       const manifest = { trace: { party_totals_left_out: [entry], other: 1 } };
       const dataset = await Dataset.create([member(data, { manifest })], { layout: "long" });
       const [read] = dataset.partyTotalsLeftOut;
-      assert.deepEqual([read?.provenance, read?.everyProvenance], [provenance, everyProvenance]);
+      assert.deepEqual(
+        [
+          read?.provenance,
+          read?.everyProvenance,
+          read?.keptIn.map(({ timePeriods: periods }) => periods),
+        ],
+        [provenance, everyProvenance, keptPeriods],
+      );
       const metadata = await savedMetadata(dataset);
       assert.deepEqual(JSON.parse(metadata["dfo.party_totals_left_out"]!), [
         { spec_id: dataset.members[0]!.spec.spec_id, ...entry },
       ]);
     });
   }
+
+  test("entries sharing a role and provenance stay apart, in the manifest's order", async () => {
+    const provenance = "provenance/OECDCRS";
+    const served = [
+      { role: "financingProvider", entities: ["DACCountriesTotal"], provenance },
+      {
+        role: "financingProvider",
+        entities: ["DACOfficialDonors"],
+        provenance,
+        kept_in: [{ series: { stat_var: "dfo/oda" }, time_periods: ["1968"] }],
+      },
+      { role: "channel", entities: ["AllChannels"], provenance },
+    ];
+    const data = await scenarioBytes("fetch-ref.parquet");
+    const manifest = { trace: { party_totals_left_out: served } };
+    const dataset = await Dataset.create([member(data, { manifest })], { layout: "long" });
+    assert.deepEqual(
+      dataset.partyTotalsLeftOut.map(({ role, roleKey, entities, keptIn }) => [
+        role,
+        roleKey,
+        entities,
+        keptIn.map(({ timePeriods }) => timePeriods),
+      ]),
+      [
+        ["financingProvider", "origin", ["DACCountriesTotal"], []],
+        ["financingProvider", "origin", ["DACOfficialDonors"], [["1968"]]],
+        ["channel", null, ["AllChannels"], []],
+      ],
+    );
+    assert.ok(
+      String(dataset)
+        .split("\n")
+        .includes(
+          "  Party totals left out: 2 on financingProvider (origin), 1 on channel · " +
+            "data.partyTotalsLeftOut",
+        ),
+    );
+  });
 
   test("a dataset with none left out writes no key and no line", async () => {
     const data = await scenarioBytes("fetch-ref.parquet");
@@ -1035,30 +1188,66 @@ describe("party totals left out", () => {
     assert.equal((await savedMetadata(dataset))["dfo.party_totals_left_out"], undefined);
   });
 
-  for (const [trace, pointer] of [
-    [[], "/trace"],
-    [{ party_totals_left_out: {} }, "/trace/party_totals_left_out"],
-    [{ party_totals_left_out: [[]] }, "/trace/party_totals_left_out/0"],
-    [{ party_totals_left_out: [{ entities: [] }] }, "/trace/party_totals_left_out/0/role"],
+  const good = { role: "financingProvider", entities: ["DACWorldBank"] };
+  const kept = (unit: unknown, periods: readonly unknown[] = ["1968"]) => ({
+    series: { stat_var: "dfo/oda", unit },
+    time_periods: periods,
+  });
+  for (const [name, trace, count] of [
+    ["a trace that is no object", [], 0],
+    ["a list that is no list", { party_totals_left_out: {} }, 0],
+    ["an entry that is no object", { party_totals_left_out: [[]] }, 0],
+    ["an entry without a role", { party_totals_left_out: [{ entities: [] }] }, 0],
+    ["an entry without entities", { party_totals_left_out: [{ role: "financingProvider" }] }, 0],
     [
-      { party_totals_left_out: [{ role: "financingProvider" }] },
-      "/trace/party_totals_left_out/0/entities",
-    ],
-    [
+      "an entity that is no text",
       { party_totals_left_out: [{ role: "financingProvider", entities: [1] }] },
-      "/trace/party_totals_left_out/0/entities/0",
+      0,
     ],
     [
+      "a provenance that is no text",
       { party_totals_left_out: [{ role: "financingProvider", entities: [], provenance: 2 }] },
-      "/trace/party_totals_left_out/0/provenance",
+      0,
+    ],
+    ...(
+      [
+        ["an empty role", { role: "" }],
+        ["an empty entity", { entities: ["DACWorldBank", ""] }],
+        ["kept_in that is no list", { kept_in: {} }],
+        ["an empty kept_in", { kept_in: [] }],
+        ["a kept series that is no object", { kept_in: [[]] }],
+        ["a kept series with another key", { kept_in: [{ ...kept("USD"), rows: 1 }] }],
+        ["a kept series without periods", { kept_in: [{ series: {} }] }],
+        ["a series that is no object", { kept_in: [{ series: [], time_periods: ["1968"] }] }],
+        ["a cell that is a number", { kept_in: [kept(1)] }],
+        ["empty kept periods", { kept_in: [kept("USD", [])] }],
+        ["an empty kept period", { kept_in: [kept("USD", [""])] }],
+        ["a kept period that is no text", { kept_in: [kept("USD", [1968])] }],
+        ["kept periods out of order", { kept_in: [kept("USD", ["1969", "1968"])] }],
+        ["a kept period named twice", { kept_in: [kept("USD", ["1968", "1968"])] }],
+        // UTF-16 code units put U+10000 before U+FFFF, and code points put it after.
+        ["periods in UTF-16 order", { kept_in: [kept("USD", ["\u{10000}", "\uffff"])] }],
+        ["a string cell before a null", { kept_in: [kept("USD"), kept(null)] }],
+        ["an object cell before a string", { kept_in: [kept({ a: 1 }), kept("USD")] }],
+        ["units out of JCS order", { kept_in: [kept({ a: 3 }), kept({ b: 1, a: 2 })] }],
+        ["a series named twice", { kept_in: [kept("USD"), kept("USD", ["1969"])] }],
+      ] as const
+    ).map(
+      ([name, change]) =>
+        [name, { party_totals_left_out: [{ ...good, ...change }, good] }, 1] as const,
+    ),
+    [
+      "a good entry beside bad ones",
+      { party_totals_left_out: [[], good, { role: 1, entities: [] }] },
+      1,
     ],
   ] as const) {
-    test(`a trace broken at ${pointer} raises ContractError`, async () => {
+    test(`${name} reads leniently`, async () => {
       const data = await scenarioBytes("fetch-ref.parquet");
-      await assert.rejects(
-        Dataset.create([member(data, { manifest: { trace } })], { layout: "long" }),
-        { name: "ContractError", code: "contract_violation", pointer },
-      );
+      const dataset = await Dataset.create([member(data, { manifest: { trace } })], {
+        layout: "long",
+      });
+      assert.equal(dataset.partyTotalsLeftOut.length, count);
     });
   }
 });

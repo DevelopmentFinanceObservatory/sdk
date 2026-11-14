@@ -748,7 +748,7 @@ describe("a stored version's lookup order", () => {
       assert.deepEqual(posted.options, {
         format: "parquet",
         bundle: false,
-        ...(isCut ? { without_party_totals: true } : {}),
+        ...(isCut ? { party_totals: false } : {}),
       });
       assert.equal(seen[2]!.url, `${version}/files/${member.digest}`);
       assert.deepEqual(dataset.members[0]!.parts, member.parts);
@@ -767,7 +767,7 @@ describe("a stored version's lookup order", () => {
       );
       const dataset = await fetchDataset(client(fetch).transport, ref);
       // The selector's query holds only the keys the selector reads: a cut's version is
-      // already the cut, and the selector refuses `without_party_totals`.
+      // already the cut, and the selector refuses the cut in either spelling.
       assert.equal(seen[2]!.url, `${version}/file?format=parquet&bundle=false`);
       assert.equal(dataset.rowCount, 30);
     });

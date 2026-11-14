@@ -17,7 +17,8 @@ export type Layout = "long" | "frame";
 /** Which rendering of a version an artifact is, as a ref stores it: format, bundle and layout,
  *  and `without_party_totals` when its fetch posted the party-totals cut, the default, whether
  *  or not the cut left a row out. The flag is present only when true, so the JSON of a
- *  rendering fetched with `partyTotals: true` has no such key. */
+ *  rendering fetched with `partyTotals: true` has no such key. A ref that spells the cut
+ *  `party_totals: false` loads to this same flag. */
 export type Rendering = {
   readonly format: "csv" | "xlsx" | "parquet";
   readonly bundle: boolean;
@@ -181,15 +182,15 @@ export type DatasetRefJson =
 export type FormatErrorReason =
   "format_invalid" | "definition_spec_id_mismatch" | "repeated_spec_id";
 
-/** Stored JSON for a `DatasetRef` or an `Answer` does not match the format. Its `code` is null,
- *  since no contract code describes a stored file. `reason` tells the faults apart. */
+/** Stored JSON for a `DatasetRef` or an `Answer` does not match the format. Its `code` is its
+ *  `reason`, which tells the faults apart. */
 export class FormatError extends DfoError {
   readonly reason: FormatErrorReason;
   /** A JSON Pointer to the offending value. */
   readonly pointer: string;
 
   constructor(reason: FormatErrorReason, pointer: string, detail: string) {
-    super({ code: null, detail, message: `${pointer || "/"}: ${detail}` });
+    super({ code: reason, detail, message: `${pointer || "/"}: ${detail}` });
     this.reason = reason;
     this.pointer = pointer;
   }
@@ -242,17 +243,46 @@ export function renderingFor(layout: Layout, withoutPartyTotals: boolean = false
 export const layoutOf = (rendering: Rendering): Layout =>
   rendering.layout === "frame" ? "frame" : "long";
 
-/** A rendering as a build request's `options` take it: format, bundle, layout, and
- *  `without_party_totals`, sent only when true, as the server records it. */
+/** A rendering as a build request's `options` take it: format, bundle, layout, and the
+ *  party-totals cut as `party_totals: false`, the request spelling, sent only for the cut. */
 export function mintOptions(rendering: Rendering): Record<string, string | boolean> {
   const options: Record<string, string | boolean> = {
     format: rendering.format,
     bundle: rendering.bundle,
   };
   if (rendering.layout !== undefined) options["layout"] = rendering.layout;
-  if (rendering.without_party_totals === true) options["without_party_totals"] = true;
+  if (rendering.without_party_totals === true) options["party_totals"] = false;
   return options;
 }
+
+/** A rendering member that spells the party-totals cut wrongly, and what is wrong with it. */
+export type CutFault = {
+  readonly key: "without_party_totals" | "party_totals";
+  readonly detail: string;
+};
+
+/**
+ * Whether a rendering object, a ref's or one a server serves, spells the party-totals cut.
+ * The cut is `without_party_totals: true`, `party_totals: false`, or both, and a plain rendering
+ * holds neither key. Either key with any other value is a fault, which also covers a pair that
+ * disagrees, since each key has one valid value. The ref loader refuses a fault. A manifest
+ * reader, which ignores members it does not know, reads one as no cut.
+ */
+export function partyTotalsCut(rendering: Readonly<Record<string, unknown>>): boolean | CutFault {
+  const old = Object.hasOwn(rendering, "without_party_totals");
+  if (old && rendering["without_party_totals"] !== true) {
+    return { key: "without_party_totals", detail: "not true" };
+  }
+  const renamed = Object.hasOwn(rendering, "party_totals");
+  if (renamed && rendering["party_totals"] !== false) {
+    return { key: "party_totals", detail: "not false" };
+  }
+  return old || renamed;
+}
+
+/** Whether a served rendering object spells the party-totals cut, reading a fault as none. */
+export const servedCut = (rendering: unknown): boolean =>
+  isRecord(rendering) && partyTotalsCut(rendering) === true;
 
 /** The file selector's query for a rendering: its build options among `SELECTOR_QUERY_KEYS`,
  *  layout only when set. The selector serves a stored version, which is already the
@@ -782,7 +812,12 @@ function deepFreeze<T>(value: T): T {
 
 function loadRendering(value: unknown, pointer: string): Rendering {
   const rendering = objectAt(value, pointer);
-  checkKeys(rendering, pointer, ["format", "bundle"], ["layout", "without_party_totals"]);
+  checkKeys(
+    rendering,
+    pointer,
+    ["format", "bundle"],
+    ["layout", "without_party_totals", "party_totals"],
+  );
   const { format, bundle, layout } = rendering;
   if (!isFormat(format)) {
     throw invalid(`${pointer}/format`, "not csv, xlsx or parquet");
@@ -793,10 +828,8 @@ function loadRendering(value: unknown, pointer: string): Rendering {
   if (layout !== undefined && layout !== "frame") {
     throw invalid(`${pointer}/layout`, 'not "frame"');
   }
-  const cut = Object.hasOwn(rendering, "without_party_totals");
-  if (cut && rendering["without_party_totals"] !== true) {
-    throw invalid(`${pointer}/without_party_totals`, "not true");
-  }
+  const cut = partyTotalsCut(rendering);
+  if (typeof cut !== "boolean") throw invalid(`${pointer}/${cut.key}`, cut.detail);
   return {
     format,
     bundle,

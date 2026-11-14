@@ -62,7 +62,7 @@ The cache records the time beside each file it downloads. A file stored by relea
 
 ## Where the cache lives
 
-The cache root comes from `cache_dir=`, then `DFO_CACHE_DIR`, then `BBLOCKS_CACHE_DIR`, then the platform's cache directory, such as `~/.cache/readerkit` on Linux. [Settings](settings.md#cache-directory) gives each platform's directory.
+The cache root comes from `cache_dir=`, then `DFO_CACHE_DIR`, then `BBLOCKS_CACHE_DIR`, then the platform's cache directory, such as `~/.cache/dfo` on Linux. [Settings](settings.md#cache-directory) gives each platform's directory. Under the platform default, the client also reads the files and manifests release 0.1 cached under `readerkit`, such as `~/.cache/readerkit` on Linux, so an offline fetch of something 0.1 downloaded still loads. It copies each one it reads into its own cache and leaves the `readerkit` directory as it found it.
 
 The entries sit under `<root>/v1/dfo/cache1`. After the fetch above, the cache holds one file and its manifest:
 

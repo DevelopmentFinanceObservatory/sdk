@@ -10,7 +10,27 @@ permissions:
   contents: read
 
 jobs:
+  # Both clients post `party_totals: false` for the default cut. Production must
+  # accept that key before either client publishes.
+  preflight:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.0
+
+      - name: Set up Python 3.12
+        run: uv python install '3.12'
+
+      - name: Check that production accepts party_totals
+        run: uv run --python 3.12 python ../scripts/release_preflight.py
+
   python:
+    needs: preflight
     if: startsWith(github.ref_name, 'python-v')
     runs-on: ubuntu-latest
     environment:
@@ -41,6 +61,7 @@ jobs:
         run: uv publish
 
   typescript:
+    needs: preflight
     if: startsWith(github.ref_name, 'typescript-v')
     runs-on: ubuntu-latest
     environment:

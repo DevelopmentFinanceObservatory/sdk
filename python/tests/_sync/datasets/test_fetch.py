@@ -17,6 +17,7 @@ import pytest
 
 import dfo._sync._datasets.fetch as fetch_module
 import dfo._sync._datasets.resolve as resolve_module
+from dfo._config import paths
 from dfo._core import errors as _errors
 from dfo._core.errors import (
     ContractError,
@@ -54,6 +55,7 @@ from tests._fetch_support import (
     NARROWED_ID,
     ORIGIN,
     POSTED_ID,
+    SERVED_CUTS,
     SIGNED,
     FakeCache,
     Replay,
@@ -67,6 +69,7 @@ from tests._fetch_support import (
     posted_spec,
     problem,
     redirect,
+    respelled,
     resubmitted,
 )
 
@@ -173,7 +176,7 @@ def test_an_unresolved_match_in_entities_sends_nothing(
     with make(server) as transport:
         with pytest.raises(InvalidRequestError) as caught:
             fetch(transport, spec(), entities={"origin": [unresolved]})
-    assert caught.value.code == "invalid_argument"
+    assert caught.value.code == "match_unresolved"
     assert named in str(caught.value)
     assert server.requests == []
 
@@ -274,7 +277,7 @@ def test_a_narrowed_spec_stores_the_built_identity_and_asks_search_its_sentence(
     assert posted["options"] == {
         "format": "parquet",
         "bundle": False,
-        "without_party_totals": True,
+        "party_totals": False,
     }
     assert server.body(1) == {
         "schema_version": 1,
@@ -507,7 +510,7 @@ def test_a_frame_builds_the_frame_rendering() -> None:
         "format": "parquet",
         "bundle": False,
         "layout": "frame",
-        "without_party_totals": True,
+        "party_totals": False,
     }
     assert built.layout == "frame"
     assert built.members[0].data == FRAME
@@ -1163,7 +1166,7 @@ def test_an_expired_file_is_rendered_again_by_the_file_selector(
         (
             CUT,
             CUT_DATA,
-            {"format": "parquet", "bundle": False, "without_party_totals": True},
+            {"format": "parquet", "bundle": False, "party_totals": False},
         ),
     ],
 )
@@ -1467,6 +1470,36 @@ def test_a_cached_ref_needs_no_request_and_offline_marks_it_stale(
     assert offline.members[0].manifest == body
 
 
+@pytest.mark.parametrize("target", ["spec", "ref"])
+def test_offline_a_fetch_hits_the_legacy_directory_a_0_1_client_filled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    # On Linux with no explicit root the cache lives in `<xdg>/dfo` and reads
+    # `<xdg>/readerkit`, where 0.1 kept the same layout with no fetch times.
+    monkeypatch.setattr(paths, "current_platform", lambda: "linux")
+    legacy = Cache(tmp_path / "readerkit", env={})
+    spec_id = POSTED_ID if target == "spec" else NARROWED_ID
+    body = manifest(spec_id)
+    legacy.put_bytes(sha256_digest(DATA), DATA)
+    legacy.put_manifest(spec_id, NARROWED_CV, LONG, body)
+    cache = Cache(env={"XDG_CACHE_HOME": str(tmp_path)})
+    fetched: Spec | DatasetRef = (
+        spec(SENTENCE) if target == "spec" else DatasetRef((ref_member(),))
+    )
+    monkeypatch.setenv("DFO_OFFLINE", "1")
+    server = Server()
+    with make(server) as transport:
+        built = fetch(transport, fetched, cache=cache)
+    assert server.requests == []
+    assert built.stale is True
+    assert built.members[0].data == DATA
+    assert (built.members[0].from_cache, built.members[0].fetched_at) == (True, None)
+    assert cache.directory is not None
+    assert (cache.directory / file_entry(sha256_digest(DATA))).read_bytes() == DATA
+    copied = cache.directory / manifest_entry(spec_id, NARROWED_CV, LONG)
+    assert json.loads(copied.read_text()) == body
+
+
 def _drop_member_artifact(body: dict) -> None:
     del body["artifacts"][1]
 
@@ -1715,12 +1748,15 @@ def test_a_ref_digest_listed_under_another_rendering_raises_before_download() ->
 # A cut that leaves rows out answers a version of its own. The cache keys both
 # versions' manifests `parquet.json`, and offline the plain build, cached as the
 # newer, does not stand in for the cut.
+# A server may spell the cut either way, so each spelling gives the same member,
+# whose rendering is what its ref holds, and the same offline hit.
+@pytest.mark.parametrize("spelling", SERVED_CUTS)
 def test_plain_and_cut_versions_stay_apart_offline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str
 ) -> None:
     plain_body = manifest(POSTED_ID, NEWER, party_totals=True)
     plain_body["prepared_at"] = "2026-03-01T00:00:00Z"
-    cut_body = manifest(POSTED_ID, OLDER, CUT_DATA)
+    cut_body = respelled(manifest(POSTED_ID, OLDER, CUT_DATA), spelling)
     cut_body["prepared_at"] = "2026-02-01T00:00:00Z"
     cache = Cache(tmp_path, env={})
     server = Server(
@@ -1734,17 +1770,23 @@ def test_plain_and_cut_versions_stay_apart_offline(
     with make(server) as transport:
         cut = fetch(transport, spec(SENTENCE), cache=cache)
         plain = fetch(transport, spec(SENTENCE), party_totals=True, cache=cache)
-        assert server.body(0)["options"]["without_party_totals"] is True
-        assert "without_party_totals" not in server.body(3)["options"]
+        assert server.body(0)["options"]["party_totals"] is False
+        assert server.body(3)["options"] == {"format": "parquet", "bundle": False}
         assert (plain.members[0].data, cut.members[0].data) == (DATA, CUT_DATA)
         assert (plain.members[0].rendering, cut.members[0].rendering) == (LONG, CUT)
         manifests = (cache.directory / "manifests" / POSTED_ID).rglob("*.json")
         assert {path.name for path in manifests} == {"parquet.json"}
 
         monkeypatch.setenv("DFO_OFFLINE", "1")
-        cut = fetch(transport, spec(SENTENCE), cache=cache)
+        offline = fetch(transport, spec(SENTENCE), cache=cache)
         plain = fetch(transport, spec(SENTENCE), party_totals=True, cache=cache)
-    assert (plain.members[0].data, cut.members[0].data) == (DATA, CUT_DATA)
+    assert (plain.members[0].data, offline.members[0].data) == (DATA, CUT_DATA)
+    (held,), (restored,) = cut.members, offline.members
+    assert (restored.content_version, restored.digest, restored.rendering) == (
+        held.content_version,
+        held.digest,
+        CUT,
+    )
     assert len(server.requests) == 6
 
 
@@ -1830,7 +1872,7 @@ def test_a_latest_ref_fetch_builds_each_spec_in_the_refs_rendering(
         built = fetch(transport, DatasetRef((held,)), latest=True)
     assert server.calls()[0] == f"POST {BASE}/datasets"
     options = server.body(0)["options"]
-    assert options.get("without_party_totals", False) is rendering.without_party_totals
+    assert options.get("party_totals", True) is not rendering.without_party_totals
     (member,) = built.members
     assert (member.parts, member.content_version) == (held.parts, NEWER)
     assert (member.spec.spec_id, member.rendering) == (NARROWED_ID, rendering)

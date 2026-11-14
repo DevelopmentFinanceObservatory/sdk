@@ -24,14 +24,20 @@ import html
 import json
 import math
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime
 from itertools import accumulate
 from os import PathLike
 from typing import TYPE_CHECKING, Any, Never, override
 
-from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT, UNEXPECTED_RESPONSE
+from dfo._core.codes import (
+    CONTRACT_VIOLATION,
+    REF_UNAVAILABLE,
+    UNEXPECTED_RESPONSE,
+)
 from dfo._core.errors import ContractError, client_error, message_of
+from dfo._core.json_text import jcs_text
 from dfo._core.parse import parse_citation, parse_notices, parse_part
 from dfo._core.refs import (
     DatasetRef,
@@ -40,6 +46,7 @@ from dfo._core.refs import (
     Member,
     RefMember,
     ResolvedPeriod,
+    Root,
     derived_member,
 )
 from dfo._core.text import single_line
@@ -74,6 +81,7 @@ from dfo._datasets.build import (
     rendering_for,
 )
 from dfo._generated.reading_order import READING_COLUMNS
+from dfo._generated.role_keys import COLUMN_ROLE_KEYS
 
 if TYPE_CHECKING:
     import pandas
@@ -291,22 +299,51 @@ class LeftOutSeries:
 
 
 @dataclass(frozen=True, slots=True)
+class KeptSeries:
+    """One series whose rows kept a `PartyTotalsLeftOut` entry's totals, and the
+    periods in which they stayed.
+
+    Attributes:
+        series: Each column of the frame's grain other than the entry's role,
+            `time_period` and `provenance`, such as `stat_var`, the frame's other
+            role columns, `unit` and `measurementMethod`, mapped to the cell the
+            series holds there: a string, None, or a unit as a dict.
+        time_periods: The `time_period` values, sorted, in which the series kept
+            the totals.
+    """
+
+    series: Mapping[str, object]
+    time_periods: tuple[str, ...]
+
+    @override
+    def __hash__(self) -> int:
+        return hash((jcs_text(self.series), self.time_periods))
+
+
+@dataclass(frozen=True, slots=True)
 class PartyTotalsLeftOut:
     """Group totals on one party role that a fetch left out of one member's rows.
 
     A fetch leaves party totals out by default, so a sum over `value` counts each
     flow once. `party_totals=True` keeps them. DFO names what the cut dropped in
-    the version's manifest, one entry per party role and provenance that lost
-    rows, and the Dataset gathers those entries in member order.
+    the version's manifest, one entry per party role, provenance and set of kept
+    series and periods, and the Dataset gathers those entries in member order,
+    then in the manifest's order. Two entries can share a role and a provenance.
+    A derived Dataset's entries describe each reading its recipe ran on, in the
+    order of its roots.
 
     Attributes:
-        spec_id: The spec of the member whose rows lost the totals.
+        spec_id: The spec of the member whose rows lost the totals, or for a
+            derived Dataset the reading's.
         role: The party role, by DFO's column name, such as `financingProvider`.
         entities: The dcids of the totals left out, such as `DACCountriesTotal`.
         provenance: The dataset whose rows lost the totals, or None for rows with
             no provenance, or when `every_provenance` is true.
         every_provenance: Whether the totals left the rows of every dataset, as
             on a version DFO recorded before it named the provenance.
+        kept_in: The series whose rows kept these totals, each with the
+            periods in which they stayed, in the contract's order; empty when
+            the totals left every series in every period.
     """
 
     spec_id: str
@@ -314,6 +351,13 @@ class PartyTotalsLeftOut:
     entities: tuple[str, ...]
     provenance: str | None = None
     every_provenance: bool = False
+    kept_in: tuple[KeptSeries, ...] = ()
+
+    @property
+    def role_key(self) -> str | None:
+        """The key a caller names the role by in `entities`, `origin` or
+        `destination`, or None for a column the client does not know."""
+        return COLUMN_ROLE_KEYS.get(self.role)
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,9 +442,13 @@ class Dataset:
             for a Dataset of dataset versions. DFO lists at most 2,000; the repr
             says "at least" when it dropped more.
         party_totals_left_out: The group totals a fetch left out of each
-            member's rows, one entry per member, party role and provenance that
-            lost rows. Empty when nothing was left out, when the fetch passed
-            `party_totals=True`, and for a derived Dataset.
+            member's rows, one entry per member, party role, provenance and set
+            of kept series and periods. For a derived Dataset, the totals each
+            reading's read left out, named by the reading's spec. Empty when
+            nothing was left out and when the fetch passed
+            `party_totals=True`. A derived Dataset's tuple is also empty against
+            a server older than the per-reading report, or when DFO could not
+            read a reading.
     """
 
     sentence: str
@@ -456,11 +504,11 @@ class Dataset:
 
         Raises:
             InvalidRequestError: The dataset is a website bundle opened from a
-                folder, which names no version (`invalid_argument`).
+                folder, which names no version (`ref_unavailable`).
         """
         if (ref := self._ref()) is None:
             raise client_error(
-                INVALID_ARGUMENT,
+                REF_UNAVAILABLE,
                 "A website bundle opened from a folder names no version, so it has "
                 "no ref; open the bundle's ZIP, or fetch the dataset with dfo.fetch",
                 builtin=ValueError,
@@ -588,7 +636,10 @@ class Dataset:
         if self.sources:
             lines.append("Source: " + "; ".join(self.sources))
         lines.extend(self._derived_summary())
-        if totals := _party_totals_line(self.party_totals_left_out):
+        if totals := _party_totals_line(
+            self.party_totals_left_out,
+            derived=any(isinstance(member, DerivedMember) for member in self.members),
+        ):
             lines.append(totals)
         if self._shown_by is not None:
             lines.append(f"Shown by: {self._shown_by}")
@@ -737,17 +788,28 @@ class Dataset:
         return {key.encode(): value.encode() for key, value in metadata.items()}
 
 
-def _party_totals_line(entries: Sequence[PartyTotalsLeftOut]) -> str | None:
-    """The repr's line counting the totals left out on each role, as
-    `Party totals left out: 15 on financingProvider · data.party_totals_left_out`,
-    or None when none were."""
+def _party_totals_line(
+    entries: Sequence[PartyTotalsLeftOut], *, derived: bool
+) -> str | None:
+    """The repr's line counting the totals left out on each role, with the key a
+    caller names it by where the client knows it, as `Party totals left out: 15
+    on financingProvider (origin) · data.party_totals_left_out`, or None when
+    none were. A derived Dataset's line counts the totals its readings left out."""
     by_role: dict[str, set[str]] = {}
+    keys: dict[str, str | None] = {}
     for entry in entries:
         by_role.setdefault(entry.role, set()).update(entry.entities)
+        keys[entry.role] = entry.role_key
     if not by_role:
         return None
-    counts = ", ".join(f"{len(dcids):,} on {role}" for role, dcids in by_role.items())
-    return f"Party totals left out: {counts} · data.party_totals_left_out"
+    counts = ", ".join(
+        f"{len(dcids):,} on {role}" + (f" ({key})" if (key := keys[role]) else "")
+        for role, dcids in by_role.items()
+    )
+    label = (
+        "Party totals left out of the readings" if derived else "Party totals left out"
+    )
+    return f"{label}: {counts} · data.party_totals_left_out"
 
 
 def _period_line(periods: Sequence[ResolvedPeriod]) -> str | None:
@@ -976,7 +1038,8 @@ def build_dataset(
         raise ValueError("a dataset needs at least one member")
     if layout == "frame" and len(members) > 1:
         raise ValueError("the frame layout holds one member")
-    # A mint or resumed operation builds the plain rendering.
+    # A member with no rendering of its own reads as the plain rendering. Fetches,
+    # mints and resolves always pass one, so only hand-built members reach this.
     plain = rendering_for(layout, party_totals=True)
 
     tables: list[pa.Table] = []
@@ -1147,6 +1210,7 @@ def derived_dataset(
         _member_rows=(table.num_rows,),
         _caller=caller,
         left_out=left_out,
+        party_totals_left_out=_root_party_totals(manifest, member.roots),
         _left_out_complete=complete,
         _steps=tuple(
             replace(step, by=tuple(roles.get(column, column) for column in step.by))
@@ -1185,61 +1249,178 @@ def served_party_totals(
     manifest: Mapping[str, Any], *, spec_id: str
 ) -> tuple[PartyTotalsLeftOut, ...]:
     """The totals a manifest's `trace.party_totals_left_out` names for the
-    member of `spec_id`, or none when the trace names none. A key an entry holds
-    beyond `role`, `entities` and `provenance` is ignored.
-
-    Raises:
-        ContractError: The trace or an entry breaks the served shape
-            (`contract_violation`).
-    """
+    member of `spec_id`, or none when the trace names none. A trace that is no
+    object names none, as `_lenient_party_totals` reads the member."""
     trace = manifest.get("trace")
-    if trace is None:
+    served = trace.get("party_totals_left_out") if isinstance(trace, Mapping) else None
+    return _lenient_party_totals(
+        served, "/trace/party_totals_left_out", spec_id=spec_id
+    )
+
+
+def _root_party_totals(
+    manifest: Mapping[str, Any], roots: Sequence[Root]
+) -> tuple[PartyTotalsLeftOut, ...]:
+    """The totals each root's read left out, as a derived manifest's
+    `roots[].party_totals_left_out` names them, each entry under its root's spec
+    id, in the order of the ref's `roots`, which a saved file keeps. Each ref root
+    takes the first manifest root of its spec id and content version not taken
+    yet, and a manifest root that matches no ref root, that is no object, or
+    whose spec id or content version is no string, names none. Empty against a
+    server older than the per-root report, and when DFO could not read a root,
+    so an empty tuple leaves open whether the reads kept every total."""
+    served = manifest.get("roots")
+    if not isinstance(served, list):
         return ()
-    pointer = "/trace/party_totals_left_out"
-    try:
-        served = object_at(trace, "/trace").get("party_totals_left_out")
-        if served is None:
-            return ()
-        return tuple(
-            read_party_totals(item, f"{pointer}/{index}", spec_id=spec_id)
-            for index, item in enumerate(_array(served, pointer))
+    by_key: dict[tuple[str, str], list[int]] = {}
+    for index, root in enumerate(served):
+        if not isinstance(root, Mapping):
+            continue
+        spec_id, content_version = root.get("spec_id"), root.get("content_version")
+        if isinstance(spec_id, str) and isinstance(content_version, str):
+            by_key.setdefault((spec_id, content_version), []).append(index)
+    totals: list[PartyTotalsLeftOut] = []
+    for root in roots:
+        indices = by_key.get((root.spec_id, root.content_version))
+        if not indices:
+            continue
+        index = indices.pop(0)
+        totals.extend(
+            _lenient_party_totals(
+                served[index].get("party_totals_left_out"),
+                f"/roots/{index}/party_totals_left_out",
+                spec_id=root.spec_id,
+            )
         )
-    except FormatError as error:
-        violation = client_error(
-            CONTRACT_VIOLATION,
-            f"The manifest's {error.pointer} breaks the shape this client reads",
-        )
-        violation.pointer = error.pointer
-        raise violation from error
+    return tuple(totals)
+
+
+def _lenient_party_totals(
+    served: object, pointer: str, *, spec_id: str
+) -> tuple[PartyTotalsLeftOut, ...]:
+    """Served party-totals entries read as no strict pointer names them: a value
+    that is no list names none, an entry that is malformed is dropped while the
+    entries beside it still read, and a key an entry holds beyond `role`,
+    `entities`, `provenance` and `kept_in` is ignored. Entries keep their order
+    and stay unmerged, since two can share a role and a provenance."""
+    if not isinstance(served, list):
+        return ()
+    totals: list[PartyTotalsLeftOut] = []
+    for index, item in enumerate(served):
+        with suppress(FormatError):
+            totals.append(
+                read_party_totals(item, f"{pointer}/{index}", spec_id=spec_id)
+            )
+    return tuple(totals)
 
 
 def read_party_totals(
     value: object, pointer: str, *, spec_id: str
 ) -> PartyTotalsLeftOut:
     """One entry of `party_totals_left_out` as the manifest's trace serves it
-    and a saved file keeps it: `{role, entities, provenance}`, where an absent
-    `provenance` means every dataset's rows.
+    and a saved file keeps it: `{role, entities, provenance, kept_in}`, where an
+    absent `provenance` means every dataset's rows and an absent `kept_in` means
+    the totals left every series in every period.
 
     Raises:
-        FormatError: A key of that shape is missing or of the wrong type.
+        FormatError: A key of that shape is missing or of the wrong type, `role`
+            or an entity is empty, or `kept_in` breaks `_read_kept_in`.
             `pointer` locates it.
     """
     obj = object_at(value, pointer)
     _require(obj, pointer, ("role", "entities"))
     entities = tuple(
-        _string(item, f"{pointer}/entities/{index}")
+        _filled(item, f"{pointer}/entities/{index}")
         for index, item in enumerate(_array(obj["entities"], f"{pointer}/entities"))
     )
     provenance = obj.get("provenance")
     if provenance is not None:
         _string(provenance, f"{pointer}/provenance")
+    kept_in = (
+        _read_kept_in(obj["kept_in"], f"{pointer}/kept_in") if "kept_in" in obj else ()
+    )
     return PartyTotalsLeftOut(
         spec_id=spec_id,
-        role=_string(obj["role"], f"{pointer}/role"),
+        role=_filled(obj["role"], f"{pointer}/role"),
         entities=entities,
         provenance=provenance,
         every_provenance="provenance" not in obj,
+        kept_in=kept_in,
     )
+
+
+def _read_kept_in(value: object, pointer: str) -> tuple[KeptSeries, ...]:
+    """An entry's `kept_in`: a non-empty list of `{series, time_periods}` objects
+    in the contract's order, which `_series_order` gives, no two holding the same
+    series. A series maps column names to a string, null or object, and
+    `time_periods` is a non-empty list of non-empty strings, sorted by code
+    point, each once.
+
+    Raises:
+        FormatError: `value` breaks that shape or order. `pointer` locates it.
+    """
+    items = _array(value, pointer)
+    if not items:
+        raise FormatError("format_invalid", pointer, "is an empty list")
+    kept: list[KeptSeries] = []
+    previous: tuple[tuple[str, int, str], ...] | None = None
+    for index, item in enumerate(items):
+        at = f"{pointer}/{index}"
+        obj = object_at(item, at)
+        check_keys(obj, at, required=("series", "time_periods"))
+        series = dict(object_at(obj["series"], f"{at}/series"))
+        for column, cell in series.items():
+            if not (cell is None or isinstance(cell, str | dict)):
+                raise FormatError(
+                    "format_invalid",
+                    f"{at}/series/{column}",
+                    "is not a string, null or object",
+                )
+        periods = tuple(
+            _filled(period, f"{at}/time_periods/{position}")
+            for position, period in enumerate(
+                _array(obj["time_periods"], f"{at}/time_periods")
+            )
+        )
+        if not periods or list(periods) != sorted(set(periods)):
+            raise FormatError(
+                "format_invalid",
+                f"{at}/time_periods",
+                "is not a non-empty sorted list of distinct periods",
+            )
+        order = _series_order(series, f"{at}/series")
+        if previous is not None and order <= previous:
+            raise FormatError(
+                "format_invalid",
+                at,
+                "repeats a series or lists it before one it sorts after",
+            )
+        previous = order
+        kept.append(KeptSeries(series=series, time_periods=periods))
+    return tuple(kept)
+
+
+def _series_order(
+    series: Mapping[str, object], pointer: str
+) -> tuple[tuple[str, int, str], ...]:
+    """The key `kept_in` items sort by: the series' cells in column-name order,
+    a null cell before a string and a string before an object, strings by code
+    point and objects by the code points of their RFC 8785 (JCS) text."""
+    order: list[tuple[str, int, str]] = []
+    for column in sorted(series):
+        cell = series[column]
+        if cell is None:
+            order.append((column, 0, ""))
+        elif isinstance(cell, str):
+            order.append((column, 1, cell))
+        else:
+            try:
+                order.append((column, 2, jcs_text(cell)))
+            except ValueError as error:
+                raise FormatError(
+                    "format_invalid", f"{pointer}/{column}", str(error)
+                ) from None
+    return tuple(order)
 
 
 def _party_totals_object(entry: PartyTotalsLeftOut) -> dict[str, Any]:
@@ -1251,20 +1432,53 @@ def _party_totals_object(entry: PartyTotalsLeftOut) -> dict[str, Any]:
     }
     if not entry.every_provenance:
         obj["provenance"] = entry.provenance
+    if entry.kept_in:
+        obj["kept_in"] = [
+            {"series": dict(kept.series), "time_periods": list(kept.time_periods)}
+            for kept in entry.kept_in
+        ]
     return obj
 
 
-def _load_party_totals(text: str) -> tuple[PartyTotalsLeftOut, ...]:
-    """A saved file's `dfo.party_totals_left_out`."""
+def _load_party_totals(
+    text: str, members: Sequence[RefMember | DerivedRefMember]
+) -> tuple[PartyTotalsLeftOut, ...]:
+    """A saved file's `dfo.party_totals_left_out`, whose entries name a dataset
+    member of the ref or a root of a derived member (a derived member's own id
+    is refused), in member order and then in the member's root order. A spec id can
+    name several of these, so each entry takes the first one at or after the one
+    the entry before it took, which finds an order whenever one exists."""
     pointer = "/dfo.party_totals_left_out"
+    named = [
+        spec_id
+        for member in members
+        for spec_id in (
+            [root.spec_id for root in member.roots]
+            if isinstance(member, DerivedRefMember)
+            else [member.spec.spec_id]
+        )
+    ]
     loaded: list[PartyTotalsLeftOut] = []
+    position = 0
     for index, item in enumerate(_array(decode_value(text, pointer), pointer)):
         at = f"{pointer}/{index}"
         obj = object_at(item, at)
         check_keys(
-            obj, at, required=("spec_id", "role", "entities"), allowed=("provenance",)
+            obj,
+            at,
+            required=("spec_id", "role", "entities"),
+            allowed=("provenance", "kept_in"),
         )
         spec_id = _string(obj["spec_id"], f"{at}/spec_id")
+        try:
+            position = named.index(spec_id, position)
+        except ValueError:
+            raise FormatError(
+                "format_invalid",
+                f"{at}/spec_id",
+                "names a spec that is no member of dfo.ref or root of a derived "
+                "member, or lists them out of order",
+            ) from None
         loaded.append(read_party_totals(obj, at, spec_id=spec_id))
     return tuple(loaded)
 
@@ -1458,6 +1672,19 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
     )
     # Only a derived dataset carries left-out series and steps.
     derived = any(isinstance(member, DerivedMember) for member in members)
+    expected = SAVED_DERIVED_FORMAT_VERSION if derived else SAVED_FORMAT_VERSION
+    if values["dfo.format_version"] != str(expected):
+        raise FormatError(
+            "format_invalid",
+            "/dfo.format_version",
+            f"is {values['dfo.format_version']} for a file whose dfo.ref "
+            f"{'holds' if derived else 'holds no'} derived member; it is {expected}",
+        )
+    party_totals = (
+        _load_party_totals(text, ref_members)
+        if (text := values.get("dfo.party_totals_left_out")) is not None
+        else ()
+    )
     return Dataset(
         sentence=_saved_value(values, "dfo.sentence"),
         members=members,
@@ -1497,11 +1724,7 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
         layout_version=_string(rest["layout_version"], "/dfo.dataset/layout_version"),
         _table=table.replace_schema_metadata(None),
         _member_rows=member_rows,
-        party_totals_left_out=(
-            _load_party_totals(text)
-            if (text := values.get("dfo.party_totals_left_out")) is not None
-            else ()
-        ),
+        party_totals_left_out=party_totals,
         fetched_at=(
             _load_fetched_at(text)
             if (text := values.get("dfo.fetched_at")) is not None
@@ -1701,6 +1924,14 @@ def _string(value: object, pointer: str) -> str:
     if not isinstance(value, str):
         raise FormatError("format_invalid", pointer, "not a string")
     return value
+
+
+def _filled(value: object, pointer: str) -> str:
+    """A non-empty string."""
+    text = _string(value, pointer)
+    if not text:
+        raise FormatError("format_invalid", pointer, "an empty string")
+    return text
 
 
 def _flag(obj: Mapping[str, Any], key: str) -> bool:

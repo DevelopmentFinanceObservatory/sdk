@@ -7,3 +7,14 @@ export const ROLE_KEYS = {
 } as const;
 
 export const FLOW_KEYS = ["origin", "destination"] as const;
+
+export const COLUMN_ROLE_KEYS: Readonly<Record<string, string>> = {
+  provider: "origin",
+  creditor: "origin",
+  source: "origin",
+  financingProvider: "origin",
+  recipient: "destination",
+  debtor: "destination",
+  target: "destination",
+  financingRecipient: "destination",
+};

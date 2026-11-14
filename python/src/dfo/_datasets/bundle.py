@@ -146,7 +146,7 @@ _DAMAGED_ZIP = (zipfile.BadZipFile, zlib.error, EOFError)
 class BundleError(DfoError, ValueError):
     """A path holds no dataset `dfo.load` can read.
 
-    Its `code` is None, and `reason` names the fault.
+    Its `code` equals `reason`, which names the fault.
 
     Attributes:
         reason: `not_a_bundle` for a file that is neither a saved dataset nor part
@@ -159,7 +159,7 @@ class BundleError(DfoError, ValueError):
     """
 
     def __init__(self, reason: BundleErrorReason, message: str) -> None:
-        super().__init__(message)
+        super().__init__(message, code=reason)
         self.reason: BundleErrorReason = reason
 
 

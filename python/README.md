@@ -232,7 +232,7 @@ with dfo.Client(timeout=300.0, max_retries=3) as client:
 
 Run `dfo auth login` to store a key, and `dfo auth status` to see which key the client sends. [Keys and credentials](docs/keys.md) covers the lookup order.
 
-Every error derives from `dfo.errors.DfoError` and carries a `code`, None for `FormatError` and `BundleError`, which carry a `reason`. The message ends with `[code]`, or `[code trace=id]` when a response carried one. The bracket text can change between releases. `error.code` and `error.trace_id` are the stable fields. A refusal names the fix, such as the call that settles an incomplete answer. [Errors](docs/errors.md) lists every class by what you do next. The types answers and datasets contain live in `dfo.types`.
+Every error derives from `dfo.errors.DfoError` and carries a `code`. On `FormatError` and `BundleError` the `code` equals their `reason`. The message ends with `[code]`, or `[code trace=id]` when a response carried one. The bracket text can change between releases. `error.code` and `error.trace_id` are the stable fields. A refusal names the fix, such as the call that settles an incomplete answer. [Errors](docs/errors.md) lists every class by what you do next. The types answers and datasets contain live in `dfo.types`.
 
 ## Limits the client enforces
 

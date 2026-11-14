@@ -46,6 +46,7 @@ export type {
   Citation,
   CitationSource,
   DerivedMember,
+  KeptSeries,
   LeftOutStep,
   Member,
   PartyTotalsLeftOut,

@@ -43,13 +43,15 @@ const roleRule = (overrides: Record<string, unknown> = {}): string =>
     rule: "role-keys",
     keys: { place: "observationAbout", origin: "origin", destination: "destination" },
     flow_keys: ["origin", "destination"],
+    columns: { provider: "origin", recipient: "destination" },
     ...overrides,
   });
 
-test("the role keys come out as the rule's keys and flow keys", () => {
+test("the role keys come out as the rule's keys, flow keys and columns", () => {
   assert.deepEqual(renderRoleKeys(roleRule()), {
     ROLE_KEYS: { place: "observationAbout", origin: "origin", destination: "destination" },
     FLOW_KEYS: ["origin", "destination"],
+    COLUMN_ROLE_KEYS: { provider: "origin", recipient: "destination" },
   });
 });
 
@@ -64,6 +66,9 @@ for (const [name, text] of [
   ["a flow key twice", roleRule({ flow_keys: ["origin", "origin"] })],
   ["a flow key that is no caller key", roleRule({ flow_keys: ["origin", "recipient"] })],
   ["a flow key posted as another role", roleRule({ flow_keys: ["place"] })],
+  ["no columns", roleRule({ columns: undefined })],
+  ["empty columns", roleRule({ columns: {} })],
+  ["a column mapped to no caller key", roleRule({ columns: { provider: "observationAbout" } })],
 ] as const) {
   test(`the role-keys rule with ${name} is refused`, () => {
     assert.throws(() => renderRoleKeys(text));

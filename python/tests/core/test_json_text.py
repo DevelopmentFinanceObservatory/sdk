@@ -1,11 +1,11 @@
-"""The client's own bound on JSON nesting, independent of the C stack, and the UTF-8
-JSON it reads."""
+"""The client's own bound on JSON nesting, independent of the C stack, the UTF-8
+JSON it reads, and the RFC 8785 (JCS) text it orders objects by."""
 
 import time
 
 import pytest
 
-from dfo._core.json_text import JSON_MAX_DEPTH, loads
+from dfo._core.json_text import JSON_MAX_DEPTH, jcs_text, loads
 
 AT = JSON_MAX_DEPTH
 PAST = JSON_MAX_DEPTH + 1
@@ -73,3 +73,35 @@ def test_an_unclosed_string_of_escaped_quotes_is_scanned_in_linear_time() -> Non
     with pytest.raises(ValueError):
         loads(text)
     assert time.perf_counter() - start < 1
+
+
+# RFC 8785's own examples, section 3.2.2.3 for numbers and 3.2.3 for member order,
+# where a name outside the Basic Multilingual Plane sorts by its UTF-16 surrogates.
+@pytest.mark.parametrize(
+    ("value", "text"),
+    [
+        (0.0, "0"),
+        (-0.0, "0"),
+        (1e21, "1e+21"),
+        (1e20, "100000000000000000000"),
+        (1e-7, "1e-7"),
+        (0.000001, "0.000001"),
+        (4.50, "4.5"),
+        (2e-3, "0.002"),
+        (333333333.33333329, "333333333.3333333"),
+        (-5e-324, "-5e-324"),
+        (2021, "2021"),
+        (
+            {"\u20ac": 1, "\U0001f600": 2, "\ufb33": 3, "a": [True, None, "\n"]},
+            '{"a":[true,null,"\\n"],"\u20ac":1,"\U0001f600":2,"\ufb33":3}',
+        ),
+    ],
+)
+def test_jcs_text_writes_rfc_8785_canonical_json(value: object, text: str) -> None:
+    assert jcs_text(value) == text
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), 10**400, {1: 2}, b""])
+def test_jcs_text_refuses_what_json_has_no_form_for(value: object) -> None:
+    with pytest.raises(ValueError):
+        jcs_text(value)

@@ -263,7 +263,7 @@ export class Catalogue {
  * are, for the fetch to check.
  *
  * @throws {InvalidRequestError} A role holds a `Match` that did not resolve: an ambiguous name,
- *   a name not found, or a node the graph does not hold (`invalid_argument`).
+ *   a name not found, or a node the graph does not hold (`match_unresolved`).
  */
 export function withEntityDcids<T>(options: T): T {
   if (!isRecord(options) || !isRecord(options["entities"])) return options;
@@ -277,7 +277,7 @@ export function withEntityDcids<T>(options: T): T {
 /**
  * The dcid an `Entity` or resolved `Match` names; any other value as it is.
  *
- * @throws {InvalidRequestError} A `Match` did not resolve (`invalid_argument`). The message
+ * @throws {InvalidRequestError} A `Match` did not resolve (`match_unresolved`). The message
  *   names the dcid of its first candidate, else of its nearest match.
  */
 function entityDcid(role: string, item: unknown): unknown {
@@ -290,7 +290,7 @@ function entityDcid(role: string, item: unknown): unknown {
       ? "pass a dcid, or the Match of a name client.lookup.resolve resolved"
       : `pass the dcid you mean, such as ${JSON.stringify(nearest.dcid)}, or one of ` +
         (item.candidates.length > 0 ? "match.candidates" : "match.nearMatches");
-  throw clientError("invalid_argument", {
+  throw clientError("match_unresolved", {
     detail: `entities.${role} holds a Match that did not resolve, ${String(item)}; ${fix}.`,
   });
 }

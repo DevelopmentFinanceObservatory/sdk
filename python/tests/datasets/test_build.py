@@ -7,7 +7,7 @@ import httpx2
 import pytest
 
 from dfo._core.errors import ContractError, InvalidRequestError
-from dfo._core.types import Rendering, Spec
+from dfo._core.types import CUT_SPELLINGS, Rendering, Spec, party_totals_cut
 from dfo._datasets.build import (
     Reading,
     dcid_entities,
@@ -18,6 +18,7 @@ from dfo._datasets.build import (
     rendering_for,
     scope,
 )
+from dfo._datasets.dataset import PartyTotalsLeftOut
 from tests._fetch_support import OP_ID, operation
 from tests.rule_vectors import ids, vectors
 
@@ -131,6 +132,10 @@ PLACE = _spec(2, entities={"observationAbout": ["country/KEN"]})
 
 @pytest.mark.parametrize("vector", vectors("role-keys"), ids=ids("role-keys"))
 def test_the_role_keys_vectors(vector: dict[str, Any]) -> None:
+    if "column" in vector:
+        entry = PartyTotalsLeftOut(spec_id="spec_x", role=vector["column"], entities=())
+        assert entry.role_key == vector["role_key"]
+        return
     spec = _spec(7, **vector["identity"])
     assert list(spec.roles.items()) == [
         (key, None if dcids is None else tuple(dcids))
@@ -152,7 +157,12 @@ def test_the_role_keys_vectors(vector: dict[str, Any]) -> None:
 
 @pytest.mark.parametrize("vector", vectors("file-selector"), ids=ids("file-selector"))
 def test_the_file_selector_vectors(vector: dict[str, Any]) -> None:
-    params = file_params(Rendering(**vector["rendering"]))
+    rendering = dict(vector["rendering"])
+    cut = party_totals_cut(rendering)
+    assert cut is not None
+    for key in CUT_SPELLINGS:
+        rendering.pop(key, None)
+    params = file_params(Rendering(**rendering, without_party_totals=cut))
     assert str(httpx2.QueryParams(params)) == vector["query"]
 
 

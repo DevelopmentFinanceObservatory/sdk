@@ -49,7 +49,7 @@ export type DfoErrorCode = ClientErrorCode | ServerErrorCode;
 const BRAND = Symbol.for("dfo.error");
 
 export type DfoErrorOptions = {
-  /** The code, or null for an error no contract code describes, such as a `FormatError`. */
+  /** The code, or null for an error no contract code describes. */
   code: DfoErrorCode | null;
   /** The HTTP status, or null when no response arrived. */
   status?: number | null;
@@ -85,7 +85,7 @@ const labelsOf = ({ code, traceId }: DfoError): string[] => [
  *  the bracket when it has neither. The bracket's text may change between releases, so `code`
  *  and `traceId` are the contract. */
 export class DfoError extends Error {
-  /** The code, or null for an error no contract code describes, such as a `FormatError`. */
+  /** The code, or null for an error no contract code describes. */
   readonly code: DfoErrorCode | null;
   readonly status: number | null;
   readonly detail: string;
@@ -366,7 +366,16 @@ export function errorClassFor(code: string, status: number): ErrorClass {
 /** The status `contract/proxy-codes.json` gives a code the website proxy answers itself. */
 const proxyStatusFor = (code: string): number | undefined => lookUp(PROXY_CODE_STATUSES, code);
 
-type ClientClassName = Exclude<(typeof CLIENT_CODE_CLASSES)[ClientErrorCode], "by_status">;
+/** The codes `clientError` builds an error for. A `FormatError` takes its `reason` as its code,
+ *  and `contract/client-codes.json` also lists the `BundleError` codes, which this client's
+ *  `DatasetRef` and `Answer` readers do not raise. Neither class is built from a code alone. */
+export type RaisedClientCode = {
+  [C in ClientErrorCode]: (typeof CLIENT_CODE_CLASSES)[C] extends "FormatError" | "BundleError"
+    ? never
+    : C;
+}[ClientErrorCode];
+
+type ClientClassName = Exclude<(typeof CLIENT_CODE_CLASSES)[RaisedClientCode], "by_status">;
 
 /** The class for each class name `contract/client-codes.json` uses. */
 const CLIENT_CLASSES = {
@@ -381,7 +390,7 @@ const CLIENT_CLASSES = {
   VersionUnavailableError,
 } satisfies Record<ClientClassName, ErrorClass>;
 
-type ClientClass<C extends ClientErrorCode> = (typeof CLIENT_CLASSES)[Exclude<
+type ClientClass<C extends RaisedClientCode> = (typeof CLIENT_CLASSES)[Exclude<
   (typeof CLIENT_CODE_CLASSES)[C],
   "by_status"
 >];
@@ -389,7 +398,7 @@ type ClientClass<C extends ClientErrorCode> = (typeof CLIENT_CLASSES)[Exclude<
 /** The options an error with a client code takes: its class's options without the code and
  *  the retryable flag, which the code's row gives, and a status for a code whose class and flag
  *  the status picks. Such a code takes a retryable flag the response states over its status's. */
-export type ClientErrorOptions<C extends ClientErrorCode> =
+export type ClientErrorOptions<C extends RaisedClientCode> =
   (typeof CLIENT_CODE_CLASSES)[C] extends "by_status"
     ? Omit<DfoErrorOptions, "code" | "status" | "retryable"> & {
         status: number;
@@ -398,13 +407,13 @@ export type ClientErrorOptions<C extends ClientErrorCode> =
     : Omit<ConstructorParameters<ClientClass<C>>[0], "code" | "retryable">;
 
 /** The error a client code raises. */
-export type ClientError<C extends ClientErrorCode> =
+export type ClientError<C extends RaisedClientCode> =
   (typeof CLIENT_CODE_CLASSES)[C] extends "by_status" ? DfoError : InstanceType<ClientClass<C>>;
 
 /** Builds an error the client raises itself, of the class and retryable flag
  *  `contract/client-codes.json` assigns to its code, or for `refusal_without_code` the class
  *  its status maps to, and the flag the body states or else its status maps to. */
-export function clientError<C extends ClientErrorCode>(
+export function clientError<C extends RaisedClientCode>(
   code: C,
   options: ClientErrorOptions<C>,
 ): ClientError<C> {

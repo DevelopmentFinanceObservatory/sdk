@@ -293,19 +293,20 @@ export function renderReadingOrder(ruleText: string): Record<string, unknown> {
   return { READING_COLUMNS: slots };
 }
 
-/** The caller key of each entity role, to the wire role a client posts it as, and the flow
- *  keys among them. */
+/** The caller key of each entity role, to the wire role a client posts it as, the flow keys
+ *  among them, and the caller key each frame role column belongs to. */
 export function renderRoleKeys(ruleText: string): Record<string, unknown> {
   const rule = JSON.parse(ruleText) as {
     format_version?: unknown;
     rule?: unknown;
     keys?: unknown;
     flow_keys?: unknown;
+    columns?: unknown;
   };
   if (rule.format_version !== 1 || rule.rule !== "role-keys") {
     throw new Error("rules/role-keys.json is not format version 1 of the role-keys rule");
   }
-  const { keys, flow_keys: flowKeys } = rule;
+  const { keys, flow_keys: flowKeys, columns } = rule;
   const isName = (name: unknown): name is string => typeof name === "string" && name !== "";
   if (
     !isRecord(keys) ||
@@ -329,7 +330,16 @@ export function renderRoleKeys(ruleText: string): Record<string, unknown> {
         "caller key posted as itself",
     );
   }
-  return { ROLE_KEYS: keys, FLOW_KEYS: flowKeys };
+  if (
+    !isRecord(columns) ||
+    Object.keys(columns).length === 0 ||
+    !Object.entries(columns).every(
+      ([column, key]) => isName(column) && isName(key) && Object.hasOwn(keys, key),
+    )
+  ) {
+    throw new Error("rules/role-keys.json maps no frame role columns to caller keys");
+  }
+  return { ROLE_KEYS: keys, FLOW_KEYS: flowKeys, COLUMN_ROLE_KEYS: columns };
 }
 
 /** The query keys a version's file selector reads, in the order a query lists them. */
@@ -354,13 +364,21 @@ export function renderFileSelector(ruleText: string): Record<string, unknown> {
   return { SELECTOR_QUERY_KEYS: keys };
 }
 
+// Tables a caller looks up by an arbitrary string, so they are typed as a readonly record
+// that any string can index.
+const RECORD_TABLES = new Set(["COLUMN_ROLE_KEYS"]);
+
 async function module(
   source: string,
   tables: Record<string, unknown>,
   file: string,
 ): Promise<string> {
   const body = Object.entries(tables)
-    .map(([name, value]) => `export const ${name} = ${JSON.stringify(value)} as const;`)
+    .map(([name, value]) =>
+      RECORD_TABLES.has(name)
+        ? `export const ${name}: Readonly<Record<string, string>> = ${JSON.stringify(value)};`
+        : `export const ${name} = ${JSON.stringify(value)} as const;`,
+    )
     .join("\n\n");
   const text = `// Generated from ${source} by \`pnpm generate\`. Do not edit by hand.\n\n${body}\n`;
   return format(text, { ...(await resolveConfig(file)), filepath: file });

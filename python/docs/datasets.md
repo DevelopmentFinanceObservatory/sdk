@@ -84,7 +84,11 @@ print(totals.nlargest(3, "value")[["financingProvider_label", "value"]])
 
 The 15 extra rows are group totals worth 18.3 billion dollars, and each one counts donors that the other 95 rows already hold. The cut applies to the party roles a spec leaves open, and a role the spec binds keeps what it binds. `answer.fetch(party_totals=True)` keeps the totals for every reading in an answer.
 
-`data.party_totals_left_out` names the totals a fetch left out. It holds one `dfo.types.PartyTotalsLeftOut` per member, party role and provenance that lost rows, with the role's column name, such as `financingProvider`, and the dcids of the totals, such as `DACCountriesTotal`. The repr counts them on its `Party totals left out` line, and `data.save` keeps them. The tuple is empty after `party_totals=True` and when the cut found no totals to drop.
+The default keeps some totals on an open role. The cut judges each series in each period, where a series is the frame's columns other than the role, `time_period` and provenance, such as `stat_var`, the other party role and `unit`. A period in which the series holds single parties for the role, such as single donors, drops its totals. A period that holds only totals keeps the ones the code index marks whole, so a year with no donor-level rows still holds one figure. When none of those totals is whole, the period drops them if the series holds single parties in another period, and keeps them all if it holds none in any period. A sum over that role can then count totals nested inside other totals.
+
+`data.party_totals_left_out` names the totals a fetch left out. It holds one `dfo.types.PartyTotalsLeftOut` per member, party role, provenance and set of kept series, with the role's column name, such as `financingProvider`, and the dcids of the totals, such as `DACCountriesTotal`. `role_key` names the key `entities=` takes for that column, `origin` or `destination`, and is None for a column the client does not know. `kept_in` lists the series whose rows kept those totals, each a `dfo.types.KeptSeries` whose `series` maps each of the series' columns to its cell, a string, None or a unit as a dict, and whose `time_periods` lists the periods in which the series kept them. It is empty when the totals left every series in every period. Two entries can share a role and a provenance and differ by `kept_in`. The repr counts the totals on its `Party totals left out` line, with the role key beside each column, as in `15 on financingProvider (origin)`, and `data.save` keeps them. The tuple is empty after `party_totals=True` and when the cut found no totals to drop.
+
+A derived Dataset from `dfo.analysis` reports what each reading's read left out, each entry named by the reading's spec id, in the order of the recipe's readings, and its repr says `Party totals left out of the readings`. Its tuple is also empty against a server older than this report and when DFO could not read a reading, so an empty tuple there leaves open whether the readings kept every total.
 
 ## Read the columns
 
@@ -256,7 +260,7 @@ The saved file keeps the provenance in the Parquet key-value metadata, under the
 - `dfo.fetched_at`: optional, when the data left the server, as a JSON string `YYYY-MM-DDTHH:MM:SSZ`. Added in 0.2.0.
 - `dfo.left_out`: a derived dataset only, the series its steps left out, as a JSON object of `series` and `complete`.
 - `dfo.steps`: a derived dataset only, its steps, as a JSON array.
-- `dfo.party_totals_left_out`: optional, the party totals the fetch left out, as a JSON array. Added in 0.2.0.
+- `dfo.party_totals_left_out`: optional, the party totals the fetch left out, as a JSON array of entries with `spec_id`, `role`, `entities`, and `provenance` and `kept_in` where they apply. A derived dataset's entries name its readings' spec ids, in the order of its readings. Added in 0.2.0.
 
 `dfo.load` reads each key back, `question` and `fetched_at` included, and sets `from_cache` to False. A 0.1.0 client ignores the keys added in 0.2.0.
 

@@ -31,13 +31,28 @@ const oneMember = async (): Promise<{ members: Record<string, unknown>[] }> =>
   (await contractJson<{ ref: { members: Record<string, unknown>[] } }>("refs/ref-one-member.json"))
     .ref;
 
+/** A stored ref with every rendering's cut spelled `without_party_totals: true`, as a client
+ *  writes it whichever spelling it read. */
+function cutWrittenOld(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(cutWrittenOld);
+  if (value === null || typeof value !== "object") return value;
+  const entries = Object.entries(value).map(([key, item]) => [key, cutWrittenOld(item)] as const);
+  if (!Object.hasOwn(value, "party_totals")) return Object.fromEntries(entries);
+  return {
+    ...Object.fromEntries(entries.filter(([key]) => key !== "party_totals")),
+    without_party_totals: true,
+  };
+}
+
 describe("the contract's DatasetRef records", async () => {
-  for (const record of await records()) {
+  const all = await records();
+  for (const record of all) {
     test(record.name, () => {
       if (record.expect === "accept") {
         const ref = DatasetRef.fromJSON(JSON.stringify(record.ref));
-        // A loaded ref writes back the stored format exactly, definition included.
-        assert.equal(JSON.stringify(ref), JSON.stringify(record.ref));
+        // A loaded ref writes back the stored format exactly, definition included, with the
+        // party-totals cut in the spelling clients older than 0.2.0 read.
+        assert.equal(JSON.stringify(ref), JSON.stringify(cutWrittenOld(record.ref)));
         return;
       }
       assert.throws(
@@ -51,6 +66,20 @@ describe("the contract's DatasetRef records", async () => {
       );
     });
   }
+
+  test("every spelling of the cut loads to one ref", () => {
+    const named = (name: string) => {
+      const record = all.find((each) => each.name === name);
+      assert.ok(record, `the contract holds no ${name} record`);
+      return DatasetRef.fromJSON(record.ref);
+    };
+    const old = named("ref-without-party-totals");
+    for (const name of ["ref-party-totals", "ref-party-totals-both"]) {
+      const ref = named(name);
+      assert.ok(ref.equals(old), name);
+      assert.ok(ref.sameData(old), name);
+    }
+  });
 });
 
 describe("DatasetRef.fromJSON", () => {
@@ -98,6 +127,8 @@ describe("DatasetRef.fromJSON", () => {
       [["spec", "definition", "identity"], "spec1"],
       [["artifact", "rendering", "without_party_totals"], false],
       [["artifact", "rendering", "without_party_totals"], "true"],
+      [["artifact", "rendering", "party_totals"], true],
+      [["artifact", "rendering", "party_totals"], "false"],
     ];
     for (const [path, value] of cases) {
       const broken = structuredClone(ref);

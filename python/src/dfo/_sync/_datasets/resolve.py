@@ -78,6 +78,7 @@ from dfo._core.types import (
     Window,
     Wire,
     matches,
+    party_totals_cut,
 )
 from dfo._datasets.build import (
     Cache,
@@ -539,8 +540,7 @@ def _frame_member(manifest: Wire, artifact: Wire, title: str) -> RefMember:
         digest=artifact["artifact_digest"],
         rendering=replace(
             _FRAME,
-            without_party_totals=artifact["rendering"].get("without_party_totals")
-            is True,
+            without_party_totals=party_totals_cut(artifact["rendering"]) is True,
         ),
     )
 
@@ -593,7 +593,7 @@ def _rendered_frame(
             raise
         cut = any(
             isinstance(artifact["rendering"], Mapping)
-            and artifact["rendering"].get("without_party_totals") is True
+            and party_totals_cut(artifact["rendering"]) is True
             for artifact in manifest["artifacts"]
         )
         return _rebuilt(

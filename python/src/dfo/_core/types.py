@@ -115,7 +115,7 @@ type FormatErrorReason = Literal[
 class FormatError(DfoError, ValueError):
     """Stored JSON for a `DatasetRef`, a saved dataset or a bundle breaks its format.
 
-    Its `code` is None, and `reason` names the fault.
+    Its `code` equals `reason`, which names the fault.
 
     Attributes:
         reason: `format_invalid` when the JSON breaks the format's shape or a
@@ -126,7 +126,7 @@ class FormatError(DfoError, ValueError):
     """
 
     def __init__(self, reason: FormatErrorReason, pointer: str, detail: str) -> None:
-        super().__init__(f"{pointer or '/'}: {detail}")
+        super().__init__(f"{pointer or '/'}: {detail}", code=reason)
         self.reason: FormatErrorReason = reason
         self.pointer = pointer
 
@@ -552,9 +552,34 @@ class Citation:
         return single_line(f"Citation({_quoted(self.text)}, {sources})")
 
 
+# The two spellings of the party-totals cut in a rendering object, each with the
+# one value it takes there: `without_party_totals` is the spelling refs and
+# served renderings carry, `party_totals` the request spelling.
+CUT_SPELLINGS: Mapping[str, bool] = {
+    "without_party_totals": True,
+    "party_totals": False,
+}
+
 # The members of a manifest artifact's `rendering` object a ref's selector holds.
-# `Rendering.matches` compares all but `without_party_totals`.
-RENDERING_SELECTORS = frozenset({"format", "bundle", "layout", "without_party_totals"})
+# `Rendering.matches` compares all but the cut's spellings.
+RENDERING_SELECTORS = frozenset({"format", "bundle", "layout", *CUT_SPELLINGS})
+
+
+def party_totals_cut(rendering: Mapping[str, Any], /) -> bool | None:
+    """Whether a rendering object is the party-totals cut, in either spelling.
+
+    `without_party_totals: true` and `party_totals: false` each name the cut,
+    alone or together, and a rendering with neither keeps every total. A
+    spelling with its other value, such as `party_totals: true`, names no
+    rendering a server records, so the answer is None, and a pair that
+    disagrees always holds one of those.
+    """
+    if any(
+        key in rendering and rendering[key] is not cut
+        for key, cut in CUT_SPELLINGS.items()
+    ):
+        return None
+    return any(key in rendering for key in CUT_SPELLINGS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -575,16 +600,32 @@ class Rendering:
     without_party_totals: bool = False
 
     def to_object(self) -> dict[str, Any]:
-        """The rendering as a ref's artifact and a build request's `options` hold it.
+        """The rendering as a ref's artifact holds it.
 
         `layout` is written only when set and `without_party_totals` only when
         true, as the server records it, so a plain rendering's JSON has neither.
+        Clients older than 0.2.0 read the cut in that spelling alone.
         """
+        obj = self._selector()
+        if self.without_party_totals:
+            obj["without_party_totals"] = True
+        return obj
+
+    def to_options(self) -> dict[str, Any]:
+        """The rendering as a build request's `options` post it.
+
+        The cut posts its request spelling, `party_totals: false`, and a plain
+        rendering posts no cut key.
+        """
+        obj = self._selector()
+        if self.without_party_totals:
+            obj["party_totals"] = False
+        return obj
+
+    def _selector(self) -> dict[str, Any]:
         obj: dict[str, Any] = {"format": self.format, "bundle": self.bundle}
         if self.layout is not None:
             obj["layout"] = self.layout
-        if self.without_party_totals:
-            obj["without_party_totals"] = True
         return obj
 
     def matches(self, rendering: Mapping[str, Any], /) -> bool:

@@ -16,3 +16,15 @@ ROLE_KEYS: Final[Mapping[str, str]] = {
 
 # The flow keys: a spec that names one takes both.
 FLOW_KEYS: Final[tuple[str, ...]] = ("origin", "destination")
+
+# Each frame role column with the caller key it belongs to.
+COLUMN_ROLE_KEYS: Final[Mapping[str, str]] = {
+    "provider": "origin",
+    "creditor": "origin",
+    "source": "origin",
+    "financingProvider": "origin",
+    "recipient": "destination",
+    "debtor": "destination",
+    "target": "destination",
+    "financingRecipient": "destination",
+}

@@ -308,6 +308,17 @@ def test_the_default_client_is_built_once_on_first_use(
     assert clients == [first]
 
 
+def test_an_invalid_dfo_timeout_raises_at_the_first_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DFO_TIMEOUT", "30s")
+    with pytest.raises(InvalidRequestError) as caught:
+        dfo.search("ODA to Nigeria")
+    assert caught.value.code == "invalid_argument"
+    assert "DFO_TIMEOUT" in str(caught.value)
+    assert _default._client is None
+
+
 FORK = textwrap.dedent(
     """
     import os

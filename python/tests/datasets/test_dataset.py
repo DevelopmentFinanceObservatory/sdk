@@ -1204,6 +1204,108 @@ def test_a_compare_lists_its_primary_input_s_steps_first() -> None:
     assert [step.verb for step in dataset._steps] == ["growth", "rank", "compare"]
 
 
+# A kept series whose unit is an object, as a frame in constant prices holds it.
+_KEPT_IN = [
+    {
+        "series": {
+            "measurementMethod": None,
+            "stat_var": "dfo/grossOdaDisbursements",
+            "unit": {"base_year": 2021, "currency": "USD", "prices": "constant"},
+        },
+        "time_periods": ["2020", "2021"],
+    }
+]
+_ROOT_TOTALS = [
+    {"role": "financingProvider", "entities": ["GroupOfSeven"], "provenance": "p/A"},
+    {"role": "observationAbout", "entities": ["World"], "kept_in": _KEPT_IN},
+]
+
+
+def _kept_in(entry: PartyTotalsLeftOut) -> list[dict[str, Any]]:
+    return [
+        {"series": dict(kept.series), "time_periods": list(kept.time_periods)}
+        for kept in entry.kept_in
+    ]
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "expected"),
+    [
+        (_ROOT_TOTALS, None, [(0, 0), (0, 1)]),
+        ([_ROOT_TOTALS[0]], [_ROOT_TOTALS[1]], [(0, 0), (1, 1)]),
+        (None, None, []),
+        ({"role": "x"}, [[], _ROOT_TOTALS[0]], [(1, 0)]),
+    ],
+    ids=["one-root", "each-root", "older-server", "malformed-entries-dropped"],
+)
+def test_a_derived_dataset_reports_its_roots_party_totals(
+    tmp_path: Path,
+    first: object,
+    second: object,
+    expected: list[tuple[int, int]],
+) -> None:
+    manifest_body = copy.deepcopy(load("analysis-chain-manifest.json"))
+    for root, served in zip(manifest_body["roots"], (first, second), strict=True):
+        if served is not None:
+            root["party_totals_left_out"] = served
+    data = (DATA / "analysis-chain-frame.parquet").read_bytes()
+    member = _derived_member()
+    dataset = derived_dataset(member, manifest_body, data)
+    assert [
+        (entry.spec_id, entry.role, _kept_in(entry), entry.role_key)
+        for entry in dataset.party_totals_left_out
+    ] == [
+        (
+            member.roots[root].spec_id,
+            _ROOT_TOTALS[index]["role"],
+            _ROOT_TOTALS[index].get("kept_in", []),
+            ("origin", None)[index],
+        )
+        for root, index in expected
+    ]
+    lines = [line for line in repr(dataset).splitlines() if "Party totals" in line]
+    if expected:
+        assert lines[0].startswith("  Party totals left out of the readings: ")
+    else:
+        assert lines == []
+    path = tmp_path / "derived.parquet"
+    dataset.save(path)
+    assert load_saved(path).party_totals_left_out == dataset.party_totals_left_out
+    assert "party_totals_left_out" not in json.dumps(
+        json.loads(pq.read_metadata(path).metadata[b"dfo.ref"])
+    )
+
+
+@pytest.mark.parametrize(
+    "unmatched",
+    [None, "content_version", "spec_id"],
+    ids=["reversed", "reversed-beside-unmatched", "reversed-beside-list-spec-id"],
+)
+def test_a_derived_dataset_orders_root_party_totals_by_the_ref_s_roots(
+    tmp_path: Path, unmatched: str | None
+) -> None:
+    manifest_body = copy.deepcopy(load("analysis-chain-manifest.json"))
+    for root, served in zip(manifest_body["roots"], _ROOT_TOTALS, strict=True):
+        root["party_totals_left_out"] = [served]
+    manifest_body["roots"].reverse()
+    if unmatched is not None:
+        first = manifest_body["roots"][0]
+        changed = (
+            "cv_" + "4" * 32 if unmatched == "content_version" else [first["spec_id"]]
+        )
+        manifest_body["roots"].insert(0, {**first, unmatched: changed})
+    data = (DATA / "analysis-chain-frame.parquet").read_bytes()
+    member = _derived_member()
+    dataset = derived_dataset(member, manifest_body, data)
+    assert [(entry.spec_id, entry.role) for entry in dataset.party_totals_left_out] == [
+        (root.spec_id, served["role"])
+        for root, served in zip(member.roots, _ROOT_TOTALS, strict=True)
+    ]
+    path = tmp_path / "derived.parquet"
+    dataset.save(path)
+    assert load_saved(path).party_totals_left_out == dataset.party_totals_left_out
+
+
 def test_a_manifest_without_left_out_reads_as_none_left_out() -> None:
     manifest_body = {
         **load("analysis-chain-manifest.json"),
@@ -1257,7 +1359,7 @@ def test_a_fetch_that_left_party_totals_out_names_them_and_saves_them(
     )
     count = len(served["entities"])
     assert (
-        f"  Party totals left out: {count} on financingProvider · "
+        f"  Party totals left out: {count} on financingProvider (origin) · "
         "data.party_totals_left_out"
     ) in repr(data).splitlines()
 
@@ -1275,8 +1377,13 @@ def test_a_fetch_that_left_party_totals_out_names_them_and_saves_them(
         ({"provenance": "provenance/OECD_DAC2a"}, "provenance/OECD_DAC2a", False),
         ({"provenance": None}, None, False),
         ({}, None, True),
+        (
+            {"provenance": "provenance/OECD_DAC2a", "kept_in": _KEPT_IN},
+            "provenance/OECD_DAC2a",
+            False,
+        ),
     ],
-    ids=["named", "rows-without-provenance", "every-provenance"],
+    ids=["named", "rows-without-provenance", "every-provenance", "kept-in"],
 )
 def test_party_totals_keep_the_provenance_through_save_and_load(
     tmp_path: Path, served: dict[str, Any], provenance: str | None, *, every: bool
@@ -1287,8 +1394,12 @@ def test_party_totals_keep_the_provenance_through_save_and_load(
     data = built(recorded_member(manifest=body))
     (read,) = data.party_totals_left_out
     assert (read.provenance, read.every_provenance) == (provenance, every)
+    assert _kept_in(read) == served.get("kept_in", [])
+    assert read.role_key == "destination"
     path = tmp_path / "saved.parquet"
     data.save(path)
+    saved = json.loads(pq.read_metadata(path).metadata[b"dfo.party_totals_left_out"])
+    assert saved[0].get("kept_in") == served.get("kept_in")
     assert load_saved(path).party_totals_left_out == data.party_totals_left_out
 
 
@@ -1301,23 +1412,30 @@ def test_a_dataset_without_party_totals_left_out_saves_no_key(tmp_path: Path) ->
     assert b"dfo.party_totals_left_out" not in pq.read_metadata(path).metadata
 
 
+_TOTALS = {"role": "financingProvider", "entities": ["DACWorldBank"]}
+
+
+def _with_kept_in(*items: object) -> dict[str, Any]:
+    """A trace of one `_TOTALS` entry with `kept_in` holding `items`."""
+    return {"party_totals_left_out": [{**_TOTALS, "kept_in": list(items)}]}
+
+
+def _kept(unit: object, *periods: str) -> dict[str, Any]:
+    """A kept series of one `unit` cell in `periods`, `1968` by default."""
+    return {"series": {"unit": unit}, "time_periods": list(periods or ["1968"])}
+
+
 @pytest.mark.parametrize(
-    ("trace", "pointer"),
+    ("trace", "expected"),
     [
-        ([], "/trace"),
-        ({"party_totals_left_out": {}}, "/trace/party_totals_left_out"),
-        ({"party_totals_left_out": [[]]}, "/trace/party_totals_left_out/0"),
-        (
-            {"party_totals_left_out": [{"entities": []}]},
-            "/trace/party_totals_left_out/0/role",
-        ),
-        (
-            {"party_totals_left_out": [{"role": "financingProvider"}]},
-            "/trace/party_totals_left_out/0/entities",
-        ),
+        ([], 0),
+        ({"party_totals_left_out": {}}, 0),
+        ({"party_totals_left_out": [[]]}, 0),
+        ({"party_totals_left_out": [{"entities": []}]}, 0),
+        ({"party_totals_left_out": [{"role": "financingProvider"}]}, 0),
         (
             {"party_totals_left_out": [{"role": "financingProvider", "entities": [1]}]},
-            "/trace/party_totals_left_out/0/entities/0",
+            0,
         ),
         (
             {
@@ -1325,7 +1443,43 @@ def test_a_dataset_without_party_totals_left_out_saves_no_key(tmp_path: Path) ->
                     {"role": "financingProvider", "entities": [], "provenance": 2}
                 ]
             },
-            "/trace/party_totals_left_out/0/provenance",
+            0,
+        ),
+        ({"party_totals_left_out": [[], _TOTALS, {"role": 1, "entities": []}]}, 1),
+        ({"party_totals_left_out": [{**_TOTALS, "role": ""}]}, 0),
+        ({"party_totals_left_out": [{**_TOTALS, "entities": ["G7", ""]}]}, 0),
+        ({"party_totals_left_out": [{**_TOTALS, "kept_in": {}}]}, 0),
+        (_with_kept_in(), 0),
+        (_with_kept_in([]), 0),
+        (_with_kept_in({**_kept("USD"), "rows": 2}), 0),
+        (_with_kept_in({**_kept("USD"), "series": []}), 0),
+        (_with_kept_in(_kept(2)), 0),
+        (_with_kept_in(_kept("USD") | {"time_periods": []}), 0),
+        (_with_kept_in(_kept("USD") | {"time_periods": [1968]}), 0),
+        (_with_kept_in(_kept("USD", "")), 0),
+        (_with_kept_in(_kept("USD", "2", "1")), 0),
+        (_with_kept_in(_kept("USD", "1", "1")), 0),
+        (_with_kept_in(_kept({"currency": "USD"}), _kept("USD")), 0),
+        (_with_kept_in(_kept("USD"), _kept(None)), 0),
+        (_with_kept_in(_kept({"b": 1}), _kept({"a": 2})), 0),
+        (_with_kept_in(_kept("USD"), _kept("USD", "1969")), 0),
+        (_with_kept_in(_kept(None), _kept("EUR"), _kept("USD"), _kept({"a": 2})), 1),
+        (
+            _with_kept_in(
+                {"series": {"a": "x", "b": "z"}, "time_periods": ["1"]},
+                {"series": {"a": "y", "b": "a"}, "time_periods": ["1"]},
+            ),
+            1,
+        ),
+        (
+            {
+                "party_totals_left_out": [
+                    _TOTALS,
+                    {**_TOTALS, "kept_in": [_kept("USD")]},
+                    {**_TOTALS, "kept_in": [_kept("USD")]},
+                ]
+            },
+            3,
         ),
     ],
     ids=[
@@ -1336,16 +1490,38 @@ def test_a_dataset_without_party_totals_left_out_saves_no_key(tmp_path: Path) ->
         "entities-missing",
         "entity-not-text",
         "provenance-not-text",
+        "good-entry-beside-bad-ones",
+        "role-empty",
+        "entity-empty",
+        "kept-in-not-array",
+        "kept-in-empty",
+        "kept-item-not-object",
+        "kept-item-extra-key",
+        "kept-series-not-object",
+        "kept-cell-a-number",
+        "kept-periods-empty",
+        "kept-period-not-text",
+        "kept-period-empty",
+        "kept-periods-unsorted",
+        "kept-period-repeated",
+        "kept-object-before-string",
+        "kept-string-before-null",
+        "kept-objects-out-of-jcs-order",
+        "kept-series-repeated",
+        "kept-in-contract-order",
+        "kept-in-ordered-by-first-column",
+        "entries-sharing-role-and-provenance-kept-apart",
     ],
 )
-def test_a_malformed_party_totals_trace_raises_contract_error(
-    trace: object, pointer: str
+def test_a_malformed_party_totals_trace_reads_leniently(
+    trace: object, expected: int
 ) -> None:
     body = manifest()
     body["trace"] = trace
-    with pytest.raises(ContractError) as caught:
-        built(recorded_member(manifest=body))
-    assert (caught.value.code, caught.value.pointer) == ("contract_violation", pointer)
+    data = built(recorded_member(manifest=body))
+    assert [entry.role for entry in data.party_totals_left_out] == [
+        "financingProvider"
+    ] * expected
 
 
 def _saved() -> Dataset:
@@ -1453,6 +1629,27 @@ def _dataset_edit(
             ),
             "/dfo.party_totals_left_out/0/spec_id",
         ),
+        (
+            lambda m: m.update(
+                {
+                    b"dfo.party_totals_left_out": json.dumps(
+                        [
+                            {
+                                "spec_id": json.loads(m[b"dfo.ref"])["members"][0][
+                                    "spec"
+                                ]["spec_id"],
+                                "role": "r",
+                                "entities": [],
+                                "kept_in": [
+                                    {"series": {}, "time_periods": ["2001", "2000"]}
+                                ],
+                            }
+                        ]
+                    ).encode()
+                }
+            ),
+            "/dfo.party_totals_left_out/0/kept_in/0/time_periods",
+        ),
         (lambda m: m.update({b"dfo.question": b"a bare text"}), "/dfo.question"),
         (lambda m: m.update({b"dfo.question": b"7"}), "/dfo.question"),
         (lambda m: m.update({b"dfo.fetched_at": b'"soon"'}), "/dfo.fetched_at"),
@@ -1484,6 +1681,7 @@ def _dataset_edit(
         "member-rows-negative",
         "party-totals-not-array",
         "party-totals-without-spec-id",
+        "kept-in-periods-unsorted",
         "question-not-json",
         "question-not-text",
         "fetched-at-not-a-time",

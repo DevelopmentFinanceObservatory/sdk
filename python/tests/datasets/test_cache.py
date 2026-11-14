@@ -3,6 +3,7 @@ the checks on what it reads back, and where it lives."""
 
 import contextlib
 import getpass
+import hashlib
 import json
 import logging
 import os
@@ -16,10 +17,18 @@ from typing import Any
 
 import pytest
 
+from dfo._config import paths
 from dfo._core.errors import InvalidRequestError
 from dfo._core.types import Rendering
 from dfo._datasets import cache as _cache
-from dfo._datasets.cache import Cache, file_entry, manifest_entry, sha256_digest
+from dfo._datasets.cache import (
+    Cache,
+    fetch_time_text,
+    fetched_entry,
+    file_entry,
+    manifest_entry,
+    sha256_digest,
+)
 from dfo._datasets.fetch import store
 from tests._fetch_support import CUT, CUT_DATA, DATA, LONG, manifest, with_cut
 from tests.rule_vectors import ids, vectors
@@ -45,9 +54,33 @@ def stored(
 
 
 @pytest.mark.parametrize("vector", vectors("cache-layout"), ids=ids("cache-layout"))
-def test_cache_layout(vector: dict[str, Any]) -> None:
+def test_cache_layout(vector: dict[str, Any], tmp_path: Path) -> None:
     if vector["entry"] == "file":
         path = file_entry(vector["digest"])
+    elif vector["entry"] == "fetched":
+        path = fetched_entry(vector["digest"])
+        # The vector's digest names no bytes, so the store runs on bytes of
+        # its own and the entry is read back under their digest.
+        cache = Cache(tmp_path, env={})
+        data = b"parquet bytes"
+        digest = sha256_digest(data)
+        fetched_at = vector["fetched_at"]
+        cache.put_bytes(
+            digest,
+            data,
+            fetched_at=None
+            if fetched_at is None
+            else datetime.fromisoformat(fetched_at),
+        )
+        entry = cache.directory / fetched_entry(digest)
+        if vector["content"] is None:
+            assert not entry.exists()
+        else:
+            assert (
+                fetch_time_text(datetime.fromisoformat(fetched_at))
+                == (vector["content"])
+            )
+            assert entry.read_bytes() == vector["content"].encode()
     else:
         rendering = vector["rendering"]
         path = manifest_entry(
@@ -305,6 +338,27 @@ def test_concurrent_stores_into_one_manifest_keep_both_artifacts(
     assert merged["artifacts"] == [body["artifacts"][1], body["artifacts"][2]]
 
 
+@pytest.mark.parametrize(
+    "spelling",
+    [{"party_totals": False}, {"without_party_totals": True, "party_totals": False}],
+    ids=["request spelling", "both spellings"],
+)
+def test_an_artifact_served_again_in_another_cut_spelling_is_one_entry(
+    cache: Cache, spelling: dict[str, bool]
+) -> None:
+    digest = sha256_digest(CUT_DATA)
+    first = with_cut(manifest(SPEC_ID, CV_OLD))
+    again = with_cut(manifest(SPEC_ID, CV_OLD))
+    rendering = again["artifacts"][2]["rendering"]
+    del rendering["without_party_totals"]
+    rendering.update(spelling)
+    store(cache, first, CUT, digest, CUT_DATA)
+    store(cache, again, CUT, digest, CUT_DATA)
+    merged = cache.get_manifest(SPEC_ID, CV_OLD, CUT)
+    assert merged is not None
+    assert merged["artifacts"] == [first["artifacts"][2]]
+
+
 def _without_definition(body: dict[str, Any]) -> None:
     del body["definition"]
 
@@ -480,3 +534,262 @@ def test_an_unwritable_cache_never_fails_the_caller(
         cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, stored(CV_OLD))
     assert cache.get_bytes(sha256_digest(data)) is None
     assert caplog.text.count("could not write") == 2
+
+
+@pytest.fixture
+def xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A Linux cache home under `tmp_path`, so a cache with no explicit root
+    lives in `<xdg>/dfo` and reads the legacy directory in `<xdg>/readerkit`."""
+    monkeypatch.setattr(paths, "current_platform", lambda: "linux")
+    return tmp_path / "xdg"
+
+
+def default_cache(xdg: Path, **options: Any) -> Cache:
+    """A cache with no explicit root, under the cache home `xdg`."""
+    return Cache(env={"XDG_CACHE_HOME": str(xdg)}, **options)
+
+
+def legacy_writer(xdg: Path) -> Cache:
+    """A cache rooted at the legacy root, standing in for a 0.1 client."""
+    return Cache(xdg / "readerkit", env={})
+
+
+def tree_digests(root: Path) -> dict[str, tuple[str, int]]:
+    """Each file under `root` with the hash of its bytes and its modified time."""
+    return {
+        str(path.relative_to(root)): (
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+            path.stat().st_mtime_ns,
+        )
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_a_default_cache_lives_under_dfo_and_reads_the_readerkit_directory(
+    xdg: Path,
+) -> None:
+    cache = default_cache(xdg)
+    assert cache.directory == xdg / "dfo" / "v1" / "dfo" / "cache1"
+    assert cache.legacy_directory == xdg / "readerkit" / "v1" / "dfo" / "cache1"
+    assert cache.legacy_directory == legacy_writer(xdg).directory
+
+
+@pytest.mark.parametrize("corrupted", [False, True], ids=["intact", "corrupted"])
+def test_a_legacy_artifact_counts_only_when_its_bytes_hash_to_its_digest(
+    xdg: Path, corrupted: bool
+) -> None:
+    data = b"parquet bytes"
+    digest = sha256_digest(data)
+    legacy_writer(xdg).put_bytes(digest, data)
+    cache = default_cache(xdg)
+    if corrupted:
+        (cache.legacy_directory / file_entry(digest)).write_bytes(b"parquet bytez")
+        assert cache.get_bytes(digest) is None
+        assert not cache.directory.exists()
+        return
+    assert cache.get_bytes(digest) == data
+    assert (cache.directory / file_entry(digest)).read_bytes() == data
+    # A copied artifact has no fetch time.
+    assert cache.fetched_at(digest) is None
+    assert not (cache.directory / "fetched").exists()
+
+
+def test_a_legacy_hit_lands_by_a_rename_from_a_temporary_sibling(
+    xdg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = b"parquet bytes"
+    digest = sha256_digest(data)
+    body = stored(CV_OLD)
+    legacy = legacy_writer(xdg)
+    legacy.put_bytes(digest, data)
+    legacy.put_manifest(SPEC_ID, CV_OLD, PARQUET, body)
+    renames: list[tuple[Path, Path]] = []
+    replace = os.replace
+
+    def recording(source: str, target: Path) -> None:
+        renames.append((Path(source), Path(target)))
+        replace(source, target)
+
+    monkeypatch.setattr(_cache.os, "replace", recording)
+    cache = default_cache(xdg)
+    assert cache.get_bytes(digest) == data
+    assert cache.get_manifest(SPEC_ID, CV_OLD, PARQUET) == body
+    targets = [
+        cache.directory / file_entry(digest),
+        cache.directory / manifest_entry(SPEC_ID, CV_OLD, PARQUET),
+    ]
+    assert [target for _, target in renames] == targets
+    for source, target in renames:
+        assert source.parent == target.parent
+        assert source.name.startswith(".tmp-")
+    assert list(cache.directory.rglob(".tmp-*")) == []
+
+
+def test_a_manifest_in_the_cache_directory_wins_over_the_legacy_one(
+    xdg: Path,
+) -> None:
+    current = stored(CV_OLD, "2026-10-20T00:00:00Z")
+    legacy_body = stored(CV_OLD, "2026-10-01T00:00:00Z")
+    legacy_only = stored(CV_NEW, "2026-10-10T00:00:00Z")
+    legacy = legacy_writer(xdg)
+    legacy.put_manifest(SPEC_ID, CV_OLD, PARQUET, legacy_body)
+    legacy.put_manifest(SPEC_ID, CV_NEW, PARQUET, legacy_only)
+    cache = default_cache(xdg)
+    cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, current)
+    written = (cache.directory / manifest_entry(SPEC_ID, CV_OLD, PARQUET)).read_bytes()
+
+    assert cache.get_manifest(SPEC_ID, CV_OLD, PARQUET) == current
+    # The listing holds each version once, and copies the legacy-only one in.
+    assert cache.manifest_candidates(SPEC_ID, PARQUET) == [current, legacy_only]
+    assert (
+        cache.directory / manifest_entry(SPEC_ID, CV_OLD, PARQUET)
+    ).read_bytes() == written
+    assert (
+        json.loads(
+            (cache.directory / manifest_entry(SPEC_ID, CV_NEW, PARQUET)).read_text()
+        )
+        == legacy_only
+    )
+
+
+def on_legacy_read(
+    monkeypatch: pytest.MonkeyPatch, legacy: Path, action: Callable[[], None]
+) -> None:
+    """Run `action` once, as another fetch would, when the cache reads an entry
+    under `legacy`, between the cache directory's miss and the copy."""
+    read = _cache._read_regular
+    pending = [action]
+
+    def reading(path: Path) -> bytes | None:
+        if pending and path.is_relative_to(legacy):
+            pending.pop()()
+        return read(path)
+
+    monkeypatch.setattr(_cache, "_read_regular", reading)
+
+
+@pytest.mark.parametrize("listing", [False, True], ids=["get", "candidates"])
+def test_a_legacy_copy_never_replaces_a_manifest_merged_since_the_miss(
+    xdg: Path, monkeypatch: pytest.MonkeyPatch, listing: bool
+) -> None:
+    legacy_body = stored(CV_OLD, "2026-10-01T00:00:00Z")
+    merged = stored(CV_OLD, "2026-10-20T00:00:00Z")
+    legacy = legacy_writer(xdg)
+    legacy.put_manifest(SPEC_ID, CV_OLD, PARQUET, legacy_body)
+    cache = default_cache(xdg)
+
+    def merge() -> None:
+        with cache.merging(SPEC_ID, CV_OLD, PARQUET):
+            cache.put_manifest(SPEC_ID, CV_OLD, PARQUET, merged)
+
+    on_legacy_read(monkeypatch, legacy.directory, merge)
+    if listing:
+        assert cache.manifest_candidates(SPEC_ID, PARQUET) == [merged]
+    else:
+        assert cache.get_manifest(SPEC_ID, CV_OLD, PARQUET) == merged
+    path = cache.directory / manifest_entry(SPEC_ID, CV_OLD, PARQUET)
+    assert json.loads(path.read_text()) == merged
+
+
+def test_a_legacy_manifest_read_under_a_merge_is_left_to_it_to_write(
+    xdg: Path,
+) -> None:
+    body = stored(CV_OLD)
+    legacy_writer(xdg).put_manifest(SPEC_ID, CV_OLD, PARQUET, body)
+    cache = default_cache(xdg)
+    with cache.merging(SPEC_ID, CV_OLD, PARQUET):
+        assert cache.get_manifest(SPEC_ID, CV_OLD, PARQUET) == body
+        assert cache.manifest_candidates(SPEC_ID, PARQUET) == [body]
+    assert not (cache.directory / manifest_entry(SPEC_ID, CV_OLD, PARQUET)).exists()
+
+
+@pytest.mark.parametrize("download", [False, True], ids=["orphan time", "download"])
+def test_a_legacy_artifact_hit_keeps_only_a_time_stored_with_its_artifact(
+    xdg: Path, monkeypatch: pytest.MonkeyPatch, download: bool
+) -> None:
+    data = b"parquet bytes"
+    digest = sha256_digest(data)
+    legacy = legacy_writer(xdg)
+    legacy.put_bytes(digest, data)
+    cache = default_cache(xdg)
+    if download:
+        # A download stores the artifact and its time after the miss.
+        on_legacy_read(
+            monkeypatch,
+            legacy.directory,
+            partial(cache.put_bytes, digest, data, fetched_at=FETCHED),
+        )
+    else:
+        # A time whose artifact another client removed names no copied bytes.
+        times = cache.directory / fetched_entry(digest)
+        times.parent.mkdir(parents=True)
+        times.write_text(fetch_time_text(FETCHED))
+    assert cache.get_bytes(digest) == data
+    assert cache.fetched_at(digest) == (FETCHED if download else None)
+
+
+def test_a_legacy_manifest_that_fails_the_checks_is_a_miss(xdg: Path) -> None:
+    legacy = legacy_writer(xdg)
+    legacy.put_manifest(SPEC_ID, CV_OLD, PARQUET, stored(CV_OLD))
+    (legacy.directory / manifest_entry(SPEC_ID, CV_OLD, PARQUET)).write_text("{trunc")
+    cache = default_cache(xdg)
+    assert cache.get_manifest(SPEC_ID, CV_OLD, PARQUET) is None
+    assert cache.manifest_candidates(SPEC_ID, PARQUET) == []
+    assert not cache.directory.exists()
+
+
+@pytest.mark.parametrize(
+    "root", ["argument", "DFO_CACHE_DIR", "BBLOCKS_CACHE_DIR", "disabled"]
+)
+def test_an_explicit_root_reads_no_legacy_directory(
+    xdg: Path, tmp_path: Path, root: str
+) -> None:
+    data = b"parquet bytes"
+    digest = sha256_digest(data)
+    legacy = legacy_writer(xdg)
+    legacy.put_bytes(digest, data)
+    legacy.put_manifest(SPEC_ID, CV_OLD, PARQUET, stored(CV_OLD))
+    env = {"XDG_CACHE_HOME": str(xdg)}
+    if root == "argument":
+        cache = Cache(tmp_path / "root", env=env)
+    elif root == "disabled":
+        cache = Cache(enabled=False, env=env)
+    else:
+        cache = Cache(env={**env, root: str(tmp_path / "root")})
+    assert cache.legacy_directory is None
+    assert cache.get_bytes(digest) is None
+    assert cache.get_manifest(SPEC_ID, CV_OLD, PARQUET) is None
+    assert cache.manifest_candidates(SPEC_ID, PARQUET) == []
+    assert not (tmp_path / "root").exists()
+
+
+def test_the_legacy_directory_is_never_written_evicted_or_counted(
+    xdg: Path,
+) -> None:
+    blobs = [bytes([index]) * 10 for index in range(4)]
+    digests = [sha256_digest(blob) for blob in blobs]
+    legacy = legacy_writer(xdg)
+    for blob, digest in zip(blobs, digests, strict=True):
+        legacy.put_bytes(digest, blob)
+    legacy.put_manifest(SPEC_ID, CV_OLD, PARQUET, stored(CV_OLD))
+    legacy.put_manifest(SPEC_ID, CV_NEW, PARQUET, stored(CV_NEW))
+    corrupted = legacy.directory / file_entry(digests[3])
+    corrupted.write_bytes(b"not the bytes")
+    before = tree_digests(xdg / "readerkit")
+
+    # The bound holds two of the 10-byte artifacts, and the legacy directory's
+    # 40 bytes do not count against it.
+    cache = default_cache(xdg, max_bytes=25)
+    assert cache.manifest_candidates(SPEC_ID, PARQUET) != []
+    assert cache.get_manifest(SPEC_ID, CV_OLD, PARQUET) is not None
+    assert [cache.get_bytes(digest) for digest in digests[:3]] == blobs[:3]
+    assert cache.get_bytes(digests[3]) is None
+    fresh = b"downloaded bytes"
+    cache.put_bytes(sha256_digest(fresh), fresh, fetched_at=FETCHED)
+    cache.discard(digests[2])
+
+    assert sorted(
+        path.name for path in (cache.directory / "files" / "sha256").iterdir()
+    ) == sorted([sha256_digest(fresh).removeprefix("sha256:")])
+    assert tree_digests(xdg / "readerkit") == before
