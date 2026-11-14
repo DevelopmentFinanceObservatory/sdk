@@ -12,11 +12,16 @@ allowed, as RFC 8259 asks of JSON exchanged between systems. `json.loads` would
 otherwise detect UTF-16 and UTF-32 on its own, and the depth scan, which reads
 the decoded text, would miss the brackets of a body in either. `NaN`,
 `Infinity` and `-Infinity` are refused, as JSON has none of them.
+
+`jcs_text` writes a value as RFC 8785 (JCS) canonical JSON, the text the
+contract orders unit objects by.
 """
 
 import json
 import re
+from decimal import Decimal
 from itertools import accumulate
+from math import isfinite
 from typing import Any, Never
 
 # The deepest response body recorded under contract/scenarios nests 14 levels, so
@@ -64,3 +69,69 @@ def loads(text: str | bytes, /) -> Any:
     if too_deep(text):
         raise ValueError(f"nested deeper than {JSON_MAX_DEPTH} levels")
     return json.loads(decoded, parse_constant=_no_constant)
+
+
+def jcs_text(value: object, /) -> str:
+    """`value`, decoded JSON, as RFC 8785 (JCS) text: object members sorted by
+    the UTF-16 code units of their names, no whitespace, strings escaped as
+    `json.dumps` escapes them without `ensure_ascii`, and numbers as ECMAScript
+    writes a double.
+
+    Raises:
+        ValueError: The value holds a number that is not finite, or something
+            JSON has no form for.
+    """
+    match value:
+        case None | bool() | str():
+            return json.dumps(value, ensure_ascii=False)
+        case int() | float():
+            try:
+                return _jcs_number(float(value))
+            except OverflowError:
+                raise ValueError(f"{value} is past a double's range") from None
+        case dict():
+            members = sorted(value.items(), key=lambda item: _utf16(item[0]))
+            return (
+                "{"
+                + ",".join(
+                    f"{json.dumps(name, ensure_ascii=False)}:{jcs_text(item)}"
+                    for name, item in members
+                )
+                + "}"
+            )
+        case list() | tuple():
+            return "[" + ",".join(jcs_text(item) for item in value) + "]"
+    raise ValueError(f"{type(value).__name__} has no JSON form")
+
+
+def _utf16(name: object) -> bytes:
+    if not isinstance(name, str):
+        raise ValueError("an object member name is not a string")
+    return name.encode("utf-16-be", errors="surrogatepass")
+
+
+def _jcs_number(number: float) -> str:
+    """`number` as ECMAScript's `Number.prototype.toString` writes it, which
+    RFC 8785 adopts. It writes the shortest digits that round-trip, in fixed
+    notation from 1e-6 up to 1e21 and in exponent notation outside it."""
+    if not isfinite(number):
+        raise ValueError(f"{number} is not a JSON number")
+    if number == 0:
+        return "0"
+    sign = "-" if number < 0 else ""
+    _, digit_tuple, exponent = Decimal(repr(abs(number))).as_tuple()
+    digits = "".join(map(str, digit_tuple)).rstrip("0")
+    if not isinstance(exponent, int):  # pragma: no cover - finite numbers only
+        raise ValueError(f"{number} is not a JSON number")
+    # The value is 0.digits times 10 to the power `point`.
+    point = exponent + len(digit_tuple)
+    count = len(digits)
+    if count <= point <= 21:
+        return sign + digits + "0" * (point - count)
+    if 0 < point <= 21:
+        return f"{sign}{digits[:point]}.{digits[point:]}"
+    if -6 < point <= 0:
+        return f"{sign}0.{'0' * -point}{digits}"
+    power = point - 1
+    mantissa = digits if count == 1 else f"{digits[0]}.{digits[1:]}"
+    return f"{sign}{mantissa}e{'+' if power > 0 else '-'}{abs(power)}"

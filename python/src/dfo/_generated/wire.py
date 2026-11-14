@@ -488,6 +488,12 @@ class FacetRefBinding(TypedDict):
     ref: str | None
 
 
+class FactSummaryOrderModel(TypedDict):
+    direction: Literal["ascending", "descending"]
+    period: str | None
+    detail: str | None
+
+
 class FactSummarySeriesEntry(TypedDict):
     id: str | None
     label: str
@@ -906,10 +912,16 @@ class PartyBlock(TypedDict):
     roles: list[str] | None
 
 
+class PartyTotalsKeptSeriesModel(TypedDict):
+    series: dict[str, str | dict[str, JsonValue] | None]
+    time_periods: list[str]
+
+
 class PartyTotalsLeftOutModel(TypedDict):
     role: str
     provenance: NotRequired[str | None]
     entities: list[str]
+    kept_in: NotRequired[list[PartyTotalsKeptSeriesModel]]
 
 
 class PeriodCoverage(TypedDict):
@@ -1982,6 +1994,7 @@ class DerivedManifestRoot(TypedDict):
     spec_id: str
     content_version: str
     rendering: dict[str, JsonValue]
+    party_totals_left_out: NotRequired[list[PartyTotalsLeftOutModel] | None]
 
 
 class DerivedRecipe(TypedDict):
@@ -2071,6 +2084,7 @@ class FactSummaryModel(TypedDict):
     unit: str | ConvertedUnitModel | ComposedUnitModel | None
     change: dict[str, Any] | None
     source_refs: list[str] | None
+    order: FactSummaryOrderModel | None
     defaults: list[AppliedDefaultModel]
 
 
@@ -2338,6 +2352,7 @@ class ResolvedStatVars(TypedDict):
     member_count: int
     member_count_exact: NotRequired[bool]
     served_count: NotRequired[int | None]
+    sums_components: NotRequired[bool]
     data_date_range: NotRequired[DateRange | None]
     source_codes: NotRequired[list[SourceCode]]
 

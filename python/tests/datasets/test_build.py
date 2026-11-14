@@ -18,6 +18,7 @@ from dfo._datasets.build import (
     rendering_for,
     scope,
 )
+from dfo._datasets.dataset import PartyTotalsLeftOut
 from tests._fetch_support import OP_ID, operation
 from tests.rule_vectors import ids, vectors
 
@@ -131,6 +132,10 @@ PLACE = _spec(2, entities={"observationAbout": ["country/KEN"]})
 
 @pytest.mark.parametrize("vector", vectors("role-keys"), ids=ids("role-keys"))
 def test_the_role_keys_vectors(vector: dict[str, Any]) -> None:
+    if "column" in vector:
+        entry = PartyTotalsLeftOut(spec_id="spec_x", role=vector["column"], entities=())
+        assert entry.role_key == vector["role_key"]
+        return
     spec = _spec(7, **vector["identity"])
     assert list(spec.roles.items()) == [
         (key, None if dcids is None else tuple(dcids))

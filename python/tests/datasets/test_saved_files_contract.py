@@ -10,6 +10,7 @@ import pytest
 
 from dfo._core.types import FormatError
 from dfo._datasets.bundle import load as load_saved
+from dfo._datasets.dataset import _party_totals_object
 from tests._data import CONTRACT
 
 _EXAMPLES = sorted((CONTRACT / "saved-files").glob("*.json"))
@@ -44,7 +45,13 @@ def test_a_saved_file_example_loads_or_is_refused_as_stated(path: Path) -> None:
     example = json.loads(path.read_text())
     content = _saved_file(example)
     if example.get("expect") == "accept":
-        assert load_saved(content).sentence == example["metadata"]["dfo.sentence"]
+        loaded = load_saved(content)
+        assert loaded.sentence == example["metadata"]["dfo.sentence"]
+        # A loader gives an accepted file's entries as its report, entry for
+        # entry and in order.
+        assert [
+            _party_totals_object(entry) for entry in loaded.party_totals_left_out
+        ] == json.loads(example["metadata"].get("dfo.party_totals_left_out", "[]"))
         return
     with pytest.raises(FormatError) as caught:
         load_saved(content)

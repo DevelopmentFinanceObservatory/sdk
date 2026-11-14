@@ -364,14 +364,38 @@ describe("role-keys", async () => {
     posted?: Record<string, string[]>;
     error?: { reason: string; names: string[] };
   };
+  type ColumnVector = { column: string; role_key: string | null };
   const rule = await contractJson<{ keys: unknown; flow_keys: unknown }>("rules/role-keys.json");
+  const isColumnVector = (vector: object): vector is ColumnVector => "column" in vector;
 
   test("the generated key map is the rule's", () => {
     assert.deepEqual(ROLE_KEYS, rule.keys);
     assert.deepEqual(FLOW_KEYS, rule.flow_keys);
   });
 
-  for (const vector of await vectors<Vector>("role-keys")) {
+  for (const vector of await vectors<Vector | ColumnVector>("role-keys")) {
+    if (isColumnVector(vector)) {
+      // A party totals entry on the column names the role by the key a caller uses.
+      test(vector.name, async () => {
+        const entry = { role: vector.column, entities: ["DACCountriesTotal"] };
+        const member = {
+          parts: [],
+          spec: { spec_id: "spec_1", definition: {} },
+          sentence: "A sentence.",
+          contentVersion: "cv",
+          manifest: { trace: { party_totals_left_out: [entry] } },
+          digest: "sha256:unchecked",
+          rendering: { format: "parquet", bundle: false },
+          data: await recordedBytes("analysis-chain-frame.parquet"),
+        } satisfies FetchedMember;
+        const dataset = await Dataset.create([member], { layout: "long" });
+        assert.deepEqual(
+          dataset.partyTotalsLeftOut.map(({ roleKey }) => roleKey),
+          [vector.role_key],
+        );
+      });
+      continue;
+    }
     test(vector.name, async () => {
       const spec = {
         spec_id: "spec_1",

@@ -26,6 +26,33 @@ export const present = <T extends Record<string, unknown>>(
     [K in keyof T]?: Exclude<T[K], undefined>;
   };
 
+/** A JSON value as its RFC 8785 (JCS) text: no whitespace, every object's members sorted by the
+ *  UTF-16 code units of their names, and each string and number as `JSON.stringify` writes it,
+ *  so equal values write equal text. Undefined, which stands only for a missing member, writes
+ *  `null`. */
+export function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (isRecord(value)) {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return value === undefined ? "null" : JSON.stringify(value);
+}
+
+/** Orders two strings by their Unicode code points, as Python orders `str`, where `<` on
+ *  JavaScript strings orders UTF-16 code units and puts U+FFFF after U+10000. A lone surrogate
+ *  counts as its own code point. */
+export function compareCodePoints(a: string, b: string): number {
+  let index = 0;
+  while (index < a.length && index < b.length) {
+    const left = a.codePointAt(index) ?? 0;
+    const right = b.codePointAt(index) ?? 0;
+    if (left !== right) return left < right ? -1 : 1;
+    index += left > 0xffff ? 2 : 1;
+  }
+  return Math.sign(a.length - b.length);
+}
+
 /** The deepest nesting `parseJson` reads. The deepest response body recorded under
  *  contract/scenarios nests 14 levels, so 256 leaves over 18 times that as headroom. `JSON.parse`
  *  itself reads any depth, but the client walks a parsed body recursively, as when it redacts

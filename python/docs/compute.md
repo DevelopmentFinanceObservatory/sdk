@@ -267,6 +267,8 @@ A `Dataset` an operation returns has one `DerivedMember` in `members`, and its r
 
 `data.left_out` is a tuple of `dfo.types.LeftOutSeries`, empty when no step dropped a series.
 
+`data.party_totals_left_out` holds the group totals each reading's read left out, as [Sum a column](datasets.md#sum-a-column) describes, each entry named by the reading's spec id, in the order of the recipe's readings. The repr counts them on a `Party totals left out of the readings` line. The tuple is empty when the readings left nothing out, against a server older than this report, and when DFO could not read a reading.
+
 `dfo.fetch(ref)` reads a derived ref's exact version, and `dfo.fetch(ref, latest=True)` computes its recipe again on the newest data. A ref of several derived members raises `InvalidRequestError` before any request.
 
 ### `dfo.pin`

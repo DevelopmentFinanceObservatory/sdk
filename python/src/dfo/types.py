@@ -66,7 +66,12 @@ from dfo._core.types import (
 )
 from dfo._datasets.build import Progress
 from dfo._datasets.bundle import BundleLimits
-from dfo._datasets.dataset import LeftOutSeries, LeftOutStep, PartyTotalsLeftOut
+from dfo._datasets.dataset import (
+    KeptSeries,
+    LeftOutSeries,
+    LeftOutStep,
+    PartyTotalsLeftOut,
+)
 from dfo._datasets.publication import (
     Card,
     CardKind,
@@ -127,6 +132,7 @@ __all__ = [
     "GapKind",
     "Groupby",
     "GrowthChange",
+    "KeptSeries",
     "LatestYear",
     "Layout",
     "LeftOutSeries",

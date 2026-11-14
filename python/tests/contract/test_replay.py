@@ -461,10 +461,24 @@ def _part_rows(data: Dataset) -> list[dict[str, Any]]:
 
 def _party_totals(data: Dataset) -> list[dict[str, Any]] | None:
     # An entry keeps `provenance` as served, null included, and leaves it out
-    # where the manifest does. The outcome leaves the key out when none.
+    # where the manifest does, and gives `kept_in` where the manifest does. The
+    # outcome leaves the key out when none.
     entries = [
         {"spec_id": entry.spec_id, "role": entry.role, "entities": list(entry.entities)}
         | ({} if entry.every_provenance else {"provenance": entry.provenance})
+        | (
+            {
+                "kept_in": [
+                    {
+                        "series": dict(kept.series),
+                        "time_periods": list(kept.time_periods),
+                    }
+                    for kept in entry.kept_in
+                ]
+            }
+            if entry.kept_in
+            else {}
+        )
         for entry in data.party_totals_left_out
     ]
     return entries or None

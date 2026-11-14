@@ -1456,7 +1456,7 @@ export interface components {
      * AppliedDefaultModel
      * @description One `fact_summary.defaults[]` entry: a choice the component made where its intent
      *     left one open. An entity-mode bar_chart whose select lists no values draws every value
-     *     of its one varying dimension, largest first.
+     *     of its one varying dimension, largest first unless the intent has an `order`.
      */
     AppliedDefaultModel: {
       /**
@@ -3804,6 +3804,11 @@ export interface components {
       rendering: {
         [key: string]: components["schemas"]["JsonValue"];
       };
+      /**
+       * Party Totals Left Out
+       * @description the group totals this root version's read left out, its manifest's `trace.party_totals_left_out` entries. Absent when the read left none out. A ref root never carries it
+       */
+      party_totals_left_out?: components["schemas"]["PartyTotalsLeftOutModel"][] | null;
     };
     /** DerivedRecipe */
     DerivedRecipe: {
@@ -4630,11 +4635,36 @@ export interface components {
        * @description every distinct raw provenance ref a source_card's frame carries. It is null for every other member.
        */
       source_refs: string[] | null;
+      /** @description the order the series were drawn in, null when the intent has no `order` or the component drew fewer than two series. The order moves whole series, and a refresh that cannot rank as asked still draws and says so in `detail` */
+      order: components["schemas"]["FactSummaryOrderModel"] | null;
       /**
        * Defaults
        * @description the choices this component made where its intent left one open, empty when it made none
        */
       defaults: components["schemas"]["AppliedDefaultModel"][];
+    };
+    /**
+     * FactSummaryOrderModel
+     * @description The order a chart or table drew its series in, from the intent's `order`. The order
+     *     moves whole series: a table's rows keep their period order within a series. A render that
+     *     cannot rank as the intent asks still draws, and `detail` says what it did instead.
+     */
+    FactSummaryOrderModel: {
+      /**
+       * Direction
+       * @description whether the series run from the smallest value or the largest
+       */
+      direction: ("ascending" | "descending") | (string & {});
+      /**
+       * Period
+       * @description the period label whose values ranked the series, null when the series were drawn unranked, which `detail` then explains
+       */
+      period: string | null;
+      /**
+       * Detail
+       * @description null when the series were ranked as the intent's `order` asks, otherwise one sentence saying what the draw did instead: ranked at another period because no drawn series holds the stated one, or drew a table whose series are in more than one unit, or whose series hold no value, unranked in the order the select resolves to
+       */
+      detail: string | null;
     };
     /**
      * FactSummarySeriesEntry
@@ -5785,8 +5815,9 @@ export interface components {
      *     `without_party_totals: true` leaves out the rows whose party, on a flow party role the
      *     served identity binds no entity on, the code index declares a group total
      *     (`datasets_api.party_totals`). It runs on the frame before any reshape, so a `groupby`
-     *     sums members alone. A cut that leaves rows out mints a version of its own, as a `groupby`
-     *     collapse does; one that leaves nothing out serves the frame's own version. A request may
+     *     sums the rows it kept, the totals it keeps in a cell of totals alone included. A cut that
+     *     leaves rows out mints a version of its own, as a `groupby` collapse does; one that leaves
+     *     nothing out serves the frame's own version. A request may
      *     spell the cut `party_totals: false`, the preferred name, which validation folds into
      *     `without_party_totals` (`fold_party_totals`), so the dump, the rendering and every key
      *     hashed from them are the same for either spelling. Both given and disagreeing refuses at
@@ -7115,11 +7146,37 @@ export interface components {
       roles: string[] | null;
     };
     /**
+     * PartyTotalsKeptSeriesModel
+     * @description One series in which a `without_party_totals` cut kept a trace entry's totals
+     *     (`PartyTotalsLeftOutModel.kept_in`), and the `time_period` values of that series, in the
+     *     entry's role and provenance, where they stayed.
+     */
+    PartyTotalsKeptSeriesModel: {
+      /**
+       * Series
+       * @description the series: each column of the frame's grain other than the entry's role, time_period and provenance (stat_var, the frame's other role columns, unit and measurementMethod), mapped to the cell the series holds there, null for a null cell and a unit by its JSON form
+       */
+      series: {
+        [key: string]:
+          | string
+          | {
+              [key: string]: components["schemas"]["JsonValue"];
+            }
+          | null;
+      };
+      /**
+       * Time Periods
+       * @description the time_period values of the series in which the entry's totals stayed, distinct and sorted by code point
+       */
+      time_periods: string[];
+    };
+    /**
      * PartyTotalsLeftOutModel
      * @description One role's group totals a `without_party_totals` cut left out of one provenance's rows
      *     (`datasets_api.party_totals.PartyTotalsCut.trace_entries`). An entry without a
      *     `provenance`, which a version recorded before the trace named the provenance holds, left its
-     *     parties out of the rows of every dataset.
+     *     parties out of the rows of every dataset. An entry with `kept_in` left its parties out of
+     *     the rows of every other cell; one without left them out of every cell.
      */
     PartyTotalsLeftOutModel: {
       /**
@@ -7137,6 +7194,11 @@ export interface components {
        * @description the dcid refs of the totals left out, in ref order
        */
       entities: string[];
+      /**
+       * Kept In
+       * @description the series in which the entry's totals stayed in this provenance's rows, one item each, with the time_period values where they stayed. A cell, one time_period of one series, that holds only totals keeps its whole totals, and keeps every total when none is whole and the role holds no other party in that series. Sorted by the series' cells in column-name order, each null first, then a string by code point, then an object by the code points of its JCS text. Absent when the totals left every cell
+       */
+      kept_in?: components["schemas"]["PartyTotalsKeptSeriesModel"][];
     };
     /**
      * PeriodCoverage
@@ -8640,6 +8702,12 @@ export interface components {
        * @description how many StatVars a Datasets mint of this Spec's definition serves, the length of its trace.resolved_stat_vars; 1 for a single series. Null when the membership is unsettled: Search answered from members the mint may not serve, and the part carries membership_unverified
        */
       served_count?: number | null;
+      /**
+       * Sums Components
+       * @description true when the definition binds a declared composite whose components sum: a datasets door `groupby` whose `by` keeps no `stat_var` adds the members of its different components into one series per cell, and a cell holding one component's member serves that member. The mint sums by the same rule (`code_index.composites.components_sum`). False, the default, is omitted: the answer binds no composite, or one whose components no sum adds. It says nothing about the slots: each slot's `summable` still governs a sum over that slot. Spec identity does not hash it
+       * @default false
+       */
+      sums_components?: boolean;
       /** @description the earliest first date and latest last date of the points the answer's read plan serves over its StatVars; null when it serves none */
       data_date_range?: components["schemas"]["DateRange"] | null;
       /**
@@ -10960,7 +11028,7 @@ export interface components {
     TraceModel: {
       /**
        * Party Totals Left Out
-       * @description the parties whose total rows a without_party_totals rendering left out of this version's frame: one entry per open party role and provenance that lost rows, in role order and then provenance order (null first). Absent when the rendering left nothing out or was not asked to
+       * @description the parties whose total rows a without_party_totals rendering left out of this version's frame: one entry per open party role, provenance that lost rows and set of kept cells, in role order, then provenance order (null first), then kept cells (entries without kept_in first, then by kept_in compared item by item: by series in its own order, then by time_periods). Absent when the rendering left nothing out or was not asked to
        */
       party_totals_left_out?: components["schemas"]["PartyTotalsLeftOutModel"][];
     } & {
@@ -15467,6 +15535,7 @@ export type FacetNationalCurrencyBinding = components["schemas"]["FacetNationalC
 export type FacetOptions = components["schemas"]["FacetOptions"];
 export type FacetRefBinding = components["schemas"]["FacetRefBinding"];
 export type FactSummaryModel = components["schemas"]["FactSummaryModel"];
+export type FactSummaryOrderModel = components["schemas"]["FactSummaryOrderModel"];
 export type FactSummarySeriesEntry = components["schemas"]["FactSummarySeriesEntry"];
 export type FlowAccount = components["schemas"]["FlowAccount"];
 export type FormatOptionModel = components["schemas"]["FormatOptionModel"];
@@ -15562,6 +15631,7 @@ export type ParsedInput = components["schemas"]["ParsedInput"];
 export type ParsedPart = components["schemas"]["ParsedPart"];
 export type PartScope = components["schemas"]["PartScope"];
 export type PartyBlock = components["schemas"]["PartyBlock"];
+export type PartyTotalsKeptSeriesModel = components["schemas"]["PartyTotalsKeptSeriesModel"];
 export type PartyTotalsLeftOutModel = components["schemas"]["PartyTotalsLeftOutModel"];
 export type PeriodCoverage = components["schemas"]["PeriodCoverage"];
 export type PinRequest = components["schemas"]["PinRequest"];

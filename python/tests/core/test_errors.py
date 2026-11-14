@@ -368,6 +368,9 @@ _BUILTIN_RAISES = {
     # Callers raise `FormatError` or `ContractError` in its place.
     ("_core/json_text.py", "_no_constant"),
     ("_core/json_text.py", "loads"),
+    ("_core/json_text.py", "jcs_text"),
+    ("_core/json_text.py", "_jcs_number"),
+    ("_core/json_text.py", "_utf16"),
     # `cache_path` raises `InvalidRequestError` in its place.
     ("_config/paths.py", "_explicit_root"),
     # The cache skips an id that is not a server id; a download checks its digest

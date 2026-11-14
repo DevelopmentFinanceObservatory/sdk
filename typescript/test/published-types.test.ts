@@ -33,6 +33,7 @@ import type {
   CardKind,
   Departure,
   GapKind,
+  KeptSeries,
   LeftOutSeries,
   Lookup,
   Match,
@@ -119,8 +120,9 @@ export async function analysed(client: Client, spec: Spec): Promise<number> {
   const dropped: readonly LeftOutSeries[] = newest.leftOut;
   const kept = await client.pin(await client.fetch(spec));
   const totals: readonly PartyTotalsLeftOut[] = kept.partyTotalsLeftOut;
+  const series: readonly KeptSeries[] = totals.flatMap(({ keptIn }) => keptIn);
   const loud = new SeriesLeftOutWarning("series_left_out", "x").code === "series_left_out";
-  return dropped.length + totals.length + share.rowCount + (kept.pinned && loud ? 1 : 0);
+  return dropped.length + totals.length + series.length + share.rowCount + (kept.pinned && loud ? 1 : 0);
 }
 
 // A member's spec is a Spec or a DerivedSpec; the guards narrow it, and only a Spec fetches.

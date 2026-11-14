@@ -26,7 +26,7 @@
 import { Dataset } from "./dataset.ts";
 import { clientError } from "../core/errors.ts";
 import type { InvalidRequestError } from "../core/errors.ts";
-import { isRecord } from "../core/json.ts";
+import { canonicalJson, isRecord } from "../core/json.ts";
 import { checkOptions, declareOptions } from "../core/options.ts";
 import { LatestYear, periodObject } from "../core/periods.ts";
 import { DatasetRef, isDatasetMember } from "../core/ref.ts";
@@ -196,7 +196,10 @@ export class Recipe {
   /** Whether `other` is a recipe that sends the same tree, so `{ by: "origin" }` and
    *  `{ by: ["origin"] }` make equal recipes. */
   equals(other: unknown): boolean {
-    return other instanceof Recipe && canonical(wire(this.#tree)) === canonical(wire(other.#tree));
+    return (
+      other instanceof Recipe &&
+      canonicalJson(wire(this.#tree)) === canonicalJson(wire(other.#tree))
+    );
   }
 
   /** Node's `console.log` and `util.inspect` show the recipe as `String(recipe)` does. */
@@ -484,17 +487,6 @@ function valueText(value: unknown): string {
     return entries.length === 0 ? "{}" : `{ ${entries.join(", ")} }`;
   }
   return quoted(value);
-}
-
-/** A tree as JSON with every object's keys sorted, so equal trees write equal text. */
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (isRecord(value)) {
-    const keys = Object.keys(value).sort();
-    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
-  }
-  // A tree holds JSON values alone, so undefined stands only for a missing member.
-  return value === undefined ? "null" : JSON.stringify(value);
 }
 
 /**

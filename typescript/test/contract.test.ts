@@ -193,14 +193,22 @@ async function checkDataset(
     partRows.set(part, (partRows.get(part) ?? 0) + 1);
   }
   // An entry keeps `provenance` as served, null included, and leaves it out where the manifest
-  // does. The outcome leaves the key out when no member's manifest names totals, so its absence
-  // is checked too.
+  // does, and gives `kept_in` where the manifest does. The outcome leaves the key out when no
+  // member's manifest names totals, so its absence is checked too.
   const partyTotals = dataset.partyTotalsLeftOut.map(
-    ({ specId, role, entities, provenance, everyProvenance }) => ({
+    ({ specId, role, entities, provenance, everyProvenance, keptIn }) => ({
       spec_id: specId,
       role,
       entities: [...entities],
       ...(everyProvenance ? {} : { provenance }),
+      ...(keptIn.length === 0
+        ? {}
+        : {
+            kept_in: keptIn.map(({ series, timePeriods }) => ({
+              series: { ...series },
+              time_periods: [...timePeriods],
+            })),
+          }),
     }),
   );
   assert.deepEqual(

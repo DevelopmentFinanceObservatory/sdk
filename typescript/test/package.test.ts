@@ -161,6 +161,7 @@ test("each entry point exports these names and no others", async () => {
       "GrowthChange",
       "GrowthOptions",
       "HeaderProvider",
+      "KeptSeries",
       "KnownPart",
       "Layout",
       "LeftOutStep",
