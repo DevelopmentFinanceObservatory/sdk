@@ -418,7 +418,7 @@ async def _read(
     async with holding(transport, cache, digest, deadline=deadline):
         data = None if cache is None else await async_offload(cache.get_bytes, digest)
         from_cache = cache is not None and data is not None
-        if cache is not None and data is not None:
+        if from_cache:
             fetched_at = await async_offload(cache.fetched_at, digest)
         else:
             data = await download(

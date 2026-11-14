@@ -245,7 +245,7 @@ def fetch(
     `latest=True` the newest versions of a ref's specs; run a recipe on DFO; or
     fetch the exact version a share's slot shows, with the default client.
 
-    Takes `Client.fetch`'s arguments, including its timeout behavior: left out,
+    Takes `Client.fetch`'s arguments, including its timeout behaviour: left out,
     `timeout` is the one given to `dfo.configure`, else a non-empty
     `DFO_TIMEOUT`, else None, which waits as long as the build takes;
     `timeout=None` given to `dfo.configure` also leaves None. Platform name

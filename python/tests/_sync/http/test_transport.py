@@ -816,13 +816,38 @@ def test_connection_failures_retry_then_raise_a_network_error() -> None:
     assert timeline.sleeps == [0.5, 1.0]
 
 
-def test_a_timed_out_attempt_raises_a_timeout_error() -> None:
+# The message names what ran out: the attempt's own bound, or the deadline that
+# cut the attempt short, which the call or the client's `timeout` set.
+@pytest.mark.parametrize(
+    ("timeout", "deadline", "ran_out"),
+    [
+        (None, None, "one attempt ran past the client's attempt_timeout of 30 s"),
+        (None, 10.0, "the call's timeout passed"),
+        (10.0, None, "the client's timeout passed"),
+        (10.0, "client", "the client's timeout passed"),
+    ],
+    ids=["attempt", "call", "client", "client-deadline"],
+)
+def test_a_timed_out_attempt_raises_a_timeout_error(
+    timeout: float | None, deadline: float | str | None, ran_out: str
+) -> None:
     recorder = Recorder(httpx2.ReadTimeout("slow"))
-    with make(recorder, max_retries=0) as transport:
+    with make(recorder, max_retries=0, timeout=timeout) as transport:
+        # Pinning, cards and history set their deadline from the client's timeout.
+        given = (
+            {}
+            if deadline is None
+            else {
+                "deadline": transport.deadline(
+                    transport.timeout if deadline == "client" else float(deadline)
+                )
+            }
+        )
         with pytest.raises(DfoTimeoutError) as caught:
-            transport.request("GET", "/datasets/schema")
+            transport.request("GET", "/datasets/schema", **given)
     assert isinstance(caught.value, TimeoutError)
     assert caught.value.code == "deadline_exceeded"
+    assert f"timed out; {ran_out} [" in str(caught.value)
 
 
 @pytest.mark.parametrize("second", [200, 401], ids=["answered", "refused-again"])

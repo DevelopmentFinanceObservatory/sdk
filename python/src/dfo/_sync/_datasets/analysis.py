@@ -415,7 +415,7 @@ def _read(
     with holding(transport, cache, digest, deadline=deadline):
         data = None if cache is None else sync_offload(cache.get_bytes, digest)
         from_cache = cache is not None and data is not None
-        if cache is not None and data is not None:
+        if from_cache:
             fetched_at = sync_offload(cache.fetched_at, digest)
         else:
             data = download(

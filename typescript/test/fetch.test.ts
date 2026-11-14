@@ -31,6 +31,7 @@ import type { Exchange } from "./replay.ts";
 import type { Dataset } from "../src/datasets/dataset.ts";
 import { contractJson, json, mockFetch, problem } from "./support.ts";
 import { Entity, Match } from "../src/search/lookup-results.ts";
+import type { ShareUrl } from "../src/datasets/publication.ts";
 
 /** A `Match` as `client.lookup.resolve` returns it, for `status`. */
 const matchOf = (
@@ -491,6 +492,32 @@ describe("a fetch's entities from client.lookup.resolve", () => {
       assert.ok(error instanceof InvalidRequestError);
       assert.equal(error.code, "match_unresolved");
       if (named !== null) assert.ok(error.detail.includes(JSON.stringify(named)), error.detail);
+    });
+  }
+
+  // A ref or share takes no entities at all, so the refusal says that before the Match's own.
+  const rows: [string, () => Promise<DatasetRef | ShareUrl>, RegExp][] = [
+    [
+      "a ref",
+      async () => DatasetRef.fromJSON(stepOf(await scenario("fetch-ref"), 0, "fetch").ref),
+      /^A ref fetch takes no entities or facets/,
+    ],
+    [
+      "a share",
+      () => Promise.resolve("https://site.example/s/lBm1RKBw"),
+      /^A share fetch .* takes no entities/,
+    ],
+  ];
+  for (const [name, target, refusal] of rows) {
+    test(`refuse ${name} given an unresolved Match for taking entities`, async () => {
+      const error = await rejection(
+        clientOver(transport).fetch(await target(), {
+          entities: { origin: [matchOf("ambiguous")] },
+        } as FetchOptions),
+      );
+      assert.ok(error instanceof InvalidRequestError);
+      assert.equal(error.code, "invalid_argument");
+      assert.match(error.detail, refusal);
     });
   }
 });

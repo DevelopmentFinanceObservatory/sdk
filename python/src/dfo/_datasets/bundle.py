@@ -22,7 +22,7 @@ import io
 import zipfile
 import zlib
 from collections import Counter
-from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from collections.abc import Buffer, Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from os import PathLike
@@ -164,7 +164,7 @@ class BundleError(DfoError, ValueError):
 
 
 def load(
-    path: str | PathLike[str] | bytes,
+    path: str | PathLike[str] | Buffer,
     /,
     *,
     limits: BundleLimits = DEFAULT_BUNDLE_LIMITS,
@@ -173,8 +173,8 @@ def load(
 
     Args:
         path: A Parquet file `save` wrote, a bundle's ZIP, the folder it extracts
-            to, or its `datapackage.json` or data file. Bytes are the file
-            `Dataset.to_bytes` returns.
+            to, or its `datapackage.json` or data file. Bytes, or any
+            bytes-like object, are the file `Dataset.to_bytes` returns.
         limits: Resource limits for a website bundle. The default accepts a 1 MiB
             descriptor, 256 ZIP entries, 128 resources, a 512 MiB archive, one
             256 MiB resource, and 512 MiB total bytes read. An XLSX may contain
@@ -192,8 +192,8 @@ def load(
             an XLSX is damaged; or a saved dataset's provenance is damaged or
             comes from a later format version.
     """
-    if isinstance(path, bytes):
-        return _open_saved(path)
+    if isinstance(path, Buffer):
+        return _open_saved(bytes(path))
     target = Path(path)
     if target.is_dir():
         return _open_folder(target, limits)
@@ -228,15 +228,19 @@ def _open_saved(path: Path | bytes) -> Dataset:
         named, source = "The bytes are", pa.BufferReader(path)
     else:
         # Opening the file here lets a missing or unreadable path raise its own
-        # OSError, so every OSError below comes from decoding.
+        # OSError.
         named, source = f"{path} is", path.open("rb")
     try:
         with source:
             parquet = pq.ParquetFile(source)
             metadata = parquet.schema_arrow.metadata or {}
             table = parquet.read() if b"dfo.format_version" in metadata else None
-    # pyarrow raises a plain OSError, outside ArrowException, for a damaged page.
     except (pa.ArrowException, OSError) as error:
+        # pyarrow raises a plain OSError with no errno, outside ArrowException,
+        # for a damaged page. A failed read of the file re-raises the file
+        # object's own OSError, which carries the errno the system gave.
+        if isinstance(error, OSError) and error.errno is not None:
+            raise
         raise BundleError(
             "not_a_bundle",
             f"{named} a damaged Parquet file ({error}): save the dataset again",

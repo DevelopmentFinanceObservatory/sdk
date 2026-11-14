@@ -107,10 +107,12 @@ from dfo._core.timeouts import (
     CLIENT_TIMEOUT,
     FROM_ENVIRONMENT,
     CallTimeout,
+    ClientDeadline,
     ClientSeconds,
     ClientTimeout,
     ClientTimeoutArgument,
     MaxRetriesArgument,
+    passed,
 )
 from dfo._http.hooks import (
     Clock,
@@ -167,9 +169,6 @@ DOWNLOAD_MAX_BYTES = 2 * 2**30
 # included, or for its next byte, in seconds. A download that waits this long
 # fails retryably (`network_error`).
 DOWNLOAD_STALL_S = 30.0
-
-# What an attempt that the call's deadline cut short ran out of.
-_CALL_BOUND = "the call's timeout passed"
 
 # The decoded bytes an API response's body may hold, the larger of 16 MiB and ten
 # times the largest JSON body recorded, rounded. That body is `/search/schema` in
@@ -1046,9 +1045,9 @@ class Transport:
 
     @property
     def timeout(self) -> float | None:
-        """The longest a call that names no bound takes, in seconds, or None to
-        leave each call its own default."""
-        return self._call_timeout
+        """The longest a call that names no bound takes, in seconds, as
+        `ClientSeconds`, or None to leave each call its own default."""
+        return None if self._call_timeout is None else ClientSeconds(self._call_timeout)
 
     @property
     def attempt_timeout(self) -> float:
@@ -1117,6 +1116,8 @@ class Transport:
 
     def deadline(self, seconds: float | None) -> float | None:
         """Return the clock reading `seconds` from now, or None for no deadline.
+        `ClientSeconds` give a `ClientDeadline`, so a deadline the client's
+        `timeout` set says so when it passes.
 
         Raises:
             InvalidRequestError: `seconds` is not None or a finite number above
@@ -1124,7 +1125,10 @@ class Transport:
         """
         if seconds is None:
             return None
-        return self._clock() + _checked_timeout(seconds)
+        reading = self._clock() + _checked_timeout(seconds)
+        return (
+            ClientDeadline(reading) if isinstance(seconds, ClientSeconds) else reading
+        )
 
     def sleep(self, seconds: float) -> None:
         """Wait `seconds` through the transport's sleep."""
@@ -1234,10 +1238,11 @@ class Transport:
             remaining = deadline - now
             if remaining <= 0:
                 raise client_error(
-                    DEADLINE_EXCEEDED, "The call's timeout passed before it finished"
+                    DEADLINE_EXCEEDED,
+                    f"{passed(deadline).capitalize()} before it finished",
                 )
             if remaining < limit:
-                limit, bound = remaining, _CALL_BOUND
+                limit, bound = remaining, passed(deadline)
         if math.isinf(limit):
             return None, None, ""
         return limit, now + limit, bound
@@ -1553,7 +1558,7 @@ class Transport:
         content = _json_content(json, method)
         _refuse_offline(f"{method} {url}")
         if deadline is CLIENT_TIMEOUT:
-            deadline = self.deadline(self._call_timeout)
+            deadline = self.deadline(self.timeout)
         retries = self._max_retries if max_retries is None else max_retries
         attempt = 0
         rekeyed = False

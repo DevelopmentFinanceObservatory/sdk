@@ -195,5 +195,5 @@ class Hold:
 def _waited_too_long() -> DfoError:
     return client_error(
         DEADLINE_EXCEEDED,
-        "The call's deadline passed while it waited for another call to finish",
+        "The timeout passed while the call waited for another call to finish",
     )

@@ -9,8 +9,9 @@ analysis calls wait as long as the server takes.
 A client's `timeout` and `max_retries` left out read `DFO_TIMEOUT` and
 `DFO_MAX_RETRIES`, and `FROM_ENVIRONMENT` stands for an argument left out.
 
-`AsyncTransport.call_timeout` returns a client's bound as `ClientSeconds`, so a
-message about it names the client's `timeout`.
+`AsyncTransport.call_timeout` returns a client's bound as `ClientSeconds`, and
+`AsyncTransport.deadline` turns it into a `ClientDeadline`, so a message about
+either names the client's `timeout`.
 """
 
 from enum import Enum
@@ -59,6 +60,17 @@ type MaxRetriesArgument = int | Literal[FromEnvironment.FROM_ENVIRONMENT]
 
 class ClientSeconds(float):
     """A call's bound in seconds that came from the client's `timeout`."""
+
+
+class ClientDeadline(float):
+    """A call's deadline, as a clock reading, that the client's `timeout` set."""
+
+
+def passed(deadline: float) -> str:
+    """`the client's timeout passed` for a deadline the client's `timeout` set,
+    else `the call's timeout passed`."""
+    whose = "client's" if isinstance(deadline, ClientDeadline) else "call's"
+    return f"the {whose} timeout passed"
 
 
 def ran_out(timeout: float | None) -> str:

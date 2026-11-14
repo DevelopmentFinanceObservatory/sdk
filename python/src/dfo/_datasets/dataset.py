@@ -112,12 +112,6 @@ _NOT_SLOT_KEYS = ("value", "time_period")
 # same value as NaN whatever its payload.
 _NAN = object()
 
-# The pyarrow major versions from which Arrow itself stacks struct columns whose
-# fields differ by name, order or type, and finds the unique 16-bit floats.
-# Below them the cells go through Python.
-_NATIVE_STRUCT_PROMOTION = 21
-_NATIVE_HALF_FLOAT_UNIQUE = 26
-
 # The columns every artifact a dataset reads holds, in both layouts.
 REQUIRED_COLUMNS = ("time_period", "value")
 
@@ -942,14 +936,10 @@ def _varies(column: pa.ChunkedArray) -> bool:
         )
         first = next(keys, None)
         return any(key != first for key in keys)
-    if (
-        pa.types.is_float16(column.type)
-        and _pyarrow_major() < _NATIVE_HALF_FLOAT_UNIQUE
-    ):
-        # Arrow has no unique kernel for 16-bit floats here, and casts them only
-        # from pyarrow 16, so they go through Python floats, which hold them exactly.
-        halves = [None if cell is None else float(cell) for cell in column.to_pylist()]
-        column = pa.chunked_array([pa.array(halves, pa.float64())])
+    if pa.types.is_float16(column.type):
+        # Arrow before 26 has no unique kernel for 16-bit floats, so they are cast
+        # to doubles, which hold them exactly.
+        column = column.cast(pa.float64())
     unique = column.unique()
     if len(unique) < 2 or not pa.types.is_floating(unique.type):
         return len(unique) > 1
@@ -1097,13 +1087,9 @@ def build_dataset(
         # widen to the others' types.
         tables = [table for table in tables if table.num_rows] or tables[:1]
         try:
-            if _pyarrow_major() < _NATIVE_STRUCT_PROMOTION:
-                tables = _with_unified_structs(tables)
             table = pa.concat_tables(tables, promote_options="permissive")
-        # ValueError covers pyarrow's ArrowInvalid and the refusal of a nanosecond
-        # cell as a Python value without pandas. OverflowError covers a cell too
-        # large for the unified type.
-        except (pa.ArrowTypeError, ValueError, OverflowError) as error:
+        # ArrowInvalid covers a cell too large for the unified type.
+        except (pa.ArrowTypeError, pa.ArrowInvalid) as error:
             raise client_error(
                 CONTRACT_VIOLATION,
                 f"The members' tables cannot stack into one: {error}",
@@ -2045,47 +2031,6 @@ def _layout_version(fetched: FetchedMember, layout: Layout) -> str:
     raise client_error(
         CONTRACT_VIOLATION, f"the manifest lists no artifact {fetched.digest}"
     )
-
-
-def _pyarrow_major() -> int:
-    """The major version of the Arrow C++ library pyarrow runs on, which is
-    pyarrow's own."""
-    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
-
-    return pa.cpp_version_info.major
-
-
-def _with_unified_structs(tables: list[pa.Table]) -> list[pa.Table]:
-    """`tables` with each column that holds structs and differs from the unified
-    type rebuilt as that type, structs unifying by field name in the order they are
-    first named. Before pyarrow `_NATIVE_STRUCT_PROMOTION` Arrow casts no struct to
-    one with more or reordered fields, so the cells go through Python, and the
-    rebuilt column drops field nullability and metadata."""
-    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
-
-    schema = pa.unify_schemas(
-        [table.schema for table in tables], promote_options="permissive"
-    )
-    result = []
-    for table in tables:
-        unified = table
-        for index, column_field in enumerate(table.schema):
-            target = schema.field(column_field.name).type
-            if _holds_struct(target) and not column_field.type.equals(target):
-                cells = unified.column(index).to_pylist()
-                column = pa.array(cells, type=target)
-                unified = unified.set_column(index, column_field.name, column)
-        result.append(unified)
-    return result
-
-
-def _holds_struct(data_type: pa.DataType) -> bool:
-    """Whether `data_type` is a struct, or a list of them at any depth."""
-    import pyarrow as pa  # noqa: PLC0415 - pyarrow loads on first use
-
-    if pa.types.is_list(data_type) or pa.types.is_large_list(data_type):
-        return _holds_struct(data_type.value_type)
-    return pa.types.is_struct(data_type)
 
 
 def _with_part(table: pa.Table, label: str) -> pa.Table:
