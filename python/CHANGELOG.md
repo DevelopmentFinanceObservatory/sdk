@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - `development-finance` installs beside any `httpx2` and `httpcore2` from 2.15 on. The transport builds its connection pools through their public interfaces, so a new minor release of either needs no new client release.
+- `development-finance` needs `pyarrow>=21`, the first release whose `concat_tables` stacks members whose struct columns differ by field name, order or type.
 - The `polars` extra needs `polars>=1.3`, the first release whose `DataFrame` reads a `Dataset` through the Arrow stream. A CI job installs every floor and runs the suite.
 - **Breaking:** `timeout` on `Client`, `AsyncClient`, `dfo.configure` and `with_options` bounds each whole call, retries, waits and downloads included, for every call that passes no `timeout` of its own, and defaults to None, which leaves `search` at 60 seconds and `fetch` and `dfo.analysis` waiting as long as the server takes. The bound on one request attempt, which `timeout` set in 0.1.0, is the new `attempt_timeout`, 30 seconds by default. `Client(timeout=60)` from 0.1.0 code now stops each call after 60 seconds with `DfoTimeoutError` (`deadline_exceeded`). Pass `attempt_timeout=60` for the old meaning. A call's `timeout=None` still waits without a bound, and a timeout's message names the option that ran out.
 - **Breaking:** `with_options(timeout=None)` returns a copy with no client bound on its calls, so each call keeps its own default. In 0.1.0 it kept the client's `timeout`. Leave `timeout` out to keep it now.
