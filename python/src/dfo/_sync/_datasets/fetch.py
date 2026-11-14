@@ -630,10 +630,6 @@ def store(
         cache.put_manifest(spec_id, content_version, rendering, cached)
 
 
-# The selector members two stored renderings of one artifact agree on, the cut's
-# spellings aside.
-
-
 def _merge_artifacts(
     prior: Sequence[Wire], downloaded: Sequence[Wire], /
 ) -> list[Wire]:

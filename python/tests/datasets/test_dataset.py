@@ -1338,18 +1338,23 @@ def test_a_derived_dataset_reports_its_roots_party_totals(
 
 
 @pytest.mark.parametrize(
-    "unmatched", [False, True], ids=["reversed", "reversed-beside-unmatched"]
+    "unmatched",
+    [None, "content_version", "spec_id"],
+    ids=["reversed", "reversed-beside-unmatched", "reversed-beside-list-spec-id"],
 )
 def test_a_derived_dataset_orders_root_party_totals_by_the_ref_s_roots(
-    tmp_path: Path, *, unmatched: bool
+    tmp_path: Path, unmatched: str | None
 ) -> None:
     manifest_body = copy.deepcopy(load("analysis-chain-manifest.json"))
     for root, served in zip(manifest_body["roots"], _ROOT_TOTALS, strict=True):
         root["party_totals_left_out"] = [served]
     manifest_body["roots"].reverse()
-    if unmatched:
-        other = {**manifest_body["roots"][0], "content_version": "cv_" + "4" * 32}
-        manifest_body["roots"].insert(0, other)
+    if unmatched is not None:
+        first = manifest_body["roots"][0]
+        changed = (
+            "cv_" + "4" * 32 if unmatched == "content_version" else [first["spec_id"]]
+        )
+        manifest_body["roots"].insert(0, {**first, unmatched: changed})
     data = (DATA / "analysis-chain-frame.parquet").read_bytes()
     member = _derived_member()
     dataset = derived_dataset(member, manifest_body, data)

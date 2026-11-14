@@ -1279,18 +1279,20 @@ def _root_party_totals(
     `roots[].party_totals_left_out` names them, each entry under its root's spec
     id, in the order of the ref's `roots`, which a saved file keeps. Each ref root
     takes the first manifest root of its spec id and content version not taken
-    yet, and a manifest root that matches no ref root, or that is no object,
-    names none. Empty against a server older than the per-root report, and when
-    DFO could not read a root, so an empty tuple leaves open whether the reads
-    kept every total."""
+    yet, and a manifest root that matches no ref root, that is no object, or
+    whose spec id or content version is no string, names none. Empty against a
+    server older than the per-root report, and when DFO could not read a root,
+    so an empty tuple leaves open whether the reads kept every total."""
     served = manifest.get("roots")
     if not isinstance(served, list):
         return ()
-    by_key: dict[tuple[object, object], list[int]] = {}
+    by_key: dict[tuple[str, str], list[int]] = {}
     for index, root in enumerate(served):
-        if isinstance(root, Mapping):
-            key = (root.get("spec_id"), root.get("content_version"))
-            by_key.setdefault(key, []).append(index)
+        if not isinstance(root, Mapping):
+            continue
+        spec_id, content_version = root.get("spec_id"), root.get("content_version")
+        if isinstance(spec_id, str) and isinstance(content_version, str):
+            by_key.setdefault((spec_id, content_version), []).append(index)
     totals: list[PartyTotalsLeftOut] = []
     for root in roots:
         indices = by_key.get((root.spec_id, root.content_version))

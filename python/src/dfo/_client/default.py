@@ -148,9 +148,11 @@ def search(question: str, /, *, timeout: CallTimeout = CLIENT_TIMEOUT) -> Answer
         question: The question, in your words.
         timeout: The longest the call waits, retries included, in seconds. Each
             attempt reads until then, and None waits as long as Search takes.
-            Left out, the `timeout` given to `dfo.configure` applies, else 60
-            seconds. In the synchronous client, platform name resolution can
-            run past this bound; the asynchronous client can cancel it.
+            Left out, the `timeout` given to `dfo.configure` applies, else a
+            non-empty `DFO_TIMEOUT`, else 60 seconds; `timeout=None` given to
+            `dfo.configure` also leaves 60 seconds. In the synchronous client,
+            platform name resolution can run past this bound; the asynchronous
+            client can cancel it.
 
     Raises:
         InvalidRequestError: `question` is empty or only whitespace, or
@@ -244,9 +246,11 @@ def fetch(
     fetch the exact version a share's slot shows, with the default client.
 
     Takes `Client.fetch`'s arguments, including its timeout behavior: left out,
-    `timeout` is the one given to `dfo.configure`, else None, which waits as
-    long as the build takes. Platform name resolution can run past a
-    synchronous deadline, while the asynchronous client can cancel it.
+    `timeout` is the one given to `dfo.configure`, else a non-empty
+    `DFO_TIMEOUT`, else None, which waits as long as the build takes;
+    `timeout=None` given to `dfo.configure` also leaves None. Platform name
+    resolution can run past a synchronous deadline, while the asynchronous
+    client can cancel it.
 
     Raises:
         InvalidRequestError: The target is not a `Spec`, a `DatasetRef`, a
