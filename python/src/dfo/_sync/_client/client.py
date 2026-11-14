@@ -21,7 +21,13 @@ from dfo._core.errors import DfoError, client_error
 from dfo._core.raw_response import RawResponse
 from dfo._core.refs import DatasetRef
 from dfo._core.refusals import caller_refusal
-from dfo._core.timeouts import CLIENT_TIMEOUT, CallTimeout
+from dfo._core.timeouts import (
+    CLIENT_TIMEOUT,
+    FROM_ENVIRONMENT,
+    CallTimeout,
+    ClientTimeoutArgument,
+    MaxRetriesArgument,
+)
 from dfo._core.types import Layout, Spec, Window
 from dfo._datasets.build import Entities
 from dfo._datasets.cache import Cache
@@ -67,9 +73,9 @@ class Client:
         *,
         api_key: ApiKeyArgument = None,
         base_url: str | None = None,
-        timeout: float | None = None,
+        timeout: ClientTimeoutArgument = FROM_ENVIRONMENT,
         attempt_timeout: float = 30.0,
-        max_retries: int = 2,
+        max_retries: MaxRetriesArgument = FROM_ENVIRONMENT,
         cache_dir: str | PathLike[str] | None = None,
         cache: bool = True,
         headers: Mapping[str, str] | None = None,
@@ -86,16 +92,18 @@ class Client:
                 `DFO_BASE_URL` when the URL came from it.
             timeout: The longest each call takes, in seconds, retries, waits
                 and downloads included, unless the call passes its own
-                `timeout`. None, the default, leaves each call its own:
-                `search` waits 60 seconds, and `fetch` and the analysis calls
-                as long as the server takes. In the synchronous client,
-                platform name resolution can run past this bound; the
+                `timeout`. Left out, a non-empty `DFO_TIMEOUT` sets it. None,
+                or the argument left out with `DFO_TIMEOUT` unset, leaves each
+                call its own: `search` waits 60 seconds, and `fetch` and the
+                analysis calls as long as the server takes. In the synchronous
+                client, platform name resolution can run past this bound; the
                 asynchronous client can cancel it.
             attempt_timeout: The longest one request attempt waits, in
                 seconds. A search attempt and a download read until their
                 call's timeout instead, and a build request for up to 150
                 seconds.
             max_retries: Further attempts after a failure that can clear.
+                Left out, a non-empty `DFO_MAX_RETRIES` sets it, else 2.
             cache_dir: The cache's root directory; None follows `DFO_CACHE_DIR`,
                 then the platform's cache directory. A relative path resolves
                 against the working directory when the client is built.
@@ -112,9 +120,11 @@ class Client:
                 key would travel over plain http to a host that is not loopback
                 (`insecure_transport`), `timeout` is not None or a finite
                 number above 0, `attempt_timeout` not a finite number above 0,
-                the retry count not an integer from 0 to 10, or, with `cache`
-                on, `cache_dir` an empty path, one holding a NUL character, or
-                one starting `~name` for a user with no home directory
+                the retry count not an integer from 0 to 10, `DFO_TIMEOUT` or
+                `DFO_MAX_RETRIES`, read for an argument left out, not seconds
+                above 0 such as `300` or `2.5` or a count from 0 to 10 in
+                digits, or, with `cache` on, `cache_dir` an empty path, one
+                holding a NUL character, or one starting `~name` for a user with no home directory
                 (`invalid_argument`).
             AuthenticationError: The key lookup failed.
         """
@@ -168,8 +178,8 @@ class Client:
         """A copy with other limits, sharing this client's connections and cache.
 
         A limit left out keeps this client's, and `timeout=None` leaves each
-        call its own default. Closing the copy leaves the connections open.
-        Close this client to close them.
+        call its own default. The copy reads no environment variable. Closing
+        the copy leaves the connections open. Close this client to close them.
 
         Raises:
             InvalidRequestError: `timeout` is not None or a finite number above

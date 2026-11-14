@@ -1,14 +1,14 @@
 # Settings
 
-`new Client(options)` takes every setting the client has. The key and the base URL can also come from four environment variables, `DFO_API_KEY`, `DFO_CREDENTIALS_FILE`, `DFO_PROFILE` and `DFO_BASE_URL`, read where the platform has a process environment, such as Node, Deno with `--allow-env`, or Bun. An option given to the constructor always wins over a variable, and an empty variable reads as unset.
+`new Client(options)` takes every setting the client has. The key, the base URL, the call timeout and the retry count can also come from six environment variables, `DFO_API_KEY`, `DFO_CREDENTIALS_FILE`, `DFO_PROFILE`, `DFO_BASE_URL`, `DFO_TIMEOUT` and `DFO_MAX_RETRIES`, read when the client is built where the platform has a process environment, such as Node, Deno with `--allow-env`, or Bun. An option given to the constructor always wins over a variable and leaves it unread, and an empty variable reads as unset.
 
 | Option                    | Environment variable                     | Default                                                   |
 | ------------------------- | ---------------------------------------- | --------------------------------------------------------- |
 | `apiKey`                  | `DFO_API_KEY`, then the credentials file | No key: anonymous use                                     |
 | `baseUrl`                 | `DFO_BASE_URL`                           | `https://developmentfinance.org/api/v1`                   |
-| `timeout`                 | none                                     | Each call's own: `search` 60 s, `fetch` and the rest none |
+| `timeout`                 | `DFO_TIMEOUT`, in seconds                | Each call's own: `search` 60 s, `fetch` and the rest none |
 | `attemptTimeout`          | none                                     | 30 s                                                      |
-| `maxRetries`              | none                                     | 2                                                         |
+| `maxRetries`              | `DFO_MAX_RETRIES`                        | 2                                                         |
 | `headers`                 | none                                     | None beyond the client's `User-Agent` and `X-DFO-Client`  |
 | `headerProvider`          | none                                     | None                                                      |
 | `fetch`                   | none                                     | The platform's `fetch`                                    |
@@ -32,11 +32,13 @@ In a browser page or worker the client refuses a secret `dfo_k_` key unless `dan
 
 ## Time limits and retries
 
-`timeout` bounds a whole call, in milliseconds: every attempt, the waits between retries, the wait for a build, and the download. A call's own `timeout` option replaces the client's for that call. `Infinity` removes the bound. With neither set, each call keeps its own default: `search` and `answer.choose` stop after 60 seconds, `fetch` and the `client.analysis` methods wait as long as the build takes, and every other call is bounded only by its attempts and retries. A call past its bound raises `DfoTimeoutError` with the code `deadline_exceeded`. A `fetch` stopped that way leaves its build running on the server, and the same fetch made again joins it.
+`timeout` bounds a whole call, in milliseconds: every attempt, the waits between retries, the wait for a build, and the download. A call's own `timeout` option replaces the client's for that call. `Infinity` removes the bound. Left out of the constructor, the client's `timeout` comes from `DFO_TIMEOUT`, given in seconds, such as `300` or `2.5`, while the option is in milliseconds. `timeout: null` sets no client bound and leaves `DFO_TIMEOUT` unread. With neither the call nor the client setting a bound, each call keeps its own default: `search` and `answer.choose` stop after 60 seconds, `fetch` and the `client.analysis` methods wait as long as the build takes, and every other call is bounded only by its attempts and retries. A call past its bound raises `DfoTimeoutError` with the code `deadline_exceeded`. A `fetch` stopped that way leaves its build running on the server, and the same fetch made again joins it.
 
-`attemptTimeout` bounds one request attempt, 30 seconds by default. An attempt that runs past it fails, and the client retries it up to `maxRetries` times, 2 by default, from 0 to 10. A refusal the server marks retryable is retried the same way, after its `Retry-After` or a backoff from 0.5 to 8 seconds. Three waits keep their own bounds: a build's POST reads for up to 150 seconds, a Search request reads until the call's `timeout`, and a download fails after 30 seconds with no byte.
+`attemptTimeout` bounds one request attempt, 30 seconds by default. An attempt that runs past it fails, and the client retries it up to `maxRetries` times, from 0 to 10, else `DFO_MAX_RETRIES`, else 2. A refusal the server marks retryable is retried the same way, after its `Retry-After` or a backoff from 0.5 to 8 seconds. Three waits keep their own bounds: a build's POST reads for up to 150 seconds, a Search request reads until the call's `timeout`, and a download fails after 30 seconds with no byte.
 
-`client.withOptions({ timeout, attemptTimeout, maxRetries })` returns a copy with other limits that shares the client's key, headers and `fetch`. A limit left out keeps the client's, and `timeout: null` clears the client's `timeout`, so each call keeps its own default.
+`client.withOptions({ timeout, attemptTimeout, maxRetries })` returns a copy with other limits that shares the client's key, headers and `fetch`. A limit left out keeps the client's, the copy reads no variable, and `timeout: null` clears the client's `timeout`, so each call keeps its own default.
+
+`DFO_TIMEOUT` is ASCII digits with an optional fraction naming seconds above 0, and `DFO_MAX_RETRIES` ASCII digits naming a count from 0 to 10. A sign, an exponent, a leading or trailing point, an underscore, a space or `Infinity` is refused. An invalid value in a variable the client reads throws `InvalidRequestError` (`invalid_argument`) when the client is built, and the message names the variable.
 
 ```ts
 import { Client } from "@developmentfinance/client";

@@ -155,6 +155,24 @@ def with_cut(body: dict[str, Any], data: bytes = CUT_DATA) -> dict[str, Any]:
     return body
 
 
+# The spellings a server may serve the party-totals cut in, by name.
+SERVED_CUTS: dict[str, dict[str, bool]] = {
+    "without_party_totals": {"without_party_totals": True},
+    "party_totals": {"party_totals": False},
+    "both": {"without_party_totals": True, "party_totals": False},
+}
+
+
+def respelled(body: dict[str, Any], spelling: str) -> dict[str, Any]:
+    """`body` with each artifact rendering that is the cut spelling it as
+    `SERVED_CUTS[spelling]`, which readers take as the same cut."""
+    for artifact in body["artifacts"]:
+        rendering = artifact["rendering"]
+        if rendering.pop("without_party_totals", None) is True:
+            rendering.update(SERVED_CUTS[spelling])
+    return body
+
+
 def files_path(body: Mapping[str, Any]) -> str:
     """The files route of `body`'s Parquet artifact, under the origin."""
     return ORIGIN + body["artifacts"][1]["url"]

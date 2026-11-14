@@ -23,6 +23,17 @@ Eviction counts a time's bytes with its artifact's and removes the two together,
 and it removes a time whose artifact another client removed. `discard` removes
 the time with its artifact.
 
+Python clients before 0.2.0 kept the platform default root under `readerkit`, and
+the cache-dir rule names that cache directory the legacy directory. With no
+explicit root, a miss reads the entry at the same path in the legacy directory,
+under the same checks: an artifact counts only when its bytes hash to its digest,
+and a manifest only when it passes the checks above. A hit is copied to the same
+path in the cache directory, by the same temporary-name rename, with no fetch
+time. A manifest already in the cache directory wins, one a fetch merged
+there since the miss included, and `manifest_candidates` lists the legacy
+directory's manifests too. The cache never writes, evicts or counts an
+entry in the legacy directory.
+
 Concurrent fetches in one process download an artifact once: `downloading`
 holds its digest while the first fetch reads the cache, downloads and stores,
 and the others then read the stored file. `merging` holds a manifest's path while
@@ -45,9 +56,9 @@ from os import PathLike
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from dfo._config.paths import cache_directory
+from dfo._config.paths import cache_directory, legacy_cache_directory
 from dfo._core.codes import INVALID_ARGUMENT
-from dfo._core.errors import ContractError, client_error
+from dfo._core.errors import ContractError, DfoTimeoutError, client_error
 from dfo._core.json_text import loads
 from dfo._core.types import CONTENT_VERSION, DIGEST, SPEC_ID, Rendering
 from dfo._datasets.build import check_served_manifest, read_held_until
@@ -88,6 +99,28 @@ def file_entry(digest: str, /) -> PurePosixPath:
     if DIGEST.fullmatch(digest) is None:
         raise ValueError(f"{digest!r} is not a sha256 digest")
     return PurePosixPath("files", "sha256", digest.removeprefix("sha256:"))
+
+
+def fetched_entry(digest: str, /) -> PurePosixPath:
+    """The path of an artifact's fetch time inside the cache directory,
+    `fetched/sha256/<hex>`.
+
+    Raises:
+        ValueError: `digest` is not `sha256:` and 64 lowercase hex characters.
+    """
+    return PurePosixPath("fetched", *file_entry(digest).parts[1:])
+
+
+def fetch_time_text(fetched_at: datetime, /) -> str:
+    """A fetch time as the cache stores it: UTC, whole seconds, and `Z`.
+
+    Raises:
+        ValueError: `fetched_at` is a naive datetime.
+    """
+    if fetched_at.tzinfo is None:
+        raise ValueError("fetched_at is a naive datetime; give it a time zone")
+    text = fetched_at.astimezone(UTC).isoformat(timespec="seconds")
+    return text.replace("+00:00", "Z")
 
 
 def manifest_entry(
@@ -140,6 +173,17 @@ def cache_path(
     return Path(directory).absolute()
 
 
+def _legacy_path(
+    cache_dir: str | PathLike[str] | None, *, env: Mapping[str, str]
+) -> Path | None:
+    """The absolute legacy directory, or None under an explicit root.
+
+    Called after `cache_path` accepts `cache_dir`, so it raises nothing.
+    """
+    legacy = legacy_cache_directory(cache_dir, env=env)
+    return None if legacy is None else Path(legacy).absolute()
+
+
 def sha256_digest(data: bytes, /) -> str:
     """The digest of `data` as the server writes it, `sha256:<hex>`."""
     return "sha256:" + hashlib.sha256(data).hexdigest()
@@ -158,7 +202,7 @@ class Cache:
             first.
     """
 
-    __slots__ = ("_directory", "max_bytes")
+    __slots__ = ("_directory", "_legacy", "max_bytes")
 
     def __init__(
         self,
@@ -169,6 +213,11 @@ class Cache:
         env: Mapping[str, str] | None = None,
     ) -> None:
         self._directory = cache_path(cache_dir, env=env) if enabled else None
+        self._legacy = (
+            _legacy_path(cache_dir, env=os.environ if env is None else env)
+            if enabled
+            else None
+        )
         self.max_bytes = max_bytes
 
     @property
@@ -180,6 +229,12 @@ class Cache:
     def directory(self) -> Path | None:
         """The cache directory, `<root>/v1/dfo/cache1`, or None when disabled."""
         return self._directory
+
+    @property
+    def legacy_directory(self) -> Path | None:
+        """The cache directory of Python clients before 0.2.0, which this cache
+        reads and never writes, or None when disabled or under an explicit root."""
+        return self._legacy
 
     def downloading(
         self, digest: str, /, *, timeout: float | None = None
@@ -215,9 +270,20 @@ class Cache:
         """The artifact with `digest`, or None when it is absent or its bytes differ."""
         if (path := self._file(digest)) is None:
             return None
-        if (data := _read_regular(path)) is None or sha256_digest(data) != digest:
+        if (data := _read_regular(path)) is not None and sha256_digest(data) == digest:
+            _touch(path)
+            return data
+        if (legacy := self._legacy_entry(path)) is None:
             return None
-        _touch(path)
+        if (data := _read_regular(legacy)) is None or sha256_digest(data) != digest:
+            return None
+        # A copied artifact has no fetch time, so a time left without its
+        # artifact cannot name it. A download that stored the artifact since
+        # the miss stored its time too, which stays.
+        if (times := self._fetched(digest)) is not None and not path.exists():
+            _remove(times)
+        if _write(path, data, digest=digest):
+            self._evict(keep=path)
         return data
 
     def put_bytes(
@@ -237,13 +303,11 @@ class Cache:
             return
         if sha256_digest(data) != digest:
             raise ValueError(f"the bytes do not hash to {digest}")
-        if fetched_at is not None and fetched_at.tzinfo is None:
-            raise ValueError("fetched_at is a naive datetime; give it a time zone")
+        text = None if fetched_at is None else fetch_time_text(fetched_at)
         if not _write(path, data, digest=digest):
             return
-        if fetched_at is not None and (times := self._fetched(digest)) is not None:
-            text = fetched_at.astimezone(UTC).isoformat(timespec="seconds")
-            _write(times, text.replace("+00:00", "Z").encode())
+        if text is not None and (times := self._fetched(digest)) is not None:
+            _write(times, text.encode())
         self._evict(keep=path)
 
     def fetched_at(self, digest: str, /) -> datetime | None:
@@ -279,12 +343,15 @@ class Cache:
 
         None also when the file does not pass `check_served_manifest`, holds a
         `held_until` that does not read as a date, or names another spec or
-        version than its path.
+        version than its path. A miss reads the legacy directory.
         """
         path = self._manifest(spec_id, content_version, rendering)
         if path is None:
             return None
-        return _held_manifest(path, spec_id, content_version)
+        manifest = _held_manifest(path, spec_id, content_version)
+        if manifest is not None:
+            return manifest
+        return self._legacy_manifest(path, spec_id, content_version)
 
     def put_manifest(
         self,
@@ -306,18 +373,36 @@ class Cache:
         """Cached manifests of a spec in one rendering, newest first.
 
         Manifest files that `get_manifest` would not return, and those with no
-        `prepared_at`, are omitted. Callers that need an artifact still verify its
+        `prepared_at`, are omitted. The legacy directory's manifests are listed
+        too, each copied into the cache directory, and a version the cache
+        directory holds wins. Callers that need an artifact still verify its
         bytes before choosing a candidate.
         """
         directory = self.directory
         if directory is None or SPEC_ID.fullmatch(spec_id) is None:
             return []
-        found: list[dict[str, Any]] = []
         name = f"{rendering_name(rendering)}.json"
+        held: dict[str, dict[str, Any]] = {}
         for path in sorted((directory / "manifests" / spec_id).glob(f"*/{name}")):
             manifest = _held_manifest(path, spec_id, path.parent.name)
-            if manifest is not None and isinstance(manifest.get("prepared_at"), str):
-                found.append(manifest)
+            if manifest is not None:
+                held[path.parent.name] = manifest
+        if (legacy := self._legacy) is not None:
+            for path in sorted((legacy / "manifests" / spec_id).glob(f"*/{name}")):
+                content_version = path.parent.name
+                if content_version in held:
+                    continue
+                target = self._manifest(spec_id, content_version, rendering)
+                if target is None:
+                    continue
+                manifest = self._legacy_manifest(target, spec_id, content_version)
+                if manifest is not None:
+                    held[content_version] = manifest
+        found = [
+            manifest
+            for manifest in held.values()
+            if isinstance(manifest.get("prepared_at"), str)
+        ]
         return sorted(found, key=lambda manifest: manifest["prepared_at"], reverse=True)
 
     def _file(self, digest: str) -> Path | None:
@@ -331,12 +416,45 @@ class Cache:
             logger.debug("dfo cache: %r is not a digest; skipped", digest)
             return None
 
+    def _legacy_entry(self, path: Path) -> Path | None:
+        """The legacy directory's entry at the path `path` names in the cache
+        directory, or None when there is no legacy directory."""
+        if (legacy := self._legacy) is None or (directory := self._directory) is None:
+            return None
+        return legacy / path.relative_to(directory)
+
+    def _legacy_manifest(
+        self, path: Path, spec_id: str, content_version: str
+    ) -> dict[str, Any] | None:
+        """The legacy directory's manifest at the path `path` names, copied to
+        `path`, or None when there is none or it fails `_held_manifest`'s checks."""
+        if (legacy := self._legacy_entry(path)) is None:
+            return None
+        if (data := _read_regular(legacy)) is None:
+            return None
+        manifest = _checked_manifest(data, legacy, spec_id, content_version)
+        if manifest is None:
+            return None
+        # The copy takes `merging`'s hold, and a fetch may have merged a manifest
+        # into `path` since the miss, which wins. A hold taken already, by this
+        # thread's own merge or another's, writes `path` after reading this
+        # manifest, so the copy is left to it.
+        try:
+            with _MERGES.hold(str(path), timeout=0):
+                current = _held_manifest(path, spec_id, content_version)
+                if current is not None:
+                    return current
+                _write(path, data)
+        except DfoTimeoutError:
+            pass
+        return manifest
+
     def _fetched(self, digest: str) -> Path | None:
         """The path of the artifact's fetch time, beside `files`, or None when
         the cache is disabled or `digest` is not a sha256 digest."""
-        if (path := self._file(digest)) is None or self.directory is None:
+        if self.directory is None or self._file(digest) is None:
             return None
-        return self.directory / "fetched" / "sha256" / path.name
+        return self.directory / fetched_entry(digest)
 
     def _manifest(
         self, spec_id: str, content_version: str, rendering: Rendering
@@ -473,8 +591,20 @@ def _held_manifest(
     """The manifest at `path` when it passes `check_served_manifest`, any
     `held_until` it carries reads as a date, and it names `spec_id` at
     `content_version`, else None."""
-    manifest = _read_json(path)
-    if manifest is None:
+    if (data := _read_regular(path)) is None:
+        return None
+    return _checked_manifest(data, path, spec_id, content_version)
+
+
+def _checked_manifest(
+    data: bytes, path: Path, spec_id: str, content_version: str
+) -> dict[str, Any] | None:
+    """The manifest `data` read from `path` holds, under `_held_manifest`'s checks."""
+    try:
+        manifest = loads(data)
+    except ValueError:
+        return None
+    if not isinstance(manifest, dict):
         return None
     try:
         check_served_manifest(manifest)
@@ -493,16 +623,6 @@ def _held_manifest(
         logger.debug("dfo cache: %s names another version; skipped", path)
         return None
     return manifest
-
-
-def _read_json(path: Path) -> dict[str, Any] | None:
-    if (data := _read_regular(path)) is None:
-        return None
-    try:
-        value = loads(data)
-    except ValueError:
-        return None
-    return value if isinstance(value, dict) else None
 
 
 def _touch(path: Path) -> None:

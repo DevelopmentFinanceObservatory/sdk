@@ -121,6 +121,7 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
             dfo.types,
             [
                 "CLIENT_TIMEOUT",
+                "FROM_ENVIRONMENT",
                 "Aggregation",
                 "Assumption",
                 "AssumptionKind",
@@ -134,6 +135,7 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
                 "Catalogue",
                 "Citation",
                 "CitationSource",
+                "ClientTimeoutArgument",
                 "Code",
                 "Columns",
                 "DeclinedReason",
@@ -153,6 +155,7 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
                 "LeftOutSeries",
                 "LeftOutStep",
                 "Match",
+                "MaxRetriesArgument",
                 "Member",
                 "Moment",
                 "NoDataPart",

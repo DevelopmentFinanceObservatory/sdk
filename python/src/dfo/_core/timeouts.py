@@ -6,6 +6,9 @@ and None there means no bound. A client built with `timeout=None` leaves each
 call its own default: `search` waits `SEARCH_TIMEOUT`, and `fetch` and the
 analysis calls wait as long as the server takes.
 
+A client's `timeout` and `max_retries` left out read `DFO_TIMEOUT` and
+`DFO_MAX_RETRIES`, and `FROM_ENVIRONMENT` stands for an argument left out.
+
 `AsyncTransport.call_timeout` returns a client's bound as `ClientSeconds`, so a
 message about it names the client's `timeout`.
 """
@@ -30,6 +33,28 @@ call's own default."""
 
 type CallTimeout = float | Literal[ClientTimeout.CLIENT_TIMEOUT] | None
 """A call's `timeout`: seconds, None for no bound, or `CLIENT_TIMEOUT`."""
+
+
+class FromEnvironment(Enum):
+    """The type of `FROM_ENVIRONMENT`, a client's `timeout` or `max_retries`
+    left out."""
+
+    FROM_ENVIRONMENT = "from environment"
+
+    @override
+    def __repr__(self) -> str:
+        return "FROM_ENVIRONMENT"
+
+
+FROM_ENVIRONMENT: Final = FromEnvironment.FROM_ENVIRONMENT
+"""A client's `timeout` or `max_retries` left out: `DFO_TIMEOUT` or
+`DFO_MAX_RETRIES` sets it when non-empty, else the default applies."""
+
+type ClientTimeoutArgument = float | Literal[FromEnvironment.FROM_ENVIRONMENT] | None
+"""A client's `timeout`: seconds, None for no client bound, or `FROM_ENVIRONMENT`."""
+
+type MaxRetriesArgument = int | Literal[FromEnvironment.FROM_ENVIRONMENT]
+"""A client's `max_retries`: a count from 0 to 10, or `FROM_ENVIRONMENT`."""
 
 
 class ClientSeconds(float):

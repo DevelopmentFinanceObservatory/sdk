@@ -325,6 +325,14 @@ def read_items(
     return [found for item in _list(value) if (found := read(item)) is not None]
 
 
+def _preferred_text(
+    obj: Mapping[str, Any], preferred: str, deprecated: str, /
+) -> str | None:
+    """The text of the `preferred` member, or of the `deprecated` spelling a server
+    from before the rename serves when `preferred` is absent."""
+    return _optional_text(obj[preferred] if preferred in obj else obj.get(deprecated))
+
+
 def parse_citation(citation: object, /) -> Citation:
     """A manifest's citation, with each source's licence."""
     obj = _object(citation)
@@ -334,8 +342,8 @@ def parse_citation(citation: object, /) -> Citation:
             CitationSource(
                 ref=_text(source.get("ref")),
                 label=_text(source.get("label")),
-                licence=_optional_text(source.get("license")),
-                licence_url=_optional_text(source.get("license_url")),
+                licence=_preferred_text(source, "licence", "license"),
+                licence_url=_preferred_text(source, "licence_url", "license_url"),
                 url=_optional_text(source.get("url")),
             )
             for source in _objects(obj.get("sources"))

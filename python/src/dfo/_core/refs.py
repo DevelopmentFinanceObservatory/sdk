@@ -19,6 +19,7 @@ from dfo._core.errors import client_error
 from dfo._core.text import single_line
 from dfo._core.types import (
     CONTENT_VERSION,
+    CUT_SPELLINGS,
     DIGEST,
     SPEC_ID,
     Citation,
@@ -33,6 +34,7 @@ from dfo._core.types import (
     load_spec,
     matches,
     object_at,
+    party_totals_cut,
     spec_object,
 )
 
@@ -550,7 +552,7 @@ def _load_rendering(value: object, pointer: str) -> Rendering:
         obj,
         pointer,
         required=("format", "bundle"),
-        allowed=("layout", "without_party_totals"),
+        allowed=("layout", *CUT_SPELLINGS),
     )
     if obj["format"] not in FORMATS:
         raise FormatError("format_invalid", f"{pointer}/format", "not a known format")
@@ -558,15 +560,21 @@ def _load_rendering(value: object, pointer: str) -> Rendering:
         raise FormatError("format_invalid", f"{pointer}/bundle", "not a boolean")
     if "layout" in obj and obj["layout"] != "frame":
         raise FormatError("format_invalid", f"{pointer}/layout", 'not "frame"')
-    if "without_party_totals" in obj and obj["without_party_totals"] is not True:
+    cut = party_totals_cut(obj)
+    if cut is None:
+        key, value = next(
+            (key, value)
+            for key, value in CUT_SPELLINGS.items()
+            if key in obj and obj[key] is not value
+        )
         raise FormatError(
-            "format_invalid", f"{pointer}/without_party_totals", "not true"
+            "format_invalid", f"{pointer}/{key}", f"not {str(value).lower()}"
         )
     return Rendering(
         obj["format"],
         obj["bundle"],
         "frame" if "layout" in obj else None,
-        without_party_totals="without_party_totals" in obj,
+        without_party_totals=cut,
     )
 
 

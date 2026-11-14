@@ -40,10 +40,12 @@ from tests._fetch_support import (
     BASE,
     ORIGIN,
     POSTED_ID,
+    SERVED_CUTS,
     Server,
     json_response,
     parquet,
     problem,
+    respelled,
     resubmitted,
 )
 
@@ -167,11 +169,13 @@ def stored_manifest() -> dict[str, Any]:
 
 def stored_version(
     sentence: httpx2.Response | Exception | None = None,
+    *,
+    spelling: str = "without_party_totals",
 ) -> list[httpx2.Response | Exception]:
-    """The dataset version's manifest, its frame file, and Search's sentence,
-    or `sentence` in its place."""
+    """The dataset version's manifest, its cut spelled `spelling`, its frame
+    file, and Search's sentence, or `sentence` in its place."""
     return [
-        json_response(200, stored_manifest()),
+        json_response(200, respelled(stored_manifest(), spelling)),
         parquet(FRAME_FILE),
         json_response(200, resubmitted(POSTED_ID)) if sentence is None else sentence,
     ]
@@ -205,10 +209,15 @@ def computed_version() -> list[httpx2.Response]:
     ],
     ids=["share", "url", "embed-url"],
 )
+@pytest.mark.parametrize("spelling", SERVED_CUTS)
 async def test_a_share_fetch_reads_the_exact_version_its_slot_shows_now(
-    target: Share | str,
+    target: Share | str, spelling: str
 ) -> None:
-    server = Server(share_read(), slot_card(dataset_frame()), *stored_version())
+    server = Server(
+        share_read(),
+        slot_card(dataset_frame()),
+        *stored_version(spelling=spelling),
+    )
     async with make(server) as transport:
         before = datetime.now(UTC).date()
         data = await fetch(transport, target, slot=2)
@@ -367,8 +376,9 @@ async def test_a_selector_file_the_manifest_twice_lists_as_no_frame_file_is_refu
     ("status", "code"),
     [(410, "artifact_expired"), (404, "artifact_not_found"), (404, "not_found")],
 )
+@pytest.mark.parametrize("spelling", SERVED_CUTS)
 async def test_a_selector_that_finds_no_file_rebuilds_then_is_unavailable(
-    status: int, code: str
+    status: int, code: str, spelling: str
 ) -> None:
     newest = "cv_" + "c" * 32
     versions = {
@@ -386,7 +396,7 @@ async def test_a_selector_that_finds_no_file_rebuilds_then_is_unavailable(
     server = Server(
         share_read(),
         slot_card(dataset_frame()),
-        json_response(200, long_only_manifest()),
+        json_response(200, respelled(long_only_manifest(), spelling)),
         problem(status, code),
         problem(422, "definition_not_reproducible"),
         json_response(200, versions),
@@ -408,7 +418,7 @@ async def test_a_selector_that_finds_no_file_rebuilds_then_is_unavailable(
         "format": "parquet",
         "bundle": False,
         "layout": "frame",
-        "without_party_totals": True,
+        "party_totals": False,
     }
 
 

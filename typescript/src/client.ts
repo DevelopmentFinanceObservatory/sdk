@@ -46,17 +46,19 @@ export type ClientOptions = {
   fetch?: typeof globalThis.fetch;
   /** The longest a whole call takes, in milliseconds, with retries, waits for a build and
    *  downloads counted. A number above 0, or `Infinity` for no bound. A call's own `timeout`
-   *  replaces it. Unset, each call keeps its own default: `fetch` waits as long as its build takes,
-   *  `search` and `answer.choose` stop after 60 s, and every other call has no bound beyond
-   *  its attempts. Past it the call raises `DfoTimeoutError` (`deadline_exceeded`). */
-  timeout?: number;
+   *  replaces it. Unset, the client reads `DFO_TIMEOUT`, in seconds, where the platform has a
+   *  process environment. `null`, or unset with `DFO_TIMEOUT` unset, leaves each call its own
+   *  default: `fetch` waits as long as its build takes, `search` and `answer.choose` stop after
+   *  60 s, and every other call has no bound beyond its attempts. Past it the call raises
+   *  `DfoTimeoutError` (`deadline_exceeded`). */
+  timeout?: number | null;
   /** The longest one request attempt waits, in milliseconds, as a finite number above 0. The
    *  default is 30 seconds. A failed attempt is retried as `maxRetries` allows. A build's POST
    *  reads for up to 150 s whatever this says, a Search request reads until the call's
    *  `timeout`, and a download fails after 30 s with no byte. */
   attemptTimeout?: number;
-  /** Further attempts after a failure the server says can clear, an integer from 0 to 10; 2 by
-   *  default. */
+  /** Further attempts after a failure the server says can clear, an integer from 0 to 10. Unset,
+   *  the client reads `DFO_MAX_RETRIES` where the platform has a process environment, else 2. */
   maxRetries?: number;
   /** Headers sent with every request to the API, never to a signed storage URL. A `User-Agent` here
    *  replaces the client's own. While the client has a key, `Authorization` carries it and
@@ -138,9 +140,11 @@ export class Client {
    *   not an absolute http or https URL, or carries userinfo, a query or a fragment
    *   (`base_url_invalid`); a key would go over plain
    *   http to a host that is not loopback (`insecure_transport`); a header value holds a control
-   *   character, or a header is named `X-DFO-Client` (`header_invalid`); `timeout` is not a
-   *   number above 0, `attemptTimeout` not a finite number above 0, `maxRetries` not an integer
-   *   from 0 to 10, or `options` holds a key outside `ClientOptions` (`invalid_argument`).
+   *   character, or a header is named `X-DFO-Client` (`header_invalid`); `timeout` is not null
+   *   or a number above 0, `attemptTimeout` not a finite number above 0, `maxRetries` not an
+   *   integer from 0 to 10, `DFO_TIMEOUT` or `DFO_MAX_RETRIES`, read for an option left out, not
+   *   seconds above 0 such as `300` or `2.5` or a count from 0 to 10 in digits, or `options`
+   *   holds a key outside `ClientOptions` (`invalid_argument`).
    * @throws {InvalidRequestError} A secret key is given in a browser page or worker without
    *   `dangerouslyAllowBrowser` (`invalid_argument`).
    */
@@ -179,11 +183,10 @@ export class Client {
   }
 
   /** A copy with other limits that shares this client's transport: its fetch, headers, warning
-   *  handler and key. A limit left out keeps this client's. `timeout: null` clears this client's
-   *  `timeout`, so each call of the copy keeps its own default, as when the option is unset. */
-  withOptions(
-    options: Pick<ClientOptions, "attemptTimeout" | "maxRetries"> & { timeout?: number | null },
-  ): Client {
+   *  handler and key. A limit left out keeps this client's, and the copy reads no environment
+   *  variable. `timeout: null` clears this client's `timeout`, so each call of the copy keeps its
+   *  own default. */
+  withOptions(options: Pick<ClientOptions, "attemptTimeout" | "maxRetries" | "timeout">): Client {
     return clientOver(this.#transport.withOptions(checkOptions(LIMITS, options)));
   }
 

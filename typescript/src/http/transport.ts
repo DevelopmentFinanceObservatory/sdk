@@ -45,6 +45,15 @@ export type BaseUrlSource = "argument" | typeof BASE_URL_VARIABLE | "default";
  *  `attemptTimeout`. */
 const DEFAULT_ATTEMPT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_RETRIES = 2;
+/** The variables a client's `timeout` and `maxRetries` left out read, and the ASCII text each
+ *  takes: seconds such as `300` or `2.5`, and a count such as `5`. */
+const TIMEOUT_VARIABLE = "DFO_TIMEOUT";
+const MAX_RETRIES_VARIABLE = "DFO_MAX_RETRIES";
+const SECONDS_TEXT = /^[0-9]+(?:\.[0-9]+)?$/;
+const COUNT_TEXT = /^[0-9]+$/;
+/** Where a client's timeout or retry count came from: its option, the variable, or the
+ *  default. */
+export type SettingSource = "argument" | "environment" | "default";
 /** The storage host the API's files route redirects a download to. */
 const STORAGE_ORIGIN = "https://storage.googleapis.com";
 
@@ -108,12 +117,14 @@ export type TransportOptions = {
   fetch?: Fetch;
   /** The longest a whole call takes by default, retries, waits and downloads included, in
    *  milliseconds. A number above 0, or `Infinity` for no bound. A call's own `timeout`
-   *  replaces it. Unset, each call keeps its own default. */
-  timeout?: number | undefined;
+   *  replaces it. `null` leaves each call its own default. Unset, `DFO_TIMEOUT` from `env`, in
+   *  seconds, sets it, else each call keeps its own default. */
+  timeout?: number | null | undefined;
   /** The longest one request attempt waits, in milliseconds, as a finite number above 0. The
    *  default is 30 seconds. */
   attemptTimeout?: number | undefined;
-  /** Further attempts after a failure the server says can clear, an integer from 0 to 10. */
+  /** Further attempts after a failure the server says can clear, an integer from 0 to 10.
+   *  Unset, `DFO_MAX_RETRIES` from `env` sets it, else 2. */
   maxRetries?: number;
   /** Headers sent with every request to the API. A signed storage URL gets none. */
   defaultHeaders?: Record<string, string>;
@@ -124,8 +135,8 @@ export type TransportOptions = {
   /** The clock and sleep the retry waits use. */
   now?: () => number;
   sleep?: Sleep;
-  /** Reads `DFO_BASE_URL` and the key lookup's variables; the process environment, where the
-   *  platform has one, by default. */
+  /** Reads `DFO_BASE_URL`, `DFO_TIMEOUT`, `DFO_MAX_RETRIES` and the key lookup's variables.
+   *  The default is the process environment, where the platform has one. */
   env?: EnvReader;
   readCredentialsFile?: CredentialsFileReader;
   /** Observes each long build as its polling starts. The contract replay reads its record. */
@@ -585,6 +596,63 @@ function checkedRetries(value: unknown): number {
 }
 
 /**
+ * A client's bound on each call in milliseconds, undefined to leave each call its own default,
+ * and where it came from: `timeout`, else a non-empty `DFO_TIMEOUT` in seconds, else none. A
+ * `timeout` passed in, `null` included, leaves `DFO_TIMEOUT` unread.
+ *
+ * @throws {InvalidRequestError} `timeout` is not null or a number above 0, or `DFO_TIMEOUT` is
+ *   not ASCII digits with an optional fraction, such as `300` or `2.5`, naming a finite value
+ *   above 0 (`invalid_argument`). The message names the one that held it.
+ */
+export function resolveTimeout(
+  timeout: number | null | undefined,
+  env: EnvReader,
+): { value: number | undefined; source: SettingSource } {
+  if (timeout !== undefined) {
+    return {
+      value: timeout === null ? undefined : checkedTimeout(timeout, "timeout", true),
+      source: "argument",
+    };
+  }
+  const text = env(TIMEOUT_VARIABLE);
+  if (text === undefined || text === "") return { value: undefined, source: "default" };
+  const seconds = Number(text);
+  if (!SECONDS_TEXT.test(text) || !(seconds > 0 && Number.isFinite(seconds))) {
+    throw clientError("invalid_argument", {
+      detail:
+        `${TIMEOUT_VARIABLE} is seconds above 0 written as digits, such as 300 or 2.5, not ` +
+        `${JSON.stringify(text)}. Fix it, or unset it for each call's default.`,
+    });
+  }
+  return { value: seconds * 1000, source: "environment" };
+}
+
+/**
+ * A client's retry count and where it came from: `maxRetries`, else a non-empty
+ * `DFO_MAX_RETRIES`, else 2. A `maxRetries` passed in leaves `DFO_MAX_RETRIES` unread.
+ *
+ * @throws {InvalidRequestError} `maxRetries` is not an integer from 0 to 10, or
+ *   `DFO_MAX_RETRIES` is not ASCII digits naming one (`invalid_argument`). The message names
+ *   the one that held it.
+ */
+export function resolveMaxRetries(
+  maxRetries: number | undefined,
+  env: EnvReader,
+): { value: number; source: SettingSource } {
+  if (maxRetries !== undefined) return { value: checkedRetries(maxRetries), source: "argument" };
+  const text = env(MAX_RETRIES_VARIABLE);
+  if (text === undefined || text === "") return { value: DEFAULT_MAX_RETRIES, source: "default" };
+  if (!COUNT_TEXT.test(text) || Number(text) > RETRIES_MAX) {
+    throw clientError("invalid_argument", {
+      detail:
+        `${MAX_RETRIES_VARIABLE} is a count from 0 to ${RETRIES_MAX} written as digits, not ` +
+        `${JSON.stringify(text)}. Fix it, or unset it for ${DEFAULT_MAX_RETRIES} retries.`,
+    });
+  }
+  return { value: Number(text), source: "environment" };
+}
+
+/**
  * A request's JSON body as text, as `JSON.stringify` writes it.
  *
  * @throws {InvalidRequestError} The method is GET or HEAD, which carries no body, or the value
@@ -767,8 +835,9 @@ export class Transport {
    * @throws {InvalidRequestError} The base URL, from `baseUrl` or else `DFO_BASE_URL`, is not an
    *   absolute http or https URL or carries userinfo (`base_url_invalid`); a key would go over plain http to a host that is not
    *   loopback (`insecure_transport`); a default header holds a control character
-   *   (`header_invalid`); the timeout is not a number above 0, the attempt timeout not a finite
-   *   number above 0, or the retry count not an integer from 0 to 10 (`invalid_argument`).
+   *   (`header_invalid`); the timeout, or `DFO_TIMEOUT` read in its place, is not a number above
+   *   0, the attempt timeout not a finite number above 0, or the retry count, or
+   *   `DFO_MAX_RETRIES` read in its place, not an integer from 0 to 10 (`invalid_argument`).
    * @throws {InvalidRequestError} A secret key is given in a browser page or worker without
    *   `dangerouslyAllowBrowser` (`invalid_argument`).
    */
@@ -795,14 +864,14 @@ export class Transport {
       this.baseUrl = sharing.baseUrl;
     }
     setHeaders(new Headers(), Object.entries(options.defaultHeaders ?? {}), "the headers option");
-    this.timeout =
-      options.timeout === undefined ? undefined : checkedTimeout(options.timeout, "timeout", true);
+    // A copy `withOptions` builds reads no variable: it passes every limit, undefined for none.
+    const env = sharing === undefined ? (options.env ?? readProcessEnv) : () => undefined;
+    this.timeout = resolveTimeout(options.timeout, env).value;
     this.attemptTimeout =
       options.attemptTimeout === undefined
         ? DEFAULT_ATTEMPT_TIMEOUT_MS
         : checkedTimeout(options.attemptTimeout, "attemptTimeout", false);
-    this.maxRetries =
-      options.maxRetries === undefined ? DEFAULT_MAX_RETRIES : checkedRetries(options.maxRetries);
+    this.maxRetries = resolveMaxRetries(options.maxRetries, env).value;
     this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
     this.#now = options.now ?? (() => performance.now());
     this.#sleep = options.sleep ?? defaultSleep;

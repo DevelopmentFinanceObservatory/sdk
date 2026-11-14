@@ -466,13 +466,44 @@ describe("limits", () => {
     });
   }
 
-  test("refuse timeout null when the client is built; withOptions reads it as clearing", () => {
-    const { fetch } = mockFetch();
-    assert.throws(() => client(fetch, { timeout: null } as unknown as ClientOptions), {
-      name: "InvalidRequestError",
-      code: "invalid_argument",
-    });
-    assert.ok(client(fetch).withOptions({ timeout: null }) instanceof Client);
+  test("read timeout null as no client bound, leaving DFO_TIMEOUT unread, here and in a copy", () => {
+    const env = envFrom({ DFO_TIMEOUT: "300", DFO_MAX_RETRIES: "5" });
+    const transport = new Transport({ baseUrl: BASE, apiKey: false, timeout: null, env });
+    assert.equal(transport.timeout, undefined);
+    // A copy reads no variable, so a limit it leaves out keeps the parent's.
+    const copy = transport.withOptions({ attemptTimeout: 1000 });
+    assert.deepEqual([copy.timeout, copy.maxRetries], [undefined, 5]);
+    assert.equal(
+      transport.withOptions({ timeout: 2000 }).withOptions({ timeout: null }).timeout,
+      undefined,
+    );
+  });
+
+  test("new Client with timeout null leaves DFO_TIMEOUT unread and each call its own default", async () => {
+    // The client reads the process environment, and Transport's `env` option is not on Client.
+    const before = process.env["DFO_TIMEOUT"];
+    try {
+      process.env["DFO_TIMEOUT"] = "not seconds";
+      assert.ok(client(mockFetch().fetch, { timeout: null }) instanceof Client);
+      // Read, a 1 ms bound would stop the catalogue before its 30 ms answer.
+      process.env["DFO_TIMEOUT"] = "0.001";
+      const slow = (_request: unknown, init: RequestInit): Promise<Response> =>
+        new Promise((resolve, reject) => {
+          const answer = setTimeout(() => {
+            resolve(json(CATALOGUE)());
+          }, 30);
+          init.signal?.addEventListener("abort", () => {
+            clearTimeout(answer);
+            reject(init.signal?.reason);
+          });
+        });
+      const { fetch } = mockFetch(slow);
+      const catalogue = await client(fetch, { timeout: null }).lookup.catalogue();
+      assert.equal(catalogue.raw.catalogue_version, "c1");
+    } finally {
+      if (before === undefined) delete process.env["DFO_TIMEOUT"];
+      else process.env["DFO_TIMEOUT"] = before;
+    }
   });
 
   test("take timeouts and retry counts in range", () => {

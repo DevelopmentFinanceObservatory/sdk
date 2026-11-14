@@ -18,7 +18,12 @@ from typing import Any, Protocol, TypeGuard
 
 import httpx2
 
-from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT, UNEXPECTED_RESPONSE
+from dfo._core.codes import (
+    CONTRACT_VIOLATION,
+    INVALID_ARGUMENT,
+    MATCH_UNRESOLVED,
+    UNEXPECTED_RESPONSE,
+)
 from dfo._core.errors import client_error
 from dfo._core.json_text import loads
 from dfo._core.lookup_results import Entity, Match
@@ -266,10 +271,11 @@ def dcid_entities(entities: Entities | None) -> DcidEntities | None:
 
     Raises:
         InvalidRequestError: A match did not resolve: it is ambiguous, found
-            nothing, or names a node the graph does not hold; or a role holds
-            an awaitable, such as `AsyncClient.lookup.resolve(...)` without its
-            `await` (`invalid_argument`). The message names the role, the text
-            and what to pass instead.
+            nothing, or names a node the graph does not hold
+            (`match_unresolved`); or a role holds an awaitable, such as
+            `AsyncClient.lookup.resolve(...)` without its `await`
+            (`invalid_argument`). The message names the role, the text and what
+            to pass instead.
     """
     if not isinstance(entities, Mapping):
         return entities
@@ -310,7 +316,7 @@ def _dcid(role: object, bound: object) -> Any:
         else "resolve another name, or pass a dcid"
     )
     raise client_error(
-        INVALID_ARGUMENT,
+        MATCH_UNRESOLVED,
         f"entities[{role!r}] holds a match that did not resolve: {bound}. Bind "
         f"the role to a resolved match only; {fix}.",
     )
@@ -577,7 +583,7 @@ def build_body(
     return {
         "schema_version": 1,
         "input": built,
-        "options": rendering.to_object(),
+        "options": rendering.to_options(),
     }
 
 

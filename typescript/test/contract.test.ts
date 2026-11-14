@@ -192,6 +192,22 @@ async function checkDataset(
     const part = row["part"] as string;
     partRows.set(part, (partRows.get(part) ?? 0) + 1);
   }
+  // An entry keeps `provenance` as served, null included, and leaves it out where the manifest
+  // does. The outcome leaves the key out when no member's manifest names totals, so its absence
+  // is checked too.
+  const partyTotals = dataset.partyTotalsLeftOut.map(
+    ({ specId, role, entities, provenance, everyProvenance }) => ({
+      spec_id: specId,
+      role,
+      entities: [...entities],
+      ...(everyProvenance ? {} : { provenance }),
+    }),
+  );
+  assert.deepEqual(
+    partyTotals.length === 0 ? undefined : partyTotals,
+    expected["party_totals_left_out"],
+    `${name}: party_totals_left_out`,
+  );
   checkMembers(
     name,
     expected,
@@ -207,6 +223,7 @@ async function checkDataset(
       })),
       missing: dataset.missing.map((gap) => ({ part: gap.partIndex, kind: gap.kind })),
       part_rows: [...partRows].map(([part, count]) => ({ part, rows: count })),
+      party_totals_left_out: partyTotals,
       search_warning: observed.warnings.some((warning) => warning instanceof SearchWarning),
       long_builds: observed.longBuilds.map(longBuildSummary),
     },

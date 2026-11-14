@@ -202,7 +202,7 @@ describe("a ref fetched with latest", () => {
         options: {
           format: "parquet",
           bundle: false,
-          ...(cut ? { without_party_totals: true } : {}),
+          ...(cut ? { party_totals: false } : {}),
         },
       };
       const { transport, remaining } = replay({
@@ -489,7 +489,7 @@ describe("a fetch's entities from client.lookup.resolve", () => {
         clientOver(transport).fetch(identified, { entities: { origin: [match] } }),
       );
       assert.ok(error instanceof InvalidRequestError);
-      assert.equal(error.code, "invalid_argument");
+      assert.equal(error.code, "match_unresolved");
       if (named !== null) assert.ok(error.detail.includes(JSON.stringify(named)), error.detail);
     });
   }
@@ -1231,8 +1231,8 @@ describe("a fetch that builds no rows", () => {
 
 describe("a fetch's party-totals cut", () => {
   for (const [options, posted] of [
-    [{}, { without_party_totals: true }],
-    [{ partyTotals: false }, { without_party_totals: true }],
+    [{}, { party_totals: false }],
+    [{ partyTotals: false }, { party_totals: false }],
     [{ partyTotals: true }, {}],
   ] as const) {
     test(`posts ${JSON.stringify(posted)} for ${JSON.stringify(options)}`, async () => {

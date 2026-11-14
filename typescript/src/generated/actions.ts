@@ -53,7 +53,6 @@ export const CODE_ACTIONS = {
   directional_children_unsupported: "fix_request",
   door_not_implemented: "report",
   edit_conflict: "fix_request",
-  entities_unbound: "fix_request",
   entity_ambiguous: "choose",
   entity_not_resolved: "ask_data_question",
   entity_role_not_admitted: "ask_data_question",

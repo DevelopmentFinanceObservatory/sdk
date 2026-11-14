@@ -31,15 +31,43 @@ def test_the_contract_has_accepted_and_rejected_refs() -> None:
     assert REJECTED
 
 
+def written(ref_json: dict[str, Any]) -> dict[str, Any]:
+    """`ref_json` as a client writes it back: the cut in its ref spelling,
+    `without_party_totals: true`, whichever spelling it was read in."""
+    ref_json = json.loads(json.dumps(ref_json))
+    for member in ref_json["members"]:
+        rendering = member["artifact"]["rendering"]
+        if rendering.pop("party_totals", None) is False:
+            rendering.pop("without_party_totals", None)
+            rendering["without_party_totals"] = True
+    return ref_json
+
+
 @pytest.mark.parametrize("path", ACCEPTED, ids=lambda path: path.stem)
 def test_accepted_refs_round_trip(path: Path) -> None:
     ref_json = example(path)["ref"]
     ref = DatasetRef.from_json(json.dumps(ref_json))
-    assert ref.to_json() == json.dumps(ref_json, ensure_ascii=False)
+    assert ref.to_json() == json.dumps(written(ref_json), ensure_ascii=False)
     assert DatasetRef.from_json(ref.to_json()) == ref
     for member, member_json in zip(ref.members, ref_json["members"], strict=True):
         if isinstance(member, RefMember):
             assert member.spec.sentence == member_json["sentence"]
+
+
+def test_either_spelling_of_the_cut_reads_as_one_ref() -> None:
+    old, new, both = (
+        DatasetRef.from_json(json.dumps(example(CONTRACT / "refs" / name)["ref"]))
+        for name in (
+            "ref-without-party-totals.json",
+            "ref-party-totals.json",
+            "ref-party-totals-both.json",
+        )
+    )
+    assert old.members[0].rendering.without_party_totals
+    assert old == new == both
+    assert hash(old) == hash(new) == hash(both)
+    assert old.same_data(new)
+    assert old.same_data(both)
 
 
 @pytest.mark.parametrize("path", REJECTED, ids=lambda path: path.stem)
@@ -101,6 +129,8 @@ def _edited(ref: dict[str, Any], pointer: str, value: object) -> dict[str, Any]:
         ("/members/0/artifact/rendering/layout", "long"),
         ("/members/0/artifact/rendering/without_party_totals", False),
         ("/members/0/artifact/rendering/without_party_totals", "true"),
+        ("/members/0/artifact/rendering/party_totals", True),
+        ("/members/0/artifact/rendering/party_totals", 0),
         ("/members/0/artifact/url", "/api/datasets/x"),
     ],
 )

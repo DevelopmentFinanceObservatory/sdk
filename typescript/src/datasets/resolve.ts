@@ -85,6 +85,7 @@ import {
   OPS_ID,
   sameRendering,
   selectorQuery,
+  servedCut,
   SPEC_ID,
 } from "../core/ref.ts";
 import type { Layout, Rendering, RefMember, Spec } from "../core/ref.ts";
@@ -327,8 +328,7 @@ function frameMember(
   artifact: Record<string, unknown>,
   title: string,
 ): RefMember {
-  const rendering = artifact["rendering"];
-  const cut = isRecord(rendering) && rendering["without_party_totals"] === true;
+  const cut = servedCut(artifact["rendering"]);
   return {
     parts: [],
     sentence: title,
@@ -381,10 +381,7 @@ async function renderedFrame(
   } catch (error) {
     if (!(error instanceof DfoError) || !FILE_GONE.has(error.code)) throw error;
     const cut = (manifest["artifacts"] as unknown[]).some(
-      (artifact) =>
-        isRecord(artifact) &&
-        isRecord(artifact["rendering"]) &&
-        artifact["rendering"]["without_party_totals"] === true,
+      (artifact) => isRecord(artifact) && servedCut(artifact["rendering"]),
     );
     const want: Omit<RefMember, "digest"> = {
       parts: [],
@@ -444,7 +441,7 @@ function refLayout(members: readonly RefMember[]): Layout {
 
 /**
  * The layout a ref holds, once the call's `layout` and `partyTotals`, when given, are the ref's
- * own. A member keeps party totals when its rendering holds no `without_party_totals`.
+ * own. A member keeps party totals when its rendering holds no party-totals cut.
  *
  * @throws {InvalidRequestError} The ref holds a rendering this client does not read, or the
  *   call names another layout or `partyTotals` (`invalid_argument`).

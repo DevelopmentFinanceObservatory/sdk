@@ -22,6 +22,7 @@ fetches of one artifact download it once, through `Cache.downloading`.
 `dfo._sync._datasets.resolve` holds `fetch`, which reads a `DatasetRef` through these steps.
 """
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
@@ -49,6 +50,7 @@ from dfo._core.parse import parse_notices, parse_parts
 from dfo._core.refusals import describing, trace_id_of
 from dfo._core.text import cited
 from dfo._core.types import (
+    CUT_SPELLINGS,
     RENDERING_SELECTORS,
     DefinitePart,
     Gap,
@@ -58,6 +60,7 @@ from dfo._core.types import (
     Spec,
     Window,
     Wire,
+    party_totals_cut,
 )
 from dfo._datasets.build import (
     Asked,
@@ -393,7 +396,7 @@ def _plain_cached_manifest(
         if (
             not rendering.matches(artifact_rendering)
             or not _is_plain_rendering(artifact_rendering)
-            or (artifact_rendering.get("without_party_totals") is True)
+            or party_totals_cut(artifact_rendering)
             is not rendering.without_party_totals
         ):
             continue
@@ -410,9 +413,10 @@ def _is_plain_rendering(rendering: Mapping[str, Any], /) -> bool:
     """Whether an artifact's rendering holds only what `Rendering.matches` compares.
 
     Besides those members it may carry `metadata` set to `incomplete`. Any other
-    member, such as `columns`, `pivot` or `groupby`, reshapes the rows.
+    member, such as `columns`, `pivot` or `groupby`, reshapes the rows, and a
+    cut spelling that `party_totals_cut` cannot read names no plain rendering.
     """
-    return all(
+    return party_totals_cut(rendering) is not None and all(
         key in RENDERING_SELECTORS or (key == "metadata" and value == "incomplete")
         for key, value in rendering.items()
     )
@@ -626,13 +630,19 @@ def store(
         cache.put_manifest(spec_id, content_version, rendering, cached)
 
 
+# The selector members two stored renderings of one artifact agree on, the cut's
+# spellings aside.
+
+
 def _merge_artifacts(
     prior: Sequence[Wire], downloaded: Sequence[Wire], /
 ) -> list[Wire]:
     """Keep same-version artifact records distinct by digest and rendering.
 
-    `prior` is a stored manifest's list, whose entries the cache checked carry
-    both members.
+    Two renderings are one when they agree on every member other than the cut's
+    spellings and `party_totals_cut` reads the same cut from both, so an artifact
+    re-served in the other spelling is one entry. `prior` is a stored
+    manifest's list, whose entries the cache checked carry both members.
     """
     artifacts = list(prior)
     artifacts.extend(
@@ -640,11 +650,20 @@ def _merge_artifacts(
         for artifact in downloaded
         if not any(
             artifact["artifact_digest"] == seen["artifact_digest"]
-            and artifact["rendering"] == seen["rendering"]
+            and _rendering_key(artifact["rendering"])
+            == _rendering_key(seen["rendering"])
             for seen in artifacts
         )
     )
     return artifacts
+
+
+def _rendering_key(rendering: Mapping[str, Any], /) -> tuple[object, ...]:
+    """A rendering object's members other than the cut's spellings, then its cut."""
+    members = {
+        key: value for key, value in rendering.items() if key not in CUT_SPELLINGS
+    }
+    return (json.dumps(members, sort_keys=True), party_totals_cut(rendering))
 
 
 def note_warnings(manifest: Wire, *, strict: bool, trace_id: str | None) -> None:

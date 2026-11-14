@@ -513,6 +513,27 @@ describe("provenance", async () => {
     fetchedAt,
   });
 
+  test("reads licence members and falls back to the license spelling", async () => {
+    const data = await scenarioBytes("fetch-ref.parquet");
+    const served = {
+      citation: {
+        text: "t",
+        sources: [
+          { ref: "a", label: "A", licence: "new", licence_url: "new-url", license: "old" },
+          { ref: "b", label: "B", license: "old", license_url: "old-url" },
+        ],
+      },
+    };
+    const read = await Dataset.create([member(data, { manifest: served })], { layout: "long" });
+    assert.deepEqual(
+      read.citation.sources.map((source) => [source.licence, source.licenceUrl]),
+      [
+        ["new", "new-url"],
+        ["old", "old-url"],
+      ],
+    );
+  });
+
   test("spells each source's licence as Python does, and joins the distinct licences", () => {
     assert.deepEqual(dataset.citation.sources[0], {
       ref: "dc:WDI",
@@ -1035,30 +1056,35 @@ describe("party totals left out", () => {
     assert.equal((await savedMetadata(dataset))["dfo.party_totals_left_out"], undefined);
   });
 
-  for (const [trace, pointer] of [
-    [[], "/trace"],
-    [{ party_totals_left_out: {} }, "/trace/party_totals_left_out"],
-    [{ party_totals_left_out: [[]] }, "/trace/party_totals_left_out/0"],
-    [{ party_totals_left_out: [{ entities: [] }] }, "/trace/party_totals_left_out/0/role"],
+  const good = { role: "financingProvider", entities: ["DACWorldBank"] };
+  for (const [name, trace, count] of [
+    ["a trace that is no object", [], 0],
+    ["a list that is no list", { party_totals_left_out: {} }, 0],
+    ["an entry that is no object", { party_totals_left_out: [[]] }, 0],
+    ["an entry without a role", { party_totals_left_out: [{ entities: [] }] }, 0],
+    ["an entry without entities", { party_totals_left_out: [{ role: "financingProvider" }] }, 0],
     [
-      { party_totals_left_out: [{ role: "financingProvider" }] },
-      "/trace/party_totals_left_out/0/entities",
-    ],
-    [
+      "an entity that is no text",
       { party_totals_left_out: [{ role: "financingProvider", entities: [1] }] },
-      "/trace/party_totals_left_out/0/entities/0",
+      0,
     ],
     [
+      "a provenance that is no text",
       { party_totals_left_out: [{ role: "financingProvider", entities: [], provenance: 2 }] },
-      "/trace/party_totals_left_out/0/provenance",
+      0,
+    ],
+    [
+      "a good entry beside bad ones",
+      { party_totals_left_out: [[], good, { role: 1, entities: [] }] },
+      1,
     ],
   ] as const) {
-    test(`a trace broken at ${pointer} raises ContractError`, async () => {
+    test(`${name} reads leniently`, async () => {
       const data = await scenarioBytes("fetch-ref.parquet");
-      await assert.rejects(
-        Dataset.create([member(data, { manifest: { trace } })], { layout: "long" }),
-        { name: "ContractError", code: "contract_violation", pointer },
-      );
+      const dataset = await Dataset.create([member(data, { manifest: { trace } })], {
+        layout: "long",
+      });
+      assert.equal(dataset.partyTotalsLeftOut.length, count);
     });
   }
 });

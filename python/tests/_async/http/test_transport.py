@@ -1089,7 +1089,7 @@ async def test_a_proxy_of_another_scheme_is_refused(
     monkeypatch.delenv("NO_PROXY", raising=False)
     with pytest.raises(InvalidRequestError) as caught:
         AsyncTransport(api_key=False, base_url=BASE)
-    assert caught.value.code == "invalid_argument"
+    assert caught.value.code == "proxy_invalid"
     assert isinstance(caught.value, ValueError)
 
 

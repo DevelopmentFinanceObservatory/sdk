@@ -154,7 +154,8 @@ def test_a_folder_or_a_file_in_it_opens(tmp_path: Path, entry: str) -> None:
     assert data.members == ()
     with pytest.raises(InvalidRequestError) as caught:
         _ = data.ref
-    assert caught.value.code == "invalid_argument"
+    assert caught.value.code == "ref_unavailable"
+    assert isinstance(caught.value, ValueError)
 
 
 def test_a_lone_csv_is_refused(tmp_path: Path) -> None:
@@ -164,7 +165,10 @@ def test_a_lone_csv_is_refused(tmp_path: Path) -> None:
     with pytest.raises(DfoError, match="download the bundle") as caught:
         load(lone)
     assert isinstance(caught.value, BundleError)
-    assert (caught.value.reason, caught.value.code) == ("no_descriptor", None)
+    assert (caught.value.reason, caught.value.code) == (
+        "no_descriptor",
+        "no_descriptor",
+    )
 
 
 def test_a_changed_file_is_refused(tmp_path: Path) -> None:
