@@ -49,7 +49,8 @@ export type DfoErrorCode = ClientErrorCode | ServerErrorCode;
 const BRAND = Symbol.for("dfo.error");
 
 export type DfoErrorOptions = {
-  code: DfoErrorCode;
+  /** The code, or null for an error no contract code describes, such as a `FormatError`. */
+  code: DfoErrorCode | null;
   /** The HTTP status, or null when no response arrived. */
   status?: number | null;
   detail?: string;
@@ -71,16 +72,21 @@ export type DfoErrorOptions = {
 const TEXTS = new WeakMap<DfoError, string>();
 
 /** The labels an error's bracket names: its code, then its trace id. */
-const labelsOf = ({ code, traceId }: DfoError): string[] =>
-  traceId === null ? [code] : [code, `trace ${traceId}`];
+const labelsOf = ({ code, traceId }: DfoError): string[] => [
+  ...(code === null ? [] : [code]),
+  ...(traceId === null ? [] : [`trace=${traceId}`]),
+];
 
 /** The base of every error the client raises. `code` tells the errors apart. Its message and
  *  `detail` drop the characters that steer a terminal or reorder text, since either can quote
  *  the server. The message ends with one bracket naming the code and the trace id, as in
- *  `No registry entry exists for code 'x'. [code_not_found · trace 4f2a91c0]`, on a line of its
- *  own after a message of several lines; the trace id is left out when the error has none. */
+ *  `No registry entry exists for code 'x'. [code_not_found trace=4f2a91c0]`, on a line of its
+ *  own after a message of several lines. The trace id is left out when the error has none, and
+ *  the bracket when it has neither. The bracket's text may change between releases, so `code`
+ *  and `traceId` are the contract. */
 export class DfoError extends Error {
-  readonly code: DfoErrorCode;
+  /** The code, or null for an error no contract code describes, such as a `FormatError`. */
+  readonly code: DfoErrorCode | null;
   readonly status: number | null;
   readonly detail: string;
   readonly traceId: string | null;
@@ -94,7 +100,7 @@ export class DfoError extends Error {
   readonly pinned: readonly string[];
 
   constructor(options: DfoErrorOptions) {
-    const detail = printable(options.detail ?? options.code);
+    const detail = printable(options.detail ?? options.code ?? "");
     super(
       options.message === undefined ? detail : printable(options.message),
       options.cause === undefined ? undefined : { cause: options.cause },

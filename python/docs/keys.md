@@ -83,13 +83,7 @@ A base URL is an absolute http or https URL. A key travels over https, or over p
 
 ## Pass a key in code
 
-The client looks for its key when it is built, and the first source that has one wins:
-
-1. the `api_key=` argument to `Client`, `AsyncClient`, or `dfo.configure`;
-1. the `DFO_API_KEY` environment variable;
-1. the credentials file, profile `DFO_PROFILE`, else `default`;
-1. inside Google Colab, a notebook secret named `DFO_API_KEY`;
-1. otherwise, anonymous.
+The client looks for its key when it is built, and the first source that has one wins: the `api_key=` argument to `Client`, `AsyncClient`, or `dfo.configure`, then `DFO_API_KEY`, then the credentials file, then a Colab secret named `DFO_API_KEY`. With none, it calls the API anonymously. [Settings](settings.md#api-key) lists every setting with its source order.
 
 `api_key=` takes a string, a `dfo.auth.ApiKey`, or a callable that returns either, which suits a secret manager. The client calls the callable when it is built and again after a 401. Here the key comes from a `TEAM_DFO_KEY` variable your secret manager sets:
 

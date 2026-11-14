@@ -25,6 +25,7 @@ from dfo._core.lookup_results import (
 )
 from dfo._core.parse import parse_parts
 from dfo._core.periods import latest_year
+from dfo._core.raw_response import RawResponse
 from dfo._core.refs import DatasetRef, Member, RefMember
 from dfo._core.types import (
     Assumption,
@@ -37,7 +38,6 @@ from dfo._core.types import (
     NoDataPart,
     Notice,
     Option,
-    RawResponse,
     Rendering,
     RequestedOperation,
     Spec,
@@ -349,7 +349,7 @@ ROWS: list[tuple[str, Callable[[], object], str, bool]] = [
     (
         "error",
         lambda: NotFoundError("No entry.", code="code_not_found", trace_id="4f2a"),
-        "NotFoundError('No entry. [code_not_found · trace 4f2a]')",
+        "NotFoundError('No entry. [code_not_found trace=4f2a]')",
         True,
     ),
     (

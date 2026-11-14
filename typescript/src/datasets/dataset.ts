@@ -12,17 +12,32 @@ import { DatasetRef, isDerived } from "../core/ref.ts";
 import type { DerivedRefMember, Layout, Rendering, ResolvedPeriod, Spec } from "../core/ref.ts";
 import { manifestWarningsOf } from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
-import type { Assumption, CitationSource, Departure, Notice, RequestedOperation } from "../wire.ts";
+import type { Assumption, Departure, Notice, RequestedOperation } from "../wire.ts";
 import { isRecord, list, objects, text } from "../core/json.ts";
 import { inline } from "../core/text.ts";
 import { clientError } from "../core/errors.ts";
+import { platformFileWriter } from "./save.ts";
 
-/** The version of the provenance a file from `bytes()` carries under `dfo.*` keys, the one
+/** The version of the provenance a file from `toBytes()` carries under `dfo.*` keys, the one
  *  Python's `Dataset.save` writes: 1 for a dataset of dataset versions, and 2 for a derived
  *  dataset, whose `dfo.ref` is a format 2 ref and which adds `dfo.left_out` and `dfo.steps`, so
  *  a client that reads format 1 alone refuses it as a later format. */
 const SAVED_FORMAT_VERSION = 1;
 const SAVED_DERIVED_FORMAT_VERSION = 2;
+
+/** One source a dataset cites. */
+export type CitationSource = {
+  /** The source's id in the graph. */
+  readonly ref: string;
+  /** The source's name. */
+  readonly label: string;
+  /** The licence's name, or null when the source declares none. */
+  readonly licence: string | null;
+  /** Where the licence is published, or null when the source names no page. */
+  readonly licenceUrl: string | null;
+  /** Where the source publishes the data, or null when the source names no page. */
+  readonly url: string | null;
+};
 
 /** How to cite the data: the citation text and the cited sources. */
 export type Citation = {
@@ -285,7 +300,9 @@ export type FetchedDerivedMember = DerivedRefMember & {
 };
 
 /** A cited source as the server sent it, with the two members every source carries. */
-const isSource = (value: unknown): value is CitationSource =>
+const isServedSource = (
+  value: unknown,
+): value is Record<string, unknown> & { ref: string; label: string } =>
   isRecord(value) && typeof value["ref"] === "string" && typeof value["label"] === "string";
 
 function citationOf(manifest: Readonly<Record<string, unknown>>): Citation {
@@ -293,7 +310,18 @@ function citationOf(manifest: Readonly<Record<string, unknown>>): Citation {
   if (!isRecord(citation)) return { text: "", sources: [] };
   return {
     text: text(citation["text"]) ?? "",
-    sources: list(citation["sources"]).filter(isSource),
+    // The server spells the licence fields `license`. The client spells them as Python does.
+    sources: list(citation["sources"])
+      .filter(isServedSource)
+      .map((source) =>
+        Object.freeze({
+          ref: source.ref,
+          label: source.label,
+          licence: text(source["license"]),
+          licenceUrl: text(source["license_url"]),
+          url: text(source["url"]),
+        }),
+      ),
   };
 }
 
@@ -347,6 +375,10 @@ type DatasetOptions = {
   readonly derived?: DerivedFacts;
   /** The retention in place of the one the manifests state, as after a pin. */
   readonly retention?: { readonly heldUntil: Date | null; readonly pinned: boolean };
+  /** The question the dataset answers, when it came from an answer. */
+  readonly question?: string | null;
+  /** When the data left the server, which the copies of a dataset keep. Now by default. */
+  readonly fetchedAt?: Date;
   /** The share slot a share fetch read, as the text form's "Shown by" line names it:
    *  `share k3Qx8vTa, slot 2 "Malaria grants", on 3 October 2026`. */
   readonly shownBy?: string;
@@ -423,6 +455,10 @@ export class Dataset {
   readonly layout: Layout;
   /** The artifact layout each member's manifest names, distinct ones joined by "; ". */
   readonly layoutVersion: string;
+  /** The question the dataset answers, when it came from `answer.fetch()`, else null. */
+  readonly question: string | null;
+  /** When the data left the server, to the second. */
+  readonly fetchedAt: Date;
   readonly #data: readonly Uint8Array[];
   /** Each member's file, one per member in member order, labelled as its `part` column holds
    *  it when several stack, in reading order. */
@@ -482,7 +518,8 @@ export class Dataset {
     // The dataset holds the bytes itself, once.
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the bytes are left out on purpose
     const inputs = members.map(({ data: _, ...member }) => member);
-    return new Dataset(inputs, options, data, table);
+    const fetchedAt = options.fetchedAt ?? new Date();
+    return new Dataset(inputs, { ...options, fetchedAt }, data, table);
   }
 
   private constructor(
@@ -526,6 +563,11 @@ export class Dataset {
     this.heldUntil = retention.heldUntil;
     this.pinned = retention.pinned;
     this.layout = options.layout;
+    this.question = options.question ?? null;
+    // Seconds precision, as the saved file's `dfo.fetched_at` holds it.
+    this.fetchedAt = new Date(
+      Math.floor((options.fetchedAt ?? new Date()).getTime() / 1000) * 1000,
+    );
     this.#data = data;
     this.#table = table;
     const derived = options.derived;
@@ -567,6 +609,11 @@ export class Dataset {
     );
   }
 
+  /** The licences the sources publish under, joined by "; ", or empty when none says. */
+  get licence(): string {
+    return [...new Set(this.citation.sources.flatMap((source) => source.licence ?? []))].join("; ");
+  }
+
   /** The number of rows in the table, which `toRows()` returns. */
   get rowCount(): number {
     return this.#table.order.rows.length;
@@ -585,8 +632,25 @@ export class Dataset {
    * begin. `memberBytes` gives the file the server built. It decodes every member and encodes
    * the whole table in memory.
    */
-  async bytes(): Promise<Uint8Array> {
+  async toBytes(): Promise<Uint8Array> {
     return encodeStacked(this.#table, this.#metadata());
+  }
+
+  /**
+   * Writes the file `toBytes()` returns to `path`, replacing any file there.
+   *
+   * @throws {InvalidRequestError} The runtime has no file system, as in a browser, where
+   *   `toBytes()` gives the file to keep (`invalid_argument`).
+   */
+  async save(path: string | URL): Promise<void> {
+    const write = platformFileWriter();
+    if (write === undefined) {
+      throw clientError("invalid_argument", {
+        detail:
+          "data.save(path) writes files on Node alone; here, await data.toBytes() gives the file.",
+      });
+    }
+    await write(path, await this.toBytes());
   }
 
   /**
@@ -648,17 +712,28 @@ export class Dataset {
     return lines;
   }
 
-  /** One member's Parquet file as the server built it, checked against its digest. */
+  /**
+   * One member's Parquet file as the server built it, checked against its digest.
+   *
+   * @throws {InvalidRequestError} The dataset has no member at `index` (`invalid_argument`).
+   */
   memberBytes(index: number): Uint8Array {
     const data = this.#data[index];
     if (data === undefined) {
-      throw new RangeError(`This dataset has ${this.#data.length} member(s), not ${index + 1}.`);
+      throw clientError("invalid_argument", {
+        detail: `This dataset has ${this.#data.length} member(s), not ${index + 1}.`,
+      });
     }
     return data.slice();
   }
 
-  /** Every row as an object keyed by column name. `JSON.stringify` works on the result. It
-   *  decodes the whole table in memory, one object per row. */
+  /**
+   * Every row as an object keyed by column name. `JSON.stringify` works on the result. It
+   * decodes the whole table in memory, one object per row.
+   *
+   * @throws {InvalidRequestError} An INT64 value lies beyond a JavaScript number's exact range,
+   *   which `toArrow()` keeps as a bigint (`invalid_argument`).
+   */
   toRows(): Promise<Row[]> {
     return decodeRows(this.#table);
   }
@@ -667,7 +742,6 @@ export class Dataset {
    *  `Dataset.save` writes, so `dfo.load` reads the file back. */
   #metadata(): Record<string, string> {
     const sources = this.citation.sources;
-    const licences = [...new Set(sources.flatMap((source) => source.license ?? []))];
     const isDerivedDataset = this.members.some(isDerived);
     const derived = !isDerivedDataset
       ? {}
@@ -693,7 +767,7 @@ export class Dataset {
       "dfo.sentence": this.sentence,
       "dfo.citation": JSON.stringify(savedCitation(this.citation)),
       "dfo.sources": JSON.stringify(sources.map((source) => source.label)),
-      "dfo.licence": licences.join("; "),
+      "dfo.licence": this.licence,
       "dfo.dataset": JSON.stringify({
         member_citations: this.members.map((member) => savedCitation(member.citation)),
         warnings: this.warnings.map(({ code, severity, message }) => ({
@@ -728,8 +802,10 @@ export class Dataset {
       }),
       "dfo.ref": JSON.stringify(this.ref),
       ...derived,
-      // A key of its own, since Python 0.1.0's loader refuses any key in `dfo.dataset` it does
+      // Keys of their own, since Python 0.1.0's loader refuses any key in `dfo.dataset` it does
       // not know and reads only the `dfo.*` keys it names.
+      ...(this.question === null ? {} : { "dfo.question": JSON.stringify(this.question) }),
+      "dfo.fetched_at": JSON.stringify(this.fetchedAt.toISOString().replace(".000Z", "Z")),
       ...(this.partyTotalsLeftOut.length === 0
         ? {}
         : {
@@ -802,9 +878,9 @@ const savedCitation = ({ text, sources }: Citation) => ({
   sources: sources.map((source) => ({
     ref: source.ref,
     label: source.label,
-    licence: source.license ?? null,
-    licence_url: source.license_url ?? null,
-    url: source.url ?? null,
+    licence: source.licence,
+    licence_url: source.licenceUrl,
+    url: source.url,
   })),
 });
 

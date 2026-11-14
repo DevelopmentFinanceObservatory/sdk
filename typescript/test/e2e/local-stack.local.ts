@@ -22,16 +22,11 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 
-import {
-  Client,
-  DatasetRef,
-  InvalidRequestError,
-  isDerived,
-  NotFoundError,
-  PermissionDeniedError,
-  recipe,
-} from "../../src/index.ts";
-import type { Card, Dataset, ResolvedSpec, Row, Share, Spec } from "../../src/index.ts";
+import { InvalidRequestError, NotFoundError, PermissionDeniedError } from "../../src/errors.ts";
+import { Client, DatasetRef, recipe } from "../../src/index.ts";
+import type { Dataset, Spec } from "../../src/index.ts";
+import { isDerived } from "../../src/types.ts";
+import type { Card, ResolvedSpec, Row, Share } from "../../src/types.ts";
 
 const baseUrl = process.env["DFO_BASE_URL"];
 if (baseUrl === undefined || baseUrl === "") {
@@ -51,7 +46,10 @@ const POPULATION = {
   sentence: "Kenya population, 2015 to 2024",
 };
 // The codes a server without the seed answers a seeded reading with.
-const NOT_FOUND_CODES = new Set(["spec_not_found", "snapshot_not_found"]);
+const NOT_FOUND_CODES: ReadonlySet<string | null> = new Set([
+  "spec_not_found",
+  "snapshot_not_found",
+]);
 const PAIRING = { destination: "place" };
 // A breakdown by recipient, the sum data-mcp's `get_data` reads a frame with.
 const BREAKDOWN = { by: ["time_period", "financingRecipient"], op: "sum" };

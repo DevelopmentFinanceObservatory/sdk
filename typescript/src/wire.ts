@@ -19,7 +19,9 @@ import type { UnknownPart } from "./core/unknown-part.ts";
 /** A part whose status this release knows. Its `status` narrows it. */
 export type KnownPart = DefinitePart | CandidatesPart | NoDataPart | UnsupportedPart;
 
-/** One part of a resolution, as `Resolution["parts"]` holds it. */
+/** One part of a resolution, as `Resolution["parts"]` holds it, with every member typed as the
+ *  schema gives it. The client checks only some of them. `Part` in
+ *  `@developmentfinance/client/types`, which `Answer.parts` holds, types the rest `unknown`. */
 export type Part = KnownPart | UnknownPart;
 
 /** A warning the server attached to an answer, a part or a dataset: its registry code, its

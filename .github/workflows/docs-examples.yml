@@ -1,0 +1,88 @@
+name: Docs examples
+
+# scripts/check_docs_examples.py runs every python block in README.md,
+# python/README.md and python/docs/*.md, and every ts block in
+# typescript/README.md and typescript/docs/*.md, against the dev API through the
+# dev website's /api/v1 proxy, which needs no ID token. One job per language. The
+# Markdown report lists each block's outcome, the warnings each passed Python
+# block showed, and each failure; the job writes it to the run summary and
+# uploads it.
+
+on:
+  schedule:
+    - cron: "47 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-examples
+  cancel-in-progress: false
+
+jobs:
+  docs-examples:
+    name: docs examples (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    # The script bounds each Python file and each TypeScript program at 1,800 s.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, typescript]
+    env:
+      DFO_BASE_URL: https://dfo-dev-website-staging-zms5lj4zhq-nn.a.run.app/api/v1
+    steps:
+      - uses: actions/checkout@v7
+
+      # The script runs under the python project's environment for both languages.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.0
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install Python dependencies
+        working-directory: python
+        run: uv sync --frozen --python 3.12
+
+      # Reads the pnpm version from typescript/package.json's packageManager.
+      - name: Install pnpm
+        if: matrix.language == 'typescript'
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: typescript/package.json
+
+      - name: Set up Node
+        if: matrix.language == 'typescript'
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+
+      - name: Install TypeScript dependencies
+        if: matrix.language == 'typescript'
+        working-directory: typescript
+        run: pnpm install --frozen-lockfile
+
+      - name: Run the docs examples
+        working-directory: python
+        run: >-
+          uv run --no-sync python ../scripts/check_docs_examples.py
+          --language ${{ matrix.language }}
+          --report "$RUNNER_TEMP/docs-check-${{ matrix.language }}.md"
+
+      - name: Write the report to the run summary
+        if: ${{ !cancelled() }}
+        run: |
+          report="$RUNNER_TEMP/docs-check-${{ matrix.language }}.md"
+          if [ -f "$report" ]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload the report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: docs-check-${{ matrix.language }}
+          path: ${{ runner.temp }}/docs-check-${{ matrix.language }}.md
+          if-no-files-found: warn

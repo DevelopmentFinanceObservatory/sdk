@@ -30,6 +30,7 @@ from dfo._core.errors import (
     message_of,
 )
 from dfo._core.parse import parse_assumptions
+from dfo._core.timeouts import CLIENT_TIMEOUT, CallTimeout
 from dfo._core.types import CandidatesPart, DefinitePart
 from dfo._datasets.build import Reading
 from dfo._datasets.dataset import build_dataset
@@ -66,9 +67,12 @@ class Server:
         )
 
 
-def transport(server: Server) -> Transport:
+def transport(server: Server, *, timeout: float | None = None) -> Transport:
     return Transport(
-        base_url=BASE, api_key=False, http_transport=httpx2.MockTransport(server)
+        base_url=BASE,
+        api_key=False,
+        timeout=timeout,
+        http_transport=httpx2.MockTransport(server),
     )
 
 
@@ -227,13 +231,22 @@ def test_search_posts_the_question_and_reads_the_answer(
 
 
 @pytest.mark.parametrize(
-    ("timeout", "read"), [(None, None), (60.0, 60.0), (90.0, 90.0)]
+    ("client_timeout", "timeout", "read"),
+    [
+        (None, None, None),
+        (None, 90.0, 90.0),
+        (None, CLIENT_TIMEOUT, 60.0),
+        (100.0, CLIENT_TIMEOUT, 100.0),
+        (100.0, 20.0, 20.0),
+        (100.0, None, None),
+    ],
+    ids=["none", "call", "search-default", "client", "call-over-client", "unbounded"],
 )
 def test_a_search_attempt_reads_until_the_search_deadline(
-    timeout: float | None, read: float | None
+    client_timeout: float | None, timeout: CallTimeout, read: float | None
 ) -> None:
     server = Server(load("search-1.json"))
-    client = transport(server)
+    client = transport(server, timeout=client_timeout)
     search(lambda: Session(client), "ODA", timeout=timeout)
     (seen,) = server.read_timeouts
     if read is None:
@@ -740,26 +753,6 @@ def test_several_waiting_parts_name_the_keyword_that_picks_one() -> None:
     assert "answer.choose(option, part=part)" in str(caught.value)
 
 
-@pytest.mark.parametrize(
-    ("old", "named"),
-    [
-        ((0, 1), "answer.choose(1, part=0)"),
-        (("Congo", "Congo [DRC]"), 'answer.choose("Congo [DRC]", part="Congo")'),
-    ],
-    ids=["indices", "labels"],
-)
-def test_choose_takes_the_part_by_keyword_only(
-    old: tuple[Any, Any], named: str
-) -> None:
-    answer, server = ask("q", load("search-4.json"))
-    part, option = old
-    with pytest.raises(TypeError) as caught:
-        # The earlier `choose(part, option)` form, which the type checker refuses.
-        answer.choose(part, option)  # ty: ignore[invalid-argument-type]
-    assert named in str(caught.value)
-    assert len(server.posted) == 1
-
-
 def test_a_resubmit_echoes_a_parts_separate_flag_and_operations() -> None:
     definite = load("search-1.json")["parts"][0]
     definite["separate"] = True
@@ -870,6 +863,7 @@ def test_fetch_builds_one_member_per_distinct_spec(
         "window": None,
         "entities": None,
         "facets": None,
+        "question": "Germany's ODA and GNI from 2015 to 2022",
     }
     assert isinstance(transport_used, Transport)
     assert [len(m.answer_parts) for m in members] == [3, 1]
@@ -911,7 +905,7 @@ def test_fetch_of_an_incomplete_answer_raises_before_any_build(
             "Development Indicators",
             "  Choose: answer.choose(0).fetch()",
             "  Or take the answered part: answer.fetch(partial=True)",
-            f"[answer_incomplete · trace {TRACE}]",
+            f"[answer_incomplete trace={TRACE}]",
         ]
     )
     assert caught.value.answer is answer
@@ -1027,7 +1021,7 @@ def test_fetch_of_a_declined_or_catalogue_answer_raises_declined(
     assert caught.value.detail == load(body).get("reason", "catalogue")
     assert caught.value.code == "answer_declined"
     # The message ends with its next line, so the code and trace go below it.
-    assert str(caught.value) == f"{answer!r}\n[answer_declined · trace {TRACE}]"
+    assert str(caught.value) == f"{answer!r}\n[answer_declined trace={TRACE}]"
     assert answer.sentence is None
     assert fetched == []
 

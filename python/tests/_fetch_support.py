@@ -13,6 +13,7 @@ import time
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -267,15 +268,25 @@ class FakeCache:
         default_factory=dict
     )
 
+    times: dict[str, datetime] = field(default_factory=dict)
+
     def get_bytes(self, digest: str, /) -> bytes | None:
         return self.files.get(digest)
 
-    def put_bytes(self, digest: str, data: bytes, /) -> None:
+    def put_bytes(
+        self, digest: str, data: bytes, /, *, fetched_at: datetime | None = None
+    ) -> None:
         assert sha256_digest(data) == digest
         self.files[digest] = data
+        if fetched_at is not None:
+            self.times[digest] = fetched_at
+
+    def fetched_at(self, digest: str, /) -> datetime | None:
+        return self.times.get(digest)
 
     def discard(self, digest: str, /) -> None:
         self.files.pop(digest, None)
+        self.times.pop(digest, None)
 
     def downloading(
         self, digest: str, /, *, timeout: float | None = None
@@ -329,6 +340,7 @@ class Built:
     complete: bool
     missing: tuple[Any, ...]
     stale: bool
+    question: str | None = None
 
 
 def fake_build_dataset(
@@ -340,8 +352,9 @@ def fake_build_dataset(
     stale: bool,
     cache: Any = None,
     caller: str = "dfo",
+    question: str | None = None,
 ) -> Built:
-    return Built(list(members), layout, complete, tuple(missing), stale)
+    return Built(list(members), layout, complete, tuple(missing), stale, question)
 
 
 type LiveResponse = tuple[int, Mapping[str, str], bytes]

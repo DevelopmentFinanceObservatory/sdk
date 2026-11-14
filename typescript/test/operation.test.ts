@@ -38,7 +38,7 @@ function client(fetch: typeof globalThis.fetch, timeout?: number) {
   const waits: number[] = [];
   const warnings: DfoWarning[] = [];
   const transport = new Transport({
-    ...(timeout === undefined ? {} : { timeout }),
+    ...(timeout === undefined ? {} : { attemptTimeout: timeout }),
     baseUrl: BASE,
     apiKey: false,
     env: envFrom({}),
@@ -298,26 +298,26 @@ describe("a long build", () => {
   // Each row gives a failed operation's error, which raises operation_failed with the trace id
   // of the response's header and the error's text, as a refusal with no code shows it.
   for (const [name, error, message] of [
-    ["no error", undefined, "The build failed. [operation_failed · trace trace-op]"],
+    ["no error", undefined, "The build failed. [operation_failed trace=trace-op]"],
     [
       "an error whose trace_id is not an HTTP token",
       { status: 500, trace_id: "trace op" },
-      "The build failed. [operation_failed · trace trace-op]",
+      "The build failed. [operation_failed trace=trace-op]",
     ],
     [
       "an error whose code is not a refusal code",
       { code: "Build Failed", status: 500 },
-      "Build Failed [operation_failed · trace trace-op]",
+      "Build Failed [operation_failed trace=trace-op]",
     ],
     [
       "an error with a title and no code",
       { status: 500, title: "Out of memory", error: "oom" },
-      "Out of memory [operation_failed · trace trace-op]",
+      "Out of memory [operation_failed trace=trace-op]",
     ],
     [
       "an error with a legacy error and no code",
       { status: 500, error: "oom" },
-      "oom [operation_failed · trace trace-op]",
+      "oom [operation_failed trace=trace-op]",
     ],
   ] as const) {
     test(`raises operation_failed for a failed operation with ${name}, with the header's trace id`, async () => {
@@ -362,20 +362,29 @@ describe("a long build", () => {
     });
   }
 
-  test("polls at the deadline when the server's pace is longer than the time left", async () => {
-    const { spec } = await built();
-    const { fetch, seen } = mockFetch(
-      json(operation("pending", { retry_after_ms: 60_000 }), 202),
-      json(operation("running", { retry_after_ms: 60_000 })),
-    );
-    const { transport, waits } = client(fetch);
-    await assert.rejects(fetchDataset(transport, spec, { timeout: 4000 }), {
-      name: "DfoTimeoutError",
-      code: "deadline_exceeded",
+  for (const [name, clientTimeout, callTimeout] of [
+    ["the fetch's timeout", undefined, 4000],
+    ["the client's timeout", 4000, undefined],
+    ["the fetch's timeout over the client's", 60_000, 4000],
+  ] as const) {
+    test(`polls at ${name} when the server's pace is longer than the time left`, async () => {
+      const { spec } = await built();
+      const { fetch, seen } = mockFetch(
+        json(operation("pending", { retry_after_ms: 60_000 }), 202),
+        json(operation("running", { retry_after_ms: 60_000 })),
+      );
+      const { transport, waits } = client(fetch);
+      const bounded =
+        clientTimeout === undefined ? transport : transport.withOptions({ timeout: clientTimeout });
+      const options = callTimeout === undefined ? {} : { timeout: callTimeout };
+      await assert.rejects(fetchDataset(bounded, spec, options), {
+        name: "DfoTimeoutError",
+        code: "deadline_exceeded",
+      });
+      assert.deepEqual(waits, [4000]);
+      assert.equal(seen.length, 2);
     });
-    assert.deepEqual(waits, [4000]);
-    assert.equal(seen.length, 2);
-  });
+  }
 
   test("polls at the deadline once more after a poll the deadline cuts off", async () => {
     const { spec } = await built();

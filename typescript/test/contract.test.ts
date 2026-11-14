@@ -361,8 +361,8 @@ const DESCRIBING_CODES = new Set([
 
 const describesResponse = (error: DfoError | DfoWarning): boolean =>
   error instanceof DfoWarning ||
-  !Object.hasOwn(CLIENT_CODE_CLASSES, error.code) ||
-  DESCRIBING_CODES.has(error.code);
+  (error.code !== null &&
+    (!Object.hasOwn(CLIENT_CODE_CLASSES, error.code) || DESCRIBING_CODES.has(error.code)));
 
 // Each API response of an error scenario gains its own x-dfo-trace-id where it names none, so
 // every error that describes a response must carry the trace id of the last API response the

@@ -1,4 +1,4 @@
-import { clientError } from "./errors.ts";
+import { ContractError, clientError } from "./errors.ts";
 import { STRICT_SCHEMAS } from "../generated/strict.ts";
 import { isRecord } from "./json.ts";
 
@@ -108,4 +108,15 @@ export function checkRequired(
  */
 export function checkStrict(schema: StrictSchema, body: unknown): void {
   checkSchema(schema, body, "");
+}
+
+/** Whether `checkStrict(schema, value)` passes. */
+export function conforms(schema: StrictSchema, value: unknown): boolean {
+  try {
+    checkSchema(schema, value, "");
+    return true;
+  } catch (error) {
+    if (error instanceof ContractError) return false;
+    throw error;
+  }
 }

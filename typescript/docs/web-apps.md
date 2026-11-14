@@ -11,12 +11,14 @@ The page posts `{ question }`, `{ answerId, option }` to settle a choice, or `{ 
 ```text
 {"type":"choose","answerId":"60b35cdc-5e2b-42f5-b34a-2e4fd8ec5fe1","options":["Kenya's percent of nominal GDP spent on education, 1971 to 2024.","Kenya's percent of total government expenditure on education, 1980 to 2025."]}
 data: 67 rows · Kenya's health expenditure per capita in international dollars, 2000 to 2023. World Development Indicators. Kenya's percent of nominal GDP spent on education, 1971 to 2024. World Development Indicators.
-{"type":"error","code":"answer_declined","message":"Search declined the question: it asks for an argument and names no data to show.\n  Next: ask for a figure DFO publishes; client.lookup.catalogue() lists example questions.\n[answer_declined · trace 3261047291064622933591b87a7b39e2]"}
+{"type":"error","code":"answer_declined","message":"Search declined the question: it asks for an argument and names no data to show.\n  Next: ask for a figure DFO publishes; client.lookup.catalogue() lists example questions.\n[answer_declined trace=3261047291064622933591b87a7b39e2]"}
 ```
 
 ```ts
 // app/api/data/route.ts
-import { Answer, Client, isDfoError, type Gap } from "@developmentfinance/client";
+import { Answer, Client } from "@developmentfinance/client";
+import { isDfoError } from "@developmentfinance/client/errors";
+import type { Gap } from "@developmentfinance/client/types";
 
 /** Next.js on Vercel ends the function after this many seconds. */
 export const maxDuration = 60;
@@ -129,7 +131,7 @@ In that route:
 - One `Client` serves every request. It holds no per-request state, and it resolves the key when it is built.
 - The work runs inside the stream, so the page gets the response headers at once and each progress line as the server reports it. A build the server has made before sends only `data`.
 - `AbortSignal.any` stops the search and the fetch when the request aborts or when `BUDGET_MS` passes. Keep the budget about ten seconds under the platform's limit, so the route still has time to send `retry` and close the stream. A budget that passes during the search sends `retry` with no answer id, and the page posts the question again.
-- An error the client raises goes to the page as its `code` and `message`. The message ends with the code, and with the trace id when there is one, `[code · trace id]`, which is what the reader quotes to you. The client replaces its own key in any server text with `[redacted]`.
+- An error the client raises goes to the page as its `code` and `message`. The message ends with the code, and with the trace id when there is one, `[code trace=id]`, which is what the reader quotes to you. The client replaces its own key in any server text with `[redacted]`.
 
 ## Read the stream in the page
 
@@ -240,7 +242,7 @@ The route's `new Client()` reads `DFO_API_KEY` from the server's environment. Se
 
 The API's CORS admits only the origins it lists. A page on another origin calls your own server route, such as the one above, or a proxy of the API on the page's origin with `new Client({ baseUrl: "/api/v1" })`.
 
-A page that calls the API itself uses a publishable `dfo_p_` key. In a browser page or worker, `new Client()` throws a `TypeError` for a secret `dfo_k_` key from `apiKey`, and the first request rejects with it for one in `headers` or from `headerProvider`. No request leaves. `dangerouslyAllowBrowser: true` turns that check off, for a page only you can open.
+A page that calls the API itself uses a publishable `dfo_p_` key. In a browser page or worker, `new Client()` throws an `InvalidRequestError` (`invalid_argument`) for a secret `dfo_k_` key from `apiKey`, and the first request rejects with it for one in `headers` or from `headerProvider`. No request leaves. `dangerouslyAllowBrowser: true` turns that check off, for a page only you can open.
 
 ## Next
 

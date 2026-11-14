@@ -2,13 +2,14 @@
 
 from dfo._core.codes import INVALID_ARGUMENT
 from dfo._core.errors import client_error
+from dfo._core.timeouts import CLIENT_TIMEOUT, CallTimeout
 from dfo._datasets.fetch import SessionSource
-from dfo._search.answer import SEARCH_TIMEOUT, AsyncAnswer, resolve
+from dfo._search.answer import AsyncAnswer, resolve
 from dfo._search.display import search_status
 
 
 async def search(
-    source: SessionSource, question: str, /, *, timeout: float | None = SEARCH_TIMEOUT
+    source: SessionSource, question: str, /, *, timeout: CallTimeout = CLIENT_TIMEOUT
 ) -> AsyncAnswer:
     """Ask Search a question and return what it understood, part by part.
 
@@ -17,6 +18,7 @@ async def search(
         question: The question, in the user's words.
         timeout: The longest the call waits, retries included, in seconds; each
             attempt reads until then, and None waits as long as Search takes.
+            `CLIENT_TIMEOUT` takes the client's `timeout`, else `SEARCH_TIMEOUT`.
 
     Raises:
         InvalidRequestError: `question` is not text, is empty or only

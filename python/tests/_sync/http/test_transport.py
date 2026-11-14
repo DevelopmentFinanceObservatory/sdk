@@ -40,6 +40,7 @@ from dfo._core.errors import (
 )
 from dfo._core.json_text import JSON_MAX_DEPTH
 from dfo._core.refusals import trace_id_of
+from dfo._core.timeouts import CLIENT_TIMEOUT, ClientSeconds
 from dfo._sync._http.transport import (
     CLIENT_IDENTITY,
     DEFAULT_BASE_URL,
@@ -174,10 +175,10 @@ def test_an_anonymous_transport_sends_no_authorization() -> None:
 def test_a_url_off_the_api_origin_is_refused_before_sending() -> None:
     recorder = Recorder()
     with make(recorder, api_key=KEY) as transport:
-        with pytest.raises(ValueError, match="outside the API"):
-            transport.request("GET", SIGNED)
-        with pytest.raises(ValueError, match="starts with"):
-            transport.request("GET", "search/resolve")
+        for target in (SIGNED, "search/resolve"):
+            with pytest.raises(InvalidRequestError) as caught:
+                transport.request("GET", target)
+            assert caught.value.code == "invalid_argument"
     assert recorder.requests == []
 
 
@@ -330,7 +331,7 @@ def test_a_download_waits_30_s_at_most_per_phase_or_until_the_deadline(
 ) -> None:
     timeline = Timeline()
     recorder = Recorder(httpx2.Response(200, content=b"PAR1"))
-    with make(recorder, timeline, timeout=30.0) as transport:
+    with make(recorder, timeline, attempt_timeout=30.0) as transport:
         transport.download(SIGNED, deadline=transport.deadline(seconds))
     timeouts = recorder.requests[0].extensions["timeout"]
     assert timeouts == {"connect": read, "read": read, "write": read, "pool": read}
@@ -377,7 +378,7 @@ def test_a_body_that_stalls_after_its_first_chunk_raises_at_the_attempt_end(
     monkeypatch.setenv("NO_PROXY", "*")
     with stalling_server(first_chunk_after=0.4) as origin:
         with Transport(
-            api_key=False, base_url=origin, timeout=0.6, max_retries=0
+            api_key=False, base_url=origin, attempt_timeout=0.6, max_retries=0
         ) as transport:
             start = time.monotonic()
             with pytest.raises(DfoTimeoutError) as caught:
@@ -400,7 +401,7 @@ def test_a_body_that_stalls_through_an_environment_proxy_raises_at_the_attempt_e
         with Transport(
             api_key=False,
             base_url="http://api.example.org/api/v1",
-            timeout=0.6,
+            attempt_timeout=0.6,
             max_retries=0,
         ) as transport:
             start = time.monotonic()
@@ -739,11 +740,21 @@ def test_a_wait_past_the_deadline_raises_at_once() -> None:
     assert timeline.sleeps == []
 
 
-def test_each_attempt_is_clamped_to_the_deadline() -> None:
+@pytest.mark.parametrize("given", [True, False], ids=["call", "client"])
+def test_each_attempt_is_clamped_to_the_deadline(given: bool) -> None:
+    # A request given no deadline takes one from the transport's timeout.
     timeline = Timeline()
     recorder = Recorder(problem(503, retryable=True), httpx2.Response(200))
-    with make(recorder, timeline, timeout=30.0) as transport:
-        transport.request("GET", "/datasets/schema", deadline=transport.deadline(10))
+    client_timeout = None if given else 10.0
+    with make(
+        recorder, timeline, timeout=client_timeout, attempt_timeout=30.0
+    ) as transport:
+        if given:
+            transport.request(
+                "GET", "/datasets/schema", deadline=transport.deadline(10)
+            )
+        else:
+            transport.request("GET", "/datasets/schema")
     timeouts = [request.extensions["timeout"]["read"] for request in recorder.requests]
     assert timeouts == [10.0, 9.5]
 
@@ -805,13 +816,38 @@ def test_connection_failures_retry_then_raise_a_network_error() -> None:
     assert timeline.sleeps == [0.5, 1.0]
 
 
-def test_a_timed_out_attempt_raises_a_timeout_error() -> None:
+# The message names what ran out: the attempt's own bound, or the deadline that
+# cut the attempt short, which the call or the client's `timeout` set.
+@pytest.mark.parametrize(
+    ("timeout", "deadline", "ran_out"),
+    [
+        (None, None, "one attempt ran past the client's attempt_timeout of 30 s"),
+        (None, 10.0, "the call's timeout passed"),
+        (10.0, None, "the client's timeout passed"),
+        (10.0, "client", "the client's timeout passed"),
+    ],
+    ids=["attempt", "call", "client", "client-deadline"],
+)
+def test_a_timed_out_attempt_raises_a_timeout_error(
+    timeout: float | None, deadline: float | str | None, ran_out: str
+) -> None:
     recorder = Recorder(httpx2.ReadTimeout("slow"))
-    with make(recorder, max_retries=0) as transport:
+    with make(recorder, max_retries=0, timeout=timeout) as transport:
+        # Pinning, cards and history set their deadline from the client's timeout.
+        given = (
+            {}
+            if deadline is None
+            else {
+                "deadline": transport.deadline(
+                    transport.timeout if deadline == "client" else float(deadline)
+                )
+            }
+        )
         with pytest.raises(DfoTimeoutError) as caught:
-            transport.request("GET", "/datasets/schema")
+            transport.request("GET", "/datasets/schema", **given)
     assert isinstance(caught.value, TimeoutError)
     assert caught.value.code == "deadline_exceeded"
+    assert f"timed out; {ran_out} [" in str(caught.value)
 
 
 @pytest.mark.parametrize("second", [200, 401], ids=["answered", "refused-again"])
@@ -946,14 +982,14 @@ def test_with_options_shares_the_pool_and_only_the_owner_closes_it() -> None:
     timeline = Timeline()
     recorder = Recorder(problem(503, retryable=True), httpx2.Response(200))
     transport = make(recorder, timeline)
-    quick = transport.with_options(max_retries=0, timeout=5.0)
+    quick = transport.with_options(max_retries=0, attempt_timeout=5.0)
     with pytest.raises(ServerError):
         quick.request("GET", "/datasets/schema")
     quick.close()
     response = transport.request("GET", "/datasets/schema")
     assert response.status_code == 200
-    assert (quick.max_retries, quick.timeout) == (0, 5.0)
-    assert (transport.max_retries, transport.timeout) == (2, 30.0)
+    assert (quick.max_retries, quick.attempt_timeout) == (0, 5.0)
+    assert (transport.max_retries, transport.attempt_timeout) == (2, 30.0)
     transport.close()
     for call in (
         lambda: transport.request("GET", "/datasets/schema"),
@@ -1024,9 +1060,12 @@ def test_only_a_404_without_a_code_names_the_request_as_unmatched(
         {"timeout": -1},
         {"timeout": math.nan},
         {"timeout": math.inf},
-        {"timeout": None},
         {"timeout": True},
         {"timeout": "30"},
+        {"attempt_timeout": 0},
+        {"attempt_timeout": math.inf},
+        {"attempt_timeout": None},
+        {"attempt_timeout": True},
         {"max_retries": -1},
         {"max_retries": 11},
         {"max_retries": 1.5},
@@ -1054,6 +1093,26 @@ def test_a_call_timeout_that_is_not_a_finite_positive_number_is_refused(
         with pytest.raises(InvalidRequestError) as caught:
             transport.deadline(seconds)
     assert caught.value.code == "invalid_argument"
+
+
+@pytest.mark.parametrize("variable", ["HTTPS_PROXY", "ALL_PROXY"])
+def test_a_proxy_of_another_scheme_is_refused(
+    monkeypatch: pytest.MonkeyPatch, variable: str
+) -> None:
+    monkeypatch.setenv(variable, "ftp://proxy:1")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    with pytest.raises(InvalidRequestError) as caught:
+        Transport(api_key=False, base_url=BASE)
+    assert caught.value.code == "invalid_argument"
+    assert isinstance(caught.value, ValueError)
+
+
+def test_a_call_bound_says_whether_it_is_the_clients() -> None:
+    # A timeout message names the client's `timeout` or the call's by this type.
+    with make(Recorder(), timeout=20.0) as transport:
+        bounds = [transport.call_timeout(each) for each in (CLIENT_TIMEOUT, 20.0)]
+    assert bounds == [20.0, 20.0]
+    assert [type(bound) for bound in bounds] == [ClientSeconds, float]
 
 
 @pytest.mark.parametrize(

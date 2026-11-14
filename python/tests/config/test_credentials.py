@@ -16,6 +16,7 @@ from dfo._config.credentials import (
     render_credentials,
     store_key,
 )
+from dfo._core.errors import DfoError
 from tests.rule_vectors import ids, vectors
 
 KEY = "dfo_k_4f8Kq2ZtR7mWx1NcB9vLp3YhD6sGa0Ue2wanxe"
@@ -78,15 +79,21 @@ def test_store_key_writes_an_owner_only_file(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("profile", "key"),
-    [("default", 'dfo"k'), ("default", "dfo\\k"), ("default", "dfo\nk"), ("a.b", KEY)],
+    ("profile", "key", "code"),
+    [
+        ("default", 'dfo"k', "key_invalid"),
+        ("default", "dfo\\k", "key_invalid"),
+        ("default", "dfo\nk", "key_invalid"),
+        ("a.b", KEY, "invalid_argument"),
+    ],
 )
 def test_store_key_refuses_what_the_format_cannot_hold(
-    tmp_path: Path, profile: str, key: str
+    tmp_path: Path, profile: str, key: str, code: str
 ) -> None:
     path = tmp_path / "credentials.toml"
-    with pytest.raises(ValueError, match="holds"):
+    with pytest.raises(DfoError) as caught:
         store_key(path, profile, key)
+    assert caught.value.code == code
     assert not path.exists()
 
 

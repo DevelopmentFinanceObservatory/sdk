@@ -6,15 +6,25 @@ Ask the Development Finance Observatory a question in words and get the data tha
 npm install @developmentfinance/client
 ```
 
-The package is ESM only. Everything imports from the package root except `toArrow`, which comes from `@developmentfinance/client/arrow`, and the generated wire types in `@developmentfinance/client/wire`. It runs on Node 22.18 and later, Bun, Deno, Workers, and browsers. [Use it in a web app](#use-it-in-a-web-app) covers the browser limits. `toArrow` needs the optional `apache-arrow` package (`npm install apache-arrow`).
+The package is ESM only. It runs on Node 22.18 and later, Bun, Deno, Workers, and browsers. [Use it in a web app](#use-it-in-a-web-app) covers the browser limits. `toArrow` needs the optional `apache-arrow` package (`npm install apache-arrow`).
+
+### Imports
+
+The package root holds what Python's `dfo` holds at its top level: `Client`, `Answer`, `Dataset`, `DatasetRef`, `Spec`, `recipe`, `latestYear`, `VERSION`, and `ClientOptions`. Five subpaths hold the rest:
+
+- `@developmentfinance/client/errors`: every error and warning, with `isDfoError` and the types their fields carry, as Python's `dfo.errors` holds them.
+- `@developmentfinance/client/types`: what answers, datasets, cards, shares and lookups contain, the options each call takes, and the helpers that read parts, members and specs, such as `specRoles`, `partFacts` and `isDerived`. Python keeps these in `dfo.types`.
+- `@developmentfinance/client/wire`: the wire types generated from the served OpenAPI document.
+- `@developmentfinance/client/arrow`: `toArrow`.
+- `@developmentfinance/client/package.json`: the package manifest.
 
 ## Ask a question and get the data
 
 ```text
-Germany's gross ODA disbursements to Nigeria for basic health care, 1995 to 2024. Current US dollars · OECD Creditor Reporting System (CRS).
+Germany's gross disbursements to Nigeria for official development assistance, 1960 to 2024. Current US dollars · OECD DAC2a.
   Fetch: answer.fetch()
-30 time_period, financingProvider_label, financingRecipient_label, crsPurpose_label
-30
+65 time_period, financingProvider_label, financingRecipient_label, value
+65
 https://developmentfinance.org/s/k3Qx8vTa
 ```
 
@@ -23,9 +33,7 @@ import { Client } from "@developmentfinance/client";
 import { toArrow } from "@developmentfinance/client/arrow";
 
 const client = new Client();
-const answer = await client.search(
-  "ODA disbursements from Germany to Nigeria for basic health care",
-);
+const answer = await client.search("ODA from Germany to Nigeria");
 console.log(String(answer));
 
 const data = await answer.fetch();
@@ -34,14 +42,12 @@ const table = await toArrow(data);
 console.log(table.numRows);
 
 const growth = await client.analysis.growth(data, { window: [2015, 2024] });
-const chart = await client.cards.line(data, {
-  title: "German aid to Nigeria for basic health care",
-});
+const chart = await client.cards.line(data, { title: "German ODA to Nigeria" });
 const share = await client.share(chart, { latest: true });
 console.log(share.url);
 ```
 
-`String(answer)` is Search's sentence and the next call to make. `answer.fetch()` builds the table and returns a `Dataset`: `rowCount`, `columns`, `toRows()` for plain objects, `toArrow(data)` for an Arrow table, and `bytes()` for one Parquet file that the Python client's `dfo.load` reads. Every table comes in reading order. The columns start with the year, the provider, the recipient, the subject, the purpose, the value, the unit, the flow type, and the source, as the table holds them, then the columns whose values tell the rows apart, then those that hold one value throughout. `stat_var` comes last, and `part` comes first when several members stack; readings that narrow to one spec share a member. The rows sort by those columns, with each series' years together. Without a key the client calls the API anonymously. See [Keys and base URL](#keys-and-base-url) for keys and configuration.
+`String(answer)` is Search's sentence and the next call to make. `answer.fetch()` builds the table and returns a `Dataset`: `rowCount`, `columns`, `toRows()` for plain objects, `toArrow(data)` for an Arrow table, `toBytes()` for one Parquet file that the Python client's `dfo.load` reads, and on Node `save(path)` to write that file. The file keeps the provenance: the sentence, the citation, the licence, the ref, the question when the data came from an answer, and the time the data left the server, which the dataset also holds as `question` and `fetchedAt`. `data.licence` joins the sources' licences, and each of `data.citation.sources` names its own `licence`. Every table comes in reading order. The columns start with the year, the provider, the recipient, the subject, the purpose, the value, the unit, the flow type, and the source, as the table holds them, then the columns whose values tell the rows apart, then those that hold one value throughout. `stat_var` comes last, and `part` comes first when several members stack; readings that narrow to one spec share a member. The rows sort by those columns, with each series' years together. Without a key the client calls the API anonymously. See [Keys and base URL](#keys-and-base-url) for keys and configuration.
 
 `client.analysis.growth` computes the change from 2015 to 2024 on DFO, as a fraction where 0.25 is a 25% rise. `client.share` publishes a line chart of the data at a public URL that anyone with the link can open, and follows new data. [Compute a figure on DFO](docs/compute.md) covers every operation and recipes, and [Cards and shares](docs/shares.md) covers cards, write tokens, snapshots, and what a share showed on a date.
 
@@ -63,7 +69,7 @@ Kenya's health expenditure per capita in international dollars, 2000 to 2023. Wo
 ```ts
 import { Client } from "@developmentfinance/client";
 
-const client = new Client({ onWarning: () => {} });
+const client = new Client();
 const answer = await client.search("health spending and education spending in Kenya");
 console.log(String(answer));
 
@@ -84,7 +90,7 @@ console.log(facts.operations.map((item) => item.phrase));
 console.log(facts.warnings.map((item) => item.message));
 ```
 
-`assumptions` lists what Search assumed to read the part, and is undefined when the part holds no list. `departures` lists how the reading differs from the question, `operations` the computations the question asked for that Search does not run, and `warnings` the part's own. A candidates part also has `readingAssumptions`, a map from each reading's `spec_id` to its assumptions. An item that lacks a required member is dropped. `partFacts(part)` reads a single part and gives the same result.
+`assumptions` lists what Search assumed to read the part, and is undefined when the part holds no list. `departures` lists how the reading differs from the question, `operations` the computations the question asked for that Search does not run, and `warnings` the part's own. A candidates part also has `readingAssumptions`, a map from each reading's `spec_id` to its assumptions. An item that lacks a required member is dropped. `partFacts(part)` reads a single part and gives the same result. A part in `answer.parts` types only the members the client checks, its `status` and the reading or refusal it names, and every other member as `unknown`. The schema types are in `@developmentfinance/client/wire`.
 
 ## Narrow a fetch
 
@@ -92,19 +98,18 @@ console.log(facts.warnings.map((item) => item.message));
 
 ```text
 { destination: [ 'country/NGA' ], origin: [ 'country/DEU' ] }
-Germany's gross ODA disbursements to Nigeria for basic health care, 2015 to 2020. Current US dollars · OECD Creditor Reporting System (CRS).
-4
-Germany's gross ODA disbursements to Ghana for basic health care, 2003 to 2023. Current US dollars · OECD Creditor Reporting System (CRS).
-5
+Germany's gross disbursements to Nigeria for official development assistance, 2015 to 2020. Current US dollars · OECD DAC2a.
+6
+Germany's gross disbursements to Ghana for official development assistance, 1960 to 2024. Current US dollars · OECD DAC2a.
+65
 ```
 
 ```ts
-import { Client, specRoles } from "@developmentfinance/client";
+import { Client } from "@developmentfinance/client";
+import { specRoles } from "@developmentfinance/client/types";
 
-const client = new Client({ onWarning: () => {} });
-const answer = await client.search(
-  "ODA disbursements from Germany to Nigeria for basic health care",
-);
+const client = new Client();
+const answer = await client.search("ODA from Germany to Nigeria");
 const [spec] = answer.specs;
 if (spec === undefined) throw new Error(`Search found nothing to fetch:\n${answer}`);
 console.log(specRoles(spec));
@@ -118,7 +123,7 @@ console.log(ghana.rowCount);
 ```
 
 - `window` is `"all"`, `"latest"`, or `[startYear, endYear]`, with years from 1000 to 2200. One year is `[2020, 2020]`.
-- `entities` rebinds a role by its key: `place` for the place a measure is about, `origin` and `destination` for a flow, as here. A GDP reading narrows to two countries with `{ entities: { place: ["country/NGA", "country/GHA"] } }`, which the client posts as the API's role `observationAbout`; typing `observationAbout` itself is refused. `specRoles(spec)` lists the keys, each with the dcids it binds, or `null` for a flow direction it binds none of. A role you leave out keeps its places, and `null` unbinds one. A key the spec does not take, such as the column name `financingRecipient`, raises `InvalidRequestError` with `invalid_argument` and the spec's roles, before any request.
+- `entities` rebinds a role by its key: `place` for the place a measure is about, `origin` and `destination` for a flow, as here. A GDP reading narrows to two countries with `{ entities: { place: ["country/NGA", "country/GHA"] } }`, which the client posts as the API's role `observationAbout`; typing `observationAbout` itself is refused. `specRoles(spec)` lists the keys, each with the dcids it binds, or `null` for a flow direction it binds none of. A role also takes what `client.lookup.resolve` returns, a resolved `Match` or an `Entity` such as one of a match's `candidates`, and posts its dcid with no request of its own. A match that did not resolve raises `InvalidRequestError` (`invalid_argument`). A role you leave out keeps its places, and `null` unbinds one. A key the spec does not take, such as the column name `financingRecipient`, raises `InvalidRequestError` with `invalid_argument` and the spec's roles, before any request.
 - `facets` binds an axis, such as `{ provenance: "provenance/OECDCreditorReportingSystem" }`.
 - `partyTotals: true` keeps the rows of totals such as "DAC countries" beside their members. They are left out by default, so a sum over `value` counts each flow once.
 
@@ -131,25 +136,33 @@ A narrowing that holds no data returns an empty `Dataset` under Search's no-data
 Party totals change the sum. For Ethiopia in 2022, 95 providers report, and the party totals add 15 rows to make 110:
 
 ```text
+Gross disbursements to Ethiopia from 95 providers for official development assistance in 2022. Current US dollars · OECD DAC2a.
+  Note: No provider was named, so the answer covers every provider with data.
+  Fetch: answer.fetch()
 95 110
 ```
 
 ```ts
 import { Client } from "@developmentfinance/client";
 
-const client = new Client({ onWarning: () => {} });
-const answer = await client.search("top 5 donors to Ethiopia in 2022");
+const client = new Client();
+const answer = await client.search("ODA to Ethiopia in 2022 by donor");
+console.log(String(answer));
 
-const members = await answer.fetch();
-const withTotals = await answer.fetch({ partyTotals: true });
+const [spec] = answer.specs;
+if (spec === undefined) throw new Error(`Search found nothing to fetch:\n${answer}`);
+const members = await client.fetch(spec);
+const withTotals = await client.fetch(spec, { partyTotals: true });
 console.log(members.rowCount, withTotals.rowCount);
 ```
 
-`data.partyTotalsLeftOut` names the totals a fetch left out. It holds one `PartyTotalsLeftOut` per member, party role and provenance that lost rows, with the role's column name, such as `financingProvider`, and the dcids of the totals, such as `DACCountriesTotal`. `String(data)` counts them on its `Party totals left out` line, and `data.bytes()` keeps them. The array is empty after `partyTotals: true` and when the cut found no totals to drop.
+The answer's note says no donor was named, so it covers every donor, which is the reading wanted here. `answer.fetch({ partyTotals: true })` returns the same table and repeats that note as a `SearchWarning` with the code `role_scope_defaulted`. `client.fetch(spec)` fetches the reading you have already read, and issues no `SearchWarning`.
+
+`data.partyTotalsLeftOut` names the totals a fetch left out. It holds one `PartyTotalsLeftOut` per member, party role and provenance that lost rows, with the role's column name, such as `financingProvider`, and the dcids of the totals, such as `DACCountriesTotal`. `String(data)` counts them on its `Party totals left out` line, and `data.toBytes()` keeps them. The array is empty after `partyTotals: true` and when the cut found no totals to drop.
 
 ## Stop a call
 
-Every call that goes to the server takes a `signal` and a `timeout` in milliseconds. For `search` and `fetch` the `timeout` bounds the whole call, and `search` stops after 60 seconds by default. For a lookup or `client.request` it bounds one attempt, which is retried up to `maxRetries` times. `fetch` waits as long as the build takes, showing progress to `onProgress`, unless you give it a `timeout`.
+Every call that goes to the server takes a `signal` and a `timeout` in milliseconds. The `timeout` bounds the whole call, retries and downloads included, and replaces the client's `timeout` option for that call. With neither set, `search` stops after 60 seconds and `fetch` waits as long as the build takes, showing progress to `onProgress`. The client's `attemptTimeout` bounds each request attempt, which is retried up to `maxRetries` times. [Settings](docs/settings.md) lists every limit and its default.
 
 ```text
 TimeoutError
@@ -157,7 +170,8 @@ DfoTimeoutError deadline_exceeded
 ```
 
 ```ts
-import { Client, DfoTimeoutError } from "@developmentfinance/client";
+import { Client } from "@developmentfinance/client";
+import { DfoTimeoutError } from "@developmentfinance/client/errors";
 
 const client = new Client();
 
@@ -201,15 +215,17 @@ A large build reports progress while it runs. A version the server has built bef
 ```ts
 import { Client } from "@developmentfinance/client";
 
-const client = new Client({ onWarning: () => {} });
-const answer = await client.search(
-  "CRS commitments from every donor to every recipient for agriculture, 2011 to 2019",
-);
-const data = await answer.fetch({
+const client = new Client();
+const answer = await client.search("CRS commitments for agriculture, 2011 to 2019");
+const [spec] = answer.specs;
+if (spec === undefined) throw new Error(`Search found nothing to fetch:\n${answer}`);
+const data = await client.fetch(spec, {
   onProgress: ({ progress }) => console.log(JSON.stringify(progress)),
 });
 console.log(data.rowCount);
 ```
+
+Search notes that the question named no donor and no recipient, so the answer covers every one with data, which is the reading wanted here. `answer.fetch()` repeats those notes as a `SearchWarning`, and `client.fetch(spec)` fetches the reading without it. Both report progress the same way.
 
 ## Keep a dataset and refresh it
 
@@ -313,15 +329,16 @@ console.log(catalogue.examples[0]);
 
 ## Errors
 
-A refusal, a failed connection, a passed deadline, or a response the client cannot read raises a `DfoError`. Its message ends with the code, and with the trace id when there is one, `[code · trace id]`. Quote both when you report a fault:
+A refusal, a failed connection, a passed deadline, or a response the client cannot read raises a `DfoError`. Its message ends with the code, and with the trace id when there is one, `[code trace=id]`. Quote both when you report a fault:
 
 ```text
 NotFoundError code_not_found
-No registry entry exists for code 'no_such_code'. [code_not_found · trace a44dc8b1e0624e1aab2e7e3b9739492a]
+No registry entry exists for code 'no_such_code'. [code_not_found trace=a44dc8b1e0624e1aab2e7e3b9739492a]
 ```
 
 ```ts
-import { Client, NotFoundError } from "@developmentfinance/client";
+import { Client } from "@developmentfinance/client";
+import { NotFoundError } from "@developmentfinance/client/errors";
 
 const client = new Client();
 try {
@@ -333,7 +350,7 @@ try {
 }
 ```
 
-Branch on the class, or on `error.code` for one case. Each error also carries `status`, `detail`, `traceId`, `retryable` and `retryAfterMs`. `isDfoError(error)` recognises one from any copy of the package.
+Branch on the class, or on `error.code` for one case. The bracket's text may change between releases, so read `error.code` and `error.traceId` in code. Each error also carries `status`, `detail`, `traceId`, `retryable` and `retryAfterMs`. `isDfoError(error)` recognises one from any copy of the package.
 
 | Class                     | Raised when                                                                                                     |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------- |
@@ -353,19 +370,21 @@ Branch on the class, or on `error.code` for one case. Each error also carries `s
 
 `client.lookup.code(code)` explains a code the server sends. The client raises these itself: `answer_declined`, `answer_incomplete`, `base_url_invalid`, `choice_invalid`, `contract_violation`, `credentials_file_invalid`, `credentials_file_unreadable`, `deadline_exceeded`, `digest_mismatch`, `download_failed`, `header_invalid`, `insecure_transport`, `invalid_argument`, `key_empty`, `key_invalid`, `network_error`, `offline`, `profile_not_found`, `profile_without_key`, `refusal_without_code`, `response_too_large`, `unexpected_response`, and `version_unavailable`.
 
-Some faults raise other errors. An aborted call rejects with its signal's `reason`. A `strict` fetch throws its first `SearchWarning`, `DataWarning`, or `SeriesLeftOutWarning` in place of passing it to `onWarning`. `SeriesLeftOutWarning` (`series_left_out`) says an operation dropped series for missing data, which `data.leftOut` lists. `DatasetRef.fromJSON` and `Answer.fromJSON` throw a `FormatError` for JSON in the wrong format, and in a browser `new Client()` throws a `TypeError` for a secret key from `apiKey`, as the first request does for one in `headers` or from `headerProvider`.
+Some faults raise other errors. An aborted call rejects with its signal's `reason`. A `strict` fetch throws its first `SearchWarning`, `DataWarning`, or `SeriesLeftOutWarning` in place of passing it to `onWarning`. `SeriesLeftOutWarning` (`series_left_out`) says an operation dropped series for missing data, which `data.leftOut` lists.
+
+`DatasetRef.fromJSON` and `Answer.fromJSON` throw a `FormatError` for JSON in the wrong format. `FormatError` is a `DfoError` whose `code` is null, since no contract code describes a stored file. Its `reason` and `pointer` name the fault. In a browser, `new Client()` throws an `InvalidRequestError` (`invalid_argument`) for a secret key from `apiKey`, as the first request does for one in `headers` or from `headerProvider`.
 
 ## Use it in a web app
 
 Run the client on your server and keep the key there. [Use it in a web app](docs/web-apps.md) builds a route that answers a question from a page, streams build progress as NDJSON, stops under the platform's time limit, and joins the build when the page posts again.
 
-A page on an origin the API's CORS lists can call the API itself with a publishable `dfo_p_` key. A page on any other origin calls your server route, or a proxy of the API on its own origin with `new Client({ baseUrl: "/api/v1" })`. In a browser page or worker the client refuses a secret `dfo_k_` key, which every visitor could read, with a `TypeError`.
+A page on an origin the API's CORS lists can call the API itself with a publishable `dfo_p_` key. A page on any other origin calls your server route, or a proxy of the API on its own origin with `new Client({ baseUrl: "/api/v1" })`. In a browser page or worker the client refuses a secret `dfo_k_` key, which every visitor could read, with an `InvalidRequestError` (`invalid_argument`).
 
 ## Keys and base URL
 
-`new Client()` reads the base URL from the `baseUrl` option, then `DFO_BASE_URL`, and defaults to `https://developmentfinance.org/api/v1`. In a page, a relative `baseUrl` such as `/api/v1` resolves against the page. It takes the first key it finds: the `apiKey` option, the `DFO_API_KEY` environment variable, then the credentials file that the Python client's `dfo auth login` writes, read on Node only. The file is the one `DFO_CREDENTIALS_FILE` names. When that is unset, it is `$XDG_CONFIG_HOME/dfo/credentials.toml` or `~/.config/dfo/credentials.toml`, and on Windows `%APPDATA%\dfo\credentials.toml`. `DFO_PROFILE` picks a profile in it, `default` when unset.
+`new Client()` takes the first key it finds: the `apiKey` option, the `DFO_API_KEY` environment variable, then the credentials file that the Python client's `dfo auth login` writes, read on Node only. It reads the base URL from the `baseUrl` option, then `DFO_BASE_URL`, and defaults to `https://developmentfinance.org/api/v1`. [Settings](docs/settings.md) lists every option and environment variable, with its default and which wins.
 
-Warnings go to `onWarning`, which by default passes each `SearchWarning` and `DataWarning` to `process.emitWarning`, or to `console.warn` where the platform has no `process.emitWarning`. The examples here pass `onWarning: () => {}` to keep their output short, which also hides the notes on how the data differs from the question.
+Warnings go to `onWarning`, which by default passes each one to `process.emitWarning`, or to `console.warn` where the platform has no `process.emitWarning`. A `SearchWarning` says how the data differs from the question, a `DataWarning` that the data falls short of what was asked, such as an empty result, and a `SeriesLeftOutWarning` that an operation dropped series. The examples on this page issue none. `strict: true` on a fetch throws the first warning instead, and an `onWarning` of your own sends each one to your logs.
 
 ```ts
 import { Client } from "@developmentfinance/client";
@@ -379,6 +398,6 @@ console.log(String(client));
 
 Every request to the API carries `X-DFO-Client`, which names the client and its runtime, such as `dfo-ts/0.1.0 (Node 22.18)` or `dfo-ts/0.1.0 (browser)`, and `dfo-ts/0.1.0 (other)` in a runtime that is no browser and reports no Node, Deno or Bun version, such as Cloudflare Workers without the `nodejs_compat` flag. With that flag, Workers report Node. A browser's dataset download is the one exception. It is a request to the API's files route, which the browser redirects to the storage host, and it carries the key alone. A request straight to a signed storage URL carries none of the client's headers. A header named `X-DFO-Client` in `headers` or from `headerProvider`, in any letter case, raises `InvalidRequestError` with `header_invalid`.
 
-The constructor also takes `fetch`, `timeout` (one request attempt, 30 seconds by default), `maxRetries` (2 by default), `headerProvider`, `onWarning` and `dangerouslyAllowBrowser`. A key travels only over https, or plain http to a loopback host. `client.withOptions({ timeout, maxRetries })` returns a copy with other limits, and `client.request(method, path, options)` reaches a route the client does not wrap, with the client's key and retries.
+The constructor also takes `fetch`, `timeout` (the default bound on a whole call), `attemptTimeout` (one request attempt, 30 seconds by default), `maxRetries` (2 by default), `headerProvider`, `onWarning` and `dangerouslyAllowBrowser`. A key travels only over https, or plain http to a loopback host. `client.withOptions({ timeout, attemptTimeout, maxRetries })` returns a copy with other limits, and `client.request(method, path, options)` reaches a route the client does not wrap, with the client's key and retries.
 
 MIT licence, see [LICENSE](LICENSE).

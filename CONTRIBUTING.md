@@ -23,7 +23,7 @@ Both packages group their modules into the same seven layers. A module imports a
 | core             | `dfo/_core/`      | `src/core/`      | errors and warnings, refusal mapping, the public data classes, wire parsing and the DatasetRef format   |
 | generated        | `dfo/_generated/` | `src/generated/` | literals and types the generators write from the contract                                               |
 
-The public names sit above every layer. In Python they are `dfo/__init__.py` and the task modules beside it, `dfo/errors.py`, `dfo/types.py`, `dfo/lookup.py` and `dfo/auth.py`. Each layer's `__init__.py` holds only a docstring. In TypeScript they are the entry points at the `src/` root (`index.ts`, `index.node.ts`, `wire.ts` and `arrow.ts`), which re-export from the layers. `_version.py` and `src/version.ts` hold the version constant and sit below every layer. The sync twin of each Python async module, under `dfo/_sync/`, sits in the layer of its source.
+The public names sit above every layer. In Python they are `dfo/__init__.py` and the task modules beside it, `dfo/errors.py`, `dfo/types.py`, `dfo/lookup.py` and `dfo/auth.py`. Each layer's `__init__.py` holds only a docstring. In TypeScript they are the entry points at the `src/` root (`index.ts`, `index.node.ts`, `types.ts`, `errors.ts`, `wire.ts` and `arrow.ts`), which re-export from the layers. `_version.py` and `src/version.ts` hold the version constant and sit below every layer. The sync twin of each Python async module, under `dfo/_sync/`, sits in the layer of its source.
 
 Two checks enforce the rule, and each fails on a runtime import from a higher layer:
 
@@ -131,7 +131,15 @@ The async modules are the source of both clients, and `scripts/gen_sync.py` deri
 
 ## Docs examples
 
-`scripts/check_docs_examples.py` runs every `python` block in `README.md`, `python/README.md`, and `python/docs/*.md`, and every `ts` or `typescript` block in `typescript/README.md` and `typescript/docs/*.md`, against the API `DFO_BASE_URL` names. It needs the network and spends Search calls, so CI leaves it out. Run it against dev after a docs change. The dev API is private, so start a local proxy that signs each request as your gcloud account, which needs `run.routes.invoke` on the service:
+`scripts/check_docs_examples.py` runs every `python` block in `README.md`, `python/README.md`, and `python/docs/*.md`, and every `ts` or `typescript` block in `typescript/README.md` and `typescript/docs/*.md`, against the API `DFO_BASE_URL` names. It needs the network and spends Search calls, so pull requests do not run it. `.github/workflows/docs-examples.yml` runs it every night, and on demand from the Actions tab, against the dev API through the dev website's `/api/v1` proxy, one job per language, and attaches the Markdown report to the run. Run it yourself against dev after a docs change. The website proxy needs no credentials:
+
+```bash
+cd python
+DFO_BASE_URL=https://dfo-dev-website-staging-zms5lj4zhq-nn.a.run.app/api/v1 \
+  uv run python ../scripts/check_docs_examples.py --report docs-check.md
+```
+
+To reach the dev API directly, which is private, start a local proxy that signs each request as your gcloud account, which needs `run.routes.invoke` on the service:
 
 ```bash
 gcloud run services proxy dfo-dev-apis --region northamerica-northeast1 --project dev-fin-observatory --port 8083
@@ -145,7 +153,7 @@ DFO_BASE_URL=http://localhost:8083/api \
   uv run python ../scripts/check_docs_examples.py --report docs-check.md
 ```
 
-It prints a line per block, with `file:line`, `pass`, `fail` or `skip`, and the error or the reason, then the counts. A failure names the docs line the error came from. The script exits 1 when a block fails, a process fails after its last block, or none ran. Name files, such as `python/docs/errors.md`, to check only those; a name that matches no file stops the script with exit 2, and pass `--language python` or `--language typescript` to check one client. `--list` prints each block and how it will run, offline. `--timeout` bounds each Python file and each TypeScript program, 1,800 seconds by default. `python/tests/test_check_docs_examples.py` tests the parsing and planning offline.
+It prints a line per block, with `file:line`, `pass`, `fail` or `skip`, and the error or the reason, then the counts. A failure names the docs line the error came from. A Python block that passes but shows a warning prints the warning with the docs line that caused it, and the report lists each such block under Warnings, so a recipe that warns shows up without failing the run. Read each one. A warning a reader would learn to ignore means the example should change, either to a question Search answers as asked or to `dfo.fetch(spec)` after the answer is read. The script exits 1 when a block fails, a process fails after its last block, or none ran. Name files, such as `python/docs/errors.md`, to check only those. A name that matches no file stops the script with exit 2, and pass `--language python` or `--language typescript` to check one client. `--list` prints each block and how it will run, offline. `--timeout` bounds each Python file and each TypeScript program, 1,800 seconds by default. `python/tests/test_check_docs_examples.py` tests the parsing and planning offline.
 
 The Python blocks of a file run in order in one process and one namespace, as a notebook runs them, so a block can use the names an earlier block set. The TypeScript blocks of a file form programs. A block that holds an `import` statement starts a program, and each block after it without one continues it. The script joins a program's blocks into one module, so a later block sees what the earlier ones declared. Imports of `@developmentfinance/client` load the TypeScript source, so no build is needed, but Node 22.18 or later and `pnpm --dir typescript install` are.
 

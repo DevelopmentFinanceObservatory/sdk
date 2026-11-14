@@ -6,11 +6,10 @@
  * from the server's answer and computes none.
  */
 
-import { clientError } from "./errors.ts";
+import { clientError, DfoError } from "./errors.ts";
 import { isRecord, parseJson } from "./json.ts";
 import { inline } from "./text.ts";
 import { SELECTOR_QUERY_KEYS } from "../generated/file-selector.ts";
-import type { ResolvedSpec } from "../wire.ts";
 
 /** The layouts a dataset comes in: the labelled long table, or the pipeline frame. */
 export type Layout = "long" | "frame";
@@ -29,11 +28,13 @@ export type Rendering = {
 /** One reading of a question, the unit the server builds a dataset from: an answer's spec, a
  *  ref member's, or one read back from JSON. The definition stays as the server sent it, because
  *  the server needs its `identity` back unmodified. `resolved` is Search's reading of the spec,
- *  which gives its sentence and entity groups; a spec from a ref or written by hand has none. */
+ *  which gives its sentence and entity groups. A spec from a ref or written by hand has none.
+ *  The client does not check the members of `resolved`, so they are `unknown`. The wire schema
+ *  is `ResolvedSpec`. */
 export type Spec = {
   readonly spec_id: string;
   readonly definition: Readonly<Record<string, unknown>>;
-  readonly resolved?: ResolvedSpec | null | undefined;
+  readonly resolved?: Readonly<Record<string, unknown>> | null | undefined;
 };
 
 /** One member of a ref: the exact version of one reading. */
@@ -180,14 +181,15 @@ export type DatasetRefJson =
 export type FormatErrorReason =
   "format_invalid" | "definition_spec_id_mismatch" | "repeated_spec_id";
 
-/** Stored JSON for a `DatasetRef` does not match the format. */
-export class FormatError extends TypeError {
+/** Stored JSON for a `DatasetRef` or an `Answer` does not match the format. Its `code` is null,
+ *  since no contract code describes a stored file. `reason` tells the faults apart. */
+export class FormatError extends DfoError {
   readonly reason: FormatErrorReason;
   /** A JSON Pointer to the offending value. */
   readonly pointer: string;
 
   constructor(reason: FormatErrorReason, pointer: string, detail: string) {
-    super(`${pointer || "/"}: ${detail}`);
+    super({ code: null, detail, message: `${pointer || "/"}: ${detail}` });
     this.reason = reason;
     this.pointer = pointer;
   }
@@ -368,10 +370,13 @@ function sameOutput(a: RefMember | DerivedRefMember, b: RefMember | DerivedRefMe
 export class DatasetRef {
   readonly members: readonly (RefMember | DerivedRefMember)[];
 
-  /** @throws {TypeError} The members mix dataset members and derived members. */
+  /** @throws {InvalidRequestError} The members mix dataset members and derived members
+   *  (`invalid_argument`). */
   constructor(members: readonly (RefMember | DerivedRefMember)[]) {
     if (new Set(members.map(isDerived)).size > 1) {
-      throw new TypeError("A DatasetRef holds dataset members or derived members, not both.");
+      throw clientError("invalid_argument", {
+        detail: "A DatasetRef holds dataset members or derived members, not both.",
+      });
     }
     this.members = Object.freeze([...members]);
   }

@@ -1,14 +1,18 @@
 """Tests for the error tree, the error map and codes, and the warning helpers."""
 
 import ast
+import builtins
 import json
 import pickle
 import warnings
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 import dfo
+from dfo._config.credentials import render_credentials
+from dfo._config.keys import ApiKey
 from dfo._core import codes as _codes
 from dfo._core import errors as _errors
 from dfo._core.errors import (
@@ -33,6 +37,7 @@ from dfo._core.errors import (
     warn,
     warn_once,
 )
+from dfo._core.raw_response import RawResponse
 from dfo._core.refusals import error_class, problem_error
 from dfo._generated.error_map import (
     ACTIONS,
@@ -130,6 +135,71 @@ def test_an_error_pickles_with_its_fields() -> None:
         NotFoundError,
         "spec_not_found",
         404,
+    )
+
+
+# Each call that raised a builtin in 0.1.0, with the `DfoError` class it raises,
+# the builtin that class subclasses, and its code.
+_ONCE_BUILTIN = {
+    "ref-member-kind": (
+        lambda: dfo.DatasetRef((object(),)),  # ty: ignore[invalid-argument-type]
+        InvalidRequestError,
+        TypeError,
+        "invalid_argument",
+    ),
+    "bundle-limit": (
+        lambda: dfo.types.BundleLimits(max_zip_entries=0),
+        InvalidRequestError,
+        ValueError,
+        "invalid_argument",
+    ),
+    "empty-key": (lambda: ApiKey(""), AuthenticationError, ValueError, "key_empty"),
+    "key-not-a-string": (
+        lambda: ApiKey(1),  # ty: ignore[invalid-argument-type]
+        AuthenticationError,
+        TypeError,
+        "key_invalid",
+    ),
+    "profile-name": (
+        lambda: render_credentials({"a b": {}}),
+        InvalidRequestError,
+        ValueError,
+        "invalid_argument",
+    ),
+    "stored-key": (
+        lambda: render_credentials({"default": {"key": 'a"b'}}),
+        AuthenticationError,
+        ValueError,
+        "key_invalid",
+    ),
+    "raw-json": (
+        lambda: RawResponse(200, {}, b"not json").json(),
+        ContractError,
+        ValueError,
+        "unexpected_response",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("call", "cls", "builtin", "code"),
+    _ONCE_BUILTIN.values(),
+    ids=_ONCE_BUILTIN.keys(),
+)
+def test_a_call_that_raised_a_builtin_still_raises_one(
+    call: Callable[[], object], cls: type[DfoError], builtin: type, code: str
+) -> None:
+    with pytest.raises(cls) as caught:
+        call()
+    assert isinstance(caught.value, builtin)
+    assert caught.value.code == code
+    # It shows, and pickles as, the class a caller imports.
+    assert repr(caught.value).startswith(f"{cls.__name__}(")
+    copy = pickle.loads(pickle.dumps(caught.value))
+    assert (type(copy), copy.code, str(copy)) == (
+        type(caught.value),
+        code,
+        str(caught.value),
     )
 
 
@@ -260,6 +330,67 @@ def test_the_package_builds_errors() -> None:
     assert len(_raises()) > 50
 
 
+# The builtin raises the package keeps, by file and enclosing function. Each is an
+# internal check whose caller raises a `DfoError` in its place, a check of a
+# value the client built itself, or a refusal the Python data model defines as a
+# `TypeError`.
+_BUILTIN_RAISES = {
+    # `main` prints it and exits 1.
+    ("_client/cli.py", "_cache_clear"),
+    # Callers raise `FormatError` or `ContractError` in its place.
+    ("_core/json_text.py", "_no_constant"),
+    ("_core/json_text.py", "loads"),
+    # `cache_path` raises `InvalidRequestError` in its place.
+    ("_config/paths.py", "cache_root"),
+    # The cache skips an id that is not a server id; a download checks its digest
+    # before it is stored.
+    ("_datasets/cache.py", "file_entry"),
+    ("_datasets/cache.py", "manifest_entry"),
+    ("_datasets/cache.py", "put_bytes"),
+    # Members and row counts the client assembled itself.
+    ("_datasets/dataset.py", "__post_init__"),
+    ("_datasets/dataset.py", "build_dataset"),
+    # Iteration, indexing and pickling refuse with the data model's TypeError.
+    ("_datasets/dataset.py", "__iter__"),
+    ("_datasets/dataset.py", "__getitem__"),
+    ("_config/keys.py", "__reduce__"),
+}
+
+
+def _builtin_raises() -> set[tuple[str, str]]:
+    """Each file and function outside `dfo._sync` that raises a builtin
+    `ValueError` or `TypeError`, or a builtin subclass of one."""
+    builtin = {
+        name
+        for name, value in vars(builtins).items()
+        if isinstance(value, type) and issubclass(value, ValueError | TypeError)
+    }
+    found = set()
+    for path in sorted(_SOURCE.rglob("*.py")):
+        name = path.relative_to(_SOURCE).as_posix()
+        if name.startswith("_sync/"):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for function in ast.walk(tree):
+            if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            for node in ast.walk(function):
+                if (
+                    isinstance(node, ast.Raise)
+                    and isinstance(node.exc, ast.Call)
+                    and isinstance(node.exc.func, ast.Name)
+                    and node.exc.func.id in builtin
+                ):
+                    found.add((name, function.name))
+    return found
+
+
+def test_a_public_call_raises_no_builtin_value_or_type_error() -> None:
+    """Every fault in a caller's input or file raises a `DfoError`, so `except
+    DfoError` catches it; only the raises listed above are builtin."""
+    assert _builtin_raises() == _BUILTIN_RAISES
+
+
 def test_every_client_raise_names_a_contract_code() -> None:
     """A raise takes its code and class from one row of `client-codes.json`.
 
@@ -326,14 +457,14 @@ def test_a_refusal_prints_its_code_and_trace_id(action: str) -> None:
     body = {"code": code, "detail": "Refused.", "trace_id": "4f2a91c0"}
     error = problem_error(400, body, reason="Bad Request", origin=ORIGIN)
     assert type(error) is ACTION_CLASSES[action]
-    assert str(error) == f"Refused. [{code} · trace 4f2a91c0]"
+    assert str(error) == f"Refused. [{code} trace=4f2a91c0]"
 
 
 @pytest.mark.parametrize(
     ("message", "fields", "shown"),
     [
         ("Gone.", {}, "Gone."),
-        ("Gone.", {"trace_id": "t1"}, "Gone. [trace t1]"),
+        ("Gone.", {"trace_id": "t1"}, "Gone. [trace=t1]"),
         ("Gone.\n  Try again.", {"code": "x_gone"}, "Gone.\n  Try again.\n[x_gone]"),
     ],
     ids=["neither", "trace-only", "several-lines"],

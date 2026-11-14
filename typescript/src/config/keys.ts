@@ -238,7 +238,8 @@ export const inBrowser = (): boolean => {
  * `Bearer dfo_k_…`, `Bearer "dfo_k_…"` and `DFO_K_…` are caught too. A well-formed publishable
  * key holds no `_` after its prefix, so it never holds the secret one.
  *
- * @throws {TypeError} It carries a secret key in a browser without `dangerouslyAllowBrowser`.
+ * @throws {InvalidRequestError} It carries a secret key in a browser without
+ *   `dangerouslyAllowBrowser` (`invalid_argument`).
  */
 export function refuseSecretInBrowser(
   credential: string | undefined,
@@ -246,9 +247,10 @@ export function refuseSecretInBrowser(
 ): void {
   if (credential === undefined || dangerouslyAllowBrowser || !inBrowser()) return;
   if (credential.toLowerCase().includes(SECRET_PREFIX)) {
-    throw new TypeError(
-      "A secret dfo_k_ key in a browser page or worker is readable by every visitor. Call the " +
+    throw clientError("invalid_argument", {
+      detail:
+        "A secret dfo_k_ key in a browser page or worker is readable by every visitor. Call the " +
         "API from a server, or pass dangerouslyAllowBrowser: true to send it anyway.",
-    );
+    });
   }
 }

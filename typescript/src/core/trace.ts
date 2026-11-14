@@ -23,7 +23,10 @@ export const traceIdFrom = (value: unknown, key?: string): string | null =>
     : null;
 
 /** The client codes of errors that describe a response the client read. */
-const RESPONSE_CODES = new Set(["unexpected_response", "contract_violation"]);
+const RESPONSE_CODES: ReadonlySet<string | null> = new Set([
+  "unexpected_response",
+  "contract_violation",
+]);
 
 /** A response's trace id: its body's `trace_id` when the body is an object holding one, else
  *  its `x-dfo-trace-id` header, else null. A value that is not an HTTP token, or that holds

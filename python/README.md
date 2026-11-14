@@ -133,8 +133,13 @@ A table of flows leaves out the rows for groups and totals, such as "DAC countri
 
 ```python
 answer = dfo.search("ODA to Ethiopia in 2022 by donor")
-by_donor = answer.fetch()
-with_totals = answer.fetch(party_totals=True)
+print(
+    answer
+)  # Note: No provider was named, so the answer covers every provider with data.
+
+spec = answer.specs[0]
+by_donor = dfo.fetch(spec)
+with_totals = dfo.fetch(spec, party_totals=True)
 
 print(len(by_donor), len(with_totals))  # 95 110
 print(with_totals.to_pandas()["financingProvider_kind"].value_counts())
@@ -149,7 +154,7 @@ whole total     2
 Name: count, dtype: int64
 ```
 
-`financingProvider_kind` tells the rows apart: `official` and `private` for one donor, `total` for a group, and `whole total` for the source's figure across every donor. Both fetches issue a `SearchWarning` that no donor was named, which is the reading wanted here. `dfo.fetch(spec, party_totals=True)` does the same for a spec.
+`financingProvider_kind` tells the rows apart: `official` and `private` for one donor, `total` for a group, and `whole total` for the source's figure across every donor. The answer's note says no donor was named, so it covers every donor, which is the reading wanted here. `answer.fetch(party_totals=True)` returns the same table and repeats that note as a `SearchWarning`. `dfo.fetch(spec)` fetches the reading you have already read, and issues no `SearchWarning`.
 
 ## Save the data and load it later
 
@@ -198,7 +203,7 @@ Answer JSON that comes back from a browser can carry any reading, and its build 
 
 ## Look up a place code
 
-`dfo.lookup.resolve` turns names into the codes `entities` takes. It returns one `Match` per name, which prints what the name resolved to. A name that matches several places lists them, and a misspelt name names the nearest:
+`dfo.lookup.resolve` turns names into the codes `entities` takes, and `entities` takes its matches too, as in `entities={"destination": dfo.lookup.resolve("Nigeria")}`. A match that did not resolve raises `InvalidRequestError` before any request. It returns one `Match` per name, which prints what the name resolved to. A name that matches several places lists them, and a misspelt name names the nearest:
 
 ```python
 for match in dfo.lookup.resolve("Nigeria", "Congo", "Germny"):
@@ -218,16 +223,16 @@ Germny -> not found; nearest: Germany  country/DEU
 `dfo.search` and `dfo.fetch` use a default client that reads `DFO_BASE_URL` and your stored key. `dfo.Client` carries the same calls with its own settings, and closes its connections on exit:
 
 ```python
-with dfo.Client(timeout=60.0, max_retries=3) as client:
+with dfo.Client(timeout=300.0, max_retries=3) as client:
     data = client.search("Kenya's external debt service").fetch()
     print(len(data))
 ```
 
-`Client` takes `api_key`, `base_url`, `timeout` (one request attempt, 30 seconds by default), `max_retries` (0 to 10, default 2), `cache_dir`, `cache`, `headers`, and `header_provider`. `dfo.configure(...)` takes the same options and replaces the default client. `dfo.AsyncClient` has the same methods as coroutines. `client.lookup` holds the lookups. `client.with_options(timeout=..., max_retries=...)` returns a copy with other limits that shares the client's connections and cache.
+`Client` takes `api_key`, `base_url`, `timeout` (the bound on each whole call that passes none of its own), `attempt_timeout` (one request attempt, 30 seconds by default), `max_retries` (0 to 10, default 2), `cache_dir`, `cache`, `headers`, and `header_provider`. `dfo.configure(...)` takes the same options and replaces the default client. `dfo.AsyncClient` has the same methods as coroutines. `client.lookup` holds the lookups. `client.with_options(timeout=..., attempt_timeout=..., max_retries=...)` returns a copy with other limits that shares the client's connections and cache. [Settings](docs/settings.md) lists every option and environment variable, with its default and which source wins.
 
 Run `dfo auth login` to store a key, and `dfo auth status` to see which key the client sends. [Keys and credentials](docs/keys.md) covers the lookup order.
 
-Every error derives from `dfo.errors.DfoError`, carries a `code`, and ends its message with `[code]`, or `[code · trace id]` when a response carried one. A refusal names the fix, such as the call that settles an incomplete answer. [Errors](docs/errors.md) lists every class by what you do next. The types answers and datasets contain live in `dfo.types`.
+Every error derives from `dfo.errors.DfoError` and carries a `code`, None for `FormatError` and `BundleError`, which carry a `reason`. The message ends with `[code]`, or `[code trace=id]` when a response carried one. The bracket text can change between releases. `error.code` and `error.trace_id` are the stable fields. A refusal names the fix, such as the call that settles an incomplete answer. [Errors](docs/errors.md) lists every class by what you do next. The types answers and datasets contain live in `dfo.types`.
 
 ## Limits the client enforces
 
@@ -242,7 +247,7 @@ The Python and TypeScript clients both apply these limits. The constant names ar
 | Body size           | Decoded bytes are counted while the body streams, and the read stops at the limit with `response_too_large`. A file's limit is its manifest's `bytes`, else 2 GiB (`DOWNLOAD_MAX_BYTES`). A JSON body's limit is 16 MiB (`JSON_BODY_MAX_BYTES`) |
 | Keys                | Visible ASCII only, 0x21 to 0x7E. The key-format check (prefix, base62, checksum) only warns                                                                                                                                                    |
 | Header values       | Visible ASCII, space, and tab. A control character, DEL, or a non-ASCII character raises `header_invalid`                                                                                                                                       |
-| `timeout`           | A finite number above 0. A call's own `timeout` bounds the whole call (60 seconds for `search`, and no limit for `fetch` unless you pass one)                                                                                                   |
+| `timeout`           | None or a finite number above 0. A call's own `timeout` overrides the client's. With neither, `search` stops after 60 seconds and `fetch` waits as long as the build takes                                                                      |
 | `max_retries`       | An integer from 0 to 10. A bool is refused                                                                                                                                                                                                      |
 | Error messages      | Name the source and the position of the offending character, and leave the key or header value out                                                                                                                                              |
 
@@ -262,6 +267,7 @@ The TypeScript client follows the same contract. It spells "no limit" as `Infini
 - [Errors](docs/errors.md): every error class and code, by what you do next.
 - [Keys and credentials](docs/keys.md): the key lookup order, `dfo auth login`, and the credentials file.
 - [The cache](docs/cache.md): where downloads go, `DFO_OFFLINE`, and stale reads.
+- [Settings](docs/settings.md): every option and environment variable, its default, and which source wins.
 
 [llms.txt](llms.txt) summarises the package for language models.
 

@@ -165,9 +165,9 @@ jobs:
           uv venv --python 3.12 "$VIRTUAL_ENV"
           uv export --frozen --only-group dev --no-emit-project --no-hashes \
             --output-file "$RUNNER_TEMP/dev-lock.txt" > /dev/null
-          grep -iE '^(pytest|pytest-cov|pyright|duckdb)==' "$RUNNER_TEMP/dev-lock.txt" \
+          grep -iE '^(pytest|pytest-cov|pyright|ty|duckdb)==' "$RUNNER_TEMP/dev-lock.txt" \
             | sed 's/ .*//; s/;.*//' > "$RUNNER_TEMP/test-tools.txt"
-          test "$(wc -l < "$RUNNER_TEMP/test-tools.txt")" -eq 4
+          test "$(wc -l < "$RUNNER_TEMP/test-tools.txt")" -eq 5
           uv pip install --resolution lowest-direct \
             -r "$RUNNER_TEMP/test-tools.txt" -e ".[pandas,polars,xlsx]"
 

@@ -48,6 +48,44 @@ test("Resolution parts hold UnknownPart, and isKnownPart separates it from the k
   assert.deepEqual(PART_STATUSES, ["definite", "candidates", "no_data", "unsupported"]);
 });
 
+const SPEC = { spec_id: "spec_a", definition: { spec_id: "spec_a", identity: {} }, resolved: {} };
+
+test("isKnownPart needs the members the client checks for the part's status", () => {
+  const cases: [string, Record<string, unknown>, boolean][] = [
+    ["definite", { status: "definite", spec: SPEC }, true],
+    ["definite without a spec", { status: "definite" }, false],
+    [
+      "definite spec without resolved",
+      { status: "definite", spec: { ...SPEC, resolved: null } },
+      false,
+    ],
+    [
+      "definite spec without an identity",
+      { status: "definite", spec: { ...SPEC, definition: { spec_id: "spec_a" } } },
+      false,
+    ],
+    ["candidates", { status: "candidates", candidates: { specs: [SPEC] } }, true],
+    ["candidates without specs", { status: "candidates", candidates: {} }, false],
+    [
+      "candidates with a spec lacking its id",
+      { status: "candidates", candidates: { specs: [SPEC, { ...SPEC, spec_id: 7 }] } },
+      false,
+    ],
+    ["no_data", { status: "no_data", no_data: { reason: "no_match" } }, true],
+    ["no_data with a reason not a string", { status: "no_data", no_data: { reason: 3 } }, false],
+    [
+      "unsupported",
+      { status: "unsupported", unsupported: { code: "capability_unavailable" } },
+      true,
+    ],
+    ["unsupported without a code", { status: "unsupported", unsupported: { detail: "x" } }, false],
+    ["a status this release does not know", { status: "toString" }, false],
+  ];
+  for (const [name, part, known] of cases) {
+    assert.equal(isKnownPart({ status: "", ...part }), known, name);
+  }
+});
+
 test("string enums accept values the server adds; Operation is RequestedOperation", () => {
   const status: OperationEnvelope["status"] = "status_from_a_newer_server";
   const verb: RequestedOperation["verb"] = "verb_from_a_newer_server";

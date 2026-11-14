@@ -17,42 +17,35 @@ const PACKAGE = fileURLToPath(new URL("..", import.meta.url));
 const TSC = join(PACKAGE, "node_modules", "typescript", "bin", "tsc");
 
 const CONSUMER = `
+import { Client, Dataset, latestYear, recipe } from "@developmentfinance/client";
+import type { Answer, Spec } from "@developmentfinance/client";
 import {
-  Client,
-  Dataset,
   InvalidRequestError,
-  isDatasetMember,
-  isDerived,
   isDfoError,
-  latestYear,
-  partFacts,
-  recipe,
   SeriesLeftOutWarning,
-} from "@developmentfinance/client";
+} from "@developmentfinance/client/errors";
+import type { Alternative, ProblemIssue } from "@developmentfinance/client/errors";
+import { isDatasetMember, isDerived, partFacts } from "@developmentfinance/client/types";
 import type {
-  Card,
-  CardKind,
-  LeftOutSeries,
-  PartyTotalsLeftOut,
-  Recipe,
-  Served,
-  Share,
-  Alternative,
-  Answer,
   AnswerKind,
   AnswerStatus,
+  Card,
+  CardKind,
   Departure,
   GapKind,
+  LeftOutSeries,
   Lookup,
   Match,
   Node,
   Notice,
   Part,
   PartFacts,
-  ProblemIssue,
+  PartyTotalsLeftOut,
+  Recipe,
+  Served,
   Severity,
-  Spec,
-} from "@developmentfinance/client";
+  Share,
+} from "@developmentfinance/client/types";
 
 export async function rows(question: string): Promise<number> {
   const client = new Client({ baseUrl: "https://example.org/api", apiKey: false });
@@ -60,7 +53,7 @@ export async function rows(question: string): Promise<number> {
   const parts: readonly Part[] = answer.parts;
   const spec: Spec = answer.specs[0]!;
   const dataset: Dataset = await client.fetch(spec);
-  const bytes: Uint8Array = await dataset.bytes();
+  const bytes: Uint8Array = await dataset.toBytes();
   const lookup: Lookup = client.lookup;
   const node: Node = await lookup.node("country/NGA");
   const matches: readonly Match[] = await lookup.resolve("Kenya");
@@ -84,7 +77,7 @@ export function described(answer: Answer): string {
   return [kind, status, kinds.join(), total ?? 0, tokens ?? 0].join(" ");
 }
 
-// The facts an answer's parts state are typed from the package root.
+// The facts an answer's parts state are typed from the types entry point.
 export function stated(answer: Answer): number {
   const facts: readonly PartFacts[] = answer.facts;
   const first: PartFacts = partFacts(answer.parts[0]!);
@@ -98,7 +91,7 @@ export function stated(answer: Answer): number {
 
 export const known = (error: unknown): boolean => isDfoError(error);
 
-// A refusal's issues and alternatives are typed from the package root.
+// A refusal's issues and alternatives are typed from the errors entry point.
 export function remedies(error: InvalidRequestError): number {
   const issues: readonly ProblemIssue[] = error.issues;
   const alternatives: readonly Alternative[] = error.alternatives;
@@ -307,16 +300,21 @@ test("only the arrow entry point needs apache-arrow", async () => {
   assert.match(output, /Cannot find module 'apache-arrow'/);
 });
 
-/** The types the root's exports name in their public declarations that the root does not
- *  export, each with the exports that name it. A member marked `@internal`, a private member and
- *  the generated `components`, `paths` and `operations` maps are not read. */
-function unexported(entry: string): Map<string, Set<string>> {
-  const program = ts.createProgram([entry], { strict: true, noEmit: true, types: [] });
+/** The types the entries' exports name in their public declarations that no entry exports, each
+ *  with the exports that name it. A member marked `@internal`, a private member and the generated
+ *  `components`, `paths` and `operations` maps are not read. */
+function unexported(entries: string[]): Map<string, Set<string>> {
+  const program = ts.createProgram(entries, { strict: true, noEmit: true, types: [] });
   const checker = program.getTypeChecker();
   const resolve = (symbol: ts.Symbol): ts.Symbol =>
     symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
-  const module = checker.getSymbolAtLocation(program.getSourceFile(entry)!)!;
-  const exported = new Set(checker.getExportsOfModule(module).map(resolve));
+  const exported = new Set(
+    entries.flatMap((entry) =>
+      checker
+        .getExportsOfModule(checker.getSymbolAtLocation(program.getSourceFile(entry)!)!)
+        .map(resolve),
+    ),
+  );
   const opaque = new Set(["components", "paths", "operations"]);
   const missing = new Map<string, Set<string>>();
   const hidden = (node: ts.Node): boolean =>
@@ -359,8 +357,10 @@ function unexported(entry: string): Map<string, Set<string>> {
   return missing;
 }
 
-test("the root exports every type its public members take or return", () => {
-  const missing = unexported(join(installed, "dist", "index.d.ts"));
+test("the root, types and errors entries export every type their public members take or return", () => {
+  const missing = unexported(
+    ["index", "types", "errors"].map((entry) => join(installed, "dist", `${entry}.d.ts`)),
+  );
   const named = [...missing].map(
     ([name, owners]) => `${name} (named by ${[...owners].join(", ")})`,
   );

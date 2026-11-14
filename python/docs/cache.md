@@ -4,14 +4,14 @@ The client keeps every file it downloads on disk, keyed by its SHA-256 digest, b
 
 ## Work offline
 
-Fetch once with the network, then set `DFO_OFFLINE=1`. A ref loads the exact versions it names, and a spec loads the newest version the cache holds. Both datasets report `stale` as True, because the client read from the cache alone:
+Fetch once with the network, then set `DFO_OFFLINE=1`. A ref loads the exact versions it names, and a spec loads the newest version the cache holds. Both datasets report `stale` as True, because the client read from the cache alone, and the display gives the time the file left the server:
 
 ```text
 <Dataset Germany's gross ODA disbursements to Nigeria for basic health care, 1995 to 2024. Current US dollars · OECD Creditor Reporting System (CRS).
   Source: OECD Creditor Reporting System (CRS)
   Version: cv_b92d94774702c7f05f2075d0b03dd756 (exact), pinned
   Rows: 30
-  Stale: read from the cache without asking for a newer version
+  Stale: read from the cache without asking for a newer version, fetched 13 November 2026 09:14 UTC
   Keep: data.save(path) · newest later: dfo.fetch(data.ref, latest=True)>
 True True
 DFO_OFFLINE=1 is set, and POST https://developmentfinance.org/api/v1/search/resolve needs the network [offline]
@@ -50,19 +50,27 @@ Under `DFO_OFFLINE=1` every request raises `NetworkError` with the code `offline
 
 `stale` is True only under `DFO_OFFLINE=1`, and it travels into the file `save` writes. Fetch again with the network to clear it.
 
+## Tell a cache hit from a download
+
+`data.from_cache` is True when the fetch read any member's file from disk, online or offline. A ref fetch whose versions are on disk is one, and so is a spec fetch whose newest version the server named and the cache already held. The display then carries a line with the time the file left the server, which `data.fetched_at` holds as a UTC `datetime`:
+
+```text
+  Cached: read from the cache, fetched 13 November 2026 09:14 UTC
+```
+
+The cache records the time beside each file it downloads. A file stored by release 0.1.0 has no time, so its line ends `fetch time unknown` and `fetched_at` is None until the file downloads again. A dataset of several members gives the earliest member's time. A fresh download sets `fetched_at` to the time it arrived and adds no line.
+
 ## Where the cache lives
 
-The cache root is the first of these that is set:
-
-1. `cache_dir=` on `dfo.Client`, `dfo.AsyncClient`, or `dfo.configure`
-1. `DFO_CACHE_DIR`
-1. `BBLOCKS_CACHE_DIR`, shared with the bblocks packages
-1. the platform's cache directory: `~/.cache/readerkit` on Linux (or `$XDG_CACHE_HOME/readerkit`), `~/Library/Caches/readerkit` on macOS, and `%LOCALAPPDATA%\readerkit\Cache` on Windows.
+The cache root comes from `cache_dir=`, then `DFO_CACHE_DIR`, then `BBLOCKS_CACHE_DIR`, then the platform's cache directory, such as `~/.cache/readerkit` on Linux. [Settings](settings.md#cache-directory) gives each platform's directory.
 
 The entries sit under `<root>/v1/dfo/cache1`. After the fetch above, the cache holds one file and its manifest:
 
 ```text
 v1/dfo/cache1/
+├── fetched/
+│   └── sha256/
+│       └── 421efacc2dc010af38112a087b0b49ff5539f61d2afd12a88272b27e99b5f5db
 ├── files/
 │   └── sha256/
 │       └── 421efacc2dc010af38112a087b0b49ff5539f61d2afd12a88272b27e99b5f5db
@@ -72,7 +80,7 @@ v1/dfo/cache1/
             └── parquet.json
 ```
 
-`files/sha256/<hex>` holds a downloaded file under its digest. `manifests/<spec_id>/<content_version>/<rendering>.json` holds the version's manifest, where the rendering is `parquet` for the long table and `parquet-frame` for the frame. Clients that read this layout share the downloads on one machine.
+`files/sha256/<hex>` holds a downloaded file under its digest, and `fetched/sha256/<hex>` the UTC time it left the server, such as `2026-11-13T09:14:05Z`. `manifests/<spec_id>/<content_version>/<rendering>.json` holds the version's manifest, where the rendering is `parquet` for the long table and `parquet-frame` for the frame. Clients that read this layout share the downloads on one machine.
 
 A read hashes the file again, and a file whose bytes differ from its digest counts as missing and downloads afresh. Each entry is written to a temporary name and renamed into place, so a reader sees whole files only, and several processes can share one cache. A relative `cache_dir` resolves against the working directory when the client is built.
 

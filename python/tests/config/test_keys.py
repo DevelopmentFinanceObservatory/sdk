@@ -279,12 +279,11 @@ def test_api_key_hides_its_value() -> None:
         pickle.dumps(key)
 
 
-@pytest.mark.parametrize(("value", "error"), [("", ValueError), (b"k", TypeError)])
-def test_api_key_refuses_an_empty_or_non_string_value(
-    value: object, error: type[Exception]
-) -> None:
-    with pytest.raises(error):
+@pytest.mark.parametrize(("value", "code"), [("", "key_empty"), (b"k", "key_invalid")])
+def test_api_key_refuses_an_empty_or_non_string_value(value: object, code: str) -> None:
+    with pytest.raises(AuthenticationError) as caught:
         ApiKey(value)
+    assert caught.value.code == code
 
 
 def test_key_state_reports_a_change_after_refresh() -> None:

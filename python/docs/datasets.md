@@ -41,12 +41,14 @@ print(data.to_pandas()[["time_period", "financingProvider_label", "value"]])
 Three arguments narrow a spec:
 
 - `window` takes `"all"`, `"latest"`, or a `(start_year, end_year)` pair of years from 1000 to 2200. `(2020, 2020)` is one year.
-- `entities` binds roles to place dcids. The roles you name change, the spec's other roles keep their places, and a role set to None drops out. `spec.roles` lists the role keys a spec takes, each with the dcids it binds, or None for a role it leaves open: `place` for the place a measure is about, as in `{"place": ["country/NGA", "country/GHA"]}` for GDP, and `origin` and `destination` for a flow. This spec binds only `destination`, so `origin` adds the two donors and Ethiopia stays the recipient. A key the spec does not take, such as the column name `financingProvider`, raises `InvalidRequestError` before any request, and the message lists the spec's roles.
+- `entities` binds roles to place dcids, or to the matches `dfo.lookup.resolve` returns, as in `{"origin": dfo.lookup.resolve("Germany", "France")}`. A match that did not resolve raises `InvalidRequestError` before any request. The roles you name change, the spec's other roles keep their places, and a role set to None drops out. `spec.roles` lists the role keys a spec takes, each with the dcids it binds, or None for a role it leaves open: `place` for the place a measure is about, as in `{"place": ["country/NGA", "country/GHA"]}` for GDP, and `origin` and `destination` for a flow. This spec binds only `destination`, so `origin` adds the two donors and Ethiopia stays the recipient. A key the spec does not take, such as the column name `financingProvider`, raises `InvalidRequestError` before any request, and the message lists the spec's roles.
 - `facets` binds the `provenance`, `measurementMethod`, or `unit` axis to a ref. None picks the facets that declare no value on that axis.
 
 `answer.fetch` takes the same three arguments and narrows every reading of the answer with them. Each reading keeps the roles you leave out, and a role one reading does not take raises `InvalidRequestError` before any build, naming each part's roles.
 
 A narrowed fetch is a reading of its own, with its own `spec_id` in `data.members[0].spec`. A narrowing that leaves no rows returns a dataset with zero rows and the usual columns, and issues a `DataWarning` with the code `empty_result`.
+
+A question that leaves the donor open, such as "ODA to Ethiopia from each donor", comes back with Search's note that no provider was named, so the answer covers every provider. `answer.fetch()` repeats that note as a `SearchWarning`. `dfo.fetch(spec)` fetches the same reading and issues no `SearchWarning`, so the examples below that leave the donor open fetch the spec.
 
 ## Sum a column
 
@@ -109,7 +111,8 @@ The rows sort by the leading columns other than `value` and `time_period`, then 
 ```python
 import dfo
 
-data = dfo.search("ODA to Ethiopia from each donor in 2022").fetch()
+spec = dfo.search("ODA to Ethiopia from each donor in 2022").specs[0]
+data = dfo.fetch(spec)
 print(data.to_arrow().schema.names)
 ```
 
@@ -161,7 +164,7 @@ print(len(data), table.num_rows)
 
 ## Keep it, and check later for new data
 
-`data.save(path)` writes one Parquet file that carries the provenance and the ref. `dfo.load(path)` reads it back without the network. `dfo.fetch(saved.ref, latest=True)` builds the newest version of the same readings, and comparing the two refs tells you whether anything changed:
+`data.save(path)` writes one Parquet file that carries the provenance and the ref. `data.to_bytes()` returns the same file as bytes, for object storage or a database column. `dfo.load(path)` reads either back without the network, given a path or the bytes. `dfo.fetch(saved.ref, latest=True)` builds the newest version of the same readings, and comparing the two refs tells you whether anything changed:
 
 ```text
 True
@@ -171,7 +174,8 @@ DatasetRef(1 member: spec_7778beed72f8433bb7fde4293acfd175 at cv_c17d6a131cb4556
 ```python
 import dfo
 
-data = dfo.search("ODA to Ethiopia from each donor in 2022").fetch()
+spec = dfo.search("ODA to Ethiopia from each donor in 2022").specs[0]
+data = dfo.fetch(spec)
 data.save("ethiopia.parquet")
 
 saved = dfo.load("ethiopia.parquet")
@@ -195,9 +199,9 @@ cv_534dd4c2bf9bdafc837d51a3ba4bcf3e
 ```python
 import dfo
 
-answer = dfo.search("ODA to Ethiopia from each donor in 2022")
-cut = answer.fetch()
-plain = answer.fetch(party_totals=True)
+spec = dfo.search("ODA to Ethiopia from each donor in 2022").specs[0]
+cut = dfo.fetch(spec)
+plain = dfo.fetch(spec, party_totals=True)
 print(cut.members[0].content_version)
 print(plain.members[0].content_version)
 ```
@@ -235,7 +239,26 @@ print(len(data))
 - `complete` and `missing`: whether every part of the question has a member, and the parts a partial fetch left out.
 - `held_until` and `pinned`: how long the server keeps the versions.
 - `stale`: True when the rows came from the cache under `DFO_OFFLINE=1`.
+- `from_cache` and `fetched_at`: whether the fetch read any file from the cache, and when the data left the server, as a UTC `datetime` or None when the cache recorded no time. [The cache](cache.md#tell-a-cache-hit-from-a-download) shows the display line.
+- `question`: the question the data answers, when it came from `answer.fetch()`, else None.
 - `layout_version`: the column set, or `frame` for the pipeline frame that `layout="frame"` returns for one reading.
+
+The saved file keeps the provenance in the Parquet key-value metadata, under these keys. Each value is UTF-8 text, and a key marked optional is left out when the dataset has no value for it:
+
+- `dfo.format_version`: the saved format, `1` for a dataset of dataset versions and `2` for a derived dataset, as plain text.
+- `dfo.sentence`: the dataset's sentence, as plain text.
+- `dfo.citation`: the citation, as a JSON object.
+- `dfo.sources`: the sources, as a JSON array of strings.
+- `dfo.licence`: the licence, as plain text.
+- `dfo.dataset`: a JSON object of the rest: each member's citation, the warnings, departures, requested operations and assumptions, `complete`, `missing`, `held_until`, `pinned`, `stale`, `layout_version`, and the row count of each member.
+- `dfo.ref`: optional, the ref as `ref.to_json()` writes it. A bundle opened from a folder has none.
+- `dfo.question`: optional, the question, as a JSON string. Added in 0.2.0.
+- `dfo.fetched_at`: optional, when the data left the server, as a JSON string `YYYY-MM-DDTHH:MM:SSZ`. Added in 0.2.0.
+- `dfo.left_out`: a derived dataset only, the series its steps left out, as a JSON object of `series` and `complete`.
+- `dfo.steps`: a derived dataset only, its steps, as a JSON array.
+- `dfo.party_totals_left_out`: optional, the party totals the fetch left out, as a JSON array. Added in 0.2.0.
+
+`dfo.load` reads each key back, `question` and `fetched_at` included, and sets `from_cache` to False. A 0.1.0 client ignores the keys added in 0.2.0.
 
 `dfo.load` also opens a bundle downloaded from the website: the ZIP, the folder it extracts to, or its `datapackage.json`. It checks each file against its hash before it reads the data, and raises `dfo.errors.BundleError` when a file is missing or its bytes differ. `dfo.load(path, limits=dfo.types.BundleLimits(...))` changes the size bounds it enforces on a bundle.
 

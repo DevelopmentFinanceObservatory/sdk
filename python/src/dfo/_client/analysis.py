@@ -10,6 +10,7 @@ they use.
 from collections.abc import Mapping, Sequence
 
 from dfo._client.default import default_client
+from dfo._core.timeouts import CLIENT_TIMEOUT, CallTimeout
 from dfo._datasets.dataset import Dataset
 from dfo._datasets.recipe import (
     Aggregation,
@@ -27,7 +28,7 @@ def filter(
     *,
     keep: Mapping[str, str | Sequence[str]],
     strict: bool = False,
-    timeout: float | None = None,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
 ) -> Dataset:
     """Keep the rows whose role or column holds one of the values, as
     `keep={"destination": ["country/KEN"]}`.
@@ -37,7 +38,8 @@ def filter(
         keep: Each role or column, with the value or values its rows keep.
         strict: Raise the `SeriesLeftOutWarning` instead of issuing it.
         timeout: The longest the call takes, in seconds, the read included.
-            None, the default, waits as long as the readings take to build.
+            None waits as long as the readings take to build. Left out, the
+            client's `timeout` applies, else None.
 
     Raises:
         InvalidRequestError: `keep` is not a non-empty mapping of names to a value
@@ -57,7 +59,7 @@ def aggregate(
     by: Columns = (),
     how: Aggregation = "sum",
     strict: bool = False,
-    timeout: float | None = None,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
 ) -> Dataset:
     """Totals or averages the rows of each year, keeping the members of `by`
     apart.
@@ -68,7 +70,8 @@ def aggregate(
             every row of each year. Each year stays its own row.
         how: `sum`, `mean`, `max` or `min`.
         strict: Raise the `SeriesLeftOutWarning` instead of issuing it.
-        timeout: The longest the call takes, in seconds; None waits.
+        timeout: The longest the call takes, in seconds. None waits. Left out,
+            the client's `timeout` applies.
     """
     return default_client().analysis.aggregate(
         data, by=by, how=how, strict=strict, timeout=timeout
@@ -83,7 +86,7 @@ def growth(
     window: tuple[Year, Year],
     change: GrowthChange = "relative",
     strict: bool = False,
-    timeout: float | None = None,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
 ) -> Dataset:
     """Change from the first to the last year of `window`, for each member of
     `by`.
@@ -97,7 +100,8 @@ def growth(
             value, a fraction where 0.25 is a 25% rise; or `difference`, the
             last year's value minus the first's, in the data's unit.
         strict: Raise the `SeriesLeftOutWarning` instead of issuing it.
-        timeout: The longest the call takes, in seconds; None waits.
+        timeout: The longest the call takes, in seconds. None waits. Left out,
+            the client's `timeout` applies.
     """
     return default_client().analysis.growth(
         data, by=by, window=window, change=change, strict=strict, timeout=timeout
@@ -113,7 +117,7 @@ def rank(
     how: Aggregation | None = None,
     limit: int | None = None,
     strict: bool = False,
-    timeout: float | None = None,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
 ) -> Dataset:
     """Order the members of `by`, largest first, and keep the top `limit`.
 
@@ -127,7 +131,8 @@ def rank(
         limit: The most members kept, from 1 to 1000; a tie at the last place
             keeps every member that shares it.
         strict: Raise the `SeriesLeftOutWarning` instead of issuing it.
-        timeout: The longest the call takes, in seconds; None waits.
+        timeout: The longest the call takes, in seconds. None waits. Left out,
+            the client's `timeout` applies.
     """
     return default_client().analysis.rank(
         data,
@@ -147,7 +152,7 @@ def quotient_of(
     *,
     on: Pairing | None = None,
     strict: bool = False,
-    timeout: float | None = None,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
 ) -> Dataset:
     """Divide one reading by another, pairing roles through `on`, such as aid per
     person with `on={"destination": "place"}`; a list such as `["place"]` names
@@ -166,7 +171,7 @@ def share_of(
     by: Columns | None = None,
     on: Pairing | None = None,
     strict: bool = False,
-    timeout: float | None = None,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
 ) -> Dataset:
     """Each value as a percentage of the matching row of `total`, or, with no
     `total`, of the total across all members of `by` in the same year.
@@ -191,7 +196,7 @@ def join(
     *,
     on: Pairing | None = None,
     strict: bool = False,
-    timeout: float | None = None,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
 ) -> Dataset:
     """Match two readings on their keys and return both sides' rows in long
     format, told apart by `stat_var`. Takes `strict` and `timeout` as `filter`
@@ -208,7 +213,7 @@ def sum_of(
     *,
     on: Pairing | None = None,
     strict: bool = False,
-    timeout: float | None = None,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
 ) -> Dataset:
     """Add the matching rows of two readings over the years both hold. Takes
     `strict` and `timeout` as `filter` does."""
@@ -224,7 +229,7 @@ def compare(
     *,
     on: Pairing | None = None,
     strict: bool = False,
-    timeout: float | None = None,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
 ) -> Dataset:
     """The difference, `data` minus `other`, for each matching member over the
     years both hold. DFO refuses two different units. Takes `strict` and

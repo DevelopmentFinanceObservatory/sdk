@@ -20,15 +20,10 @@ Each method of `client.analysis` takes the data to work on and returns the resul
 ```
 
 ```ts
-import {
-  Client,
-  DatasetRef,
-  latestYear,
-  recipe,
-  SeriesLeftOutWarning,
-} from "@developmentfinance/client";
+import { Client, DatasetRef, latestYear, recipe } from "@developmentfinance/client";
+import { SeriesLeftOutWarning } from "@developmentfinance/client/errors";
 
-const client = new Client({ onWarning: () => {} });
+const client = new Client();
 const aid = await (
   await client.search("ODA from Germany to Kenya, Ghana and Nigeria, 2018 to 2023")
 ).fetch();
@@ -40,9 +35,9 @@ const [first] = await perPerson.toRows();
 console.log([first?.["time_period"], first?.["financingRecipient"], first?.["value"]]);
 ```
 
-`on` pairs the roles of the two readings that hold the same places: the aid's `destination` with the population's `place`. The population covers Kenya alone, so DFO leaves Ghana and Nigeria out and counts them in the `Missing data` line. [Find out why series were left out](#find-out-why-series-were-left-out) reads that list.
+`on` pairs the roles of the two readings that hold the same places: the aid's `destination` with the population's `place`. The population covers Kenya alone, so DFO leaves Ghana and Nigeria out, counts them in the `Missing data` line, and the call passes a `SeriesLeftOutWarning` to `onWarning`, which prints it by default. The gaps are expected here. [Find out why series were left out](#find-out-why-series-were-left-out) reads the list, and `strict: true` stops on it.
 
-Every method takes a `Spec`, a `DatasetRef`, a `Dataset`, or a `Recipe` as its data. A `Dataset` or ref sends its exact version, and a `Spec` sends the newest version without party totals, as `client.fetch(spec)` reads it. DFO builds any version it has not built yet, then computes. The call waits as long as that takes unless you pass `timeout` in milliseconds or a `signal`.
+Every method takes a `Spec`, a `DatasetRef`, a `Dataset`, or a `Recipe` as its data. A `Dataset` or ref sends its exact version, and a `Spec` sends the newest version without party totals, as `client.fetch(spec)` reads it. DFO builds any version it has not built yet, then computes. The call waits as long as that takes unless you pass `timeout` in milliseconds or a `signal`, or the client has a `timeout` of its own.
 
 A derived frame's `time_period` is a string, such as `"2022"`, or `"2018/2023"` for a value that spans years, as `growth` writes. A dataset in the long layout holds integer years as numbers, and one in the frame layout holds strings.
 
@@ -116,7 +111,7 @@ console.log(String(kenyaPerPerson));
 
 A recipe is a value. It does no I/O, needs no client, and checks each option when the step is added, so a malformed chain fails before any request. `client.analysis.rank(data, { by: "origin" })` returns what `client.fetch(recipe(data).rank({ by: "origin" }))` returns.
 
-`client.fetch` takes `latest`, `strict`, `timeout`, and `signal` with a recipe, and refuses `onProgress`, the options that narrow a spec, `partyTotals`, and any layout other than `frame`. Narrow the readings with a `filter` step, or fetch them narrowed before the recipe starts.
+`client.fetch` takes `latest`, `strict`, `timeout`, and `signal` with a recipe, as `RecipeFetchOptions` types them, and refuses `onProgress`, the options that narrow a spec, `partyTotals`, and any layout other than `frame`. Narrow the readings with a `filter` step, or fetch them narrowed before the recipe starts.
 
 ## Follow new data and recompute
 
@@ -151,7 +146,7 @@ A changed ref can still hold the same numbers, after an engine release or a rebu
 
 `client.fetch(ref)`, without `latest`, reads the exact version again. DFO holds a derived version until the `held until` date in its text form. After that, the fetch asks DFO to compute it again from the same versions of its readings, and returns it when the result is the same version. When it is not, the fetch raises `VersionUnavailableError`, and `{ latest: true }` computes it on the newest data.
 
-`await data.bytes()` returns the rows as one Parquet file with the ref, the steps, and the left-out series, which the Python client's `dfo.load` reads. `client.pin(data)` keeps a dataset version fetchable for good, and refuses a derived dataset before any request.
+`await data.toBytes()` returns the rows as one Parquet file with the ref, the steps, and the left-out series, which the Python client's `dfo.load` reads, and on Node `await data.save(path)` writes that file. `client.pin(data)` keeps a dataset version fetchable for good, and refuses a derived dataset before any request.
 
 ## Find out why series were left out
 

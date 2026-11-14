@@ -9,6 +9,7 @@ import os
 import pwd
 import threading
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -115,6 +116,54 @@ def test_bytes_round_trip_under_the_digest_path(cache: Cache) -> None:
     assert cache.get_bytes(digest) == data
     assert (cache.directory / file_entry(digest)).read_bytes() == data
     assert list(cache.directory.rglob(".tmp-*")) == []
+
+
+FETCHED = datetime(2026, 11, 13, 9, 14, 5, tzinfo=UTC)
+
+
+def test_a_fetch_time_is_kept_beside_its_artifact_until_discarded(
+    cache: Cache,
+) -> None:
+    data = b"parquet bytes"
+    digest = sha256_digest(data)
+    berlin = FETCHED.astimezone(timezone(timedelta(hours=1)))
+    cache.put_bytes(digest, data, fetched_at=berlin)
+    hex_name = digest.removeprefix("sha256:")
+    sidecar = cache.directory / "fetched" / "sha256" / hex_name
+    assert sidecar.read_text() == "2026-11-13T09:14:05Z"
+    # Equal digests are equal bytes, so a store without a time keeps the first.
+    cache.put_bytes(digest, data)
+    assert cache.fetched_at(digest) == FETCHED
+    assert cache.fetched_at(digest).tzinfo == UTC
+    cache.discard(digest)
+    assert (cache.get_bytes(digest), cache.fetched_at(digest)) == (None, None)
+    assert not sidecar.exists()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [None, b"soon", b"2026-11-13T09:14:05", b"\xff"],
+    ids=["absent", "not-a-time", "no-zone", "not-utf8"],
+)
+def test_an_artifact_without_a_readable_fetch_time_has_none(
+    cache: Cache, text: bytes | None
+) -> None:
+    data = b"parquet bytes"
+    digest = sha256_digest(data)
+    cache.put_bytes(digest, data)
+    if text is not None:
+        sidecar = cache.directory / "fetched" / "sha256" / digest[len("sha256:") :]
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_bytes(text)
+    assert cache.get_bytes(digest) == data
+    assert cache.fetched_at(digest) is None
+
+
+def test_a_naive_fetch_time_is_refused(cache: Cache) -> None:
+    data = b"parquet bytes"
+    with pytest.raises(ValueError):
+        cache.put_bytes(sha256_digest(data), data, fetched_at=datetime(2026, 1, 1))
+    assert cache.get_bytes(sha256_digest(data)) is None
 
 
 def test_a_corrupted_artifact_is_a_miss(cache: Cache) -> None:
@@ -336,11 +385,12 @@ def test_manifest_candidates_accept_versions_with_the_same_prepared_time(
 
 
 def test_eviction_drops_the_least_recently_used(tmp_path: Path) -> None:
-    cache = Cache(tmp_path, max_bytes=25, env={})
+    # Three 10-byte artifacts and one 20-byte fetch time overflow 45 bytes.
+    cache = Cache(tmp_path, max_bytes=45, env={})
     blobs = [bytes([index]) * 10 for index in range(3)]
     digests = [sha256_digest(blob) for blob in blobs]
     cache.put_bytes(digests[0], blobs[0])
-    cache.put_bytes(digests[1], blobs[1])
+    cache.put_bytes(digests[1], blobs[1], fetched_at=FETCHED)
     first = cache.directory / file_entry(digests[0])
     second = cache.directory / file_entry(digests[1])
     os.utime(first, (1_000, 1_000))
@@ -350,8 +400,34 @@ def test_eviction_drops_the_least_recently_used(tmp_path: Path) -> None:
     cache.put_bytes(digests[2], blobs[2])
 
     assert cache.get_bytes(digests[1]) is None
+    assert cache.fetched_at(digests[1]) is None
     assert cache.get_bytes(digests[0]) == blobs[0]
     assert cache.get_bytes(digests[2]) == blobs[2]
+
+
+def test_eviction_counts_each_fetch_time_with_its_artifact(tmp_path: Path) -> None:
+    # Two 10-byte artifacts fit 45 bytes. With their 20-byte times they total 60.
+    cache = Cache(tmp_path, max_bytes=45, env={})
+    blobs = [bytes([index]) * 10 for index in range(2)]
+    digests = [sha256_digest(blob) for blob in blobs]
+    cache.put_bytes(digests[0], blobs[0], fetched_at=FETCHED)
+    os.utime(cache.directory / file_entry(digests[0]), (1_000, 1_000))
+    cache.put_bytes(digests[1], blobs[1], fetched_at=FETCHED)
+    assert [cache.get_bytes(digest) for digest in digests] == [None, blobs[1]]
+    assert list((cache.directory / "fetched" / "sha256").iterdir()) == [
+        cache.directory / "fetched" / "sha256" / digests[1].removeprefix("sha256:")
+    ]
+
+
+def test_eviction_removes_a_fetch_time_without_its_artifact(cache: Cache) -> None:
+    # Another client, or an older release, removed the artifact and left its time.
+    orphan = cache.directory / "fetched" / "sha256" / ("0" * 64)
+    orphan.parent.mkdir(parents=True)
+    orphan.write_text("2026-11-13T09:14:05Z")
+    data = b"parquet bytes"
+    cache.put_bytes(sha256_digest(data), data, fetched_at=FETCHED)
+    assert not orphan.exists()
+    assert cache.fetched_at(sha256_digest(data)) == FETCHED
 
 
 def test_an_entry_larger_than_the_cap_is_kept(tmp_path: Path) -> None:

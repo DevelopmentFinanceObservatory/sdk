@@ -15,7 +15,8 @@ from collections.abc import Sequence
 from dfo._config.credentials import CredentialsFileError, store_key
 from dfo._config.keys import check_key_format, mask, resolve_key
 from dfo._config.paths import credentials_path
-from dfo._core.errors import DfoError
+from dfo._core.codes import CREDENTIALS_FILE_INVALID, KEY_EMPTY
+from dfo._core.errors import DfoError, client_error
 from dfo._datasets.cache import cache_path
 from dfo._http.transport import resolve_base_url
 
@@ -26,20 +27,25 @@ def _save(key: str) -> None:
     """Store `key` under the chosen profile and say where it went.
 
     Raises:
-        ValueError: The key is empty or cannot be stored, or the existing
-            credentials file is invalid.
+        AuthenticationError: The key is empty (`key_empty`) or cannot be stored
+            (`key_invalid`), or the existing credentials file is invalid
+            (`credentials_file_invalid`).
+        InvalidRequestError: `DFO_PROFILE` names a profile the file cannot hold
+            (`invalid_argument`).
     """
     key = key.strip()
     if not key:
-        raise ValueError("No key given")
+        raise client_error(KEY_EMPTY, "No key given", builtin=ValueError)
     path = credentials_path()
     profile = os.environ.get("DFO_PROFILE") or "default"
     try:
         store_key(path, profile, key)
     except CredentialsFileError as error:
-        raise ValueError(
+        raise client_error(
+            CREDENTIALS_FILE_INVALID,
             f"The credentials file {path} is invalid at line {error.line} "
-            f"({error.reason}); fix or remove it, then log in again"
+            f"({error.reason}); fix or remove it, then log in again",
+            builtin=ValueError,
         ) from error
     print(f"Saved the key {mask(key)} to {path}, profile {profile!r}.")
     if problem := check_key_format(key):
@@ -56,8 +62,11 @@ def login() -> None:
     readable by its owner only.
 
     Raises:
-        ValueError: The key is empty or cannot be stored, or the existing
-            credentials file is invalid.
+        AuthenticationError: The key is empty (`key_empty`) or cannot be stored
+            (`key_invalid`), or the existing credentials file is invalid
+            (`credentials_file_invalid`).
+        InvalidRequestError: `DFO_PROFILE` names a profile the file cannot hold
+            (`invalid_argument`).
     """
     _save(getpass.getpass(_PROMPT))
 

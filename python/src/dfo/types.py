@@ -10,7 +10,9 @@ the `Card` a `dfo.cards` call stores, the `Share` `dfo.share` publishes and the
 It also holds the argument types the public signatures name: `Start`, `Year`,
 `Columns`, `Pairing`, `Aggregation` and `GrowthChange` for `dfo.analysis`;
 `Source` and `StatChange` for `dfo.cards`; and `ShareTarget` and `Moment` for
-the share calls and `dfo.fetch(share, as_of=...)`.
+the share calls and `dfo.fetch(share, as_of=...)`. `CallTimeout` types a
+call's `timeout`, and `CLIENT_TIMEOUT`, its default, stands for the client's
+`timeout`, so a wrapper can pass it through.
 
 `Severity`, `AssumptionKind`, `DepartureCode`, `NoDataReason`, `DeclinedReason`
 and `ResolveKind` are the values the served contract lists for each field. A
@@ -21,6 +23,7 @@ takes `Name`.
 
 from dfo._core.lookup_results import Catalogue, Code, Entity, Match, Node
 from dfo._core.periods import LatestYear
+from dfo._core.raw_response import RawResponse
 from dfo._core.refs import (
     DerivedMember,
     DerivedRefMember,
@@ -31,6 +34,7 @@ from dfo._core.refs import (
     ResolvedPeriod,
     Root,
 )
+from dfo._core.timeouts import CLIENT_TIMEOUT, CallTimeout
 from dfo._core.types import (
     Assumption,
     Candidate,
@@ -46,7 +50,6 @@ from dfo._core.types import (
     Notice,
     Option,
     Part,
-    RawResponse,
     Rendering,
     RequestedOperation,
     UnknownPart,
@@ -86,11 +89,13 @@ from dfo._generated.wire import (
 from dfo._search.answer import AsyncAnswer
 
 __all__ = [
+    "CLIENT_TIMEOUT",
     "Aggregation",
     "Assumption",
     "AssumptionKind",
     "AsyncAnswer",
     "BundleLimits",
+    "CallTimeout",
     "Candidate",
     "CandidatesPart",
     "Card",

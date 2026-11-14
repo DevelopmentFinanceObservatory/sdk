@@ -19,9 +19,9 @@
  * Every download asks a files route on the API's origin, fetches the URL it redirects to, bare
  * on the storage host and as an API request on the API's origin, and is checked against its
  * digest before the fetch returns. Members build one after another, with no deadline unless
- * the caller gives a `timeout`, which bounds them all: each request attempt, the files route
- * ask included, waits the client's timeout within it, and a download reads until the deadline
- * while bytes keep arriving.
+ * the call or the client gives a `timeout`, which bounds them all: each request attempt, the
+ * files route ask included, waits the client's `attemptTimeout` within it, and a download reads
+ * until the deadline while bytes keep arriving.
  */
 
 import type { Gap } from "../search/answer.ts";
@@ -47,13 +47,15 @@ import { describing } from "../core/trace.ts";
 import { trimEnd, WHITESPACE } from "../core/text.ts";
 import { DEFAULT_MAX_BYTES, passedDeadline } from "../http/transport.ts";
 import type { Target, Transport } from "../http/transport.ts";
-import type { EntityGroup, Part } from "../wire.ts";
+import type { EntityGroup } from "../wire.ts";
+import type { Part } from "../core/parts.ts";
 import { DataWarning } from "../core/warnings.ts";
-import { isRecord, present } from "../core/json.ts";
+import { isRecord, present, text } from "../core/json.ts";
 import { nearest } from "../core/nearest.ts";
 import { declareOptions } from "../core/options.ts";
 import { callerKey, specRoles, wireRole } from "../core/roles.ts";
 import { readParquet } from "./parquet.ts";
+import type { Entity, Match } from "../search/lookup-results.ts";
 import type { ColumnType, ParquetFile } from "./parquet.ts";
 
 /** The Search endpoint, and the `schema_version` of the bodies posted to it. */
@@ -68,15 +70,20 @@ export type Narrowing = {
   /** The years, from 1000 to 2200. Null or undefined reads as unset, which is `"all"`. */
   window?: Window | null | undefined;
   /** Roles to rebind under their `specRoles` keys, as `{ place: ["country/KEN"] }` or
-   *  `{ origin: ["country/FRA"] }`, each dcid read without surrounding white space. null
-   *  unbinds a role. Every role the spec binds and this leaves out keeps its dcids, so `{}`
-   *  narrows nothing, as do null and undefined. */
-  entities?: Readonly<Record<string, readonly string[] | null>> | null | undefined;
+   *  `{ origin: ["country/FRA"] }`, each dcid read without surrounding white space. A role also
+   *  takes what `client.lookup.resolve` returns: a resolved `Match`, or an `Entity` such as one
+   *  of a match's `candidates`, each read as its dcid with no request. null unbinds a role.
+   *  Every role the spec binds and this leaves out keeps its dcids, so `{}` narrows nothing, as
+   *  do null and undefined. */
+  entities?: Readonly<Record<string, readonly EntityChoice[] | null>> | null | undefined;
   /** Facet axes (`provenance`, `measurementMethod`, `unit`) bound to a reference. null binds
    *  the facets that declare no value on the axis. `{}` narrows nothing, as do null and
    *  undefined. */
   facets?: Readonly<Record<string, string | null>> | null | undefined;
 };
+
+/** What a role in `entities` binds to: a dcid, or a node `client.lookup.resolve` found. */
+export type EntityChoice = string | Entity | Match;
 
 /** How Search resolved each role's group of places, keyed by role: a spec's
  *  `resolved.entity_groups`. */
@@ -93,14 +100,29 @@ export type MemberRequest = {
   readonly answerParts?: readonly Part[];
 };
 
+/** The sentence and entity groups of a spec's `resolved`, whose members the client does not
+ *  check. A sentence that is not a string reads as null, and so do groups that are not an
+ *  object. The groups post back to Search as it sent them. */
+export function resolvedOf(spec: Spec): {
+  readonly sentence: string | null;
+  readonly entityGroups: EntityGroups | null;
+} {
+  const groups = spec.resolved?.["entity_groups"];
+  return {
+    sentence: text(spec.resolved?.["rendered_sentence"]),
+    entityGroups: isRecord(groups) ? (groups as EntityGroups) : null,
+  };
+}
+
 export type CallOptions = {
   /** Aborts the fetch, rejecting with `signal.reason`. A build the server has started keeps
    *  running, and the same fetch joins it. */
   signal?: AbortSignal;
-  /** The longest the whole fetch takes, builds and downloads included, in milliseconds. None by
-   *  default: the fetch waits as long as the build takes, which the server bounds. Past it the
-   *  fetch raises `DfoTimeoutError` (`deadline_exceeded`) and the build carries on; the same
-   *  fetch joins it. */
+  /** The longest the whole fetch takes, builds, retries and downloads included, in
+   *  milliseconds, or `Infinity` for no bound. The client's `timeout` by default, else none, so
+   *  the fetch waits as long as the build takes, which the server bounds. Past it the fetch
+   *  raises `DfoTimeoutError` (`deadline_exceeded`) and the build carries on. The same fetch
+   *  joins it. */
   timeout?: number;
   onProgress?: ProgressHandler;
   /** Raises the first dataset warning, a `DataWarning`, instead of passing it to the warning
@@ -114,20 +136,43 @@ export type CallOptions = {
   partyTotals?: boolean;
 };
 
-export type FetchOptions = CallOptions &
-  Narrowing & {
-    /** For a ref, build the newest version of each member's spec in the ref's rendering, in
-     *  place of the exact versions it names. A spec always fetches its newest version. */
-    latest?: boolean;
-    /** For a share, a `Date`, a date such as `"2026-10-28"` or an RFC 3339 date-time such as
-     *  `"2026-10-28T10:00:00Z"`: the newest version the slot first served on or before it. A
-     *  date string reads as the last millisecond of that day in UTC. Unset reads what the slot
-     *  shows now. */
-    asOf?: Date | string | null | undefined;
-    /** For a share, the slot to read, numbered from 1 as the share's data URLs are. Unset reads
-     *  a share of one slot, and a share of several refuses it. */
-    slot?: number | null | undefined;
-  };
+/** The options a spec takes: every option but `latest`, `asOf` and `slot`. */
+export type SpecFetchOptions = CallOptions & Narrowing;
+
+/** The options a ref takes. Its `layout` must be the ref's own, and a ref of a frame DFO
+ *  computed takes no `onProgress`. */
+export type RefFetchOptions = Omit<CallOptions, "partyTotals"> & {
+  /** Build the newest version of each member's spec in the ref's rendering, in place of the
+   *  exact versions it names. */
+  latest?: boolean;
+};
+
+/** The options a recipe takes. */
+export type RecipeFetchOptions = Pick<CallOptions, "signal" | "timeout" | "strict"> & {
+  /** Run the recipe on the newest versions of the datasets it starts from. */
+  latest?: boolean;
+  /** A recipe's frame is in the frame layout. */
+  layout?: "frame";
+};
+
+/** The options a share, or its URL, takes. */
+export type ShareFetchOptions = Omit<CallOptions, "partyTotals" | "layout"> & {
+  /** A share's frame is in the frame layout. */
+  layout?: "frame";
+  /** Reads the newest version the slot first served on or before a `Date`, a date such as
+   *  `"2026-10-28"`, or an RFC 3339 date-time such as `"2026-10-28T10:00:00Z"`. A date string
+   *  reads as the last millisecond of that day in UTC. Unset reads what the slot shows now. */
+  asOf?: Date | string | null | undefined;
+  /** The slot to read, numbered from 1 as the share's data URLs are. Unset reads a share of
+   *  one slot, and a share of several refuses it. */
+  slot?: number | null | undefined;
+};
+
+/** Every option `client.fetch` takes for some target. Each target takes the subset its own
+ *  options type names, and refuses the rest at run time. */
+export type FetchOptions = SpecFetchOptions &
+  Pick<RefFetchOptions, "latest"> &
+  Pick<ShareFetchOptions, "asOf" | "slot">;
 
 /** The keys `client.fetch` takes. */
 export const FETCH_OPTIONS = declareOptions<FetchOptions>("client.fetch", {
@@ -150,6 +195,8 @@ export type FetchMembersOptions = CallOptions & {
   missing?: readonly Gap[];
   /** The build request's `scope`, applied to every member. */
   narrowing?: Narrowing;
+  /** The question the members answer, which the dataset keeps, when an answer fetches them. */
+  question?: string | null;
 };
 
 /** The variable text an identity resubmit sends for a spec no answer part names. Search
@@ -494,8 +541,8 @@ function artifactFault({ columns, rows }: ParquetFile, counted: number): string 
 /**
  * Downloads a file through the route that redirects to it, checked against its digest, or taken
  * as served when `digest` is undefined. The route ask is an API request, which retries as one
- * and waits the client's timeout per attempt; its failure raises. The URL it names is fetched
- * once, bare on the storage host and with the client's headers on the API's origin, reading
+ * and waits the client's `attemptTimeout` per attempt. Its failure raises. The URL it names is
+ * fetched once, bare on the storage host and with the client's headers on the API's origin, reading
  * until the fetch's deadline, if any, while a byte arrives at least every `DOWNLOAD_STALL_MS`;
  * in a browser that hid the redirect, that one fetch asks the route again with the key alone
  * and the browser follows the redirect. A retryable failure of that fetch, or bytes that do not
@@ -526,7 +573,7 @@ export async function download(
       try {
         data = await transport.fetchSigned(located.signed, {
           ...ask,
-          timeout: wait.timeout ?? Infinity,
+          attemptTimeout: wait.attemptTimeout ?? Infinity,
           stall: DOWNLOAD_STALL_MS,
           follow: located.follow,
         });
@@ -903,5 +950,6 @@ export async function fetchMembers(
   return Dataset.create(fetched, {
     layout,
     ...(options.missing === undefined ? {} : { missing: options.missing }),
+    question: options.question ?? null,
   });
 }

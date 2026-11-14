@@ -34,7 +34,7 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, Never, NoReturn, override
+from typing import TYPE_CHECKING, Any, ClassVar, NoReturn, override
 
 from dfo._core.codes import (
     ANSWER_DECLINED,
@@ -60,6 +60,7 @@ from dfo._core.parse import (
 )
 from dfo._core.refusals import describing, trace_id_of
 from dfo._core.text import cited
+from dfo._core.timeouts import CLIENT_TIMEOUT, CallTimeout
 from dfo._core.types import (
     Candidate,
     CandidatesPart,
@@ -76,7 +77,7 @@ from dfo._core.types import (
     option_line,
     shown_text,
 )
-from dfo._datasets.build import Reading, check_strict, response_json
+from dfo._datasets.build import Entities, Reading, check_strict, response_json
 from dfo._datasets.dataset import Dataset
 from dfo._datasets.fetch import SessionSource, fetch_members
 from dfo._generated import strict as _strict
@@ -212,7 +213,7 @@ class AsyncAnswer:
             )
 
     async def choose(
-        self, option: int | str, /, *old_form: Never, part: int | str | None = None
+        self, option: int | str, /, *, part: int | str | None = None
     ) -> AsyncAnswer:
         """Settle a part that awaits a choice, and return Search's new answer.
 
@@ -227,9 +228,6 @@ class AsyncAnswer:
         is read without closing full stops.
 
         Raises:
-            TypeError: A second positional argument, as the earlier
-                `choose(part, option)` took; the message names the call in
-                this form.
             InvalidRequestError: No part, or more than one when `part` is None,
                 awaits a choice; a key is not an index or a label, or names no
                 part or option; the part offers no options; or a part cannot be
@@ -237,16 +235,10 @@ class AsyncAnswer:
             ContractError: The chosen option's `data_query` is not a parsed
                 input of one part; it carries the answer's trace id.
         """
-        # A caller without a type checker can pass the `choose(part, option)` form.
-        if old_form:  # ty: ignore[redundant-condition]
-            raise TypeError(
-                "answer.choose takes the option first and the part as a keyword: "
-                f"answer.choose({cited(old_form[0])}, part={cited(option)})."
-            )
         with describing(self.trace_id):
             request = self._choice_input(option, part)
         return await resolve(
-            self._source, request, question=self.question, timeout=SEARCH_TIMEOUT
+            self._source, request, question=self.question, timeout=CLIENT_TIMEOUT
         )
 
     def _choice_input(
@@ -275,12 +267,12 @@ class AsyncAnswer:
         *,
         partial: bool = False,
         window: Window | None = None,
-        entities: Mapping[str, list[str] | tuple[str, ...] | None] | None = None,
+        entities: Entities | None = None,
         facets: Mapping[str, str | None] | None = None,
         strict: bool = False,
         layout: Layout = "long",
         party_totals: bool = False,
-        timeout: float | None = None,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
         progress: bool | None = None,
     ) -> Dataset:
         """Build the dataset for the answer's readings.
@@ -297,9 +289,12 @@ class AsyncAnswer:
             window: Narrow every reading to `"all"`, `"latest"` or
                 `(start_year, end_year)`.
             entities: Rebind the named roles of every reading to dcids, such as
-                `{"destination": ["country/NGA"]}`; each spec's `roles` lists
-                its keys. None drops a role. Each reading keeps its other
-                roles' binding, and an empty map narrows nothing.
+                `{"destination": ["country/NGA"]}`, or to what `lookup.resolve`
+                returns, such as
+                `{"destination": await client.lookup.resolve("Nigeria")}`;
+                each spec's `roles` lists its keys. None drops a role. Each
+                reading keeps its other roles' binding, and an empty map
+                narrows nothing.
             facets: Bind every reading's provenance, measurement method or
                 unit. An empty map narrows nothing.
             strict: Raise the `SearchWarning`, and the datasets surface's
@@ -310,11 +305,11 @@ class AsyncAnswer:
                 role a reading leaves open. False, the default, leaves them out,
                 so a sum over the table counts each party once; a role a reading
                 binds keeps what it binds.
-            timeout: The longest the whole build waits, in seconds. None, the
-                default, waits as long as the build takes, which the server
-                always ends. In the synchronous client, platform name
-                resolution can run past this bound; the asynchronous client
-                can cancel it.
+            timeout: The longest the whole build waits, in seconds, downloads
+                included. None waits as long as the build takes, which the
+                server always ends. Left out, the client's `timeout` applies,
+                else None. In the synchronous client, platform name resolution
+                can run past this bound; the asynchronous client can cancel it.
             progress: Show progress; None shows it in a terminal or notebook.
 
         Raises:
@@ -328,9 +323,10 @@ class AsyncAnswer:
                 above `info`.
             InvalidRequestError: `layout="frame"` with several readings;
                 `strict` is not a bool or `progress` neither a bool nor None;
-                `window`, `entities` or `facets` is malformed; or `entities`
-                names a role a reading does not declare, and the message lists
-                each part's roles (`invalid_argument`). No build is sent.
+                `window`, `entities` or `facets` is malformed; `entities` holds
+                a match that did not resolve; or `entities` names a role a
+                reading does not declare, and the message lists each part's
+                roles (`invalid_argument`). No build is sent.
             DfoTimeoutError: `timeout` passed (`deadline_exceeded`). The build
                 keeps running on the server, and the same fetch joins it.
             DfoError: The server refused a request.
@@ -359,13 +355,14 @@ class AsyncAnswer:
             layout=layout,
             party_totals=party_totals,
             strict=strict,
-            timeout=timeout,
+            timeout=session.transport.call_timeout(timeout),
             progress=progress,
             cache=session.cache,
             missing=self.gaps,
             window=window,
             entities=entities,
             facets=facets,
+            question=self.question,
         )
 
     def _incomplete_error(self) -> IncompleteAnswerError:
@@ -406,7 +403,7 @@ async def resolve(
     /,
     *,
     question: str | None,
-    timeout: float | None,
+    timeout: CallTimeout,
 ) -> AsyncAnswer:
     """Post one Search input and read the answer.
 
@@ -416,9 +413,10 @@ async def resolve(
             input.
         question: The question the answer stands for, kept on it.
         timeout: The longest the call waits, retries included, in seconds; each
-            attempt reads until then. None waits without limit. In the
-            synchronous client, platform name resolution can run past this bound;
-            the asynchronous client can cancel it.
+            attempt reads until then. None waits without limit, and
+            `CLIENT_TIMEOUT` takes the client's `timeout`, else `SEARCH_TIMEOUT`.
+            In the synchronous client, platform name resolution can run past
+            this bound; the asynchronous client can cancel it.
 
     Raises:
         DfoError: The response is a problem document with a string `code` but
@@ -436,7 +434,9 @@ async def resolve(
         RESOLVE_PATH,
         json={"schema_version": SCHEMA_VERSION, "input": request},
         timeout=math.inf,
-        deadline=transport.deadline(timeout),
+        deadline=transport.deadline(
+            transport.call_timeout(timeout, default=SEARCH_TIMEOUT)
+        ),
     )
     body = response_json(response)
     trace_id = trace_id_of(response, body)

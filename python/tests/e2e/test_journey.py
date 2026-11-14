@@ -302,7 +302,7 @@ def _post_build(client: Client, spec: Spec) -> tuple[int, dict[str, Any]]:
     the rendering a default fetch posts, so the fetch joins it."""
     body = build_body(spec, rendering_for("long", party_totals=False))
     # A build answers within 150 s; the client's default attempt is 30 s.
-    response = client.with_options(timeout=160.0).request(
+    response = client.with_options(attempt_timeout=160.0).request(
         "POST", "/datasets", json=body
     )
     return response.status_code, response.json()

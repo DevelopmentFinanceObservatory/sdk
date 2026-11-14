@@ -7,6 +7,7 @@
  * `util.inspect`, with the server's text passed through `inline`.
  */
 
+import { clientError } from "../core/errors.ts";
 import { isRecord, strings } from "../core/json.ts";
 import { inline } from "../core/text.ts";
 import type {
@@ -253,4 +254,43 @@ export class Catalogue {
   [INSPECT](): string {
     return this.toString();
   }
+}
+
+/**
+ * Fetch options with each `Entity` and resolved `Match` in `entities` read as its dcid, so a
+ * role takes what `client.lookup.resolve` returns with no request of its own. Options that are
+ * not an object, an `entities` that is not one, and any other value in a role stay as they
+ * are, for the fetch to check.
+ *
+ * @throws {InvalidRequestError} A role holds a `Match` that did not resolve: an ambiguous name,
+ *   a name not found, or a node the graph does not hold (`invalid_argument`).
+ */
+export function withEntityDcids<T>(options: T): T {
+  if (!isRecord(options) || !isRecord(options["entities"])) return options;
+  const entities = Object.entries(options["entities"]).map(([role, given]): [string, unknown] => [
+    role,
+    Array.isArray(given) ? given.map((item: unknown) => entityDcid(role, item)) : given,
+  ]);
+  return { ...options, entities: Object.fromEntries(entities) };
+}
+
+/**
+ * The dcid an `Entity` or resolved `Match` names; any other value as it is.
+ *
+ * @throws {InvalidRequestError} A `Match` did not resolve (`invalid_argument`). The message
+ *   names the dcid of its first candidate, else of its nearest match.
+ */
+function entityDcid(role: string, item: unknown): unknown {
+  if (item instanceof Entity) return item.dcid;
+  if (!(item instanceof Match)) return item;
+  if (item.status === "resolved" && item.entity !== null) return item.entity.dcid;
+  const [nearest] = item.candidates.length > 0 ? item.candidates : item.nearMatches;
+  const fix =
+    nearest === undefined
+      ? "pass a dcid, or the Match of a name client.lookup.resolve resolved"
+      : `pass the dcid you mean, such as ${JSON.stringify(nearest.dcid)}, or one of ` +
+        (item.candidates.length > 0 ? "match.candidates" : "match.nearMatches");
+  throw clientError("invalid_argument", {
+    detail: `entities.${role} holds a Match that did not resolve, ${String(item)}; ${fix}.`,
+  });
 }

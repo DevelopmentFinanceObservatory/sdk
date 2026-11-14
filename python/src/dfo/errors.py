@@ -9,6 +9,7 @@ file or text the client cannot read. The warnings are exception classes too, so
 `ClientErrorCode` values the client raises itself, or any code a server sends.
 """
 
+from dfo._core.base_error import ErrorCode
 from dfo._core.errors import (
     AuthenticationError,
     ContractError,
@@ -18,7 +19,6 @@ from dfo._core.errors import (
     DfoError,
     DfoTimeoutError,
     DfoWarning,
-    ErrorCode,
     IncompleteAnswerError,
     InvalidRequestError,
     NetworkError,

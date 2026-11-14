@@ -23,9 +23,12 @@ import dfo
 answer = dfo.search(
     "ODA disbursements from every donor to every recipient for social infrastructure and services, 1995 to 2024"
 )
-data = answer.fetch()
+spec = answer.specs[0]
+data = dfo.fetch(spec)
 print(data)
 ```
+
+Search notes that the question named no donor and no recipient, so the answer covers every one with data, which is the reading wanted here. `answer.fetch()` repeats that note as a `SearchWarning`, and `dfo.fetch(spec)` fetches the reading without it. Both wait for the build the same way.
 
 The progress goes to a bar on stderr in a terminal, to one live display in a notebook, and to INFO records on the `dfo` logger anywhere else, each naming the operation id, the trace id, and the rows written. `progress=False` silences it for one call, and `DFO_PROGRESS=0` for the process.
 
@@ -33,7 +36,7 @@ The progress goes to a bar on stderr in a terminal, to one live display in a not
 
 ## Set a deadline
 
-`timeout=` bounds the whole fetch in seconds, downloads included. When it passes, `fetch` raises `DfoTimeoutError` with the code `deadline_exceeded`, and the build carries on:
+`timeout=` bounds the whole fetch in seconds, downloads included, on the call or for every call on the client. When it passes, `fetch` raises `DfoTimeoutError` with the code `deadline_exceeded`, and the build carries on:
 
 ```text
 Building op_72daea81df3f067b98662314f0b9d29d48750c6afd5592aeecc058a7f68bcc9c: [--------------------] 0% 0 of about 978,349 rows
@@ -50,20 +53,20 @@ Building op_72daea81df3f067b98662314f0b9d29d48750c6afd5592aeecc058a7f68bcc9c: [#
 import dfo
 from dfo.errors import DfoTimeoutError
 
-answer = dfo.search(
+spec = dfo.search(
     "ODA disbursements from every donor to every recipient for social infrastructure and services, 1995 to 2024"
-)
+).specs[0]
 try:
-    data = answer.fetch(timeout=10)
+    data = dfo.fetch(spec, timeout=10)
 except DfoTimeoutError as error:
     print(error)
-    data = answer.fetch()  # joins the build the first call started
+    data = dfo.fetch(spec)  # joins the build the first call started
 print(data)
 ```
 
 The server names a build by a hash of its request, so a second identical fetch, from this process or another, joins the running build and waits for the rest of it. A build that finished returns at once.
 
-A fetch can run past its `timeout` by a little. When the last poll before the deadline reads the build done, the poll and each request that collects the file get one attempt of the client's own timeout, so the call returns the data. In the synchronous client, platform name resolution can also run past the bound. The asynchronous client can cancel it.
+A fetch can run past its `timeout` by a little. When the last poll before the deadline reads the build done, the poll and each request that collects the file get one attempt of the client's `attempt_timeout`, so the call returns the data. In the synchronous client, platform name resolution can also run past the bound. The asynchronous client can cancel it.
 
 ## Stop with Ctrl-C
 
@@ -98,12 +101,14 @@ QUESTION = "ODA disbursements from every donor to every recipient for economic i
 
 async def main() -> None:
     async with dfo.AsyncClient() as client:
-        answer = await client.search(QUESTION)
+        spec = (await client.search(QUESTION)).specs[0]
         try:
-            data = await asyncio.wait_for(answer.fetch(progress=False), timeout=10)
+            data = await asyncio.wait_for(
+                client.fetch(spec, progress=False), timeout=10
+            )
         except TimeoutError:
             print("Cancelled; the build keeps running.")
-            data = await answer.fetch(progress=False)
+            data = await client.fetch(spec, progress=False)
         print(len(data))
 
 
@@ -133,10 +138,11 @@ A build up to `sync_budget_rows` returns within its request. A larger one runs i
 
 The client's own timeouts sit underneath:
 
-- `Client(timeout=30.0)` bounds one request attempt, and `max_retries=2` sets the further attempts after a failure that can clear.
-- A build request reads for up to 150 seconds within the fetch's deadline.
-- `fetch(timeout=None)`, the default, waits for the whole build, and a number of seconds bounds it.
-- `search(timeout=60.0)` bounds a search, retries included.
+- `Client(timeout=...)` bounds every call that passes no `timeout` of its own, so `Client(timeout=300)` lets each fetch wait five minutes. None, the default, leaves `fetch` waiting for the whole build and `search` stopping after 60 seconds.
+- A call's `timeout=` overrides the client's, and `timeout=None` on the call waits without a bound.
+- `Client(attempt_timeout=30.0)` bounds one request attempt, and `max_retries=2` sets the further attempts after a failure that can clear. A build request reads for up to 150 seconds within the fetch's deadline.
+
+[Settings](settings.md#timeouts) lists both options with the others.
 
 ## Next
 

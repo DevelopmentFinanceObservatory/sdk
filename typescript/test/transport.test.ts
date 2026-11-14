@@ -362,14 +362,14 @@ describe("refusals", () => {
     [
       "Field required",
       "/input/definition/schema_version",
-      "Field required at /input/definition/schema_version [request_invalid · trace trace-1]",
+      "Field required at /input/definition/schema_version [request_invalid trace=trace-1]",
     ],
-    ["Field required.", "/input", "Field required at /input [request_invalid · trace trace-1]"],
-    ["/input is required", "/input", "/input is required [request_invalid · trace trace-1]"],
-    ["Field required", "", "Field required [request_invalid · trace trace-1]"],
-    ["Field required", 7, "Field required [request_invalid · trace trace-1]"],
+    ["Field required.", "/input", "Field required at /input [request_invalid trace=trace-1]"],
+    ["/input is required", "/input", "/input is required [request_invalid trace=trace-1]"],
+    ["Field required", "", "Field required [request_invalid trace=trace-1]"],
+    ["Field required", 7, "Field required [request_invalid trace=trace-1]"],
     // `problem` gives every document the title "Refused", which a document with no detail shows.
-    [undefined, "/input", "Refused at /input [request_invalid · trace trace-1]"],
+    [undefined, "/input", "Refused at /input [request_invalid trace=trace-1]"],
   ] as const) {
     test(`name the pointer ${JSON.stringify(pointer)} in the message of ${JSON.stringify(detail)}`, async () => {
       const { fetch } = mockFetch(
@@ -608,8 +608,9 @@ describe("keys", () => {
       Object.assign(global, globals);
       try {
         if (browser) {
-          assert.throws(() => transport({ apiKey: KEY }), TypeError);
-          assert.throws(() => transport({ apiKey: KEY.toUpperCase() }), TypeError);
+          const refused = { name: "InvalidRequestError", code: "invalid_argument" };
+          assert.throws(() => transport({ apiKey: KEY }), refused);
+          assert.throws(() => transport({ apiKey: KEY.toUpperCase() }), refused);
         } else assert.doesNotThrow(() => transport({ apiKey: KEY }));
         assert.doesNotThrow(() => transport({ apiKey: KEY, dangerouslyAllowBrowser: true }));
         const { fetch, seen } = mockFetch(json({}));
@@ -632,7 +633,11 @@ describe("keys", () => {
               ...options,
             }).request({ path: "/x", headers });
             if (browser && !dangerouslyAllowBrowser) {
-              await assert.rejects(sent, TypeError, source);
+              await assert.rejects(
+                sent,
+                { name: "InvalidRequestError", code: "invalid_argument" },
+                source,
+              );
               assert.equal(sending.seen.length, 0, source);
             } else await sent;
           }
@@ -762,7 +767,7 @@ describe("timeouts", () => {
     const { fetch, seen } = mockFetch(json({ ok: true }));
     const client = transport({
       fetch,
-      timeout: 60_000,
+      attemptTimeout: 60_000,
       headerProvider: () => new Promise<HeadersInit>(() => undefined),
     });
     const error = await client
@@ -777,7 +782,7 @@ describe("timeouts", () => {
     const { fetch, seen } = mockFetch(json({ ok: true }));
     const client = transport({
       fetch,
-      timeout: 60_000,
+      attemptTimeout: 60_000,
       apiKey: () => new Promise<string>(() => undefined),
     });
     const error = await client
@@ -801,7 +806,7 @@ describe("timeouts", () => {
     const client = transport({
       baseUrl: "https://api.example/api/v1",
       fetch,
-      timeout: 60_000,
+      attemptTimeout: 60_000,
       apiKey: () => key,
     });
     const url = new URL("https://api.example/api/v1/datasets/files/artifact");
@@ -835,7 +840,7 @@ describe("timeouts", () => {
     );
     const client = transport({
       fetch,
-      timeout: 60_000,
+      attemptTimeout: 60_000,
       apiKey: () => (calls++ === 0 ? "dfo_k_old" : refresh),
     });
     const error = await client
@@ -850,17 +855,17 @@ describe("timeouts", () => {
     assert.equal(seen[1]?.headers.get("authorization"), "Bearer dfo_k_new");
   });
 
-  test("retry an attempt that runs past the client's timeout", async () => {
+  test("retry an attempt that runs past the client's attemptTimeout", async () => {
     const { sleep } = recordingSleep();
     const { fetch, seen } = mockFetch(answerAfter(1_000), json({ ok: true }));
-    const response = await transport({ fetch, sleep, timeout: 20 }).request({ path: "/x" });
+    const response = await transport({ fetch, sleep, attemptTimeout: 20 }).request({ path: "/x" });
     assert.deepEqual(response.body, { ok: true });
     assert.equal(seen.length, 2);
   });
 
   test("raise deadline_exceeded with no retry when the deadline passes", async () => {
     const { fetch, seen } = mockFetch(answerAfter(1_000));
-    const client = transport({ fetch, timeout: 60_000 });
+    const client = transport({ fetch, attemptTimeout: 60_000 });
     const error = await client
       .request({ path: "/x", deadline: client.deadlineAfter(20) })
       .catch((e: unknown) => e);
@@ -871,7 +876,7 @@ describe("timeouts", () => {
 
   test("raise deadline_exceeded when the deadline passes during the body", async () => {
     const { fetch } = mockFetch(stalledBody);
-    const client = transport({ fetch, timeout: 60_000 });
+    const client = transport({ fetch, attemptTimeout: 60_000 });
     const error = await client
       .request({ path: "/x", deadline: client.deadlineAfter(20) })
       .catch((e: unknown) => e);
@@ -881,9 +886,9 @@ describe("timeouts", () => {
 
   test("fail a download that sends no byte for its stall bound as a retryable network_error", async () => {
     const { fetch } = mockFetch(stalledBody);
-    const error = await transport({ fetch, timeout: 60_000 })
+    const error = await transport({ fetch, attemptTimeout: 60_000 })
       .fetchSigned(new URL("https://storage.googleapis.com/bucket/object"), {
-        timeout: Infinity,
+        attemptTimeout: Infinity,
         stall: 20,
       })
       .catch((e: unknown) => e);
@@ -906,10 +911,10 @@ describe("timeouts", () => {
       return new Response(body, { status: 200 });
     };
     const { fetch } = mockFetch(trickle);
-    const data = await transport({ fetch, timeout: 60_000 }).fetchSigned(
+    const data = await transport({ fetch, attemptTimeout: 60_000 }).fetchSigned(
       new URL("https://storage.googleapis.com/bucket/object"),
       {
-        timeout: Infinity,
+        attemptTimeout: Infinity,
         stall: 30,
       },
     );
@@ -938,7 +943,7 @@ describe("timeouts", () => {
     test(`raise invalid_argument for a bad timeout before a passed deadline, ${name}`, async () => {
       const { fetch, seen } = mockFetch(json({ ok: true }));
       const error = await transport({ fetch, now: () => 1_000, ...options })
-        .request({ path: "/x", deadline: 1_000, timeout: -5 })
+        .request({ path: "/x", deadline: 1_000, attemptTimeout: -5 })
         .catch((value: unknown) => value);
       assert.ok(error instanceof InvalidRequestError);
       assert.equal(error.code, "invalid_argument");
@@ -948,7 +953,7 @@ describe("timeouts", () => {
     test(`raise invalid_argument for a bad timeout before invalid call headers, ${name}`, async () => {
       const { fetch, seen } = mockFetch(json({ ok: true }));
       const error = await transport({ fetch, ...options })
-        .request({ path: "/x", timeout: -5, headers: { "x-token": "bad\nvalue" } })
+        .request({ path: "/x", attemptTimeout: -5, headers: { "x-token": "bad\nvalue" } })
         .catch((value: unknown) => value);
       assert.ok(error instanceof InvalidRequestError);
       assert.equal(error.code, "invalid_argument");
@@ -957,9 +962,9 @@ describe("timeouts", () => {
   }
 
   for (const timeout of [2 ** 31, 30 * 24 * 3_600_000]) {
-    test(`take a client timeout of ${timeout} ms as its clamp`, async () => {
+    test(`take a client attemptTimeout of ${timeout} ms as its clamp`, async () => {
       const { fetch } = mockFetch(answerAfter(20));
-      const client = transport({ fetch, timeout });
+      const client = transport({ fetch, attemptTimeout: timeout });
       const response = await client.request({
         path: "/x",
         deadline: client.deadlineAfter(timeout),
@@ -973,7 +978,7 @@ describe("timeouts", () => {
       assert.equal(init.signal, undefined);
       return json({ ok: true })();
     });
-    await transport({ fetch }).request({ path: "/x", timeout: Infinity });
+    await transport({ fetch }).request({ path: "/x", attemptTimeout: Infinity });
   });
 });
 
@@ -1769,7 +1774,7 @@ describe("key providers", () => {
   ] as const) {
     test(`bound a stalled ${name} by the attempt's timeout`, async () => {
       const { fetch, seen } = mockFetch(json({ ok: true }));
-      const error = await transport({ fetch, timeout: 20, ...options })
+      const error = await transport({ fetch, attemptTimeout: 20, ...options })
         .request({ path: "/x" })
         .catch((value: unknown) => value);
       assert.ok(error instanceof DfoTimeoutError);
@@ -1844,7 +1849,7 @@ describe("server text", () => {
         assert.ok(error instanceof DfoError);
         assert.equal(
           error.message,
-          "[31mred[0m\nevil, sent [redacted]\n[request_invalid · trace trace-1]",
+          "[31mred[0m\nevil, sent [redacted]\n[request_invalid trace=trace-1]",
         );
         assert.equal(error.detail, "[31mred[0m\nevil, sent [redacted]");
         assert.equal(
@@ -1864,7 +1869,7 @@ describe("server text", () => {
     const client = transport({ fetch, maxRetries: 0 });
     const coded = await client.request({ path: "/x" }).catch((value: unknown) => value);
     assert.ok(coded instanceof DfoError);
-    assert.equal(coded.message, `${"x".repeat(1_000)}… [request_invalid · trace trace-1]`);
+    assert.equal(coded.message, `${"x".repeat(1_000)}… [request_invalid trace=trace-1]`);
     assert.equal(coded.detail.length, 5_000);
     const codeless = await client.request({ path: "/x" }).catch((value: unknown) => value);
     assert.ok(codeless instanceof DfoError);
@@ -1913,13 +1918,13 @@ describe("server text", () => {
     [
       "not_found",
       problem({ code: "not_found", status: 404, detail: noRoute }),
-      `${noRoute} [not_found · trace trace-1]`,
+      `${noRoute} [not_found trace=trace-1]`,
       noRoute,
     ],
     [
       "spec_not_found",
       problem({ code: "spec_not_found", status: 404, detail: noRoute }),
-      `${noRoute} [spec_not_found · trace trace-1]`,
+      `${noRoute} [spec_not_found trace=trace-1]`,
       noRoute,
     ],
     [

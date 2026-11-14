@@ -156,7 +156,10 @@ describe("a derived ref", () => {
     const [datasetMember] = DatasetRef.fromJSON(await oneMember()).members;
     const [derivedMember] = DatasetRef.fromJSON(await derived()).members;
     assert.ok(datasetMember && derivedMember && isDerived(derivedMember));
-    assert.throws(() => new DatasetRef([datasetMember, derivedMember]), TypeError);
+    assert.throws(() => new DatasetRef([datasetMember, derivedMember]), {
+      name: "InvalidRequestError",
+      code: "invalid_argument",
+    });
   });
 
   test("compares its data with a ref alone", async () => {

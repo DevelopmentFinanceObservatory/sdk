@@ -23,14 +23,10 @@ import { join } from "node:path";
 import { describe, test } from "node:test";
 import { promisify } from "node:util";
 
-import {
-  Client,
-  DatasetRef,
-  IncompleteAnswerError,
-  InvalidRequestError,
-  NotFoundError,
-} from "../../src/index.ts";
-import type { Answer, Dataset, Row, Spec } from "../../src/index.ts";
+import { IncompleteAnswerError, InvalidRequestError, NotFoundError } from "../../src/errors.ts";
+import { Client, DatasetRef } from "../../src/index.ts";
+import type { Answer, Dataset, Spec } from "../../src/index.ts";
+import type { Row } from "../../src/types.ts";
 import { firstLogged, idTokenHeaders } from "../support.ts";
 
 const baseUrl = process.env["DFO_BASE_URL"];

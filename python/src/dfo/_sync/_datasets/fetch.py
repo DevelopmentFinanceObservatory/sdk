@@ -25,6 +25,7 @@ fetches of one artifact download it once, through `Cache.downloading`.
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from typing import Any
 from urllib.parse import urljoin
 
@@ -67,6 +68,7 @@ from dfo._datasets.build import (
     build_body,
     check_strict,
     counted_rows,
+    dcid_entities,
     narrowings,
     pick_artifact,
     rendering_for,
@@ -74,7 +76,12 @@ from dfo._datasets.build import (
     resubmit_body,
 )
 from dfo._datasets.cache import sha256_digest
-from dfo._datasets.dataset import Dataset, FetchedMember, build_dataset
+from dfo._datasets.dataset import (
+    Dataset,
+    FetchedMember,
+    build_dataset,
+    fetch_time,
+)
 from dfo._datasets.interrupt import sync_interrupt_note
 from dfo._datasets.progress import ProgressRenderer
 from dfo._generated.strict import RESOLUTION_KIND
@@ -136,6 +143,7 @@ def fetch_members(
     window: Window | None = None,
     entities: Entities | None = None,
     facets: Mapping[str, str | None] | None = None,
+    question: str | None = None,
 ) -> Dataset:
     """Build the latest version of each spec and assemble one dataset.
 
@@ -159,14 +167,18 @@ def fetch_members(
             when there are none.
         window: Narrow every reading to `"all"`, `"latest"` or
             `(start_year, end_year)`.
-        entities: Rebind the named roles of every reading to dcids; None drops
+        entities: Rebind the named roles of every reading to dcids, or to the
+            entities and resolved matches `lookup.resolve` returns; None drops
             a role. Each reading keeps its other roles' binding.
         facets: Bind every reading's provenance, measurement method or unit.
+        question: The question of the answer the readings answer, which the
+            dataset keeps; None for a spec or ref.
 
     Raises:
         InvalidRequestError: `layout="frame"` with several members, `strict`
             is not a bool or `progress` neither a bool nor None, the narrowing
-            is malformed or `entities` names a role a reading does not declare
+            is malformed, `entities` holds a match that did not resolve, or
+            `entities` names a role a reading does not declare
             (`invalid_argument`), all before any request; or the server refused
             a build as malformed.
         NetworkError: `DFO_OFFLINE=1` is set, and the cache holds no version of
@@ -174,7 +186,7 @@ def fetch_members(
         DfoTimeoutError: The deadline passed; the message says the build carries
             on on the server. A long build the poll at the deadline reads done
             still downloads, each request for one attempt of the client's
-            timeout.
+            `attempt_timeout`.
         DfoError: The server refused a request.
     """
     wants = _distinct(readings)
@@ -186,8 +198,9 @@ def fetch_members(
             'layout="frame" holds one reading; fetch each spec on its own for its '
             "frame",
         )
-    scopes = narrowings(wants, window=window, entities=entities, facets=facets)
-    named = asked(entities=entities, facets=facets)
+    dcids = dcid_entities(entities)
+    scopes = narrowings(wants, window=window, entities=dcids, facets=facets)
+    named = asked(entities=dcids, facets=facets)
     stale = offline()
     if stale and any(narrowed is not None for narrowed in scopes):
         raise client_error(
@@ -257,6 +270,7 @@ def fetch_members(
         stale=stale,
         cache=cache,
         caller=transport.caller,
+        question=question,
     )
 
 
@@ -328,8 +342,8 @@ def _narrowing_refusal(
         name = next((dcid for dcid in asked.dcids if "/" not in dcid), None)
         if name is not None:
             hints.append(
-                f"Entities take dcids; {caller}.lookup.resolve({cited(name)}) finds "
-                "one."
+                f"Entities take dcids, or what {caller}.lookup.resolve({cited(name)}) "
+                "returns."
             )
     return with_hint(error, *hints) if hints else error
 
@@ -469,8 +483,9 @@ def finish_member(
     `want` is the reading posted, or None for a build resumed by its id, and
     `trace_id` the trace id of the response that carried the manifest, or None
     for a cached one. `cached_data` is the artifact's bytes when the manifest
-    came from the cache, which already lists it. The manifest's warnings and its
-    artifact's `url` are checked before any request.
+    came from the cache, which already lists it, and `cache` gives its fetch
+    time. The manifest's warnings and its artifact's `url` are checked before any
+    request.
     """
     definition = manifest["definition"]
     spec_id = definition["spec_id"]
@@ -495,9 +510,8 @@ def finish_member(
             None if want is None else want.spec,
             deadline=deadline,
         )
-    data = cached_data
-    if data is None:
-        data = _cached_download(
+    if cached_data is None:
+        data, fetched_at, from_cache = _cached_download(
             transport,
             cache,
             manifest,
@@ -505,6 +519,13 @@ def finish_member(
             artifact,
             route=route,
             deadline=deadline,
+        )
+    else:
+        data, from_cache = cached_data, True
+        fetched_at = (
+            None
+            if cache is None
+            else sync_offload(cache.fetched_at, artifact["artifact_digest"])
         )
     return FetchedMember(
         parts=parts,
@@ -516,6 +537,8 @@ def finish_member(
         data=data,
         answer_parts=() if want is None else want.answer_parts,
         rendering=rendering,
+        fetched_at=fetched_at,
+        from_cache=from_cache,
     )
 
 
@@ -528,19 +551,23 @@ def _cached_download(
     *,
     route: str,
     deadline: float | None,
-) -> bytes:
-    """An artifact's bytes from the cache, else downloaded from `route` and stored."""
+) -> tuple[bytes, datetime | None, bool]:
+    """An artifact's bytes from the cache, else downloaded from `route` and
+    stored, with when they left the server and whether the cache held them."""
     digest = artifact["artifact_digest"]
     with holding(transport, cache, digest, deadline=deadline):
         data = None if cache is None else sync_offload(cache.get_bytes, digest)
-        if data is not None:
+        if cache is not None and data is not None:
             sync_offload(store, cache, manifest, rendering, digest)
-            return data
+            return data, sync_offload(cache.fetched_at, digest), True
         data = download(
             transport, route, digest, size=artifact.get("bytes"), deadline=deadline
         )
-        sync_offload(store, cache, manifest, rendering, digest, data)
-        return data
+        fetched_at = fetch_time()
+        sync_offload(
+            store, cache, manifest, rendering, digest, data, fetched_at=fetched_at
+        )
+        return data, fetched_at, False
 
 
 def holding(
@@ -568,8 +595,12 @@ def store(
     rendering: Rendering,
     digest: str,
     data: bytes | None = None,
+    *,
+    fetched_at: datetime | None = None,
 ) -> None:
     """Store `data` under `digest`, and merge the artifact into the cached manifest.
+
+    `fetched_at` is when `data` left the server, which the cache records.
 
     `Cache.merging` holds the manifest while it is read, merged and written, so
     fetches in one process keep each other's artifacts. A writer in another
@@ -579,7 +610,7 @@ def store(
     if cache is None:
         return
     if data is not None:
-        cache.put_bytes(digest, data)
+        cache.put_bytes(digest, data, fetched_at=fetched_at)
     spec_id = manifest["definition"]["spec_id"]
     content_version = manifest["content_version"]
     cached = dict(manifest)

@@ -68,14 +68,20 @@ def create_card(
             (`allowance_exhausted`); `retry_after` says when it resets.
     """
     ref = _one_version(data, transport.caller)
+    deadline = transport.deadline(transport.timeout)
     (member,) = ref.members
     frame = {"spec_id": member.spec.spec_id, "content_version": member.content_version}
     body: dict[str, Any] = {"type": CARD_TYPES[kind], "frame_ref": frame, **intent}
     if kind != "source":
-        body["select"] = {_STAT_VAR: _variables(transport, data, frame)}
+        body["select"] = {
+            _STAT_VAR: _variables(transport, data, frame, deadline=deadline)
+        }
     token = "cmw_" + secrets.token_urlsafe(16)
     response = transport.request(
-        "POST", CARDS_PATH, json={"intent": body, "write_token": token}
+        "POST",
+        CARDS_PATH,
+        json={"intent": body, "write_token": token},
+        deadline=deadline,
     )
     reply = response_json(response)
     with describing(trace_id_of(response, reply)):
@@ -112,7 +118,11 @@ def _one_version(data: object, caller: str) -> DatasetRef:
 
 
 def _variables(
-    transport: Transport, data: object, frame: Mapping[str, str]
+    transport: Transport,
+    data: object,
+    frame: Mapping[str, str],
+    *,
+    deadline: float | None,
 ) -> str | list[str]:
     """The variables the version holds, from a Dataset's rows when they name
     them, else from DFO: one as text, several as a sorted list, so one set of
@@ -125,7 +135,9 @@ def _variables(
         ]
     else:
         path = f"/presentation/frames/{frame['spec_id']}/{frame['content_version']}"
-        response = transport.request("GET", path, params={"dimension": _STAT_VAR})
+        response = transport.request(
+            "GET", path, params={"dimension": _STAT_VAR}, deadline=deadline
+        )
         reply = response_json(response)
         values = reply.get("values") if isinstance(reply, Mapping) else None
         if not isinstance(values, list):

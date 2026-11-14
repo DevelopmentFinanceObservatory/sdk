@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, test } from "node:test";
 
 import { parquetMetadata } from "hyparquet";
 import { parquetWriteBuffer } from "hyparquet-writer";
 
 import { toArrow } from "../src/datasets/arrow.ts";
-import { Dataset, datasetTable } from "../src/datasets/dataset.ts";
+import { Dataset, datasetTable, pinnedDataset } from "../src/datasets/dataset.ts";
 import type { FetchedMember } from "../src/datasets/dataset.ts";
 import { decodeRows, decodeStored, readParquet, widen } from "../src/datasets/parquet.ts";
 import { partFacts } from "../src/core/parse.ts";
@@ -18,6 +20,9 @@ import type { DerivedRefMember } from "../src/core/ref.ts";
 import type { Gap } from "../src/search/answer.ts";
 import { replay, scenario, scenarioBytes, stepOf } from "./replay.ts";
 import { clientOver } from "../src/client.ts";
+import { InvalidRequestError } from "../src/core/errors.ts";
+import { installFileWriter } from "../src/datasets/save.ts";
+import { writeDatasetFile } from "../src/datasets/save-node.ts";
 import { recordedBytes, recordedJson } from "./support.ts";
 
 const SCENARIOS = new URL("../../contract/scenarios/", import.meta.url);
@@ -43,7 +48,7 @@ function member(
   };
 }
 
-/** A file `bytes()` wrote, read as it stands: its columns and rows in file order, and the
+/** A file `toBytes()` wrote, read as it stands: its columns and rows in file order, and the
  *  member row counts its `dfo.dataset` records, which Python's `dfo.load` splits it by. */
 function readSaved(bytes: Uint8Array): {
   rows: () => Promise<Row[]>;
@@ -134,7 +139,10 @@ describe("Parquet types", () => {
   });
 
   test("toRows refuses an int64 beyond a number's exact range", async () => {
-    await assert.rejects((await types()).toRows(), RangeError);
+    await assert.rejects((await types()).toRows(), {
+      name: "InvalidRequestError",
+      code: "invalid_argument",
+    });
   });
 
   test("a column named __proto__ reads as any other", async () => {
@@ -169,7 +177,7 @@ describe("Parquet types", () => {
       ["value", name],
     );
     assert.equal(table.getChild(name)?.get(1), "b");
-    const saved = parquetMetadata((await dataset.bytes()).buffer as ArrayBuffer);
+    const saved = parquetMetadata((await dataset.toBytes()).buffer as ArrayBuffer);
     assert.deepEqual(
       saved.schema.slice(1).map((element) => element.name),
       ["value", name],
@@ -209,10 +217,10 @@ describe("DECIMAL values", async () => {
       (await decodeStored(datasetTable(dataset))).map(({ name, values }) => [name, values]),
     );
 
-  test("bytes() writes each decimal exact, as the unscaled integer the file stores", async () => {
+  test("toBytes() writes each decimal exact, as the unscaled integer the file stores", async () => {
     const dataset = await Dataset.create([member(data)], { layout: "long" });
     assert.deepEqual(await valuesOf(dataset), unscaled);
-    const written = await Dataset.create([member(await dataset.bytes())], { layout: "long" });
+    const written = await Dataset.create([member(await dataset.toBytes())], { layout: "long" });
     assert.deepEqual(await valuesOf(written), unscaled);
     assert.deepEqual(written.columns, dataset.columns);
   });
@@ -267,7 +275,7 @@ describe("DECIMAL values", async () => {
       narrow: [...unscaled.narrow, 700n],
     };
     assert.deepEqual(await valuesOf(dataset), expected);
-    const written = readSaved(await dataset.bytes());
+    const written = readSaved(await dataset.toBytes());
     assert.deepEqual(
       Object.fromEntries((await written.stored()).map(({ name, values }) => [name, values])),
       expected,
@@ -359,8 +367,8 @@ describe("a dataset of several members", async () => {
     assert.equal(dataset.layoutVersion, "long_v2; long");
   });
 
-  test("bytes() writes one Parquet file of the stacked table, with the provenance", async () => {
-    const stacked = await dataset.bytes();
+  test("toBytes() writes one Parquet file of the stacked table, with the provenance", async () => {
+    const stacked = await dataset.toBytes();
     // The file holds the table's columns in reading order, `part` first, and reads back so.
     assert.deepEqual(
       parquetMetadata(stacked.slice().buffer)
@@ -378,9 +386,11 @@ describe("a dataset of several members", async () => {
         value,
       ]),
     );
+    // A dataset fetched outside an answer saves no `dfo.question`.
     assert.deepEqual(Object.keys(metadata).toSorted(), [
       "dfo.citation",
       "dfo.dataset",
+      "dfo.fetched_at",
       "dfo.format_version",
       "dfo.licence",
       "dfo.ref",
@@ -421,7 +431,7 @@ test("a stacked file keeps every column type the members store", async () => {
     ],
     { layout: "long" },
   );
-  const stacked = await dataset.bytes();
+  const stacked = await dataset.toBytes();
   const original = await decodeStored(datasetTable(dataset));
   const written = await readSaved(stacked).stored();
   assert.deepEqual(written, original);
@@ -474,6 +484,112 @@ describe("an empty member beside a member with rows", async () => {
     assert.ok(
       (await Dataset.create([member(empty)], { layout: "long" })).columns.includes("value"),
     );
+  });
+});
+
+describe("provenance", async () => {
+  const data = await scenarioBytes("fetch-ref.parquet");
+  const manifest = {
+    citation: {
+      text: "WDI; CRS.",
+      sources: [
+        {
+          ref: "dc:WDI",
+          label: "World Development Indicators",
+          license: "CC BY 4.0",
+          license_url: "https://creativecommons.org/licenses/by/4.0/",
+          url: "https://data.worldbank.org",
+          processing_level: "raw",
+        },
+        { ref: "dc:CRS", label: "Creditor Reporting System" },
+        { ref: "dc:WDI2", label: "WDI again", license: "CC BY 4.0" },
+      ],
+    },
+  };
+  const fetchedAt = new Date("2026-11-13T09:15:42.678Z");
+  const dataset = await Dataset.create([member(data, { manifest })], {
+    layout: "long",
+    question: "Aid to Nigeria",
+    fetchedAt,
+  });
+
+  test("spells each source's licence as Python does, and joins the distinct licences", () => {
+    assert.deepEqual(dataset.citation.sources[0], {
+      ref: "dc:WDI",
+      label: "World Development Indicators",
+      licence: "CC BY 4.0",
+      licenceUrl: "https://creativecommons.org/licenses/by/4.0/",
+      url: "https://data.worldbank.org",
+    });
+    assert.deepEqual(dataset.citation.sources[1], {
+      ref: "dc:CRS",
+      label: "Creditor Reporting System",
+      licence: null,
+      licenceUrl: null,
+      url: null,
+    });
+    assert.equal(dataset.licence, "CC BY 4.0");
+  });
+
+  test("keeps the question and the fetch time to the second, and saves both", async () => {
+    assert.equal(dataset.question, "Aid to Nigeria");
+    assert.equal(dataset.fetchedAt.toISOString(), "2026-11-13T09:15:42.000Z");
+    const metadata = Object.fromEntries(
+      (parquetMetadata((await dataset.toBytes()).slice().buffer).key_value_metadata ?? []).map(
+        ({ key, value }) => [key, value],
+      ),
+    );
+    assert.equal(JSON.parse(metadata["dfo.question"]!), "Aid to Nigeria");
+    assert.equal(JSON.parse(metadata["dfo.fetched_at"]!), "2026-11-13T09:15:42Z");
+    assert.equal(metadata["dfo.licence"], "CC BY 4.0");
+    const citation = JSON.parse(metadata["dfo.citation"]!) as { sources: unknown[] };
+    assert.deepEqual(citation.sources[0], {
+      ref: "dc:WDI",
+      label: "World Development Indicators",
+      licence: "CC BY 4.0",
+      licence_url: "https://creativecommons.org/licenses/by/4.0/",
+      url: "https://data.worldbank.org",
+    });
+  });
+
+  test("a pinned copy keeps the question and the fetch time", () => {
+    const pinned = pinnedDataset(dataset);
+    assert.equal(pinned.question, "Aid to Nigeria");
+    assert.equal(pinned.fetchedAt.getTime(), dataset.fetchedAt.getTime());
+  });
+
+  test("a dataset with no question has none, and is stamped when it was made", async () => {
+    const before = Math.floor(Date.now() / 1000) * 1000;
+    const plain = await Dataset.create([member(data)], { layout: "long" });
+    assert.equal(plain.question, null);
+    assert.ok(plain.fetchedAt.getTime() >= before && plain.fetchedAt.getTime() <= Date.now());
+    assert.equal(plain.fetchedAt.getMilliseconds(), 0);
+  });
+
+  test("save(path) writes the file toBytes() returns", async () => {
+    installFileWriter(writeDatasetFile);
+    const dir = await mkdtemp(join(tmpdir(), "dfo-save-"));
+    try {
+      const path = join(dir, "aid.parquet");
+      await dataset.save(path);
+      assert.deepEqual(new Uint8Array(await readFile(path)), await dataset.toBytes());
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("save(path) refuses where no file writer is installed, naming toBytes()", async () => {
+    installFileWriter(undefined);
+    try {
+      await assert.rejects(dataset.save("aid.parquet"), (error: unknown) => {
+        assert.ok(error instanceof InvalidRequestError);
+        assert.equal(error.code, "invalid_argument");
+        assert.match(error.message, /toBytes\(\)/);
+        return true;
+      });
+    } finally {
+      installFileWriter(writeDatasetFile);
+    }
   });
 });
 
@@ -590,8 +706,8 @@ describe("one member", async () => {
     assert.equal(parsed.buffer.byteLength, data.length);
   });
 
-  test("bytes() writes the member's table with the provenance and no part column", async () => {
-    const written = await dataset.bytes();
+  test("toBytes() writes the member's table with the provenance and no part column", async () => {
+    const written = await dataset.toBytes();
     const metadata = Object.fromEntries(
       (parquetMetadata(written.slice().buffer).key_value_metadata ?? []).map(({ key, value }) => [
         key,
@@ -632,7 +748,7 @@ async function derivedMember(name: "chain" | "rank" = "chain"): Promise<DerivedR
 
 const savedMetadata = async (dataset: Dataset): Promise<Record<string, string | undefined>> =>
   Object.fromEntries(
-    (parquetMetadata((await dataset.bytes()).slice().buffer).key_value_metadata ?? []).map(
+    (parquetMetadata((await dataset.toBytes()).slice().buffer).key_value_metadata ?? []).map(
       ({ key, value }) => [key, value],
     ),
   );
@@ -722,7 +838,7 @@ describe("a derived dataset", () => {
   });
 
   for (const complete of [true, false]) {
-    test(`bytes() writes its format 2 ref, left-out series and steps (complete ${complete})`, async () => {
+    test(`toBytes() writes its format 2 ref, left-out series and steps (complete ${complete})`, async () => {
       const dataset = await derived("chain", { left_out_complete: complete });
       const metadata = await savedMetadata(dataset);
       // A client that reads format 1 alone refuses the file as a later format.
@@ -897,7 +1013,7 @@ describe("party totals left out", () => {
     ["rows without provenance", { provenance: null }, null, false],
     ["every provenance", {}, null, true],
   ] as const) {
-    test(`keeps ${name} through bytes()`, async () => {
+    test(`keeps ${name} through toBytes()`, async () => {
       const entry = { role: "financingRecipient", entities: ["AfricaTotal"], ...served };
       const data = await scenarioBytes("fetch-ref.parquet");
       const manifest = { trace: { party_totals_left_out: [entry], other: 1 } };
@@ -1008,7 +1124,7 @@ describe("members whose column types differ", () => {
         [2021, 0.5, new Date(2_000)],
       ],
     );
-    const reread = await Dataset.create([member(await dataset.bytes())], { layout: "long" });
+    const reread = await Dataset.create([member(await dataset.toBytes())], { layout: "long" });
     assert.deepEqual(await reread.toRows(), await dataset.toRows());
     const stored = await decodeStored(datasetTable(reread));
     const typed = (columns: readonly { name: string; type: unknown }[]) =>
@@ -1079,7 +1195,7 @@ describe("members whose column types differ", () => {
         ),
       rows,
     );
-    const reread = await Dataset.create([member(await dataset.bytes())], { layout: "long" });
+    const reread = await Dataset.create([member(await dataset.toBytes())], { layout: "long" });
     assert.deepEqual(await reread.toRows(), rows);
   });
 
@@ -1286,7 +1402,7 @@ describe("members whose column types differ", () => {
       (await dataset.toRows()).map(({ count }) => count),
       [2 ** 32 - 1, -1],
     );
-    const saved = readSaved(await dataset.bytes());
+    const saved = readSaved(await dataset.toBytes());
     assert.deepEqual(await saved.rows(), await dataset.toRows());
   });
 
@@ -1303,7 +1419,7 @@ describe("members whose column types differ", () => {
     );
     const rows = [2022, 2024, 2021, 2023].map((year) => ({ part: "aid", year }));
     assert.deepEqual(await dataset.toRows(), rows);
-    const saved = readSaved(await dataset.bytes());
+    const saved = readSaved(await dataset.toBytes());
     assert.deepEqual(await saved.rows(), rows);
     assert.deepEqual(saved.memberRows, [2, 2]);
   });
@@ -1329,7 +1445,7 @@ describe("members whose column types differ", () => {
     const unsigned = file({ count: { type: "INT64", converted: "UINT_64", data: [maximum] } });
     const dataset = await Dataset.create([member(unsigned)], { layout: "long" });
     assert.equal((await toArrow(dataset)).getChild("count")?.get(0), maximum);
-    const saved = await Dataset.create([member(await dataset.bytes())], { layout: "long" });
+    const saved = await Dataset.create([member(await dataset.toBytes())], { layout: "long" });
     assert.equal((await toArrow(saved)).getChild("count")?.get(0), maximum);
   });
 });

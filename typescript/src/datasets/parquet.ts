@@ -6,7 +6,7 @@
  * columns and rows in reading order, which `presentedOrder` reads from its values. A column
  * whose type differs between files widens as pyarrow's permissive promotion widens it, so a table either client stacks has the same types. A DECIMAL column
  * keeps its precision and scale. Its values are read as the unscaled integers the file stores,
- * so `bytes()` writes them exact, and `toRows()` and `toArrow()` give each the nearest 64-bit
+ * so `toBytes()` writes them exact, and `toRows()` and `toArrow()` give each the nearest 64-bit
  * float. A LIST column, in the standard three-level layout, reads as arrays of its items, and a
  * struct group as objects keyed by its fields.
  */
@@ -613,10 +613,11 @@ function rowValue(value: unknown, column: Column): Value {
   }
   if (typeof value === "bigint") {
     if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER)) {
-      throw new RangeError(
-        `The column ${column.name} holds ${value}, beyond a JavaScript number's exact range; ` +
+      throw clientError("invalid_argument", {
+        detail:
+          `The column ${column.name} holds ${value}, beyond a JavaScript number's exact range; ` +
           "read it with toArrow(), which keeps it as a bigint.",
-      );
+      });
     }
     return Number(value);
   }

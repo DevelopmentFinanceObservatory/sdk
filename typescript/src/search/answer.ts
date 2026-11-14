@@ -17,6 +17,7 @@ import type { Dataset } from "../datasets/dataset.ts";
 import {
   fetchMembers as defaultFetchMembers,
   narrowingOf,
+  resolvedOf,
   RESOLVE_PATH,
   RESOLVE_SCHEMA_VERSION,
 } from "../datasets/fetch.ts";
@@ -31,7 +32,9 @@ import type { GAP_KINDS } from "../generated/actions.ts";
 import { parsedInputOf, partFacts, warningsOf } from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
 import { definiteParts, isKnownPart, partSentence, partText } from "../core/parts.ts";
+import type { DefinitePart, KnownPart, NoDataPart, Part } from "../core/parts.ts";
 import { checkOptions, declareOptions } from "../core/options.ts";
+import { withEntityDcids } from "./lookup-results.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
 import type { Transport } from "../http/transport.ts";
@@ -42,13 +45,9 @@ import type {
   DatasetResubmitInput,
   DeclinedReason,
   Diagnostics,
-  KnownPart,
-  NoData,
   ParsedInput,
-  Part,
   Notice,
   RawTextInput,
-  Spec as WireSpec,
 } from "../wire.ts";
 import type { Spec } from "../core/ref.ts";
 import { isRecord, list, objects, strings, text } from "../core/json.ts";
@@ -97,7 +96,7 @@ export type Candidate = {
 };
 
 /** One way to settle a part that awaits a choice of place or source. */
-export type QueryOption = {
+export type Option = {
   readonly kind: "query";
   /** The choice as the user reads it, such as "Congo [DRC]". */
   readonly label: string;
@@ -123,7 +122,7 @@ export type Gap = {
   /** What the user reads about it. */
   readonly message: string;
   /** The choices that settle it: a candidates part's readings, or a refusal's options. */
-  readonly options: readonly (Candidate | QueryOption)[];
+  readonly options: readonly (Candidate | Option)[];
 };
 
 /** What an answer's requests go through. The client builds it. */
@@ -141,7 +140,8 @@ export type AnswerContext = {
 export type SearchOptions = {
   readonly signal?: AbortSignal;
   /** The longest the whole call takes, retries included, in milliseconds; each attempt reads
-   *  until then. `Infinity` waits as long as Search takes. 60 seconds by default. */
+   *  until then. `Infinity` waits as long as Search takes. The client's `timeout` by default,
+   *  else 60 seconds. */
   readonly timeout?: number;
 };
 
@@ -225,7 +225,9 @@ export class Answer {
   readonly status: AnswerStatus;
   /** Search's sentence for the whole answer; null for a declined or catalogue answer. */
   readonly sentence: string | null;
-  /** One part per variable asked, in query order. */
+  /** One part per variable asked, in query order. A part types the members the client checks,
+   *  its `status` and the reading or refusal it names, and every other member as `unknown`; read
+   *  its assumptions, departures, operations and warnings from `facts`. */
   readonly parts: readonly Part[];
   /** The readings, one per distinct `spec_id`, in query order. */
   readonly specs: readonly Spec[];
@@ -300,23 +302,15 @@ export class Answer {
    * needed only when several parts await a choice: `answer.choose(0, { part: "GDP" })`. The
    * chosen answer's sentence and assumptions are Search's.
    *
-   * @throws {TypeError} The second argument is not an options object, as in a call that names
-   *   the part before the option.
    * @throws {InvalidRequestError} No part, or more than one, awaits a choice and `part` is not
    *   given; the part or option is unknown; the part offers no options; or a part cannot be
-   *   posted back (`choice_invalid`); or `options` holds a key outside `ChooseOptions`
-   *   (`invalid_argument`). A part or label that names nothing is refused with the nearest
+   *   posted back (`choice_invalid`); or `options` is not an object or holds a key outside
+   *   `ChooseOptions` (`invalid_argument`). A part or label that names nothing is refused with the nearest
    *   match and the valid choices.
    * @throws {ContractError} The chosen option carries no one-part `data_query`. The error carries
    *   the answer's trace id.
    */
   async choose(option: ChoiceKey, options: ChooseOptions = {}): Promise<Answer> {
-    if (!isRecord(options)) {
-      throw new TypeError(
-        `answer.choose takes the option first and the part as an option: ` +
-          `answer.choose(${JSON.stringify(options)}, { part: ${JSON.stringify(option)} }).`,
-      );
-    }
     const { part, ...request } = checkOptions(CHOOSE_OPTIONS, options);
     const input = describing(this.traceId, () => {
       const gap = part === undefined ? onlyChoice(this) : gapNamed(this, part);
@@ -332,8 +326,9 @@ export class Answer {
    * narrows one spec.
    *
    * @throws {InvalidRequestError} `options` holds a key outside `AnswerFetchOptions`, or a
-   *   narrowing breaks its rule or names a role a reading does not take, which names each
-   *   reading's roles, before any request (`invalid_argument`).
+   *   narrowing breaks its rule, names a role a reading does not take, which names each
+   *   reading's roles, or holds a `Match` that did not resolve, before any request
+   *   (`invalid_argument`).
    * @throws {DeclinedError} Search declined the question or answered with the catalogue.
    * @throws {IncompleteAnswerError} A part has no reading and `partial` is false, or no part has
    *   one.
@@ -341,9 +336,8 @@ export class Answer {
    * @throws {DataWarning} `strict` is true and a manifest carries a warning above `info`.
    */
   async fetch(options: AnswerFetchOptions = {}): Promise<Dataset> {
-    const { partial, window, entities, facets, ...fetchOptions } = checkOptions(
-      ANSWER_FETCH_OPTIONS,
-      options,
+    const { partial, window, entities, facets, ...fetchOptions } = withEntityDcids(
+      checkOptions(ANSWER_FETCH_OPTIONS, options),
     );
     if (this.kind !== "resolution") {
       throw clientError("answer_declined", {
@@ -375,6 +369,7 @@ export class Answer {
       ...fetchOptions,
       narrowing: narrowingOf({ window, entities, facets }),
       missing: this.gaps,
+      question: this.question,
     });
   }
 
@@ -441,8 +436,8 @@ export async function resolveAnswer(
   const response = await transport.request({
     path: RESOLVE_PATH,
     json: { schema_version: RESOLVE_SCHEMA_VERSION, input },
-    timeout: Infinity,
-    deadline: transport.deadlineAfter(options.timeout ?? SEARCH_TIMEOUT_MS),
+    attemptTimeout: Infinity,
+    deadline: transport.callDeadline(options.timeout, SEARCH_TIMEOUT_MS),
     signal: options.signal,
   });
   const { body, traceId } = response;
@@ -582,8 +577,13 @@ function sharedStatus(parts: readonly Part[]): string {
 /** One member per distinct `spec_id`, in query order, with the first part's spec; folded parts
  *  share their spec's member, which names each of them that has variable text. A part without
  *  any names nothing. */
-function membersOf(parts: readonly Part[]): (MemberRequest & { readonly spec: WireSpec })[] {
-  const grouped = new Map<string, { spec: WireSpec; parts: string[]; answerParts: Part[] }>();
+function membersOf(
+  parts: readonly Part[],
+): (MemberRequest & { readonly spec: DefinitePart["spec"] })[] {
+  const grouped = new Map<
+    string,
+    { spec: DefinitePart["spec"]; parts: string[]; answerParts: Part[] }
+  >();
   for (const part of definiteParts(parts)) {
     const { spec } = part;
     const entry = grouped.get(spec.spec_id) ?? { spec, parts: [], answerParts: [] };
@@ -593,14 +593,7 @@ function membersOf(parts: readonly Part[]): (MemberRequest & { readonly spec: Wi
     grouped.set(spec.spec_id, entry);
   }
   return [...grouped.values()].map(({ spec, parts: names, answerParts }) => {
-    const groups = spec.resolved.entity_groups;
-    return {
-      parts: names,
-      spec,
-      sentence: text(spec.resolved.rendered_sentence),
-      entityGroups: isRecord(groups) ? groups : null,
-      answerParts,
-    };
+    return { parts: names, spec, ...resolvedOf(spec), answerParts };
   });
 }
 
@@ -644,7 +637,7 @@ function gapFor(partIndex: number, part: Part): Gap | null {
 
 /** A refusal's choices, from `no_data.options`, read tolerantly. Each option's `data_query` is
  *  the input that settles it. */
-function queryOptions(noData: NoData): QueryOption[] {
+function queryOptions(noData: NoDataPart["no_data"]): Option[] {
   return objects(noData.options).map((option) => ({
     kind: "query",
     label: text(option["label"]) ?? "",
@@ -662,7 +655,7 @@ function indexOf(value: unknown): number | null {
 /** A candidate from its full spec and what Search assumed for it. The label is the sentence's
  *  heading and the unit the byline's unit slot, so label, unit and source together say what the
  *  sentence says. */
-function candidateFrom(spec: WireSpec, assumptions: readonly Assumption[]): Candidate {
+function candidateFrom(spec: DefinitePart["spec"], assumptions: readonly Assumption[]): Candidate {
   const { resolved } = spec;
   const tokens = objects(resolved.sentence_plan);
   const heading = tokens
