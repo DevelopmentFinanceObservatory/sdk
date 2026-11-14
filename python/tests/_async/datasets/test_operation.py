@@ -706,7 +706,7 @@ async def test_a_long_build_selects_the_party_totals_cut() -> None:
     assert server.body(0)["options"] == {
         "format": "parquet",
         "bundle": False,
-        "without_party_totals": True,
+        "party_totals": False,
     }
     (member,) = built.members
     assert (member.digest, member.rendering) == (sha256_digest(CUT_DATA), CUT)

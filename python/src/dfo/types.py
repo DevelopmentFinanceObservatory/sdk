@@ -12,7 +12,9 @@ It also holds the argument types the public signatures name: `Start`, `Year`,
 `Source` and `StatChange` for `dfo.cards`; and `ShareTarget` and `Moment` for
 the share calls and `dfo.fetch(share, as_of=...)`. `CallTimeout` types a
 call's `timeout`, and `CLIENT_TIMEOUT`, its default, stands for the client's
-`timeout`, so a wrapper can pass it through.
+`timeout`, so a wrapper can pass it through. `ClientTimeoutArgument` and
+`MaxRetriesArgument` type a client's `timeout` and `max_retries`, and
+`FROM_ENVIRONMENT`, their default, reads `DFO_TIMEOUT` and `DFO_MAX_RETRIES`.
 
 `Severity`, `AssumptionKind`, `DepartureCode`, `NoDataReason`, `DeclinedReason`
 and `ResolveKind` are the values the served contract lists for each field. A
@@ -34,7 +36,13 @@ from dfo._core.refs import (
     ResolvedPeriod,
     Root,
 )
-from dfo._core.timeouts import CLIENT_TIMEOUT, CallTimeout
+from dfo._core.timeouts import (
+    CLIENT_TIMEOUT,
+    FROM_ENVIRONMENT,
+    CallTimeout,
+    ClientTimeoutArgument,
+    MaxRetriesArgument,
+)
 from dfo._core.types import (
     Assumption,
     Candidate,
@@ -90,6 +98,7 @@ from dfo._search.answer import AsyncAnswer
 
 __all__ = [
     "CLIENT_TIMEOUT",
+    "FROM_ENVIRONMENT",
     "Aggregation",
     "Assumption",
     "AssumptionKind",
@@ -103,6 +112,7 @@ __all__ = [
     "Catalogue",
     "Citation",
     "CitationSource",
+    "ClientTimeoutArgument",
     "Code",
     "Columns",
     "DeclinedReason",
@@ -122,6 +132,7 @@ __all__ = [
     "LeftOutSeries",
     "LeftOutStep",
     "Match",
+    "MaxRetriesArgument",
     "Member",
     "Moment",
     "NoDataPart",

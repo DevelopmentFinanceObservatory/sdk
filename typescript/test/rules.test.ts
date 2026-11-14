@@ -1,7 +1,7 @@
 // Replays the contract's rule vectors for keys, credentials, the reading order, role keys, the
-// file selector's query, the client's identity, the comparison of refs and the series a derived
-// fetch leaves out. The cache rules have no TypeScript counterpart: this client keeps no cache on
-// disk.
+// file selector's query, the client's identity, the comparison of refs, the series a derived
+// fetch leaves out, and the client's timeout and retry count. The cache rules have no TypeScript
+// counterpart: this client keeps no cache on disk.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
@@ -11,10 +11,11 @@ import { parquetWriteBuffer } from "hyparquet-writer";
 import { credentialsPath, parseCredentialsFile } from "../src/config/credentials.ts";
 import type { Platform } from "../src/config/credentials.ts";
 import { envFrom } from "../src/config/env.ts";
-import { isDfoError } from "../src/core/errors.ts";
+import { InvalidRequestError, isDfoError } from "../src/core/errors.ts";
 import { checkKeyFormat, resolveApiKey } from "../src/config/keys.ts";
 import { clientOver } from "../src/client.ts";
-import { Transport } from "../src/http/transport.ts";
+import { resolveMaxRetries, resolveTimeout, Transport } from "../src/http/transport.ts";
+import type { SettingSource, TransportOptions } from "../src/http/transport.ts";
 import {
   CLIENT_HEADER,
   clientIdentity,
@@ -69,6 +70,66 @@ describe("base-url", async () => {
       const transport = build();
       assert.equal(transport.baseUrlSource, sources[vector.source!]);
       assert.equal(clientOver(transport).baseUrl, vector.url);
+    });
+  }
+});
+
+describe("timeout-and-retries", async () => {
+  type Source = SettingSource | "call";
+  type Vector = {
+    variable: "DFO_TIMEOUT" | "DFO_MAX_RETRIES";
+    env: Record<string, string>;
+    argument?: unknown;
+    call?: "search" | "fetch";
+    call_argument?: number | null;
+    source?: Source;
+    resolved?: number | null;
+    error?: { class: string; code: string; source: Source };
+  };
+  // Each call's own bound, in milliseconds, when neither it nor the client sets one.
+  const callDefaults = { search: 60_000, fetch: Infinity };
+  // The vectors give seconds, and this client takes milliseconds.
+  const ms = (value: unknown): unknown => (typeof value === "number" ? value * 1000 : value);
+  for (const vector of await vectors<Vector>("timeout-and-retries")) {
+    test(vector.name, () => {
+      const isTimeout = vector.variable === "DFO_TIMEOUT";
+      const argument = isTimeout ? ms(vector.argument) : vector.argument;
+      const env = envFrom(vector.env);
+      const refused = (source: Source) => (error: unknown) =>
+        error instanceof InvalidRequestError &&
+        error.code === vector.error?.code &&
+        error.message.includes(vector.variable) === (source === "environment");
+      const build = () =>
+        new Transport({
+          apiKey: false,
+          baseUrl: "https://api.example.org/api/v1",
+          env,
+          // A vector passes values the option types refuse, such as `true`.
+          ...(("argument" in vector
+            ? { [isTimeout ? "timeout" : "maxRetries"]: argument }
+            : {}) as TransportOptions),
+        });
+      if (vector.error !== undefined && vector.error.source !== "call") {
+        assert.throws(build, refused(vector.error.source));
+        return;
+      }
+      const transport = build();
+      if (!isTimeout) {
+        const { source } = resolveMaxRetries(argument as number | undefined, env);
+        assert.deepEqual([transport.maxRetries, source], [vector.resolved, vector.source]);
+        return;
+      }
+      // A null at a call is `Infinity` here, as is a resolved bound of none.
+      const callArgument = vector.call_argument === null ? Infinity : ms(vector.call_argument);
+      const resolve = () =>
+        transport.callTimeout(callArgument as number | undefined, callDefaults[vector.call!]);
+      if (vector.error !== undefined) {
+        assert.throws(resolve, refused("call"));
+        return;
+      }
+      assert.equal(resolve(), vector.resolved === null ? Infinity : ms(vector.resolved));
+      const { source } = resolveTimeout(argument as number | null | undefined, env);
+      assert.equal("call_argument" in vector ? "call" : source, vector.source);
     });
   }
 });

@@ -1362,23 +1362,20 @@ def test_a_dataset_without_party_totals_left_out_saves_no_key(tmp_path: Path) ->
     assert b"dfo.party_totals_left_out" not in pq.read_metadata(path).metadata
 
 
+_TOTALS = {"role": "financingProvider", "entities": ["DACWorldBank"]}
+
+
 @pytest.mark.parametrize(
-    ("trace", "pointer"),
+    ("trace", "expected"),
     [
-        ([], "/trace"),
-        ({"party_totals_left_out": {}}, "/trace/party_totals_left_out"),
-        ({"party_totals_left_out": [[]]}, "/trace/party_totals_left_out/0"),
-        (
-            {"party_totals_left_out": [{"entities": []}]},
-            "/trace/party_totals_left_out/0/role",
-        ),
-        (
-            {"party_totals_left_out": [{"role": "financingProvider"}]},
-            "/trace/party_totals_left_out/0/entities",
-        ),
+        ([], 0),
+        ({"party_totals_left_out": {}}, 0),
+        ({"party_totals_left_out": [[]]}, 0),
+        ({"party_totals_left_out": [{"entities": []}]}, 0),
+        ({"party_totals_left_out": [{"role": "financingProvider"}]}, 0),
         (
             {"party_totals_left_out": [{"role": "financingProvider", "entities": [1]}]},
-            "/trace/party_totals_left_out/0/entities/0",
+            0,
         ),
         (
             {
@@ -1386,8 +1383,9 @@ def test_a_dataset_without_party_totals_left_out_saves_no_key(tmp_path: Path) ->
                     {"role": "financingProvider", "entities": [], "provenance": 2}
                 ]
             },
-            "/trace/party_totals_left_out/0/provenance",
+            0,
         ),
+        ({"party_totals_left_out": [[], _TOTALS, {"role": 1, "entities": []}]}, 1),
     ],
     ids=[
         "trace-not-object",
@@ -1397,16 +1395,18 @@ def test_a_dataset_without_party_totals_left_out_saves_no_key(tmp_path: Path) ->
         "entities-missing",
         "entity-not-text",
         "provenance-not-text",
+        "good-entry-beside-bad-ones",
     ],
 )
-def test_a_malformed_party_totals_trace_raises_contract_error(
-    trace: object, pointer: str
+def test_a_malformed_party_totals_trace_reads_leniently(
+    trace: object, expected: int
 ) -> None:
     body = manifest()
     body["trace"] = trace
-    with pytest.raises(ContractError) as caught:
-        built(recorded_member(manifest=body))
-    assert (caught.value.code, caught.value.pointer) == ("contract_violation", pointer)
+    data = built(recorded_member(manifest=body))
+    assert [entry.role for entry in data.party_totals_left_out] == [
+        "financingProvider"
+    ] * expected
 
 
 def _saved() -> Dataset:

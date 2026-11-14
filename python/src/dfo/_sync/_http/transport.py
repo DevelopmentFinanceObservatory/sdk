@@ -77,6 +77,7 @@ from dfo._core.codes import (
     INVALID_ARGUMENT,
     NETWORK_ERROR,
     OFFLINE,
+    PROXY_INVALID,
     RESPONSE_TOO_LARGE,
     ROUTE_DEPRECATED,
     SERVER_WARNING,
@@ -104,9 +105,12 @@ from dfo._core.text import (
 )
 from dfo._core.timeouts import (
     CLIENT_TIMEOUT,
+    FROM_ENVIRONMENT,
     CallTimeout,
     ClientSeconds,
     ClientTimeout,
+    ClientTimeoutArgument,
+    MaxRetriesArgument,
 )
 from dfo._http.hooks import (
     Clock,
@@ -174,8 +178,16 @@ _CALL_BOUND = "the call's timeout passed"
 # 16 MiB floor applies.
 JSON_BODY_MAX_BYTES = 16 * 2**20
 
-# The most retries a client takes.
+# The most retries a client takes, and the count it takes by default.
 _RETRIES_MAX = 10
+_DEFAULT_MAX_RETRIES = 2
+
+# The variables a client's `timeout` and `max_retries` left out read, and the
+# ASCII text each takes: seconds such as `300` or `2.5`, and a count such as `5`.
+TIMEOUT_VARIABLE = "DFO_TIMEOUT"
+MAX_RETRIES_VARIABLE = "DFO_MAX_RETRIES"
+_SECONDS_TEXT = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+_COUNT_TEXT = re.compile(r"[0-9]+")
 
 # A host other than an IPv6 address whose last label is a number, which a URL
 # parser reads as an IPv4 address, such as `127.1`, `0x7f.1` or `2130706433`.
@@ -460,6 +472,79 @@ def _checked_retries(max_retries: int) -> int:
     return max_retries
 
 
+type SettingSource = Literal["argument", "environment", "default"]
+
+
+def resolve_timeout(
+    timeout: ClientTimeoutArgument, *, env: Mapping[str, str] | None = None
+) -> tuple[float | None, SettingSource]:
+    """A client's bound on each call, in seconds, or None to leave each call
+    its own default, and where it came from: `timeout`, else a non-empty
+    `DFO_TIMEOUT`, else the default, None. A `timeout` passed in leaves
+    `DFO_TIMEOUT` unread.
+
+    Args:
+        timeout: The client's argument; `FROM_ENVIRONMENT` looks it up.
+        env: The environment, defaulting to this process's.
+
+    Raises:
+        InvalidRequestError: `timeout` is not None or a finite number above 0,
+            or `DFO_TIMEOUT` is not ASCII digits with an optional fraction,
+            such as `300` or `2.5`, naming a finite value above 0
+            (`invalid_argument`). The message names the one that held it.
+    """
+    if timeout is not FROM_ENVIRONMENT:
+        return (None if timeout is None else _checked_timeout(timeout)), "argument"
+    text = (os.environ if env is None else env).get(TIMEOUT_VARIABLE)
+    if not text:
+        return None, "default"
+    if _SECONDS_TEXT.fullmatch(text) is None or not 0 < float(text) < math.inf:
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"{TIMEOUT_VARIABLE} is seconds above 0 written as digits, such as 300"
+            f" or 2.5, not {text!r}. Fix it, or unset it for each call's default",
+        )
+    return float(text), "environment"
+
+
+def resolve_max_retries(
+    max_retries: MaxRetriesArgument, *, env: Mapping[str, str] | None = None
+) -> tuple[int, SettingSource]:
+    """A client's retry count and where it came from: `max_retries`, else a
+    non-empty `DFO_MAX_RETRIES`, else the default, 2. A `max_retries` passed in
+    leaves `DFO_MAX_RETRIES` unread.
+
+    Args:
+        max_retries: The client's argument; `FROM_ENVIRONMENT` looks it up.
+        env: The environment, defaulting to this process's.
+
+    Raises:
+        InvalidRequestError: `max_retries` is not an integer from 0 to 10, or
+            `DFO_MAX_RETRIES` is not ASCII digits naming one
+            (`invalid_argument`). The message names the one that held it.
+    """
+    if max_retries is not FROM_ENVIRONMENT:
+        return _checked_retries(max_retries), "argument"
+    text = (os.environ if env is None else env).get(MAX_RETRIES_VARIABLE)
+    if not text:
+        return _DEFAULT_MAX_RETRIES, "default"
+    # With leading zeros stripped, a count over two digits is out of range. int()
+    # refuses a string past 4,300 digits, so the length check comes first.
+    digits = text.lstrip("0") or "0"
+    if (
+        _COUNT_TEXT.fullmatch(text) is None
+        or len(digits) > 2
+        or int(digits) > _RETRIES_MAX
+    ):
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"{MAX_RETRIES_VARIABLE} is a count from 0 to {_RETRIES_MAX} written as"
+            f" digits, not {text!r}. Fix it, or unset it for"
+            f" {_DEFAULT_MAX_RETRIES} retries",
+        )
+    return int(digits), "environment"
+
+
 def _json_content(json: Any, method: str) -> bytes | None:
     """`json` encoded as the body of a `method` request, or None for no body.
 
@@ -671,7 +756,7 @@ def _connection_pool(proxy_url: str | None) -> httpcore2.ConnectionPool:
 
     Raises:
         InvalidRequestError: `proxy_url`'s scheme is not http, https, socks5 or
-            socks5h (`invalid_argument`).
+            socks5h (`proxy_invalid`).
     """
     ssl_context = httpx2.create_ssl_context(verify=True, trust_env=True)
     # httpcore2 declares a stand-in class when anyio or socksio is missing, so
@@ -691,7 +776,7 @@ def _connection_pool(proxy_url: str | None) -> httpcore2.ConnectionPool:
     scheme = urlsplit(proxy_url).scheme
     if scheme not in ("http", "https", "socks5", "socks5h"):
         raise client_error(
-            INVALID_ARGUMENT,
+            PROXY_INVALID,
             f"A proxy URL's scheme is http, https, socks5 or socks5h, not {scheme!r}",
             builtin=ValueError,
         )
@@ -863,9 +948,9 @@ class Transport:
         *,
         base_url: str | None = None,
         api_key: ApiKeyArgument = None,
-        timeout: float | None = None,
+        timeout: ClientTimeoutArgument = FROM_ENVIRONMENT,
         attempt_timeout: float = 30.0,
-        max_retries: int = 2,
+        max_retries: MaxRetriesArgument = FROM_ENVIRONMENT,
         headers: Mapping[str, str] | None = None,
         header_provider: HeaderProvider | None = None,
         http_transport: httpx2.BaseTransport | None = None,
@@ -881,9 +966,11 @@ class Transport:
             api_key: The key, an `ApiKey`, a callable returning one, False for
                 anonymous use, or None to look one up.
             timeout: The longest a call takes, in seconds, when it names no
-                bound of its own; None leaves each call its own default.
+                bound of its own. None leaves each call its own default, and
+                left out reads `DFO_TIMEOUT`.
             attempt_timeout: The longest one attempt waits, in seconds.
-            max_retries: Further attempts after a retryable failure.
+            max_retries: Further attempts after a retryable failure. Left out
+                reads `DFO_MAX_RETRIES`, then takes 2.
             headers: Headers sent with every API request.
             header_provider: Called before every API request for more headers,
                 such as an identity token.
@@ -901,15 +988,15 @@ class Transport:
                 header's name is not an HTTP token or names `X-DFO-Client`, or its
                 value not visible ASCII, spaces and tabs (`header_invalid`), the key would
                 travel over plain http to a host that is not loopback
-                (`insecure_transport`), `timeout` is not None or a finite
-                number above 0, `attempt_timeout` not a finite number above 0,
-                or the retry count not an integer from 0 to 10
-                (`invalid_argument`).
+                (`insecure_transport`), `timeout` or `DFO_TIMEOUT` is not None
+                or a finite number above 0, `attempt_timeout` not a finite
+                number above 0, or the retry count or `DFO_MAX_RETRIES` not an
+                integer from 0 to 10 (`invalid_argument`).
             AuthenticationError: The key lookup failed.
         """
-        call_timeout = None if timeout is None else _checked_timeout(timeout)
+        call_timeout, _ = resolve_timeout(timeout)
         attempt_timeout = _checked_timeout(attempt_timeout, "attempt_timeout")
-        max_retries = _checked_retries(max_retries)
+        retries, _ = resolve_max_retries(max_retries)
         resolved = resolve_base_url(base_url)
         self._base_url, self._origin = resolved.url, resolved.origin
         self._base_url_source = resolved.source
@@ -918,7 +1005,7 @@ class Transport:
         self._authorization()
         self._call_timeout = call_timeout
         self._attempt_timeout = attempt_timeout
-        self._max_retries = max_retries
+        self._max_retries = retries
         # A signed download's attempt runs until the deadline unless a
         # `single_attempt` copy bounds it by the attempt timeout. Either way each read
         # waits at most `DOWNLOAD_STALL_S`.

@@ -7,6 +7,7 @@ import pickle
 import warnings
 from collections.abc import Callable
 from pathlib import Path
+from typing import TypeAliasType, get_args
 
 import pytest
 
@@ -39,6 +40,8 @@ from dfo._core.errors import (
 )
 from dfo._core.raw_response import RawResponse
 from dfo._core.refusals import error_class, problem_error
+from dfo._core.types import FormatErrorReason
+from dfo._datasets.bundle import BundleErrorReason
 from dfo._generated.error_map import (
     ACTIONS,
     CLIENT_CODES,
@@ -46,6 +49,7 @@ from dfo._generated.error_map import (
     REFUSAL_WITHOUT_CODE,
     WARNING_CODES,
 )
+from dfo.errors import BundleError, FormatError
 from tests.rule_vectors import CONTRACT
 
 ORIGIN = "https://api.example.org"
@@ -279,6 +283,9 @@ _CLIENT_ROWS = json.loads((CONTRACT / "client-codes.json").read_text(encoding="u
 _CLIENT_CODES = {
     name: value for name, value in vars(_codes).items() if isinstance(value, ClientCode)
 }
+# A FormatError or BundleError sets its `code` to its `reason`, so these rows have
+# no `dfo._core.codes` constant.
+_REASON_CLASSES = {"FormatError", "BundleError"}
 _SOURCE = Path(dfo.__file__).parent
 _ERROR_CLASSES = {
     name
@@ -301,8 +308,29 @@ def test_the_map_and_codes_hold_exactly_the_contract_client_codes() -> None:
     } == {
         row["code"].upper(): (row["code"], row["class"], row["retryable"])
         for row in _CLIENT_ROWS
-        if row["class"] != "by_status"
+        if row["class"] != "by_status" and row["class"] not in _REASON_CLASSES
     }
+
+
+@pytest.mark.parametrize(
+    ("reasons", "name"),
+    [(FormatErrorReason, "FormatError"), (BundleErrorReason, "BundleError")],
+)
+def test_a_reason_is_the_code_of_its_contract_row(
+    reasons: TypeAliasType, name: str
+) -> None:
+    rows = {row["code"] for row in _CLIENT_ROWS if row["class"] == name}
+    assert set(get_args(reasons.__value__)) == rows
+
+
+def test_a_format_or_bundle_error_carries_its_reason_as_its_code() -> None:
+    format_error = FormatError("repeated_spec_id", "/members/1", "twice")
+    bundle_error = BundleError("no_descriptor", "no datapackage.json")
+    assert (format_error.code, bundle_error.code) == (
+        "repeated_spec_id",
+        "no_descriptor",
+    )
+    assert (format_error.retryable, bundle_error.retryable) == (False, False)
 
 
 def _raises() -> list[tuple[str, str, ast.Call]]:
@@ -341,12 +369,14 @@ _BUILTIN_RAISES = {
     ("_core/json_text.py", "_no_constant"),
     ("_core/json_text.py", "loads"),
     # `cache_path` raises `InvalidRequestError` in its place.
-    ("_config/paths.py", "cache_root"),
+    ("_config/paths.py", "_explicit_root"),
     # The cache skips an id that is not a server id; a download checks its digest
     # before it is stored.
     ("_datasets/cache.py", "file_entry"),
     ("_datasets/cache.py", "manifest_entry"),
     ("_datasets/cache.py", "put_bytes"),
+    # A fetch records an aware time, and `put_bytes` passes on the naive refusal.
+    ("_datasets/cache.py", "fetch_time_text"),
     # Members and row counts the client assembled itself.
     ("_datasets/dataset.py", "__post_init__"),
     ("_datasets/dataset.py", "build_dataset"),

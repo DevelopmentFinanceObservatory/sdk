@@ -200,53 +200,44 @@ export type PartyTotalsLeftOut = {
   readonly everyProvenance: boolean;
 };
 
-/** The pointer of the served list of party totals left out. */
-const PARTY_TOTALS_POINTER = "/trace/party_totals_left_out";
-
-/** A manifest's `trace` breaks the served shape at `pointer`. */
-const traceViolation = (pointer: string) =>
-  clientError("contract_violation", {
-    detail: `The manifest's ${pointer} breaks the shape this client reads.`,
-    pointer,
+/**
+ * One entry of a manifest's `trace.party_totals_left_out` as `{role, entities, provenance}`, where
+ * an absent `provenance` means every dataset's rows; null when the entry is no object, its `role`
+ * is no string, its `entities` is no list of strings, or its `provenance` is neither absent, a
+ * string nor null. Other keys are ignored.
+ */
+function partyTotalsEntry(entry: unknown, specId: string): PartyTotalsLeftOut | null {
+  if (!isRecord(entry)) return null;
+  const { role, entities, provenance } = entry;
+  if (typeof role !== "string") return null;
+  if (!Array.isArray(entities) || !entities.every((entity) => typeof entity === "string")) {
+    return null;
+  }
+  if (provenance !== undefined && provenance !== null && typeof provenance !== "string") {
+    return null;
+  }
+  return Object.freeze({
+    specId,
+    role,
+    entities: Object.freeze([...entities]),
+    provenance: provenance ?? null,
+    everyProvenance: !Object.hasOwn(entry, "provenance"),
   });
+}
 
 /**
- * The totals a manifest's `trace.party_totals_left_out` names for the member of `specId`, each
- * `{role, entities, provenance}`, where an absent `provenance` means every dataset's rows. The
- * list is empty when the trace names none. Other keys in an entry are ignored.
- *
- * @throws {ContractError} The trace or an entry breaks the served shape (`contract_violation`).
+ * The totals a manifest's `trace.party_totals_left_out` names for the member of `specId`. The
+ * list is empty when the trace names none: a trace that is no object or a member that is no list
+ * names none, and a malformed entry is dropped while the entries beside it still read.
  */
 function partyTotalsOf(
   manifest: Readonly<Record<string, unknown>>,
   specId: string,
 ): PartyTotalsLeftOut[] {
   const trace = manifest["trace"];
-  if (trace === undefined || trace === null) return [];
-  if (!isRecord(trace)) throw traceViolation("/trace");
-  const served = trace["party_totals_left_out"];
-  if (served === undefined || served === null) return [];
-  if (!Array.isArray(served)) throw traceViolation(PARTY_TOTALS_POINTER);
-  return served.map((entry: unknown, index): PartyTotalsLeftOut => {
-    const pointer = `${PARTY_TOTALS_POINTER}/${index}`;
-    if (!isRecord(entry)) throw traceViolation(pointer);
-    const { role, entities, provenance } = entry;
-    if (typeof role !== "string") throw traceViolation(`${pointer}/role`);
-    if (!Array.isArray(entities)) throw traceViolation(`${pointer}/entities`);
-    entities.forEach((entity: unknown, at) => {
-      if (typeof entity !== "string") throw traceViolation(`${pointer}/entities/${at}`);
-    });
-    if (provenance !== undefined && provenance !== null && typeof provenance !== "string") {
-      throw traceViolation(`${pointer}/provenance`);
-    }
-    return Object.freeze({
-      specId,
-      role,
-      entities: Object.freeze([...(entities as string[])]),
-      provenance: provenance ?? null,
-      everyProvenance: !Object.hasOwn(entry, "provenance"),
-    });
-  });
+  const served = isRecord(trace) ? trace["party_totals_left_out"] : undefined;
+  if (!Array.isArray(served)) return [];
+  return served.flatMap((entry: unknown) => partyTotalsEntry(entry, specId) ?? []);
 }
 
 /** The text form's line counting the totals left out on each role, as
@@ -310,15 +301,18 @@ function citationOf(manifest: Readonly<Record<string, unknown>>): Citation {
   if (!isRecord(citation)) return { text: "", sources: [] };
   return {
     text: text(citation["text"]) ?? "",
-    // The server spells the licence fields `license`. The client spells them as Python does.
+    // Read `licence*`, the preferred spelling, and fall back to the deprecated `license*` a
+    // server from before the rename serves.
     sources: list(citation["sources"])
       .filter(isServedSource)
       .map((source) =>
         Object.freeze({
           ref: source.ref,
           label: source.label,
-          licence: text(source["license"]),
-          licenceUrl: text(source["license_url"]),
+          licence: text(Object.hasOwn(source, "licence") ? source["licence"] : source["license"]),
+          licenceUrl: text(
+            Object.hasOwn(source, "licence_url") ? source["licence_url"] : source["license_url"],
+          ),
           url: text(source["url"]),
         }),
       ),

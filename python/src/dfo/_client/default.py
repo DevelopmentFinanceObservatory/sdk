@@ -3,7 +3,8 @@
 of `dfo.lookup`, over a default client.
 
 The default client is built on first use, under a lock, so importing `dfo` reads
-neither the environment nor the network. `configure` replaces it. An answer from
+neither the environment nor the network, and an invalid `DFO_TIMEOUT` raises at
+the first call. `configure` replaces it. An answer from
 `dfo.search` reads the default client when each of its requests runs, so it stays
 usable after `configure`. A replaced client closes once nothing uses it, since another thread may still be in a call on it, and the default client
 closes at exit.
@@ -26,7 +27,13 @@ from typing import overload
 from dfo._config.keys import ApiKeyArgument
 from dfo._core.lookup_results import Catalogue, Code, Match, Node
 from dfo._core.refs import DatasetRef
-from dfo._core.timeouts import CLIENT_TIMEOUT, CallTimeout
+from dfo._core.timeouts import (
+    CLIENT_TIMEOUT,
+    FROM_ENVIRONMENT,
+    CallTimeout,
+    ClientTimeoutArgument,
+    MaxRetriesArgument,
+)
 from dfo._core.types import Layout, Spec, Window
 from dfo._datasets.build import Entities
 from dfo._datasets.dataset import Dataset
@@ -85,9 +92,9 @@ def configure(
     *,
     api_key: ApiKeyArgument = None,
     base_url: str | None = None,
-    timeout: float | None = None,
+    timeout: ClientTimeoutArgument = FROM_ENVIRONMENT,
     attempt_timeout: float = 30.0,
-    max_retries: int = 2,
+    max_retries: MaxRetriesArgument = FROM_ENVIRONMENT,
     cache_dir: str | PathLike[str] | None = None,
     cache: bool = True,
     headers: Mapping[str, str] | None = None,
@@ -97,6 +104,8 @@ def configure(
 
     Takes `dfo.Client`'s options. `timeout` bounds each whole call that passes
     no `timeout` of its own, and `attempt_timeout` each request attempt.
+    `timeout` and `max_retries` left out read `DFO_TIMEOUT` and
+    `DFO_MAX_RETRIES`, and `timeout=None` leaves each call its own default.
     Answers already returned by `dfo.search` use the new client for their next
     request. `cache=False` fetches without reading or writing the cache.
 
@@ -108,7 +117,10 @@ def configure(
             travel over plain http to a host that is not loopback
             (`insecure_transport`), `timeout` is not None or a finite number
             above 0, `attempt_timeout` not a finite number above 0, the retry
-            count not an integer from 0 to 10, or, with `cache` on,
+            count not an integer from 0 to 10, `DFO_TIMEOUT` or
+            `DFO_MAX_RETRIES`, read for an argument left out, not seconds
+            above 0 such as `300` or `2.5` or a count from 0 to 10 in digits,
+            or, with `cache` on,
             `cache_dir` an empty path, one holding a NUL character, or one
             starting `~name` for a user with no home directory
             (`invalid_argument`).

@@ -19,12 +19,13 @@ import {
   serverCode,
   VersionUnavailableError,
 } from "../src/core/errors.ts";
-import type { ClientErrorCode } from "../src/core/errors.ts";
+import type { RaisedClientCode } from "../src/core/errors.ts";
 import { CLIENT_WARNING_CODES } from "../src/generated/warning-codes.ts";
 import { clientWarning, warnOnce } from "../src/core/warnings.ts";
 import type { ClientWarningCode } from "../src/core/warnings.ts";
 import { Client, clientOver } from "../src/client.ts";
-import { DatasetRef } from "../src/core/ref.ts";
+import { DatasetRef, FormatError } from "../src/core/ref.ts";
+import type { FormatErrorReason } from "../src/core/ref.ts";
 import { RawResponse } from "../src/http/transport.ts";
 import { Answer } from "../src/search/answer.ts";
 import { NO_EXCHANGES, replay } from "./replay.ts";
@@ -78,8 +79,8 @@ test("every code in contract/client-codes.json builds an error of its class and 
   }>("client-codes.json");
   assert.ok(codes.length > 0);
   for (const { code, class: name, retryable } of codes) {
-    if (name === "by_status") continue;
-    const error = clientError(code as Exclude<ClientErrorCode, "refusal_without_code">, {});
+    if (name === "by_status" || name === "FormatError" || name === "BundleError") continue;
+    const error = clientError(code as Exclude<RaisedClientCode, "refusal_without_code">, {});
     assert.ok(error instanceof DfoError, code);
     assert.equal(error.name, name, code);
     assert.equal(error.code, code, code);
@@ -162,9 +163,9 @@ test("the public entry points that take caller input throw only DfoError", async
   const client = clientOver(replay(NO_EXCHANGES).transport);
   const notJson = new RawResponse(200, new Headers(), new TextEncoder().encode("<html>"));
   // Each row calls one entry point with input it refuses, and the code the refusal carries.
-  const rows: [string, () => unknown, string | null][] = [
-    ["DatasetRef.fromJSON", () => DatasetRef.fromJSON("{"), null],
-    ["Answer.fromJSON", () => Answer.fromJSON("{", client), null],
+  const rows: [string, () => unknown, string][] = [
+    ["DatasetRef.fromJSON", () => DatasetRef.fromJSON("{"), "format_invalid"],
+    ["Answer.fromJSON", () => Answer.fromJSON("{", client), "format_invalid"],
     ["RawResponse.json", () => notJson.json(), "unexpected_response"],
     ["new Client", () => new Client({ timeout: -1 }), "invalid_argument"],
     [
@@ -187,11 +188,20 @@ test("the public entry points that take caller input throw only DfoError", async
   }
 });
 
-test("an error with no code and no trace id ends its message without a bracket", () => {
+test("a FormatError carries its reason as its code", async () => {
   assert.throws(() => DatasetRef.fromJSON("{"), {
     name: "FormatError",
-    code: null,
+    code: "format_invalid",
     reason: "format_invalid",
-    message: "/: not JSON",
+    message: "/: not JSON [format_invalid]",
   });
+  const { codes } = await contractJson<{ codes: { code: string; class: string }[] }>(
+    "client-codes.json",
+  );
+  const reasons = codes.filter(({ class: name }) => name === "FormatError").map(({ code }) => code);
+  for (const reason of reasons) {
+    const error = new FormatError(reason as FormatErrorReason, "/x", "bad");
+    assert.equal(error.code, reason);
+    assert.equal(error.retryable, false);
+  }
 });

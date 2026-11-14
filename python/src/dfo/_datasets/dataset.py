@@ -24,13 +24,18 @@ import html
 import json
 import math
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime
 from itertools import accumulate
 from os import PathLike
 from typing import TYPE_CHECKING, Any, Never, override
 
-from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT, UNEXPECTED_RESPONSE
+from dfo._core.codes import (
+    CONTRACT_VIOLATION,
+    REF_UNAVAILABLE,
+    UNEXPECTED_RESPONSE,
+)
 from dfo._core.errors import ContractError, client_error, message_of
 from dfo._core.parse import parse_citation, parse_notices, parse_part
 from dfo._core.refs import (
@@ -462,11 +467,11 @@ class Dataset:
 
         Raises:
             InvalidRequestError: The dataset is a website bundle opened from a
-                folder, which names no version (`invalid_argument`).
+                folder, which names no version (`ref_unavailable`).
         """
         if (ref := self._ref()) is None:
             raise client_error(
-                INVALID_ARGUMENT,
+                REF_UNAVAILABLE,
                 "A website bundle opened from a folder names no version, so it has "
                 "no ref; open the bundle's ZIP, or fetch the dataset with dfo.fetch",
                 builtin=ValueError,
@@ -986,7 +991,8 @@ def build_dataset(
         raise ValueError("a dataset needs at least one member")
     if layout == "frame" and len(members) > 1:
         raise ValueError("the frame layout holds one member")
-    # A mint or resumed operation builds the plain rendering.
+    # A member with no rendering of its own reads as the plain rendering. Fetches,
+    # mints and resolves always pass one, so only hand-built members reach this.
     plain = rendering_for(layout, party_totals=True)
 
     tables: list[pa.Table] = []
@@ -1199,32 +1205,22 @@ def served_party_totals(
     manifest: Mapping[str, Any], *, spec_id: str
 ) -> tuple[PartyTotalsLeftOut, ...]:
     """The totals a manifest's `trace.party_totals_left_out` names for the
-    member of `spec_id`, or none when the trace names none. A key an entry holds
-    beyond `role`, `entities` and `provenance` is ignored.
-
-    Raises:
-        ContractError: The trace or an entry breaks the served shape
-            (`contract_violation`).
-    """
+    member of `spec_id`, or none when the trace names none. A trace that is no
+    object or a member that is no list names none, an entry that is malformed
+    is dropped while the entries beside it still read, and a key an entry holds
+    beyond `role`, `entities` and `provenance` is ignored."""
     trace = manifest.get("trace")
-    if trace is None:
+    served = trace.get("party_totals_left_out") if isinstance(trace, Mapping) else None
+    if not isinstance(served, list):
         return ()
     pointer = "/trace/party_totals_left_out"
-    try:
-        served = object_at(trace, "/trace").get("party_totals_left_out")
-        if served is None:
-            return ()
-        return tuple(
-            read_party_totals(item, f"{pointer}/{index}", spec_id=spec_id)
-            for index, item in enumerate(_array(served, pointer))
-        )
-    except FormatError as error:
-        violation = client_error(
-            CONTRACT_VIOLATION,
-            f"The manifest's {error.pointer} breaks the shape this client reads",
-        )
-        violation.pointer = error.pointer
-        raise violation from error
+    totals: list[PartyTotalsLeftOut] = []
+    for index, item in enumerate(served):
+        with suppress(FormatError):
+            totals.append(
+                read_party_totals(item, f"{pointer}/{index}", spec_id=spec_id)
+            )
+    return tuple(totals)
 
 
 def read_party_totals(
@@ -1268,8 +1264,11 @@ def _party_totals_object(entry: PartyTotalsLeftOut) -> dict[str, Any]:
     return obj
 
 
-def _load_party_totals(text: str) -> tuple[PartyTotalsLeftOut, ...]:
-    """A saved file's `dfo.party_totals_left_out`."""
+def _load_party_totals(
+    text: str, spec_ids: Sequence[str]
+) -> tuple[PartyTotalsLeftOut, ...]:
+    """A saved file's `dfo.party_totals_left_out`, whose entries name a member of
+    the ref (`spec_ids`, in member order) and follow member order."""
     pointer = "/dfo.party_totals_left_out"
     loaded: list[PartyTotalsLeftOut] = []
     for index, item in enumerate(_array(decode_value(text, pointer), pointer)):
@@ -1280,6 +1279,16 @@ def _load_party_totals(text: str) -> tuple[PartyTotalsLeftOut, ...]:
         )
         spec_id = _string(obj["spec_id"], f"{at}/spec_id")
         loaded.append(read_party_totals(obj, at, spec_id=spec_id))
+    positions = [
+        spec_ids.index(entry.spec_id) if entry.spec_id in spec_ids else -1
+        for entry in loaded
+    ]
+    if -1 in positions or positions != sorted(positions):
+        raise FormatError(
+            "format_invalid",
+            pointer,
+            "names a spec that is no member of dfo.ref, or lists members out of order",
+        )
     return tuple(loaded)
 
 
@@ -1472,6 +1481,19 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
     )
     # Only a derived dataset carries left-out series and steps.
     derived = any(isinstance(member, DerivedMember) for member in members)
+    expected = SAVED_DERIVED_FORMAT_VERSION if derived else SAVED_FORMAT_VERSION
+    if values["dfo.format_version"] != str(expected):
+        raise FormatError(
+            "format_invalid",
+            "/dfo.format_version",
+            f"is {values['dfo.format_version']} for a file whose dfo.ref "
+            f"{'holds' if derived else 'holds no'} derived member; it is {expected}",
+        )
+    party_totals = (
+        _load_party_totals(text, [member.spec.spec_id for member in ref_members])
+        if (text := values.get("dfo.party_totals_left_out")) is not None
+        else ()
+    )
     return Dataset(
         sentence=_saved_value(values, "dfo.sentence"),
         members=members,
@@ -1511,11 +1533,7 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
         layout_version=_string(rest["layout_version"], "/dfo.dataset/layout_version"),
         _table=table.replace_schema_metadata(None),
         _member_rows=member_rows,
-        party_totals_left_out=(
-            _load_party_totals(text)
-            if (text := values.get("dfo.party_totals_left_out")) is not None
-            else ()
-        ),
+        party_totals_left_out=party_totals,
         fetched_at=(
             _load_fetched_at(text)
             if (text := values.get("dfo.fetched_at")) is not None

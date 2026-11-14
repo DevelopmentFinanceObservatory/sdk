@@ -459,6 +459,17 @@ def _part_rows(data: Dataset) -> list[dict[str, Any]]:
     return [{"part": part, "rows": rows} for part, rows in counts.items()]
 
 
+def _party_totals(data: Dataset) -> list[dict[str, Any]] | None:
+    # An entry keeps `provenance` as served, null included, and leaves it out
+    # where the manifest does. The outcome leaves the key out when none.
+    entries = [
+        {"spec_id": entry.spec_id, "role": entry.role, "entities": list(entry.entities)}
+        | ({} if entry.every_provenance else {"provenance": entry.provenance})
+        for entry in data.party_totals_left_out
+    ]
+    return entries or None
+
+
 def _newest_version(error: object) -> str | None:
     if not isinstance(error, VersionUnavailableError):
         pytest.fail(f"newest_version read from {error!r}")
@@ -544,6 +555,10 @@ COMMON: dict[str, Reader] = {
     "warnings": lambda _, step: _warning_codes(step),
 }
 
+# The members an outcome of a kind leaves out when they hold nothing, read on
+# every step of that kind and compared as None when the outcome leaves them out.
+ABSENT: dict[str, tuple[str, ...]] = {"dataset": ("party_totals_left_out",)}
+
 READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
     "answer": (
         (AsyncAnswer, Answer),
@@ -582,6 +597,7 @@ READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
             "missing": lambda data, _: [
                 {"part": gap.part_index, "kind": gap.kind} for gap in data.missing
             ],
+            "party_totals_left_out": lambda data, _: _party_totals(data),
             "search_warning": lambda _, step: any(
                 isinstance(w.message, SearchWarning) for w in step.issued
             ),
@@ -617,7 +633,11 @@ def _check(where: str, outcome: Mapping[str, Any], result: object, step: Step) -
         pytest.fail(f"{where}: outcome {sorted(outcome)} has no replay")
     classes, readers = READERS[kind]
     readers = readers | COMMON
-    expected = {member: [] for member in COMMON} | outcome[kind]
+    expected = (
+        {member: [] for member in COMMON}
+        | dict.fromkeys(ABSENT.get(kind, ()))
+        | outcome[kind]
+    )
     if unknown := set(expected) - readers.keys():
         pytest.fail(f"{where}: {kind} members {sorted(unknown)} have no replay")
     if not isinstance(result, classes):

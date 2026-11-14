@@ -103,7 +103,7 @@ describe("IncompleteAnswerError", () => {
     assert.ok(!inspect(error, { depth: Infinity }).includes("query_echo"));
     assert.deepEqual(error.message.split("\n"), [
       "Search answered 1 of 2 parts of your question.",
-      `  answered "debt service": Kenya's external debt service owed to all creditors, 1970 to 2024. Current US dollars · World Bank International Debt Statistics (IDS).`,
+      `  answered "debt service": Kenya's external debt service owed to all creditors, 1970 to 2025. Current US dollars · World Bank International Debt Statistics (IDS).`,
       `  missing  "price of tea": Could not match "price of tea" to a supported indicator. Try a different wording or a related indicator.`,
       "  Or take the answered part: answer.fetch({ partial: true })",
       "[answer_incomplete]",
@@ -366,9 +366,9 @@ describe("choose", () => {
     ],
     [
       "a part word one letter short",
-      () => answerOf("choose-place-two-parts").choose(0, { part: "Cong" }),
-      'did you mean "Congo"?',
-      "0 = GDP / Congo, 1 = ODA disbursements / Congo",
+      () => answerOf("choose-place-two-parts").choose(0, { part: "GD" }),
+      'did you mean "GDP"?',
+      "0 = GDP / Congo's, 1 = ODA disbursements / Congo's",
     ],
   ] as const) {
     test(`refuses ${name} with the nearest match and the choices`, async () => {
@@ -558,7 +558,10 @@ describe("candidates", () => {
         [],
       );
     }
-    assert.equal(candidatesOf(dataset.missing).length, 3);
+    // The missing part's candidates are the two the recorded Search response offers.
+    const [mortality] = (search!.response.json as { parts: CandidatesPart[] }).parts;
+    assert.equal(mortality!.candidates.specs.length, 2);
+    assert.equal(candidatesOf(dataset.missing).length, 2);
     assert.deepEqual(
       candidatesOf(answer.gaps).map((candidate) => candidate.spec),
       candidatesOf(error.gaps).map((candidate) => candidate.spec),

@@ -170,6 +170,25 @@ async function emptiedHistory(shuffled = false): Promise<Handler> {
 const storedManifest = async (): Promise<unknown> =>
   (await scenario("fetch-ref")).exchanges[0]!.response.json;
 
+/** How a served rendering spells the party-totals cut: the old key, the request key, or both. */
+type Spelling = "without_party_totals" | "party_totals" | "both";
+
+/** `manifest` with each artifact rendering's cut, recorded as `without_party_totals: true`,
+ *  spelled `spelling`. */
+function respelled(manifest: unknown, spelling: Spelling): Record<string, unknown> {
+  const copy = structuredClone(manifest) as Record<string, unknown>;
+  let cuts = 0;
+  for (const artifact of copy["artifacts"] as Record<string, unknown>[]) {
+    const rendering = artifact["rendering"] as Record<string, unknown>;
+    if (rendering["without_party_totals"] !== true) continue;
+    cuts += 1;
+    if (spelling === "party_totals") delete rendering["without_party_totals"];
+    if (spelling !== "without_party_totals") rendering["party_totals"] = false;
+  }
+  assert.ok(cuts > 0, "the manifest lists no cut artifact");
+  return copy;
+}
+
 /** Search's answer to the identity resubmit, naming `specId`. */
 async function resubmitted(specId: string): Promise<Handler> {
   const resubmit = await recordedJson<{ parts: { spec: Record<string, unknown> }[] }>(
@@ -277,6 +296,32 @@ describe("a share fetch", () => {
     });
   }
 
+  for (const spelling of ["party_totals", "both"] as const) {
+    test(`of a version whose manifest spells the cut ${spelling} reads the member the old spelling gives`, async () => {
+      const read = async (manifest: unknown) => {
+        const { transport } = make(
+          await shareRead(),
+          await slotCard(datasetFrame()),
+          json(manifest),
+          ...(await storedVersion()).slice(1),
+        );
+        return fetchDataset(transport, await threeSlots(), { slot: 2 });
+      };
+      const old = await read(await storedManifest());
+      const data = await read(respelled(await storedManifest(), spelling));
+      const [member] = data.ref.members;
+      assert.ok(member !== undefined && !isDerived(member));
+      assert.deepEqual(member.rendering, {
+        format: "parquet",
+        bundle: false,
+        layout: "frame",
+        without_party_totals: true,
+      });
+      assert.equal(JSON.stringify(data.ref), JSON.stringify(old.ref));
+      assert.ok(data.ref.equals(old.ref));
+    });
+  }
+
   for (const retried of [false, true]) {
     test(`of a version listing no frame file reads the one the file selector renders${
       retried ? ", asking again when the manifest does not list the first" : ""
@@ -343,17 +388,18 @@ describe("a share fetch", () => {
     });
   }
 
-  for (const [status, code] of [
-    [410, "artifact_expired"],
-    [404, "artifact_not_found"],
-    [404, "not_found"],
+  // Each row also spells the cut of the stored manifest's long file one way.
+  for (const [status, code, spelling] of [
+    [410, "artifact_expired", "without_party_totals"],
+    [404, "artifact_not_found", "party_totals"],
+    [404, "not_found", "both"],
   ] as const) {
-    test(`a selector answering ${code} rebuilds the version, then is unavailable`, async () => {
+    test(`a selector answering ${code} rebuilds the version, then is unavailable, the cut spelled ${spelling}`, async () => {
       const newest = `cv_${"c".repeat(32)}`;
       const { transport, seen } = make(
         await shareRead(),
         await slotCard(datasetFrame()),
-        json(await longOnlyManifest()),
+        json(respelled(await longOnlyManifest(), spelling)),
         problem({ status, code }),
         problem({ status: 422, code: "definition_not_reproducible" }),
         json({
@@ -381,7 +427,7 @@ describe("a share fetch", () => {
         format: "parquet",
         bundle: false,
         layout: "frame",
-        without_party_totals: true,
+        party_totals: false,
       });
     });
   }
