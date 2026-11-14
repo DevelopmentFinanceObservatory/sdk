@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - `development-finance` installs beside any `httpx2` and `httpcore2` from 2.15 on. The transport builds its connection pools through their public interfaces, so a new minor release of either needs no new client release.
+- `development-finance` needs `pyarrow>=21`, the first release whose `concat_tables` stacks members whose struct columns differ by field name, order or type.
 - The `polars` extra needs `polars>=1.3`, the first release whose `DataFrame` reads a `Dataset` through the Arrow stream. A CI job installs every floor and runs the suite.
 
 ### Fixed

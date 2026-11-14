@@ -12,7 +12,7 @@ requires-python = ">=3.12"
 dependencies = [
     "httpcore2>=2.15; sys_platform != 'emscripten'",
     "httpx2>=2.15",
-    "pyarrow>=15",
+    "pyarrow>=21",
     "typing-extensions>=4.12",
 ]
 
