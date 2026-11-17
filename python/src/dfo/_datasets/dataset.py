@@ -417,9 +417,8 @@ class Provenance:
             answer to one; None otherwise.
         warnings: The datasets surface's warnings about the members' data.
         members: One member per built spec or derived frame, each an exact
-            version with its digest, parts, sentence, citation and retention,
-            its own `pinned` and `held_until`. Empty for a website bundle
-            opened from a folder.
+            version with its digest, parts, sentence, citation, `pinned` and
+            `held_until`. Empty for a website bundle opened from a folder.
     """
 
     sentence: str
@@ -440,14 +439,14 @@ class Provenance:
 
     @property
     def pinned(self) -> bool:
-        """Whether every member's version is kept without a time limit; False
+        """Whether every member's version is kept without a time limit. False
         with no members."""
         return self._retention_of_members[1]
 
     @property
     def held_until(self) -> date | None:
         """The earliest date any member's version not pinned can still be
-        fetched; None when every member is pinned or no such member's date is
+        fetched. None when every member is pinned or no such member's date is
         known."""
         return self._retention_of_members[0]
 
@@ -690,9 +689,9 @@ def dataset_retention(
     members: Iterable[Member | DerivedMember],
 ) -> tuple[date | None, bool]:
     """The earliest `held_until` of the members not pinned, and whether every
-    member is pinned; a member whose `pinned` is unknown counts as not pinned,
-    and no members are not pinned, as a website bundle opened from a folder
-    names no version to keep."""
+    member is pinned. A member whose `pinned` is unknown counts as not pinned.
+    A dataset with no members is not pinned, as a website bundle opened from a
+    folder names no version to keep."""
     members = tuple(members)
     if members and all(member.pinned is True for member in members):
         return None, True
@@ -2134,10 +2133,11 @@ def _load_saved_retention(
     text: str | None, members: int, *, pinned: bool, held_until: date | None
 ) -> list[_Retention]:
     """A saved file's `dfo.retention`, one retention per member. A file without
-    it, as one a client before 0.3.0 saved, reads every member as pinned when
-    the dataset is. Otherwise each member's `pinned` is unknown and its
-    `held_until` is the dataset's, the earliest of its members', a date each
-    member is held until at least, so the dataset reads the date it saved."""
+    it, such as one a client before 0.3.0 saved, reads every member as pinned
+    when the dataset is pinned. Otherwise each member's `pinned` is unknown and
+    its `held_until` is the dataset's, the earliest of its members' dates, so
+    every member is held at least that long and the dataset reads the date it
+    saved."""
     if text is None:
         return [(True, None) if pinned else (None, held_until)] * members
     pointer = "/dfo.retention"

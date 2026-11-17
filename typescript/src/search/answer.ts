@@ -226,7 +226,7 @@ export class Answer {
   readonly kind: AnswerKind;
   /** The parts' shared status, `mixed` when they differ, or the kind of a declined or catalogue
    *  answer. It is Search's status, so a definite answer can still have a gap from a series
-   *  code; `complete` says whether it has none. */
+   *  code. `complete` says whether it has none. */
   readonly status: AnswerStatus;
   /** Search's sentence for the whole answer; null for a declined or catalogue answer. */
   readonly sentence: string | null;

@@ -162,11 +162,9 @@ Taking a share down again with its token succeeds, so a retry after a lost reply
 
 A site that shows DFO cards can refresh them from a CI job. Make the share once by hand, as above, and keep its URL and write token for the job. The job then replaces the cards on each data refresh, and every link the page has published keeps working.
 
-Three rules keep this safe and cheap:
-
-- Store `share.writeToken` as a CI secret, beside the share's URL and a DFO key. Anyone with the token can change the share or take it down, so it never belongs in a public repository.
+- Store `share.writeToken` as a CI secret, beside the share's URL and a DFO key. Anyone with the token can change the share or take it down, so keep it out of public repositories.
 - Run the replace in its own job, triggered by a data refresh or a schedule. A site build runs on every push, and each run would otherwise publish to DFO.
-- Pass `replace` with the stored URL and token, so the job gives the live share new cards under the same URLs and makes no new share.
+- Pass `replace` with the stored URL and token, so the job puts new cards on the live share under the same URLs.
 
 <!-- docs-check: skip: needs a key and a live share's write token -->
 
@@ -189,7 +187,7 @@ console.log(String(share));
 
 Two daily allowances apply. Each new share counts against the share allowance, and each card against the card allowance. A replace makes no new share, and each card it makes still counts against the card allowance, so a job that rebuilds many cards can reach it. `QuotaExceededError` (`allowance_exhausted`) carries `retryAfterMs`, the milliseconds until it resets.
 
-A pipeline that reads the data rather than shows it needs no share. [Use DFO in a data pipeline](pipelines.md) covers refs, links, and offline tests.
+A pipeline that reads data needs no share. [Use DFO in a data pipeline](pipelines.md) covers refs, links, and offline tests.
 
 ## Reference
 

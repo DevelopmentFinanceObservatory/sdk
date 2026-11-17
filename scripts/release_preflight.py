@@ -16,7 +16,7 @@ with no key:
    rows. A failure means production does not accept structured search.
 4. The file route a `file_url` link points at. `file_url` of the control's member
    returns a link when the version is pinned, and raises `version_not_pinned`
-   while it is not, since an anonymous caller cannot pin; the script then builds
+   while it is not, since an anonymous caller cannot pin. The script then builds
    the link from the client's own path and rendering query. Any other error from
    `file_url` fails the check. The script reads the link with a plain HTTP
    client, with no key, following redirects; the response must be a Parquet file
@@ -52,7 +52,7 @@ FILE_REFUSED = "production does not serve the file route anonymously"
 
 
 class PreflightError(Exception):
-    """A check failed; the message says what production does not do."""
+    """A check failed. The message says what production does not do."""
 
 
 def check_party_totals(client: Client) -> tuple[Member, int]:

@@ -3,12 +3,12 @@
 
 A client asks Search what a question means (`search`), builds datasets (`fetch`),
 runs DFO's operations (`analysis`, and `fetch` of a recipe), pins versions
-(`pin`) and links to their files (`file_url`), stores cards DFO draws (`cards`), publishes them as links (`share`,
-`snapshot`, `unshare`, `history`), and looks up names, codes and Search's
-catalogue (`lookup`). `request`
-reaches any route the client does not wrap. The client
-owns its connection pool: `with_options` returns a copy that shares the pool and
-the cache, and only the client that built the pool closes it.
+(`pin`) and links to their files (`file_url`), stores cards DFO draws (`cards`),
+publishes them as links (`share`, `snapshot`, `unshare`, `history`), and looks up
+names, codes and Search's catalogue (`lookup`). `request` reaches any route the
+client does not wrap. The client owns its connection pool: `with_options`
+returns a copy that shares the pool and the cache, and only the client that
+built the pool closes it.
 """
 
 from collections.abc import Mapping, Sequence
@@ -71,8 +71,8 @@ class Client:
     lookup: Lookup
     analysis: Analysis
     cards: Cards
-    # What the client's hints name the owner of a call they suggest, as in
-    # `client.fetch(spec)`; the default client behind `dfo.fetch` names `dfo`.
+    # The owner the client's hints name for a call they suggest, as in
+    # `client.fetch(spec)`. The default client behind `dfo.fetch` names `dfo`.
     _caller: ClassVar[str] = "client"
 
     def __init__(
@@ -122,17 +122,17 @@ class Client:
         Raises:
             InvalidRequestError: The base URL, passed or read from
                 `DFO_BASE_URL`, is invalid (`base_url_invalid`), a
-                header's name is not an HTTP token or names `X-DFO-Client`, or its
-                value not a string of visible ASCII, spaces and tabs (`header_invalid`), the
-                key would travel over plain http to a host that is not loopback
-                (`insecure_transport`), `timeout` is not None or a finite
-                number above 0, `attempt_timeout` not a finite number above 0,
-                the retry count not an integer from 0 to 10, `DFO_TIMEOUT` or
-                `DFO_MAX_RETRIES`, read for an argument left out, not seconds
-                above 0 such as `300` or `2.5` or a count from 0 to 10 in
-                digits, or, with `cache` on, `cache_dir` an empty path, one
-                holding a NUL character, or one starting `~name` for a user with no home directory
-                (`invalid_argument`).
+                header's name is not an HTTP token or names `X-DFO-Client`, or
+                its value not a string of visible ASCII, spaces and tabs
+                (`header_invalid`), the key would travel over plain http to a
+                host that is not loopback (`insecure_transport`), `timeout` is
+                not None or a finite number above 0, `attempt_timeout` not a
+                finite number above 0, the retry count not an integer from 0 to
+                10, `DFO_TIMEOUT` or `DFO_MAX_RETRIES`, read for an argument
+                left out, not seconds above 0 such as `300` or `2.5` or a count
+                from 0 to 10 in digits, or, with `cache` on, `cache_dir` an
+                empty path, one holding a NUL character, or one starting
+                `~name` for a user with no home directory (`invalid_argument`).
             AuthenticationError: The key lookup failed.
         """
         local = Cache(cache_dir, enabled=cache)
@@ -248,7 +248,7 @@ class Client:
             entities: Role keys bound to dcids, such as
                 `{"destination": ["country/KEN"]}`, or to what `lookup.resolve`
                 returns, as `fetch` takes them. `origin` reads as the giving
-                side and `destination` as the receiving side; `place` names
+                side and `destination` as the receiving side. `place` names
                 no side.
             window: `"all"`, `"latest"` or `(start_year, end_year)`, as `fetch`
                 takes it.

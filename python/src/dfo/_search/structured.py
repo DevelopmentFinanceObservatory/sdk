@@ -17,7 +17,7 @@ from dfo._core.types import DefinitePart, Gap, Notice, Part, Window
 from dfo._datasets.build import Entities, dcid_entities, listed_entities, scope
 from dfo._generated.role_keys import FLOW_KEYS, ROLE_KEYS
 
-# The `role_text` word each caller key posts; `place` posts none and is undirected.
+# The `role_text` word each caller key posts. `place` posts none and is undirected.
 _ROLE_TEXT = {"origin": "from", "destination": "to"}
 
 # The warning Search gives a `time_text` it cannot read, which then reads every year.
@@ -131,7 +131,7 @@ def check_reply(
 
 
 def asked_code(part: Part) -> str | None:
-    """The series code a part was asked by, as Search restates the part; None
+    """The series code a part was asked by, as Search restates the part. None
     when it names none."""
     restatement = part.raw.get("restatement")
     if not isinstance(restatement, Mapping):
@@ -142,7 +142,7 @@ def asked_code(part: Part) -> str | None:
 
 def code_gap(index: int, part: Part, code: str | None) -> Gap | None:
     """The gap a definite part asked by `code` leaves when its reading is not that
-    code's series alone; None when it is, or when no code was asked.
+    code's series alone. None when it is, or when no code was asked.
 
     Every entry of the spec's `resolved.stat_vars.source_codes` must be an object
     naming `code`, compared upper-cased as Search compares codes, with `exact`
@@ -270,14 +270,14 @@ def _entities(entities: Entities) -> list[dict[str, str]]:
 
 
 def _name(bound: object) -> str | None:
-    """The name of an entity or a resolved match; None for a dcid."""
+    """The name of an entity or a resolved match. None for a dcid."""
     if isinstance(bound, Match):
         bound = bound.entity
     return bound.name if isinstance(bound, Entity) else None
 
 
 def _time_text(window: Window) -> str | None:
-    """The `time_text` a window posts, read by `fetch`'s window rule; None for
+    """The `time_text` a window posts, read by `fetch`'s window rule. None for
     `"all"`, which posts none."""
     checked = (scope(window=window) or {})["window"]
     match checked["kind"]:

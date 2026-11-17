@@ -61,7 +61,7 @@ const SAVED_DATASET_KEYS = [
 const PARQUET_MAGIC = [0x50, 0x41, 0x52, 0x31];
 
 /** Why bytes hold no dataset to read, as `contract/client-codes.json` names the codes of its
- *  `BundleError` rows. This client reads saved files alone, so it raises `not_a_bundle`; the
+ *  `BundleError` rows. This client reads saved files alone, so it raises `not_a_bundle`. The
  *  other codes name faults in a website bundle, which Python's `dfo.load` reads. */
 export type BundleErrorReason = {
   [C in ClientErrorCode]: (typeof CLIENT_CODE_CLASSES)[C] extends "BundleError" ? C : never;
@@ -251,7 +251,7 @@ function savedState(file: ParquetFile): Omit<SavedDataset, "table"> {
     roles: {},
     ...(derived ? loadDerived(values) : { leftOut: [], leftOutComplete: true, steps: [] }),
   };
-  // Python reads `stale` too; this client keeps no cache, so a saved dataset is never stale.
+  // Python reads `stale` too. This client keeps no cache, so a saved dataset is never stale.
   flag(rest, "stale");
   return { state, memberRows };
 }
@@ -625,7 +625,7 @@ export function arrayAt(value: unknown, pointer: string): unknown[] {
   return value;
 }
 
-/** A stored citation, its sources' licence spelled `licence`. A saved file's is closed; a
+/** A stored citation, its sources' licence spelled `licence`. A saved file's is closed. A
  *  provenance record's is open, so a key it or a source does not name is ignored. */
 export function loadCitation(
   value: unknown,
@@ -662,7 +662,7 @@ export function loadCitation(
 
 /**
  * A stored warning, its `spec_id` a string or null. A provenance record's warning is open and
- * holds `spec_id`, so it refuses one without it and ignores a key it does not name; a saved
+ * holds `spec_id`, so it refuses one without it and ignores a key it does not name. A saved
  * file's is closed and may leave `spec_id` out, and the notice then has none.
  */
 export function loadWarning(

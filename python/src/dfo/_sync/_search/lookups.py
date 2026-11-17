@@ -175,8 +175,8 @@ class Lookup:
         """The registry entry for one of DFO's own error or warning codes, such as
         `spec_not_found`, which says what that refusal or warning means.
 
-        This looks up a code DFO raises or warns with. It does not look up a
-        publisher's codes; `resolve(..., kinds=["code"])` finds those.
+        This looks up a code DFO raises or warns with.
+        `resolve(..., kinds=["code"])` finds a publisher's codes.
 
         The registry sits at the API host's root, the page an error's `docs_url`
         names.
@@ -202,7 +202,7 @@ class Lookup:
             read_code,
         )
 
-    # The marker is for type checkers alone; the call warns through the client.
+    # The marker is for type checkers alone. The call warns through the client.
     @deprecated("Use `lookup.error_code`.", category=None)
     def code(self, code: str, /) -> Code:
         """The deprecated name of `error_code`, removed in 0.4.0.

@@ -42,7 +42,7 @@ const data = await answer.fetch();
 console.log(data.rowCount, "rows");
 ```
 
-`answer.fetch()` refuses an answer with gaps (`answer_incomplete`). `answer.fetch({ partial: true })` builds the codes that did read. The message of a code that reads as more than its series names the codes its reading holds, and gives two ways on: narrow the search with `variable` or `source`, or take the reading as it is with `client.fetch((answer.parts[i] as DefinitePart).spec)`. `variable` adds words that choose among the variables of a code, `source: "IDS"` names the source to read the codes from, and `openRoles: ["origin"]` answers creditor by creditor. A question string beside any of these is refused.
+`answer.fetch()` refuses an answer with gaps (`answer_incomplete`). `answer.fetch({ partial: true })` builds the codes that did read. The message of a code that reads as more than its series names the codes its reading holds, and says to narrow the search with `variable` or `source`, or to take the reading as it is with `client.fetch((answer.parts[i] as DefinitePart).spec)`. `variable` adds words that choose among the variables of a code, `source: "IDS"` names the source to read the codes from, and `openRoles: ["origin"]` answers creditor by creditor. A question string beside any of these is refused.
 
 When a search holds more codes than the server takes in one request, the server refuses with `request_invalid`. Search in chunks, fetch each, and join the members into one ref:
 
@@ -95,7 +95,7 @@ for (const notice of newest.warnings) {
 
 `data.warnings` holds the notices DFO attached to the data, each with a `code`, `severity`, `message`, and the `spec_id` it concerns. Read them from the dataset and log or fail on them. `strict: true` throws the first one instead.
 
-A ref keeps its window: `latest: true` rebuilds the same years on newer versions. To widen the window, search again with the new `window` and commit the new ref.
+A ref keeps its window, so `latest: true` rebuilds the same years on newer versions. To widen the window, search again with the new `window` and commit the new ref.
 
 ## Link a reading
 
@@ -118,7 +118,7 @@ The link serves the member's version as Parquet, in the rendering the member was
 
 `fileUrl` reads the version's manifest once. An unpinned version throws `VersionNotPinnedError`, an `InvalidRequestError` with the code `version_not_pinned`, because DFO keeps it for 30 days and a committed link to it would break after that. `error.heldUntil` is the `Date` DFO stops guaranteeing it. Run `client.pin(data)`, then ask again. A member of a derived dataset from `client.analysis` throws `invalid_argument`.
 
-The link serves a plain Parquet file, which a Parquet reader such as hyparquet reads. `load` reads the files `data.save` writes and refuses this one with `not_a_bundle`; `client.fetch(ref)` gives the same version as a Dataset with its provenance.
+The link serves a plain Parquet file, which a Parquet reader such as hyparquet reads. `load` reads the files `data.save` writes and refuses this one with `not_a_bundle`. `client.fetch(ref)` gives the same version as a Dataset with its provenance.
 
 ## Record provenance
 
@@ -132,7 +132,7 @@ console.log(same.sentence);
 console.log(same.equals(newest.provenance));
 ```
 
-Each member carries its own `pinned` and `heldUntil`, so a record of several readings says which one stops being guaranteed first, and the dataset's `pinned` and `heldUntil` come from them: pinned when every member is, held until the earliest day of the members that are not. A member's `pinned` is null when the client does not know it, as in a dataset read from a file an older client saved, and its `heldUntil` is then the day that file saved for the whole dataset, a day the member is held until at least. After `client.pin(data)`, every member reads as pinned.
+Each member carries its own `pinned` and `heldUntil`, so a record of several readings says which one stops being guaranteed first, and the dataset's `pinned` and `heldUntil` come from them. The dataset is pinned when every member is, and held until the earliest day of the members that are not. A member's `pinned` is null when the client does not know it, as in a dataset read from a file an older client saved, and its `heldUntil` is then the day that file saved for the whole dataset, a day the member is held until at least. After `client.pin(data)`, every member reads as pinned.
 
 `Provenance.fromJSON` takes the text or its parsed value, throws `FormatError` when it breaks the format, and reads a record with keys it does not know, in a member, a citation or a warning too, so a record a later client wrote still loads. The Python client writes the same text with `provenance.to_json()` and reads it with `Provenance.from_json`, so a Python job and a TypeScript site can share one file. The same record sits inside a file saved with `data.save`.
 

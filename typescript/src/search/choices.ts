@@ -12,7 +12,7 @@
  *   and `truncated` echoed, since Search cannot recompute that order from a restatement;
  * - any other part posts its `restatement`, which Search resolves again and so keeps its message
  *   and its choices, or a placeholder of its refusal when it has none. A definite part with a gap
- *   from its series code is one: Search answers an identity entry with no restatement, so the
+ *   from its series code is one. Search answers an identity entry with no restatement, so the
  *   code and its gap would be lost, while the restatement keeps the code for the new answer to
  *   check again.
  *

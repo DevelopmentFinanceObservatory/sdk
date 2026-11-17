@@ -94,11 +94,11 @@ class Member:
         citation: How to cite the member's data.
         digest: The SHA-256 digest of the artifact the data came from.
         rendering: Which rendering the artifact is.
-        pinned: Whether DFO keeps the version without a time limit; None when
+        pinned: Whether DFO keeps the version without a time limit. None when
             the client does not know, as for a file saved by a client before
             0.3.0.
         held_until: The date the version can still be fetched without being
-            pinned; None when it is pinned, the server did not say, or the
+            pinned. None when it is pinned, the server did not say, or the
             client does not know.
     """
 

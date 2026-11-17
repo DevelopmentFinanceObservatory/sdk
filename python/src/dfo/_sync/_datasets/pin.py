@@ -14,7 +14,7 @@ The pin route takes dataset versions alone, so a derived Dataset, whose members
 name `ops_` frames, is refused before any request.
 
 `file_url` gives a pinned member's file as a link a pipeline can commit and read
-with any HTTP client: the file selector, `GET
+with any HTTP client. The link is the file selector, `GET
 /datasets/{spec_id}/{content_version}/file`, under the client's base URL, with
 the query of the rendering the member was built in, so it serves the same
 table. It reads the version's manifest first and refuses a version that is not

@@ -288,7 +288,7 @@ await data.save("kenya-gdp.parquet");
 console.log(String(await load("kenya-gdp.parquet")));
 ```
 
-A file of several members holds them in one table, `part` first, so `memberBytes` throws `InvalidRequestError` (`invalid_argument`) on a loaded dataset; `client.fetch(data.ref)` fetches each member's own file. Bytes that hold no saved dataset throw `BundleError` (`not_a_bundle`). This client reads the files `data.save` wrote; a bundle downloaded from the website opens with the Python client's `dfo.load`. A damaged or later-format provenance throws `FormatError`. A file Python saved from a website bundle's folder names no version, so its `fetchedAt` is null and `data.ref` throws `InvalidRequestError` (`ref_unavailable`). In a browser, `load(path)` throws `InvalidRequestError` (`invalid_argument`); read the file's bytes with `Dataset.fromBytes`.
+A file of several members holds them in one table, `part` first, so `memberBytes` throws `InvalidRequestError` (`invalid_argument`) on a loaded dataset, and `client.fetch(data.ref)` fetches each member's own file. Bytes that hold no saved dataset throw `BundleError` (`not_a_bundle`). This client reads the files `data.save` wrote. A bundle downloaded from the website opens with the Python client's `dfo.load`. A damaged or later-format provenance throws `FormatError`. A file Python saved from a website bundle's folder names no version, so its `fetchedAt` is null and `data.ref` throws `InvalidRequestError` (`ref_unavailable`). In a browser, `load(path)` throws `InvalidRequestError` (`invalid_argument`), so read the file's bytes with `Dataset.fromBytes`.
 
 ## Save an answer and revive it
 

@@ -120,9 +120,9 @@ function keptInOf(value: unknown): KeptSeries[] | null {
 
 /**
  * One entry of a manifest's `trace.party_totals_left_out` as `{role, entities, provenance,
- * kept_in}`, where an absent `provenance` means every dataset's rows; null when the entry is no
- * object, its `role` is no non-empty string, its `entities` is no list of non-empty strings, its
- * `provenance` is neither absent, a string nor null, or its `kept_in` is neither absent nor a
+ * kept_in}`, where an absent `provenance` means every dataset's rows. It is null when the entry is
+ * no object, its `role` is no non-empty string, its `entities` is no list of non-empty strings,
+ * its `provenance` is neither absent, a string nor null, or its `kept_in` is neither absent nor a
  * well-formed list in the contract's order. Other keys are ignored.
  */
 export function partyTotalsEntry(entry: unknown, specId: string): PartyTotalsLeftOut | null {
@@ -155,8 +155,8 @@ function partyTotalsFrom(served: unknown, specId: string): PartyTotalsLeftOut[] 
 
 /**
  * The totals a manifest's `trace.party_totals_left_out` names for the member of `specId`. The
- * list is empty when the trace names none: a trace that is no object or a member that is no list
- * names none, and a malformed entry is dropped while the entries beside it still read.
+ * list is empty when the trace names none, as a trace that is no object or a member that is no
+ * list does. A malformed entry is dropped while the entries beside it still read.
  */
 export function partyTotalsOf(
   manifest: Readonly<Record<string, unknown>>,

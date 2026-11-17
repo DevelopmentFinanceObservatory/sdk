@@ -4,10 +4,11 @@ and the lookups of `dfo.lookup`, over a default client.
 
 The default client is built on first use, under a lock, so importing `dfo` reads
 neither the environment nor the network, and an invalid `DFO_TIMEOUT` raises at
-the first call. `configure` replaces it. An answer from
-`dfo.search` reads the default client when each of its requests runs, so it stays
-usable after `configure`. A replaced client closes once nothing uses it, since another thread may still be in a call on it, and the default client
-closes at exit.
+the first call. `configure` replaces it. An answer from `dfo.search` reads the
+default client when each of its requests runs, so it stays usable after
+`configure`. A replaced client closes once nothing uses it, since another thread
+may still be in a call on it, and the default client closes at exit.
+
 A forked child keeps the default client, and with it the options `configure`
 set. Its transport builds a fresh connection pool on the child's first request
 and leaves the parent's connections untouched. The child takes a fresh lock,
@@ -121,19 +122,17 @@ def configure(
 
     Raises:
         InvalidRequestError: The base URL, passed or read from `DFO_BASE_URL`,
-            is invalid (`base_url_invalid`), a
-            header's name is not an HTTP token or names `X-DFO-Client`, or its
-            value not a string of visible ASCII, spaces and tabs (`header_invalid`), the key would
-            travel over plain http to a host that is not loopback
-            (`insecure_transport`), `timeout` is not None or a finite number
-            above 0, `attempt_timeout` not a finite number above 0, the retry
-            count not an integer from 0 to 10, `DFO_TIMEOUT` or
-            `DFO_MAX_RETRIES`, read for an argument left out, not seconds
-            above 0 such as `300` or `2.5` or a count from 0 to 10 in digits,
-            or, with `cache` on,
-            `cache_dir` an empty path, one holding a NUL character, or one
-            starting `~name` for a user with no home directory
-            (`invalid_argument`).
+            is invalid (`base_url_invalid`), a header's name is not an HTTP
+            token or names `X-DFO-Client`, or its value not a string of visible
+            ASCII, spaces and tabs (`header_invalid`), the key would travel over
+            plain http to a host that is not loopback (`insecure_transport`),
+            `timeout` is not None or a finite number above 0, `attempt_timeout`
+            not a finite number above 0, the retry count not an integer from 0
+            to 10, `DFO_TIMEOUT` or `DFO_MAX_RETRIES`, read for an argument left
+            out, not seconds above 0 such as `300` or `2.5` or a count from 0 to
+            10 in digits, or, with `cache` on, `cache_dir` an empty path, one
+            holding a NUL character, or one starting `~name` for a user with no
+            home directory (`invalid_argument`).
         AuthenticationError: The key lookup failed.
     """
     client = _DefaultClient(
@@ -198,7 +197,7 @@ def search(
         entities: Role keys bound to dcids, such as
             `{"destination": ["country/KEN"]}`, or to what `dfo.lookup.resolve`
             returns, as `dfo.fetch` takes them. `origin` reads as the giving
-            side and `destination` as the receiving side; `place` names no side.
+            side and `destination` as the receiving side. `place` names no side.
         window: `"all"`, `"latest"` or `(start_year, end_year)`, as `dfo.fetch`
             takes it.
         open_roles: Flow role keys, `origin` or `destination`, to answer member
@@ -514,7 +513,7 @@ def error_code(code: str, /) -> Code:
     return default_client().lookup.error_code(code)
 
 
-# The marker is for type checkers alone; the call warns through the client.
+# The marker is for type checkers alone. The call warns through the client.
 @deprecated("Use `dfo.lookup.error_code`.", category=None)
 def code(code: str, /) -> Code:
     """The deprecated name of `error_code`, removed in 0.4.0.

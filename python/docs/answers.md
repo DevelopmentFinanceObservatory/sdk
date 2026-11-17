@@ -18,7 +18,7 @@ import dfo
 
 answer = dfo.search("GDP of Kenya and health spending")
 print(answer)
-print(answer.complete)  # True: no part has a gap
+print(answer.complete)  # True: `gaps` is empty
 print(len(answer.specs))  # 2: one spec per distinct reading
 ```
 
@@ -29,7 +29,7 @@ print(len(answer.specs))  # 2: one spec per distinct reading
 | `sentence`  | Search's sentence for the whole answer (`None` for a declined or catalogue answer) |
 | `parts`     | One part per variable asked, in the question's order                               |
 | `specs`     | The readings, one per distinct spec                                                |
-| `complete`  | Whether no part has a gap                                                          |
+| `complete`  | Whether `gaps` is empty                                                            |
 | `gaps`      | The parts that stop a complete dataset, each a `Gap`                               |
 | `kind`      | `resolution`, `catalogue` or `declined`                                            |
 | `reason`    | Why Search declined, for a declined answer                                         |

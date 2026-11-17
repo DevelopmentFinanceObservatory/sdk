@@ -40,7 +40,7 @@ data = answer.fetch()
 print(len(data), "rows")
 ```
 
-`answer.fetch()` refuses an answer with gaps (`answer_incomplete`). `answer.fetch(partial=True)` builds the codes that did read. The message of a code that reads as more than its series names the codes its reading holds, and gives two ways on: narrow the search with `variable` or `source`, or take the reading as it is with `dfo.fetch(answer.parts[i].spec)`. `variable` adds words that choose among the variables of a code, `source="IDS"` names the source to read the codes from, and `open_roles=["origin"]` answers creditor by creditor. A positional question beside any of these raises `InvalidRequestError` (`invalid_argument`).
+`answer.fetch()` refuses an answer with gaps (`answer_incomplete`). `answer.fetch(partial=True)` builds the codes that did read. The message of a code that reads as more than its series names the codes its reading holds, and says to narrow the search with `variable` or `source`, or to take the reading as it is with `dfo.fetch(answer.parts[i].spec)`. `variable` adds words that choose among the variables of a code, `source="IDS"` names the source to read the codes from, and `open_roles=["origin"]` answers creditor by creditor. A positional question beside any of these raises `InvalidRequestError` (`invalid_argument`).
 
 When a search holds more codes than the server takes in one request, the server refuses with `request_invalid`. Search in chunks, fetch each, and join the members into one ref:
 
@@ -93,7 +93,7 @@ for notice in newest.warnings:
 
 `data.warnings` holds the notices DFO attached to the data, each with a `code`, `severity`, `message`, and the `spec_id` it concerns. Read them from the dataset and log or fail on them. `strict=True` raises them as `DataWarning` instead.
 
-A ref keeps its window: `latest=True` rebuilds the same years on newer versions. To widen the window, search again with the new `window` and commit the new ref.
+A ref keeps its window, so `latest=True` rebuilds the same years on newer versions. To widen the window, search again with the new `window` and commit the new ref.
 
 ## Link a reading
 
@@ -115,7 +115,7 @@ The link serves the member's version as Parquet, in the rendering the member was
 
 `file_url` reads the version's manifest once. An unpinned version raises `VersionNotPinnedError`, an `InvalidRequestError` with the code `version_not_pinned`, because DFO keeps it for 30 days and a committed link to it would break after that. `error.held_until` is the date DFO stops guaranteeing it. Run `dfo.pin(data)`, then ask again. A member of a derived dataset from `dfo.analysis` raises `invalid_argument`.
 
-The link serves a plain Parquet file, which pyarrow reads. `dfo.load` reads the files `data.save` writes and refuses this one with `not_a_bundle`; `dfo.fetch(ref)` gives the same version as a Dataset with its provenance.
+The link serves a plain Parquet file, which pyarrow reads. `dfo.load` reads the files `data.save` writes and refuses this one with `not_a_bundle`. `dfo.fetch(ref)` gives the same version as a Dataset with its provenance.
 
 ## Record provenance
 
@@ -130,7 +130,7 @@ print(same.sentence)
 print(same == newest.provenance)
 ```
 
-Each member carries its own `pinned` and `held_until`, so a record of several readings says which one stops being guaranteed first, and the dataset's `pinned` and `held_until` come from them: pinned when every member is, held until the earliest date of the members that are not. A member's `pinned` is None when the client does not know it, as in a dataset loaded from a file an older client saved, and its `held_until` is then the date that file saved for the whole dataset, a date the member is held until at least. After `dfo.pin(data)`, every member reads as pinned.
+Each member carries its own `pinned` and `held_until`, so a record of several readings says which one stops being guaranteed first, and the dataset's `pinned` and `held_until` come from them. The dataset is pinned when every member is, and held until the earliest date of the members that are not. A member's `pinned` is None when the client does not know it, as in a dataset loaded from a file an older client saved, and its `held_until` is then the date that file saved for the whole dataset, a date the member is held until at least. After `dfo.pin(data)`, every member reads as pinned.
 
 `Provenance.from_json` takes the text, as str or bytes, or the object `json.loads` gives, raises `FormatError` when it breaks the format, and reads a record with keys it does not know, in a member, a citation or a warning too, so a record a later client wrote still loads. The TypeScript client writes the same text with `JSON.stringify(provenance)` and reads it with `Provenance.fromJSON`, so a Python job and a TypeScript site can share one file. The same record sits inside a file saved with `data.save`.
 

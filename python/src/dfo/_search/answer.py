@@ -113,7 +113,7 @@ class AsyncAnswer:
         status: The parts' shared status (`definite`, `candidates`, `no_data`,
             `unsupported`), `mixed` when they differ, or the kind for a declined or
             catalogue answer. It is Search's status, so a definite answer can
-            still have a gap from a series code; `complete` says whether it has
+            still have a gap from a series code. `complete` says whether it has
             none.
         sentence: Search's sentence for the whole answer; None for a declined or
             catalogue answer, which Search gives none.
@@ -148,9 +148,9 @@ class AsyncAnswer:
     raw: Mapping[str, Any] = field(default_factory=dict, compare=False)
     _source: SessionSource = field(compare=False)
     # The readings `fetch` builds, one per distinct spec of the answered parts
-    # (those with no gap): computed once in `answer_from_body`.
+    # (those with no gap), computed once in `answer_from_body`.
     _readings: tuple[Reading, ...] = field(default=(), compare=False)
-    # The session `from_json` reads through when it names no client: the
+    # The session `from_json` reads through when it names no client. It is the
     # default client's, which `dfo._client.default` sets, since this layer
     # cannot import the client layer.
     _default_source: ClassVar[SessionSource | None] = None
@@ -756,7 +756,7 @@ def _entry(
     """The `dataset_resubmit` entry for one part, settled by `chosen` when given.
 
     Only an answered part posts its reading's identity. A definite part with a
-    gap, whose reading is not its series code's alone, posts its restatement:
+    gap, whose reading is not its series code's alone, posts its restatement.
     Search answers an identity entry with no restatement, so the code would be
     lost and the inexact reading would come back without its gap.
     """

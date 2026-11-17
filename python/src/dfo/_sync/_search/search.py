@@ -32,7 +32,7 @@ def search(
     understood, part by part.
 
     A search by codes posts one part per code, which Search answers on its own
-    from the code's series; `variable`, `entities`, `window`, `open_roles` and
+    from the code's series. `variable`, `entities`, `window`, `open_roles` and
     `source` apply to every code. A definite part whose reading is not its
     code's series alone is a gap.
 
@@ -41,8 +41,8 @@ def search(
             request runs.
         question: The question, in the user's words.
         codes: Publisher series codes, such as `["DT.TDS.DEGG.CD"]`.
-        variable: Words that choose among a code's variables; each code by
-            default.
+        variable: Words that choose among a code's variables. Left out, each
+            code's part reads the code.
         entities: Role keys bound to dcids or to what `lookup.resolve` returns,
             as `fetch` takes them.
         window: `"all"`, `"latest"` or `(start_year, end_year)`, as `fetch`
@@ -50,7 +50,7 @@ def search(
         open_roles: Flow role keys, `origin` or `destination`, to answer member
             by member.
         source: The source to read the codes from, in words, such as `"IDS"`.
-        timeout: The longest the call waits, retries included, in seconds; each
+        timeout: The longest the call waits, retries included, in seconds. Each
             attempt reads until then, and None waits as long as Search takes.
             `CLIENT_TIMEOUT` takes the client's `timeout`, else `SEARCH_TIMEOUT`.
 
