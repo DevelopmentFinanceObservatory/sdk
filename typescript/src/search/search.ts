@@ -59,16 +59,26 @@ export async function search(
       detail: `The question holds a lone surrogate at position ${surrogate}, which UTF-8 cannot encode.`,
     });
   }
-  const given = isRecord(options) ? CODE_SEARCH_KEYS.filter((key) => key in options) : [];
+  // A key of a search by codes set to undefined is absent, as None is to the Python client.
+  const keys: Readonly<Record<string, unknown>> = isRecord(options) ? options : {};
+  const given = CODE_SEARCH_KEYS.filter((key) => keys[key] !== undefined);
+  const unset = new Set<string>(
+    CODE_SEARCH_KEYS.filter((key) => key in keys && !given.includes(key)),
+  );
   if (given.length > 0) {
     throw clientError("invalid_argument", {
       detail:
         "client.search takes a question in words or series codes, not both; Search does not " +
-        `read a question beside ${given.join(", ")}. Name the places and years in the keys: ` +
+        `read a question beside ${listed(given)}. Name the places and years in the keys: ` +
         "client.search({ codes: [...], entities: ..., window: ... }).",
     });
   }
-  const call = checkOptions(SEARCH_OPTIONS, options);
+  const call = checkOptions(
+    SEARCH_OPTIONS,
+    isRecord(options) && unset.size > 0
+      ? Object.fromEntries(Object.entries(options).filter(([key]) => !unset.has(key)))
+      : options,
+  );
   return resolveAnswer(context, { kind: "raw_text", query: question }, { ...call, question });
 }
 
@@ -82,17 +92,24 @@ async function searchCodes(context: AnswerContext, search: CodeSearchOptions): P
   // Read as unknown: a JavaScript caller can leave `codes` out.
   const asked: { readonly codes?: unknown } = keys;
   if (asked.codes === undefined) {
-    const given = Object.keys(keys);
+    const given = Object.entries(keys).flatMap(([key, value]) =>
+      value === undefined ? [] : [key],
+    );
     throw clientError("invalid_argument", {
       detail:
         given.length === 0
           ? "client.search takes a question in words, or series codes: " +
             "client.search({ codes: [...] })."
-          : `${given.join(", ")} qualify the series codes a search asks for; pass ` +
-            "codes: [...], or ask a question in words.",
+          : `${listed(given)} ${given.length === 1 ? "qualifies" : "qualify"} the series ` +
+            "codes a search asks for; pass codes: [...], or ask a question in words.",
     });
   }
   const input = parsedInput(checked);
   const codes = input.parts.map((part) => part.source_code ?? "");
   return resolveAnswer(context, input, { ...present({ signal, timeout }), question: null, codes });
+}
+
+/** Names as a sentence lists them: `a`, `a and b`, `a, b and c`. */
+function listed(names: readonly string[]): string {
+  return names.length === 1 ? names[0]! : `${names.slice(0, -1).join(", ")} and ${names.at(-1)!}`;
 }

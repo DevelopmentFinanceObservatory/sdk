@@ -158,6 +158,7 @@ describe("a search by codes", () => {
     ["reversed years", { window: [2020, 2015] }],
     ["open roles as a string", { openRoles: "origin" }],
     ["place as an open role", { openRoles: ["place"] }],
+    ["an open role that is not a string", { openRoles: [{ toString: () => "origin" }] }],
     ["a source that is not text", { source: 3 }],
     ["a key it does not take", { partial: true }],
   ] as const) {
@@ -188,6 +189,15 @@ describe("a search by codes", () => {
       assert.deepEqual(posted(), []);
     });
   }
+
+  test("reads a key of a search by codes set to undefined as absent beside a question", async () => {
+    const { context, posted } = serving(await reply());
+    const options = { window: undefined, codes: undefined } as unknown as SearchOptions;
+    await search(context, "debt service of Kenya", options);
+    assert.deepEqual(posted(), [
+      { schema_version: 1, input: { kind: "raw_text", query: "debt service of Kenya" } },
+    ]);
+  });
 
   test("refuses an unresolved match as fetch refuses it", () => {
     const ambiguous = matchOf({
@@ -236,6 +246,7 @@ describe("a search by codes", () => {
     ["exact left out", [{ provenance: IDS, code: "DT.TDS.MLAT.CD" }], [0, 2]],
     ["a second code", [MLAT, { ...MLAT, code: "DT.TDS.MLAT.CD.X" }], [0, 2]],
     ["no code", [], [0, 2]],
+    ["an entry that is not an object", [MLAT, "DT.TDS.MLAT.CD"], [0, 2]],
   ] as const) {
     for (const by of ["codes", "restatement"] as const) {
       test(`reads a reading holding ${name} by its ${by}`, async () => {
@@ -268,20 +279,63 @@ describe("a search by codes", () => {
     const { message } = answer.gaps[0]!;
     assert.match(message, /"DT\.TDS\.MLAT\.CD" \(not exact\)/);
     assert.match(message, /"DT\.X"/);
+    assert.ok(message.includes("client.fetch((answer.parts[0] as DefinitePart).spec)"));
     const lines = incompleteMessage(answer).split("\n");
-    assert.equal(lines[0], "Search answered 1 of 3 parts of your question.");
+    assert.equal(lines[0], "Search answered 1 of 3 series codes.");
     assert.ok(lines[1]!.startsWith('  missing  "DT.TDS.MLAT.CD": '));
-    assert.equal(answerText(answer).split("\n")[0], "Answered 1 of 3 parts of your question.");
+    assert.equal(answerText(answer).split("\n")[0], "Answered 1 of 3 series codes.");
   });
 
-  test("keeps a code gap through JSON", async () => {
-    const { context } = serving();
-    const answer = answerFromBody(await held([{ ...MLAT, exact: false }]), context, null);
-    const revived = answerFromBody(answer.toJSON().answer, context, null);
+  for (const writtenBy of ["0.3", "0.2.0"] as const) {
+    test(`reads a code gap through JSON written by ${writtenBy}`, async () => {
+      const { context } = serving();
+      const answer = answerFromBody(await held([{ ...MLAT, exact: false }]), context, null);
+      const stored = structuredClone(answer.toJSON().answer) as Body;
+      if (writtenBy === "0.2.0") {
+        // @developmentfinance/client 0.2.0 cut `resolved.stat_vars` from answer JSON, so its
+        // answers cannot be checked by code and read as they did then.
+        for (const part of stored.parts) {
+          if (part.spec !== undefined) {
+            delete (part.spec.resolved as { stat_vars?: unknown }).stat_vars;
+          }
+        }
+      }
+      const revived = answerFromBody(stored, context, null);
+      const expected = writtenBy === "0.3" ? answer.gaps : answer.gaps.slice(1);
+      assert.deepEqual(
+        revived.gaps.map((gap) => [gap.partIndex, gap.message]),
+        expected.map((gap) => [gap.partIndex, gap.message]),
+      );
+    });
+  }
+
+  test("posts a code-gapped part restated beside a choice", async () => {
+    // Search answers an identity entry with no restatement, so posting the code-gapped part by
+    // its identity would lose its code and its gap. Posted restated, it comes back with its
+    // code, and the new answer checks it again.
+    const body = await recordedJson<Body>("search-two-parts-candidates.json");
+    body.parts[0] = (await held([{ ...MLAT, exact: false }])).parts[0]!;
+    const chosenReply = await recordedJson<Body>("probe-resubmit-code-part.json");
+    chosenReply.parts[0]!.spec!.resolved.stat_vars.source_codes = [{ ...MLAT, exact: false }];
+    const { context, posted } = serving(body, chosenReply);
+    const answer = await search(context, "Germany's ODA and GNI from 2015 to 2022");
     assert.deepEqual(
-      revived.gaps.map((gap) => [gap.partIndex, gap.message]),
-      answer.gaps.map((gap) => [gap.partIndex, gap.message]),
+      answer.gaps.map((gap) => [gap.partIndex, gap.kind]),
+      [
+        [0, "no_data"],
+        [1, "choice"],
+      ],
     );
+    const chosen = await answer.choose(0);
+    assert.deepEqual(
+      posted()[1],
+      await recordedJson<unknown>("probe-resubmit-code-part.request.json"),
+    );
+    assert.deepEqual(
+      chosen.gaps.map((gap) => [gap.partIndex, gap.kind]),
+      [[0, "no_data"]],
+    );
+    assert.equal(chosen.specs.length, 1);
   });
 
   test("reads a part without a code in its restatement as before", async () => {

@@ -6,7 +6,7 @@
 import type { Gap, SearchOptions } from "./answer.ts";
 import { Entity, Match, entityDcid } from "./lookup-results.ts";
 import { clientError } from "../core/errors.ts";
-import { isRecord, objects, text } from "../core/json.ts";
+import { isRecord, list, text } from "../core/json.ts";
 import { partFacts } from "../core/parse.ts";
 import { isKnownPart } from "../core/parts.ts";
 import type { Part } from "../core/parts.ts";
@@ -159,31 +159,41 @@ export function askedCode(part: Part): string | null {
 /**
  * The gap a definite part asked by `code` leaves when its reading is not that code's series
  * alone; null when it is, or when no code was asked. Every entry of the spec's
- * `resolved.stat_vars.source_codes` must be `code`, compared upper-cased as Search compares
- * codes, with `exact` true. A spec that lists no code is not known to be the code's series, so
- * it leaves a gap.
+ * `resolved.stat_vars.source_codes` must be an object naming `code`, compared upper-cased as
+ * Search compares codes, with `exact` true. A spec that lists no code is not known to be the
+ * code's series, so it leaves a gap. A spec without `resolved.stat_vars`, as answer JSON from
+ * `@developmentfinance/client` 0.2.0 stores it, cannot be checked and leaves none.
  */
 export function codeGap(partIndex: number, part: Part, code: string | null): Gap | null {
   if (code === null || !isKnownPart(part) || part.status !== "definite") return null;
   const resolved: unknown = part.spec.resolved;
   const statVars = isRecord(resolved) ? resolved["stat_vars"] : undefined;
-  const held = objects(isRecord(statVars) ? statVars["source_codes"] : undefined);
+  if (!isRecord(statVars)) return null;
+  const held = list(statVars["source_codes"]);
   const asked = code.toUpperCase();
   const exact = held.every(
-    (entry) => text(entry["code"])?.toUpperCase() === asked && entry["exact"] === true,
+    (entry) =>
+      isRecord(entry) && text(entry["code"])?.toUpperCase() === asked && entry["exact"] === true,
   );
   if (held.length > 0 && exact) return null;
-  const message =
+  const quoted = JSON.stringify(code);
+  const fact =
     held.length === 0
-      ? `Search's reading for series code ${JSON.stringify(code)} names no series code, so it ` +
-        "may hold another series"
-      : `Search's reading for series code ${JSON.stringify(code)} is not that series alone; it ` +
-        `holds ${held.map(heldLine).join(", ")}`;
-  return { partIndex, part, kind: "no_data", message, options: [] };
+      ? `Search's reading for series code ${quoted} names no series code, so it may hold ` +
+        "another series"
+      : `Search's reading for series code ${quoted} holds ${held.map(heldLine).join(", ")}, ` +
+        "not that series alone";
+  const exits =
+    `Narrow it with variable or source, as in client.search({ codes: [${quoted}], ` +
+    "source: ... }), or take the reading as it is: " +
+    `client.fetch((answer.parts[${partIndex}] as DefinitePart).spec)`;
+  return { partIndex, part, kind: "no_data", message: `${fact}. ${exits}`, options: [] };
 }
 
-/** One held code as a gap names it, marked when it is not exact. */
-function heldLine(entry: Readonly<Record<string, unknown>>): string {
+/** One held entry as a gap names it: its code, marked when it is not exact, or the entry itself
+ *  when it is not an object. */
+function heldLine(entry: unknown): string {
+  if (!isRecord(entry)) return `${JSON.stringify(entry ?? null)} (not a code)`;
   const shown = JSON.stringify(entry["code"] ?? null);
   return entry["exact"] === true ? shown : `${shown} (not exact)`;
 }
@@ -194,9 +204,9 @@ function textOf(name: string, value: unknown): string | undefined {
   throw invalid(`${name} is non-empty text, not ${shown(value)}.`);
 }
 
-function roleKey(argument: string, key: string, keys: readonly string[]): string {
-  if (keys.includes(key)) return key;
-  throw invalid(`${argument} names ${JSON.stringify(key)}; its role keys are ${keys.join(", ")}.`);
+function roleKey(argument: string, key: unknown, keys: readonly string[]): string {
+  if (typeof key === "string" && keys.includes(key)) return key;
+  throw invalid(`${argument} names ${shown(key)}; its role keys are ${keys.join(", ")}.`);
 }
 
 /**
@@ -264,9 +274,7 @@ function openRolesOf(openRoles: unknown): string[] {
       `openRoles is an array of role keys, such as ["origin"], not ${shown(openRoles)}.`,
     );
   }
-  return openRoles.map((key: unknown) =>
-    roleKey("openRoles", typeof key === "string" ? key : String(key), FLOW_KEYS),
-  );
+  return openRoles.map((key: unknown) => roleKey("openRoles", key, FLOW_KEYS));
 }
 
 function shown(value: unknown): string {

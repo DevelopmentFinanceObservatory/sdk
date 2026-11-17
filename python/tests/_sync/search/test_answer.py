@@ -1104,18 +1104,45 @@ def test_a_search_by_codes_posts_one_part_per_code_and_builds_the_exact_ones(
     assert options["missing"] == answer.gaps
 
 
-def test_an_answer_by_codes_keeps_its_gaps_through_json() -> None:
+@pytest.mark.parametrize("written_by", ["0.3", "0.2.0"])
+def test_an_answer_by_codes_keeps_its_gaps_through_json(written_by: str) -> None:
     answer, _ = ask_codes(
         with_inexact_first_code(load("search-codes.json")), codes=CODES
     )
+    stored = json.loads(answer.to_json())
+    if written_by == "0.2.0":
+        # development-finance 0.2.0 cut `resolved.stat_vars` from answer JSON, so
+        # its answers cannot be checked by code and read as they did then.
+        for part in stored["answer"]["parts"]:
+            if "spec" in part:
+                del part["spec"]["resolved"]["stat_vars"]
     server = Server()
     client = transport(server)
     revived = answer_from_body(
-        read_answer_json(answer.to_json())[1],
+        read_answer_json(json.dumps(stored))[1],
         question=None,
         source=lambda: Session(client),
     )
-    assert revived.gaps == answer.gaps
+    expected = answer.gaps if written_by == "0.3" else answer.gaps[1:]
+    assert revived.gaps == expected
+
+
+def test_a_choice_beside_a_code_gap_posts_the_code_part_restated() -> None:
+    # Search answers an identity entry with no restatement, so posting the
+    # code-gapped part by its identity would lose its code and its gap. Posted
+    # restated, it comes back with its code, and the new answer checks it again.
+    body = load("search-two-parts-candidates.json")
+    body["parts"][0] = with_inexact_first_code(load("search-codes.json"))["parts"][0]
+    reply = with_inexact_first_code(load("probe-resubmit-code-part.json"))
+    answer, server = ask(TWO_PARTS, body, reply)
+    assert [(gap.part_index, gap.kind) for gap in answer.gaps] == [
+        (0, "no_data"),
+        (1, "choice"),
+    ]
+    chosen = answer.choose(0)
+    assert server.posted[1] == load("probe-resubmit-code-part.request.json")
+    assert [(gap.part_index, gap.kind) for gap in chosen.gaps] == [(0, "no_data")]
+    assert len(chosen.specs) == 1
 
 
 @pytest.mark.parametrize(
@@ -1144,6 +1171,15 @@ def test_a_search_that_mixes_or_lacks_its_inputs_is_refused_before_any_request(
         search(lambda: Session(client), question, **keywords)
     assert refused.value.code == "invalid_argument"
     assert server.posted == []
+
+
+def test_codes_passed_as_the_question_are_refused_with_the_keyword() -> None:
+    server = Server()
+    client = transport(server)
+    codes: Any = ["DT.TDS.MLAT.CD"]
+    with pytest.raises(InvalidRequestError) as refused:
+        search(lambda: Session(client), codes)
+    assert "search(codes=[...])" in str(refused.value)
 
 
 def without_last_part(body: dict[str, Any]) -> dict[str, Any]:

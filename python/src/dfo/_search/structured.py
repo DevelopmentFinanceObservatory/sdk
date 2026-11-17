@@ -6,7 +6,7 @@ Search's answer.
 alone.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT
@@ -144,47 +144,67 @@ def code_gap(index: int, part: Part, code: str | None) -> Gap | None:
     """The gap a definite part asked by `code` leaves when its reading is not that
     code's series alone; None when it is, or when no code was asked.
 
-    Every entry of the spec's `resolved.stat_vars.source_codes` must be `code`,
-    compared upper-cased as Search compares codes, with `exact` true. A spec
-    that lists no code is not known to be the code's series, so it leaves a gap.
+    Every entry of the spec's `resolved.stat_vars.source_codes` must be an object
+    naming `code`, compared upper-cased as Search compares codes, with `exact`
+    true. A spec that lists no code is not known to be the code's series, so it
+    leaves a gap. A spec without `resolved.stat_vars`, as answer JSON from
+    development-finance 0.2.0 stores it, cannot be checked and leaves none.
     """
     if code is None or not isinstance(part, DefinitePart):
         return None
     held = _source_codes(part)
-    if held and all(
-        isinstance(entry.get("code"), str)
-        and entry["code"].upper() == code.upper()
-        and entry.get("exact") is True
-        for entry in held
-    ):
+    if held is None:
+        return None
+    if held and all(_exact(entry, code) for entry in held):
         return None
     if not held:
-        message = (
+        fact = (
             f"Search's reading for series code {cited(code)} names no series code, "
             "so it may hold another series"
         )
     else:
         listed = ", ".join(_held_line(entry) for entry in held)
-        message = (
-            f"Search's reading for series code {cited(code)} is not that series "
-            f"alone; it holds {listed}"
+        fact = (
+            f"Search's reading for series code {cited(code)} holds {listed}, not "
+            "that series alone"
         )
-    return Gap(index, part, "no_data", message)
+    exits = (
+        f"Narrow it with variable= or source=, as in dfo.search(codes=[{cited(code)}], "
+        f"source=...), or take the reading as it is: "
+        f"dfo.fetch(answer.parts[{index}].spec)"
+    )
+    return Gap(index, part, "no_data", f"{fact}. {exits}")
 
 
-def _source_codes(part: DefinitePart) -> list[Mapping[str, Any]]:
-    """The spec's `resolved.stat_vars.source_codes` entries that are objects."""
+def _source_codes(part: DefinitePart) -> list[object] | None:
+    """The spec's `resolved.stat_vars.source_codes` entries, empty when it lists
+    none; None when the spec has no `resolved.stat_vars`."""
     spec = part.raw.get("spec")
     resolved = spec.get("resolved") if isinstance(spec, Mapping) else None
     stat_vars = resolved.get("stat_vars") if isinstance(resolved, Mapping) else None
-    held = stat_vars.get("source_codes") if isinstance(stat_vars, Mapping) else None
-    if not isinstance(held, list):
-        return []
-    return [entry for entry in held if isinstance(entry, Mapping)]
+    if not isinstance(stat_vars, Mapping):
+        return None
+    held = stat_vars.get("source_codes")
+    return list(held) if isinstance(held, list) else []
 
 
-def _held_line(entry: Mapping[str, Any]) -> str:
-    """One held code as a gap names it, marked when it is not exact."""
+def _exact(entry: object, code: str) -> bool:
+    """Whether a held entry is an object naming `code` exactly."""
+    if not isinstance(entry, Mapping):
+        return False
+    held = entry.get("code")
+    return (
+        isinstance(held, str)
+        and held.upper() == code.upper()
+        and entry.get("exact") is True
+    )
+
+
+def _held_line(entry: object) -> str:
+    """One held entry as a gap names it: its code, marked when it is not exact,
+    or the entry itself when it is not an object."""
+    if not isinstance(entry, Mapping):
+        return f"{cited(entry)} (not a code)"
     shown = cited(entry.get("code"))
     return shown if entry.get("exact") is True else f"{shown} (not exact)"
 
@@ -215,7 +235,7 @@ def _entities(entities: Entities) -> list[dict[str, str]]:
     Raises:
         InvalidRequestError: `entities` is not a map of role keys to non-empty
             lists of dcids or what `lookup.resolve` returns, as `fetch` reads it,
-            or binds a role to None (`invalid_argument`).
+            or binds a role to None or to no entity (`invalid_argument`).
     """
     if not isinstance(entities, Mapping):
         raise client_error(
@@ -223,13 +243,17 @@ def _entities(entities: Entities) -> list[dict[str, str]]:
             f"entities is a map of role keys, such as {{'destination': "
             f"['country/KEN']}}, not {cited(entities)}",
         )
+    # Each role's entities are read twice, for dcids and for names, so a
+    # generator is read once into a list.
+    entities = {role: _listed(bound) for role, bound in entities.items()}
     for role, bound in entities.items():
         _role_key("entities", role, tuple(ROLE_KEYS))
-        if bound is None:
+        if bound is None or bound == []:
             raise client_error(
                 INVALID_ARGUMENT,
-                f"entities[{role!r}] is None; a search binds the roles it names, "
-                "so leave the role out to leave it open",
+                f"entities[{role!r}] is {cited(bound)}; a search binds each role it "
+                "names to at least one entity, so leave the role out to leave it "
+                "open",
             )
     dcids = dcid_entities(entities) or {}
     # `scope` refuses what `fetch` refuses, so one form of `entities` serves both.
@@ -245,6 +269,14 @@ def _entities(entities: Entities) -> list[dict[str, str]]:
                 entity["role_text"] = _ROLE_TEXT[role]
             parsed.append(entity)
     return parsed
+
+
+def _listed(bound: object) -> Any:
+    """A role's binding as a list when it is an iterable other than text or a
+    map; any other value as it is, for `scope` to refuse."""
+    if isinstance(bound, Iterable) and not isinstance(bound, str | bytes | Mapping):
+        return list(bound)
+    return bound
 
 
 def _name(bound: object) -> str | None:

@@ -1,0 +1,3547 @@
+{
+ "schema_version": 1,
+ "query_echo": {
+  "entry_path": "dataset_resubmit",
+  "extract_skipped": true
+ },
+ "diagnostics": {
+  "engine_build": "0a051f154eaf8563757c6237ebdd6977a4a78ca1",
+  "trace_id": "ff8fce37f34e4df484f07e04d2f781b3",
+  "warnings": [],
+  "timing_ms": {
+   "total": 498,
+   "by_step": {
+    "coverage": 0
+   }
+  },
+  "llm_usage": {
+   "input_tokens": 0,
+   "output_tokens": 0,
+   "cached_tokens": 0,
+   "jev_input_tokens": 3358,
+   "jev_output_tokens": 1284
+  },
+  "timed_out": false
+ },
+ "kind": "resolution",
+ "parts": [
+  {
+   "variable_text": "DT.TDS.MLAT.CD",
+   "separate": true,
+   "warnings": [],
+   "timing_ms": {
+    "total": 480,
+    "by_step": {
+     "recall": 0,
+     "phase_resolve_places": 0,
+     "phase_check_entities": 0,
+     "shape_arcs": 0,
+     "shape_probe_coverage": 1,
+     "shape_probe": 1,
+     "shape_groups": 1,
+     "shape_labels": 0,
+     "shape_admission": 0,
+     "phase_derive_shapes": 0,
+     "shape_denominators": 0,
+     "shape_quantity": 124,
+     "shape_rank": 0,
+     "shape": 133,
+     "phase_prune_and_rank": 0,
+     "bind": 239,
+     "phase_bind": 4,
+     "phase_settle": 5,
+     "phase_place_bindings": 6,
+     "phase_facet_requests": 0,
+     "materialise": 12,
+     "phase_materialise": 5,
+     "answer": 2,
+     "options": 5,
+     "phase_outcome": 69
+    }
+   },
+   "restatement": {
+    "variable_text": "DT.TDS.MLAT.CD",
+    "entities": [
+     {
+      "text": "country/KEN",
+      "role_text": "to",
+      "dcid": "country/KEN"
+     }
+    ],
+    "time_text": "2015 to 2020",
+    "sources": [],
+    "source_code": "DT.TDS.MLAT.CD",
+    "operations": [],
+    "separate": true
+   },
+   "entity_refs": [
+    {
+     "text": "country/KEN",
+     "refs": [
+      "country/KEN"
+     ]
+    }
+   ],
+   "operations": [],
+   "departures": [],
+   "assumptions": [],
+   "status": "definite",
+   "spec": {
+    "spec_id": "spec_4d95f936ca9c4df08ee0574ca8fd962e",
+    "definition": {
+     "schema_version": 1,
+     "spec_id": "spec_4d95f936ca9c4df08ee0574ca8fd962e",
+     "identity": {
+      "identity_version": "spec1",
+      "shape": {
+       "kind": "statvar_schema",
+       "population_type": "FinancialFlow",
+       "measured_property": "amount",
+       "stat_type": "measuredValue",
+       "measurement_qualifier": "Nominal"
+      },
+      "slots": [
+       {
+        "property": "financialFlowType",
+        "binding": {
+         "state": "value",
+         "ref": "ServicingPayment"
+        }
+       },
+       {
+        "property": "idsCreditorType",
+        "binding": {
+         "state": "value",
+         "ref": "IDSCreditorTypeMLAT"
+        }
+       }
+      ],
+      "entities": {
+       "destination": [
+        "country/KEN"
+       ]
+      },
+      "requested_window": {
+       "kind": "range",
+       "start_year": 2015,
+       "end_year": 2020
+      }
+     }
+    },
+    "resolved": {
+     "shape": {
+      "shape_id": "financialflow_amount_measuredvalue_nominal_by_role",
+      "label": "Debt service on external debt to multilateral creditors",
+      "population_type": {
+       "ref": "FinancialFlow",
+       "label": "financial flow"
+      },
+      "measured_property": {
+       "ref": "amount",
+       "label": "amount"
+      },
+      "stat_type": {
+       "ref": "measuredValue",
+       "label": "measuredValue"
+      },
+      "measurement_qualifier": {
+       "ref": "Nominal",
+       "label": "Nominal"
+      },
+      "measurement_denominator_unresolved": false,
+      "slot_keys": [
+       {
+        "axis": "how",
+        "property": {
+         "ref": "financialFlowType",
+         "label": "financial flow type"
+        },
+        "label": "financial flow type"
+       },
+       {
+        "axis": "how",
+        "property": {
+         "ref": "idsCreditorType",
+         "label": "IDS creditor type"
+        },
+        "label": "IDS creditor type"
+       },
+       {
+        "axis": "where",
+        "label": "place"
+       },
+       {
+        "axis": "when",
+        "label": "time window"
+       },
+       {
+        "axis": "source",
+        "label": "data source"
+       }
+      ],
+      "member_count": 1,
+      "member_digest": "f84d2c72bfb7a8cc544ac8fe144b5a1256ac848b42a9f48d21103fdffc1e78a8",
+      "refine_supported": true,
+      "data_commons": [
+       {
+        "id": "dfo",
+        "label": "Development Finance Observatory"
+       }
+      ]
+     },
+     "slots": [
+      {
+       "key": {
+        "axis": "how",
+        "property": {
+         "ref": "financialFlowType",
+         "label": "financial flow type"
+        },
+        "label": "financial flow type"
+       },
+       "binding": {
+        "kind": "value",
+        "value": {
+         "ref": {
+          "ref": "ServicingPayment",
+          "label": "servicing payment"
+         },
+         "value_kind": "enum_value"
+        }
+       },
+       "summable": false
+      },
+      {
+       "key": {
+        "axis": "how",
+        "property": {
+         "ref": "idsCreditorType",
+         "label": "IDS creditor type"
+        },
+        "label": "IDS creditor type"
+       },
+       "binding": {
+        "kind": "value",
+        "value": {
+         "ref": {
+          "ref": "IDSCreditorTypeMLAT",
+          "label": "multilateral (IDS creditor type)"
+         },
+         "value_kind": "enum_value"
+        }
+       },
+       "summable": false
+      },
+      {
+       "key": {
+        "axis": "where",
+        "label": "place"
+       },
+       "binding": {
+        "kind": "value",
+        "value": {
+         "ref": {
+          "ref": "country/KEN",
+          "label": "Kenya"
+         },
+         "value_kind": "entity"
+        }
+       },
+       "summable": false
+      },
+      {
+       "key": {
+        "axis": "when",
+        "label": "time window"
+       },
+       "binding": {
+        "kind": "value",
+        "value": {
+         "value_kind": "time_window",
+         "time_window": {
+          "start_year": 2015,
+          "end_year": 2020
+         }
+        }
+       },
+       "summable": false
+      },
+      {
+       "key": {
+        "axis": "source",
+        "label": "data source"
+       },
+       "binding": {
+        "kind": "unbound"
+       },
+       "summable": false
+      }
+     ],
+     "inapplicable_slots": [],
+     "unresolved_slots": [],
+     "stat_vars": {
+      "member_count": 1,
+      "member_count_exact": false,
+      "served_count": 1,
+      "data_date_range": {
+       "start": "2015",
+       "end": "2020"
+      },
+      "source_codes": [
+       {
+        "provenance": "provenance/WorldBankInternationalDebtStatistics",
+        "code": "DT.TDS.MLAT.CD",
+        "exact": true
+       }
+      ]
+     },
+     "entities": [
+      {
+       "ref": "country/KEN",
+       "label": "Kenya",
+       "entity_type": "Country",
+       "role": "destination",
+       "party_kind": "party",
+       "party_class": "official"
+      }
+     ],
+     "coverage": {
+      "kind": "exact",
+      "has_data": true,
+      "observation_count": 6,
+      "evidence": "facet_metadata",
+      "dimensions": [
+       {
+        "label": "sources",
+        "count": 1
+       },
+       {
+        "label": "observations",
+        "count": 6
+       },
+       {
+        "label": "variables",
+        "count": 1
+       }
+      ],
+      "window": {
+       "start_year": 2015,
+       "end_year": 2020
+      }
+     },
+     "headline": {
+      "year": 2020,
+      "year_named": true,
+      "named_window": {
+       "start_year": 2015,
+       "end_year": 2020
+      },
+      "observations": 1,
+      "series": 1,
+      "role_counts": {
+       "financingRecipient": 1
+      },
+      "recent_years": [
+       {
+        "year": 2020,
+        "observations": 1,
+        "series": 1,
+        "role_counts": {
+         "financingRecipient": 1
+        }
+       },
+       {
+        "year": 2019,
+        "observations": 1,
+        "series": 1,
+        "role_counts": {
+         "financingRecipient": 1
+        }
+       },
+       {
+        "year": 2018,
+        "observations": 1,
+        "series": 1,
+        "role_counts": {
+         "financingRecipient": 1
+        }
+       }
+      ]
+     },
+     "download": {
+      "rows": 6,
+      "rows_exact": true,
+      "series": 1,
+      "window": {
+       "start_year": 2015,
+       "end_year": 2020
+      },
+      "licence": {
+       "label": "Creative Commons Attribution License"
+      }
+     },
+     "coverage_stamp": "3fc663ca92067f4b0d56adce180c668c78e4ac0ba753bbd4a3282a5027b37ac9",
+     "facets": {
+      "provenance": {
+       "basis": "fallback",
+       "ref": "provenance/WorldBankInternationalDebtStatistics",
+       "label": "World Bank International Debt Statistics (IDS)",
+       "source": {
+        "ref": "dc/s/WorldBank",
+        "label": "World Bank"
+       },
+       "data_commons": {
+        "id": "dfo",
+        "label": "Development Finance Observatory"
+       },
+       "documentation": "/api/graph/documentation/provenance/WorldBankInternationalDebtStatistics"
+      },
+      "unit": {
+       "basis": "fallback",
+       "ref": "CurrencyUSD",
+       "label": "US Dollar",
+       "currency": "USD"
+      }
+     },
+     "slot_options": [
+      {
+       "key": {
+        "axis": "how",
+        "property": {
+         "ref": "financialFlowType",
+         "label": "financial flow type"
+        },
+        "label": "financial flow type"
+       },
+       "options": [
+        {
+         "value": {
+          "ref": {
+           "ref": "ServicingPayment",
+           "label": "servicing payment"
+          },
+          "value_kind": "enum_value"
+         }
+        }
+       ],
+       "truncated": true,
+       "source": "observed"
+      },
+      {
+       "key": {
+        "axis": "how",
+        "property": {
+         "ref": "idsCreditorType",
+         "label": "IDS creditor type"
+        },
+        "label": "IDS creditor type"
+       },
+       "options": [
+        {
+         "value": {
+          "ref": {
+           "ref": "IDSCreditorTypeMLAT",
+           "label": "multilateral (IDS creditor type)"
+          },
+          "value_kind": "enum_value"
+         }
+        }
+       ],
+       "truncated": true,
+       "source": "observed"
+      }
+     ],
+     "entity_options": [],
+     "facet_options": [
+      {
+       "axis": "provenance",
+       "options": [
+        {
+         "value": {
+          "ref": {
+           "ref": "provenance/WorldBankInternationalDebtStatistics",
+           "label": "World Bank International Debt Statistics (IDS)"
+          },
+          "value_kind": "source"
+         }
+        }
+       ],
+       "truncated": false,
+       "source": "observed"
+      },
+      {
+       "axis": "unit",
+       "options": [
+        {
+         "value": {
+          "ref": {
+           "ref": "CurrencyUSD",
+           "label": "US Dollar"
+          },
+          "value_kind": "enum_value"
+         }
+        }
+       ],
+       "truncated": false,
+       "source": "observed"
+      }
+     ],
+     "rendered_sentence": "Kenya's external debt service owed to multilateral creditors, 2015 to 2020. Current US dollars · World Bank International Debt Statistics (IDS).",
+     "sentence_plan": [
+      {
+       "kind": "slot",
+       "text": "Kenya",
+       "axis": "where",
+       "segment": "heading",
+       "role": "destination",
+       "binding_ref": "where:",
+       "entity_refs": [
+        "country/KEN"
+       ],
+       "states": [
+        "where:"
+       ]
+      },
+      {
+       "kind": "text",
+       "text": "'s",
+       "segment": "heading",
+       "entity_refs": [],
+       "states": []
+      },
+      {
+       "kind": "text",
+       "text": " ",
+       "segment": "heading",
+       "entity_refs": [],
+       "states": []
+      },
+      {
+       "kind": "slot",
+       "text": "external debt service",
+       "axis": "what",
+       "segment": "heading",
+       "entity_refs": [],
+       "states": [
+        "how:financialFlowType",
+        "axis:populationType",
+        "axis:measuredProperty",
+        "axis:statType"
+       ]
+      },
+      {
+       "kind": "text",
+       "text": " owed to ",
+       "segment": "heading",
+       "entity_refs": [],
+       "states": []
+      },
+      {
+       "kind": "slot",
+       "text": "multilateral creditors",
+       "axis": "how",
+       "segment": "heading",
+       "property_dcid": "idsCreditorType",
+       "binding_ref": "how:idsCreditorType",
+       "entity_refs": [],
+       "states": [
+        "how:idsCreditorType"
+       ]
+      },
+      {
+       "kind": "slot",
+       "text": "",
+       "axis": "how",
+       "segment": "heading",
+       "property_dcid": "financialFlowType",
+       "binding_ref": "how:financialFlowType",
+       "entity_refs": [],
+       "states": []
+      },
+      {
+       "kind": "text",
+       "text": ", ",
+       "segment": "heading",
+       "entity_refs": [],
+       "states": []
+      },
+      {
+       "kind": "slot",
+       "text": "2015 to 2020",
+       "axis": "when",
+       "segment": "heading",
+       "binding_ref": "when:",
+       "entity_refs": [],
+       "states": [
+        "when:"
+       ]
+      },
+      {
+       "kind": "text",
+       "text": ".",
+       "segment": "heading",
+       "entity_refs": [],
+       "states": []
+      },
+      {
+       "kind": "text",
+       "text": " ",
+       "segment": "byline",
+       "entity_refs": [],
+       "states": []
+      },
+      {
+       "kind": "slot",
+       "text": "Current US dollars",
+       "axis": "unit",
+       "segment": "byline",
+       "binding_ref": "unit:",
+       "entity_refs": [],
+       "states": [
+        "unit:",
+        "axis:measurementQualifier"
+       ]
+      },
+      {
+       "kind": "text",
+       "text": " · ",
+       "segment": "byline",
+       "entity_refs": [],
+       "states": []
+      },
+      {
+       "kind": "slot",
+       "text": "World Bank International Debt Statistics (IDS)",
+       "axis": "source",
+       "segment": "byline",
+       "entity_refs": [],
+       "states": [
+        "source:"
+       ]
+      },
+      {
+       "kind": "text",
+       "text": ".",
+       "segment": "byline",
+       "entity_refs": [],
+       "states": []
+      }
+     ],
+     "trace": {
+      "resolved_entities": [
+       {
+        "ref": "country/KEN",
+        "label": "Kenya"
+       }
+      ],
+      "resolved_sources": [
+       {
+        "ref": "provenance/WorldBankInternationalDebtStatistics",
+        "label": "World Bank International Debt Statistics (IDS)",
+        "source": {
+         "ref": "dc/s/WorldBank",
+         "label": "World Bank"
+        },
+        "data_commons": {
+         "id": "dfo",
+         "label": "Development Finance Observatory"
+        },
+        "documentation": "/api/graph/documentation/provenance/WorldBankInternationalDebtStatistics"
+       }
+      ],
+      "slot_filters": [
+       {
+        "key": {
+         "axis": "how",
+         "property": {
+          "ref": "financialFlowType",
+          "label": "financial flow type"
+         },
+         "label": "financial flow type"
+        },
+        "binding_kind": "value",
+        "refs": [
+         {
+          "ref": "ServicingPayment",
+          "label": "servicing payment"
+         }
+        ],
+        "provenance": "binder"
+       },
+       {
+        "key": {
+         "axis": "how",
+         "property": {
+          "ref": "idsCreditorType",
+          "label": "IDS creditor type"
+         },
+         "label": "IDS creditor type"
+        },
+        "binding_kind": "value",
+        "refs": [
+         {
+          "ref": "IDSCreditorTypeMLAT",
+          "label": "multilateral (IDS creditor type)"
+         }
+        ],
+        "provenance": "binder"
+       },
+       {
+        "key": {
+         "axis": "where",
+         "label": "place"
+        },
+        "binding_kind": "value",
+        "refs": [
+         {
+          "ref": "country/KEN",
+          "label": "Kenya"
+         }
+        ],
+        "provenance": "binder"
+       },
+       {
+        "key": {
+         "axis": "when",
+         "label": "time window"
+        },
+        "binding_kind": "value",
+        "refs": [],
+        "provenance": "binder"
+       },
+       {
+        "key": {
+         "axis": "source",
+         "label": "data source"
+        },
+        "binding_kind": "unbound",
+        "refs": [],
+        "provenance": "binder"
+       }
+      ],
+      "query_qualifiers": [],
+      "requested_window": {
+       "start_year": 2015,
+       "end_year": 2020
+      },
+      "capability_version": "cap_eed8849e3076f272",
+      "default_reading": {
+       "applied": true,
+       "removed_stat_vars": []
+      }
+     },
+     "confidence": "high",
+     "available_at_place": true,
+     "measure_label_axes": [],
+     "measure_axis_values": [],
+     "published_tables": "World Bank International Debt Statistics (IDS)",
+     "unit_conversion": {
+      "currencies": [
+       {
+        "code": "AED",
+        "noun": "UAE dirhams",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "AFN",
+        "noun": "Afghan afghanis",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 2002,
+        "base_year_max": 2025
+       },
+       {
+        "code": "ALL",
+        "noun": "Albanian leks",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "AMD",
+        "noun": "Armenian drams",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1992,
+        "base_year_max": 2025
+       },
+       {
+        "code": "AOA",
+        "noun": "Angolan kwanzas",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1991,
+        "base_year_max": 2025
+       },
+       {
+        "code": "ARS",
+        "noun": "Argentine pesos",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "AUD",
+        "noun": "Australian dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "AWG",
+        "noun": "Aruban florins",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1995,
+        "base_year_max": 2025
+       },
+       {
+        "code": "AZN",
+        "noun": "Azerbaijani manats",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1992,
+        "base_year_max": 2025
+       },
+       {
+        "code": "BAM",
+        "noun": "Bosnia-Herzegovina convertible marks",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1996,
+        "base_year_max": 2025
+       },
+       {
+        "code": "BBD",
+        "noun": "Barbadian dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "BDT",
+        "noun": "Bangladeshi taka",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "BHD",
+        "noun": "Bahraini dinars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "BIF",
+        "noun": "Burundian francs",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "BND",
+        "noun": "Brunei dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1985,
+        "base_year_max": 2025
+       },
+       {
+        "code": "BOB",
+        "noun": "Bolivian bolivianos",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "BRL",
+        "noun": "Brazilian reais",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1986,
+        "base_year_max": 2025
+       },
+       {
+        "code": "BSD",
+        "noun": "Bahamian dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "BTN",
+        "noun": "Bhutanese ngultrums",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "BWP",
+        "noun": "Botswana pula",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "BYN",
+        "noun": "Belarusian rubles",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1992,
+        "base_year_max": 2025
+       },
+       {
+        "code": "BZD",
+        "noun": "Belize dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "CAD",
+        "noun": "Canadian dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "CDF",
+        "noun": "Congolese francs",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1991,
+        "base_year_max": 2025
+       },
+       {
+        "code": "CHF",
+        "noun": "Swiss francs",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "CLP",
+        "noun": "Chilean pesos",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "CNY",
+        "noun": "Chinese yuan",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "COP",
+        "noun": "Colombian pesos",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "CRC",
+        "noun": "Costa Rican colones",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "CVE",
+        "noun": "Cape Verdean escudos",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "CZK",
+        "noun": "Czech korunas",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1995,
+        "base_year_max": 2025
+       },
+       {
+        "code": "DJF",
+        "noun": "Djiboutian francs",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1990,
+        "base_year_max": 2025
+       },
+       {
+        "code": "DKK",
+        "noun": "Danish kroner",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "DOP",
+        "noun": "Dominican pesos",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "DZD",
+        "noun": "Algerian dinars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "EGP",
+        "noun": "Egyptian pounds",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "ERN",
+        "noun": "Eritrean nakfas",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2019
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1992,
+        "base_year_max": 2019
+       },
+       {
+        "code": "ETB",
+        "noun": "Ethiopian birr",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "EUR",
+        "noun": "euros",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "FJD",
+        "noun": "Fijian dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "GBP",
+        "noun": "British pounds",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "GEL",
+        "noun": "Georgian lari",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1994,
+        "base_year_max": 2025
+       },
+       {
+        "code": "GHS",
+        "noun": "Ghanaian cedis",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "GMD",
+        "noun": "Gambian dalasis",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "GNF",
+        "noun": "Guinean francs",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "GTQ",
+        "noun": "Guatemalan quetzales",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "GYD",
+        "noun": "Guyanese dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "HKD",
+        "noun": "Hong Kong dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "HNL",
+        "noun": "Honduran lempiras",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "HTG",
+        "noun": "Haitian gourdes",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "HUF",
+        "noun": "Hungarian forints",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "IDR",
+        "noun": "Indonesian rupiahs",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "ILS",
+        "noun": "Israeli new shekels",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "INR",
+        "noun": "Indian rupees",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "IQD",
+        "noun": "Iraqi dinars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 2000,
+        "base_year_max": 2025
+       },
+       {
+        "code": "IRR",
+        "noun": "Iranian rials",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "ISK",
+        "noun": "Icelandic krónur",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "JMD",
+        "noun": "Jamaican dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "JOD",
+        "noun": "Jordanian dinars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "JPY",
+        "noun": "Japanese yen",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "KES",
+        "noun": "Kenyan shillings",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "KGS",
+        "noun": "Kyrgyz soms",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1992,
+        "base_year_max": 2025
+       },
+       {
+        "code": "KHR",
+        "noun": "Cambodian riels",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1986,
+        "base_year_max": 2025
+       },
+       {
+        "code": "KMF",
+        "noun": "Comorian francs",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "KRW",
+        "noun": "South Korean won",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "KWD",
+        "noun": "Kuwaiti dinars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1981,
+        "base_year_max": 2025
+       },
+       {
+        "code": "KZT",
+        "noun": "Kazakh tenge",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1992,
+        "base_year_max": 2025
+       },
+       {
+        "code": "LAK",
+        "noun": "Lao kip",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "LBP",
+        "noun": "Lebanese pounds",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "LKR",
+        "noun": "Sri Lankan rupees",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "LSL",
+        "noun": "Lesotho maloti",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "LYD",
+        "noun": "Libyan dinars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "MAD",
+        "noun": "Moroccan dirhams",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "MDL",
+        "noun": "Moldovan lei",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1992,
+        "base_year_max": 2025
+       },
+       {
+        "code": "MGA",
+        "noun": "Malagasy ariary",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "MKD",
+        "noun": "Macedonian denars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1992,
+        "base_year_max": 2025
+       },
+       {
+        "code": "MMK",
+        "noun": "Myanmar kyats",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1998,
+        "base_year_max": 2025
+       },
+       {
+        "code": "MNT",
+        "noun": "Mongolian tugriks",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "MOP",
+        "noun": "Macanese patacas",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 2001,
+        "base_year_max": 2025
+       },
+       {
+        "code": "MRU",
+        "noun": "Mauritanian ouguiyas",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1990,
+        "base_year_max": 2025
+       },
+       {
+        "code": "MUR",
+        "noun": "Mauritian rupees",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "MVR",
+        "noun": "Maldivian rufiyaa",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "MWK",
+        "noun": "Malawian kwachas",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "MXN",
+        "noun": "Mexican pesos",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "MYR",
+        "noun": "Malaysian ringgits",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "MZN",
+        "noun": "Mozambican meticais",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "NAD",
+        "noun": "Namibian dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1989,
+        "base_year_max": 2025
+       },
+       {
+        "code": "NGN",
+        "noun": "Nigerian naira",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1990,
+        "base_year_max": 2025
+       },
+       {
+        "code": "NIO",
+        "noun": "Nicaraguan córdobas",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1987,
+        "base_year_max": 2025
+       },
+       {
+        "code": "NOK",
+        "noun": "Norwegian kroner",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "NPR",
+        "noun": "Nepalese rupees",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "NZD",
+        "noun": "New Zealand dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "OMR",
+        "noun": "Omani rials",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "PEN",
+        "noun": "Peruvian soles",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "PGK",
+        "noun": "Papua New Guinean kina",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "PHP",
+        "noun": "Philippine pesos",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "PKR",
+        "noun": "Pakistani rupees",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "PLN",
+        "noun": "Polish zlotys",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "PYG",
+        "noun": "Paraguayan guaranís",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "QAR",
+        "noun": "Qatari riyals",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "RON",
+        "noun": "Romanian lei",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "RSD",
+        "noun": "Serbian dinars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1997,
+        "base_year_max": 2025
+       },
+       {
+        "code": "RUB",
+        "noun": "Russian rubles",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1992,
+        "base_year_max": 2025
+       },
+       {
+        "code": "RWF",
+        "noun": "Rwandan francs",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "SAR",
+        "noun": "Saudi riyals",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "SBD",
+        "noun": "Solomon Islands dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "SCR",
+        "noun": "Seychellois rupees",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "SDG",
+        "noun": "Sudanese pounds",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "SEK",
+        "noun": "Swedish kronor",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "SGD",
+        "noun": "Singapore dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "SLE",
+        "noun": "Sierra Leonean leones",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "SRD",
+        "noun": "Surinamese dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "SSP",
+        "noun": "South Sudanese pounds",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 2011,
+        "base_year_max": 2025
+       },
+       {
+        "code": "STN",
+        "noun": "São Tomé and Príncipe dobras",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "SYP",
+        "noun": "Syrian pounds",
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2010,
+        "current_years": null
+       },
+       {
+        "code": "SZL",
+        "noun": "Swazi emalangeni",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "THB",
+        "noun": "Thai baht",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "TJS",
+        "noun": "Tajikistani somonis",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1992,
+        "base_year_max": 2025
+       },
+       {
+        "code": "TMT",
+        "noun": "Turkmenistani manat",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1992,
+        "base_year_max": 2025
+       },
+       {
+        "code": "TND",
+        "noun": "Tunisian dinars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "TOP",
+        "noun": "Tongan paʻanga",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "TRY",
+        "noun": "Turkish lira",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "TTD",
+        "noun": "Trinidad and Tobago dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "TWD",
+        "noun": "New Taiwan dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "TZS",
+        "noun": "Tanzanian shillings",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "UAH",
+        "noun": "Ukrainian hryvnias",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1991,
+        "base_year_max": 2025
+       },
+       {
+        "code": "UGX",
+        "noun": "Ugandan shillings",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "USD",
+        "noun": "US dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "UYU",
+        "noun": "Uruguayan pesos",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "UZS",
+        "noun": "Uzbekistani soms",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1992,
+        "base_year_max": 2025
+       },
+       {
+        "code": "VES",
+        "noun": "Venezuelan bolívares",
+        "current_years": {
+         "start_year": 2017,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 2017,
+        "base_year_max": 2025
+       },
+       {
+        "code": "VND",
+        "noun": "Vietnamese dong",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "VUV",
+        "noun": "Vanuatu vatu",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "WST",
+        "noun": "Samoan tala",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "XAF",
+        "noun": "Central African CFA francs",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "XCD",
+        "noun": "East Caribbean dollars",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "XOF",
+        "noun": "West African CFA francs",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "YER",
+        "noun": "Yemeni rials",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 2014,
+        "base_year_max": 2025
+       },
+       {
+        "code": "ZAR",
+        "noun": "South African rand",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       },
+       {
+        "code": "ZMW",
+        "noun": "Zambian kwachas",
+        "current_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "constant_years": {
+         "start_year": 2015,
+         "end_year": 2020
+        },
+        "base_year_min": 1980,
+        "base_year_max": 2025
+       }
+      ],
+      "default_base_year": 2024,
+      "role_currencies": {
+       "destination": "KES"
+      },
+      "deflation_basis": "recipient"
+     }
+    }
+   }
+  },
+  {
+   "variable_text": "gross national income",
+   "warnings": [],
+   "timing_ms": {
+    "total": 220,
+    "by_step": {
+     "validate": 0,
+     "phase_validate": 0,
+     "walk": 16,
+     "reread_arcs": 0,
+     "phase_reread_arcs": 0,
+     "detect_edits": 0,
+     "phase_detect_edits": 0,
+     "resolve_survivors": 0,
+     "phase_resolve_survivors": 0,
+     "shape": 1,
+     "phase_build_shape": 0,
+     "bind": 0,
+     "phase_build_bindings": 0,
+     "where_places": 0,
+     "phase_where_places": 0,
+     "materialise": 199,
+     "phase_materialise": 0,
+     "ground_related": 1,
+     "ground_units": 0,
+     "ground_facets": 0,
+     "ground_convert": 0,
+     "answer": 1,
+     "ground_gates": 0,
+     "phase_ground_build": 2,
+     "finalize_preview": 0,
+     "options": 0,
+     "finalize_related": 0,
+     "finalize_wholes": 0,
+     "finalize_relaunch": 0,
+     "phase_finalize": 0,
+     "served_entry": 0
+    }
+   },
+   "entity_refs": [],
+   "operations": [],
+   "departures": [],
+   "assumptions": [],
+   "status": "definite",
+   "spec": {
+    "spec_id": "spec_c0f61f3ca3558aac184973441a67601e",
+    "definition": {
+     "schema_version": 1,
+     "spec_id": "spec_c0f61f3ca3558aac184973441a67601e",
+     "identity": {
+      "identity_version": "spec1",
+      "shape": {
+       "kind": "statvar_schema",
+       "population_type": "EconomicUnit",
+       "measured_property": "primaryIncome",
+       "stat_type": "measuredValue",
+       "measurement_qualifier": "Nominal"
+      },
+      "slots": [
+       {
+        "property": "fixedCapitalConsumptionBasis",
+        "binding": {
+         "state": "value",
+         "ref": "GrossOfFixedCapitalConsumption"
+        }
+       }
+      ],
+      "entities": {
+       "observationAbout": [
+        "country/DEU"
+       ]
+      },
+      "requested_window": {
+       "kind": "range",
+       "start_year": 2015,
+       "end_year": 2022
+      }
+     }
+    },
+    "resolved": {
+     "shape": {
+      "shape_id": "economicunit_primaryincome_measuredvalue_nominal",
+      "label": "Gross national income",
+      "population_type": {
+       "ref": "EconomicUnit",
+       "label": "economic unit"
+      },
+      "measured_property": {
+       "ref": "primaryIncome",
+       "label": "primary income"
+      },
+      "stat_type": {
+       "ref": "measuredValue",
+       "label": "measuredValue"
+      },
+      "measurement_qualifier": {
+       "ref": "Nominal",
+       "label": "Nominal"
+      },
+      "measurement_denominator_unresolved": false,
+      "slot_keys": [
+       {
+        "axis": "how",
+        "property": {
+         "ref": "fixedCapitalConsumptionBasis",
+         "label": "fixed capital consumption basis"
+        },
+        "label": "fixed capital consumption basis"
+       },
+       {
+        "axis": "where",
+        "label": "place"
+       },
+       {
+        "axis": "when",
+        "label": "time window"
+       },
+       {
+        "axis": "source",
+        "label": "data source"
+       }
+      ],
+      "member_count": 1,
+      "member_digest": "e118bc2c1c5ac817a6d4a269c5276b7d2c74f3033dde9cad5925de58239c55b4",
+      "refine_supported": true,
+      "data_commons": [
+       {
+        "id": "dfo",
+        "label": "Development Finance Observatory"
+       }
+      ]
+     },
+     "slots": [
+      {
+       "key": {
+        "axis": "how",
+        "property": {
+         "ref": "fixedCapitalConsumptionBasis",
+         "label": "fixed capital consumption basis"
+        },
+        "label": "fixed capital consumption basis"
+       },
+       "binding": {
+        "kind": "value",
+        "value": {
+         "ref": {
+          "ref": "GrossOfFixedCapitalConsumption",
+          "label": "gross of fixed capital consumption"
+         },
+         "value_kind": "enum_value"
+        }
+       },
+       "summable": false
+      },
+      {
+       "key": {
+        "axis": "where",
+        "label": "place"
+       },
+       "binding": {
+        "kind": "value",
+        "value": {
+         "ref": {
+          "ref": "country/DEU",
+          "label": "Germany"
+         },
+         "value_kind": "entity"
+        }
+       },
+       "summable": false
+      },
+      {
+       "key": {
+        "axis": "when",
+        "label": "time window"
+       },
+       "binding": {
+        "kind": "value",
+        "value": {
+         "value_kind": "time_window",
+         "time_window": {
+          "start_year": 2015,
+          "end_year": 2022
+         }
+        }
+       },
+       "summable": false
+      },
+      {
+       "key": {
+        "axis": "source",
+        "label": "data source"
+       },
+       "binding": {
+        "kind": "unbound"
+       },
+       "summable": false
+      }
+     ],
+     "inapplicable_slots": [],
+     "unresolved_slots": [],
+     "stat_vars": {
+      "member_count": 1,
+      "member_count_exact": true,
+      "served_count": 1,
+      "data_date_range": {
+       "start": "2015",
+       "end": "2022"
+      }
+     },
+     "entities": [
+      {
+       "ref": "country/DEU",
+       "label": "Germany",
+       "entity_type": "Country",
+       "role": "observationAbout"
+      }
+     ],
+     "coverage": {
+      "kind": "exact",
+      "has_data": true,
+      "observation_count": 8,
+      "evidence": "facet_metadata",
+      "dimensions": [
+       {
+        "label": "sources",
+        "count": 1
+       },
+       {
+        "label": "observations",
+        "count": 8
+       },
+       {
+        "label": "variables",
+        "count": 1
+       }
+      ],
+      "window": {
+       "start_year": 2015,
+       "end_year": 2022
+      }
+     },
+     "download": {
+      "rows": 8,
+      "rows_exact": true,
+      "series": 1,
+      "window": {
+       "start_year": 2015,
+       "end_year": 2022
+      },
+      "licence": {
+       "label": "OECD Terms and Conditions"
+      }
+     },
+     "facets": {
+      "provenance": {
+       "basis": "fallback",
+       "ref": "provenance/OECDDAC1",
+       "label": "OECD DAC1",
+       "source": {
+        "ref": "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd",
+        "label": "Organisation for Economic Co-operation and Development (OECD)"
+       },
+       "data_commons": {
+        "id": "dfo",
+        "label": "Development Finance Observatory"
+       },
+       "documentation": "/api/graph/documentation/provenance/OECDDAC1",
+       "account": "provider"
+      },
+      "unit": {
+       "basis": "fallback",
+       "ref": "CurrencyUSD",
+       "label": "US Dollar",
+       "currency": "USD"
+      }
+     },
+     "slot_options": [
+      {
+       "key": {
+        "axis": "how",
+        "property": {
+         "ref": "fixedCapitalConsumptionBasis",
+         "label": "fixed capital consumption basis"
+        },
+        "label": "fixed capital consumption basis"
+       },
+       "options": [
+        {
+         "value": {
+          "ref": {
+           "ref": "GrossOfFixedCapitalConsumption",
+           "label": "gross of fixed capital consumption"
+          },
+          "value_kind": "enum_value"
+         }
+        }
+       ],
+       "truncated": true,
+       "source": "observed"
+      }
+     ],
+     "entity_options": [],
+     "facet_options": [
+      {
+       "axis": "provenance",
+       "options": [
+        {
+         "value": {
+          "ref": {
+           "ref": "provenance/OECDDAC1",
+           "label": "OECD DAC1"
+          },
+          "value_kind": "source"
+         }
+        }
+       ],
+       "truncated": false,
+       "source": "observed"
+      },
+      {
+       "axis": "unit",
+       "options": [
+        {
+         "value": {
+          "ref": {
+           "ref": "CurrencyUSD",
+           "label": "US Dollar"
+          },
+          "value_kind": "enum_value"
+         }
+        }
+       ],
+       "truncated": false,
+       "source": "observed"
+      }
+     ],
+     "rendered_sentence": "Germany's gross national income, 2015 to 2022. Current US dollars · OECD DAC1.",
+     "sentence_plan": [
+      {
+       "kind": "slot",
+       "text": "Germany",
+       "axis": "where",
+       "segment": "heading",
+       "binding_ref": "where:",
+       "entity_refs": [],
+       "states": [
+        "where:"
+       ]
+      },
+      {
+       "kind": "text",
+       "text": "'s",
+       "segment": "heading",
+       "entity_refs": [],
+       "states": []
+      },
+      {
+       "kind": "text",
+       "text": " ",
+       "segment": "heading",
+       "entity_refs": [],
+       "states": []
+      },
+      {
+       "kind": "slot",
+       "text": "gross national income",
+       "axis": "what",
+       "segment": "heading",
+       "entity_refs": [],
+       "states": [
+        "how:fixedCapitalConsumptionBasis",
+        "axis:populationType",
+        "axis:measuredProperty",
+        "axis:statType"
+       ]
+      },
+      {
+       "kind": "slot",
+       "text": "",
+       "axis": "how",
+       "segment": "heading",
+       "property_dcid": "fixedCapitalConsumptionBasis",
+       "binding_ref": "how:fixedCapitalConsumptionBasis",
+       "entity_refs": [],
+       "states": []
+      },
+      {
+       "kind": "text",
+       "text": ", ",
+       "segment": "heading",
+       "entity_refs": [],
+       "states": []
+      },
+      {
+       "kind": "slot",
+       "text": "2015 to 2022",
+       "axis": "when",
+       "segment": "heading",
+       "binding_ref": "when:",
+       "entity_refs": [],
+       "states": [
+        "when:"
+       ]
+      },
+      {
+       "kind": "text",
+       "text": ".",
+       "segment": "heading",
+       "entity_refs": [],
+       "states": []
+      },
+      {
+       "kind": "text",
+       "text": " ",
+       "segment": "byline",
+       "entity_refs": [],
+       "states": []
+      },
+      {
+       "kind": "slot",
+       "text": "Current US dollars",
+       "axis": "unit",
+       "segment": "byline",
+       "binding_ref": "unit:",
+       "entity_refs": [],
+       "states": [
+        "unit:",
+        "axis:measurementQualifier"
+       ]
+      },
+      {
+       "kind": "text",
+       "text": " · ",
+       "segment": "byline",
+       "entity_refs": [],
+       "states": []
+      },
+      {
+       "kind": "slot",
+       "text": "OECD DAC1",
+       "axis": "source",
+       "segment": "byline",
+       "entity_refs": [],
+       "states": [
+        "source:"
+       ]
+      },
+      {
+       "kind": "text",
+       "text": ".",
+       "segment": "byline",
+       "entity_refs": [],
+       "states": []
+      }
+     ],
+     "trace": {
+      "resolved_entities": [
+       {
+        "ref": "country/DEU",
+        "label": "Germany"
+       }
+      ],
+      "resolved_sources": [
+       {
+        "ref": "provenance/OECDDAC1",
+        "label": "OECD DAC1",
+        "source": {
+         "ref": "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd",
+         "label": "Organisation for Economic Co-operation and Development (OECD)"
+        },
+        "data_commons": {
+         "id": "dfo",
+         "label": "Development Finance Observatory"
+        },
+        "documentation": "/api/graph/documentation/provenance/OECDDAC1"
+       }
+      ],
+      "slot_filters": [
+       {
+        "key": {
+         "axis": "how",
+         "property": {
+          "ref": "fixedCapitalConsumptionBasis",
+          "label": "fixed capital consumption basis"
+         },
+         "label": "fixed capital consumption basis"
+        },
+        "binding_kind": "value",
+        "refs": [
+         {
+          "ref": "GrossOfFixedCapitalConsumption",
+          "label": "gross of fixed capital consumption"
+         }
+        ],
+        "provenance": "binder"
+       },
+       {
+        "key": {
+         "axis": "where",
+         "label": "place"
+        },
+        "binding_kind": "value",
+        "refs": [
+         {
+          "ref": "country/DEU",
+          "label": "Germany"
+         }
+        ],
+        "provenance": "binder"
+       },
+       {
+        "key": {
+         "axis": "when",
+         "label": "time window"
+        },
+        "binding_kind": "value",
+        "refs": [],
+        "provenance": "binder"
+       },
+       {
+        "key": {
+         "axis": "source",
+         "label": "data source"
+        },
+        "binding_kind": "unbound",
+        "refs": [],
+        "provenance": "binder"
+       }
+      ],
+      "query_qualifiers": [],
+      "requested_window": {
+       "start_year": 2015,
+       "end_year": 2022
+      },
+      "capability_version": "cap_eed8849e3076f272"
+     },
+     "confidence": "high",
+     "available_at_place": true,
+     "measure_label_axes": [],
+     "measure_axis_values": [],
+     "published_tables": "OECD DAC1",
+     "related_measures": []
+    }
+   }
+  }
+ ],
+ "rendered_sentence": "Kenya's external debt service owed to multilateral creditors, 2015 to 2020. Current US dollars · World Bank International Debt Statistics (IDS). Germany's gross national income, 2015 to 2022. Current US dollars · OECD DAC1.",
+ "sentence_plan": [
+  {
+   "kind": "slot",
+   "text": "Kenya",
+   "axis": "where",
+   "segment": "heading",
+   "role": "destination",
+   "binding_ref": "where:",
+   "entity_refs": [
+    "country/KEN"
+   ],
+   "states": [
+    "where:"
+   ],
+   "part_index": 0
+  },
+  {
+   "kind": "text",
+   "text": "'s",
+   "segment": "heading",
+   "entity_refs": [],
+   "states": [],
+   "part_index": 0
+  },
+  {
+   "kind": "text",
+   "text": " ",
+   "segment": "heading",
+   "entity_refs": [],
+   "states": [],
+   "part_index": 0
+  },
+  {
+   "kind": "slot",
+   "text": "external debt service",
+   "axis": "what",
+   "segment": "heading",
+   "entity_refs": [],
+   "states": [
+    "how:financialFlowType",
+    "axis:populationType",
+    "axis:measuredProperty",
+    "axis:statType"
+   ],
+   "part_index": 0
+  },
+  {
+   "kind": "text",
+   "text": " owed to ",
+   "segment": "heading",
+   "entity_refs": [],
+   "states": [],
+   "part_index": 0
+  },
+  {
+   "kind": "slot",
+   "text": "multilateral creditors",
+   "axis": "how",
+   "segment": "heading",
+   "property_dcid": "idsCreditorType",
+   "binding_ref": "how:idsCreditorType",
+   "entity_refs": [],
+   "states": [
+    "how:idsCreditorType"
+   ],
+   "part_index": 0
+  },
+  {
+   "kind": "slot",
+   "text": "",
+   "axis": "how",
+   "segment": "heading",
+   "property_dcid": "financialFlowType",
+   "binding_ref": "how:financialFlowType",
+   "entity_refs": [],
+   "states": [],
+   "part_index": 0
+  },
+  {
+   "kind": "text",
+   "text": ", ",
+   "segment": "heading",
+   "entity_refs": [],
+   "states": [],
+   "part_index": 0
+  },
+  {
+   "kind": "slot",
+   "text": "2015 to 2020",
+   "axis": "when",
+   "segment": "heading",
+   "binding_ref": "when:",
+   "entity_refs": [],
+   "states": [
+    "when:"
+   ],
+   "part_index": 0
+  },
+  {
+   "kind": "text",
+   "text": ".",
+   "segment": "heading",
+   "entity_refs": [],
+   "states": [],
+   "part_index": 0
+  },
+  {
+   "kind": "text",
+   "text": " ",
+   "segment": "byline",
+   "entity_refs": [],
+   "states": [],
+   "part_index": 0
+  },
+  {
+   "kind": "slot",
+   "text": "Current US dollars",
+   "axis": "unit",
+   "segment": "byline",
+   "binding_ref": "unit:",
+   "entity_refs": [],
+   "states": [
+    "unit:",
+    "axis:measurementQualifier"
+   ],
+   "part_index": 0
+  },
+  {
+   "kind": "text",
+   "text": " · ",
+   "segment": "byline",
+   "entity_refs": [],
+   "states": [],
+   "part_index": 0
+  },
+  {
+   "kind": "slot",
+   "text": "World Bank International Debt Statistics (IDS)",
+   "axis": "source",
+   "segment": "byline",
+   "entity_refs": [],
+   "states": [
+    "source:"
+   ],
+   "part_index": 0
+  },
+  {
+   "kind": "text",
+   "text": ".",
+   "segment": "byline",
+   "entity_refs": [],
+   "states": [],
+   "part_index": 0
+  },
+  {
+   "kind": "text",
+   "text": " ",
+   "segment": "heading",
+   "entity_refs": [],
+   "states": []
+  },
+  {
+   "kind": "slot",
+   "text": "Germany",
+   "axis": "where",
+   "segment": "heading",
+   "binding_ref": "where:",
+   "entity_refs": [],
+   "states": [
+    "where:"
+   ],
+   "part_index": 1
+  },
+  {
+   "kind": "text",
+   "text": "'s",
+   "segment": "heading",
+   "entity_refs": [],
+   "states": [],
+   "part_index": 1
+  },
+  {
+   "kind": "text",
+   "text": " ",
+   "segment": "heading",
+   "entity_refs": [],
+   "states": [],
+   "part_index": 1
+  },
+  {
+   "kind": "slot",
+   "text": "gross national income",
+   "axis": "what",
+   "segment": "heading",
+   "entity_refs": [],
+   "states": [
+    "how:fixedCapitalConsumptionBasis",
+    "axis:populationType",
+    "axis:measuredProperty",
+    "axis:statType"
+   ],
+   "part_index": 1
+  },
+  {
+   "kind": "slot",
+   "text": "",
+   "axis": "how",
+   "segment": "heading",
+   "property_dcid": "fixedCapitalConsumptionBasis",
+   "binding_ref": "how:fixedCapitalConsumptionBasis",
+   "entity_refs": [],
+   "states": [],
+   "part_index": 1
+  },
+  {
+   "kind": "text",
+   "text": ", ",
+   "segment": "heading",
+   "entity_refs": [],
+   "states": [],
+   "part_index": 1
+  },
+  {
+   "kind": "slot",
+   "text": "2015 to 2022",
+   "axis": "when",
+   "segment": "heading",
+   "binding_ref": "when:",
+   "entity_refs": [],
+   "states": [
+    "when:"
+   ],
+   "part_index": 1
+  },
+  {
+   "kind": "text",
+   "text": ".",
+   "segment": "heading",
+   "entity_refs": [],
+   "states": [],
+   "part_index": 1
+  },
+  {
+   "kind": "text",
+   "text": " ",
+   "segment": "byline",
+   "entity_refs": [],
+   "states": [],
+   "part_index": 1
+  },
+  {
+   "kind": "slot",
+   "text": "Current US dollars",
+   "axis": "unit",
+   "segment": "byline",
+   "binding_ref": "unit:",
+   "entity_refs": [],
+   "states": [
+    "unit:",
+    "axis:measurementQualifier"
+   ],
+   "part_index": 1
+  },
+  {
+   "kind": "text",
+   "text": " · ",
+   "segment": "byline",
+   "entity_refs": [],
+   "states": [],
+   "part_index": 1
+  },
+  {
+   "kind": "slot",
+   "text": "OECD DAC1",
+   "axis": "source",
+   "segment": "byline",
+   "entity_refs": [],
+   "states": [
+    "source:"
+   ],
+   "part_index": 1
+  },
+  {
+   "kind": "text",
+   "text": ".",
+   "segment": "byline",
+   "entity_refs": [],
+   "states": [],
+   "part_index": 1
+  }
+ ],
+ "status": "definite"
+}

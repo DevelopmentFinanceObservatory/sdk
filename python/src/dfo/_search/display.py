@@ -24,6 +24,7 @@ from dfo._core.types import (
     option_line,
 )
 from dfo._datasets.progress import progress_mode
+from dfo._search.structured import asked_code
 
 _SHOWN_SEVERITIES = frozenset({"warn", "degraded"})
 
@@ -65,6 +66,8 @@ class AnswerView(Protocol):
     @property
     def complete(self) -> bool: ...
     @property
+    def _answered(self) -> frozenset[int]: ...
+    @property
     def warnings(self) -> tuple[Notice, ...]: ...
 
 
@@ -77,9 +80,8 @@ def hints(answer: AnswerView, /, *, departures: bool) -> list[tuple[str, str]]:
     them out. `info` warnings stay hidden.
     """
     found: dict[str, str] = {}
-    gapped = {gap.part_index for gap in answer.gaps}
     for index, part in enumerate(answer.parts):
-        if not isinstance(part, DefinitePart) or index in gapped:
+        if not isinstance(part, DefinitePart) or index not in answer._answered:
             continue
         for operation in part.operations:
             found.setdefault(
@@ -177,10 +179,8 @@ def _plural(count: int, noun: str) -> str:
 def _incomplete(answer: AnswerView, *, lead: str) -> str:
     """What is answered and what is missing, with the calls that settle each gap."""
     gaps = {gap.part_index: gap for gap in answer.gaps}
-    answered = len(answer.parts) - len(gaps)
-    lines = [
-        f"{lead} {answered} of {_plural(len(answer.parts), 'part')} of your question."
-    ]
+    answered = len(answer._answered)
+    lines = [f"{lead} {answered} of {_asked(answer.parts)}."]
     for index, part in enumerate(answer.parts):
         name = _quote(part.variable_text)
         gap = gaps.get(index)
@@ -202,6 +202,14 @@ def _incomplete(answer: AnswerView, *, lead: str) -> str:
         noun = "part" if answered == 1 else "parts"
         lines.append(f"  Or take the answered {noun}: answer.fetch(partial=True)")
     return _text_lines(lines)
+
+
+def _asked(parts: Sequence[Part]) -> str:
+    """What the parts ask for: series codes when each part was asked by one, else
+    parts of the question."""
+    if parts and all(asked_code(part) is not None for part in parts):
+        return _plural(len(parts), "series code")
+    return f"{_plural(len(parts), 'part')} of your question"
 
 
 def _text_lines(lines: Sequence[str]) -> str:
