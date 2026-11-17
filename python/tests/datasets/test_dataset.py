@@ -1639,6 +1639,7 @@ def _dataset_edit(
         (_dataset_edit(lambda d: d.pop("stale")), "/dfo.dataset/stale"),
         (_dataset_edit(lambda d: d.update(complete="no")), "/dfo.dataset/complete"),
         (_dataset_edit(lambda d: d.update(complete=True)), "/dfo.dataset/complete"),
+        (_dataset_edit(lambda d: d.update(missing=[])), "/dfo.dataset/complete"),
         (
             _dataset_edit(lambda d: d.update(held_until="soon")),
             "/dfo.dataset/held_until",
@@ -1732,6 +1733,7 @@ def _dataset_edit(
         "flag-removed",
         "flag-not-boolean",
         "complete-beside-missing",
+        "incomplete-without-missing",
         "held-until-not-a-date",
         "gap-kind-unknown",
         "gap-part-not-object",

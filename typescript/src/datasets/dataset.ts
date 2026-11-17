@@ -1098,14 +1098,15 @@ export class Provenance {
    * Loads a record any DFO client wrote, from its JSON text or the value `JSON.parse` gives for
    * it. Python's `Provenance.from_json` takes the text, as str or bytes, or the parsed object.
    * A key the format does not name is ignored, at the top level, in a member, in a citation and
-   * its sources and in a warning, so a record a later client wrote reads here. The ref keeps its
-   * own versioned format, which `DatasetRef.fromJSON` reads strictly.
+   * its sources, in a warning, and in a missing part and its options, so a record a later client
+   * wrote reads here. The ref keeps its own versioned format, which `DatasetRef.fromJSON` reads
+   * strictly.
    *
    * @throws {FormatError} The value is neither JSON text nor a JSON object, breaks the provenance
    *   format or comes from a later format version, a member differs from the member its ref
    *   names, the record's `pinned` or `held_until` differs from what its members give, members
-   *   or none, `complete` is true while `missing` holds a part, or the ref breaks its own format, as `DatasetRef.fromJSON` throws, with a pointer
-   *   under `/ref`.
+   *   or none, `complete` is not whether `missing` is empty, or the ref breaks its own format, as
+   *   `DatasetRef.fromJSON` throws, with a pointer under `/ref`.
    */
   static fromJSON(value: unknown): Provenance {
     let parsed: unknown = value;

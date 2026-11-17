@@ -150,6 +150,19 @@ async function twoMembers({ missing }: { missing?: readonly Gap[] } = {}): Promi
   );
 }
 
+/** `twoMembers` with the gap of a part that awaits a choice of place, whose options name the
+ *  ambiguous wording they settle by `entityChoice`. */
+async function placeChoice(): Promise<Dataset> {
+  const record = await scenario("choose-place-one-part");
+  const answer = await clientOver(replay(record).transport).search(
+    stepOf(record, 0, "search").question,
+  );
+  const [gap] = answer.gaps;
+  assert.ok(gap?.options.some((option) => option.kind === "query" && option.entityChoice !== null));
+  assert.equal(answer.gaps.length, 1);
+  return twoMembers({ missing: answer.gaps });
+}
+
 /** The dataset `answer-mixed-fetch-partial` fetches: one member, and one part left out. */
 async function partialAnswer(): Promise<Dataset> {
   const record = await scenario("answer-mixed-fetch-partial");
@@ -217,6 +230,7 @@ describe("a dataset's provenance", async () => {
     ["two members", twoMembers],
     ["a derived member", derived],
     ["a partial answer", partialAnswer],
+    ["a choice of place", placeChoice],
   ] as const) {
     test(`of ${name} meets the schema, reads back, and agrees with the saved file`, async () => {
       const dataset = await make();
@@ -229,6 +243,9 @@ describe("a dataset's provenance", async () => {
       assert.ok(Provenance.fromJSON(JSON.parse(text)).equals(dataset.provenance));
       assert.deepEqual(provenanceOfFile(await savedMetadata(dataset)), record);
       assert.ok(dataset.provenance.ref?.equals(dataset.ref));
+      // A gap reads back as the live one, each option's place group included.
+      assert.deepEqual(Provenance.fromJSON(text).missing, dataset.missing);
+      assert.deepEqual((await Dataset.fromBytes(await dataset.toBytes())).missing, dataset.missing);
     });
   }
 
@@ -385,6 +402,7 @@ describe("Provenance.fromJSON refuses", async () => {
     ],
     ["a complete flag that is not a boolean", { ...record, complete: "no" }, "/complete"],
     ["a complete record with a part missing", { ...partial, complete: true }, "/complete"],
+    ["an incomplete record with no part missing", { ...partial, missing: [] }, "/complete"],
     ["a missing list that is not a list", { ...record, missing: {} }, "/missing"],
     [
       "a missing part of no gap kind",

@@ -8,16 +8,21 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import httpx2
 import jsonschema
 import pyarrow.parquet as pq
 import pytest
 from referencing import Registry, Resource
 
 import dfo
-from dfo._core.types import FormatError
+from dfo._core.types import FormatError, Option
 from dfo._datasets.bundle import load as load_saved
 from dfo._datasets.dataset import Dataset
+from dfo._sync._client.client import Client
+from dfo._sync._datasets.fetch import Session
+from dfo._sync._http.transport import Transport
 from tests._data import CONTRACT
+from tests._fetch_support import BASE, Replay
 from tests.datasets.test_dataset import _derived, _saved, built
 
 _EXAMPLES = sorted((CONTRACT / "provenance").glob("*.json"))
@@ -102,8 +107,27 @@ def test_a_value_neither_json_text_nor_an_object_is_refused(value: object) -> No
     assert (caught.value.reason, caught.value.pointer) == ("format_invalid", "")
 
 
+def _place_choice() -> Dataset:
+    """`_saved` with the gap of a part that awaits a choice of place, whose options
+    name the ambiguous wording they settle by `entity_choice`."""
+    replay = Replay("choose-place-one-part")
+    transport = Transport(
+        base_url=BASE, api_key=False, http_transport=httpx2.MockTransport(replay)
+    )
+    with Client._over(Session(transport, None)) as client:
+        answer = client.search(replay.record["call"][0]["question"])
+    (gap,) = answer.gaps
+    assert any(
+        isinstance(option, Option) and option.entity_choice is not None
+        for option in gap.options
+    )
+    return replace(_saved(), complete=False, missing=(gap,))
+
+
 @pytest.mark.parametrize(
-    "make", [_saved, _derived, built], ids=["two-members", "derived", "one-member"]
+    "make",
+    [_saved, _derived, built, _place_choice],
+    ids=["two-members", "derived", "one-member", "place-choice"],
 )
 def test_a_dataset_and_its_saved_copy_hold_one_provenance(
     make: Callable[[], Dataset], tmp_path: Path
@@ -261,6 +285,7 @@ def _without_member_key(key: str) -> Callable[[dict[str, Any]], object]:
         (_member(0, held_until="2026-12-30"), "/held_until"),
         (lambda record: {**record, "complete": "no"}, "/complete"),
         (lambda record: {**record, "complete": True}, "/complete"),
+        (lambda record: {**record, "missing": []}, "/complete"),
         (lambda record: {**record, "missing": {}}, "/missing"),
         (
             lambda record: {
@@ -286,6 +311,7 @@ def _without_member_key(key: str) -> Callable[[dict[str, Any]], object]:
         "held-until-disagrees",
         "complete-not-boolean",
         "complete-beside-missing",
+        "incomplete-without-missing",
         "missing-not-a-list",
         "missing-kind",
     ],
