@@ -12,7 +12,7 @@ from typing import Any
 from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT
 from dfo._core.errors import client_error
 from dfo._core.lookup_results import Entity, Match
-from dfo._core.text import cited
+from dfo._core.text import WHITESPACE, cited
 from dfo._core.types import DefinitePart, Gap, Notice, Part, Window
 from dfo._datasets.build import Entities, dcid_entities, listed_entities, scope
 from dfo._generated.role_keys import FLOW_KEYS, ROLE_KEYS
@@ -67,7 +67,8 @@ def parsed_input(
 
 
 def checked_codes(codes: object) -> list[str]:
-    """The codes a search asks for, each without surrounding white space.
+    """The codes a search asks for, each without the surrounding white space
+    `WHITESPACE` lists, as both clients trim it.
 
     Raises:
         InvalidRequestError: `codes` is a string, not a non-empty list or tuple
@@ -85,7 +86,7 @@ def checked_codes(codes: object) -> list[str]:
             f"codes is a list of series codes, such as ['DT.TDS.DEGG.CD'], not "
             f"{cited(codes)}",
         )
-    listed = [code.strip() if isinstance(code, str) else "" for code in codes]
+    listed = [code.strip(WHITESPACE) if isinstance(code, str) else "" for code in codes]
     for given, code in zip(codes, listed, strict=True):
         if not code:
             raise client_error(

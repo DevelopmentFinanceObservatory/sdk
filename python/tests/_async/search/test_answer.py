@@ -1141,7 +1141,7 @@ async def test_the_asked_code_decides_a_gap_live_and_through_json(
 ) -> None:
     answer, _ = await ask_codes(edit(load("search-codes.json")), codes=CODES)
     stored = json.loads(answer.to_json())
-    assert stored["codes"] == CODES
+    assert (stored["format_version"], stored["codes"]) == (2, CODES)
     async with AsyncClient(base_url=BASE, api_key=False, cache=False) as client:
         revived = AsyncAnswer.from_json(json.dumps(stored), client=client)
     for read in (answer, revived):
@@ -1167,6 +1167,7 @@ async def test_an_answer_by_codes_keeps_its_gaps_through_json(written_by: str) -
         # wrote no `codes`, so no code part of its answers is known to be its
         # code's series alone.
         del stored["codes"]
+        stored["format_version"] = 1
         for part in stored["answer"]["parts"]:
             if "spec" in part:
                 del part["spec"]["resolved"]["stat_vars"]
