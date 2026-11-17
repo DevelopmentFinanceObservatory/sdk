@@ -11,6 +11,7 @@ import json
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, fields
+from datetime import date
 from types import MappingProxyType
 from typing import Any, Literal, Self, override
 
@@ -93,6 +94,12 @@ class Member:
         citation: How to cite the member's data.
         digest: The SHA-256 digest of the artifact the data came from.
         rendering: Which rendering the artifact is.
+        pinned: Whether DFO keeps the version without a time limit; None when
+            the client does not know, as for a file saved by a client before
+            0.3.0.
+        held_until: The date the version can still be fetched without being
+            pinned; None when it is pinned, the server did not say, or the
+            client does not know.
     """
 
     parts: tuple[str, ...]
@@ -102,6 +109,8 @@ class Member:
     citation: Citation
     digest: str
     rendering: Rendering
+    pinned: bool | None = None
+    held_until: date | None = None
 
     @override
     def __repr__(self) -> str:
@@ -288,6 +297,8 @@ class DerivedMember:
         citation: How to cite the frame's data.
         digest: The SHA-256 digest of the artifact the data came from.
         rendering: Which rendering the artifact is.
+        pinned: As `Member.pinned`.
+        held_until: As `Member.held_until`.
     """
 
     parts: tuple[str, ...]
@@ -301,6 +312,8 @@ class DerivedMember:
     citation: Citation
     digest: str
     rendering: Rendering
+    pinned: bool | None = None
+    held_until: date | None = None
 
     @override
     def __repr__(self) -> str:
@@ -313,9 +326,21 @@ class DerivedMember:
         return DerivedRefMember(**_derived_fields(self))
 
 
-def derived_member(member: DerivedRefMember, citation: Citation) -> DerivedMember:
-    """A derived ref member as a dataset holds it, with its citation."""
-    return DerivedMember(**_derived_fields(member), citation=citation)
+def derived_member(
+    member: DerivedRefMember,
+    citation: Citation,
+    *,
+    pinned: bool | None = None,
+    held_until: date | None = None,
+) -> DerivedMember:
+    """A derived ref member as a dataset holds it, with its citation and
+    retention."""
+    return DerivedMember(
+        **_derived_fields(member),
+        citation=citation,
+        pinned=pinned,
+        held_until=held_until,
+    )
 
 
 def _derived_fields(member: DerivedRefMember | DerivedMember) -> dict[str, Any]:

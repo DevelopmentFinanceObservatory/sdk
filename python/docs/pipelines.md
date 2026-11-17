@@ -119,20 +119,20 @@ The link serves the member's version as Parquet, in the rendering the member was
 
 ## Record provenance
 
-`data.provenance` is the record of where the data came from: its sentence, citation, the time it left the server, the question, the ref, `pinned` and `held_until`, the warnings, and each member's spec, version and digest. `to_object()` gives it as plain JSON values:
+`data.provenance` is the record of where the data came from: its sentence, citation, the time it left the server, the question, the ref, `pinned` and `held_until`, the warnings, and each member's spec, version, digest and retention. `to_json()` gives it as JSON text:
 
 ```python
-import json
+record = newest.provenance.to_json()
+Path("debt-service.provenance.json").write_text(record)
 
-record = newest.provenance.to_object()
-Path("debt-service.provenance.json").write_text(json.dumps(record, indent=2))
-
-same = dfo.Provenance.from_object(json.loads(Path("debt-service.provenance.json").read_text()))
+same = dfo.Provenance.from_json(Path("debt-service.provenance.json").read_text())
 print(same.sentence)
-print(same.ref == newest.ref)
+print(same == newest.provenance)
 ```
 
-`Provenance.from_object` raises `FormatError` when the object breaks the format. The TypeScript client writes and reads the same object with `provenance.toObject()` and `Provenance.fromObject`, so a Python job and a TypeScript site can share one file. The same record sits inside a file saved with `data.save`.
+Each member carries its own `pinned` and `held_until`, so a record of several readings says which one stops being guaranteed first. Both are None for a member whose retention the client does not know, as in a dataset loaded from a file an older client saved. After `dfo.pin(data)`, every member reads as pinned.
+
+`Provenance.from_json` raises `FormatError` when the text breaks the format, and reads a record with keys it does not know, so a record a later client wrote still loads. The TypeScript client writes the same text with `JSON.stringify(provenance)` and reads it with `Provenance.fromJSON`, so a Python job and a TypeScript site can share one file. The same record sits inside a file saved with `data.save`.
 
 ## Test offline
 

@@ -36,9 +36,8 @@ def main() -> None:
             data = answer.fetch()
     assert len(data.members) > 1, "the scenario no longer stacks several members"
     data.save(PARQUET)
-    PROVENANCE.write_text(
-        json.dumps(data.provenance.to_object(), indent=2, ensure_ascii=False) + "\n"
-    )
+    record = json.loads(data.provenance.to_json())
+    PROVENANCE.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n")
     print(f"wrote {PARQUET} and {PROVENANCE}")
 
 

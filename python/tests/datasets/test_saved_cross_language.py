@@ -16,7 +16,7 @@ _TYPESCRIPT = Path(__file__).resolve().parents[3] / "typescript" / "test" / "dat
 def test_a_file_typescript_wrote_loads_with_its_provenance() -> None:
     data = load(_TYPESCRIPT / "saved-typescript.parquet")
     stored = json.loads((_TYPESCRIPT / "saved-typescript.provenance.json").read_text())
-    assert data.provenance.to_object() == stored
+    assert json.loads(data.provenance.to_json()) == stored
     assert len(data.members) > 1
     # The `part` column runs member by member, each run as long as its member's rows.
     parts = data.to_arrow().column("part").to_pylist()

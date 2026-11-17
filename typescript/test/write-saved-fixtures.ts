@@ -29,7 +29,7 @@ await writeFile(parquet, await data.toBytes());
 // Formatted as `pnpm lint` checks it.
 await writeFile(
   provenance,
-  await format(JSON.stringify(data.provenance.toObject()), {
+  await format(JSON.stringify(data.provenance), {
     ...(await resolveConfig(provenance)),
     parser: "json",
   }),

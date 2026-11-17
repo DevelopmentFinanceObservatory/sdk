@@ -4,7 +4,7 @@
 `answer.fetch()` or `dfo.fetch(spec_or_ref)` returns a `Dataset`, which
 `data.save` writes to a Parquet file and `dfo.load` reads back.
 `data.provenance` is a `Provenance`, the record of where the data came from,
-which `to_object()` gives as JSON values and `Provenance.from_object` reads
+which `to_json()` gives as JSON text and `Provenance.from_json` reads
 back. `Client` and `AsyncClient` carry the same calls for one configuration
 each.
 

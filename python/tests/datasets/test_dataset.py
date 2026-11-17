@@ -171,6 +171,7 @@ def test_retention_absent_reads_none_and_is_not_shown() -> None:
     data = built(recorded_member(manifest=body))
     assert data.held_until is None
     assert data.pinned is False
+    assert (data.members[0].pinned, data.members[0].held_until) == (None, None)
     assert "held until" not in repr(data).lower()
     assert "pinned" not in repr(data).lower()
 
@@ -185,6 +186,10 @@ def test_held_until_is_the_earliest_member_date() -> None:
     data = built(first, second)
     assert data.held_until == date(2026, 11, 18)
     assert data.pinned is False
+    assert [(member.pinned, member.held_until) for member in data.members] == [
+        (False, date(2026, 12, 1)),
+        (False, date(2026, 11, 18)),
+    ]
     assert "held until 18 November 2026, not pinned" in repr(data)
 
 
@@ -198,6 +203,10 @@ def test_pinned_when_every_member_is_pinned() -> None:
     assert "(exact), pinned" in repr(both)
     mixed = built(pinned, held)
     assert (mixed.pinned, mixed.held_until) == (False, date(2026, 11, 18))
+    assert [(member.pinned, member.held_until) for member in mixed.members] == [
+        (True, None),
+        (False, date(2026, 11, 18)),
+    ]
 
 
 def test_several_members_stack_with_a_part_column() -> None:

@@ -1,4 +1,4 @@
-"""The live journey: eleven steps against the DFO API at `DFO_BASE_URL`.
+"""The live journey: twelve steps against the DFO API at `DFO_BASE_URL`.
 
 Marked `live` and deselected by default; run it with `pytest -m live`. Each step
 asserts on what the wire carries: codes, ids, digests, row counts and years. A
@@ -6,8 +6,9 @@ step the server cannot serve yet, an async build or a place choice, skips with
 what the server served instead.
 
 `DFO_E2E_DIR` names a directory shared with the TypeScript journey: step 10
-writes the ref it fetched there as `ref-python.json` and reads back
-`ref-typescript.json` when it exists.
+writes the ref it fetched there as `ref-python.json` and its provenance as
+`provenance-python.json`, and reads back `ref-typescript.json` and
+`provenance-typescript.json` when they exist.
 
 Step 6 builds the spec `tests/live/long-builds.json` assigns to this run by the UTC
 day's parity, the language and `DFO_E2E_TARGET`, which is `api` or `website`.
@@ -33,9 +34,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import jsonschema
 import pytest
+from referencing import Registry, Resource
 
-from dfo import Answer, Client, Dataset, DatasetRef, Spec
+from dfo import Answer, Client, Dataset, DatasetRef, Provenance, Spec
 from dfo._datasets.build import (
     build_body,
     pick_artifact,
@@ -44,6 +47,7 @@ from dfo._datasets.build import (
 )
 from dfo.errors import IncompleteAnswerError, InvalidRequestError, NotFoundError
 from dfo.types import Member
+from tests._data import CONTRACT
 from tests.e2e.cloud_run import id_token_headers
 
 pytestmark = pytest.mark.live
@@ -428,6 +432,7 @@ def test_10_a_ref_crosses_languages(client: Client, dataset: Dataset) -> None:
     shared.mkdir(parents=True, exist_ok=True)
     assert dataset.ref is not None
     (shared / "ref-python.json").write_text(dataset.ref.to_json())
+    (shared / "provenance-python.json").write_text(dataset.provenance.to_json())
 
     other = shared / "ref-typescript.json"
     if not other.exists():
@@ -437,6 +442,11 @@ def test_10_a_ref_crosses_languages(client: Client, dataset: Dataset) -> None:
     assert [(m.content_version, m.digest) for m in data.members] == [
         (m.content_version, m.digest) for m in ref.members
     ]
+    # The provenance TypeScript wrote beside its ref names the same versions.
+    provenance = shared / "provenance-typescript.json"
+    if not provenance.exists():
+        pytest.skip(f"read ref-typescript.json; {provenance} does not exist yet")
+    assert Provenance.from_json(provenance.read_text()).ref == ref
 
 
 def test_11_a_search_by_codes_answers_each_code_held_and_names_the_rest(
@@ -467,3 +477,43 @@ def test_11_a_search_by_codes_answers_each_code_held_and_names_the_rest(
     years = {int(year) for year in data.to_arrow().column("time_period").to_pylist()}
     assert years
     assert years <= set(range(2015, 2021))
+
+
+def _provenance_validator() -> jsonschema.Draft202012Validator:
+    """The contract's provenance schema, with the schemas it refers to by `$id`."""
+    schemas = [
+        json.loads((CONTRACT / name).read_text())
+        for name in (
+            "provenance.schema.json",
+            "dataset-ref.schema.json",
+            "saved-file.schema.json",
+        )
+    ]
+    registry = Registry().with_resources(
+        (schema["$id"], Resource.from_contents(schema)) for schema in schemas
+    )
+    return jsonschema.Draft202012Validator(schemas[0], registry=registry)
+
+
+def test_12_provenance_reads_back_and_states_each_members_retention(
+    client: Client, dataset: Dataset
+) -> None:
+    text = dataset.provenance.to_json()
+    _provenance_validator().validate(json.loads(text))
+    provenance = Provenance.from_json(text)
+    assert provenance == dataset.provenance
+    assert provenance.ref == dataset.ref
+
+    # Each member's retention is the one its stored version's manifest serves.
+    (member,) = provenance.members
+    retention = _snapshot(client, member)["retention"]
+    if retention["pinned"] is True:
+        assert (member.pinned, member.held_until) == (True, None)
+    else:
+        held = retention.get("held_until")
+        expected = None if held is None else datetime.fromisoformat(held).date()
+        assert (member.pinned, member.held_until) == (False, expected)
+    assert (provenance.pinned, provenance.held_until) == (
+        member.pinned,
+        member.held_until,
+    )

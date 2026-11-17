@@ -7,7 +7,7 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import { parquetMetadata } from "hyparquet";
 
 import { DatasetRef, FormatError, isDerived } from "../src/core/ref.ts";
-import { Dataset, Provenance } from "../src/datasets/dataset.ts";
+import { Dataset, pinnedDataset, Provenance } from "../src/datasets/dataset.ts";
 import type { FetchedMember, ProvenanceJson } from "../src/datasets/dataset.ts";
 import { derivedDataset } from "../src/datasets/derived.ts";
 import { scenarioBytes } from "./replay.ts";
@@ -42,15 +42,35 @@ async function validator(): Promise<(value: unknown) => boolean> {
   };
 }
 
+/** `record` with only the keys the schema names, at the top level and in each member, as a
+ *  reader writes it back. */
+async function named(record: unknown): Promise<unknown> {
+  const schema = await contractJson<{
+    properties: Record<string, unknown> & {
+      members: { items: { properties: Record<string, unknown> } };
+    };
+  }>("provenance.schema.json");
+  const pick = (value: Record<string, unknown>, keys: Record<string, unknown>) =>
+    Object.fromEntries(Object.entries(value).filter(([key]) => Object.hasOwn(keys, key)));
+  const top = record as Record<string, unknown> & { members: Record<string, unknown>[] };
+  return {
+    ...pick(top, schema.properties),
+    members: top.members.map((member) => pick(member, schema.properties.members.items.properties)),
+  };
+}
+
 describe("the contract's provenance examples", async () => {
   for (const record of await records()) {
-    test(record.name, () => {
+    test(record.name, async () => {
       if (record.expect === "accept") {
-        assert.deepEqual(Provenance.fromObject(record.provenance).toObject(), record.provenance);
+        const text = JSON.stringify(record.provenance);
+        const read = Provenance.fromJSON(text);
+        assert.deepEqual(read.toJSON(), await named(record.provenance));
+        assert.ok(read.equals(Provenance.fromJSON(record.provenance)));
         return;
       }
       assert.throws(
-        () => Provenance.fromObject(record.provenance),
+        () => Provenance.fromJSON(JSON.stringify(record.provenance)),
         (error: unknown) => {
           assert.ok(error instanceof FormatError);
           if (record.error?.by === "rule") assert.equal(error.reason, record.error.reason);
@@ -126,6 +146,10 @@ function provenanceOfFile(metadata: Record<string, string>): ProvenanceJson {
   const saved = JSON.parse(metadata["dfo.dataset"]!) as Record<string, unknown>;
   const ref = JSON.parse(metadata["dfo.ref"]!) as ProvenanceJson["ref"] & {};
   const citations = saved["member_citations"] as ProvenanceJson["members"][number]["citation"][];
+  const retention = JSON.parse(metadata["dfo.retention"]!) as Pick<
+    ProvenanceJson["members"][number],
+    "pinned" | "held_until"
+  >[];
   return {
     format_version: 1,
     sentence: metadata["dfo.sentence"]!,
@@ -146,6 +170,7 @@ function provenanceOfFile(metadata: Record<string, string>): ProvenanceJson {
       parts: member.parts,
       sentence: member.sentence,
       citation: citations[index]!,
+      ...retention[index]!,
     })),
   };
 }
@@ -158,22 +183,30 @@ describe("a dataset's provenance", async () => {
   ] as const) {
     test(`of ${name} meets the schema, reads back, and agrees with the saved file`, async () => {
       const dataset = await make();
-      const record = dataset.provenance.toObject();
+      const record = dataset.provenance.toJSON();
       valid(record);
       // A pipeline stores the record as JSON text and reads it back.
       const text = JSON.stringify(dataset.provenance);
       assert.equal(text, JSON.stringify(record));
-      assert.deepEqual(Provenance.fromObject(JSON.parse(text)).toObject(), record);
+      assert.deepEqual(Provenance.fromJSON(text).toJSON(), record);
+      assert.ok(Provenance.fromJSON(JSON.parse(text)).equals(dataset.provenance));
       assert.deepEqual(provenanceOfFile(await savedMetadata(dataset)), record);
       assert.ok(dataset.provenance.ref?.equals(dataset.ref));
     });
   }
 
-  test("names the earliest retention, the question and the fetch time", async () => {
-    const record = (await twoMembers()).provenance.toObject();
+  test("names each member's retention, the question and the fetch time", async () => {
+    const record = (await twoMembers()).provenance.toJSON();
     assert.equal(record.fetched_at, "2026-11-13T09:15:42Z");
     assert.equal(record.held_until, "2026-11-27");
     assert.equal(record.pinned, false);
+    assert.deepEqual(
+      record.members.map(({ pinned, held_until }) => [pinned, held_until]),
+      [
+        [false, "2026-11-27"],
+        [true, null],
+      ],
+    );
     assert.equal(record.question, "Aid to Nigeria");
     assert.deepEqual(
       record.members.map((member) => member.parts),
@@ -194,12 +227,75 @@ describe("a dataset's provenance", async () => {
   });
 });
 
-describe("Provenance.fromObject refuses", async () => {
-  const record = (await twoMembers()).provenance.toObject();
+describe("Provenance.equals", async () => {
+  const provenance = (await twoMembers()).provenance;
+
+  test("holds for the same facts and fails on another member's retention", () => {
+    const record = provenance.toJSON();
+    assert.ok(provenance.equals(Provenance.fromJSON(JSON.stringify(record))));
+    assert.ok(!provenance.equals(record));
+    const later = { ...record.members[0]!, held_until: "2026-11-28" };
+    const moved = { ...record, held_until: "2026-11-28", members: [later, record.members[1]!] };
+    assert.ok(!provenance.equals(Provenance.fromJSON(moved)));
+  });
+});
+
+describe("a pinned dataset", () => {
+  test("pins every member", async () => {
+    const pinned = pinnedDataset(await twoMembers());
+    assert.deepEqual(
+      pinned.members.map(({ pinned, heldUntil }) => [pinned, heldUntil]),
+      [
+        [true, null],
+        [true, null],
+      ],
+    );
+    assert.ok(Provenance.fromJSON(JSON.stringify(pinned.provenance)).equals(pinned.provenance));
+  });
+});
+
+describe("Provenance.fromJSON ignores a key the format does not name", () => {
+  test("at the top level and in a member", async () => {
+    const provenance = (await twoMembers()).provenance;
+    const record = provenance.toJSON();
+    const added = {
+      ...record,
+      release: "2026-11",
+      members: [{ ...record.members[0]!, release: { name: "2026-11" } }, record.members[1]!],
+    };
+    assert.ok(Provenance.fromJSON(JSON.stringify(added)).equals(provenance));
+  });
+});
+
+describe("Provenance.fromJSON refuses", async () => {
+  const record = (await twoMembers()).provenance.toJSON();
   const [first, second] = record.members;
   for (const [name, value, pointer] of [
-    ["JSON text", JSON.stringify(record), ""],
+    ["text that is not JSON", "{", ""],
+    ["a value that is not an object", [], ""],
+    ["a later format", { ...record, format_version: 2 }, "/format_version"],
     ["a pinned flag that is not a boolean", { ...record, pinned: "no" }, "/pinned"],
+    [
+      "a member's pinned flag that is not a boolean",
+      { ...record, members: [{ ...first!, pinned: "no" }, second] },
+      "/members/0/pinned",
+    ],
+    [
+      "a member's day that does not exist",
+      { ...record, members: [{ ...first!, held_until: "2026-02-30" }, second] },
+      "/members/0/held_until",
+    ],
+    [
+      "a member without held_until",
+      { ...record, members: [{ ...first!, held_until: undefined }, second] },
+      "/members/0/held_until",
+    ],
+    ["a pinned flag the members do not share", { ...record, pinned: true }, "/pinned"],
+    [
+      "a held_until that is not the members' earliest",
+      { ...record, members: [{ ...first!, held_until: "2026-12-30" }, second] },
+      "/held_until",
+    ],
     ["a fetch time in another form", { ...record, fetched_at: "13 November 2026" }, "/fetched_at"],
     ["a day that does not exist", { ...record, held_until: "2026-02-30" }, "/held_until"],
     ["a ref with no members", { ...record, ref: { ...record.ref, members: [] } }, "/ref/members"],
@@ -211,7 +307,7 @@ describe("Provenance.fromObject refuses", async () => {
   ] as const) {
     test(name, () => {
       assert.throws(
-        () => Provenance.fromObject(value),
+        () => Provenance.fromJSON(typeof value === "string" ? value : JSON.stringify(value)),
         (error: unknown) => {
           assert.ok(error instanceof FormatError);
           assert.equal(error.reason, "format_invalid");

@@ -20,7 +20,7 @@
       }
     ]
   },
-  "fetched_at": "2026-11-17T14:16:53Z",
+  "fetched_at": "2026-11-17T15:04:13Z",
   "question": "ODA disbursements for health and for education from Germany to Kenya, and GDP of Kenya",
   "ref": {
     "format_version": 1,
@@ -133,7 +133,9 @@
             "url": "https://data-explorer.oecd.org/vis?tm=crs&pg=0&snb=30&df[ds]=dsDisseminateFinalDMZ&df[id]=DSD_CRS%40DF_CRS&df[ag]=OECD.DCD.FSD&df[vs]=1.6&isAvailabilityDisabled=false&page=0"
           }
         ]
-      }
+      },
+      "pinned": false,
+      "held_until": "2026-11-28"
     },
     {
       "spec_id": "spec_b5673e60c045b10f8beeed2ce50dbd18",
@@ -152,7 +154,9 @@
             "url": "https://datatopics.worldbank.org/world-development-indicators/"
           }
         ]
-      }
+      },
+      "pinned": true,
+      "held_until": null
     }
   ]
 }
