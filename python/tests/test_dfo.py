@@ -63,6 +63,7 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
         "Client",
         "Dataset",
         "DatasetRef",
+        "Provenance",
         "Spec",
         "analysis",
         "auth",

@@ -1051,18 +1051,18 @@ describe("party totals left out", () => {
     const client = clientOver(replay(record).transport);
     const dataset = await client.fetch(spec, { window, entities });
     const trace = (record.exchanges[0]!.response.json as Record<string, unknown>)["trace"] as {
-      party_totals_left_out: { role: string; entities: string[] }[];
+      party_totals_left_out: { role: string; provenance: string; entities: string[] }[];
     };
     const [served] = trace.party_totals_left_out;
-    assert.ok(served !== undefined && !("provenance" in served));
+    assert.ok(served !== undefined && typeof served.provenance === "string");
     assert.deepEqual(dataset.partyTotalsLeftOut, [
       {
         specId: dataset.members[0]!.spec.spec_id,
         role: "financingProvider",
         roleKey: "origin",
         entities: served.entities,
-        provenance: null,
-        everyProvenance: true,
+        provenance: served.provenance,
+        everyProvenance: false,
         keptIn: [],
       },
     ]);

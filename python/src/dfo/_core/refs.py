@@ -432,14 +432,7 @@ class DatasetRef:
         A ref of dataset members is written in format 1, and a ref of derived
         members in format 2.
         """
-        derived = any(isinstance(member, DerivedRefMember) for member in self.members)
-        return json.dumps(
-            {
-                "format_version": DERIVED_FORMAT if derived else DATASET_FORMAT,
-                "members": [_member_object(member) for member in self.members],
-            },
-            ensure_ascii=False,
-        )
+        return json.dumps(ref_object(self), ensure_ascii=False)
 
     @classmethod
     def from_json(cls, text: str | bytes, /) -> Self:
@@ -449,34 +442,60 @@ class DatasetRef:
             FormatError: The JSON breaks the ref format, a member's definition names
                 another spec, or two members hold one spec.
         """
-        obj = decode(text)
-        check_keys(obj, "", required=("format_version", "members"))
-        version = obj["format_version"]
-        if version not in (DATASET_FORMAT, DERIVED_FORMAT) or isinstance(version, bool):
-            raise FormatError(
-                "format_invalid",
-                "/format_version",
-                f"not {DATASET_FORMAT} or {DERIVED_FORMAT}",
-            )
-        members = obj["members"]
-        if not isinstance(members, list) or not members:
-            raise FormatError("format_invalid", "/members", "not a non-empty array")
-        pointers = [f"/members/{index}" for index in range(len(members))]
-        loaded: tuple[RefMember | DerivedRefMember, ...] = (
-            tuple(map(_load_member, members, pointers))
-            if version == DATASET_FORMAT
-            else tuple(map(_load_derived_member, members, pointers))
+        return cls(_load_ref_members(decode(text), ""))
+
+
+def ref_object(ref: DatasetRef) -> dict[str, Any]:
+    """The ref as the JSON object `DatasetRef.to_json` writes: format 1 for
+    dataset members, format 2 for derived members."""
+    derived = any(isinstance(member, DerivedRefMember) for member in ref.members)
+    return {
+        "format_version": DERIVED_FORMAT if derived else DATASET_FORMAT,
+        "members": [_member_object(member) for member in ref.members],
+    }
+
+
+def load_ref(value: object, pointer: str) -> DatasetRef:
+    """A ref stored as a decoded JSON object at `pointer` in a larger document.
+
+    Raises:
+        FormatError: As `DatasetRef.from_json` raises, its pointer under `pointer`.
+    """
+    return DatasetRef(_load_ref_members(object_at(value, pointer), pointer))
+
+
+def _load_ref_members(
+    obj: Mapping[str, Any], pointer: str
+) -> tuple[RefMember | DerivedRefMember, ...]:
+    check_keys(obj, pointer, required=("format_version", "members"))
+    version = obj["format_version"]
+    if version not in (DATASET_FORMAT, DERIVED_FORMAT) or isinstance(version, bool):
+        raise FormatError(
+            "format_invalid",
+            f"{pointer}/format_version",
+            f"not {DATASET_FORMAT} or {DERIVED_FORMAT}",
         )
-        seen: set[str] = set()
-        for index, member in enumerate(loaded):
-            if member.spec.spec_id in seen:
-                raise FormatError(
-                    "repeated_spec_id",
-                    f"/members/{index}/spec/spec_id",
-                    f"{member.spec.spec_id} is already a member",
-                )
-            seen.add(member.spec.spec_id)
-        return cls(loaded)
+    members = obj["members"]
+    if not isinstance(members, list) or not members:
+        raise FormatError(
+            "format_invalid", f"{pointer}/members", "not a non-empty array"
+        )
+    pointers = [f"{pointer}/members/{index}" for index in range(len(members))]
+    loaded: tuple[RefMember | DerivedRefMember, ...] = (
+        tuple(map(_load_member, members, pointers))
+        if version == DATASET_FORMAT
+        else tuple(map(_load_derived_member, members, pointers))
+    )
+    seen: set[str] = set()
+    for index, member in enumerate(loaded):
+        if member.spec.spec_id in seen:
+            raise FormatError(
+                "repeated_spec_id",
+                f"{pointer}/members/{index}/spec/spec_id",
+                f"{member.spec.spec_id} is already a member",
+            )
+        seen.add(member.spec.spec_id)
+    return loaded
 
 
 def _identity(member: RefMember | DerivedRefMember) -> tuple[object, ...]:

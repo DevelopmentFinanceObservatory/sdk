@@ -23,6 +23,7 @@ from __future__ import annotations
 import html
 import json
 import math
+import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field, replace
@@ -48,6 +49,8 @@ from dfo._core.refs import (
     ResolvedPeriod,
     Root,
     derived_member,
+    load_ref,
+    ref_object,
 )
 from dfo._core.text import single_line
 from dfo._core.types import (
@@ -67,6 +70,7 @@ from dfo._core.types import (
     RequestedOperation,
     Spec,
     check_keys,
+    clipped,
     decode,
     decode_value,
     is_gap_kind,
@@ -121,6 +125,8 @@ REQUIRED_COLUMNS = ("time_period", "value")
 # `dfo.steps`, so a client that reads format 1 alone refuses it as a later format.
 SAVED_FORMAT_VERSION = 1
 SAVED_DERIVED_FORMAT_VERSION = 2
+# The format of the object `Provenance.to_object` returns.
+PROVENANCE_FORMAT_VERSION = 1
 
 _MONTHS = (
     "January",
@@ -387,6 +393,244 @@ def steps_text(steps: Sequence[DerivedStep], source: str) -> str:
     return f"{done}, from {source}" if done else f"from {source}"
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class Provenance:
+    """Where a dataset came from, as one record to store beside the data.
+
+    `data.provenance.to_object()` gives the record as a JSON-ready dict, and
+    `Provenance.from_object` reads it back, in this client or the TypeScript
+    one. It holds what the file `data.save` writes holds of the same
+    dataset, so the provenance of a dataset `dfo.load` read equals the
+    provenance of the dataset that saved it.
+
+    Attributes:
+        sentence: What the data shows, as `Dataset.sentence`.
+        citation: How to cite the data, every member's sources together.
+        fetched_at: When the data left the server, in UTC to the second; None
+            when the fetch time of a member is unknown.
+        question: The question the data answers, when it was fetched from an
+            answer to one; None otherwise.
+        pinned: Whether every member's version is kept without a time limit.
+        held_until: The earliest date any member's version can still be
+            fetched without being pinned; None when every member is pinned or
+            the server does not say.
+        warnings: The datasets surface's warnings about the members' data.
+        members: One member per built spec or derived frame, each an exact
+            version with its digest, parts, sentence and citation. Empty for a
+            website bundle opened from a folder.
+    """
+
+    sentence: str
+    citation: Citation
+    fetched_at: datetime | None
+    question: str | None
+    pinned: bool
+    held_until: date | None
+    warnings: tuple[Notice, ...]
+    members: tuple[Member | DerivedMember, ...]
+
+    @property
+    def ref(self) -> DatasetRef | None:
+        """The exact versions the members name, to fetch them again with
+        `dfo.fetch(ref)`; None when there are no members."""
+        return DatasetRef.of(self.members) if self.members else None
+
+    @override
+    def __repr__(self) -> str:
+        count = len(self.members)
+        fetched = (
+            "fetch time unknown"
+            if self.fetched_at is None
+            else f"fetched {_time_text(self.fetched_at)}"
+        )
+        noun = "member" if count == 1 else "members"
+        return single_line(
+            f"Provenance({clipped(self.sentence)}, {count} {noun}, {fetched})"
+        )
+
+    def to_object(self) -> dict[str, Any]:
+        """The record as a dict of JSON values, for `json.dump`.
+
+        `Provenance.from_object` reads it back. The keys are `format_version`,
+        `sentence`, `citation`, `fetched_at`, `question`, `ref`, `pinned`,
+        `held_until`, `warnings`, and `members`, each member's `spec_id`,
+        `content_version`, `digest`, `parts`, `sentence` and `citation`. `ref`
+        is the object `DatasetRef.to_json` writes, or None with no members.
+        """
+        ref = self.ref
+        return {
+            "format_version": PROVENANCE_FORMAT_VERSION,
+            "sentence": self.sentence,
+            "citation": _citation_object(self.citation),
+            "fetched_at": (
+                None if self.fetched_at is None else _iso_time(self.fetched_at)
+            ),
+            "question": self.question,
+            "ref": None if ref is None else ref_object(ref),
+            "pinned": self.pinned,
+            "held_until": (
+                None if self.held_until is None else self.held_until.isoformat()
+            ),
+            "warnings": [asdict(notice) for notice in self.warnings],
+            "members": [
+                {
+                    "spec_id": member.spec.spec_id,
+                    "content_version": member.content_version,
+                    "digest": member.digest,
+                    "parts": list(member.parts),
+                    "sentence": member.sentence,
+                    "citation": _citation_object(member.citation),
+                }
+                for member in self.members
+            ],
+        }
+
+    @classmethod
+    def from_object(cls, obj: object, /) -> Provenance:
+        """Read a record `to_object` wrote, in this client or another.
+
+        Args:
+            obj: The decoded JSON object, as `json.load` returns it.
+
+        Raises:
+            FormatError: The object breaks the provenance format, a member
+                differs from the member its ref names, or the ref breaks its
+                own format, as `DatasetRef.from_json` raises, with a pointer
+                under `/ref`.
+        """
+        if isinstance(obj, str | bytes):
+            raise FormatError(
+                "format_invalid",
+                "",
+                "JSON text, not a decoded object; pass json.loads(text)",
+            )
+        record = object_at(obj, "")
+        check_keys(record, "", required=_PROVENANCE_KEYS)
+        version = record["format_version"]
+        if version != PROVENANCE_FORMAT_VERSION or isinstance(version, bool):
+            raise FormatError(
+                "format_invalid",
+                "/format_version",
+                f"not {PROVENANCE_FORMAT_VERSION}; a later client reads it",
+            )
+        stored = (
+            () if record["ref"] is None else load_ref(record["ref"], "/ref").members
+        )
+        entries = _array(record["members"], "/members")
+        if len(entries) != len(stored):
+            raise FormatError(
+                "format_invalid",
+                "/members",
+                f"holds {len(entries)} members for the {len(stored)} members ref names",
+            )
+        pinned = record["pinned"]
+        if not isinstance(pinned, bool):
+            raise FormatError("format_invalid", "/pinned", "not a boolean")
+        question = record["question"]
+        return cls(
+            sentence=_string(record["sentence"], "/sentence"),
+            citation=_load_citation(record["citation"], "/citation"),
+            fetched_at=(
+                None
+                if record["fetched_at"] is None
+                else _load_time(_iso(record, "fetched_at", _ISO_TIME), "/fetched_at")
+            ),
+            question=None if question is None else _string(question, "/question"),
+            pinned=pinned,
+            held_until=(
+                None
+                if record["held_until"] is None
+                else _load_held_until(
+                    _iso(record, "held_until", _ISO_DATE), "/held_until"
+                )
+            ),
+            warnings=tuple(
+                _load_warning(item, f"/warnings/{index}")
+                for index, item in enumerate(_array(record["warnings"], "/warnings"))
+            ),
+            members=tuple(
+                _provenance_member(entry, member, f"/members/{index}")
+                for index, (entry, member) in enumerate(
+                    zip(entries, stored, strict=True)
+                )
+            ),
+        )
+
+
+# The keys of the object `Provenance.to_object` returns, and of one member in it.
+_PROVENANCE_KEYS = (
+    "format_version",
+    "sentence",
+    "citation",
+    "fetched_at",
+    "question",
+    "ref",
+    "pinned",
+    "held_until",
+    "warnings",
+    "members",
+)
+_PROVENANCE_MEMBER_KEYS = (
+    "spec_id",
+    "content_version",
+    "digest",
+    "parts",
+    "sentence",
+    "citation",
+)
+
+
+def _provenance_member(
+    value: object, stored: RefMember | DerivedRefMember, pointer: str
+) -> Member | DerivedMember:
+    """A provenance member, which names the ref member at its position, with its
+    citation."""
+    entry = object_at(value, pointer)
+    check_keys(entry, pointer, required=_PROVENANCE_MEMBER_KEYS)
+    named = {
+        "spec_id": stored.spec.spec_id,
+        "content_version": stored.content_version,
+        "digest": stored.digest,
+        "parts": list(stored.parts),
+        "sentence": stored.sentence,
+    }
+    for key, expected in named.items():
+        if entry[key] != expected:
+            raise FormatError(
+                "format_invalid",
+                f"{pointer}/{key}",
+                f"is not the {key} of the ref's member at the same position",
+            )
+    return _saved_member(
+        stored, _load_citation(entry["citation"], f"{pointer}/citation")
+    )
+
+
+# The forms a provenance record writes a time and a date in, as its schema
+# gives them, which both clients read alike.
+_ISO_TIME = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?"
+    r"(Z|[+-][0-9]{2}:[0-9]{2})"
+)
+_ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def _iso(record: Mapping[str, Any], key: str, form: re.Pattern[str]) -> str:
+    """The string `record[key]` in the ISO 8601 form `form` matches."""
+    value = _string(record[key], f"/{key}")
+    if form.fullmatch(value) is None:
+        raise FormatError("format_invalid", f"/{key}", "not in the ISO 8601 form")
+    return value
+
+
+def _load_warning(value: object, pointer: str) -> Notice:
+    obj = object_at(value, pointer)
+    check_keys(obj, pointer, required=("code", "severity", "message", "spec_id"))
+    return Notice(
+        **_strings(obj, pointer, ("code", "severity", "message"), ("spec_id",))
+    )
+
+
 @dataclass(frozen=True, slots=True, eq=False, repr=False)
 class Dataset:
     """A table of data with its provenance, one exact version per member.
@@ -517,6 +761,22 @@ class Dataset:
 
     def _ref(self) -> DatasetRef | None:
         return DatasetRef.of(self.members) if self.members else None
+
+    @property
+    def provenance(self) -> Provenance:
+        """Where the data came from, as one record: `to_object()` gives it as
+        JSON values to store beside the data, and `Provenance.from_object`
+        reads them back."""
+        return Provenance(
+            sentence=self.sentence,
+            citation=self.citation,
+            fetched_at=self.fetched_at,
+            question=self.question,
+            pinned=self.pinned,
+            held_until=self.held_until,
+            warnings=self.warnings,
+            members=self.members,
+        )
 
     @property
     def sources(self) -> tuple[str, ...]:
@@ -731,22 +991,24 @@ class Dataset:
         }
 
     def _metadata(self) -> dict[bytes, bytes]:
-        """The provenance as the saved file's key-value metadata, under `dfo.*` keys."""
-        ref = self._ref()
+        """The provenance as the saved file's key-value metadata, under `dfo.*`
+        keys. The values `Provenance.to_object` gives come from it, so the file
+        and the record agree."""
+        record = self.provenance.to_object()
         derived = any(isinstance(member, DerivedMember) for member in self.members)
         version = SAVED_DERIVED_FORMAT_VERSION if derived else SAVED_FORMAT_VERSION
         metadata = {
             "dfo.format_version": str(version),
-            "dfo.sentence": self.sentence,
-            "dfo.citation": _dumps(_citation_object(self.citation)),
+            "dfo.sentence": record["sentence"],
+            "dfo.citation": _dumps(record["citation"]),
             "dfo.sources": _dumps(list(self.sources)),
             "dfo.licence": self.licence,
             "dfo.dataset": _dumps(
                 {
                     "member_citations": [
-                        _citation_object(member.citation) for member in self.members
+                        member["citation"] for member in record["members"]
                     ],
-                    "warnings": [asdict(notice) for notice in self.warnings],
+                    "warnings": record["warnings"],
                     "departures": [asdict(item) for item in self.departures],
                     "requested_operations": [
                         asdict(item) for item in self.requested_operations
@@ -754,23 +1016,21 @@ class Dataset:
                     "assumptions": [asdict(item) for item in self.assumptions],
                     "complete": self.complete,
                     "missing": [_gap_object(gap) for gap in self.missing],
-                    "held_until": (
-                        self.held_until.isoformat() if self.held_until else None
-                    ),
-                    "pinned": self.pinned,
+                    "held_until": record["held_until"],
+                    "pinned": record["pinned"],
                     "stale": self.stale,
                     "layout_version": self.layout_version,
                     "member_rows": list(self._member_rows),
                 }
             ),
         }
-        if ref is not None:
-            metadata["dfo.ref"] = ref.to_json()
+        if record["ref"] is not None:
+            metadata["dfo.ref"] = _dumps(record["ref"])
         # Keys of their own, as for the party totals below.
-        if self.question is not None:
-            metadata["dfo.question"] = _dumps(self.question)
-        if self.fetched_at is not None:
-            metadata["dfo.fetched_at"] = _dumps(_iso_time(self.fetched_at))
+        if record["question"] is not None:
+            metadata["dfo.question"] = _dumps(record["question"])
+        if record["fetched_at"] is not None:
+            metadata["dfo.fetched_at"] = _dumps(record["fetched_at"])
         if derived:
             metadata["dfo.left_out"] = _dumps(
                 {
@@ -1743,7 +2003,12 @@ def _load_fetched_at(text: str) -> datetime:
     """A saved `dfo.fetched_at`, a JSON string holding an ISO 8601 time with a
     zone, in UTC."""
     pointer = "/dfo.fetched_at"
-    value = _string(decode_value(text, pointer), pointer)
+    return _load_time(decode_value(text, pointer), pointer)
+
+
+def _load_time(stored: object, pointer: str) -> datetime:
+    """A stored ISO 8601 time with a zone, in UTC."""
+    value = _string(stored, pointer)
     try:
         moment = datetime.fromisoformat(value)
     except ValueError as error:
@@ -1979,8 +2244,9 @@ def _load_member_rows(value: object, *, members: int, rows: int) -> tuple[int, .
     return member_rows
 
 
-def _load_held_until(value: object) -> date | None:
-    pointer = "/dfo.dataset/held_until"
+def _load_held_until(
+    value: object, pointer: str = "/dfo.dataset/held_until"
+) -> date | None:
     if value is None:
         return None
     try:

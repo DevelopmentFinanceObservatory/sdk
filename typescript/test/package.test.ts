@@ -49,7 +49,16 @@ test("each entry point exports these names and no others", async () => {
   const listed = await surface();
   // The root holds what Python's `dfo` holds at its top level.
   assert.deepEqual(listed["."], {
-    values: ["Answer", "Client", "Dataset", "DatasetRef", "VERSION", "latestYear", "recipe"],
+    values: [
+      "Answer",
+      "Client",
+      "Dataset",
+      "DatasetRef",
+      "Provenance",
+      "VERSION",
+      "latestYear",
+      "recipe",
+    ],
     types: ["ClientOptions", "Spec"],
   });
   // `./errors` holds what Python's `dfo.errors` holds.
@@ -184,6 +193,7 @@ test("each entry point exports these names and no others", async () => {
       "Progress",
       "ProgressEvent",
       "ProgressHandler",
+      "ProvenanceJson",
       "RankOptions",
       "RawRequestOptions",
       "RecipeFetchOptions",

@@ -8,8 +8,16 @@ import {
   stackedColumns,
 } from "./parquet.ts";
 import type { Row, Table } from "./parquet.ts";
-import { DatasetRef, isDerived } from "../core/ref.ts";
-import type { DerivedRefMember, Layout, Rendering, ResolvedPeriod, Spec } from "../core/ref.ts";
+import { checkKeys, DatasetRef, invalid, isDerived, loadRef, objectAt } from "../core/ref.ts";
+import type {
+  DatasetRefJson,
+  DerivedRefMember,
+  Layout,
+  RefMember,
+  Rendering,
+  ResolvedPeriod,
+  Spec,
+} from "../core/ref.ts";
 import { manifestWarningsOf } from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
 import type { Assumption, Departure, Notice, RequestedOperation } from "../wire.ts";
@@ -25,6 +33,8 @@ import { platformFileWriter } from "./save.ts";
  *  a client that reads format 1 alone refuses it as a later format. */
 const SAVED_FORMAT_VERSION = 1;
 const SAVED_DERIVED_FORMAT_VERSION = 2;
+/** The format of the object `Provenance.toObject()` returns. */
+const PROVENANCE_FORMAT_VERSION = 1;
 
 /** One source a dataset cites. */
 export type CitationSource = {
@@ -725,20 +735,22 @@ export class Dataset {
 
   /** The exact versions the dataset holds, to fetch them again with `client.fetch(ref)`. */
   get ref(): DatasetRef {
-    return new DatasetRef(
-      this.members.map((member) =>
-        isDerived(member)
-          ? derivedRefMember(member)
-          : {
-              parts: member.parts,
-              sentence: member.sentence,
-              spec: member.spec,
-              contentVersion: member.contentVersion,
-              digest: member.digest,
-              rendering: member.rendering,
-            },
-      ),
-    );
+    return refOf(this.members);
+  }
+
+  /** Where the data came from, as one record: `toObject()` gives it as JSON values to store
+   *  beside the data, and `Provenance.fromObject` reads them back. */
+  get provenance(): Provenance {
+    return provenanceOf({
+      sentence: this.sentence,
+      citation: this.citation,
+      fetchedAt: this.fetchedAt,
+      question: this.question,
+      pinned: this.pinned,
+      heldUntil: this.heldUntil,
+      warnings: this.warnings,
+      members: this.members,
+    });
   }
 
   /** The licences the sources publish under, joined by "; ", or empty when none says. */
@@ -871,8 +883,10 @@ export class Dataset {
   }
 
   /** The provenance as the file's key-value metadata, in the shape Python's
-   *  `Dataset.save` writes, so `dfo.load` reads the file back. */
+   *  `Dataset.save` writes, so `dfo.load` reads the file back. The values
+   *  `Provenance.toObject()` gives come from it, so the file and the record agree. */
   #metadata(): Record<string, string> {
+    const record = this.provenance.toObject();
     const sources = this.citation.sources;
     const isDerivedDataset = this.members.some(isDerived);
     const derived = !isDerivedDataset
@@ -896,18 +910,13 @@ export class Dataset {
       "dfo.format_version": String(
         isDerivedDataset ? SAVED_DERIVED_FORMAT_VERSION : SAVED_FORMAT_VERSION,
       ),
-      "dfo.sentence": this.sentence,
-      "dfo.citation": JSON.stringify(savedCitation(this.citation)),
+      "dfo.sentence": record.sentence,
+      "dfo.citation": JSON.stringify(record.citation),
       "dfo.sources": JSON.stringify(sources.map((source) => source.label)),
       "dfo.licence": this.licence,
       "dfo.dataset": JSON.stringify({
-        member_citations: this.members.map((member) => savedCitation(member.citation)),
-        warnings: this.warnings.map(({ code, severity, message }) => ({
-          code,
-          severity,
-          message,
-          spec_id: null,
-        })),
+        member_citations: record.members.map((member) => member.citation),
+        warnings: record.warnings,
         departures: this.departures.map(({ code, text, asked, shown, binding_ref }) => ({
           code,
           text,
@@ -926,18 +935,20 @@ export class Dataset {
         assumptions: this.assumptions,
         complete: this.complete,
         missing: this.missing.map(savedGap),
-        held_until: this.heldUntil?.toISOString().slice(0, 10) ?? null,
-        pinned: this.pinned,
+        held_until: record.held_until,
+        pinned: record.pinned,
         stale: false,
         layout_version: this.layoutVersion,
         member_rows: memberRows(this.#table.parts),
       }),
-      "dfo.ref": JSON.stringify(this.ref),
+      ...(record.ref === null ? {} : { "dfo.ref": JSON.stringify(record.ref) }),
       ...derived,
       // Keys of their own, since Python 0.1.0's loader refuses any key in `dfo.dataset` it does
       // not know and reads only the `dfo.*` keys it names.
-      ...(this.question === null ? {} : { "dfo.question": JSON.stringify(this.question) }),
-      "dfo.fetched_at": JSON.stringify(this.fetchedAt.toISOString().replace(".000Z", "Z")),
+      ...(record.question === null ? {} : { "dfo.question": JSON.stringify(record.question) }),
+      ...(record.fetched_at === null
+        ? {}
+        : { "dfo.fetched_at": JSON.stringify(record.fetched_at) }),
       ...(this.partyTotalsLeftOut.length === 0
         ? {}
         : {
@@ -962,6 +973,335 @@ export class Dataset {
           }),
     };
   }
+}
+
+/** The record `Provenance.toObject()` returns: plain JSON values, in the format
+ *  `provenance.schema.json` gives, which Python's `Provenance.to_object` writes too. */
+export type ProvenanceJson = {
+  format_version: 1;
+  sentence: string;
+  citation: ReturnType<typeof savedCitation>;
+  /** When the data left the server, in UTC to the second, as `2026-11-27T09:14:05Z`. */
+  fetched_at: string | null;
+  question: string | null;
+  /** The ref `JSON.stringify(data.ref)` writes, or null for a dataset with no members. */
+  ref: DatasetRefJson | null;
+  pinned: boolean;
+  /** As `YYYY-MM-DD`. */
+  held_until: string | null;
+  warnings: { code: string; severity: string; message: string; spec_id: string | null }[];
+  members: {
+    spec_id: string;
+    content_version: string;
+    digest: string;
+    parts: string[];
+    sentence: string;
+    citation: ReturnType<typeof savedCitation>;
+  }[];
+};
+
+/** Builds a `Provenance` from what it holds; its constructor is the class's own. */
+let provenanceOf: (fields: ProvenanceFields) => Provenance;
+
+/** What a `Provenance` holds. */
+type ProvenanceFields = Pick<
+  Provenance,
+  | "sentence"
+  | "citation"
+  | "fetchedAt"
+  | "question"
+  | "pinned"
+  | "heldUntil"
+  | "warnings"
+  | "members"
+>;
+
+/**
+ * Where a dataset came from, as one record to store beside the data. `data.provenance.toObject()`
+ * gives it as JSON values, and `Provenance.fromObject` reads them back, in this client or the
+ * Python one. It holds what the file `data.toBytes()` writes holds of the same dataset.
+ */
+export class Provenance {
+  /** What the data shows, as `Dataset.sentence`. */
+  readonly sentence: string;
+  /** How to cite the data, every member's sources together. */
+  readonly citation: Citation;
+  /** When the data left the server, to the second, or null when a member's fetch time is
+   *  unknown, as in a record Python wrote for such a dataset. */
+  readonly fetchedAt: Date | null;
+  /** The question the data answers, when it came from `answer.fetch()`, else null. */
+  readonly question: string | null;
+  /** Whether every member's version is kept without a time limit. */
+  readonly pinned: boolean;
+  /** The earliest day any member's version can still be fetched without being pinned, or null
+   *  when every member is pinned or the server did not say. */
+  readonly heldUntil: Date | null;
+  /** The datasets surface's warnings about the members' data. */
+  readonly warnings: readonly Notice[];
+  /** One member per built spec or derived frame, each an exact version with its digest, parts,
+   *  sentence and citation. Empty for a dataset that names no version. */
+  readonly members: readonly (Member | DerivedMember)[];
+
+  static {
+    provenanceOf = (fields) => new Provenance(fields);
+  }
+
+  private constructor(fields: ProvenanceFields) {
+    this.sentence = fields.sentence;
+    this.citation = fields.citation;
+    this.fetchedAt = fields.fetchedAt;
+    this.question = fields.question;
+    this.pinned = fields.pinned;
+    this.heldUntil = fields.heldUntil;
+    this.warnings = Object.freeze([...fields.warnings]);
+    this.members = Object.freeze([...fields.members]);
+    Object.freeze(this);
+  }
+
+  /** The exact versions the members name, to fetch them again with `client.fetch(ref)`, or null
+   *  when there are no members. */
+  get ref(): DatasetRef | null {
+    return this.members.length === 0 ? null : refOf(this.members);
+  }
+
+  /** The record as JSON values, which `Provenance.fromObject` reads back. */
+  toObject(): ProvenanceJson {
+    return {
+      format_version: PROVENANCE_FORMAT_VERSION,
+      sentence: this.sentence,
+      citation: savedCitation(this.citation),
+      fetched_at: this.fetchedAt === null ? null : isoTime(this.fetchedAt),
+      question: this.question,
+      ref: this.ref?.toJSON() ?? null,
+      pinned: this.pinned,
+      held_until: this.heldUntil?.toISOString().slice(0, 10) ?? null,
+      warnings: this.warnings.map(({ code, severity, message, spec_id }) => ({
+        code,
+        severity,
+        message,
+        spec_id: spec_id ?? null,
+      })),
+      members: this.members.map((member) => ({
+        spec_id: member.spec.spec_id,
+        content_version: member.contentVersion,
+        digest: member.digest,
+        parts: [...member.parts],
+        sentence: member.sentence,
+        citation: savedCitation(member.citation),
+      })),
+    };
+  }
+
+  /** `JSON.stringify(provenance)` writes the object `toObject()` returns. */
+  toJSON(): ProvenanceJson {
+    return this.toObject();
+  }
+
+  /**
+   * Reads a record `toObject()` wrote, in this client or another, from its parsed JSON value.
+   *
+   * @throws {FormatError} The value breaks the provenance format, a member differs from the
+   *   member its ref names, or the ref breaks its own format, as `DatasetRef.fromJSON` throws,
+   *   with a pointer under `/ref`.
+   */
+  static fromObject(value: unknown): Provenance {
+    if (typeof value === "string") {
+      throw invalid("", "JSON text, not a parsed object; pass JSON.parse(text)");
+    }
+    const record = objectAt(value, "");
+    checkKeys(record, "", PROVENANCE_KEYS);
+    if (record["format_version"] !== PROVENANCE_FORMAT_VERSION) {
+      throw invalid("/format_version", `not ${PROVENANCE_FORMAT_VERSION}; a later client reads it`);
+    }
+    const stored = record["ref"] === null ? [] : loadRef(record["ref"], "/ref").members;
+    const entries = arrayAt(record["members"], "/members");
+    if (entries.length !== stored.length) {
+      throw invalid(
+        "/members",
+        `holds ${entries.length} members for the ${stored.length} members ref names`,
+      );
+    }
+    const pinned = record["pinned"];
+    if (typeof pinned !== "boolean") throw invalid("/pinned", "not a boolean");
+    const question = record["question"];
+    return provenanceOf({
+      sentence: stringAt(record["sentence"], "/sentence"),
+      citation: loadCitation(record["citation"], "/citation"),
+      fetchedAt: record["fetched_at"] === null ? null : loadTime(record["fetched_at"]),
+      question: question === null ? null : stringAt(question, "/question"),
+      pinned,
+      heldUntil: record["held_until"] === null ? null : loadDay(record["held_until"]),
+      warnings: arrayAt(record["warnings"], "/warnings").map((item, index) =>
+        loadWarning(item, `/warnings/${index}`),
+      ),
+      members: entries.map((entry, index) =>
+        provenanceMember(entry, stored[index]!, `/members/${index}`),
+      ),
+    });
+  }
+
+  /** The sentence, the number of members and the fetch time, as `Provenance(…, 2 members,
+   *  fetched 13 November 2026 09:14 UTC)`, on one line through `inline`. */
+  toString(): string {
+    const count = this.members.length;
+    const fetched =
+      this.fetchedAt === null ? "fetch time unknown" : `fetched ${timeText(this.fetchedAt)}`;
+    return inline(
+      `Provenance(${this.sentence}, ${count} member${count === 1 ? "" : "s"}, ${fetched})`,
+    );
+  }
+
+  /** Node's `console.log` and `util.inspect` show the record as `String(provenance)` does. */
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return this.toString();
+  }
+}
+
+/** The keys of a provenance record, and of one member in it. */
+const PROVENANCE_KEYS = [
+  "format_version",
+  "sentence",
+  "citation",
+  "fetched_at",
+  "question",
+  "ref",
+  "pinned",
+  "held_until",
+  "warnings",
+  "members",
+] as const;
+const PROVENANCE_MEMBER_KEYS = [
+  "spec_id",
+  "content_version",
+  "digest",
+  "parts",
+  "sentence",
+  "citation",
+] as const;
+
+/** The forms a provenance record writes a time and a day in, as its schema gives them. */
+const ISO_TIME = /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+const ISO_DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/** A UTC time as the record writes it, to the second, such as `2026-11-27T09:14:05Z`. */
+const isoTime = (date: Date): string => `${date.toISOString().slice(0, 19)}Z`;
+
+/** A UTC time as `toString` prints it, such as `27 November 2026 09:14 UTC`. */
+const timeText = (date: Date): string => `${dayText(date)} ${date.toISOString().slice(11, 16)} UTC`;
+
+/** Whether the year, month and day a pattern matched name a day on the calendar. */
+function dayExists(match: RegExpExecArray): boolean {
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+  );
+}
+
+function loadTime(value: unknown): Date {
+  const match = ISO_TIME.exec(stringAt(value, "/fetched_at"));
+  const date = match === null ? null : new Date(match[0]);
+  if (match === null || !dayExists(match) || Number.isNaN(date!.getTime())) {
+    throw invalid("/fetched_at", "not an ISO 8601 time with a zone on a day that exists");
+  }
+  return date!;
+}
+
+function loadDay(value: unknown): Date {
+  const match = ISO_DAY.exec(stringAt(value, "/held_until"));
+  if (match === null || !dayExists(match)) {
+    throw invalid("/held_until", "not an ISO date on a day that exists");
+  }
+  return new Date(`${match[0]}T00:00:00Z`);
+}
+
+function stringAt(value: unknown, pointer: string): string {
+  if (typeof value !== "string") throw invalid(pointer, "not a string");
+  return value;
+}
+
+function nullableStringAt(value: unknown, pointer: string): string | null {
+  return value === null ? null : stringAt(value, pointer);
+}
+
+function arrayAt(value: unknown, pointer: string): unknown[] {
+  if (!Array.isArray(value)) throw invalid(pointer, "not an array");
+  return value;
+}
+
+function loadCitation(value: unknown, pointer: string): Citation {
+  const citation = objectAt(value, pointer);
+  checkKeys(citation, pointer, ["text", "sources"]);
+  return {
+    text: stringAt(citation["text"], `${pointer}/text`),
+    sources: arrayAt(citation["sources"], `${pointer}/sources`).map((item, index) => {
+      const at = `${pointer}/sources/${index}`;
+      const source = objectAt(item, at);
+      checkKeys(source, at, ["ref", "label"], ["licence", "licence_url", "url"]);
+      return Object.freeze({
+        ref: stringAt(source["ref"], `${at}/ref`),
+        label: stringAt(source["label"], `${at}/label`),
+        licence: nullableStringAt(source["licence"] ?? null, `${at}/licence`),
+        licenceUrl: nullableStringAt(source["licence_url"] ?? null, `${at}/licence_url`),
+        url: nullableStringAt(source["url"] ?? null, `${at}/url`),
+      });
+    }),
+  };
+}
+
+function loadWarning(value: unknown, pointer: string): Notice {
+  const warning = objectAt(value, pointer);
+  checkKeys(warning, pointer, ["code", "severity", "message", "spec_id"]);
+  return {
+    code: stringAt(warning["code"], `${pointer}/code`),
+    severity: stringAt(warning["severity"], `${pointer}/severity`),
+    message: stringAt(warning["message"], `${pointer}/message`),
+    spec_id: nullableStringAt(warning["spec_id"], `${pointer}/spec_id`),
+  };
+}
+
+/** A provenance member, which names the ref member at its position, with its citation. */
+function provenanceMember(
+  value: unknown,
+  stored: RefMember | DerivedRefMember,
+  pointer: string,
+): Member | DerivedMember {
+  const entry = objectAt(value, pointer);
+  checkKeys(entry, pointer, PROVENANCE_MEMBER_KEYS);
+  const named: Record<string, unknown> = {
+    spec_id: stored.spec.spec_id,
+    content_version: stored.contentVersion,
+    digest: stored.digest,
+    parts: stored.parts,
+    sentence: stored.sentence,
+  };
+  for (const [key, expected] of Object.entries(named)) {
+    if (JSON.stringify(entry[key]) !== JSON.stringify(expected)) {
+      throw invalid(
+        `${pointer}/${key}`,
+        `is not the ${key} of the ref's member at the same position`,
+      );
+    }
+  }
+  return { ...stored, citation: loadCitation(entry["citation"], `${pointer}/citation`) };
+}
+
+/** The ref to a dataset's members. */
+function refOf(members: readonly (Member | DerivedMember)[]): DatasetRef {
+  return new DatasetRef(
+    members.map((member) =>
+      isDerived(member)
+        ? derivedRefMember(member)
+        : {
+            parts: member.parts,
+            sentence: member.sentence,
+            spec: member.spec,
+            contentVersion: member.contentVersion,
+            digest: member.digest,
+            rendering: member.rendering,
+          },
+    ),
+  );
 }
 
 /** A derived member as a ref stores it, without what the dataset adds. */

@@ -1348,13 +1348,13 @@ def test_a_fetch_that_left_party_totals_out_names_them_and_saves_them(
     (served,) = record["exchanges"][0]["response"]["json"]["trace"][
         "party_totals_left_out"
     ]
-    assert "provenance" not in served
+    assert isinstance(served["provenance"], str)
     assert data.party_totals_left_out == (
         PartyTotalsLeftOut(
             spec_id=data.members[0].spec.spec_id,
             role="financingProvider",
             entities=tuple(served["entities"]),
-            every_provenance=True,
+            provenance=served["provenance"],
         ),
     )
     count = len(served["entities"])

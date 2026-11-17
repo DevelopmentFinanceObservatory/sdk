@@ -198,7 +198,7 @@ export class FormatError extends DfoError {
 Object.defineProperty(FormatError.prototype, "name", { value: "FormatError", configurable: true });
 
 /** A `format_invalid` error at `pointer`. */
-const invalid = (pointer: string, detail: string): FormatError =>
+export const invalid = (pointer: string, detail: string): FormatError =>
   new FormatError("format_invalid", pointer, detail);
 
 /** The ref format of dataset members, and the one of derived members. */
@@ -495,39 +495,52 @@ export class DatasetRef {
         throw Object.assign(invalid("", "not JSON"), { cause: error });
       }
     }
-    const ref = objectAt(parsed, "");
-    checkKeys(ref, "", ["format_version", "members"]);
-    const version = ref["format_version"];
-    if (version !== DATASET_FORMAT && version !== DERIVED_FORMAT) {
-      throw invalid("/format_version", `not ${DATASET_FORMAT} or ${DERIVED_FORMAT}`);
-    }
-    const members = ref["members"];
-    if (!Array.isArray(members) || members.length === 0) {
-      throw invalid("/members", "not a non-empty array");
-    }
-    const load = version === DATASET_FORMAT ? loadMember : loadDerivedMember;
-    const loaded = members.map((member: unknown, index) => load(member, `/members/${index}`));
-    const seen = new Set<string>();
-    for (const [index, member] of loaded.entries()) {
-      if (seen.has(member.spec.spec_id)) {
-        throw new FormatError(
-          "repeated_spec_id",
-          `/members/${index}/spec/spec_id`,
-          `${member.spec.spec_id} is already a member`,
-        );
-      }
-      seen.add(member.spec.spec_id);
-    }
-    return new DatasetRef(loaded);
+    return loadRef(parsed, "");
   }
 }
 
-function objectAt(value: unknown, pointer: string): Record<string, unknown> {
+/**
+ * A ref stored as a parsed JSON object at `pointer` in a larger document.
+ *
+ * @throws {FormatError} As `DatasetRef.fromJSON` throws, its pointer under `pointer`.
+ */
+export function loadRef(value: unknown, pointer: string): DatasetRef {
+  const ref = objectAt(value, pointer);
+  checkKeys(ref, pointer, ["format_version", "members"]);
+  const version = ref["format_version"];
+  if (version !== DATASET_FORMAT && version !== DERIVED_FORMAT) {
+    throw invalid(`${pointer}/format_version`, `not ${DATASET_FORMAT} or ${DERIVED_FORMAT}`);
+  }
+  const members = ref["members"];
+  if (!Array.isArray(members) || members.length === 0) {
+    throw invalid(`${pointer}/members`, "not a non-empty array");
+  }
+  const load = version === DATASET_FORMAT ? loadMember : loadDerivedMember;
+  const loaded = members.map((member: unknown, index) =>
+    load(member, `${pointer}/members/${index}`),
+  );
+  const seen = new Set<string>();
+  for (const [index, member] of loaded.entries()) {
+    if (seen.has(member.spec.spec_id)) {
+      throw new FormatError(
+        "repeated_spec_id",
+        `${pointer}/members/${index}/spec/spec_id`,
+        `${member.spec.spec_id} is already a member`,
+      );
+    }
+    seen.add(member.spec.spec_id);
+  }
+  return new DatasetRef(loaded);
+}
+
+/** The object at `pointer`, or a `format_invalid` error. */
+export function objectAt(value: unknown, pointer: string): Record<string, unknown> {
   if (!isRecord(value)) throw invalid(pointer, "not an object");
   return value;
 }
 
-function checkKeys(
+/** Refuses an object without each required key or with a key the format does not name. */
+export function checkKeys(
   value: Record<string, unknown>,
   pointer: string,
   required: readonly string[],
