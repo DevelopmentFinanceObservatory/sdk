@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx2
+from typing_extensions import deprecated
 
 from dfo._core.codes import INVALID_ARGUMENT
 from dfo._core.errors import ContractError, client_error
@@ -102,7 +103,7 @@ class AsyncLookup:
 
     def __repr__(self) -> str:
         return (
-            f"<{type(self).__name__}: resolve(*names), node(dcid), code(code), "
+            f"<{type(self).__name__}: resolve(*names), node(dcid), error_code(code), "
             "catalogue()>"
         )
 
@@ -169,9 +170,12 @@ class AsyncLookup:
             read_node,
         )
 
-    async def code(self, code: str, /) -> Code:
-        """The registry entry for one code, such as `spec_not_found`, which says
-        what that refusal or warning means.
+    async def error_code(self, code: str, /) -> Code:
+        """The registry entry for one of DFO's own error or warning codes, such as
+        `spec_not_found`, which says what that refusal or warning means.
+
+        This looks up a code DFO raises or warns with. It does not look up a
+        publisher's codes; `resolve(..., kinds=["code"])` finds those.
 
         The registry sits at the API host's root, the page an error's `docs_url`
         names.
@@ -196,6 +200,11 @@ class AsyncLookup:
             (("code", "string"), ("mappings", "array")),
             read_code,
         )
+
+    @deprecated("Use `lookup.error_code`.", category=DeprecationWarning, stacklevel=1)
+    async def code(self, code: str, /) -> Code:
+        """The deprecated name of `error_code`."""
+        return await self.error_code(code)
 
     async def catalogue(self, *, place: str | None = None) -> Catalogue:
         """What Search holds data on: counts and example questions.

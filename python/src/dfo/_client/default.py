@@ -24,6 +24,8 @@ from datetime import date
 from os import PathLike
 from typing import overload
 
+from typing_extensions import deprecated
+
 from dfo._config.keys import ApiKeyArgument
 from dfo._core.lookup_results import Catalogue, Code, Match, Node
 from dfo._core.refs import DatasetRef
@@ -410,16 +412,22 @@ def node(dcid: str, /, *, as_of: date | None = None) -> Node:
     return default_client().lookup.node(dcid, as_of=as_of)
 
 
-def code(code: str, /) -> Code:
-    """The registry entry for one code, such as `spec_not_found`, with the
-    default client.
+def error_code(code: str, /) -> Code:
+    """The registry entry for one of DFO's own error or warning codes, such as
+    `spec_not_found`, with the default client.
 
     Raises:
         InvalidRequestError: `code` is not lower-case snake case
             (`invalid_argument`); no request is sent.
         NotFoundError: The registry holds no such code.
     """
-    return default_client().lookup.code(code)
+    return default_client().lookup.error_code(code)
+
+
+@deprecated("Use `dfo.lookup.error_code`.", category=DeprecationWarning, stacklevel=1)
+def code(code: str, /) -> Code:
+    """The deprecated name of `error_code`."""
+    return error_code(code)
 
 
 def catalogue(*, place: str | None = None) -> Catalogue:

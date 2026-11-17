@@ -324,7 +324,7 @@ console.log(
   regions.map((region) => region.label),
 );
 
-console.log(`${await client.lookup.code("role_incompatible")}`);
+console.log(`${await client.lookup.errorCode("role_incompatible")}`);
 
 const catalogue = await client.lookup.catalogue({ place: "country/NGA" });
 console.log(`${catalogue}`);
@@ -348,7 +348,7 @@ import { NotFoundError } from "@developmentfinance/client/errors";
 
 const client = new Client();
 try {
-  await client.lookup.code("no_such_code");
+  await client.lookup.errorCode("no_such_code");
 } catch (error) {
   if (!(error instanceof NotFoundError)) throw error;
   console.log(error.name, error.code);
@@ -374,7 +374,7 @@ Branch on the class, or on `error.code` for one case. The bracket's text may cha
 | `ServerError`             | The server failed or a download did not verify. A retryable failure is retried before you see it                |
 | `ContractError`           | A response the client cannot act on. Upgrade the package                                                        |
 
-`client.lookup.code(code)` explains a code the server sends. The client raises these itself: `answer_declined`, `answer_incomplete`, `base_url_invalid`, `choice_invalid`, `contract_violation`, `credentials_file_invalid`, `credentials_file_unreadable`, `deadline_exceeded`, `digest_mismatch`, `download_failed`, `header_invalid`, `insecure_transport`, `invalid_argument`, `key_empty`, `key_invalid`, `match_unresolved`, `network_error`, `offline`, `profile_not_found`, `profile_without_key`, `refusal_without_code`, `response_too_large`, `unexpected_response`, and `version_unavailable`.
+`client.lookup.errorCode(code)` explains one of DFO's own error or warning codes, such as one the server sends. The client raises these itself: `answer_declined`, `answer_incomplete`, `base_url_invalid`, `choice_invalid`, `contract_violation`, `credentials_file_invalid`, `credentials_file_unreadable`, `deadline_exceeded`, `digest_mismatch`, `download_failed`, `header_invalid`, `insecure_transport`, `invalid_argument`, `key_empty`, `key_invalid`, `match_unresolved`, `network_error`, `offline`, `profile_not_found`, `profile_without_key`, `refusal_without_code`, `response_too_large`, `unexpected_response`, and `version_unavailable`.
 
 Some faults raise other errors. An aborted call rejects with its signal's `reason`. A `strict` fetch throws its first `SearchWarning`, `DataWarning`, or `SeriesLeftOutWarning` in place of passing it to `onWarning`. `SeriesLeftOutWarning` (`series_left_out`) says an operation dropped series for missing data, which `data.leftOut` lists.
 

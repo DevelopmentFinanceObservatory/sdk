@@ -64,7 +64,7 @@ def parameters(function: Callable[..., Any]) -> list[inspect.Parameter]:
         (dfo.configure, Client.__init__),
         (dfo.lookup.resolve, Lookup.resolve),
         (dfo.lookup.node, Lookup.node),
-        (dfo.lookup.code, Lookup.code),
+        (dfo.lookup.error_code, Lookup.error_code),
         (dfo.lookup.catalogue, Lookup.catalogue),
         (dfo.pin, Client.pin),
         (dfo.share, Client.share),
@@ -229,9 +229,25 @@ def test_the_lookup_functions_ask_the_default_client(
     mock_clients(monkeypatch, {DEFAULT_URL: serve})
     dfo.lookup.resolve("Nigeria")
     dfo.lookup.node("country/NGA")
-    dfo.lookup.code("spec_not_found")
+    dfo.lookup.error_code("spec_not_found")
     dfo.lookup.catalogue()
     assert seen == list(bodies)
+
+
+def test_the_deprecated_code_function_warns_and_reads_as_error_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = {"code": "spec_not_found", "mappings": []}
+    mock_clients(
+        monkeypatch, {DEFAULT_URL: lambda request: httpx2.Response(200, json=body)}
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        current = dfo.lookup.error_code("spec_not_found")
+    with pytest.warns(DeprecationWarning, match="dfo.lookup.error_code") as caught:
+        old = dfo.lookup.code("spec_not_found")  # ty: ignore[deprecated]
+    assert old == current
+    assert [warning.filename for warning in caught] == [__file__]
 
 
 def test_the_analysis_functions_run_on_the_default_client(

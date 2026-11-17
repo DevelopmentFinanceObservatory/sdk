@@ -127,7 +127,12 @@ const ROWS: [string, () => { toString(): string }, string, boolean][] = [
   ["answer", () => answer, String(answer).split("\n")[0]!, false],
   ["dataset", () => dataset, "<Dataset Germany's gross ODA disbursements to Nigeria.\n", false],
   ["dataset-ref", () => dataset.ref, `DatasetRef(1 member: ${SPEC_ID} at ${VERSION}, exact)`, true],
-  ["lookup", () => lookup, "<Lookup: resolve(names), node(dcid), code(code), catalogue()>", true],
+  [
+    "lookup",
+    () => lookup,
+    "<Lookup: resolve(names), node(dcid), errorCode(code), catalogue()>",
+    true,
+  ],
   [
     "match-resolved",
     () => new Match(result("Kenya", { entity: KENYA })),

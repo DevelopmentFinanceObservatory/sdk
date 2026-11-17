@@ -211,6 +211,7 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
                 "ResolveKind",
                 "catalogue",
                 "code",
+                "error_code",
                 "node",
                 "resolve",
             ],
