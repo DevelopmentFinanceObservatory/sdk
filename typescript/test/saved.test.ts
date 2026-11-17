@@ -90,6 +90,15 @@ describe("the contract's saved-file examples", async () => {
           JSON.parse(written["dfo.party_totals_left_out"] ?? "[]"),
           JSON.parse(example.metadata["dfo.party_totals_left_out"] ?? "[]"),
         );
+        // The retention the file states, with or without `dfo.retention`.
+        const stated = JSON.parse(example.metadata["dfo.dataset"]!) as {
+          pinned: boolean;
+          held_until: string | null;
+        };
+        assert.deepEqual(
+          [loaded.pinned, loaded.heldUntil?.toISOString().slice(0, 10) ?? null],
+          [stated.pinned, stated.held_until],
+        );
         return;
       }
       await assert.rejects(Dataset.fromBytes(content), (error: unknown) => {
@@ -265,14 +274,29 @@ describe("load(path)", () => {
   });
 
   test("refuses a file that is no Parquet file, such as a website bundle, naming its path", async () => {
-    installFileReader(() => Promise.resolve(new Uint8Array([0x50, 0x4b, 0x03, 0x04])));
-    try {
-      await assert.rejects(load("bundle.zip"), (error: unknown) => {
+    const zip = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
+    installFileReader(() => Promise.resolve(zip));
+    const refusal = async (read: Promise<unknown>) => {
+      try {
+        await read;
+      } catch (error) {
         assert.ok(error instanceof BundleError);
         assert.equal(error.code, "not_a_bundle");
-        assert.match(error.message, /^bundle\.zip /);
-        return true;
-      });
+        return error.message;
+      }
+      assert.fail("read a file that is no Parquet file");
+    };
+    try {
+      const named = await refusal(load("bundle.zip"));
+      const unnamed = await refusal(Dataset.fromBytes(zip));
+      assert.match(named, /^bundle\.zip is not a Parquet file\./);
+      assert.match(unnamed, /^The bytes are not a Parquet file\./);
+      // Both name the Python client's dfo.load for a website bundle, in one wording.
+      assert.match(named, /dfo\.load\(path\)/);
+      assert.equal(
+        named.replace(/^.*? not a Parquet file/, ""),
+        unnamed.replace(/^.*? not a Parquet file/, ""),
+      );
     } finally {
       installFileReader(undefined);
     }

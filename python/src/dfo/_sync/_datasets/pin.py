@@ -64,7 +64,12 @@ def pin(transport: Transport, data: Dataset) -> Dataset:
             if index == 0:
                 raise
             raise _part_way(error, members[:index]) from error
-    return replace(data, pinned=True, held_until=None)
+    return replace(
+        data,
+        members=tuple(
+            replace(member, pinned=True, held_until=None) for member in data.members
+        ),
+    )
 
 
 def _part_way(error: DfoError, pinned: tuple[Member, ...]) -> DfoError:

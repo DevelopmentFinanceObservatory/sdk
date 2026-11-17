@@ -52,6 +52,10 @@ def test_a_saved_file_example_loads_or_is_refused_as_stated(path: Path) -> None:
         assert [
             _party_totals_object(entry) for entry in loaded.party_totals_left_out
         ] == json.loads(example["metadata"].get("dfo.party_totals_left_out", "[]"))
+        # The retention the file states, with or without `dfo.retention`.
+        stated = json.loads(example["metadata"]["dfo.dataset"])
+        held = loaded.held_until.isoformat() if loaded.held_until else None
+        assert (loaded.pinned, held) == (stated["pinned"], stated["held_until"])
         return
     with pytest.raises(FormatError) as caught:
         load_saved(content)

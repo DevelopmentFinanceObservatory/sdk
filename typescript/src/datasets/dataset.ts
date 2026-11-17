@@ -297,15 +297,42 @@ function mergeCitations(citations: readonly Citation[]): Citation {
   return { text: [...texts].join("; "), sources: [...sources.values()] };
 }
 
-/** A retention's `held_until` as the UTC midnight of the date it names, or null when it is not
- *  an ISO 8601 date or date-time string. The date is the one the text writes, in its own
- *  offset, as the Python client reads it. */
+/** The forms `heldUntilOf` reads: a date, `2026-11-18`, or a date-time with seconds, an optional
+ *  fraction and an optional `Z` or `±HH:MM` offset, `2026-11-18T23:30:00.5-05:00`. */
+const HELD_UNTIL =
+  /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))?)?$/;
+
+/**
+ * A retention's `held_until` as the UTC midnight of the date it names, or null when it is no
+ * string, is in another form, or names a date or time that does not exist, as `2026-02-30` or
+ * `T25:00:00`. It reads `2026-11-18` and `2026-11-18T23:30:00Z`, with an optional fraction of a
+ * second and `Z` or `±HH:MM` for the offset or none, the forms the server writes. The date is the
+ * one the text writes, in its own offset, as Python's `datetime.fromisoformat(value).date()`
+ * reads each of these forms. Python also reads forms the server does not write, such as
+ * `20261118` and `T24:00:00`, the next day's midnight, which this reads as null.
+ */
 export function heldUntilOf(value: unknown): Date | null {
   if (typeof value !== "string") return null;
-  const found = /^(\d{4})-(\d{2})-(\d{2})(?:$|T)/.exec(value);
-  if (found === null || Number.isNaN(new Date(value).getTime())) return null;
-  const [, year, month, date] = found.map(Number) as [number, number, number, number];
-  return new Date(Date.UTC(year, month - 1, date));
+  const found = HELD_UNTIL.exec(value);
+  if (found === null) return null;
+  // An absent time or offset reads as 0, which is in range.
+  const [year, month, day, hour, minute, second, offsetHour, offsetMinute] = found
+    .slice(1)
+    .map((part: string | undefined) => Number(part ?? 0)) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  const date = new Date(Date.UTC(year, month - 1, day));
+  const exists =
+    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+  const inRange = hour < 24 && minute < 60 && second < 60 && offsetHour < 24 && offsetMinute < 60;
+  return exists && inRange ? date : null;
 }
 
 /** A version's retention as its manifest serves it: pinned with no day, or not pinned and held
@@ -352,8 +379,6 @@ export type DatasetState = {
   readonly assumptions: readonly Assumption[];
   readonly complete: boolean;
   readonly missing: readonly Gap[];
-  readonly heldUntil: Date | null;
-  readonly pinned: boolean;
   readonly layout: Layout;
   readonly layoutVersion: string;
   readonly question: string | null;
@@ -392,7 +417,6 @@ function stateOf(members: readonly MemberInput[], options: DatasetOptions): Data
   });
   const manifests = members.map((member) => member.manifest);
   const facts = members.flatMap((member) => (isDerived(member) ? [] : (member.answerFacts ?? [])));
-  const { heldUntil, pinned } = datasetRetention(built);
   const missing = Object.freeze([...(options.missing ?? [])]);
   const derived = options.derived;
   const roles = derived?.roles ?? {};
@@ -407,8 +431,6 @@ function stateOf(members: readonly MemberInput[], options: DatasetOptions): Data
     assumptions: Object.freeze(unique(facts.flatMap((part) => part.assumptions ?? []))),
     complete: missing.length === 0,
     missing,
-    heldUntil,
-    pinned,
     layout: options.layout,
     layoutVersion: [
       ...new Set(members.map((member) => artifactLayout(member, options.layout))),
@@ -433,8 +455,16 @@ function stateOf(members: readonly MemberInput[], options: DatasetOptions): Data
 /** Copies a dataset as pinned; Dataset's static block assigns it. */
 let pinnedCopy: (dataset: Dataset) => Dataset;
 
-/** `dataset` with every version kept without a time limit, as a pin leaves it. */
+/** `dataset` with every member's version kept without a time limit, as a pin leaves it. */
 export const pinnedDataset = (dataset: Dataset): Dataset => pinnedCopy(dataset);
+
+/** Reads a saved file's bytes as a dataset; Dataset's static block assigns it. */
+let savedDataset: (bytes: unknown, path?: string) => Promise<Dataset>;
+
+/** The dataset in the saved file `load(path)` read from `path`, as `Dataset.fromBytes` reads its
+ *  bytes, with a refusal of bytes that are no Parquet file naming `path`. */
+export const datasetAt = (bytes: Uint8Array, path: string): Promise<Dataset> =>
+  savedDataset(bytes, path);
 
 /** Copies a dataset with the share slot it was read from; Dataset's static block assigns it. */
 let shownCopy: (dataset: Dataset, shownBy: string) => Dataset;
@@ -490,10 +520,10 @@ export class Dataset {
   readonly complete: boolean;
   /** The parts a partial fetch left out. */
   readonly missing: readonly Gap[];
-  /** The earliest time any member's version can still be fetched, or null when every member is
-   *  pinned or while the server does not say. */
+  /** The earliest time any member's version not pinned can still be fetched, from the members'
+   *  `heldUntil`, or null when every member is pinned or none of the others' times is known. */
   readonly heldUntil: Date | null;
-  /** Whether every member's version is kept without a time limit. */
+  /** Whether every member's version is kept without a time limit; false with no members. */
   readonly pinned: boolean;
   readonly layout: Layout;
   /** The artifact layout each member's manifest names, distinct ones joined by "; ". */
@@ -529,6 +559,10 @@ export class Dataset {
 
   static {
     readTable = (dataset) => dataset.#table;
+    savedDataset = async (bytes, path) => {
+      const { state, table, memberRows } = await readSaved(bytes, path);
+      return new Dataset(state, table, memberRows, null);
+    };
     pinnedCopy = (dataset) =>
       new Dataset(
         {
@@ -538,8 +572,6 @@ export class Dataset {
             pinned: true,
             heldUntil: null,
           })),
-          heldUntil: null,
-          pinned: true,
         },
         dataset.#table,
         dataset.#memberRows,
@@ -599,8 +631,7 @@ export class Dataset {
    *   (`invalid_argument`).
    */
   static async fromBytes(bytes: Uint8Array | ArrayBuffer): Promise<Dataset> {
-    const { state, table, memberRows } = await readSaved(bytes);
-    return new Dataset(state, table, memberRows, null);
+    return savedDataset(bytes);
   }
 
   private constructor(
@@ -622,8 +653,7 @@ export class Dataset {
     this.assumptions = Object.freeze([...state.assumptions]);
     this.missing = Object.freeze([...state.missing]);
     this.complete = state.complete;
-    this.heldUntil = state.heldUntil;
-    this.pinned = state.pinned;
+    ({ heldUntil: this.heldUntil, pinned: this.pinned } = datasetRetention(this.members));
     this.layout = state.layout;
     this.layoutVersion = state.layoutVersion;
     this.question = state.question;
@@ -663,8 +693,6 @@ export class Dataset {
       citation: this.citation,
       fetchedAt: this.fetchedAt,
       question: this.question,
-      pinned: this.pinned,
-      heldUntil: this.heldUntil,
       warnings: this.warnings,
       members: this.members,
     });
@@ -951,14 +979,7 @@ let provenanceOf: (fields: ProvenanceFields) => Provenance;
 /** What a `Provenance` holds. */
 type ProvenanceFields = Pick<
   Provenance,
-  | "sentence"
-  | "citation"
-  | "fetchedAt"
-  | "question"
-  | "pinned"
-  | "heldUntil"
-  | "warnings"
-  | "members"
+  "sentence" | "citation" | "fetchedAt" | "question" | "warnings" | "members"
 >;
 
 /**
@@ -976,10 +997,10 @@ export class Provenance {
   readonly fetchedAt: Date | null;
   /** The question the data answers, when it came from `answer.fetch()`, else null. */
   readonly question: string | null;
-  /** Whether every member's version is kept without a time limit. */
+  /** Whether every member's version is kept without a time limit; false with no members. */
   readonly pinned: boolean;
-  /** The earliest day any member's version can still be fetched without being pinned, or null
-   *  when every member is pinned or the server did not say. */
+  /** The earliest day any member's version not pinned can still be fetched, from the members'
+   *  `heldUntil`, or null when every member is pinned or none of the others' days is known. */
   readonly heldUntil: Date | null;
   /** The datasets surface's warnings about the members' data. */
   readonly warnings: readonly Notice[];
@@ -997,10 +1018,9 @@ export class Provenance {
     this.citation = fields.citation;
     this.fetchedAt = fields.fetchedAt;
     this.question = fields.question;
-    this.pinned = fields.pinned;
-    this.heldUntil = fields.heldUntil;
     this.warnings = Object.freeze([...fields.warnings]);
     this.members = Object.freeze([...fields.members]);
+    ({ heldUntil: this.heldUntil, pinned: this.pinned } = datasetRetention(this.members));
     Object.freeze(this);
   }
 
@@ -1049,14 +1069,16 @@ export class Provenance {
   }
 
   /**
-   * Loads a record any DFO client wrote, from its JSON text or the parsed value. A key the format
-   * does not name is ignored, at the top level and in a member, so a record a later client wrote
-   * reads here.
+   * Loads a record any DFO client wrote, from its JSON text or the value `JSON.parse` gives for
+   * it. Python's `Provenance.from_json` takes the text, as str or bytes, or the parsed object.
+   * A key the format does not name is ignored, at the top level, in a member, in a citation and
+   * its sources and in a warning, so a record a later client wrote reads here. The ref keeps its
+   * own versioned format, which `DatasetRef.fromJSON` reads strictly.
    *
-   * @throws {FormatError} The value breaks the provenance format or comes from a later format
-   *   version, a member differs from the member its ref names, the record's `pinned` or
-   *   `held_until` disagrees with its members', or the ref breaks its own format, as
-   *   `DatasetRef.fromJSON` throws, with a pointer under `/ref`.
+   * @throws {FormatError} The value is neither JSON text nor a JSON object, breaks the provenance
+   *   format or comes from a later format version, a member differs from the member its ref
+   *   names, the record's `pinned` or `held_until` disagrees with its members', or the ref breaks
+   *   its own format, as `DatasetRef.fromJSON` throws, with a pointer under `/ref`.
    */
   static fromJSON(value: unknown): Provenance {
     let parsed: unknown = value;
@@ -1091,14 +1113,12 @@ export class Provenance {
     checkRetention({ pinned, heldUntil }, members, "");
     return provenanceOf({
       sentence: stringAt(record["sentence"], "/sentence"),
-      citation: loadCitation(record["citation"], "/citation"),
+      citation: loadCitation(record["citation"], "/citation", { closed: false }),
       fetchedAt:
         record["fetched_at"] === null ? null : loadTime(record["fetched_at"], "/fetched_at"),
       question: question === null ? null : stringAt(question, "/question"),
-      pinned,
-      heldUntil,
       warnings: arrayAt(record["warnings"], "/warnings").map((item, index) =>
-        loadWarning(item, `/warnings/${index}`, { specIdRequired: true }),
+        loadWarning(item, `/warnings/${index}`, { provenance: true }),
       ),
       members,
     });
@@ -1181,7 +1201,7 @@ function provenanceMember(
   }
   return {
     ...stored,
-    citation: loadCitation(entry["citation"], `${pointer}/citation`),
+    citation: loadCitation(entry["citation"], `${pointer}/citation`, { closed: false }),
     ...loadRetention(entry, pointer),
   };
 }

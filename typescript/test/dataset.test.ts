@@ -649,6 +649,33 @@ describe("retention", () => {
     );
   });
 
+  // The forms of `held_until` both clients read alike, and values both read as unknown; Python's
+  // test_held_until_reads_the_date_the_text_writes holds the same rows.
+  for (const [heldUntil, expected] of [
+    ["2026-11-18", "2026-11-18"],
+    ["2026-11-18T10:00:00Z", "2026-11-18"],
+    ["2026-11-18T23:30:00-05:00", "2026-11-18"],
+    ["2026-11-18T00:30:00+14:00", "2026-11-18"],
+    ["2026-11-18T10:00:00.123456789Z", "2026-11-18"],
+    ["2026-11-18T10:00:00", "2026-11-18"],
+    ["2024-02-29", "2024-02-29"],
+    ["2026-02-30", null],
+    ["2026-02-30T10:00:00Z", null],
+    ["2026-13-01", null],
+    ["2026-11-18T25:00:00Z", null],
+    ["2026-11-18T23:59:60Z", null],
+    ["soon", null],
+    [20261118, null],
+  ] as const) {
+    test(`reads held_until ${JSON.stringify(heldUntil)} as ${String(expected)}`, async () => {
+      const dataset = await retained({ pinned: false, held_until: heldUntil });
+      const day = (date: Date | null) => date?.toISOString() ?? null;
+      const midnight = expected === null ? null : `${expected}T00:00:00.000Z`;
+      assert.equal(day(dataset.members[0]!.heldUntil), midnight);
+      assert.equal(day(dataset.heldUntil), midnight);
+    });
+  }
+
   test("is pinned with no date when every member is pinned", async () => {
     const dataset = await retained({ pinned: true }, { pinned: true });
     assert.equal(dataset.heldUntil, null);

@@ -3,8 +3,8 @@
  * file reader. Under the `node` export condition that is the file system; elsewhere there is no
  * file to read, and `Dataset.fromBytes` reads the file's bytes.
  */
-import { Dataset } from "./dataset.ts";
-import { BundleError } from "./saved.ts";
+import { datasetAt } from "./dataset.ts";
+import type { Dataset } from "./dataset.ts";
 import { clientError } from "../core/errors.ts";
 
 /** Reads a file's bytes from a path. */
@@ -45,14 +45,5 @@ export async function load(path: string | URL): Promise<Dataset> {
       detail: `load takes a path as a string or a URL, not ${(path as unknown) === null ? "null" : typeof path}.`,
     });
   }
-  const bytes = await read(path);
-  if (new TextDecoder().decode(bytes.subarray(0, 4)) !== "PAR1") {
-    throw new BundleError(
-      "not_a_bundle",
-      `${String(path)} is not a Parquet file. The TypeScript client reads the files ` +
-        "data.save(path) wrote; a bundle downloaded from the website opens with the Python " +
-        "client's dfo.load(path).",
-    );
-  }
-  return Dataset.fromBytes(bytes);
+  return datasetAt(await read(path), String(path));
 }

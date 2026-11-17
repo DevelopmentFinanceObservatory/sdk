@@ -42,21 +42,34 @@ async function validator(): Promise<(value: unknown) => boolean> {
   };
 }
 
-/** `record` with only the keys the schema names, at the top level and in each member, as a
- *  reader writes it back. */
+/** A node of the provenance schema, as far as `named` walks it. */
+type SchemaNode = {
+  $ref?: string;
+  $defs?: Record<string, SchemaNode>;
+  properties?: Record<string, SchemaNode>;
+  items?: SchemaNode;
+};
+
+/** `record` with only the keys the schema names, in every object it holds but the ref, which
+ *  follows its own schema, as a reader writes it back. */
 async function named(record: unknown): Promise<unknown> {
-  const schema = await contractJson<{
-    properties: Record<string, unknown> & {
-      members: { items: { properties: Record<string, unknown> } };
-    };
-  }>("provenance.schema.json");
-  const pick = (value: Record<string, unknown>, keys: Record<string, unknown>) =>
-    Object.fromEntries(Object.entries(value).filter(([key]) => Object.hasOwn(keys, key)));
-  const top = record as Record<string, unknown> & { members: Record<string, unknown>[] };
-  return {
-    ...pick(top, schema.properties),
-    members: top.members.map((member) => pick(member, schema.properties.members.items.properties)),
+  const root = await contractJson<SchemaNode>("provenance.schema.json");
+  const walk = (value: unknown, node: SchemaNode): unknown => {
+    const local = node.$ref?.startsWith("#/$defs/") ? root.$defs?.[node.$ref.slice(8)] : node;
+    const schema = local ?? node;
+    if (Array.isArray(value)) {
+      const items = schema.items;
+      return items === undefined ? value : value.map((item) => walk(item, items));
+    }
+    const properties = schema.properties;
+    if (value === null || typeof value !== "object" || properties === undefined) return value;
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => Object.hasOwn(properties, key))
+        .map(([key, item]) => [key, walk(item, properties[key]!)]),
+    );
   };
+  return walk(record, root);
 }
 
 describe("the contract's provenance examples", async () => {
@@ -264,6 +277,23 @@ describe("Provenance.fromJSON ignores a key the format does not name", () => {
       members: [{ ...record.members[0]!, release: { name: "2026-11" } }, record.members[1]!],
     };
     assert.ok(Provenance.fromJSON(JSON.stringify(added)).equals(provenance));
+  });
+
+  test("in a citation, its sources and a warning", async () => {
+    const provenance = (await twoMembers()).provenance;
+    const record = provenance.toJSON();
+    const [first, second] = record.members;
+    const added = {
+      ...record,
+      citation: {
+        ...record.citation,
+        doi: "10.1787/x",
+        sources: record.citation.sources.map((source) => ({ ...source, publisher: "OECD" })),
+      },
+      warnings: record.warnings.map((warning) => ({ ...warning, url: "u" })),
+      members: [{ ...first!, citation: { ...first!.citation, doi: "10.1787/x" } }, second!],
+    };
+    assert.deepEqual(Provenance.fromJSON(added).toJSON(), record);
   });
 });
 

@@ -88,21 +88,24 @@ export type SavedDataset = {
 };
 
 /**
- * Reads the file `Dataset.toBytes()` or Python's `Dataset.save` wrote.
+ * Reads the file `Dataset.toBytes()` or Python's `Dataset.save` wrote, from the file at `path`
+ * when `load(path)` read it, which a refusal of bytes that are no Parquet file names.
  *
- * @throws {BundleError} The bytes are no Parquet file, a damaged one, or one without
- *   `dfo.format_version` (`not_a_bundle`).
+ * @throws {BundleError} The bytes are no Parquet file, such as a bundle downloaded from the
+ *   website, a damaged one, or one without `dfo.format_version` (`not_a_bundle`).
  * @throws {FormatError} A `dfo.*` key is missing or breaks the saved format, or names a later
  *   format version, at a pointer that starts with the key, as `/dfo.dataset/missing`.
  * @throws {InvalidRequestError} `input` is neither a Uint8Array nor an ArrayBuffer
  *   (`invalid_argument`).
  */
-export async function readSaved(input: unknown): Promise<SavedDataset> {
+export async function readSaved(input: unknown, path?: string): Promise<SavedDataset> {
   const bytes = bytesOf(input);
   if (!PARQUET_MAGIC.every((byte, index) => bytes[index] === byte)) {
     throw new BundleError(
       "not_a_bundle",
-      "The bytes are not a Parquet file: pass the bytes data.toBytes() returned.",
+      `${path ?? "The bytes"} ${path === undefined ? "are" : "is"} not a Parquet file. The ` +
+        "TypeScript client reads the file data.save(path) or data.toBytes() wrote; a bundle " +
+        "downloaded from the website opens with the Python client's dfo.load(path).",
     );
   }
   const file = savedFile(bytes);
@@ -195,7 +198,10 @@ function savedState(file: ParquetFile): Omit<SavedDataset, "table"> {
   const heldUntilText = rest["held_until"];
   const heldUntil =
     heldUntilText === null ? null : loadDay(heldUntilText, "/dfo.dataset/held_until");
-  const retentions = loadSavedRetention(values.get("dfo.retention"), stored.length, pinned);
+  const retentions = loadSavedRetention(values.get("dfo.retention"), stored.length, {
+    pinned,
+    heldUntil,
+  });
   const members = stored.map((member, index): Member | DerivedMember => ({
     ...member,
     citation: loadCitation(citations[index], `/dfo.dataset/member_citations/${index}`),
@@ -224,15 +230,13 @@ function savedState(file: ParquetFile): Omit<SavedDataset, "table"> {
       "/dfo.citation",
     ),
     warnings: items(rest, "warnings", (item, pointer) =>
-      loadWarning(item, pointer, { specIdRequired: false }),
+      loadWarning(item, pointer, { provenance: false }),
     ),
     departures: items(rest, "departures", loadDeparture),
     requestedOperations: items(rest, "requested_operations", loadOperation),
     assumptions: items(rest, "assumptions", loadAssumption),
     complete: flag(rest, "complete"),
     missing: items(rest, "missing", loadGap),
-    heldUntil,
-    pinned,
     layout: members[0] === undefined ? "long" : layoutOf(members[0].rendering),
     layoutVersion: stringAt(rest["layout_version"], "/dfo.dataset/layout_version"),
     question:
@@ -622,15 +626,30 @@ export function arrayAt(value: unknown, pointer: string): unknown[] {
 }
 
 /** A stored citation, its sources' licence spelled `licence`. */
-export function loadCitation(value: unknown, pointer: string): Citation {
+/** A stored citation. A saved file's is closed; a provenance record's is open, so a key it or a
+ *  source does not name is ignored. */
+export function loadCitation(
+  value: unknown,
+  pointer: string,
+  { closed = true }: { readonly closed?: boolean } = {},
+): Citation {
+  const keysOf = (
+    record: Record<string, unknown>,
+    at: string,
+    keys: string[],
+    optional: string[],
+  ): void => {
+    if (closed) checkKeys(record, at, keys, optional);
+    else requireKeys(record, at, keys);
+  };
   const citation = objectAt(value, pointer);
-  checkKeys(citation, pointer, ["text", "sources"]);
+  keysOf(citation, pointer, ["text", "sources"], []);
   return {
     text: stringAt(citation["text"], `${pointer}/text`),
     sources: arrayAt(citation["sources"], `${pointer}/sources`).map((item, index) => {
       const at = `${pointer}/sources/${index}`;
       const source = objectAt(item, at);
-      checkKeys(source, at, ["ref", "label"], ["licence", "licence_url", "url"]);
+      keysOf(source, at, ["ref", "label"], ["licence", "licence_url", "url"]);
       return Object.freeze({
         ref: stringAt(source["ref"], `${at}/ref`),
         label: stringAt(source["label"], `${at}/label`),
@@ -643,18 +662,18 @@ export function loadCitation(value: unknown, pointer: string): Citation {
 }
 
 /**
- * A stored warning, its `spec_id` a string or null. A provenance record's warning holds
- * `spec_id`, so `specIdRequired` refuses one without it; a saved file's may leave it out, and the
- * notice then has none.
+ * A stored warning, its `spec_id` a string or null. A provenance record's warning is open and
+ * holds `spec_id`, so it refuses one without it and ignores a key it does not name; a saved
+ * file's is closed and may leave `spec_id` out, and the notice then has none.
  */
 export function loadWarning(
   value: unknown,
   pointer: string,
-  { specIdRequired }: { readonly specIdRequired: boolean },
+  { provenance }: { readonly provenance: boolean },
 ): Notice {
   const warning = objectAt(value, pointer);
   const keys = ["code", "severity", "message"];
-  if (specIdRequired) checkKeys(warning, pointer, [...keys, "spec_id"]);
+  if (provenance) requireKeys(warning, pointer, [...keys, "spec_id"]);
   else checkKeys(warning, pointer, keys, ["spec_id"]);
   const notice = {
     code: stringAt(warning["code"], `${pointer}/code`),
@@ -680,18 +699,19 @@ export function loadRetention(entry: Record<string, unknown>, pointer: string): 
 
 /**
  * A saved file's `dfo.retention`, one retention per member. A file without it, as one a client
- * before 0.3.0 saved, reads every member as pinned when the dataset is, and as unknown otherwise,
- * since the dataset's `held_until` is the earliest of its members' and names no one member's.
+ * before 0.3.0 saved, reads every member as pinned when the dataset is. Otherwise each member's
+ * `pinned` is unknown and its `heldUntil` is the dataset's, the earliest of its members', a day
+ * each member is held until at least, so the dataset reads the day it saved.
  */
 function loadSavedRetention(
   text: string | undefined,
   members: number,
-  pinned: boolean,
+  dataset: { readonly pinned: boolean; readonly heldUntil: Date | null },
 ): Retention[] {
   if (text === undefined) {
-    const retention: Retention = pinned
+    const retention: Retention = dataset.pinned
       ? { pinned: true, heldUntil: null }
-      : { pinned: null, heldUntil: null };
+      : { pinned: null, heldUntil: dataset.heldUntil };
     return Array.from({ length: members }, () => retention);
   }
   const pointer = "/dfo.retention";
@@ -711,12 +731,15 @@ function loadSavedRetention(
 }
 
 /** The earliest `heldUntil` of the members not pinned, and whether every member is pinned; a
- *  member whose `pinned` is unknown counts as not pinned. */
+ *  member whose `pinned` is unknown counts as not pinned, and no members are not pinned, as a
+ *  website bundle opened from a folder names no version to keep. */
 export function datasetRetention(members: readonly Retention[]): {
   heldUntil: Date | null;
   pinned: boolean;
 } {
-  if (members.every((member) => member.pinned === true)) return { heldUntil: null, pinned: true };
+  if (members.length > 0 && members.every((member) => member.pinned === true)) {
+    return { heldUntil: null, pinned: true };
+  }
   let heldUntil: Date | null = null;
   for (const member of members) {
     if (member.pinned === true || member.heldUntil === null) continue;
@@ -726,9 +749,11 @@ export function datasetRetention(members: readonly Retention[]): {
 }
 
 /**
- * Refuses a dataset's `pinned` or `heldUntil` that disagrees with its members' retention, as
- * `datasetRetention` derives it. With no member there is nothing to agree with. A member whose
- * `pinned` is unknown leaves `heldUntil` unchecked, since the day may be that member's.
+ * Refuses a stored record's `pinned` or `heldUntil` that disagrees with its members' retention, as
+ * `datasetRetention` derives it: a saved file's `dfo.dataset` against its `dfo.retention`, or a
+ * provenance record against its members. With no member there is nothing to agree with. A
+ * member whose `pinned` is unknown leaves `heldUntil` unchecked, since the day may be that
+ * member's.
  *
  * @throws {FormatError} At `${pointer}/pinned` or `${pointer}/held_until` (`format_invalid`).
  */

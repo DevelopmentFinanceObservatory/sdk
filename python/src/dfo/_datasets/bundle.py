@@ -856,8 +856,6 @@ def _bundle_dataset(
         requested_operations=(),
         complete=True,
         missing=(),
-        held_until=None,
-        pinned=False,
         stale=False,
         layout_version="bundle",
         _table=table,

@@ -132,9 +132,9 @@ console.log(same.sentence);
 console.log(same.equals(newest.provenance));
 ```
 
-Each member carries its own `pinned` and `heldUntil`, so a record of several readings says which one stops being guaranteed first. Both are null for a member whose retention the client does not know, as in a dataset read from a file an older client saved. After `client.pin(data)`, every member reads as pinned.
+Each member carries its own `pinned` and `heldUntil`, so a record of several readings says which one stops being guaranteed first, and the dataset's `pinned` and `heldUntil` come from them: pinned when every member is, held until the earliest day of the members that are not. A member's `pinned` is null when the client does not know it, as in a dataset read from a file an older client saved, and its `heldUntil` is then the day that file saved for the whole dataset, a day the member is held until at least. After `client.pin(data)`, every member reads as pinned.
 
-`Provenance.fromJSON` takes the text or its parsed value, throws `FormatError` when it breaks the format, and reads a record with keys it does not know, so a record a later client wrote still loads. The Python client writes the same text with `provenance.to_json()` and reads it with `Provenance.from_json`, so a Python job and a TypeScript site can share one file. The same record sits inside a file saved with `data.save`.
+`Provenance.fromJSON` takes the text or its parsed value, throws `FormatError` when it breaks the format, and reads a record with keys it does not know, in a member, a citation or a warning too, so a record a later client wrote still loads. The Python client writes the same text with `provenance.to_json()` and reads it with `Provenance.from_json`, so a Python job and a TypeScript site can share one file. The same record sits inside a file saved with `data.save`.
 
 ## Test offline
 

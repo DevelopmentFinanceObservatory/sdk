@@ -165,6 +165,37 @@ def test_the_recorded_retention_reads_its_date() -> None:
     assert data.pinned is False
 
 
+# The forms of `held_until` both clients read alike, and values both read as
+# unknown; the TypeScript client's `heldUntilOf` table holds the same rows.
+_HELD_UNTIL_FORMS = [
+    ("2026-11-18", date(2026, 11, 18)),
+    ("2026-11-18T10:00:00Z", date(2026, 11, 18)),
+    ("2026-11-18T23:30:00-05:00", date(2026, 11, 18)),
+    ("2026-11-18T00:30:00+14:00", date(2026, 11, 18)),
+    ("2026-11-18T10:00:00.123456789Z", date(2026, 11, 18)),
+    ("2026-11-18T10:00:00", date(2026, 11, 18)),
+    ("2024-02-29", date(2024, 2, 29)),
+    ("2026-02-30", None),
+    ("2026-02-30T10:00:00Z", None),
+    ("2026-13-01", None),
+    ("2026-11-18T25:00:00Z", None),
+    ("2026-11-18T23:59:60Z", None),
+    ("soon", None),
+    (20261118, None),
+]
+
+
+@pytest.mark.parametrize(("held_until", "expected"), _HELD_UNTIL_FORMS)
+def test_held_until_reads_the_date_the_text_writes(
+    held_until: object, expected: date | None
+) -> None:
+    data = built(
+        with_retention(recorded_member(), {"pinned": False, "held_until": held_until})
+    )
+    assert data.members[0].held_until == expected
+    assert data.held_until == expected
+
+
 def test_retention_absent_reads_none_and_is_not_shown() -> None:
     body = manifest()
     del body["retention"]
