@@ -6,7 +6,7 @@
  * table, `part` first, and `dfo.dataset.member_rows` splits its rows by member. The stored JSON
  * readers here serve `Provenance.fromJSON` too.
  */
-import { readParquet, decodeStacked } from "./parquet.ts";
+import { readParquet, decodeStored } from "./parquet.ts";
 import { rowRange } from "./reading-order.ts";
 import type { ParquetFile, Table } from "./parquet.ts";
 import { partyTotalsEntry } from "./party-totals.ts";
@@ -113,36 +113,37 @@ export async function readSaved(input: unknown, path?: string): Promise<SavedDat
   // The `dfo.*` keys and the footer's row counts are checked before anything sized by them.
   const saved = savedState(file);
   checkRowCounts(file);
-  const parts = Object.freeze([{ file, label: "" }]);
-  let stacked;
-  try {
-    // A damaged page would otherwise surface on the first read of the rows. The table keeps
-    // the decode, so its conversions decode nothing again.
-    stacked = Object.freeze(await decodeStacked(parts));
-  } catch (error) {
-    throw damaged(error);
-  }
   const table: Table = {
-    parts,
+    parts: Object.freeze([{ file, label: "" }]),
     order: {
       columns: Object.freeze(file.columns.map(({ name }) => name)),
       rows: rowRange(file.rows),
     },
-    stacked,
   };
+  try {
+    // A damaged page would otherwise surface on the first read of the rows.
+    await decodeStored(table);
+  } catch (error) {
+    throw damaged(error);
+  }
   return { ...saved, table };
 }
+
+/** The most rows this client loads from a saved file: 2**24, since decoding holds every value
+ *  in memory and a browser tab runs out well before a table of this size doubles. */
+export const MAX_SAVED_ROWS = 2 ** 24;
 
 /** The most rows a byte of a saved file holds. A column of one repeated value packs about
  *  1,200 rows a byte as hyparquet-writer writes it and 500 as pyarrow does, so a file
  *  declaring more rows than this allows is damaged, and reading it would only allocate. */
-const MAX_ROWS_PER_BYTE = 4096;
+const MAX_ROWS_PER_BYTE = 2048;
 
 /**
  * Refuses a footer whose row count is not the sum of its row groups', holds a negative count,
- * or exceeds what the file's bytes can hold, before any row is decoded.
+ * exceeds `MAX_SAVED_ROWS`, or exceeds what the file's bytes can hold, before any row is
+ * decoded.
  *
- * @throws {BundleError} As a damaged Parquet file (`not_a_bundle`).
+ * @throws {BundleError} (`not_a_bundle`).
  */
 function checkRowCounts(file: ParquetFile): void {
   const { num_rows: declared, row_groups: groups } = file.metadata;
@@ -155,8 +156,14 @@ function checkRowCounts(file: ParquetFile): void {
       }),
     );
   }
-  const capacity = file.buffer.byteLength * MAX_ROWS_PER_BYTE;
-  if (!Number.isSafeInteger(file.rows) || file.rows > capacity) {
+  if (declared > BigInt(MAX_SAVED_ROWS)) {
+    throw new BundleError(
+      "not_a_bundle",
+      `The file holds ${declared} rows, more than the ${MAX_SAVED_ROWS.toLocaleString("en")} ` +
+        "the TypeScript client loads. The Python client's dfo.load(path) reads larger files.",
+    );
+  }
+  if (file.rows > file.buffer.byteLength * MAX_ROWS_PER_BYTE) {
     throw damaged(
       clientError("unexpected_response", {
         detail: `the footer declares ${declared} rows in ${file.buffer.byteLength} bytes`,

@@ -222,14 +222,6 @@ describe("Dataset.fromBytes reads back the file toBytes() writes", () => {
     assert.deepEqual(loaded.missing, data.missing);
   });
 
-  test("a loaded dataset converts from the decode that checked its pages", async () => {
-    const data = await sources["two members of an answer"]!();
-    const loaded = await Dataset.fromBytes(await data.toBytes());
-    // Pages overwritten after the read would refuse any second decode.
-    new Uint8Array(datasetTable(loaded).parts[0]!.file.buffer).fill(0xff, 4, 2000);
-    assert.deepEqual(await loaded.toRows(), await data.toRows());
-  });
-
   test("a loaded dataset has no member's own file", async () => {
     const loaded = await Dataset.fromBytes(await (await sources["a derived frame"]!()).toBytes());
     assert.throws(
@@ -294,6 +286,12 @@ describe("Dataset.fromBytes refuses what holds no saved dataset", () => {
     );
     assert.equal((await Dataset.fromBytes(file)).rowCount, 3);
     const billion = 1_000_000_000n;
+    const declaring = (rows: bigint) =>
+      withFooter(file, (metadata) => ({
+        ...metadata,
+        num_rows: rows,
+        row_groups: metadata.row_groups.map((group) => ({ ...group, num_rows: rows })),
+      }));
     const declared: [Uint8Array, RegExp][] = [
       // 61 bytes of a later format version and no row group, declaring a billion rows.
       [
@@ -311,14 +309,10 @@ describe("Dataset.fromBytes refuses what holds no saved dataset", () => {
         withFooter(file, (metadata) => ({ ...metadata, num_rows: billion })),
         /declares 1000000000 rows and its row groups hold 3/,
       ],
-      [
-        withFooter(file, (metadata) => ({
-          ...metadata,
-          num_rows: billion,
-          row_groups: metadata.row_groups.map((group) => ({ ...group, num_rows: billion })),
-        })),
-        /declares 1000000000 rows in \d+ bytes/,
-      ],
+      // Footer and row groups agree on a count past the rows this client loads.
+      [declaring(billion), /more than the 16,777,216 the TypeScript client loads.*dfo\.load/],
+      // Under that limit, and past what the file's few hundred bytes can hold.
+      [declaring(16_000_000n), /declares 16000000 rows in \d+ bytes/],
     ];
     // The reader once built an index of one entry per declared row before checking anything.
     const from = Uint32Array.from.bind(Uint32Array);

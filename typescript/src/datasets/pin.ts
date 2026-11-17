@@ -27,7 +27,7 @@ import { clientError, DfoError, messageOf, optionsOf } from "../core/errors.ts";
 import type { DfoErrorOptions } from "../core/errors.ts";
 import { isRecord } from "../core/json.ts";
 import { trimEnd, WHITESPACE } from "../core/text.ts";
-import { isDerived, isRendering, selectorPath } from "../core/ref.ts";
+import { CONTENT_VERSION, isDerived, isRendering, selectorPath, SPEC_ID } from "../core/ref.ts";
 import type { DerivedRefMember, RefMember } from "../core/ref.ts";
 import type { Transport } from "../http/transport.ts";
 
@@ -150,6 +150,10 @@ export async function fileUrl(
   return transport.url({ path: selectorPath(reading) }).href;
 }
 
+/** Whether a value is a string `pattern` matches, so it can stand as a URL path segment. */
+const matches = (pattern: RegExp, value: unknown): boolean =>
+  typeof value === "string" && pattern.test(value);
+
 /** `member`, refused unless it is a dataset version's member, with the spec id, version and
  *  rendering its link is built from. */
 function readingOf(member: unknown): Member | RefMember {
@@ -158,14 +162,7 @@ function readingOf(member: unknown): Member | RefMember {
       "fileUrl takes a member of a dataset, such as data.members[0] or data.ref.members[0] " +
         `after const data = await client.fetch(spec), not ${member instanceof Dataset ? "a Dataset" : typeName(member)}.`,
     );
-  if (
-    !isRecord(member) ||
-    !isRecord(member["spec"]) ||
-    typeof member["spec"]["spec_id"] !== "string" ||
-    typeof member["contentVersion"] !== "string"
-  ) {
-    throw notMember();
-  }
+  if (!isRecord(member) || !isRecord(member["spec"])) throw notMember();
   const reading = member as Member | RefMember | DerivedRefMember;
   if (isDerived(reading)) {
     throw invalid(
@@ -174,6 +171,13 @@ function readingOf(member: unknown): Member | RefMember {
         "data.toBytes() keeps its rows.",
     );
   }
-  if (!isRendering(reading.rendering)) throw notMember();
+  // The spec id and version become path segments, so each must have its id's form.
+  if (
+    !matches(SPEC_ID, reading.spec.spec_id) ||
+    !matches(CONTENT_VERSION, reading.contentVersion) ||
+    !isRendering(reading.rendering)
+  ) {
+    throw notMember();
+  }
   return reading;
 }

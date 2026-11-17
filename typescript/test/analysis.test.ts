@@ -608,6 +608,10 @@ describe("fileUrl", () => {
       { spec, contentVersion, rendering: { bundle: false } },
       { spec, contentVersion, rendering: { format: "parquet" } },
       { spec, contentVersion, rendering: { format: "parquet", bundle: false, layout: "wide" } },
+      { spec: { ...spec, spec_id: "../../keys" }, contentVersion, rendering },
+      { spec: { ...spec, spec_id: `${spec.spec_id}/../x` }, contentVersion, rendering },
+      { spec, contentVersion: "../../keys", rendering },
+      { spec, contentVersion: `${contentVersion}?x=1`, rendering },
     ];
     for (const target of incomplete) {
       const { transport, seen } = make(manifest);
