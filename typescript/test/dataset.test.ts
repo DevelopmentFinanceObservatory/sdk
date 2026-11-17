@@ -394,6 +394,7 @@ describe("a dataset of several members", async () => {
       "dfo.format_version",
       "dfo.licence",
       "dfo.ref",
+      "dfo.retention",
       "dfo.sentence",
       "dfo.sources",
     ]);
@@ -638,6 +639,14 @@ describe("retention", () => {
     );
     assert.equal(dataset.heldUntil?.toISOString(), "2026-11-02T08:30:00.000Z");
     assert.equal(dataset.pinned, false);
+    assert.deepEqual(
+      dataset.members.map(({ pinned, heldUntil }) => [pinned, heldUntil?.toISOString() ?? null]),
+      [
+        [false, "2026-11-18T10:00:00.000Z"],
+        [false, "2026-11-02T08:30:00.000Z"],
+        [true, null],
+      ],
+    );
   });
 
   test("is pinned with no date when every member is pinned", async () => {
@@ -650,6 +659,10 @@ describe("retention", () => {
     const dataset = await retained(undefined);
     assert.equal(dataset.heldUntil, null);
     assert.equal(dataset.pinned, false);
+    assert.deepEqual(
+      dataset.members.map(({ pinned, heldUntil }) => [pinned, heldUntil]),
+      [[null, null]],
+    );
   });
 });
 

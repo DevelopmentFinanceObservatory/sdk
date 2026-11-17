@@ -4,7 +4,7 @@
  * `saved-file.schema.json` in the client contract gives them. It refuses what Python's
  * `saved_dataset` refuses, with the same codes. A file of several members holds them in one
  * table, `part` first, and `dfo.dataset.member_rows` splits its rows by member. The stored JSON
- * readers here serve `Provenance.fromObject` too.
+ * readers here serve `Provenance.fromJSON` too.
  */
 import { readParquet, decodeStored } from "./parquet.ts";
 import type { ParquetFile, Table } from "./parquet.ts";
@@ -30,6 +30,9 @@ import { CLIENT_CODE_CLASSES } from "../generated/client-codes.ts";
 import { GAP_KINDS } from "../generated/actions.ts";
 import type { Gap, GapKind, Option } from "../search/answer.ts";
 import type { Assumption, Departure, Notice, RequestedOperation } from "../wire.ts";
+
+/** A member's retention: whether its version is pinned and when it stops being guaranteed. */
+type Retention = Pick<Member, "pinned" | "heldUntil">;
 
 /** The version of the provenance a file from `toBytes()` carries under `dfo.*` keys, the one
  *  Python's `Dataset.save` writes: 1 for a dataset of dataset versions, and 2 for a derived
@@ -188,10 +191,17 @@ function savedState(file: ParquetFile): Omit<SavedDataset, "table"> {
       `holds ${citations.length} citations for the ${stored.length} members dfo.ref names`,
     );
   }
+  const pinned = flag(rest, "pinned");
+  const heldUntilText = rest["held_until"];
+  const heldUntil =
+    heldUntilText === null ? null : loadDay(heldUntilText, "/dfo.dataset/held_until");
+  const retentions = loadSavedRetention(values.get("dfo.retention"), stored.length, pinned);
   const members = stored.map((member, index): Member | DerivedMember => ({
     ...member,
     citation: loadCitation(citations[index], `/dfo.dataset/member_citations/${index}`),
+    ...retentions[index]!,
   }));
+  checkRetention({ pinned, heldUntil }, members, "/dfo.dataset");
   const memberRows = loadMemberRows(rest["member_rows"], members.length, file.rows);
   // Only a derived dataset carries left-out series and steps.
   const derived = stored.some(isDerived);
@@ -206,7 +216,6 @@ function savedState(file: ParquetFile): Omit<SavedDataset, "table"> {
   const partyTotals = values.get("dfo.party_totals_left_out");
   const fetchedAt = values.get("dfo.fetched_at");
   const question = values.get("dfo.question");
-  const heldUntil = rest["held_until"];
   const state: DatasetState = {
     sentence: required(values, "dfo.sentence"),
     members,
@@ -214,14 +223,16 @@ function savedState(file: ParquetFile): Omit<SavedDataset, "table"> {
       decodeObject(required(values, "dfo.citation"), "/dfo.citation"),
       "/dfo.citation",
     ),
-    warnings: items(rest, "warnings", loadSavedWarning),
+    warnings: items(rest, "warnings", (item, pointer) =>
+      loadWarning(item, pointer, { specIdRequired: false }),
+    ),
     departures: items(rest, "departures", loadDeparture),
     requestedOperations: items(rest, "requested_operations", loadOperation),
     assumptions: items(rest, "assumptions", loadAssumption),
     complete: flag(rest, "complete"),
     missing: items(rest, "missing", loadGap),
-    heldUntil: heldUntil === null ? null : loadDay(heldUntil, "/dfo.dataset/held_until"),
-    pinned: flag(rest, "pinned"),
+    heldUntil,
+    pinned,
     layout: members[0] === undefined ? "long" : layoutOf(members[0].rendering),
     layoutVersion: stringAt(rest["layout_version"], "/dfo.dataset/layout_version"),
     question:
@@ -321,16 +332,6 @@ function loadMemberRows(value: unknown, members: number, rows: number): number[]
     throw invalid(pointer, `counts ${total} rows in a file of ${rows}`);
   }
   return counts;
-}
-
-function loadSavedWarning(value: unknown, pointer: string): Notice {
-  const { code, severity, message, ...rest } = strings(
-    value,
-    pointer,
-    ["code", "severity", "message"],
-    ["spec_id"],
-  );
-  return { code: code!, severity: severity!, message: message!, ...rest };
 }
 
 function loadDeparture(value: unknown, pointer: string): Departure {
@@ -526,7 +527,11 @@ function loadDerived(
 }
 
 /** Refuses a missing key of `keys`; any other key passes. */
-function requireKeys(value: Record<string, unknown>, pointer: string, keys: readonly string[]) {
+export function requireKeys(
+  value: Record<string, unknown>,
+  pointer: string,
+  keys: readonly string[],
+) {
   const missing = keys.find((key) => !Object.hasOwn(value, key));
   if (missing !== undefined) throw invalid(`${pointer}/${missing}`, "missing");
 }
@@ -637,14 +642,111 @@ export function loadCitation(value: unknown, pointer: string): Citation {
   };
 }
 
-/** A provenance record's warning, whose `spec_id` is a string or null. */
-export function loadWarning(value: unknown, pointer: string): Notice {
+/**
+ * A stored warning, its `spec_id` a string or null. A provenance record's warning holds
+ * `spec_id`, so `specIdRequired` refuses one without it; a saved file's may leave it out, and the
+ * notice then has none.
+ */
+export function loadWarning(
+  value: unknown,
+  pointer: string,
+  { specIdRequired }: { readonly specIdRequired: boolean },
+): Notice {
   const warning = objectAt(value, pointer);
-  checkKeys(warning, pointer, ["code", "severity", "message", "spec_id"]);
-  return {
+  const keys = ["code", "severity", "message"];
+  if (specIdRequired) checkKeys(warning, pointer, [...keys, "spec_id"]);
+  else checkKeys(warning, pointer, keys, ["spec_id"]);
+  const notice = {
     code: stringAt(warning["code"], `${pointer}/code`),
     severity: stringAt(warning["severity"], `${pointer}/severity`),
     message: stringAt(warning["message"], `${pointer}/message`),
-    spec_id: nullableStringAt(warning["spec_id"], `${pointer}/spec_id`),
   };
+  if (!Object.hasOwn(warning, "spec_id")) return notice;
+  return { ...notice, spec_id: nullableStringAt(warning["spec_id"], `${pointer}/spec_id`) };
+}
+
+/** A member's stored `pinned`, a boolean or null, and `held_until`, an ISO day or null. */
+export function loadRetention(entry: Record<string, unknown>, pointer: string): Retention {
+  const pinned = entry["pinned"];
+  if (pinned !== null && typeof pinned !== "boolean") {
+    throw invalid(`${pointer}/pinned`, "not a boolean or null");
+  }
+  const heldUntil = entry["held_until"];
+  return {
+    pinned,
+    heldUntil: heldUntil === null ? null : loadDay(heldUntil, `${pointer}/held_until`),
+  };
+}
+
+/**
+ * A saved file's `dfo.retention`, one retention per member. A file without it, as one a client
+ * before 0.3.0 saved, reads every member as pinned when the dataset is, and as unknown otherwise,
+ * since the dataset's `held_until` is the earliest of its members' and names no one member's.
+ */
+function loadSavedRetention(
+  text: string | undefined,
+  members: number,
+  pinned: boolean,
+): Retention[] {
+  if (text === undefined) {
+    const retention: Retention = pinned
+      ? { pinned: true, heldUntil: null }
+      : { pinned: null, heldUntil: null };
+    return Array.from({ length: members }, () => retention);
+  }
+  const pointer = "/dfo.retention";
+  const entries = arrayAt(decodeValue(text, pointer), pointer);
+  if (entries.length !== members) {
+    throw invalid(
+      pointer,
+      `holds ${entries.length} entries for the ${members} members dfo.ref names`,
+    );
+  }
+  return entries.map((value, index) => {
+    const at = `${pointer}/${index}`;
+    const entry = objectAt(value, at);
+    requireKeys(entry, at, ["pinned", "held_until"]);
+    return loadRetention(entry, at);
+  });
+}
+
+/** The earliest `heldUntil` of the members not pinned, and whether every member is pinned; a
+ *  member whose `pinned` is unknown counts as not pinned. */
+export function datasetRetention(members: readonly Retention[]): {
+  heldUntil: Date | null;
+  pinned: boolean;
+} {
+  if (members.every((member) => member.pinned === true)) return { heldUntil: null, pinned: true };
+  let heldUntil: Date | null = null;
+  for (const member of members) {
+    if (member.pinned === true || member.heldUntil === null) continue;
+    if (heldUntil === null || member.heldUntil < heldUntil) heldUntil = member.heldUntil;
+  }
+  return { heldUntil, pinned: false };
+}
+
+/**
+ * Refuses a dataset's `pinned` or `heldUntil` that disagrees with its members' retention, as
+ * `datasetRetention` derives it. With no member there is nothing to agree with. A member whose
+ * `pinned` is unknown leaves `heldUntil` unchecked, since the day may be that member's.
+ *
+ * @throws {FormatError} At `${pointer}/pinned` or `${pointer}/held_until` (`format_invalid`).
+ */
+export function checkRetention(
+  dataset: { readonly pinned: boolean; readonly heldUntil: Date | null },
+  members: readonly Retention[],
+  pointer: string,
+): void {
+  if (members.length === 0) return;
+  const derived = datasetRetention(members);
+  if (dataset.pinned !== derived.pinned) {
+    throw invalid(`${pointer}/pinned`, "disagrees with the members' pinned");
+  }
+  const known = members.every((member) => member.pinned !== null);
+  if (known && dataset.heldUntil?.getTime() !== derived.heldUntil?.getTime()) {
+    throw invalid(
+      `${pointer}/held_until`,
+      "is not the earliest held_until of the members not pinned",
+    );
+  }
 }

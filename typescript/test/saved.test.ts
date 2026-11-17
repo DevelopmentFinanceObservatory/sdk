@@ -154,7 +154,8 @@ describe("Dataset.fromBytes reads back the file toBytes() writes", () => {
       const data = await source();
       const bytes = await data.toBytes();
       const loaded = await Dataset.fromBytes(bytes);
-      assert.deepEqual(loaded.provenance.toObject(), data.provenance.toObject());
+      assert.deepEqual(loaded.provenance.toJSON(), data.provenance.toJSON());
+      assert.ok(loaded.provenance.equals(data.provenance));
       assert.deepEqual(loaded.ref.toJSON(), data.ref.toJSON());
       assert.deepEqual(loaded.columns, data.columns);
       assert.equal(loaded.rowCount, data.rowCount);
@@ -253,7 +254,8 @@ describe("load(path)", () => {
       const path = join(folder, "data.parquet");
       await data.save(path);
       const loaded = await load(path);
-      assert.deepEqual(loaded.provenance.toObject(), data.provenance.toObject());
+      assert.deepEqual(loaded.provenance.toJSON(), data.provenance.toJSON());
+      assert.ok(loaded.provenance.equals(data.provenance));
       assert.deepEqual(await loaded.toBytes(), await data.toBytes());
     } finally {
       await rm(folder, { recursive: true, force: true });
@@ -295,7 +297,7 @@ describe("a file Python wrote", () => {
       await readFile(new URL("saved-python.provenance.json", folder), "utf8"),
     );
     const loaded = await Dataset.fromBytes(bytes);
-    assert.deepEqual(loaded.provenance.toObject(), stored);
+    assert.deepEqual(loaded.provenance.toJSON(), stored);
     assert.ok(loaded.members.length > 1);
     // The `part` column runs member by member, as `member_rows` counts them.
     const memberRows = (JSON.parse(metadataOf(bytes)["dfo.dataset"]!) as { member_rows: number[] })

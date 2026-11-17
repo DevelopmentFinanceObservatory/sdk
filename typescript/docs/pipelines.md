@@ -122,20 +122,19 @@ The link serves a plain Parquet file, which a Parquet reader such as hyparquet r
 
 ## Record provenance
 
-`data.provenance` is the record of where the data came from: its sentence, citation, the time it left the server, the question, the ref, `pinned` and `heldUntil`, the warnings, and each member's spec, version and digest. `toObject()` gives it as plain JSON values:
+`data.provenance` is the record of where the data came from: its sentence, citation, the time it left the server, the question, the ref, `pinned` and `heldUntil`, the warnings, and each member's spec, version, digest and retention. `JSON.stringify` writes it:
 
 ```ts
-const record = newest.provenance.toObject();
-await writeFile("debt-service.provenance.json", JSON.stringify(record, null, 2));
+await writeFile("debt-service.provenance.json", JSON.stringify(newest.provenance));
 
-const same = Provenance.fromObject(
-  JSON.parse(await readFile("debt-service.provenance.json", "utf8")),
-);
+const same = Provenance.fromJSON(await readFile("debt-service.provenance.json", "utf8"));
 console.log(same.sentence);
-console.log(same.ref?.equals(newest.ref));
+console.log(same.equals(newest.provenance));
 ```
 
-`Provenance.fromObject` throws `FormatError` when the object breaks the format. The Python client writes and reads the same object with `provenance.to_object()` and `Provenance.from_object`, so a Python job and a TypeScript site can share one file. The same record sits inside a file saved with `data.save`.
+Each member carries its own `pinned` and `heldUntil`, so a record of several readings says which one stops being guaranteed first. Both are null for a member whose retention the client does not know, as in a dataset read from a file an older client saved. After `client.pin(data)`, every member reads as pinned.
+
+`Provenance.fromJSON` takes the text or its parsed value, throws `FormatError` when it breaks the format, and reads a record with keys it does not know, so a record a later client wrote still loads. The Python client writes the same text with `provenance.to_json()` and reads it with `Provenance.from_json`, so a Python job and a TypeScript site can share one file. The same record sits inside a file saved with `data.save`.
 
 ## Test offline
 

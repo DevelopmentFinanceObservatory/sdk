@@ -8,7 +8,7 @@ import {
   stackedColumns,
 } from "./parquet.ts";
 import type { Row, Table } from "./parquet.ts";
-import { checkKeys, DatasetRef, invalid, isDerived, loadRef, objectAt } from "../core/ref.ts";
+import { DatasetRef, invalid, isDerived, loadRef, objectAt } from "../core/ref.ts";
 import type {
   DatasetRefJson,
   DerivedRefMember,
@@ -21,7 +21,7 @@ import type {
 import { manifestWarningsOf } from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
 import type { Assumption, Departure, Notice, RequestedOperation } from "../wire.ts";
-import { isRecord, list, objects, text } from "../core/json.ts";
+import { canonicalJson, isRecord, list, objects, parseJson, text } from "../core/json.ts";
 import { inline } from "../core/text.ts";
 import { clientError } from "../core/errors.ts";
 import { partyTotalsLine, partyTotalsOf, rootPartyTotalsOf } from "./party-totals.ts";
@@ -29,11 +29,15 @@ import type { PartyTotalsLeftOut } from "./party-totals.ts";
 import { platformFileWriter } from "./save.ts";
 import {
   arrayAt,
+  checkRetention,
+  datasetRetention,
   loadCitation,
   loadDay,
+  loadRetention,
   loadTime,
   loadWarning,
   readSaved,
+  requireKeys,
   SAVED_DERIVED_FORMAT_VERSION,
   SAVED_FORMAT_VERSION,
   stringAt,
@@ -41,7 +45,7 @@ import {
 
 export type { KeptSeries, PartyTotalsLeftOut } from "./party-totals.ts";
 
-/** The format of the object `Provenance.toObject()` returns. */
+/** The format of the record `Provenance.toJSON()` returns. */
 const PROVENANCE_FORMAT_VERSION = 1;
 
 /** One source a dataset cites. */
@@ -64,7 +68,7 @@ export type Citation = {
   readonly sources: readonly CitationSource[];
 };
 
-/** One reading inside a dataset: the exact version built for it. */
+/** One reading inside a dataset: the exact version built for it, with its retention. */
 export type Member = {
   /** The variable text of each answer part the member answers, in query order, or empty for a
    *  spec fetched outside an answer. */
@@ -78,11 +82,23 @@ export type Member = {
   /** The SHA-256 digest of the member's Parquet file, which the fetch checked. */
   readonly digest: string;
   readonly rendering: Rendering;
+  /** Whether DFO keeps the version without a time limit, or null when the client does not know,
+   *  as for a file saved by a client before 0.3.0. */
+  readonly pinned: boolean | null;
+  /** The time the version can still be fetched without being pinned, as the server gives it, or
+   *  null when it is pinned, the server did not say, or the client does not know. A saved file
+   *  and a provenance record keep the day, which reads back as midnight UTC. */
+  readonly heldUntil: Date | null;
 };
 
+/** How long DFO keeps a member's version: whether it is pinned, and when it stops being
+ *  guaranteed. */
+type Retention = Pick<Member, "pinned" | "heldUntil">;
+
 /** One derived frame inside a dataset: the frame an analysis recipe computed, with its
- *  citation. */
-export type DerivedMember = DerivedRefMember & { readonly citation: Citation };
+ *  citation and retention. */
+export type DerivedMember = DerivedRefMember &
+  Pick<Member, "pinned" | "heldUntil"> & { readonly citation: Citation };
 
 /** The step of a recipe that dropped a series. */
 export type LeftOutStep = {
@@ -281,26 +297,25 @@ function mergeCitations(citations: readonly Citation[]): Citation {
   return { text: [...texts].join("; "), sources: [...sources.values()] };
 }
 
-/** The earliest `held_until` across members, and whether every member is pinned. A member
- *  whose manifest has no `retention` counts as neither pinned nor dated. */
-function retentionOf(manifests: readonly Readonly<Record<string, unknown>>[]): {
-  heldUntil: Date | null;
-  pinned: boolean;
-} {
-  const retentions = manifests.map((manifest) => manifest["retention"]);
-  if (retentions.every((retention) => isRecord(retention) && retention["pinned"] === true)) {
-    return { heldUntil: null, pinned: true };
-  }
-  let heldUntil: Date | null = null;
-  for (const retention of retentions) {
-    if (!isRecord(retention) || retention["pinned"] === true) continue;
-    const held = retention["held_until"];
-    if (typeof held !== "string") continue;
-    const date = new Date(held);
-    if (Number.isNaN(date.getTime())) continue;
-    if (heldUntil === null || date < heldUntil) heldUntil = date;
-  }
-  return { heldUntil, pinned: false };
+/** A retention's `held_until` as a date, or null when it is not one. */
+export function heldUntilOf(value: unknown): Date | null {
+  if (typeof value !== "string") return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** A version's retention as its manifest serves it: pinned with no day, or not pinned and held
+ *  until the day the server gives, null when it gives none. A manifest without `retention`
+ *  leaves both unknown, and a `pinned` that is not a boolean leaves it unknown. */
+function servedRetention(manifest: Readonly<Record<string, unknown>>): Retention {
+  const retention = manifest["retention"];
+  if (!isRecord(retention)) return { pinned: null, heldUntil: null };
+  const pinned = retention["pinned"];
+  if (pinned === true) return { pinned: true, heldUntil: null };
+  return {
+    pinned: typeof pinned === "boolean" ? pinned : null,
+    heldUntil: heldUntilOf(retention["held_until"]),
+  };
 }
 
 /** How `Dataset.create` assembles its members: the layout, the parts a partial fetch left out,
@@ -356,8 +371,9 @@ function stateOf(members: readonly MemberInput[], options: DatasetOptions): Data
   const built = members.map((member): Member | DerivedMember => {
     const citation = citationOf(member.manifest);
     const parts = Object.freeze([...member.parts]);
+    const retention = servedRetention(member.manifest);
     if (isDerived(member)) {
-      return { ...derivedRefMember(member), parts, citation };
+      return { ...derivedRefMember(member), parts, citation, ...retention };
     }
     return {
       parts,
@@ -367,11 +383,12 @@ function stateOf(members: readonly MemberInput[], options: DatasetOptions): Data
       citation,
       digest: member.digest,
       rendering: member.rendering,
+      ...retention,
     };
   });
   const manifests = members.map((member) => member.manifest);
   const facts = members.flatMap((member) => (isDerived(member) ? [] : (member.answerFacts ?? [])));
-  const { heldUntil, pinned } = retentionOf(manifests);
+  const { heldUntil, pinned } = datasetRetention(built);
   const missing = Object.freeze([...(options.missing ?? [])]);
   const derived = options.derived;
   const roles = derived?.roles ?? {};
@@ -510,7 +527,16 @@ export class Dataset {
     readTable = (dataset) => dataset.#table;
     pinnedCopy = (dataset) =>
       new Dataset(
-        { ...dataset.#state, heldUntil: null, pinned: true },
+        {
+          ...dataset.#state,
+          members: dataset.#state.members.map((member) => ({
+            ...member,
+            pinned: true,
+            heldUntil: null,
+          })),
+          heldUntil: null,
+          pinned: true,
+        },
         dataset.#table,
         dataset.#memberRows,
         dataset.#data,
@@ -625,8 +651,8 @@ export class Dataset {
     return refOf(this.members);
   }
 
-  /** Where the data came from, as one record: `toObject()` gives it as JSON values to store
-   *  beside the data, and `Provenance.fromObject` reads them back. */
+  /** Where the data came from, as one record: `JSON.stringify(data.provenance)` writes it as
+   *  JSON to store beside the data, and `Provenance.fromJSON` reads it back. */
   get provenance(): Provenance {
     return provenanceOf({
       sentence: this.sentence,
@@ -788,9 +814,9 @@ export class Dataset {
 
   /** The provenance as the file's key-value metadata, in the shape Python's
    *  `Dataset.save` writes, so `dfo.load` reads the file back. The values
-   *  `Provenance.toObject()` gives come from it, so the file and the record agree. */
+   *  `Provenance.toJSON()` gives come from it, so the file and the record agree. */
   #metadata(): Record<string, string> {
-    const record = this.provenance.toObject();
+    const record = this.provenance.toJSON();
     const sources = this.citation.sources;
     const isDerivedDataset = this.members.some(isDerived);
     const derived = !isDerivedDataset
@@ -845,10 +871,17 @@ export class Dataset {
         layout_version: this.layoutVersion,
         member_rows: this.#memberRows,
       }),
-      ...(record.ref === null ? {} : { "dfo.ref": JSON.stringify(record.ref) }),
+      ...(record.ref === null
+        ? {}
+        : {
+            "dfo.ref": JSON.stringify(record.ref),
+            "dfo.retention": JSON.stringify(
+              record.members.map(({ pinned, held_until }) => ({ pinned, held_until })),
+            ),
+          }),
       ...derived,
-      // Keys of their own, since Python 0.1.0's loader refuses any key in `dfo.dataset` it does
-      // not know and reads only the `dfo.*` keys it names.
+      // Keys of their own, as `dfo.retention` above, since Python 0.1.0's loader refuses any key
+      // in `dfo.dataset` it does not know and reads only the `dfo.*` keys it names.
       ...(record.question === null ? {} : { "dfo.question": JSON.stringify(record.question) }),
       ...(record.fetched_at === null
         ? {}
@@ -879,8 +912,8 @@ export class Dataset {
   }
 }
 
-/** The record `Provenance.toObject()` returns: plain JSON values, in the format
- *  `provenance.schema.json` gives, which Python's `Provenance.to_object` writes too. */
+/** The record `Provenance.toJSON()` returns: plain JSON values, in the format
+ *  `provenance.schema.json` gives, which Python's `Provenance.to_json` writes too. */
 export type ProvenanceJson = {
   format_version: 1;
   sentence: string;
@@ -901,6 +934,10 @@ export type ProvenanceJson = {
     parts: string[];
     sentence: string;
     citation: ReturnType<typeof savedCitation>;
+    /** Null when the client does not know. */
+    pinned: boolean | null;
+    /** As `YYYY-MM-DD`, or null. */
+    held_until: string | null;
   }[];
 };
 
@@ -921,9 +958,9 @@ type ProvenanceFields = Pick<
 >;
 
 /**
- * Where a dataset came from, as one record to store beside the data. `data.provenance.toObject()`
- * gives it as JSON values, and `Provenance.fromObject` reads them back, in this client or the
- * Python one. It holds what the file `data.toBytes()` writes holds of the same dataset.
+ * Where a dataset came from, as one record to store beside the data. `JSON.stringify(provenance)`
+ * writes it, and `Provenance.fromJSON` reads it back, in this client or the Python one. It holds
+ * what the file `data.toBytes()` writes holds of the same dataset.
  */
 export class Provenance {
   /** What the data shows, as `Dataset.sentence`. */
@@ -943,7 +980,8 @@ export class Provenance {
   /** The datasets surface's warnings about the members' data. */
   readonly warnings: readonly Notice[];
   /** One member per built spec or derived frame, each an exact version with its digest, parts,
-   *  sentence and citation. Empty for a dataset that names no version. */
+   *  sentence, citation and retention, its own `pinned` and `heldUntil`. Empty for a dataset
+   *  that names no version. */
   readonly members: readonly (Member | DerivedMember)[];
 
   static {
@@ -968,8 +1006,9 @@ export class Provenance {
     return this.members.length === 0 ? null : refOf(this.members);
   }
 
-  /** The record as JSON values, which `Provenance.fromObject` reads back. */
-  toObject(): ProvenanceJson {
+  /** The record as JSON values, which `JSON.stringify(provenance)` writes and
+   *  `Provenance.fromJSON` reads back. */
+  toJSON(): ProvenanceJson {
     return {
       format_version: PROVENANCE_FORMAT_VERSION,
       sentence: this.sentence,
@@ -978,7 +1017,7 @@ export class Provenance {
       question: this.question,
       ref: this.ref?.toJSON() ?? null,
       pinned: this.pinned,
-      held_until: this.heldUntil?.toISOString().slice(0, 10) ?? null,
+      held_until: isoDay(this.heldUntil),
       warnings: this.warnings.map(({ code, severity, message, spec_id }) => ({
         code,
         severity,
@@ -992,28 +1031,40 @@ export class Provenance {
         parts: [...member.parts],
         sentence: member.sentence,
         citation: savedCitation(member.citation),
+        pinned: member.pinned,
+        held_until: isoDay(member.heldUntil),
       })),
     };
   }
 
-  /** `JSON.stringify(provenance)` writes the object `toObject()` returns. */
-  toJSON(): ProvenanceJson {
-    return this.toObject();
+  /** Whether `other` is a `Provenance` holding the same facts, as Python's `==` compares two. */
+  equals(other: unknown): boolean {
+    return (
+      other instanceof Provenance && canonicalJson(this.toJSON()) === canonicalJson(other.toJSON())
+    );
   }
 
   /**
-   * Reads a record `toObject()` wrote, in this client or another, from its parsed JSON value.
+   * Loads a record any DFO client wrote, from its JSON text or the parsed value. A key the format
+   * does not name is ignored, at the top level and in a member, so a record a later client wrote
+   * reads here.
    *
-   * @throws {FormatError} The value breaks the provenance format, a member differs from the
-   *   member its ref names, or the ref breaks its own format, as `DatasetRef.fromJSON` throws,
-   *   with a pointer under `/ref`.
+   * @throws {FormatError} The value breaks the provenance format or comes from a later format
+   *   version, a member differs from the member its ref names, the record's `pinned` or
+   *   `held_until` disagrees with its members', or the ref breaks its own format, as
+   *   `DatasetRef.fromJSON` throws, with a pointer under `/ref`.
    */
-  static fromObject(value: unknown): Provenance {
+  static fromJSON(value: unknown): Provenance {
+    let parsed: unknown = value;
     if (typeof value === "string") {
-      throw invalid("", "JSON text, not a parsed object; pass JSON.parse(text)");
+      try {
+        parsed = parseJson(value);
+      } catch (error) {
+        throw Object.assign(invalid("", "not JSON"), { cause: error });
+      }
     }
-    const record = objectAt(value, "");
-    checkKeys(record, "", PROVENANCE_KEYS);
+    const record = objectAt(parsed, "");
+    requireKeys(record, "", PROVENANCE_KEYS);
     if (record["format_version"] !== PROVENANCE_FORMAT_VERSION) {
       throw invalid("/format_version", `not ${PROVENANCE_FORMAT_VERSION}; a later client reads it`);
     }
@@ -1028,6 +1079,12 @@ export class Provenance {
     const pinned = record["pinned"];
     if (typeof pinned !== "boolean") throw invalid("/pinned", "not a boolean");
     const question = record["question"];
+    const heldUntil =
+      record["held_until"] === null ? null : loadDay(record["held_until"], "/held_until");
+    const members = entries.map((entry, index) =>
+      provenanceMember(entry, stored[index]!, `/members/${index}`),
+    );
+    checkRetention({ pinned, heldUntil }, members, "");
     return provenanceOf({
       sentence: stringAt(record["sentence"], "/sentence"),
       citation: loadCitation(record["citation"], "/citation"),
@@ -1035,14 +1092,11 @@ export class Provenance {
         record["fetched_at"] === null ? null : loadTime(record["fetched_at"], "/fetched_at"),
       question: question === null ? null : stringAt(question, "/question"),
       pinned,
-      heldUntil:
-        record["held_until"] === null ? null : loadDay(record["held_until"], "/held_until"),
+      heldUntil,
       warnings: arrayAt(record["warnings"], "/warnings").map((item, index) =>
-        loadWarning(item, `/warnings/${index}`),
+        loadWarning(item, `/warnings/${index}`, { specIdRequired: true }),
       ),
-      members: entries.map((entry, index) =>
-        provenanceMember(entry, stored[index]!, `/members/${index}`),
-      ),
+      members,
     });
   }
 
@@ -1063,7 +1117,8 @@ export class Provenance {
   }
 }
 
-/** The keys of a provenance record, and of one member in it. */
+/** The keys of a provenance record, and of one member in it. A reader requires these and
+ *  ignores any other. */
 const PROVENANCE_KEYS = [
   "format_version",
   "sentence",
@@ -1083,22 +1138,28 @@ const PROVENANCE_MEMBER_KEYS = [
   "parts",
   "sentence",
   "citation",
+  "pinned",
+  "held_until",
 ] as const;
 
 /** A UTC time as the record writes it, to the second, such as `2026-11-27T09:14:05Z`. */
 const isoTime = (date: Date): string => `${date.toISOString().slice(0, 19)}Z`;
 
+/** A day as the record writes it, `YYYY-MM-DD`, or null. */
+const isoDay = (date: Date | null): string | null => date?.toISOString().slice(0, 10) ?? null;
+
 /** A UTC time as `toString` prints it, such as `27 November 2026 09:14 UTC`. */
 const timeText = (date: Date): string => `${dayText(date)} ${date.toISOString().slice(11, 16)} UTC`;
 
-/** A provenance member, which names the ref member at its position, with its citation. */
+/** A provenance member, which names the ref member at its position, with its citation and
+ *  retention. */
 function provenanceMember(
   value: unknown,
   stored: RefMember | DerivedRefMember,
   pointer: string,
 ): Member | DerivedMember {
   const entry = objectAt(value, pointer);
-  checkKeys(entry, pointer, PROVENANCE_MEMBER_KEYS);
+  requireKeys(entry, pointer, PROVENANCE_MEMBER_KEYS);
   const named: Record<string, unknown> = {
     spec_id: stored.spec.spec_id,
     content_version: stored.contentVersion,
@@ -1114,7 +1175,11 @@ function provenanceMember(
       );
     }
   }
-  return { ...stored, citation: loadCitation(entry["citation"], `${pointer}/citation`) };
+  return {
+    ...stored,
+    citation: loadCitation(entry["citation"], `${pointer}/citation`),
+    ...loadRetention(entry, pointer),
+  };
 }
 
 /** The ref to a dataset's members. */

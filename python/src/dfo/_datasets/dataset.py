@@ -125,8 +125,12 @@ REQUIRED_COLUMNS = ("time_period", "value")
 # `dfo.steps`, so a client that reads format 1 alone refuses it as a later format.
 SAVED_FORMAT_VERSION = 1
 SAVED_DERIVED_FORMAT_VERSION = 2
-# The format of the object `Provenance.to_object` returns.
+# The format of the record `Provenance.to_json` writes.
 PROVENANCE_FORMAT_VERSION = 1
+
+# A member's retention: whether its version is pinned and the date it is held
+# until, each None when unknown.
+type _Retention = tuple[bool | None, date | None]
 
 _MONTHS = (
     "January",
@@ -397,11 +401,12 @@ def steps_text(steps: Sequence[DerivedStep], source: str) -> str:
 class Provenance:
     """Where a dataset came from, as one record to store beside the data.
 
-    `data.provenance.to_object()` gives the record as a JSON-ready dict, and
-    `Provenance.from_object` reads it back, in this client or the TypeScript
+    `data.provenance.to_json()` gives the record as JSON text, and
+    `Provenance.from_json` reads it back, in this client or the TypeScript
     one. It holds what the file `data.save` writes holds of the same
     dataset, so the provenance of a dataset `dfo.load` read equals the
-    provenance of the dataset that saved it.
+    provenance of the dataset that saved it. Two records are equal when
+    they hold the same facts.
 
     Attributes:
         sentence: What the data shows, as `Dataset.sentence`.
@@ -416,8 +421,9 @@ class Provenance:
             the server does not say.
         warnings: The datasets surface's warnings about the members' data.
         members: One member per built spec or derived frame, each an exact
-            version with its digest, parts, sentence and citation. Empty for a
-            website bundle opened from a folder.
+            version with its digest, parts, sentence, citation and retention,
+            its own `pinned` and `held_until`. Empty for a website bundle
+            opened from a folder.
     """
 
     sentence: str
@@ -448,64 +454,34 @@ class Provenance:
             f"Provenance({clipped(self.sentence)}, {count} {noun}, {fetched})"
         )
 
-    def to_object(self) -> dict[str, Any]:
-        """The record as a dict of JSON values, for `json.dump`.
+    def to_json(self) -> str:
+        """The record as JSON text, which `Provenance.from_json` reads back in
+        any DFO client.
 
-        `Provenance.from_object` reads it back. The keys are `format_version`,
-        `sentence`, `citation`, `fetched_at`, `question`, `ref`, `pinned`,
-        `held_until`, `warnings`, and `members`, each member's `spec_id`,
-        `content_version`, `digest`, `parts`, `sentence` and `citation`. `ref`
-        is the object `DatasetRef.to_json` writes, or None with no members.
+        The keys are `format_version`, `sentence`, `citation`, `fetched_at`,
+        `question`, `ref`, `pinned`, `held_until`, `warnings`, and `members`,
+        each member's `spec_id`, `content_version`, `digest`, `parts`,
+        `sentence`, `citation`, `pinned` and `held_until`. `ref` is the
+        object `DatasetRef.to_json` writes, or null with no members.
         """
-        ref = self.ref
-        return {
-            "format_version": PROVENANCE_FORMAT_VERSION,
-            "sentence": self.sentence,
-            "citation": _citation_object(self.citation),
-            "fetched_at": (
-                None if self.fetched_at is None else _iso_time(self.fetched_at)
-            ),
-            "question": self.question,
-            "ref": None if ref is None else ref_object(ref),
-            "pinned": self.pinned,
-            "held_until": (
-                None if self.held_until is None else self.held_until.isoformat()
-            ),
-            "warnings": [asdict(notice) for notice in self.warnings],
-            "members": [
-                {
-                    "spec_id": member.spec.spec_id,
-                    "content_version": member.content_version,
-                    "digest": member.digest,
-                    "parts": list(member.parts),
-                    "sentence": member.sentence,
-                    "citation": _citation_object(member.citation),
-                }
-                for member in self.members
-            ],
-        }
+        return json.dumps(provenance_object(self), ensure_ascii=False)
 
     @classmethod
-    def from_object(cls, obj: object, /) -> Provenance:
-        """Read a record `to_object` wrote, in this client or another.
+    def from_json(cls, text: str | bytes, /) -> Provenance:
+        """Read a record written by any DFO client.
 
-        Args:
-            obj: The decoded JSON object, as `json.load` returns it.
+        A key the format does not name is ignored, at the top level and in a
+        member, so a record a later client wrote reads here.
 
         Raises:
-            FormatError: The object breaks the provenance format, a member
-                differs from the member its ref names, or the ref breaks its
-                own format, as `DatasetRef.from_json` raises, with a pointer
-                under `/ref`.
+            FormatError: The text breaks the provenance format or comes from a
+                later format version, a member differs from the member its ref
+                names, the record's `pinned` or `held_until` disagrees with
+                its members', or the ref breaks its own format, as
+                `DatasetRef.from_json` raises, with a pointer under `/ref`.
         """
-        if isinstance(obj, str | bytes):
-            raise FormatError(
-                "format_invalid",
-                "",
-                "JSON text, not a decoded object; pass json.loads(text)",
-            )
-        record = object_at(obj, "")
-        check_keys(record, "", required=_PROVENANCE_KEYS)
+        record = decode(text)
+        _require_keys(record, "", _PROVENANCE_KEYS)
         version = record["format_version"]
         if version != PROVENANCE_FORMAT_VERSION or isinstance(version, bool):
             raise FormatError(
@@ -527,37 +503,74 @@ class Provenance:
         if not isinstance(pinned, bool):
             raise FormatError("format_invalid", "/pinned", "not a boolean")
         question = record["question"]
+        held_until = _load_day(record["held_until"], "/held_until")
+        members = tuple(
+            _provenance_member(entry, member, f"/members/{index}")
+            for index, (entry, member) in enumerate(zip(entries, stored, strict=True))
+        )
+        check_retention(pinned, held_until, members, "")
         return cls(
             sentence=_string(record["sentence"], "/sentence"),
             citation=_load_citation(record["citation"], "/citation"),
             fetched_at=(
                 None
                 if record["fetched_at"] is None
-                else _load_time(_iso(record, "fetched_at", _ISO_TIME), "/fetched_at")
+                else _load_time(
+                    _iso(record["fetched_at"], "/fetched_at"), "/fetched_at"
+                )
             ),
             question=None if question is None else _string(question, "/question"),
             pinned=pinned,
-            held_until=(
-                None
-                if record["held_until"] is None
-                else _load_held_until(
-                    _iso(record, "held_until", _ISO_DATE), "/held_until"
-                )
-            ),
+            held_until=held_until,
             warnings=tuple(
                 _load_warning(item, f"/warnings/{index}")
                 for index, item in enumerate(_array(record["warnings"], "/warnings"))
             ),
-            members=tuple(
-                _provenance_member(entry, member, f"/members/{index}")
-                for index, (entry, member) in enumerate(
-                    zip(entries, stored, strict=True)
-                )
-            ),
+            members=members,
         )
 
 
-# The keys of the object `Provenance.to_object` returns, and of one member in it.
+def provenance_object(provenance: Provenance) -> dict[str, Any]:
+    """The record as the JSON object `Provenance.to_json` writes."""
+    ref = provenance.ref
+    return {
+        "format_version": PROVENANCE_FORMAT_VERSION,
+        "sentence": provenance.sentence,
+        "citation": _citation_object(provenance.citation),
+        "fetched_at": (
+            None if provenance.fetched_at is None else _iso_time(provenance.fetched_at)
+        ),
+        "question": provenance.question,
+        "ref": None if ref is None else ref_object(ref),
+        "pinned": provenance.pinned,
+        "held_until": _day_text(provenance.held_until),
+        "warnings": [asdict(notice) for notice in provenance.warnings],
+        "members": [
+            {
+                "spec_id": member.spec.spec_id,
+                "content_version": member.content_version,
+                "digest": member.digest,
+                "parts": list(member.parts),
+                "sentence": member.sentence,
+                "citation": _citation_object(member.citation),
+                **_retention_object(member),
+            }
+            for member in provenance.members
+        ],
+    }
+
+
+def _retention_object(member: Member | DerivedMember) -> dict[str, Any]:
+    """A member's retention as the provenance record and `dfo.retention` hold it."""
+    return {"pinned": member.pinned, "held_until": _day_text(member.held_until)}
+
+
+def _day_text(day: date | None) -> str | None:
+    return None if day is None else day.isoformat()
+
+
+# The keys of the object `Provenance.to_json` writes, and of one member in it.
+# A reader requires these and ignores any other.
 _PROVENANCE_KEYS = (
     "format_version",
     "sentence",
@@ -577,16 +590,25 @@ _PROVENANCE_MEMBER_KEYS = (
     "parts",
     "sentence",
     "citation",
+    "pinned",
+    "held_until",
 )
+
+
+def _require_keys(obj: Mapping[str, Any], pointer: str, keys: Sequence[str]) -> None:
+    """Refuse a missing key of `keys`; any other key passes."""
+    for key in keys:
+        if key not in obj:
+            raise FormatError("format_invalid", f"{pointer}/{key}", "missing")
 
 
 def _provenance_member(
     value: object, stored: RefMember | DerivedRefMember, pointer: str
 ) -> Member | DerivedMember:
     """A provenance member, which names the ref member at its position, with its
-    citation."""
+    citation and retention."""
     entry = object_at(value, pointer)
-    check_keys(entry, pointer, required=_PROVENANCE_MEMBER_KEYS)
+    _require_keys(entry, pointer, _PROVENANCE_MEMBER_KEYS)
     named = {
         "spec_id": stored.spec.spec_id,
         "content_version": stored.content_version,
@@ -602,8 +624,67 @@ def _provenance_member(
                 f"is not the {key} of the ref's member at the same position",
             )
     return _saved_member(
-        stored, _load_citation(entry["citation"], f"{pointer}/citation")
+        stored,
+        _load_citation(entry["citation"], f"{pointer}/citation"),
+        _load_retention(entry, pointer),
     )
+
+
+def _load_retention(entry: Mapping[str, Any], pointer: str) -> _Retention:
+    """A member's stored `pinned`, a boolean or null, and `held_until`, an ISO
+    date or null."""
+    pinned = entry["pinned"]
+    if pinned is not None and not isinstance(pinned, bool):
+        raise FormatError(
+            "format_invalid", f"{pointer}/pinned", "not a boolean or null"
+        )
+    return pinned, _load_day(entry["held_until"], f"{pointer}/held_until")
+
+
+def check_retention(
+    pinned: bool,
+    held_until: date | None,
+    members: Sequence[Member | DerivedMember],
+    pointer: str,
+) -> None:
+    """Refuse a dataset's `pinned` or `held_until` that disagrees with its
+    members' retention, as `dataset_retention` derives it. With no member
+    there is nothing to agree with. A member whose `pinned` is unknown leaves
+    `held_until` unchecked, since the date may be that member's.
+
+    Raises:
+        FormatError: At `{pointer}/pinned` or `{pointer}/held_until`.
+    """
+    if not members:
+        return
+    derived_held, derived_pinned = dataset_retention(members)
+    if pinned != derived_pinned:
+        raise FormatError(
+            "format_invalid", f"{pointer}/pinned", "disagrees with the members' pinned"
+        )
+    known = all(member.pinned is not None for member in members)
+    if known and held_until != derived_held:
+        raise FormatError(
+            "format_invalid",
+            f"{pointer}/held_until",
+            "is not the earliest held_until of the members not pinned",
+        )
+
+
+def dataset_retention(
+    members: Iterable[Member | DerivedMember],
+) -> tuple[date | None, bool]:
+    """The earliest `held_until` of the members not pinned, and whether every
+    member is pinned; a member whose `pinned` is unknown counts as not pinned."""
+    members = tuple(members)
+    if all(member.pinned is True for member in members):
+        return None, True
+    dates = [
+        member.held_until
+        for member in members
+        if member.pinned is not True and member.held_until is not None
+    ]
+    return (min(dates) if dates else None), False
 
 
 # The forms a provenance record writes a time and a date in, as its schema
@@ -615,12 +696,19 @@ _ISO_TIME = re.compile(
 _ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
-def _iso(record: Mapping[str, Any], key: str, form: re.Pattern[str]) -> str:
-    """The string `record[key]` in the ISO 8601 form `form` matches."""
-    value = _string(record[key], f"/{key}")
-    if form.fullmatch(value) is None:
-        raise FormatError("format_invalid", f"/{key}", "not in the ISO 8601 form")
-    return value
+def _iso(value: object, pointer: str, form: re.Pattern[str] = _ISO_TIME) -> str:
+    """The string `value` in the ISO 8601 form `form` matches."""
+    text = _string(value, pointer)
+    if form.fullmatch(text) is None:
+        raise FormatError("format_invalid", pointer, "not in the ISO 8601 form")
+    return text
+
+
+def _load_day(value: object, pointer: str) -> date | None:
+    """A stored ISO date, `YYYY-MM-DD` on a date that exists, or None for null."""
+    if value is None:
+        return None
+    return _load_held_until(_iso(value, pointer, _ISO_DATE), pointer)
 
 
 def _load_warning(value: object, pointer: str) -> Notice:
@@ -741,6 +829,17 @@ class Dataset:
         object.__setattr__(
             self, "_table", in_reading_order(self._table, member_rows=rows)
         )
+        # A pinned dataset's members are pinned, as `dfo.pin` leaves them when
+        # it replaces the dataset's own `pinned`.
+        if self.pinned and not all(member.pinned for member in self.members):
+            object.__setattr__(
+                self,
+                "members",
+                tuple(
+                    replace(member, pinned=True, held_until=None)
+                    for member in self.members
+                ),
+            )
 
     @property
     def ref(self) -> DatasetRef:
@@ -764,9 +863,9 @@ class Dataset:
 
     @property
     def provenance(self) -> Provenance:
-        """Where the data came from, as one record: `to_object()` gives it as
-        JSON values to store beside the data, and `Provenance.from_object`
-        reads them back."""
+        """Where the data came from, as one record: `to_json()` gives it as
+        JSON text to store beside the data, and `Provenance.from_json` reads
+        it back."""
         return Provenance(
             sentence=self.sentence,
             citation=self.citation,
@@ -992,9 +1091,9 @@ class Dataset:
 
     def _metadata(self) -> dict[bytes, bytes]:
         """The provenance as the saved file's key-value metadata, under `dfo.*`
-        keys. The values `Provenance.to_object` gives come from it, so the file
+        keys. The values `Provenance.to_json` writes come from it, so the file
         and the record agree."""
-        record = self.provenance.to_object()
+        record = provenance_object(self.provenance)
         derived = any(isinstance(member, DerivedMember) for member in self.members)
         version = SAVED_DERIVED_FORMAT_VERSION if derived else SAVED_FORMAT_VERSION
         metadata = {
@@ -1026,6 +1125,9 @@ class Dataset:
         }
         if record["ref"] is not None:
             metadata["dfo.ref"] = _dumps(record["ref"])
+            metadata["dfo.retention"] = _dumps(
+                [_retention_object(member) for member in self.members]
+            )
         # Keys of their own, as for the party totals below.
         if record["question"] is not None:
             metadata["dfo.question"] = _dumps(record["question"])
@@ -1305,7 +1407,6 @@ def build_dataset(
     tables: list[pa.Table] = []
     built: list[Member] = []
     layouts: list[str] = []
-    retentions: list[Mapping[str, Any] | None] = []
     warnings: list[Notice] = []
     party_totals: list[PartyTotalsLeftOut] = []
     for fetched in members:
@@ -1313,6 +1414,7 @@ def build_dataset(
         party_totals.extend(
             served_party_totals(fetched.manifest, spec_id=fetched.spec.spec_id)
         )
+        pinned, held_until = served_retention(fetched.manifest)
         built.append(
             Member(
                 parts=fetched.parts,
@@ -1322,10 +1424,10 @@ def build_dataset(
                 citation=parse_citation(fetched.manifest.get("citation")),
                 digest=fetched.digest,
                 rendering=fetched.rendering or plain,
+                pinned=pinned,
+                held_until=held_until,
             )
         )
-        retention = fetched.manifest.get("retention")
-        retentions.append(retention if isinstance(retention, Mapping) else None)
         warnings.extend(parse_notices(fetched.manifest.get("warnings")))
         tables.append(
             read_artifact(
@@ -1358,7 +1460,7 @@ def build_dataset(
         table = tables[0]
 
     answer_parts = [part for fetched in members for part in fetched.answer_parts]
-    held_until, pinned = _retention(retentions)
+    held_until, pinned = dataset_retention(built)
     return Dataset(
         sentence=" ".join(member.sentence for member in built),
         members=tuple(built),
@@ -1446,17 +1548,20 @@ def derived_dataset(
         manifest=manifest,
         cache=cache,
     )
-    retention = manifest.get("retention")
-    held_until, pinned = _retention(
-        [retention if isinstance(retention, Mapping) else None]
+    member_pinned, member_held_until = served_retention(manifest)
+    built = derived_member(
+        member,
+        parse_citation(manifest.get("citation")),
+        pinned=member_pinned,
+        held_until=member_held_until,
     )
-    citation = parse_citation(manifest.get("citation"))
     recipe = manifest.get("recipe")
     tree = recipe.get("tree") if isinstance(recipe, Mapping) else None
+    held_until, pinned = dataset_retention((built,))
     return Dataset(
         sentence=member.sentence,
-        members=(derived_member(member, citation),),
-        citation=citation,
+        members=(built,),
+        citation=built.citation,
         warnings=(),
         departures=(),
         requested_operations=(),
@@ -1918,15 +2023,22 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
             f"holds {len(citations)} citations for the {len(ref_members)} members "
             "dfo.ref names",
         )
+    pinned = _flag(rest, "pinned")
+    held_until = _load_held_until(rest["held_until"])
+    retentions = _load_saved_retention(
+        values.get("dfo.retention"), len(ref_members), pinned=pinned
+    )
     members = tuple(
         _saved_member(
             stored,
             _load_citation(citation, f"/dfo.dataset/member_citations/{index}"),
+            retention,
         )
-        for index, (stored, citation) in enumerate(
-            zip(ref_members, citations, strict=True)
+        for index, (stored, citation, retention) in enumerate(
+            zip(ref_members, citations, retentions, strict=True)
         )
     )
+    check_retention(pinned, held_until, members, "/dfo.dataset")
     member_rows = _load_member_rows(
         rest["member_rows"], members=len(members), rows=table.num_rows
     )
@@ -1978,8 +2090,8 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
         missing=tuple(
             _load_gap(item, pointer) for pointer, item in _items(rest, "missing")
         ),
-        held_until=_load_held_until(rest["held_until"]),
-        pinned=_flag(rest, "pinned"),
+        held_until=held_until,
+        pinned=pinned,
         stale=_flag(rest, "stale"),
         layout_version=_string(rest["layout_version"], "/dfo.dataset/layout_version"),
         _table=table.replace_schema_metadata(None),
@@ -1997,6 +2109,32 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
         ),
         **(_load_derived(values) if derived else {}),
     )
+
+
+def _load_saved_retention(
+    text: str | None, members: int, *, pinned: bool
+) -> list[_Retention]:
+    """A saved file's `dfo.retention`, one retention per member. A file without
+    it, as one a client before 0.3.0 saved, reads every member as pinned when
+    the dataset is, and as unknown otherwise, since the dataset's `held_until`
+    is the earliest of its members' and names no one member's."""
+    if text is None:
+        return [(True, None) if pinned else (None, None)] * members
+    pointer = "/dfo.retention"
+    entries = _array(decode_value(text, pointer), pointer)
+    if len(entries) != members:
+        raise FormatError(
+            "format_invalid",
+            pointer,
+            f"holds {len(entries)} entries for the {members} members dfo.ref names",
+        )
+    retentions: list[_Retention] = []
+    for index, value in enumerate(entries):
+        at = f"{pointer}/{index}"
+        entry = object_at(value, at)
+        _require_keys(entry, at, ("pinned", "held_until"))
+        retentions.append(_load_retention(entry, at))
+    return retentions
 
 
 def _load_fetched_at(text: str) -> datetime:
@@ -2019,9 +2157,13 @@ def _load_time(stored: object, pointer: str) -> datetime:
 
 
 def _saved_member(
-    stored: RefMember | DerivedRefMember, citation: Citation
+    stored: RefMember | DerivedRefMember,
+    citation: Citation,
+    retention: _Retention = (None, None),
 ) -> Member | DerivedMember:
-    """A saved ref's member as the dataset holds it, with its citation."""
+    """A saved ref's member as the dataset holds it, with its citation and
+    retention."""
+    pinned, held_until = retention
     if isinstance(stored, RefMember):
         return Member(
             parts=stored.parts,
@@ -2031,8 +2173,10 @@ def _saved_member(
             citation=citation,
             digest=stored.digest,
             rendering=stored.rendering,
+            pinned=pinned,
+            held_until=held_until,
         )
-    return derived_member(stored, citation)
+    return derived_member(stored, citation, pinned=pinned, held_until=held_until)
 
 
 def _left_out_object(series: LeftOutSeries) -> dict[str, Any]:
@@ -2318,23 +2462,21 @@ def _with_part(table: pa.Table, label: str) -> pa.Table:
     return table.add_column(0, PART_COLUMN, column)
 
 
-def _retention(
-    retentions: Sequence[Mapping[str, Any] | None],
-) -> tuple[date | None, bool]:
-    """The earliest `held_until` across members, and whether every member is pinned."""
-    if all(
-        retention is not None and retention.get("pinned") is True
-        for retention in retentions
-    ):
-        return None, True
-    dates = [
-        held
-        for retention in retentions
-        if retention is not None
-        and retention.get("pinned") is not True
-        and (held := read_held_until(retention.get("held_until"))) is not None
-    ]
-    return (min(dates) if dates else None), False
+def served_retention(manifest: Mapping[str, Any]) -> _Retention:
+    """A version's retention as its manifest serves it: pinned with no date,
+    or not pinned and held until the date the server gives, None when it gives
+    none. A manifest without `retention` leaves both unknown, and a `pinned`
+    that is not a boolean leaves it unknown."""
+    retention = manifest.get("retention")
+    if not isinstance(retention, Mapping):
+        return None, None
+    pinned = retention.get("pinned")
+    if pinned is True:
+        return True, None
+    return (
+        pinned if isinstance(pinned, bool) else None,
+        read_held_until(retention.get("held_until")),
+    )
 
 
 def _merge_citations(citations: Iterable[Citation]) -> Citation:
