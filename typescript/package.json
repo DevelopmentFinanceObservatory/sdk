@@ -1,6 +1,6 @@
 {
   "name": "@developmentfinance/client",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TypeScript client for the Development Finance Observatory APIs",
   "license": "MIT",
   "author": "ONE Campaign <data@one.org>",
