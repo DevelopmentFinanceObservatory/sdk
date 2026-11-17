@@ -4,10 +4,10 @@
  */
 import type { Answer, Gap } from "./answer.ts";
 import { isAnswered, mentionsOf, optionLine, waitingGaps } from "./choices.ts";
+import { requestedCodes } from "./requested-codes.ts";
 import { askedCode } from "./structured.ts";
 import { partFacts } from "../core/parse.ts";
 import { definiteParts, partSentence, partText } from "../core/parts.ts";
-import type { Part } from "../core/parts.ts";
 import { inline } from "../core/text.ts";
 import type { Notice } from "../wire.ts";
 
@@ -99,9 +99,11 @@ const quote = (value: string | null | undefined): string => JSON.stringify(value
 
 const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
-/** What the parts ask for: series codes when each part was asked by one, else parts of the
- *  question. */
-function asked(parts: readonly Part[]): string {
+/** What the parts ask for: series codes for an answer to a search by codes, or when each part's
+ *  restatement names one, else parts of the question. */
+function asked(answer: Answer): string {
+  const { parts } = answer;
+  if (requestedCodes(answer) !== null) return plural(parts.length, "series code");
   if (parts.length > 0 && parts.every((part) => askedCode(part) !== null)) {
     return plural(parts.length, "series code");
   }
@@ -113,7 +115,7 @@ function asked(parts: readonly Part[]): string {
 function gapText(answer: Answer, lead: string): string {
   const gaps = new Map(answer.gaps.map((gap) => [gap.partIndex, gap]));
   const count = answer.parts.filter((_, index) => isAnswered(answer, index)).length;
-  const lines = [`${lead} ${count} of ${asked(answer.parts)}.`];
+  const lines = [`${lead} ${count} of ${asked(answer)}.`];
   for (const [index, part] of answer.parts.entries()) {
     const name = quote(partText(part));
     const gap = gaps.get(index);

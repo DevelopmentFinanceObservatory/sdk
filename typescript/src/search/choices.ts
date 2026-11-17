@@ -12,9 +12,11 @@
  *   and `truncated` echoed, since Search cannot recompute that order from a restatement;
  * - any other part posts its `restatement`, which Search resolves again and so keeps its message
  *   and its choices, or a placeholder of its refusal when it has none. A definite part with a gap
- *   from its series code is one. Search answers an identity entry with no restatement, so the
- *   code and its gap would be lost, while the restatement keeps the code for the new answer to
- *   check again.
+ *   from its series code is one, so Search resolves it again.
+ *
+ * Every entry stands for its part, in part order, so the new answer to a search by codes keeps
+ * the codes part for part and checks each reading against its code again. A reply with another
+ * number of parts than codes breaks the contract.
  *
  * Each identity echoes its reading's assumptions: a picked or listed candidate its part's
  * `reading_assumptions` under its `spec_id`, a definite part its own `assumptions`. Each list,

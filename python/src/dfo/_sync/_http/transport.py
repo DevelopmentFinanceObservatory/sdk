@@ -838,16 +838,19 @@ class _DeadlineTransport(httpx2.BaseTransport):
 
 
 def _check_location(response: httpx2.Response) -> None:
-    """Refuse a redirect whose `Location` httpx2 cannot read as a URL, such as one
-    with a malformed IPv6 host or port, before httpx2 reads it as a protocol fault.
+    """Refuse a redirect whose `Location` does not resolve to an http or https
+    URL with a host, such as one with a malformed IPv6 host or port, or a
+    `javascript:` URL.
 
     Raises:
-        ContractError: The `Location` is not a URL (`unexpected_response`).
+        ContractError: The `Location` is not such a URL (`unexpected_response`).
     """
     if not response.has_redirect_location:
         return
     try:
-        httpx2.URL(response.headers["location"])
+        target = response.request.url.join(response.headers["location"])
+        if target.scheme not in {"http", "https"} or not target.host:
+            raise httpx2.InvalidURL("not an http or https URL with a host")
     except httpx2.InvalidURL:
         request = response.request
         raise client_error(

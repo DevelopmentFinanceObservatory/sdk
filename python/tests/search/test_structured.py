@@ -215,8 +215,15 @@ def test_a_reading_that_is_not_its_codes_series_alone_is_a_gap(
     assert not answer.complete
 
 
-def test_a_code_gap_names_the_asked_code_and_the_codes_the_part_holds() -> None:
-    answer = read(held([{**MLAT, "exact": False}, {**MLAT, "code": "DT.X"}]))
+@pytest.mark.parametrize("by", ["restatement", "codes-missing-echo"])
+def test_a_code_gap_names_the_asked_code_and_the_codes_the_part_holds(by: str) -> None:
+    body = held([{**MLAT, "exact": False}, {**MLAT, "code": "DT.X"}])
+    codes = None
+    if by == "codes-missing-echo":
+        codes = ["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD", "XX.NOPE.CD"]
+        for part in body["parts"]:
+            del part["restatement"]["source_code"]
+    answer = read(body, codes)
     message = answer.gaps[0].message
     assert '"DT.TDS.MLAT.CD" (not exact)' in message
     assert '"DT.X"' in message

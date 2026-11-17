@@ -12,6 +12,7 @@ import { Entity, Match } from "../src/search/lookup-results.ts";
 import { search } from "../src/search/search.ts";
 import { parsedInput } from "../src/search/structured.ts";
 import type { CodeSearchOptions } from "../src/search/structured.ts";
+import type { DefinitePart } from "../src/types.ts";
 import type { MemberRequest } from "../src/datasets/fetch.ts";
 import { Dataset } from "../src/datasets/dataset.ts";
 import { NO_EXCHANGES, replay, scenarioBytes } from "./replay.ts";
@@ -41,6 +42,41 @@ const recordedRequest = await recordedJson<{ input: unknown }>("search-codes.req
 async function held(entries: unknown[]): Promise<Body> {
   const body = await reply();
   body.parts[0]!.spec!.resolved.stat_vars.source_codes = entries;
+  return body;
+}
+
+/** The reply with its first part inexact. */
+function inexactFirst(body: Body): void {
+  const [entry] = body.parts[0]!.spec!.resolved.stat_vars.source_codes as { exact: boolean }[];
+  entry!.exact = false;
+}
+
+/** The reply's first part as Search may restate it: inexact with its echo of the code asked
+ *  missing, or reading another code exactly, which its restatement names in place of it. */
+const ECHOES = [
+  ["the code echoed", inexactFirst],
+  [
+    "a missing echo",
+    (body: Body) => {
+      inexactFirst(body);
+      delete body.parts[0]!.restatement["source_code"];
+    },
+  ],
+  [
+    "an incorrect echo",
+    (body: Body) => {
+      const part = body.parts[0]!;
+      const [entry] = part.spec!.resolved.stat_vars.source_codes as { code: string }[];
+      entry!.code = "DT.TDS.BLAT.CD";
+      part.restatement["source_code"] = "DT.TDS.BLAT.CD";
+    },
+  ],
+] as const;
+
+/** The reply with its second part awaiting a choice of reading. */
+async function withCandidatesSecond(body: Body): Promise<Body> {
+  const candidates = await recordedJson<Body>("search-two-parts-candidates.json");
+  body.parts[1] = candidates.parts[1]!;
   return body;
 }
 
@@ -283,23 +319,87 @@ describe("a search by codes", () => {
     }
   }
 
-  test("names the asked code and the codes a part holds", async () => {
-    const answer = answerFromBody(
-      await held([
+  for (const by of ["restatement", "codes with a missing echo"] as const) {
+    test(`names the asked code and the codes a part holds, by its ${by}`, async () => {
+      const body = await held([
         { ...MLAT, exact: false },
         { ...MLAT, code: "DT.X" },
-      ]),
-      serving().context,
-      null,
-    );
-    const { message } = answer.gaps[0]!;
-    assert.match(message, /"DT\.TDS\.MLAT\.CD" \(not exact\)/);
-    assert.match(message, /"DT\.X"/);
-    assert.ok(message.includes("client.fetch((answer.parts[0] as DefinitePart).spec)"));
-    const lines = incompleteMessage(answer).split("\n");
-    assert.equal(lines[0], "Search answered 1 of 3 series codes.");
-    assert.ok(lines[1]!.startsWith('  missing  "DT.TDS.MLAT.CD": '));
-    assert.equal(answerText(answer).split("\n")[0], "Answered 1 of 3 series codes.");
+      ]);
+      if (by !== "restatement") {
+        for (const part of body.parts) delete part.restatement["source_code"];
+      }
+      const answer = answerFromBody(
+        body,
+        serving().context,
+        null,
+        null,
+        by === "restatement" ? undefined : CODES,
+      );
+      const { message } = answer.gaps[0]!;
+      assert.match(message, /"DT\.TDS\.MLAT\.CD" \(not exact\)/);
+      assert.match(message, /"DT\.X"/);
+      assert.ok(message.includes("client.fetch((answer.parts[0] as DefinitePart).spec)"));
+      const lines = incompleteMessage(answer).split("\n");
+      assert.equal(lines[0], "Search answered 1 of 3 series codes.");
+      assert.ok(lines[1]!.startsWith('  missing  "DT.TDS.MLAT.CD": '));
+      assert.equal(answerText(answer).split("\n")[0], "Answered 1 of 3 series codes.");
+    });
+  }
+
+  for (const [name, edit] of ECHOES) {
+    test(`checks a reading by its asked code with ${name}, live and through JSON`, async () => {
+      const body = await reply();
+      edit(body);
+      const answer = await search(serving(body).context, { codes: CODES });
+      const stored = answer.toJSON();
+      assert.deepEqual(stored.codes, CODES);
+      const client = new Client({ baseUrl: "https://api.example.org/api", apiKey: false });
+      const revived = Answer.fromJSON(JSON.parse(JSON.stringify(stored)), client);
+      for (const read of [answer, revived]) {
+        assert.deepEqual(
+          read.gaps.map((gap) => [gap.partIndex, gap.kind]),
+          [
+            [0, "no_data"],
+            [2, "no_data"],
+          ],
+        );
+        assert.equal(read.complete, false);
+        assert.deepEqual(
+          read.specs.map((spec) => spec.spec_id),
+          [(answer.parts[1] as DefinitePart).spec.spec_id],
+        );
+      }
+      assert.deepEqual(revived.toJSON(), stored);
+    });
+
+    test(`keeps the codes through a choice with ${name}`, async () => {
+      const first = await withCandidatesSecond(await reply());
+      const chosenReply = await reply();
+      edit(chosenReply);
+      const answer = await search(serving(first, chosenReply).context, { codes: CODES });
+      const chosen = await answer.choose(0);
+      assert.deepEqual(
+        chosen.gaps.map((gap) => [gap.partIndex, gap.kind]),
+        [
+          [0, "no_data"],
+          [2, "no_data"],
+        ],
+      );
+      assert.equal(chosen.complete, false);
+      assert.equal(chosen.specs.length, 1);
+      assert.deepEqual(chosen.toJSON().codes, CODES);
+    });
+  }
+
+  test("raises contract_violation on a choice answered with a part short", async () => {
+    const first = await withCandidatesSecond(await reply());
+    const chosenReply = await reply();
+    chosenReply.parts.pop();
+    const answer = await search(serving(first, chosenReply).context, { codes: CODES });
+    await assert.rejects(answer.choose(0), {
+      name: "ContractError",
+      code: "contract_violation",
+    });
   });
 
   for (const writtenBy of ["0.3", "0.2.0"] as const) {
@@ -308,8 +408,8 @@ describe("a search by codes", () => {
       const answer = answerFromBody(await held([{ ...MLAT, exact: false }]), context, null);
       const stored = structuredClone(answer.toJSON().answer) as Body;
       if (writtenBy === "0.2.0") {
-        // @developmentfinance/client 0.2.0 cut `resolved.stat_vars` from answer JSON, so no
-        // code part of its answers is known to be its code's series alone.
+        // @developmentfinance/client 0.2.0 cut `resolved.stat_vars` from answer JSON and wrote
+        // no `codes`, so no code part of its answers is known to be its code's series alone.
         for (const part of stored.parts) {
           if (part.spec !== undefined) {
             delete (part.spec.resolved as { stat_vars?: unknown }).stat_vars;

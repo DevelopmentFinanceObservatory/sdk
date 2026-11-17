@@ -26,8 +26,19 @@ export type ColumnValues = {
   readonly nested: boolean;
 };
 
-/** The presented column names, and the stacked row each presented row reads. */
-export type ReadingOrder = { readonly columns: readonly string[]; readonly rows: Uint32Array };
+/** The stacked rows in their own order, held as their count, so a table read in file order
+ *  needs no index of one entry per row. */
+export type RowRange = { readonly kind: "range"; readonly length: number };
+
+/** The presented column names, and the stacked row each presented row reads: an index for an
+ *  order that moves rows, or a range for one that keeps them where they are. */
+export type ReadingOrder = {
+  readonly columns: readonly string[];
+  readonly rows: Uint32Array | RowRange;
+};
+
+/** The order that keeps `length` stacked rows where they are. */
+export const rowRange = (length: number): RowRange => Object.freeze({ kind: "range", length });
 
 /**
  * The reading order of a stacked table: `columns` in the order the server wrote them, the
@@ -39,7 +50,7 @@ export type ReadingOrder = { readonly columns: readonly string[]; readonly rows:
 export function readingOrder(
   columns: readonly ColumnValues[],
   memberRows: readonly number[],
-): ReadingOrder {
+): ReadingOrder & { readonly rows: Uint32Array } {
   const held = new Map(columns.map((column) => [column.name, column]));
   const slots = READING_COLUMNS.flatMap((slot) => slot.find((name) => held.has(name)) ?? []);
   const filled = new Set<string>(slots);

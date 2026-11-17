@@ -44,6 +44,8 @@ console.log(data.rowCount, "rows");
 
 `answer.fetch()` refuses an answer with gaps (`answer_incomplete`). `answer.fetch({ partial: true })` builds the codes that did read. The message of a code that reads as more than its series names the codes its reading holds, and says to narrow the search with `variable` or `source`, or to take the reading as it is with `client.fetch((answer.parts[i] as DefinitePart).spec)`. `variable` adds words that choose among the variables of a code, `source: "IDS"` names the source to read the codes from, and `openRoles: ["origin"]` answers creditor by creditor. A question string beside any of these is refused.
 
+The answer keeps the codes it asked for. `answer.choose` and `answer.toJSON()` carry them, so a choice and an answer read back with `Answer.fromJSON` check each reading against its code as the first answer did.
+
 When a search holds more codes than the server takes in one request, the server refuses with `request_invalid`. Search in chunks, fetch each, and join the members into one ref:
 
 ```ts
