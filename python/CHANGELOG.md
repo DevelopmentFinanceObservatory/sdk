@@ -6,10 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `dfo.search`, `Client.search` and `AsyncClient.search` take publisher series codes in place of a question: `dfo.search(codes=["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD"], entities={"destination": ["country/KEN"]}, window=(2015, 2023))`. Each code is its own part of the answer. `variable` gives words that choose among a code's variables and defaults to the code itself. `entities` and `window` take the forms `fetch` takes, `open_roles` takes `origin` or `destination` to answer member by member, and `source` names the source in words, such as `"IDS"`, for a code two sources hold. A question beside any of these keywords, or a keyword without `codes`, raises `InvalidRequestError` (`invalid_argument`) before any request, and so does `codes` given as one string or naming a code twice. The client caps neither codes nor entities; a server refusal arrives as `request_invalid`.
+- An answer flags a part asked by a series code whose reading is not that code's series alone: every code in the spec's `resolved.stat_vars.source_codes` must be the asked code with `exact` true. Such a part keeps its reading and becomes a gap of kind `no_data` whose message names the asked code and the codes the reading holds, so `answer.fetch()` raises `IncompleteAnswerError` (`answer_incomplete`) and `answer.fetch(partial=True)` builds the other parts. The check reads the asked code from the part's restatement, so it holds for an answer read back by `Answer.from_json` and for a code Search found in a question's words.
+
 ### Changed
 
 - The `pyarrow` floor is `>=19.0.1`, down from `>=21`, so the package installs beside packages that pin an older pyarrow, such as `bblocks-data-importers`. pyarrow 19.0.0 cannot read the Parquet files the server returns, and 18 and older fail to stack struct columns with differing fields.
 - `dfo.lookup.error_code` and `client.lookup.error_code` replace `lookup.code` for the registry entry of one of DFO's own error or warning codes, so the name no longer reads as a lookup of a publisher's codes. `lookup.code` stays as a deprecated alias that returns the same `Code` and raises a `DeprecationWarning` naming `lookup.error_code`, and is removed in 0.4.0.
+- `answer.to_json()` keeps each spec's `resolved.stat_vars.source_codes`, which the exact-code check reads.
+- An answer counts and builds only the parts without a gap: `answer.specs` and `answer.fetch(partial=True)` leave out a definite part that is a gap, and the printed answer counts it as missing.
 
 ## [0.2.0] - 2026-11-14
 

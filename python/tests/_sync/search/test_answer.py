@@ -1058,3 +1058,112 @@ def test_an_answer_holds_no_data_methods() -> None:
         answer.to_pandas()  # ty: ignore[unresolved-attribute]
     assert not hasattr(answer, "__arrow_c_stream__")
     assert not hasattr(answer, "anything_else")
+
+
+CODES = ["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD", "XX.NOPE.CD"]
+
+
+def ask_codes(*bodies: object, **keywords: Any) -> tuple[Answer, Server]:
+    server = Server(*bodies)
+    client = transport(server)
+    answer = search(lambda: Session(client), **keywords)
+    return answer, server
+
+
+def with_inexact_first_code(body: dict[str, Any]) -> dict[str, Any]:
+    """The recorded reply with its first part's code no longer exact."""
+    (entry,) = body["parts"][0]["spec"]["resolved"]["stat_vars"]["source_codes"]
+    entry["exact"] = False
+    return body
+
+
+@pytest.mark.parametrize("inexact", [False, True], ids=["exact", "inexact"])
+def test_a_search_by_codes_posts_one_part_per_code_and_builds_the_exact_ones(
+    inexact: bool, fetched: list[tuple[Any, Any, Any]]
+) -> None:
+    body = load("search-codes.json")
+    answer, server = ask_codes(
+        with_inexact_first_code(body) if inexact else body,
+        codes=CODES,
+        entities={"destination": ["country/KEN"]},
+        window=(2015, 2020),
+    )
+    assert server.posted == [load("search-codes.request.json")]
+    assert answer.question is None
+    gaps = [0, 2] if inexact else [2]
+    assert [gap.part_index for gap in answer.gaps] == gaps
+    assert [gap.kind for gap in answer.gaps] == ["no_data"] * len(gaps)
+    with pytest.raises(IncompleteAnswerError):
+        answer.fetch()
+    assert fetched == []
+    answer.fetch(partial=True)
+    ((_, members, options),) = fetched
+    assert [member.parts for member in members] == [
+        (code,) for index, code in enumerate(CODES) if index not in gaps
+    ]
+    assert options["missing"] == answer.gaps
+
+
+def test_an_answer_by_codes_keeps_its_gaps_through_json() -> None:
+    answer, _ = ask_codes(
+        with_inexact_first_code(load("search-codes.json")), codes=CODES
+    )
+    server = Server()
+    client = transport(server)
+    revived = answer_from_body(
+        read_answer_json(answer.to_json())[1],
+        question=None,
+        source=lambda: Session(client),
+    )
+    assert revived.gaps == answer.gaps
+
+
+@pytest.mark.parametrize(
+    ("question", "keywords"),
+    [
+        ("debt service of Kenya", {"codes": CODES}),
+        ("debt service of Kenya", {"window": (2015, 2020)}),
+        (None, {"entities": {"place": ["country/KEN"]}}),
+        (None, {}),
+        (None, {"codes": "DT.TDS.MLAT.CD"}),
+    ],
+    ids=[
+        "question-and-codes",
+        "question-and-window",
+        "no-codes",
+        "nothing",
+        "one-string",
+    ],
+)
+def test_a_search_that_mixes_or_lacks_its_inputs_is_refused_before_any_request(
+    question: str | None, keywords: dict[str, Any]
+) -> None:
+    server = Server()
+    client = transport(server)
+    with pytest.raises(InvalidRequestError) as refused:
+        search(lambda: Session(client), question, **keywords)
+    assert refused.value.code == "invalid_argument"
+    assert server.posted == []
+
+
+def without_last_part(body: dict[str, Any]) -> dict[str, Any]:
+    body["parts"].pop()
+    return body
+
+
+def time_text_not_parsed(body: dict[str, Any]) -> dict[str, Any]:
+    body["parts"][1]["warnings"].append(
+        {"code": "time_text_not_parsed", "severity": "warn", "message": "unread"}
+    )
+    return body
+
+
+@pytest.mark.parametrize(
+    "edit", [without_last_part, time_text_not_parsed], ids=["parts", "years"]
+)
+def test_an_answer_that_does_not_read_the_codes_as_sent_violates_the_contract(
+    edit: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
+    with pytest.raises(ContractError) as violated:
+        ask_codes(edit(load("search-codes.json")), codes=CODES)
+    assert violated.value.code == "contract_violation"

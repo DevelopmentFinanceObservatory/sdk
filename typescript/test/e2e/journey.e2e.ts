@@ -462,6 +462,60 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
       );
     },
   );
+
+  test(
+    "11. a search by codes answers each code held and names the rest",
+    { timeout: STEP_TIMEOUT },
+    async () => {
+      // Two IDS codes DFO holds as their series alone, and one no source holds.
+      const codes = ["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD", "XX.NOPE.CD"];
+      const answer = await client.search({
+        codes,
+        entities: { destination: ["country/KEN"] },
+        window: [2015, 2020],
+      });
+      assert.deepEqual(
+        answer.parts.map((part) => part.status),
+        ["definite", "definite", "no_data"],
+      );
+      // The wire's parts, as JSON, since the part type leaves `stat_vars` unchecked.
+      const wireParts = (
+        JSON.parse(JSON.stringify(answer.raw)) as {
+          parts: { spec?: { resolved: { stat_vars: { source_codes: unknown } } } }[];
+        }
+      ).parts;
+      for (const [index, part] of wireParts.slice(0, 2).entries()) {
+        assert.deepEqual(part.spec?.resolved.stat_vars.source_codes, [
+          {
+            provenance: "provenance/WorldBankInternationalDebtStatistics",
+            code: codes[index],
+            exact: true,
+          },
+        ]);
+      }
+      assert.deepEqual(
+        answer.gaps.map((gap) => [gap.partIndex, gap.kind]),
+        [[2, "no_data"]],
+      );
+      const error = await rejection(answer.fetch());
+      assert.ok(error instanceof IncompleteAnswerError, String(error));
+      const dataset = await answer.fetch({ partial: true });
+      assert.deepEqual(
+        dataset.members.map((member) => member.parts),
+        [[codes[0]], [codes[1]]],
+      );
+      assert.deepEqual(
+        dataset.missing.map((gap) => gap.partIndex),
+        [2],
+      );
+      const years = new Set((await dataset.toRows()).map(yearOf));
+      assert.ok(years.size > 0);
+      assert.ok(
+        [...years].every((year) => year >= 2015 && year <= 2020),
+        [...years].join(", "),
+      );
+    },
+  );
 });
 
 /** Fetches `spec` from a second Node process and returns the operation id its build POST

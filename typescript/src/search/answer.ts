@@ -35,6 +35,7 @@ import { definiteParts, isKnownPart, partSentence, partText } from "../core/part
 import type { DefinitePart, KnownPart, NoDataPart, Part } from "../core/parts.ts";
 import { checkOptions, declareOptions } from "../core/options.ts";
 import { withEntityDcids } from "./lookup-results.ts";
+import { askedCode, checkReply, codeGap } from "./structured.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
 import type { Transport } from "../http/transport.ts";
@@ -209,6 +210,8 @@ type AnswerInit = {
   traceId?: string | null;
   raw: Readonly<Record<string, unknown>>;
   context: AnswerContext;
+  /** The series code each part was asked by, for a search by codes. */
+  codes?: readonly string[] | undefined;
 };
 
 /** The context each client's answers use, for `Answer.fromJSON`. */
@@ -233,7 +236,8 @@ export class Answer {
   readonly specs: readonly Spec[];
   /** Whether every part has a reading. */
   readonly complete: boolean;
-  /** The parts that stop a complete dataset, in query order. */
+  /** The parts that stop a complete dataset, in query order. A definite part asked by a series
+   *  code whose reading is not that code's series alone is one, of kind `no_data`. */
   readonly gaps: readonly Gap[];
   /** The question asked, when the answer came from one. */
   readonly question: string | null;
@@ -272,12 +276,14 @@ export class Answer {
     this.traceId = init.traceId ?? null;
     this.raw = init.raw;
     this.#context = init.context;
+    const { codes } = init;
     this.gaps = this.parts.flatMap((part, index) => {
-      const gap = gapFor(index, part);
+      const gap =
+        gapFor(index, part) ?? codeGap(index, part, codes ? codes[index]! : askedCode(part));
       return gap === null ? [] : [gap];
     });
     this.complete = this.kind === "resolution" && this.gaps.length === 0;
-    const members = membersOf(this.parts);
+    const members = membersOf(this.parts, this.gaps);
     this.#members = members;
     this.specs = members.map((member) => member.spec);
   }
@@ -430,7 +436,7 @@ export class Answer {
 export async function resolveAnswer(
   context: AnswerContext,
   input: RawTextInput | ParsedInput | DatasetResubmitInput,
-  options: SearchOptions & { question: string | null },
+  options: SearchOptions & { question: string | null; codes?: readonly string[] },
 ): Promise<Answer> {
   const { transport } = context;
   const response = await transport.request({
@@ -441,12 +447,17 @@ export async function resolveAnswer(
     signal: options.signal,
   });
   const { body, traceId } = response;
-  return describing(traceId, () => answerFromBody(body, context, options.question, traceId));
+  return describing(traceId, () =>
+    answerFromBody(body, context, options.question, traceId, options.codes),
+  );
 }
 
 /**
  * Reads a decoded Search response into an answer. `traceId` is the trace id of the response
- * the body came from.
+ * the body came from. `codes` are the series codes a search by codes asked, one per part in
+ * order; without them, a part's code is the `source_code` of its restatement. A definite part
+ * asked by a code whose reading is not that code's series alone is a gap of kind `no_data`, so
+ * `fetch` builds it only beside `partial: true`, and then leaves it out.
  *
  * @throws {DfoError} The body is a problem document (a `code` and no `kind`): the class the
  *   contract's actions give its code, or `ContractError` (`contract_violation`) for a code they
@@ -461,6 +472,7 @@ export function answerFromBody(
   context: AnswerContext,
   question: string | null,
   traceId: string | null = null,
+  codes?: readonly string[],
 ): Answer {
   if (!isRecord(body)) {
     throw clientError("contract_violation", {
@@ -503,6 +515,7 @@ export function answerFromBody(
     });
   }
   const typed = parts.map(readPart);
+  if (codes !== undefined) checkReply(typed, warnings, codes);
   const sentence = text(body["rendered_sentence"]);
   const status = text(body["status"]);
   return new Answer({
@@ -518,6 +531,7 @@ export function answerFromBody(
     traceId,
     raw: body,
     context,
+    codes,
   });
 }
 
@@ -574,17 +588,19 @@ function sharedStatus(parts: readonly Part[]): string {
   return statuses.size === 1 ? [...statuses][0]! : "mixed";
 }
 
-/** One member per distinct `spec_id`, in query order, with the first part's spec; folded parts
- *  share their spec's member, which names each of them that has variable text. A part without
- *  any names nothing. */
+/** One member per distinct `spec_id` of the parts without a gap, in query order, with the first
+ *  part's spec; folded parts share their spec's member, which names each of them that has
+ *  variable text. A part without any names nothing. */
 function membersOf(
   parts: readonly Part[],
+  gaps: readonly Gap[],
 ): (MemberRequest & { readonly spec: DefinitePart["spec"] })[] {
+  const gapped = new Set(gaps.map((gap) => gap.partIndex));
   const grouped = new Map<
     string,
     { spec: DefinitePart["spec"]; parts: string[]; answerParts: Part[] }
   >();
-  for (const part of definiteParts(parts)) {
+  for (const part of definiteParts(parts.filter((_, index) => !gapped.has(index)))) {
     const { spec } = part;
     const entry = grouped.get(spec.spec_id) ?? { spec, parts: [], answerParts: [] };
     const name = partText(part);

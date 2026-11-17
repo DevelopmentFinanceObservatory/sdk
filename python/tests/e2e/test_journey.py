@@ -1,4 +1,4 @@
-"""The live journey: ten steps against the DFO API at `DFO_BASE_URL`.
+"""The live journey: eleven steps against the DFO API at `DFO_BASE_URL`.
 
 Marked `live` and deselected by default; run it with `pytest -m live`. Each step
 asserts on what the wire carries: codes, ids, digests, row counts and years. A
@@ -57,6 +57,8 @@ SEVERAL = (
     "and GDP of Kenya"
 )
 PLACE = "ODA disbursements from Germany to Congo"
+# Two IDS codes DFO holds as their series alone, and one no source holds.
+CODES = ["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD", "XX.NOPE.CD"]
 LONG_BUILDS = Path(__file__).parents[3] / "tests" / "live" / "long-builds.json"
 LANGUAGE = "python"
 LONG_COLUMNS = {"stat_var", "time_period", "value", "unit"}
@@ -435,3 +437,33 @@ def test_10_a_ref_crosses_languages(client: Client, dataset: Dataset) -> None:
     assert [(m.content_version, m.digest) for m in data.members] == [
         (m.content_version, m.digest) for m in ref.members
     ]
+
+
+def test_11_a_search_by_codes_answers_each_code_held_and_names_the_rest(
+    client: Client,
+) -> None:
+    answer = client.search(
+        codes=CODES, entities={"destination": ["country/KEN"]}, window=(2015, 2020)
+    )
+    parts = _wire_parts(answer)
+    assert [part["status"] for part in parts] == ["definite", "definite", "no_data"]
+    for part, code in zip(parts[:2], CODES, strict=False):
+        assert part["spec"]["resolved"]["stat_vars"]["source_codes"] == [
+            {
+                "provenance": "provenance/WorldBankInternationalDebtStatistics",
+                "code": code,
+                "exact": True,
+            }
+        ]
+    (gap,) = answer.gaps
+    assert (gap.part_index, gap.kind) == (2, "no_data")
+    assert parts[2]["no_data"]["reason"] == "source_code_not_held"
+
+    with pytest.raises(IncompleteAnswerError):
+        answer.fetch(progress=False)
+    data = answer.fetch(partial=True, progress=False)
+    assert [m.parts for m in data.members] == [(CODES[0],), (CODES[1],)]
+    assert [gap.part_index for gap in data.missing] == [2]
+    years = {int(year) for year in data.to_arrow().column("time_period").to_pylist()}
+    assert years
+    assert years <= set(range(2015, 2021))
