@@ -4,6 +4,12 @@ All notable changes to this package are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The `pyarrow` floor is `>=19.0.1`, down from `>=21`, so the package installs beside packages that pin an older pyarrow, such as `bblocks-data-importers`. pyarrow 19.0.0 cannot read the Parquet files the server returns, and 18 and older fail to stack struct columns with differing fields.
+
 ## [0.2.0] - 2026-11-14
 
 ### Added
