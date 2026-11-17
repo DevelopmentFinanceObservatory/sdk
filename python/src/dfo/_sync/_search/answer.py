@@ -16,8 +16,12 @@ folds the parts again; a pick in a one-part answer posts one entry:
 - a candidates part left alone posts its candidate set in the server's order;
 - any other part posts its `restatement`, which Search resolves again and so keeps
   its message and its choices; a part without one is restated as a placeholder.
-  A definite part with a gap from its series code is one: its restatement keeps
-  the code, so the new answer checks the reading again.
+  A definite part with a gap from its series code is one, so Search resolves it
+  again.
+
+Every entry stands for its part, in part order, so the new answer to a search by
+codes keeps the codes part for part and checks each reading against its code
+again. A reply with another number of parts than codes breaks the contract.
 
 Each identity echoes its reading's assumptions: a definite part's `assumptions`,
 and a candidate's entry in its part's `reading_assumptions`. Search then states
@@ -151,6 +155,10 @@ class Answer:
     # The readings `fetch` builds, one per distinct spec of the answered parts
     # (those with no gap), computed once in `answer_from_body`.
     _readings: tuple[Reading, ...] = field(default=(), compare=False)
+    # The series code each part was asked by, in part order, for an answer to a
+    # search by codes; None for a question in words. The gaps check each
+    # reading against these, and `to_json` and `choose` carry them on.
+    _codes: tuple[str, ...] | None = field(default=None, compare=False)
     # The session `from_json` reads through when it names no client. It is the
     # default client's, which `dfo._client.default` sets, since this layer
     # cannot import the client layer.
@@ -177,10 +185,13 @@ class Answer:
 
         The JSON holds the question and Search's response cut to the members the
         client reads, so a web page can hold an answer and post it back with the
-        reader's choice.
+        reader's choice. An answer to a search by codes also holds the codes, one
+        per part, so the answer read back checks each reading against the code
+        asked for, as the live answer does.
         """
         return json.dumps(
-            answer_json(self.question, self.raw, self.trace_id), ensure_ascii=False
+            answer_json(self.question, self.raw, self.trace_id, self._codes),
+            ensure_ascii=False,
         )
 
     @classmethod
@@ -202,13 +213,13 @@ class Answer:
                 synchronous `Answer` takes the default client when it is None.
 
         Raises:
-            FormatError: The text is not JSON in the answer format
-                (`format_invalid`).
+            FormatError: The text is not JSON in the answer format, or its
+                `codes` is not one non-blank string per part (`format_invalid`).
             ContractError: The answer lacks a member the client acts on.
             InvalidRequestError: `client` is None and no default client is
                 set (`invalid_argument`).
         """
-        question, body, trace_id = read_answer_json(text)
+        question, body, trace_id, codes = read_answer_json(text)
         if client is not None:
             source = client._current
         elif cls._default_source is not None:
@@ -221,14 +232,16 @@ class Answer:
             )
         with describing(trace_id):
             return answer_from_body(
-                body, question=question, source=source, trace_id=trace_id
+                body, question=question, source=source, trace_id=trace_id, codes=codes
             )
 
     def choose(self, option: int | str, /, *, part: int | str | None = None) -> Answer:
         """Settle a part that awaits a choice, and return Search's new answer.
 
         The choice makes one Search request. The new answer, its sentence and
-        its assumptions are Search's response.
+        its assumptions are Search's response. A choice in an answer to a search
+        by codes keeps the codes, part for part, so the new answer checks each
+        reading against the code asked for.
 
         `choose(option)` picks in the only part that awaits a choice;
         `choose(option, part=part)` names the part. A part is named by its
@@ -243,12 +256,18 @@ class Answer:
                 part or option; the part offers no options; or a part cannot be
                 posted back (`choice_invalid`).
             ContractError: The chosen option's `data_query` is not a parsed
-                input of one part; it carries the answer's trace id.
+                input of one part, and the error carries the answer's trace id;
+                or, in an answer to a search by codes, Search answers with
+                another number of parts than codes (`contract_violation`).
         """
         with describing(self.trace_id):
             request = self._choice_input(option, part)
         return resolve(
-            self._source, request, question=self.question, timeout=CLIENT_TIMEOUT
+            self._source,
+            request,
+            question=self.question,
+            timeout=CLIENT_TIMEOUT,
+            codes=self._codes,
         )
 
     def _choice_input(
@@ -434,7 +453,8 @@ def resolve(
             In the synchronous client, platform name resolution can run past
             this bound; the asynchronous client can cancel it.
         codes: The series code each part of `request` asks for, in part order,
-            for a search by codes; `answer_from_body` reads the answer by them.
+            for a search by codes or a choice in its answer; `answer_from_body`
+            reads the answer by them.
 
     Raises:
         DfoError: The response is a problem document with a string `code` but
@@ -478,8 +498,10 @@ def answer_from_body(
     """Read a decoded Search response into an answer.
 
     `trace_id` is the trace id of the response the body came from. `codes` are
-    the series codes a search by codes asked, one per part in order. Without
-    them, a part's code is the `source_code` of its restatement. A definite part
+    the series codes a search by codes asked, one per part in order, and the
+    code a part asked is the authority whatever its restatement names. Without
+    them, as for a question in words, a part's code is the `source_code` of its
+    restatement. A definite part
     asked by a code whose reading is not that code's series alone is a gap of
     kind `no_data`, so `fetch` builds it only beside `partial=True`, and then
     leaves it out. A code part whose spec has no `resolved.stat_vars`, as in an
@@ -560,6 +582,7 @@ def answer_from_body(
         raw=body,
         _source=source,
         _readings=readings,
+        _codes=tuple(codes) if codes is not None else None,
     )
 
 
