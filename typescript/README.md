@@ -261,7 +261,7 @@ const newest = await client.fetch(ref, { latest: true });
 console.log(newest.ref.equals(ref) ? "unchanged" : "new data");
 ```
 
-`equals` compares specs, versions and renderings, and leaves out file digests, which change when the server renders the same version again. The ref format is shared with the Python client, so a ref saved by one reads in the other. A ref keeps the `partyTotals` choice it was fetched with, and refuses a narrowing. A version the server can no longer build raises `VersionUnavailableError`, and `{ latest: true }` fetches the current one.
+`equals` compares specs, versions and renderings, and leaves out file digests, which change when the server renders the same version again. The ref format is shared with the Python client, so a ref saved by one reads in the other. A ref keeps the `partyTotals` choice it was fetched with, and refuses a narrowing. A version the server can no longer build raises `VersionUnavailableError`, and `{ latest: true }` fetches the current one. [Use DFO in a data pipeline](docs/pipelines.md) builds the whole loop: search by series code, pin, refresh, link a reading, record provenance, and test offline.
 
 ## Save the rows and read them back
 
@@ -387,7 +387,7 @@ Branch on the class, or on `error.code` for one case. The bracket's text may cha
 
 | Class                     | Raised when                                                                                                     |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `InvalidRequestError`     | An argument breaks a rule. `issues` and `alternatives` name the valid values                                    |
+| `InvalidRequestError`     | An argument breaks a rule. `issues` and `alternatives` name the valid values; `heldUntil` says when an unpinned version stops being guaranteed (`version_not_pinned`) |
 | `IncompleteAnswerError`   | You fetch an answer with a part that has no reading. `gaps` lists them                                          |
 | `DeclinedError`           | You fetch an answer Search declined or answered with the catalogue. `answer.reason` says why a decline happened |
 | `NotFoundError`           | A spec, place, code, or version is unknown                                                                      |

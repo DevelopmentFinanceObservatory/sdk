@@ -31,6 +31,7 @@ Main calls:
 - [README](README.md): install, the first five lines, and a recipe per task: choose, other years or places, totals, save and load, refresh, share, place codes
 - [Answers and choices](docs/answers.md): parts, `choose`, `partial=True`, `SearchWarning` and `strict`, `to_json`, declined answers, gap kinds
 - [Datasets and versions](docs/datasets.md): `window`, `entities`, `facets`, layouts, `party_totals`, conversions, refs, retention, `save` and `load`
+- [Use DFO in a data pipeline](docs/pipelines.md): `search(codes=)`, `DatasetRef`, `pin`, `file_url`, `fetch(ref, latest=True)`, `same_data`, `Provenance`, `load`
 - [Long builds](docs/long-builds.md): progress, deadlines, Ctrl-C
 - [Compute a figure on DFO](docs/compute.md): `dfo.analysis`, recipes, `latest_year`, recomputing, saving a derived result, `left_out`
 - [Cards and shares](docs/shares.md): cards, public shares, write tokens, replace, snapshot, unshare, history, `as_of`

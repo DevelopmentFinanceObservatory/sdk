@@ -261,6 +261,7 @@ The TypeScript client follows the same contract. It spells "no limit" as `Infini
 
 - [Answers and choices](docs/answers.md): parts, readings, `choose`, partial fetches, shared answers, and declined questions.
 - [Datasets and versions](docs/datasets.md): narrowing a fetch, layouts, conversions, refs, retention, `save`, and `load`.
+- [Use DFO in a data pipeline](docs/pipelines.md): search by series code, pin, refresh, link a reading, record provenance, and test offline.
 - [Long builds](docs/long-builds.md): progress, deadlines, and what Ctrl-C leaves running.
 - [Compute a figure on DFO](docs/compute.md): `dfo.analysis`, recipes, `latest_year`, recomputing on new data, and the series an operation leaves out.
 - [Cards and shares](docs/shares.md): charts, tables and headline numbers, public share links, write tokens, snapshots, and what a share showed on a date.
