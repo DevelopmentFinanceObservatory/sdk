@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `client.fileUrl(member)` returns a link to a pinned member's file that a pipeline can commit and read with any HTTP client and no key. The member is one of `data.members` or `data.ref.members`. The URL names the file selector, `/datasets/{spec_id}/{content_version}/file`, under the client's base URL, with the query of the rendering the member was built in, so it serves the same table. The call reads the version's manifest once. A version that is not pinned throws `InvalidRequestError` (`version_not_pinned`), whose new `heldUntil` field is the date DFO stops guaranteeing it and whose message says to run `client.pin(data)` first. A member of a derived dataset throws `InvalidRequestError` (`invalid_argument`) before any request.
+
 ### Changed
 
 - `client.lookup.errorCode` replaces `client.lookup.code` for the registry entry of one of DFO's own error or warning codes, so the name no longer reads as a lookup of a publisher's codes. `client.lookup.code` stays as a deprecated alias that returns the same `Code`, carries a `@deprecated` tag, and is removed in 0.4.0. Calls to `errorCode` that pass an unknown option name `client.lookup.errorCode` in the error.

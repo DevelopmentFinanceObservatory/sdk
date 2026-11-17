@@ -162,9 +162,13 @@ export class InvalidRequestError extends DfoError {
    *  request named; an item without a string `ref` and `label` is left out. Empty when the
    *  server sent none. */
   readonly alternatives: readonly Alternative[];
+  /** For `version_not_pinned`, when DFO stops guaranteeing the unpinned version, or null when it
+   *  names no time. Null for every other code. */
+  readonly heldUntil: Date | null;
 
-  constructor(options: DfoErrorOptions) {
+  constructor(options: DfoErrorOptions & { heldUntil?: Date | null }) {
     super(options);
+    this.heldUntil = options.heldUntil ?? null;
     this.issues = objects(options.problem?.["issues"]);
     this.alternatives = objects(options.problem?.["alternatives"]).filter(
       (item): item is Alternative =>

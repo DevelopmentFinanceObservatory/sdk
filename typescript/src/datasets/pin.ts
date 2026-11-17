@@ -11,16 +11,24 @@
  *
  * The pin route takes dataset versions alone, so a derived dataset, whose members name `ops_`
  * frames, is refused before any request.
+ *
+ * `fileUrl` gives a pinned member's file as a link a pipeline can commit and read with any HTTP
+ * client: the file selector, `GET /datasets/{spec_id}/{content_version}/file`, under the client's
+ * base URL, with the query of the rendering the member was built in, so it serves the same table.
+ * It reads the version's manifest first and refuses a version that is not pinned, since DFO holds
+ * an unpinned version for 30 days and a committed link to it breaks after that.
  */
 
-import { Dataset, pinnedDataset } from "./dataset.ts";
-import type { Member } from "./dataset.ts";
+import { Dataset, dayText, pinnedDataset } from "./dataset.ts";
+import type { DerivedMember, Member } from "./dataset.ts";
 import { invalid } from "./fetch.ts";
+import { storedManifest } from "./resolve.ts";
 import { clientError, DfoError, messageOf, optionsOf } from "../core/errors.ts";
 import type { DfoErrorOptions } from "../core/errors.ts";
 import { isRecord } from "../core/json.ts";
 import { trimEnd, WHITESPACE } from "../core/text.ts";
-import { isDerived } from "../core/ref.ts";
+import { isDerived, selectorQuery } from "../core/ref.ts";
+import type { DerivedRefMember, RefMember } from "../core/ref.ts";
 import type { Transport } from "../http/transport.ts";
 
 /**
@@ -99,4 +107,67 @@ async function pinMember(transport: Transport, member: Member, deadline: number)
       traceId: response.traceId,
     });
   }
+}
+
+/**
+ * The URL of a pinned member's file, in the rendering it was built in.
+ *
+ * @throws {InvalidRequestError} `member` is not a member of a dataset or its ref, or names a
+ *   frame DFO computed (`invalid_argument`), and no request is sent; or its version is not pinned
+ *   (`version_not_pinned`), with `heldUntil` naming when DFO stops guaranteeing it.
+ * @throws {DfoError} Whatever reading the version's manifest threw, such as `NotFoundError` for a
+ *   version DFO never stored.
+ */
+export async function fileUrl(
+  transport: Transport,
+  member: Member | RefMember | DerivedMember | DerivedRefMember,
+): Promise<string> {
+  const reading = readingOf(member);
+  const { spec_id: specId } = reading.spec;
+  const { manifest, traceId } = await storedManifest(transport, specId, reading.contentVersion, {
+    deadline: transport.callDeadline(),
+  });
+  const retention = isRecord(manifest["retention"]) ? manifest["retention"] : {};
+  if (retention["pinned"] !== true) {
+    const heldUntil = heldUntilOf(retention["held_until"]);
+    const held = heldUntil === null ? "" : `, held until ${dayText(heldUntil)}`;
+    throw clientError("version_not_pinned", {
+      detail:
+        `${specId} at ${reading.contentVersion} is not pinned${held}, so a link to it stops ` +
+        "working once DFO drops the version. Pin the dataset the member came from with " +
+        "client.pin(data), then ask for the link again.",
+      traceId,
+      heldUntil,
+    });
+  }
+  const path = `/datasets/${specId}/${reading.contentVersion}/file`;
+  const url = transport.url({ path });
+  url.search = selectorQuery(reading.rendering).toString();
+  return url.href;
+}
+
+/** `member`, refused unless it is a dataset version's member. */
+function readingOf(member: unknown): Member | RefMember {
+  if (!isRecord(member) || !isRecord(member["spec"]) || !("contentVersion" in member)) {
+    throw invalid(
+      "fileUrl takes a member of a dataset, such as data.members[0] or data.ref.members[0] " +
+        `after const data = await client.fetch(spec), not ${member instanceof Dataset ? "a Dataset" : typeName(member)}.`,
+    );
+  }
+  const reading = member as Member | RefMember | DerivedRefMember;
+  if (isDerived(reading)) {
+    throw invalid(
+      `fileUrl links to dataset versions, and ${reading.spec.spec_id} at ` +
+        `${reading.contentVersion} is a frame DFO computed, which has no stored file to link to. ` +
+        "data.toBytes() keeps its rows.",
+    );
+  }
+  return reading;
+}
+
+/** A retention's `held_until` as a date, or null when it is not one. */
+function heldUntilOf(value: unknown): Date | null {
+  if (typeof value !== "string") return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }

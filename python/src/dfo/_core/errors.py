@@ -17,6 +17,7 @@ import sys
 import warnings
 from collections.abc import Hashable
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, override
 
 from dfo._core.base_error import DfoError, message_of, with_suffix
@@ -40,10 +41,14 @@ class InvalidRequestError(DfoError):
         alternatives: The problem document's `alternatives`, the graph nodes the
             server offers in place of what the request named. Empty when the
             server sent none.
+        held_until: For `version_not_pinned`, the date the unpinned version
+            stops being guaranteed, or None when DFO named none. None for every
+            other code.
     """
 
     issues: tuple[ProblemIssue, ...] = ()
     alternatives: tuple[Alternative, ...] = ()
+    held_until: date | None = None
 
 
 class NotFoundError(DfoError):

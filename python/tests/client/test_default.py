@@ -67,6 +67,7 @@ def parameters(function: Callable[..., Any]) -> list[inspect.Parameter]:
         (dfo.lookup.error_code, Lookup.error_code),
         (dfo.lookup.catalogue, Lookup.catalogue),
         (dfo.pin, Client.pin),
+        (dfo.file_url, Client.file_url),
         (dfo.share, Client.share),
         (dfo.snapshot, Client.snapshot),
         (dfo.unshare, Client.unshare),

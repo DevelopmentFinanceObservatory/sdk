@@ -2,7 +2,7 @@
 
 A client asks Search what a question means (`search`), builds datasets (`fetch`),
 runs DFO's operations (`analysis`, and `fetch` of a recipe), pins versions
-(`pin`), stores cards DFO draws (`cards`), publishes them as links (`share`,
+(`pin`) and links to their files (`file_url`), stores cards DFO draws (`cards`), publishes them as links (`share`,
 `snapshot`, `unshare`, `history`), and looks up names, codes and Search's
 catalogue (`lookup`). `request`
 reaches any route the client does not wrap. The client
@@ -18,7 +18,13 @@ from dfo._config.keys import ApiKeyArgument
 from dfo._core.codes import INVALID_ARGUMENT
 from dfo._core.errors import DfoError, client_error
 from dfo._core.raw_response import RawResponse
-from dfo._core.refs import DatasetRef
+from dfo._core.refs import (
+    DatasetRef,
+    DerivedMember,
+    DerivedRefMember,
+    Member,
+    RefMember,
+)
 from dfo._core.refusals import caller_refusal
 from dfo._core.timeouts import (
     CLIENT_TIMEOUT,
@@ -34,6 +40,7 @@ from dfo._datasets.cache import Cache
 from dfo._datasets.cards import AsyncCards
 from dfo._datasets.dataset import Dataset
 from dfo._datasets.fetch import Session
+from dfo._datasets.pin import file_url as pinned_file_url
 from dfo._datasets.pin import pin as pin_versions
 from dfo._datasets.publication import Card, Moment, Served, Share, ShareTarget
 from dfo._datasets.recipe import Recipe
@@ -420,6 +427,30 @@ class AsyncClient:
                 (`allowance_exhausted`); `retry_after` says when it resets.
         """
         return await pin_versions(self._session.transport, data)
+
+    async def file_url(
+        self, member: Member | RefMember | DerivedMember | DerivedRefMember, /
+    ) -> str:
+        """The URL of a pinned member's file, a link a pipeline can commit and
+        read with any HTTP client, with no key.
+
+        The URL names the file selector for the member's exact version under
+        the client's base URL, with the query of the rendering the member was
+        built in, so it serves the same table. It reads the version's manifest
+        once to check the version is pinned.
+
+        Args:
+            member: One of `data.members` or `data.ref.members`.
+
+        Raises:
+            InvalidRequestError: `member` is not a Member or RefMember, or names
+                a frame DFO computed (`invalid_argument`), and no request is
+                sent; or its version is not pinned (`version_not_pinned`), and
+                `held_until` says when DFO stops guaranteeing it. Run
+                `client.pin(data)` first.
+            NotFoundError: DFO never stored the version.
+        """
+        return await pinned_file_url(self._session.transport, member)
 
     async def share(
         self,

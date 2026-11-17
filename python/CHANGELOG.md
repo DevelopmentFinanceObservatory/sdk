@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `dfo.file_url(member)`, `Client.file_url` and `AsyncClient.file_url` return a link to a pinned member's file that a pipeline can commit and read with any HTTP client and no key. The member is one of `data.members` or `data.ref.members`. The URL names the file selector, `/datasets/{spec_id}/{content_version}/file`, under the client's base URL, with the query of the rendering the member was built in, so it serves the same table. The call reads the version's manifest once. A version that is not pinned raises `InvalidRequestError` (`version_not_pinned`), whose new `held_until` attribute is the date DFO stops guaranteeing it and whose message says to run `dfo.pin(data)` first. A member of a derived Dataset raises `InvalidRequestError` (`invalid_argument`) before any request.
+
 ### Changed
 
 - The `pyarrow` floor is `>=19.0.1`, down from `>=21`, so the package installs beside packages that pin an older pyarrow, such as `bblocks-data-importers`. pyarrow 19.0.0 cannot read the Parquet files the server returns, and 18 and older fail to stack struct columns with differing fields.
