@@ -12,7 +12,7 @@ import ipaddress
 import json
 import re
 import unicodedata
-from typing import Any
+from typing import Any, Final
 from urllib.parse import unquote, urlsplit
 
 # The most characters of server text a message quotes. A refusal's `detail`
@@ -196,6 +196,15 @@ def quoted(value: object, key: str | None, /) -> str:
     with `key` redacted and cut to `MESSAGE_TEXT_MAX` characters. The value is
     redacted before `repr` escapes any of the key's characters."""
     return capped(repr(redacted_json(value, key)))
+
+
+# The characters ECMAScript's `String.prototype.trim` removes, which the TypeScript
+# client's `WHITESPACE` lists. `str.strip()` removes another set, with U+0085 and
+# U+001C to U+001F but without U+FEFF, so text both clients trim is stripped of these.
+WHITESPACE: Final = (
+    "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007"
+    "\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
 
 
 def is_token(value: str, /) -> bool:

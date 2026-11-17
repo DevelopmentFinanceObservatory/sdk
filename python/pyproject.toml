@@ -1,6 +1,6 @@
 [project]
 name = "development-finance"
-version = "0.2.0"
+version = "0.3.0"
 description = "Python client for the Development Finance Observatory APIs"
 
 authors = [
@@ -12,7 +12,7 @@ requires-python = ">=3.12"
 dependencies = [
     "httpcore2>=2.15; sys_platform != 'emscripten'",
     "httpx2>=2.15",
-    "pyarrow>=21",
+    "pyarrow>=19.0.1",
     "typing-extensions>=4.12",
 ]
 
@@ -67,6 +67,7 @@ dev = [
     "openpyxl>=3.1.5",
     "pyright>=1.1.414",
     "import-linter>=2.15",
+    "jsonschema>=4.23",
 ]
 
 [tool.ruff]

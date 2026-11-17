@@ -18,6 +18,7 @@ export type {
 } from "./search/answer.ts";
 export type { AnswerJson } from "./search/answer-json.ts";
 export type { ChoiceKey } from "./search/choices.ts";
+export type { CodeSearchOptions } from "./search/structured.ts";
 export type { RawRequestOptions } from "./client.ts";
 export type {
   Assumption,
@@ -50,6 +51,7 @@ export type {
   LeftOutStep,
   Member,
   PartyTotalsLeftOut,
+  ProvenanceJson,
 } from "./datasets/dataset.ts";
 export { Analysis } from "./datasets/analysis.ts";
 export type { RunOptions } from "./datasets/analysis.ts";

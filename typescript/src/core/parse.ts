@@ -129,18 +129,21 @@ function operationOf(item: Record<string, unknown>): RequestedOperation | null {
   };
 }
 
-type Notice = { code: string; severity: string; message: string };
+type Notice = { code: string; severity: string; message: string; spec_id?: string | null };
+type NoticeText = "code" | "severity" | "message";
 
 /** A warning's notice, or null when it lacks a member in `required`. The members a rule reads are
  *  required. Any other reads as `""` when it is absent or not a string, as the Python client
- *  reads it. */
-function noticeOf(
-  item: Record<string, unknown>,
-  required: readonly (keyof Notice)[],
-): Notice | null {
+ *  reads it. `spec_id` is kept when it is a string or null. */
+function noticeOf(item: Record<string, unknown>, required: readonly NoticeText[]): Notice | null {
   if (required.some((name) => typeof item[name] !== "string")) return null;
-  const read = (name: keyof Notice): string => text(item[name]) ?? "";
-  return { code: read("code"), severity: read("severity"), message: read("message") };
+  const read = (name: NoticeText): string => text(item[name]) ?? "";
+  return {
+    code: read("code"),
+    severity: read("severity"),
+    message: read("message"),
+    ...present({ spec_id: optionalString(item["spec_id"]) }),
+  };
 }
 
 type Param = NonNullable<Warning["params"]>[string];
@@ -166,7 +169,6 @@ export function warningsOf(value: unknown): readonly Warning[] {
     return {
       ...notice,
       ...present({
-        spec_id: optionalString(item["spec_id"]),
         params: params === null ? null : isRecord(params) ? paramsOf(params) : undefined,
       }),
     };

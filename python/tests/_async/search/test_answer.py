@@ -17,6 +17,7 @@ import httpx2
 import pytest
 
 import dfo._search.answer as answer_module
+from dfo._client.client import AsyncClient
 from dfo._core.errors import (
     ContractError,
     DeclinedError,
@@ -293,7 +294,7 @@ async def test_a_part_that_timed_out_marks_the_answer_and_its_json_timed_out() -
     wire["parts"][1]["no_data"]["reason"] = "timed_out"
     answer, _ = await ask("debt", wire)
     assert answer.timed_out
-    question, body, trace_id = read_answer_json(answer.to_json())
+    question, body, trace_id, _ = read_answer_json(answer.to_json())
     revived = answer_from_body(
         body, question=question, source=answer._source, trace_id=trace_id
     )
@@ -1069,3 +1070,247 @@ async def test_an_answer_holds_no_data_methods() -> None:
         answer.to_pandas()  # ty: ignore[unresolved-attribute]
     assert not hasattr(answer, "__arrow_c_stream__")
     assert not hasattr(answer, "anything_else")
+
+
+CODES = ["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD", "XX.NOPE.CD"]
+
+
+async def ask_codes(*bodies: object, **keywords: Any) -> tuple[AsyncAnswer, Server]:
+    server = Server(*bodies)
+    client = transport(server)
+    answer = await search(lambda: Session(client), **keywords)
+    return answer, server
+
+
+def with_inexact_first_code(body: dict[str, Any]) -> dict[str, Any]:
+    """The recorded reply with its first part's code no longer exact."""
+    (entry,) = body["parts"][0]["spec"]["resolved"]["stat_vars"]["source_codes"]
+    entry["exact"] = False
+    return body
+
+
+@pytest.mark.parametrize("inexact", [False, True], ids=["exact", "inexact"])
+async def test_a_search_by_codes_posts_one_part_per_code_and_builds_the_exact_ones(
+    inexact: bool, fetched: list[tuple[Any, Any, Any]]
+) -> None:
+    body = load("search-codes.json")
+    answer, server = await ask_codes(
+        with_inexact_first_code(body) if inexact else body,
+        codes=CODES,
+        entities={"destination": ["country/KEN"]},
+        window=(2015, 2020),
+    )
+    assert server.posted == [load("search-codes.request.json")]
+    assert answer.question is None
+    gaps = [0, 2] if inexact else [2]
+    assert [gap.part_index for gap in answer.gaps] == gaps
+    assert [gap.kind for gap in answer.gaps] == ["no_data"] * len(gaps)
+    with pytest.raises(IncompleteAnswerError):
+        await answer.fetch()
+    assert fetched == []
+    await answer.fetch(partial=True)
+    ((_, members, options),) = fetched
+    assert [member.parts for member in members] == [
+        (code,) for index, code in enumerate(CODES) if index not in gaps
+    ]
+    assert options["missing"] == answer.gaps
+
+
+def with_missing_echo(body: dict[str, Any]) -> dict[str, Any]:
+    """The reply with its first part inexact and its restatement naming no code."""
+    del with_inexact_first_code(body)["parts"][0]["restatement"]["source_code"]
+    return body
+
+
+def with_incorrect_echo(body: dict[str, Any]) -> dict[str, Any]:
+    """The reply with its first part reading another code exactly, which its
+    restatement names in place of the code asked."""
+    part = body["parts"][0]
+    (entry,) = part["spec"]["resolved"]["stat_vars"]["source_codes"]
+    entry["code"] = part["restatement"]["source_code"] = "DT.TDS.BLAT.CD"
+    return body
+
+
+ECHOES = [with_inexact_first_code, with_missing_echo, with_incorrect_echo]
+ECHO_IDS = ["echoed", "missing-echo", "incorrect-echo"]
+
+
+@pytest.mark.parametrize("edit", ECHOES, ids=ECHO_IDS)
+async def test_the_asked_code_decides_a_gap_live_and_through_json(
+    edit: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
+    answer, _ = await ask_codes(edit(load("search-codes.json")), codes=CODES)
+    stored = json.loads(answer.to_json())
+    assert (stored["format_version"], stored["codes"]) == (2, CODES)
+    async with AsyncClient(base_url=BASE, api_key=False, cache=False) as client:
+        revived = AsyncAnswer.from_json(json.dumps(stored), client=client)
+    for read in (answer, revived):
+        assert [(gap.part_index, gap.kind) for gap in read.gaps] == [
+            (0, "no_data"),
+            (2, "no_data"),
+        ]
+        assert not read.complete
+        assert [spec.spec_id for spec in read.specs] == [
+            answer.parts[1].spec.spec_id  # ty: ignore[unresolved-attribute]
+        ]
+    assert json.loads(revived.to_json()) == stored
+
+
+@pytest.mark.parametrize("written_by", ["0.3", "0.2.0"])
+async def test_an_answer_by_codes_keeps_its_gaps_through_json(written_by: str) -> None:
+    answer, _ = await ask_codes(
+        with_inexact_first_code(load("search-codes.json")), codes=CODES
+    )
+    stored = json.loads(answer.to_json())
+    if written_by == "0.2.0":
+        # development-finance 0.2.0 cut `resolved.stat_vars` from answer JSON and
+        # wrote no `codes`, so no code part of its answers is known to be its
+        # code's series alone.
+        del stored["codes"]
+        stored["format_version"] = 1
+        for part in stored["answer"]["parts"]:
+            if "spec" in part:
+                del part["spec"]["resolved"]["stat_vars"]
+    async with AsyncClient(base_url=BASE, api_key=False, cache=False) as client:
+        revived = AsyncAnswer.from_json(json.dumps(stored), client=client)
+    if written_by == "0.3":
+        assert revived.gaps == answer.gaps
+    else:
+        assert [(gap.part_index, gap.kind) for gap in revived.gaps] == [
+            (0, "no_data"),
+            (1, "no_data"),
+            (2, "no_data"),
+        ]
+
+
+async def test_a_live_code_part_without_stat_vars_is_a_gap() -> None:
+    body = load("search-codes.json")
+    for part in body["parts"]:
+        if "spec" in part:
+            del part["spec"]["resolved"]["stat_vars"]
+    answer, _ = await ask_codes(body, codes=CODES)
+    assert [gap.part_index for gap in answer.gaps] == [0, 1, 2]
+
+
+async def test_a_choice_beside_a_code_gap_posts_the_code_part_restated() -> None:
+    # Search answers an identity entry with no restatement, so posting the
+    # code-gapped part by its identity would lose its code and its gap. Posted
+    # restated, it comes back with its code, and the new answer checks it again.
+    body = load("search-two-parts-candidates.json")
+    body["parts"][0] = with_inexact_first_code(load("search-codes.json"))["parts"][0]
+    reply = with_inexact_first_code(load("probe-resubmit-code-part.json"))
+    answer, server = await ask(TWO_PARTS, body, reply)
+    assert [(gap.part_index, gap.kind) for gap in answer.gaps] == [
+        (0, "no_data"),
+        (1, "choice"),
+    ]
+    chosen = await answer.choose(0)
+    assert server.posted[1] == load("probe-resubmit-code-part.request.json")
+    assert [(gap.part_index, gap.kind) for gap in chosen.gaps] == [(0, "no_data")]
+    assert len(chosen.specs) == 1
+
+
+def with_candidates_second(body: dict[str, Any]) -> dict[str, Any]:
+    """The reply with its second part awaiting a choice of reading."""
+    body["parts"][1] = load("search-two-parts-candidates.json")["parts"][1]
+    return body
+
+
+@pytest.mark.parametrize("edit", ECHOES, ids=ECHO_IDS)
+async def test_a_choice_in_an_answer_by_codes_keeps_the_codes(
+    edit: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
+    first = with_candidates_second(load("search-codes.json"))
+    answer, _ = await ask_codes(first, edit(load("search-codes.json")), codes=CODES)
+    chosen = await answer.choose(0)
+    assert [(gap.part_index, gap.kind) for gap in chosen.gaps] == [
+        (0, "no_data"),
+        (2, "no_data"),
+    ]
+    assert not chosen.complete
+    assert len(chosen.specs) == 1
+    assert json.loads(chosen.to_json())["codes"] == CODES
+
+
+async def test_a_choice_answered_with_a_part_short_violates_the_contract() -> None:
+    first = with_candidates_second(load("search-codes.json"))
+    answer, _ = await ask_codes(
+        first, without_last_part(load("search-codes.json")), codes=CODES
+    )
+    with pytest.raises(ContractError) as violated:
+        await answer.choose(0)
+    assert violated.value.code == "contract_violation"
+
+
+@pytest.mark.parametrize(
+    ("question", "keywords"),
+    [
+        ("debt service of Kenya", {"codes": CODES}),
+        ("debt service of Kenya", {"window": (2015, 2020)}),
+        (None, {"entities": {"place": ["country/KEN"]}}),
+        (None, {}),
+        (None, {"codes": "DT.TDS.MLAT.CD"}),
+    ],
+    ids=[
+        "question-and-codes",
+        "question-and-window",
+        "no-codes",
+        "nothing",
+        "one-string",
+    ],
+)
+async def test_a_search_that_mixes_or_lacks_its_inputs_is_refused_before_any_request(
+    question: str | None, keywords: dict[str, Any]
+) -> None:
+    server = Server()
+    client = transport(server)
+    with pytest.raises(InvalidRequestError) as refused:
+        await search(lambda: Session(client), question, **keywords)
+    assert refused.value.code == "invalid_argument"
+    assert server.posted == []
+
+
+async def test_codes_passed_as_the_question_are_refused_with_the_keyword() -> None:
+    server = Server()
+    client = transport(server)
+    codes: Any = ["DT.TDS.MLAT.CD"]
+    with pytest.raises(InvalidRequestError) as refused:
+        await search(lambda: Session(client), codes)
+    assert "search(codes=[...])" in str(refused.value)
+
+
+async def test_codes_passed_as_the_question_beside_a_keyword_get_the_codes_hint() -> (
+    None
+):
+    server = Server()
+    client = transport(server)
+    codes: Any = ["DT.TDS.MLAT.CD"]
+    with pytest.raises(InvalidRequestError) as refused:
+        await search(
+            lambda: Session(client), codes, entities={"place": ["country/KEN"]}
+        )
+    assert "search(codes=[...])" in str(refused.value)
+    assert "not both" not in str(refused.value)
+
+
+def without_last_part(body: dict[str, Any]) -> dict[str, Any]:
+    body["parts"].pop()
+    return body
+
+
+def time_text_not_parsed(body: dict[str, Any]) -> dict[str, Any]:
+    body["parts"][1]["warnings"].append(
+        {"code": "time_text_not_parsed", "severity": "warn", "message": "unread"}
+    )
+    return body
+
+
+@pytest.mark.parametrize(
+    "edit", [without_last_part, time_text_not_parsed], ids=["parts", "years"]
+)
+async def test_an_answer_that_does_not_read_the_codes_as_sent_violates_the_contract(
+    edit: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
+    with pytest.raises(ContractError) as violated:
+        await ask_codes(edit(load("search-codes.json")), codes=CODES)
+    assert violated.value.code == "contract_violation"

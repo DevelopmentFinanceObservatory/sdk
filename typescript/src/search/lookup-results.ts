@@ -193,7 +193,7 @@ export class Code {
   /** The registry's response body, untouched. */
   readonly raw: CodeRegistryEntry;
 
-  /** @internal Codes come from `client.lookup.code`. */
+  /** @internal Codes come from `client.lookup.errorCode`. */
   constructor(entry: CodeRegistryEntry) {
     this.code = entry.code;
     this.definition = entry.definition ?? null;
@@ -280,7 +280,7 @@ export function withEntityDcids<T>(options: T): T {
  * @throws {InvalidRequestError} A `Match` did not resolve (`match_unresolved`). The message
  *   names the dcid of its first candidate, else of its nearest match.
  */
-function entityDcid(role: string, item: unknown): unknown {
+export function entityDcid(role: string, item: unknown): unknown {
   if (item instanceof Entity) return item.dcid;
   if (!(item instanceof Match)) return item;
   if (item.status === "resolved" && item.entity !== null) return item.entity.dcid;

@@ -1,0 +1,47 @@
+{
+ "schema_version": 1,
+ "input": {
+  "kind": "parsed",
+  "parts": [
+   {
+    "variable_text": "DT.TDS.MLAT.CD",
+    "source_code": "DT.TDS.MLAT.CD",
+    "separate": true,
+    "entities": [
+     {
+      "text": "country/KEN",
+      "dcid": "country/KEN",
+      "role_text": "to"
+     }
+    ],
+    "time_text": "2015 to 2020"
+   },
+   {
+    "variable_text": "DT.TDS.BLAT.CD",
+    "source_code": "DT.TDS.BLAT.CD",
+    "separate": true,
+    "entities": [
+     {
+      "text": "country/KEN",
+      "dcid": "country/KEN",
+      "role_text": "to"
+     }
+    ],
+    "time_text": "2015 to 2020"
+   },
+   {
+    "variable_text": "XX.NOPE.CD",
+    "source_code": "XX.NOPE.CD",
+    "separate": true,
+    "entities": [
+     {
+      "text": "country/KEN",
+      "dcid": "country/KEN",
+      "role_text": "to"
+     }
+    ],
+    "time_text": "2015 to 2020"
+   }
+  ]
+ }
+}

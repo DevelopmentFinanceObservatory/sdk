@@ -63,6 +63,7 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
         "Client",
         "Dataset",
         "DatasetRef",
+        "Provenance",
         "Spec",
         "analysis",
         "auth",
@@ -70,6 +71,7 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
         "configure",
         "errors",
         "fetch",
+        "file_url",
         "history",
         "latest_year",
         "load",
@@ -114,6 +116,7 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
                 "SearchWarning",
                 "SeriesLeftOutWarning",
                 "ServerError",
+                "VersionNotPinnedError",
                 "VersionUnavailableError",
             ],
         ),
@@ -211,6 +214,7 @@ def test_the_top_level_holds_the_verbs_the_core_types_and_the_task_modules() -> 
                 "ResolveKind",
                 "catalogue",
                 "code",
+                "error_code",
                 "node",
                 "resolve",
             ],
@@ -244,5 +248,5 @@ def test_every_error_and_warning_class_is_in_dfo_errors() -> None:
         if cls.__module__.startswith("dfo."):
             found.add(cls.__name__)
         pending.extend(cls.__subclasses__())
-    assert len(found) == 21
+    assert len(found) == 22
     assert found <= set(dfo.errors.__all__)

@@ -61,6 +61,7 @@ type ClientCodeName = Literal[
     "resource_limit",
     "response_too_large",
     "unexpected_response",
+    "version_not_pinned",
     "version_unavailable",
 ]
 # Every code the client raises itself, the one whose class follows the status
@@ -70,6 +71,7 @@ type WarningCodeName = Literal[
     "key_checksum_mismatch",
     "key_not_base62",
     "key_unknown_prefix",
+    "name_deprecated",
     "ref_digest_changed",
     "route_deprecated",
     "series_left_out",
@@ -289,6 +291,7 @@ CLIENT_CODES: Final[dict[ClientCodeName, tuple[str, bool]]] = {
     "resource_limit": ("BundleError", False),
     "response_too_large": ("ServerError", False),
     "unexpected_response": ("ContractError", False),
+    "version_not_pinned": ("VersionNotPinnedError", False),
     "version_unavailable": ("VersionUnavailableError", False),
 }
 
@@ -297,6 +300,7 @@ WARNING_CODES: Final[dict[WarningCodeName, str]] = {
     "key_checksum_mismatch": "DfoWarning",
     "key_not_base62": "DfoWarning",
     "key_unknown_prefix": "DfoWarning",
+    "name_deprecated": "DfoDeprecationWarning",
     "ref_digest_changed": "DfoWarning",
     "route_deprecated": "DfoDeprecationWarning",
     "series_left_out": "SeriesLeftOutWarning",

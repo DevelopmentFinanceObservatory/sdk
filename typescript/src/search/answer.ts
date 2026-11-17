@@ -1,8 +1,8 @@
 /**
  * An answer is what Search understood a question to ask, part by part.
  *
- * An answer holds readings. `fetch` builds the dataset when every part has a reading,
- * and raises `IncompleteAnswerError` before any build when one does not. `choose` settles a part
+ * An answer holds readings. `fetch` builds the dataset when the answer is complete, and raises
+ * `IncompleteAnswerError` before any build when it has a gap. `choose` settles a part
  * that awaits a choice and returns a new answer. `toJSON` and `Answer.fromJSON` carry an answer
  * across a request, as between a web page and its server.
  */
@@ -29,12 +29,14 @@ import type {
 } from "../datasets/fetch.ts";
 import { CODE_GAP_KINDS } from "../generated/actions.ts";
 import type { GAP_KINDS } from "../generated/actions.ts";
-import { parsedInputOf, partFacts, warningsOf } from "../core/parse.ts";
+import { candidatesOf, queryOptions } from "../core/candidates.ts";
+import { partFacts, warningsOf } from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
 import { definiteParts, isKnownPart, partSentence, partText } from "../core/parts.ts";
-import type { DefinitePart, KnownPart, NoDataPart, Part } from "../core/parts.ts";
+import type { DefinitePart, KnownPart, Part } from "../core/parts.ts";
 import { checkOptions, declareOptions } from "../core/options.ts";
 import { withEntityDcids } from "./lookup-results.ts";
+import { askedCode, checkReply, codeGap } from "./structured.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
 import type { Transport } from "../http/transport.ts";
@@ -50,12 +52,10 @@ import type {
   RawTextInput,
 } from "../wire.ts";
 import type { Spec } from "../core/ref.ts";
-import { isRecord, list, objects, strings, text } from "../core/json.ts";
+import { isRecord, list, text } from "../core/json.ts";
 
 /** Longer than Search's 45-second soft deadline, so a slow answer arrives whole. */
 const SEARCH_TIMEOUT_MS = 60_000;
-
-const NO_ASSUMPTIONS: readonly Assumption[] = Object.freeze([]);
 
 /** What a gap needs to settle it: the contract's gap kinds, or one the client derives. */
 export type GapKind = (typeof GAP_KINDS)[number] | "unknown";
@@ -209,6 +209,8 @@ type AnswerInit = {
   traceId?: string | null;
   raw: Readonly<Record<string, unknown>>;
   context: AnswerContext;
+  /** The series code each part was asked by, for a search by codes. */
+  codes?: readonly string[] | undefined;
 };
 
 /** The context each client's answers use, for `Answer.fromJSON`. */
@@ -222,6 +224,9 @@ export function registerClient(client: Client, context: AnswerContext): void {
 /** What Search understood a question to ask, as one reading per part. */
 export class Answer {
   readonly kind: AnswerKind;
+  /** The parts' shared status, `mixed` when they differ, or the kind of a declined or catalogue
+   *  answer. It is Search's status, so a definite answer can still have a gap from a series
+   *  code. `complete` says whether it has none. */
   readonly status: AnswerStatus;
   /** Search's sentence for the whole answer; null for a declined or catalogue answer. */
   readonly sentence: string | null;
@@ -231,9 +236,11 @@ export class Answer {
   readonly parts: readonly Part[];
   /** The readings, one per distinct `spec_id`, in query order. */
   readonly specs: readonly Spec[];
-  /** Whether every part has a reading. */
+  /** Whether every part has a reading `fetch` builds: each part is definite, and a part asked by
+   *  a series code reads that code's series alone. */
   readonly complete: boolean;
-  /** The parts that stop a complete dataset, in query order. */
+  /** The parts that stop a complete dataset, in query order. A definite part asked by a series
+   *  code whose reading is not that code's series alone is one, of kind `no_data`. */
   readonly gaps: readonly Gap[];
   /** The question asked, when the answer came from one. */
   readonly question: string | null;
@@ -254,6 +261,10 @@ export class Answer {
    *  body it held. */
   readonly raw: Readonly<Record<string, unknown>>;
   readonly #context: AnswerContext;
+  /** The series code each part was asked by, in part order, for an answer to a search by codes;
+   *  null for a question in words. The gaps check each reading against these, and `toJSON`,
+   *  `choose` and the text carry them on. */
+  readonly #codes: readonly string[] | null;
   #facts: readonly PartFacts[] | undefined;
   /** The members `fetch` builds, one per distinct spec. */
   readonly #members: readonly MemberRequest[];
@@ -272,12 +283,17 @@ export class Answer {
     this.traceId = init.traceId ?? null;
     this.raw = init.raw;
     this.#context = init.context;
+    const codes = init.codes ?? null;
+    this.#codes = codes;
     this.gaps = this.parts.flatMap((part, index) => {
-      const gap = gapFor(index, part);
+      const gap =
+        gapFor(index, part) ?? codeGap(index, part, codes ? codes[index]! : askedCode(part));
       return gap === null ? [] : [gap];
     });
     this.complete = this.kind === "resolution" && this.gaps.length === 0;
-    const members = membersOf(this.parts);
+    const gapped = new Set(this.gaps.map((gap) => gap.partIndex));
+    const answered = new Set(this.parts.flatMap((_, index) => (gapped.has(index) ? [] : [index])));
+    const members = membersOf(this.parts, answered);
     this.#members = members;
     this.specs = members.map((member) => member.spec);
   }
@@ -300,15 +316,18 @@ export class Answer {
    * Search to bind it again. The option is named by its index or its label. `part` names the
    * part by its index, its variable text, or a word of the question its options settle, and is
    * needed only when several parts await a choice: `answer.choose(0, { part: "GDP" })`. The
-   * chosen answer's sentence and assumptions are Search's.
+   * chosen answer's sentence and assumptions are Search's. A choice in an answer to a search by
+   * codes keeps the codes, part for part, so the new answer checks each reading against the code
+   * asked for.
    *
    * @throws {InvalidRequestError} No part, or more than one, awaits a choice and `part` is not
    *   given; the part or option is unknown; the part offers no options; or a part cannot be
    *   posted back (`choice_invalid`); or `options` is not an object or holds a key outside
    *   `ChooseOptions` (`invalid_argument`). A part or label that names nothing is refused with the nearest
    *   match and the valid choices.
-   * @throws {ContractError} The chosen option carries no one-part `data_query`. The error carries
-   *   the answer's trace id.
+   * @throws {ContractError} The chosen option carries no one-part `data_query`. In an answer to a
+   *   search by codes, also Search answers with another number of parts than codes
+   *   (`contract_violation`). The error carries the answer's trace id.
    */
   async choose(option: ChoiceKey, options: ChooseOptions = {}): Promise<Answer> {
     const { part, ...request } = checkOptions(CHOOSE_OPTIONS, options);
@@ -316,7 +335,11 @@ export class Answer {
       const gap = part === undefined ? onlyChoice(this) : gapNamed(this, part);
       return choiceInput(this, gap, pick(gap, option, part));
     });
-    return resolveAnswer(this.#context, input, { ...request, question: this.question });
+    return resolveAnswer(this.#context, input, {
+      ...request,
+      question: this.question,
+      ...(this.#codes === null ? {} : { codes: this.#codes }),
+    });
   }
 
   /**
@@ -348,7 +371,7 @@ export class Answer {
     const members = this.#members;
     if (this.gaps.length > 0 && (partial !== true || members.length === 0)) {
       throw clientError("answer_incomplete", {
-        detail: incompleteMessage(this),
+        detail: incompleteMessage(this, this.#codes),
         traceId: this.traceId,
         answer: this,
         gaps: this.gaps,
@@ -376,7 +399,7 @@ export class Answer {
   /** The answer as a reader sees it: the sentence and the call that fetches it, or what is
    *  missing and the calls that settle it. */
   toString(): string {
-    return answerText(this);
+    return answerText(this, this.#codes);
   }
 
   /** Node's `console.log` and `util.inspect` show the answer as `String(answer)` does. */
@@ -387,10 +410,12 @@ export class Answer {
   /**
    * The answer in the answer format, `{format_version: 1, question, answer}`, which every DFO
    * client reads. `answer` is the Search response cut to the members a client reads, with the
-   * answer's trace id. `JSON.stringify(answer)` and `Response.json({ answer })` write it.
+   * answer's trace id. An answer to a search by codes also holds `codes`, one per part, so the
+   * answer read back checks each reading against the code asked for, as the live answer does.
+   * `JSON.stringify(answer)` and `Response.json({ answer })` write it.
    */
   toJSON(): AnswerJson {
-    return answerJson(this.question, this.raw, this.traceId);
+    return answerJson(this.question, this.raw, this.traceId, this.#codes);
   }
 
   /**
@@ -407,7 +432,8 @@ export class Answer {
    * beyond the public tier, keep the answer on the server, stored under a random id that the
    * page sends back, or sign it before it leaves.
    *
-   * @throws {FormatError} The value is not JSON in the answer format (`format_invalid`).
+   * @throws {FormatError} The value is not JSON in the answer format, or its `codes` is not one
+   *   non-blank string per part (`format_invalid`).
    * @throws {InvalidRequestError} `client` is not a `Client` (`invalid_argument`).
    * @throws {DfoError} The body is a problem document, as a Search response would raise it.
    * @throws {ContractError} The body lacks a member the client acts on, as a Search response
@@ -421,8 +447,10 @@ export class Answer {
           "Answer.fromJSON needs the client its requests go through: Answer.fromJSON(value, client).",
       });
     }
-    const { question, body, traceId } = readAnswerJson(value);
-    return describing(traceId, () => answerFromBody(body, context, question, traceId));
+    const { question, body, traceId, codes } = readAnswerJson(value);
+    return describing(traceId, () =>
+      answerFromBody(body, context, question, traceId, codes ?? undefined),
+    );
   }
 }
 
@@ -430,7 +458,7 @@ export class Answer {
 export async function resolveAnswer(
   context: AnswerContext,
   input: RawTextInput | ParsedInput | DatasetResubmitInput,
-  options: SearchOptions & { question: string | null },
+  options: SearchOptions & { question: string | null; codes?: readonly string[] },
 ): Promise<Answer> {
   const { transport } = context;
   const response = await transport.request({
@@ -441,12 +469,20 @@ export async function resolveAnswer(
     signal: options.signal,
   });
   const { body, traceId } = response;
-  return describing(traceId, () => answerFromBody(body, context, options.question, traceId));
+  return describing(traceId, () =>
+    answerFromBody(body, context, options.question, traceId, options.codes),
+  );
 }
 
 /**
  * Reads a decoded Search response into an answer. `traceId` is the trace id of the response
- * the body came from.
+ * the body came from. `codes` are the series codes a search by codes asked, one per part in
+ * order, and the code a part asked is the authority whatever its restatement names. Without
+ * them, as for a question in words, a part's code is the `source_code` of its restatement. A
+ * definite part asked by a code whose reading is not that code's series alone is a gap of kind
+ * `no_data`, so `fetch` builds it only beside `partial: true`, and then leaves it out. A code
+ * part whose spec has no `resolved.stat_vars`, as in an answer `@developmentfinance/client`
+ * 0.2.0 wrote, is such a gap too.
  *
  * @throws {DfoError} The body is a problem document (a `code` and no `kind`): the class the
  *   contract's actions give its code, or `ContractError` (`contract_violation`) for a code they
@@ -461,6 +497,7 @@ export function answerFromBody(
   context: AnswerContext,
   question: string | null,
   traceId: string | null = null,
+  codes?: readonly string[],
 ): Answer {
   if (!isRecord(body)) {
     throw clientError("contract_violation", {
@@ -503,6 +540,7 @@ export function answerFromBody(
     });
   }
   const typed = parts.map(readPart);
+  if (codes !== undefined) checkReply(typed, warnings, codes);
   const sentence = text(body["rendered_sentence"]);
   const status = text(body["status"]);
   return new Answer({
@@ -518,6 +556,7 @@ export function answerFromBody(
     traceId,
     raw: body,
     context,
+    codes,
   });
 }
 
@@ -574,17 +613,18 @@ function sharedStatus(parts: readonly Part[]): string {
   return statuses.size === 1 ? [...statuses][0]! : "mixed";
 }
 
-/** One member per distinct `spec_id`, in query order, with the first part's spec; folded parts
- *  share their spec's member, which names each of them that has variable text. A part without
- *  any names nothing. */
+/** One member per distinct `spec_id` of the answered parts, in query order, with the first
+ *  part's spec; folded parts share their spec's member, which names each of them that has
+ *  variable text. A part without any names nothing. */
 function membersOf(
   parts: readonly Part[],
+  answered: ReadonlySet<number>,
 ): (MemberRequest & { readonly spec: DefinitePart["spec"] })[] {
   const grouped = new Map<
     string,
     { spec: DefinitePart["spec"]; parts: string[]; answerParts: Part[] }
   >();
-  for (const part of definiteParts(parts)) {
+  for (const part of definiteParts(parts.filter((_, index) => answered.has(index)))) {
     const { spec } = part;
     const entry = grouped.get(spec.spec_id) ?? { spec, parts: [], answerParts: [] };
     const name = partText(part);
@@ -617,10 +657,7 @@ function gapFor(partIndex: number, part: Part): Gap | null {
     case "definite":
       return null;
     case "candidates": {
-      const { readingAssumptions } = partFacts(part);
-      const candidates = part.candidates.specs.map((spec) =>
-        candidateFrom(spec, readingAssumptions.get(spec.spec_id) ?? NO_ASSUMPTIONS),
-      );
+      const candidates = candidatesOf(part);
       return gap("choice", `${candidates.length} readings`, candidates);
     }
     case "no_data": {
@@ -633,53 +670,4 @@ function gapFor(partIndex: number, part: Part): Gap | null {
     case "unsupported":
       return gap("unsupported", text(part.unsupported.detail) || part.unsupported.code);
   }
-}
-
-/** A refusal's choices, from `no_data.options`, read tolerantly. Each option's `data_query` is
- *  the input that settles it. */
-function queryOptions(noData: NoDataPart["no_data"]): Option[] {
-  return objects(noData.options).map((option) => ({
-    kind: "query",
-    label: text(option["label"]) ?? "",
-    mentions: strings(option["mentions"]),
-    dataQuery: parsedInputOf(option["data_query"]),
-    entityChoice: indexOf(option["entity_choice"]),
-  }));
-}
-
-/** A non-negative JSON integer, or null for any other value. */
-function indexOf(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
-}
-
-/** A candidate from its full spec and what Search assumed for it. The label is the sentence's
- *  heading and the unit the byline's unit slot, so label, unit and source together say what the
- *  sentence says. */
-function candidateFrom(spec: DefinitePart["spec"], assumptions: readonly Assumption[]): Candidate {
-  const { resolved } = spec;
-  const tokens = objects(resolved.sentence_plan);
-  const heading = tokens
-    .filter((token) => (text(token["segment"]) ?? "heading") === "heading")
-    .map((token) => text(token["text"]) ?? "")
-    .join("")
-    .trim();
-  const unit = tokens
-    .filter(
-      (token) =>
-        token["segment"] === "byline" && token["kind"] === "slot" && token["axis"] === "unit",
-    )
-    .map((token) => text(token["text"]))
-    .find(Boolean);
-  const sentence = text(resolved.rendered_sentence);
-  const facets: unknown = resolved.facets;
-  const provenance = isRecord(facets) ? facets["provenance"] : undefined;
-  return Object.freeze({
-    kind: "candidate",
-    spec,
-    sentence,
-    label: heading || sentence || null,
-    source: isRecord(provenance) ? text(provenance["label"]) : null,
-    unit: unit ?? null,
-    assumptions,
-  });
 }

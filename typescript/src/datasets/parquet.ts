@@ -477,10 +477,12 @@ export const memberRows = (parts: readonly TablePart[]): number[] =>
  */
 export async function decodeStored({ parts, order }: Table): Promise<StoredColumn[]> {
   const stacked = new Map((await decodeStacked(parts)).map((column) => [column.name, column]));
+  const { rows } = order;
   return order.columns.map((name) => {
     const column = stacked.get(name)!;
-    const values = Array.from(order.rows, (row) => column.values[row]);
-    return { ...column, values };
+    // A range keeps every stacked row in place, so the decoded values are the column's.
+    if (!(rows instanceof Uint32Array)) return column;
+    return { ...column, values: Array.from(rows, (row) => column.values[row]) };
   });
 }
 

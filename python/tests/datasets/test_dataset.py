@@ -16,6 +16,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+import dfo._datasets.dataset as dataset_module
 from dfo._core.errors import ContractError, DfoError
 from dfo._core.parse import parse_parts
 from dfo._core.refs import (
@@ -165,12 +166,65 @@ def test_the_recorded_retention_reads_its_date() -> None:
     assert data.pinned is False
 
 
+# The forms of `held_until` both clients read alike, and values both read as
+# unknown; the TypeScript client's `heldUntilOf` table holds the same rows.
+_HELD_UNTIL_FORMS = [
+    ("2026-11-18", date(2026, 11, 18)),
+    ("2026-11-18T10:00:00Z", date(2026, 11, 18)),
+    ("2026-11-18T23:30:00-05:00", date(2026, 11, 18)),
+    ("2026-11-18T00:30:00+14:00", date(2026, 11, 18)),
+    ("2026-11-18T10:00:00.123456789Z", date(2026, 11, 18)),
+    ("2026-11-18T10:00:00", date(2026, 11, 18)),
+    ("2024-02-29", date(2024, 2, 29)),
+    ("2026-02-30", None),
+    ("2026-02-30T10:00:00Z", None),
+    ("2026-13-01", None),
+    ("2026-11-18T25:00:00Z", None),
+    ("2026-11-18T23:59:60Z", None),
+    ("soon", None),
+    (20261118, None),
+    ("20261118", None),
+    ("2026-11-18T24:00:00Z", None),
+    ("2026-11-18T10:00Z", None),
+    ("2026-11-18 10:00:00Z", None),
+    ("2026-W47-3", None),
+    ("2026-11-18T10:00:00+05:60", None),
+    ("0050-01-01", date(50, 1, 1)),
+    ("0000-01-01", None),
+]
+
+
+@pytest.mark.parametrize(("held_until", "expected"), _HELD_UNTIL_FORMS)
+def test_held_until_reads_the_date_the_text_writes(
+    held_until: object, expected: date | None
+) -> None:
+    data = built(
+        with_retention(recorded_member(), {"pinned": False, "held_until": held_until})
+    )
+    assert data.members[0].held_until == expected
+    assert data.held_until == expected
+
+
+def test_retention_is_read_from_the_members_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = built()
+    expected = (data.held_until, data.pinned)
+
+    def again(_: object) -> None:
+        raise AssertionError("retention read again after the dataset was made")
+
+    monkeypatch.setattr(dataset_module, "dataset_retention", again)
+    assert (data.held_until, data.pinned) == expected
+
+
 def test_retention_absent_reads_none_and_is_not_shown() -> None:
     body = manifest()
     del body["retention"]
     data = built(recorded_member(manifest=body))
     assert data.held_until is None
     assert data.pinned is False
+    assert (data.members[0].pinned, data.members[0].held_until) == (None, None)
     assert "held until" not in repr(data).lower()
     assert "pinned" not in repr(data).lower()
 
@@ -185,6 +239,10 @@ def test_held_until_is_the_earliest_member_date() -> None:
     data = built(first, second)
     assert data.held_until == date(2026, 11, 18)
     assert data.pinned is False
+    assert [(member.pinned, member.held_until) for member in data.members] == [
+        (False, date(2026, 12, 1)),
+        (False, date(2026, 11, 18)),
+    ]
     assert "held until 18 November 2026, not pinned" in repr(data)
 
 
@@ -198,6 +256,10 @@ def test_pinned_when_every_member_is_pinned() -> None:
     assert "(exact), pinned" in repr(both)
     mixed = built(pinned, held)
     assert (mixed.pinned, mixed.held_until) == (False, date(2026, 11, 18))
+    assert [(member.pinned, member.held_until) for member in mixed.members] == [
+        (True, None),
+        (False, date(2026, 11, 18)),
+    ]
 
 
 def test_several_members_stack_with_a_part_column() -> None:
@@ -1348,13 +1410,13 @@ def test_a_fetch_that_left_party_totals_out_names_them_and_saves_them(
     (served,) = record["exchanges"][0]["response"]["json"]["trace"][
         "party_totals_left_out"
     ]
-    assert "provenance" not in served
+    assert isinstance(served["provenance"], str)
     assert data.party_totals_left_out == (
         PartyTotalsLeftOut(
             spec_id=data.members[0].spec.spec_id,
             role="financingProvider",
             entities=tuple(served["entities"]),
-            every_provenance=True,
+            provenance=served["provenance"],
         ),
     )
     count = len(served["entities"])
@@ -1576,6 +1638,8 @@ def _dataset_edit(
         (lambda m: m.pop(b"dfo.ref"), "/dfo.dataset/member_citations"),
         (_dataset_edit(lambda d: d.pop("stale")), "/dfo.dataset/stale"),
         (_dataset_edit(lambda d: d.update(complete="no")), "/dfo.dataset/complete"),
+        (_dataset_edit(lambda d: d.update(complete=True)), "/dfo.dataset/complete"),
+        (_dataset_edit(lambda d: d.update(missing=[])), "/dfo.dataset/complete"),
         (
             _dataset_edit(lambda d: d.update(held_until="soon")),
             "/dfo.dataset/held_until",
@@ -1668,6 +1732,8 @@ def _dataset_edit(
         "ref-removed",
         "flag-removed",
         "flag-not-boolean",
+        "complete-beside-missing",
+        "incomplete-without-missing",
         "held-until-not-a-date",
         "gap-kind-unknown",
         "gap-part-not-object",

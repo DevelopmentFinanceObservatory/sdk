@@ -258,11 +258,12 @@ The saved file keeps the provenance in the Parquet key-value metadata, under the
 - `dfo.ref`: optional, the ref as `ref.to_json()` writes it. A bundle opened from a folder has none.
 - `dfo.question`: optional, the question, as a JSON string. Added in 0.2.0.
 - `dfo.fetched_at`: optional, when the data left the server, as a JSON string `YYYY-MM-DDTHH:MM:SSZ`. Added in 0.2.0.
+- `dfo.retention`: written with `dfo.ref`, each member's retention, as a JSON array of `{"pinned", "held_until"}`, one per member in order. A file without it reads every member as pinned when `pinned` is true, and with both None otherwise. Added in 0.3.0.
 - `dfo.left_out`: a derived dataset only, the series its steps left out, as a JSON object of `series` and `complete`.
 - `dfo.steps`: a derived dataset only, its steps, as a JSON array.
 - `dfo.party_totals_left_out`: optional, the party totals the fetch left out, as a JSON array of entries with `spec_id`, `role`, `entities`, and `provenance` and `kept_in` where they apply. A derived dataset's entries name its readings' spec ids, in the order of its readings. Added in 0.2.0.
 
-`dfo.load` reads each key back, `question` and `fetched_at` included, and sets `from_cache` to False. A 0.1.0 client ignores the keys added in 0.2.0.
+`dfo.load` reads each key back, `question` and `fetched_at` included, and sets `from_cache` to False. A 0.1.0 client ignores the keys added in 0.2.0, and a 0.2.0 client the key added in 0.3.0.
 
 `dfo.load` also opens a bundle downloaded from the website: the ZIP, the folder it extracts to, or its `datapackage.json`. It checks each file against its hash before it reads the data, and raises `dfo.errors.BundleError` when a file is missing or its bytes differ. `dfo.load(path, limits=dfo.types.BundleLimits(...))` changes the size bounds it enforces on a bundle.
 

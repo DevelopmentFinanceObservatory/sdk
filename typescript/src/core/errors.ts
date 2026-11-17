@@ -172,6 +172,16 @@ export class InvalidRequestError extends DfoError {
     );
   }
 }
+/** A link is asked for a version DFO keeps for a limited time. The caller pins it first. */
+export class VersionNotPinnedError extends InvalidRequestError {
+  /** When DFO stops guaranteeing the unpinned version, or null when it names no time. */
+  readonly heldUntil: Date | null;
+
+  constructor(options: DfoErrorOptions & { heldUntil?: Date | null }) {
+    super(options);
+    this.heldUntil = options.heldUntil ?? null;
+  }
+}
 /** A spec, version or operation is unknown. The caller checks the id. */
 export class NotFoundError extends DfoError {}
 /** A part of the question has no reading. The caller chooses one or takes the answered parts. */
@@ -235,6 +245,7 @@ export class DfoTimeoutError extends DfoError {}
 for (const [name, errorClass] of Object.entries({
   DfoError,
   InvalidRequestError,
+  VersionNotPinnedError,
   NotFoundError,
   IncompleteAnswerError,
   DeclinedError,
@@ -387,6 +398,7 @@ const CLIENT_CLASSES = {
   InvalidRequestError,
   NetworkError,
   ServerError,
+  VersionNotPinnedError,
   VersionUnavailableError,
 } satisfies Record<ClientClassName, ErrorClass>;
 

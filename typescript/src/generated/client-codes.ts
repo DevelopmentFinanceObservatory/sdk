@@ -35,6 +35,7 @@ export const CLIENT_CODE_CLASSES = {
   resource_limit: "BundleError",
   response_too_large: "ServerError",
   unexpected_response: "ContractError",
+  version_not_pinned: "VersionNotPinnedError",
   version_unavailable: "VersionUnavailableError",
 } as const;
 
@@ -73,5 +74,6 @@ export const CLIENT_CODE_RETRYABLE = {
   resource_limit: false,
   response_too_large: false,
   unexpected_response: false,
+  version_not_pinned: false,
   version_unavailable: false,
 } as const;

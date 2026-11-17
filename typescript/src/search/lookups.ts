@@ -13,6 +13,7 @@
 
 import { clientError, problemAt200, REFUSAL_CODE } from "../core/errors.ts";
 import { checkOptions, declareOptions } from "../core/options.ts";
+import { clientWarning, warnOnce } from "../core/warnings.ts";
 import { isRecord } from "../core/json.ts";
 import { checkRequired } from "../core/strict.ts";
 import type { JsonType } from "../core/strict.ts";
@@ -72,7 +73,7 @@ const NODE_OPTIONS = declareOptions<NodeOptions>("client.lookup.node", {
   timeout: true,
   asOf: true,
 });
-const CODE_OPTIONS = declareOptions<LookupOptions>("client.lookup.code", {
+const ERROR_CODE_OPTIONS = declareOptions<LookupOptions>("client.lookup.errorCode", {
   signal: true,
   timeout: true,
 });
@@ -152,9 +153,9 @@ export class Lookup {
     this.#transport = transport;
   }
 
-  /** The lookups' calls, as `<Lookup: resolve(names), node(dcid), code(code), catalogue()>`. */
+  /** The lookups' calls, as `<Lookup: resolve(names), node(dcid), errorCode(code), catalogue()>`. */
   toString(): string {
-    return "<Lookup: resolve(names), node(dcid), code(code), catalogue()>";
+    return "<Lookup: resolve(names), node(dcid), errorCode(code), catalogue()>";
   }
 
   /** Node's `console.log` and `util.inspect` show the lookups as `String(client.lookup)` does. */
@@ -220,14 +221,15 @@ export class Lookup {
   }
 
   /**
-   * The registry entry for one code, such as `spec_not_found`: what a refusal or warning code
-   * means. The registry sits at the API host's root, the page an error's `docsUrl` names.
+   * The registry entry for one of DFO's own error or warning codes, such as `spec_not_found`:
+   * what a refusal or warning code means. The registry sits at the API host's root, the page an
+   * error's `docsUrl` names. It does not look up a publisher's codes.
    *
    * @throws {InvalidRequestError} The code is not lower-case snake case (`invalid_argument`).
    * @throws {NotFoundError} The registry holds no such code.
    */
-  async code(code: string, options: LookupOptions = {}): Promise<Code> {
-    const call = checkOptions(CODE_OPTIONS, options);
+  async errorCode(code: string, options: LookupOptions = {}): Promise<Code> {
+    const call = checkOptions(ERROR_CODE_OPTIONS, options);
     if (!REFUSAL_CODE.test(code)) {
       throw clientError("invalid_argument", {
         detail: "A code is a lower-case letter followed by lower-case letters, digits or _.",
@@ -243,6 +245,26 @@ export class Lookup {
         mappings: "array",
       }) as CodeRegistryEntry,
     );
+  }
+
+  /**
+   * The old name of `errorCode`, removed in 0.4.0. It reports a `DfoDeprecationWarning`
+   * (`name_deprecated`) to the client's `onWarning`, once per process.
+   *
+   * @deprecated Use errorCode.
+   */
+  code(code: string, options: LookupOptions = {}): Promise<Code> {
+    warnOnce(
+      "name_deprecated:lookup.code",
+      clientWarning(
+        "name_deprecated",
+        "lookup.code is deprecated and removed in 0.4.0; use lookup.errorCode.",
+      ),
+      (warning) => {
+        this.#transport.warn(warning);
+      },
+    );
+    return this.errorCode(code, options);
   }
 
   /** What Search holds data on: counts and example questions, for one country with `place`. */

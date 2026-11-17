@@ -143,6 +143,26 @@ def edited(change: Callable[[dict[str, Any]], object]) -> str:
     return json.dumps(value if replaced is None else replaced)
 
 
+def with_codes(codes: object, *, version: int = 2) -> str:
+    """The fixture as an answer to a search by codes, at `version`."""
+    return edited(lambda value: value.update(format_version=version, codes=codes))
+
+
+@pytest.mark.parametrize("flavour", FLAVOURS)
+def test_codes_read_as_a_search_by_codes_reads_them(
+    flavour: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _ = serving(flavour, monkeypatch, 1)
+    revived = revive(
+        flavour, with_codes([" DT.TDS.MLAT.CD\ufeff", "DT.TDS.BLAT.CD"]), client
+    )
+    written = json.loads(revived.to_json())
+    assert (written["format_version"], written["codes"]) == (
+        2,
+        ["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD"],
+    )
+
+
 @pytest.mark.parametrize(
     ("text", "pointer"),
     [
@@ -150,20 +170,36 @@ def edited(change: Callable[[dict[str, Any]], object]) -> str:
         (edited(lambda value: [value]), ""),
         (edited(lambda value: value.__delitem__("question")), "/question"),
         (edited(lambda value: value.update(extra=1)), "/extra"),
-        (edited(lambda value: value.update(format_version=2)), "/format_version"),
         (edited(lambda value: value.update(format_version=True)), "/format_version"),
         (edited(lambda value: value.update(question=5)), "/question"),
         (edited(lambda value: value.update(answer=[])), "/answer"),
+        (edited(lambda value: value.update(format_version=3)), "/format_version"),
+        (with_codes("DT.TDS.MLAT.CD"), "/codes"),
+        (with_codes(["DT.TDS.MLAT.CD"]), "/codes"),
+        (with_codes(["DT.TDS.MLAT.CD", " "]), "/codes"),
+        (with_codes(["DT.TDS.MLAT.CD", "\ufeff"]), "/codes"),
+        (with_codes([1, "DT.TDS.MLAT.CD"]), "/codes"),
+        (with_codes(["DT.TDS.MLAT.CD", " dt.tds.mlat.cd"]), "/codes"),
+        (with_codes(["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD"], version=1), "/codes"),
+        (edited(lambda value: value.update(format_version=2)), "/codes"),
     ],
     ids=[
         "not-json",
         "not-an-object",
         "a-missing-member",
         "a-member-the-format-does-not-name",
-        "another-format-version",
         "a-boolean-format-version",
         "a-question-that-is-not-a-string",
         "an-answer-that-is-not-an-object",
+        "another-format-version",
+        "codes-that-are-not-an-array",
+        "codes-short-of-the-parts",
+        "a-blank-code",
+        "a-code-only-a-byte-order-mark",
+        "a-code-that-is-not-a-string",
+        "a-code-twice",
+        "codes-in-format-1",
+        "format-2-without-codes",
     ],
 )
 @pytest.mark.parametrize("flavour", FLAVOURS)

@@ -394,6 +394,7 @@ describe("a dataset of several members", async () => {
       "dfo.format_version",
       "dfo.licence",
       "dfo.ref",
+      "dfo.retention",
       "dfo.sentence",
       "dfo.sources",
     ]);
@@ -554,7 +555,7 @@ describe("provenance", async () => {
 
   test("keeps the question and the fetch time to the second, and saves both", async () => {
     assert.equal(dataset.question, "Aid to Nigeria");
-    assert.equal(dataset.fetchedAt.toISOString(), "2026-11-13T09:15:42.000Z");
+    assert.equal(dataset.fetchedAt?.toISOString(), "2026-11-13T09:15:42.000Z");
     const metadata = Object.fromEntries(
       (parquetMetadata((await dataset.toBytes()).slice().buffer).key_value_metadata ?? []).map(
         ({ key, value }) => [key, value],
@@ -576,15 +577,16 @@ describe("provenance", async () => {
   test("a pinned copy keeps the question and the fetch time", () => {
     const pinned = pinnedDataset(dataset);
     assert.equal(pinned.question, "Aid to Nigeria");
-    assert.equal(pinned.fetchedAt.getTime(), dataset.fetchedAt.getTime());
+    assert.deepEqual(pinned.fetchedAt, dataset.fetchedAt);
   });
 
   test("a dataset with no question has none, and is stamped when it was made", async () => {
     const before = Math.floor(Date.now() / 1000) * 1000;
     const plain = await Dataset.create([member(data)], { layout: "long" });
     assert.equal(plain.question, null);
-    assert.ok(plain.fetchedAt.getTime() >= before && plain.fetchedAt.getTime() <= Date.now());
-    assert.equal(plain.fetchedAt.getMilliseconds(), 0);
+    const fetchedAt = plain.fetchedAt?.getTime() ?? NaN;
+    assert.ok(fetchedAt >= before && fetchedAt <= Date.now());
+    assert.equal(fetchedAt % 1000, 0);
   });
 
   test("save(path) writes the file toBytes() returns", async () => {
@@ -635,9 +637,52 @@ describe("retention", () => {
       { pinned: false, held_until: "2026-11-02T08:30:00Z" },
       { pinned: true },
     );
-    assert.equal(dataset.heldUntil?.toISOString(), "2026-11-02T08:30:00.000Z");
+    assert.equal(dataset.heldUntil?.toISOString(), "2026-11-02T00:00:00.000Z");
     assert.equal(dataset.pinned, false);
+    assert.deepEqual(
+      dataset.members.map(({ pinned, heldUntil }) => [pinned, heldUntil?.toISOString() ?? null]),
+      [
+        [false, "2026-11-18T00:00:00.000Z"],
+        [false, "2026-11-02T00:00:00.000Z"],
+        [true, null],
+      ],
+    );
   });
+
+  // The forms of `held_until` both clients read alike, and values both read as unknown; Python's
+  // test_held_until_reads_the_date_the_text_writes holds the same rows.
+  for (const [heldUntil, expected] of [
+    ["2026-11-18", "2026-11-18"],
+    ["2026-11-18T10:00:00Z", "2026-11-18"],
+    ["2026-11-18T23:30:00-05:00", "2026-11-18"],
+    ["2026-11-18T00:30:00+14:00", "2026-11-18"],
+    ["2026-11-18T10:00:00.123456789Z", "2026-11-18"],
+    ["2026-11-18T10:00:00", "2026-11-18"],
+    ["2024-02-29", "2024-02-29"],
+    ["2026-02-30", null],
+    ["2026-02-30T10:00:00Z", null],
+    ["2026-13-01", null],
+    ["2026-11-18T25:00:00Z", null],
+    ["2026-11-18T23:59:60Z", null],
+    ["soon", null],
+    [20261118, null],
+    ["20261118", null],
+    ["2026-11-18T24:00:00Z", null],
+    ["2026-11-18T10:00Z", null],
+    ["2026-11-18 10:00:00Z", null],
+    ["2026-W47-3", null],
+    ["2026-11-18T10:00:00+05:60", null],
+    ["0050-01-01", "0050-01-01"],
+    ["0000-01-01", null],
+  ] as const) {
+    test(`reads held_until ${JSON.stringify(heldUntil)} as ${String(expected)}`, async () => {
+      const dataset = await retained({ pinned: false, held_until: heldUntil });
+      const day = (date: Date | null) => date?.toISOString() ?? null;
+      const midnight = expected === null ? null : `${expected}T00:00:00.000Z`;
+      assert.equal(day(dataset.members[0]!.heldUntil), midnight);
+      assert.equal(day(dataset.heldUntil), midnight);
+    });
+  }
 
   test("is pinned with no date when every member is pinned", async () => {
     const dataset = await retained({ pinned: true }, { pinned: true });
@@ -649,6 +694,10 @@ describe("retention", () => {
     const dataset = await retained(undefined);
     assert.equal(dataset.heldUntil, null);
     assert.equal(dataset.pinned, false);
+    assert.deepEqual(
+      dataset.members.map(({ pinned, heldUntil }) => [pinned, heldUntil]),
+      [[null, null]],
+    );
   });
 });
 
@@ -797,7 +846,7 @@ describe("a derived dataset", () => {
     assert.ok(dataset.ref.equals(new DatasetRef([await derivedMember()])));
     assert.deepEqual(
       [dataset.heldUntil?.toISOString(), dataset.pinned, dataset.layoutVersion],
-      ["2026-11-27T15:10:16.473Z", false, "frame"],
+      ["2026-11-27T00:00:00.000Z", false, "frame"],
     );
   });
 
@@ -1051,18 +1100,18 @@ describe("party totals left out", () => {
     const client = clientOver(replay(record).transport);
     const dataset = await client.fetch(spec, { window, entities });
     const trace = (record.exchanges[0]!.response.json as Record<string, unknown>)["trace"] as {
-      party_totals_left_out: { role: string; entities: string[] }[];
+      party_totals_left_out: { role: string; provenance: string; entities: string[] }[];
     };
     const [served] = trace.party_totals_left_out;
-    assert.ok(served !== undefined && !("provenance" in served));
+    assert.ok(served !== undefined && typeof served.provenance === "string");
     assert.deepEqual(dataset.partyTotalsLeftOut, [
       {
         specId: dataset.members[0]!.spec.spec_id,
         role: "financingProvider",
         roleKey: "origin",
         entities: served.entities,
-        provenance: null,
-        everyProvenance: true,
+        provenance: served.provenance,
+        everyProvenance: false,
         keptIn: [],
       },
     ]);

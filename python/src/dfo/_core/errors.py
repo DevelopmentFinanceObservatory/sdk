@@ -17,6 +17,7 @@ import sys
 import warnings
 from collections.abc import Hashable
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, override
 
 from dfo._core.base_error import DfoError, message_of, with_suffix
@@ -44,6 +45,17 @@ class InvalidRequestError(DfoError):
 
     issues: tuple[ProblemIssue, ...] = ()
     alternatives: tuple[Alternative, ...] = ()
+
+
+class VersionNotPinnedError(InvalidRequestError):
+    """A link to a version DFO keeps for a limited time. The caller pins it first.
+
+    Attributes:
+        held_until: The date DFO stops guaranteeing the unpinned version, or
+            None when DFO named none.
+    """
+
+    held_until: date | None = None
 
 
 class NotFoundError(DfoError):

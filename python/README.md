@@ -216,7 +216,7 @@ Congo -> ambiguous: Congo [DRC]  country/COD | Congo [Republic]  country/COG
 Germny -> not found; nearest: Germany  country/DEU
 ```
 
-`match.entity.dcid` holds the code of a resolved name, `match.candidates` the places an ambiguous one could mean, and `match.near_matches` the nearest spellings. `match.raw` keeps the server's result. `resolve` also takes `kinds`, such as `["country"]`, to limit the node kinds a name may match, `code_system` with `kinds=["code"]` to match one code system's codes, such as `CRSPurposeCodeEnum`, and `expand_members=True` to inline each group's members. `dfo.lookup.node("country/NGA")` returns one place, with the regions it belongs to in `node.raw`, and `as_of=` reads the graph on a past date. `dfo.lookup.code("spec_not_found")` explains a code from an error, and `dfo.lookup.catalogue()` lists what Search holds data on, with example questions. The result types live in `dfo.types`.
+`match.entity.dcid` holds the code of a resolved name, `match.candidates` the places an ambiguous one could mean, and `match.near_matches` the nearest spellings. `match.raw` keeps the server's result. `resolve` also takes `kinds`, such as `["country"]`, to limit the node kinds a name may match, `code_system` with `kinds=["code"]` to match one code system's codes, such as `CRSPurposeCodeEnum`, and `expand_members=True` to inline each group's members. `dfo.lookup.node("country/NGA")` returns one place, with the regions it belongs to in `node.raw`, and `as_of=` reads the graph on a past date. `dfo.lookup.error_code("spec_not_found")` explains one of DFO's own error or warning codes from an error, and `dfo.lookup.catalogue()` lists what Search holds data on, with example questions. The result types live in `dfo.types`.
 
 ## Settings, keys, and errors
 
@@ -261,6 +261,7 @@ The TypeScript client follows the same contract. It spells "no limit" as `Infini
 
 - [Answers and choices](docs/answers.md): parts, readings, `choose`, partial fetches, shared answers, and declined questions.
 - [Datasets and versions](docs/datasets.md): narrowing a fetch, layouts, conversions, refs, retention, `save`, and `load`.
+- [Use DFO in a data pipeline](docs/pipelines.md): search by series code, pin, refresh, link a reading, record provenance, and test offline.
 - [Long builds](docs/long-builds.md): progress, deadlines, and what Ctrl-C leaves running.
 - [Compute a figure on DFO](docs/compute.md): `dfo.analysis`, recipes, `latest_year`, recomputing on new data, and the series an operation leaves out.
 - [Cards and shares](docs/shares.md): charts, tables and headline numbers, public share links, write tokens, snapshots, and what a share showed on a date.

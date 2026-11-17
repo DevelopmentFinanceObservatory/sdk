@@ -10,7 +10,7 @@ requests themselves.
 
 import inspect
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -260,14 +260,47 @@ type Entities = Mapping[str, RoleBinding | None]
 what `lookup.resolve` returns, or to None to drop the role."""
 
 
-type DcidEntities = Mapping[str, list[str] | tuple[str, ...] | None]
+type ListedEntities = Mapping[str, list[Bound] | None]
+"""`entities` once `listed_entities` has read each role's sequence or iterator
+into a list."""
+
+type DcidEntities = Mapping[str, list[str] | None]
 """`entities` once `dcid_entities` has replaced each entity and match by its dcid."""
 
 
-def dcid_entities(entities: Entities | None) -> DcidEntities | None:
-    """`entities` with each `Entity` and resolved `Match` replaced by its dcid.
+def listed_entities(entities: Entities | None) -> ListedEntities | None:
+    """`entities` with each role's sequence or one-shot iterator, such as a
+    generator, read into a list once, so the role can be read more than once.
+    Text, bytes, values that are not iterable and a value that is not a map pass
+    through, for `scope` to refuse.
 
-    A value that is not a list or tuple passes through, for `scope` to refuse.
+    Raises:
+        InvalidRequestError: A role is bound to a set, a map, a map's view or
+            another collection with no fixed order, whose entities would post in
+            an order that changes between runs (`invalid_argument`).
+    """
+    if not isinstance(entities, Mapping):
+        return entities
+    listed: dict[str, Any] = {}
+    for role, bound in entities.items():
+        if isinstance(bound, str | bytes) or not isinstance(bound, Iterable):
+            listed[role] = bound
+        elif isinstance(bound, Sequence | Iterator):
+            listed[role] = list(bound)
+        else:
+            raise client_error(
+                INVALID_ARGUMENT,
+                f"entities[{role!r}] is a {type(bound).__name__}, whose order is not "
+                "fixed; bind the role to a list of its entities in the order you "
+                "mean, such as ['country/KEN', 'country/NGA']",
+            )
+    return listed
+
+
+def dcid_entities(entities: ListedEntities | None) -> DcidEntities | None:
+    """`entities`, as `listed_entities` gives them, with each `Entity` and
+    resolved `Match` replaced by its dcid. A value that is not a list passes
+    through, for `scope` to refuse.
 
     Raises:
         InvalidRequestError: A match did not resolve: it is ambiguous, found
@@ -280,7 +313,7 @@ def dcid_entities(entities: Entities | None) -> DcidEntities | None:
     if not isinstance(entities, Mapping):
         return entities
     for role, bound in entities.items():
-        for each in bound if isinstance(bound, list | tuple) else (bound,):
+        for each in bound if isinstance(bound, list) else (bound,):
             if inspect.isawaitable(each):
                 if inspect.iscoroutine(each):
                     each.close()  # it never runs, so Python need not warn
@@ -291,9 +324,7 @@ def dcid_entities(entities: Entities | None) -> DcidEntities | None:
                 )
     dcids: dict[str, Any] = {
         role: (
-            [_dcid(role, each) for each in bound]
-            if isinstance(bound, list | tuple)
-            else bound
+            [_dcid(role, each) for each in bound] if isinstance(bound, list) else bound
         )
         for role, bound in entities.items()
     }
@@ -785,13 +816,36 @@ def check_served_manifest(manifest: object, pointer: str = "", /) -> None:
         )
 
 
+# The forms `read_held_until` reads, as the TypeScript client's `heldUntilOf`
+# reads them: a date, `2026-11-18`, or a date-time with seconds, an optional
+# fraction and an optional `Z` or `±HH:MM` offset, `2026-11-18T23:30:00.5-05:00`.
+_HELD_UNTIL = re.compile(
+    r"([0-9]{4})-([0-9]{2})-([0-9]{2})"
+    r"(?:T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.[0-9]+)?"
+    r"(?:Z|[+-]([0-9]{2}):([0-9]{2}))?)?"
+)
+
+
 def read_held_until(value: object) -> date | None:
-    """A retention's `held_until` as a date, or None when it is not an ISO 8601
-    date or date-time string."""
-    if not isinstance(value, str):
+    """A retention's `held_until` as the date it writes, in its own offset, or
+    None when it is no string, is in another form than `_HELD_UNTIL`, or names
+    a date or time that does not exist, as `2026-02-30` or `T25:00:00`."""
+    if not isinstance(value, str) or (found := _HELD_UNTIL.fullmatch(value)) is None:
+        return None
+    # An absent time or offset reads as 0, which is in range.
+    year, month, day, hour, minute, second, offset_hour, offset_minute = (
+        int(group or 0) for group in found.groups()
+    )
+    if (
+        hour > 23
+        or minute > 59
+        or second > 59
+        or offset_hour > 23
+        or offset_minute > 59
+    ):
         return None
     try:
-        return datetime.fromisoformat(value).date()
+        return date(year, month, day)
     except ValueError:
         return None
 

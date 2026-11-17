@@ -19,7 +19,9 @@ export class DfoWarning extends Error {
   }
 }
 
-/** The server marks a route deprecated (`Deprecation`), perhaps with a removal date (`Sunset`). */
+/** A call or route that goes away in a later release: a client name such as `lookup.code`
+ *  (`name_deprecated`), or a route the server marks with `Deprecation` or `Sunset`
+ *  (`route_deprecated`). */
 export class DfoDeprecationWarning extends DfoWarning {}
 
 /** A warning the server attached to a dataset's manifest, above `info` severity. */

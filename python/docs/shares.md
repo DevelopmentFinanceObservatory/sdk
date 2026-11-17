@@ -161,6 +161,39 @@ dfo.unshare(saved["url"], write_token=saved["write_token"])
 
 Taking a share down again with its token succeeds, so a retry after a lost reply is safe. After that, `dfo.history` and `dfo.fetch` of the share raise `NotFoundError`.
 
+## Shares from CI
+
+A site that shows DFO cards can refresh them from a CI job. Make the share once by hand, as above, and keep its URL and write token for the job. The job then replaces the cards on each data refresh, and every link the page has published keeps working.
+
+- Store `share.write_token` as a CI secret, beside the share's URL and a DFO key. Anyone with the token can change the share or take it down, so keep it out of public repositories.
+- Run the replace in its own job, triggered by a data refresh or a schedule. A site build runs on every push, and each run would otherwise publish to DFO.
+- Pass `replace` with the stored URL and token, so the job puts new cards on the live share under the same URLs.
+
+<!-- docs-check: skip: needs a key and a live share's write token -->
+
+```python
+import os
+
+import dfo
+
+aid = dfo.search("ODA from Germany to Kenya, 2018 to 2023").fetch()
+people = dfo.search("Kenya population, 2018 to 2023").fetch()
+per_person = dfo.analysis.quotient_of(aid, people, on={"destination": "place"})
+line = dfo.cards.line(per_person, title="German aid per person in Kenya")
+
+share = dfo.share(
+    [line],
+    latest=True,
+    replace=os.environ["SHARE_URL"],
+    write_token=os.environ["SHARE_WRITE_TOKEN"],
+)
+print(share)
+```
+
+Two daily allowances apply. Each new share counts against the share allowance, and each card against the card allowance. A replace makes no new share, and each card it makes still counts against the card allowance, so a job that rebuilds many cards can reach it. `QuotaExceededError` (`allowance_exhausted`) carries `retry_after`, the seconds until it resets.
+
+A pipeline that reads data needs no share. [Use DFO in a data pipeline](pipelines.md) covers refs, links, and offline tests.
+
 ## Reference
 
 ### `dfo.cards`

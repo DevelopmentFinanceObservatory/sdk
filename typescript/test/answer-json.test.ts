@@ -77,14 +77,37 @@ describe("the answer format", () => {
   });
 
   const parsed = (): Record<string, unknown> => JSON.parse(fixture) as Record<string, unknown>;
+  /** The fixture as an answer to a search by codes, at `version`. */
+  const withCodes = (codes: unknown, version = 2): Record<string, unknown> => ({
+    ...parsed(),
+    format_version: version,
+    codes,
+  });
+
+  test("reads codes as a search by codes reads them", () => {
+    const value = withCodes([" DT.TDS.MLAT.CD\ufeff", "DT.TDS.BLAT.CD"]);
+    const revived = Answer.fromJSON(JSON.stringify(value), clientFrom(1).client);
+    const written = revived.toJSON();
+    assert.equal(written.format_version, 2);
+    assert.deepEqual(written.codes, ["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD"]);
+  });
+
   const refusals: [string, () => unknown, string][] = [
     ["text that is not JSON", () => "{", ""],
     ["a value that is not an object", () => [parsed()], ""],
     ["a missing member", () => ({ ...parsed(), question: undefined }), "/question"],
     ["a member the format does not name", () => ({ ...parsed(), extra: 1 }), "/extra"],
-    ["another format version", () => ({ ...parsed(), format_version: 2 }), "/format_version"],
     ["a question that is not a string", () => ({ ...parsed(), question: 5 }), "/question"],
     ["an answer that is not an object", () => ({ ...parsed(), answer: [] }), "/answer"],
+    ["another format version", () => ({ ...parsed(), format_version: 3 }), "/format_version"],
+    ["codes that are not an array", () => withCodes("DT.TDS.MLAT.CD"), "/codes"],
+    ["codes short of the parts", () => withCodes(["DT.TDS.MLAT.CD"]), "/codes"],
+    ["a blank code", () => withCodes(["DT.TDS.MLAT.CD", " "]), "/codes"],
+    ["a code only a byte order mark", () => withCodes(["DT.TDS.MLAT.CD", "\ufeff"]), "/codes"],
+    ["a code that is not a string", () => withCodes([1, "DT.TDS.MLAT.CD"]), "/codes"],
+    ["a code twice", () => withCodes(["DT.TDS.MLAT.CD", " dt.tds.mlat.cd"]), "/codes"],
+    ["codes in format 1", () => withCodes(["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD"], 1), "/codes"],
+    ["format 2 without codes", () => ({ ...parsed(), format_version: 2 }), "/codes"],
   ];
   for (const [name, value, pointer] of refusals) {
     test(`refuses ${name} as format_invalid`, () => {
@@ -132,7 +155,7 @@ describe("the answer format", () => {
       '{"kind":"resolution","constructor":{"a":1},"toString":"x","hasOwnProperty":2,' +
         '"__proto__":{"b":1},"secret":1}',
     ) as Record<string, unknown>;
-    const { answer } = answerJson(null, body, null);
+    const { answer } = answerJson(null, body, null, null);
     assert.deepEqual(answer, { kind: "resolution" });
     assert.equal(Object.getPrototypeOf(answer), Object.prototype);
   });

@@ -1,7 +1,7 @@
 """Answers: what Search understood a question to ask, part by part.
 
-An answer holds readings. `fetch` builds the dataset when every part has
-a reading, and raises `IncompleteAnswerError` before any build when one does not.
+An answer holds readings. `fetch` builds the dataset when the answer is
+complete, and raises `IncompleteAnswerError` before any build when it has a gap.
 `choose` settles a part that awaits a choice and returns a new answer.
 
 Every choice makes one Search request, and the new answer is Search's response.
@@ -10,11 +10,17 @@ unchanged, a parsed input that Search binds again. Any other choice posts a
 `dataset_resubmit` with one entry per part, so Search composes the sentence and
 folds the parts again; a pick in a one-part answer posts one entry:
 
-- a definite part posts its spec's identity and entity groups;
+- an answered definite part posts its spec's identity and entity groups;
 - the chosen candidate posts its identity, and the chosen option its one parsed part;
 - a candidates part left alone posts its candidate set in the server's order;
 - any other part posts its `restatement`, which Search resolves again and so keeps
   its message and its choices; a part without one is restated as a placeholder.
+  A definite part with a gap from its series code is one, so Search resolves it
+  again.
+
+Every entry stands for its part, in part order, so the new answer to a search by
+codes keeps the codes part for part and checks each reading against its code
+again. A reply with another number of parts than codes breaks the contract.
 
 Each identity echoes its reading's assumptions: a definite part's `assumptions`,
 and a candidate's entry in its part's `reading_assumptions`. Search then states
@@ -85,6 +91,7 @@ from dfo._generated.error_map import GAP_KINDS
 from dfo._generated.wire import DeclinedReason
 from dfo._search import display as _display
 from dfo._search.answer_json import answer_json, read_answer_json
+from dfo._search.structured import asked_code, check_reply, code_gap
 
 if TYPE_CHECKING:
     # The client module reads answers, so the import is for types only.
@@ -109,13 +116,18 @@ class AsyncAnswer:
         kind: `resolution`, `catalogue` or `declined`.
         status: The parts' shared status (`definite`, `candidates`, `no_data`,
             `unsupported`), `mixed` when they differ, or the kind for a declined or
-            catalogue answer.
+            catalogue answer. It is Search's status, so a definite answer can
+            still have a gap from a series code. `complete` says whether it has
+            none.
         sentence: Search's sentence for the whole answer; None for a declined or
             catalogue answer, which Search gives none.
         parts: One part per variable asked, in query order.
         specs: The readings, one per distinct spec, in query order.
-        complete: Whether every part has a reading.
-        gaps: The parts that stop a complete dataset, in query order.
+        complete: Whether every part has a reading: each part is definite, and a
+            part asked by a series code reads that code's series alone.
+        gaps: The parts that stop a complete dataset, in query order. A definite
+            part asked by a series code whose reading is not that code's series
+            alone is one, of kind `no_data`.
         question: The question asked, when the answer came from one.
         reason: Why Search declined, for a declined answer.
         warnings: Search's warnings for the whole answer.
@@ -139,17 +151,24 @@ class AsyncAnswer:
     trace_id: str | None = field(default=None, compare=False)
     raw: Mapping[str, Any] = field(default_factory=dict, compare=False)
     _source: SessionSource = field(compare=False)
-    # The session `from_json` reads through when it names no client: the
+    # The readings `fetch` builds, one per distinct spec of the answered parts
+    # (those with no gap), computed once in `answer_from_body`.
+    _readings: tuple[Reading, ...] = field(default=(), compare=False)
+    # The series code each part was asked by, in part order, for an answer to a
+    # search by codes; None for a question in words. The gaps check each
+    # reading against these, and `to_json` and `choose` carry them on.
+    _codes: tuple[str, ...] | None = field(default=None, compare=False)
+    # The session `from_json` reads through when it names no client. It is the
     # default client's, which `dfo._client.default` sets, since this layer
     # cannot import the client layer.
     _default_source: ClassVar[SessionSource | None] = None
 
     @override
     def __repr__(self) -> str:
-        return _display.answer_text(self)
+        return _display.answer_text(self, codes=self._codes)
 
     def _repr_html_(self) -> str:
-        return _display.answer_html(self)
+        return _display.answer_html(self, codes=self._codes)
 
     def __getattr__(self, name: str) -> NoReturn:
         if name in _DATA_METHODS:
@@ -165,10 +184,14 @@ class AsyncAnswer:
 
         The JSON holds the question and Search's response cut to the members the
         client reads, so a web page can hold an answer and post it back with the
-        reader's choice.
+        reader's choice. An answer to a search by codes is format 2 and also
+        holds the codes, one per part, so the answer read back checks each
+        reading against the code asked for, as the live answer does, and a
+        reader of format 1 alone refuses it.
         """
         return json.dumps(
-            answer_json(self.question, self.raw, self.trace_id), ensure_ascii=False
+            answer_json(self.question, self.raw, self.trace_id, self._codes),
+            ensure_ascii=False,
         )
 
     @classmethod
@@ -190,13 +213,14 @@ class AsyncAnswer:
                 synchronous `Answer` takes the default client when it is None.
 
         Raises:
-            FormatError: The text is not JSON in the answer format
+            FormatError: The text is not JSON in the answer format, or its
+                `codes` are not codes `search(codes=...)` takes, one per part
                 (`format_invalid`).
             ContractError: The answer lacks a member the client acts on.
             InvalidRequestError: `client` is None and no default client is
                 set (`invalid_argument`).
         """
-        question, body, trace_id = read_answer_json(text)
+        question, body, trace_id, codes = read_answer_json(text)
         if client is not None:
             source = client._current
         elif cls._default_source is not None:
@@ -209,7 +233,7 @@ class AsyncAnswer:
             )
         with describing(trace_id):
             return answer_from_body(
-                body, question=question, source=source, trace_id=trace_id
+                body, question=question, source=source, trace_id=trace_id, codes=codes
             )
 
     async def choose(
@@ -218,7 +242,9 @@ class AsyncAnswer:
         """Settle a part that awaits a choice, and return Search's new answer.
 
         The choice makes one Search request. The new answer, its sentence and
-        its assumptions are Search's response.
+        its assumptions are Search's response. A choice in an answer to a search
+        by codes keeps the codes, part for part, so the new answer checks each
+        reading against the code asked for.
 
         `choose(option)` picks in the only part that awaits a choice;
         `choose(option, part=part)` names the part. A part is named by its
@@ -233,12 +259,18 @@ class AsyncAnswer:
                 part or option; the part offers no options; or a part cannot be
                 posted back (`choice_invalid`).
             ContractError: The chosen option's `data_query` is not a parsed
-                input of one part; it carries the answer's trace id.
+                input of one part. In an answer to a search by codes, also
+                Search answers with another number of parts than codes
+                (`contract_violation`). The error carries the answer's trace id.
         """
         with describing(self.trace_id):
             request = self._choice_input(option, part)
         return await resolve(
-            self._source, request, question=self.question, timeout=CLIENT_TIMEOUT
+            self._source,
+            request,
+            question=self.question,
+            timeout=CLIENT_TIMEOUT,
+            codes=self._codes,
         )
 
     def _choice_input(
@@ -256,8 +288,13 @@ class AsyncAnswer:
         if len(self.parts) == 1 and isinstance(chosen, Option):
             _option_part(chosen)
             return chosen.data_query
+        read = _display.answered(self.parts, self.gaps)
         entries = [
-            _entry(each, chosen if index == gap.part_index else None)
+            _entry(
+                each,
+                chosen if index == gap.part_index else None,
+                answered=index in read,
+            )
             for index, each in enumerate(self.parts)
         ]
         return {"kind": "dataset_resubmit", "entries": entries}
@@ -341,7 +378,7 @@ class AsyncAnswer:
         # `fetch_members` checks `strict` too. This check runs first so a bad
         # value raises before the incomplete-answer error or the warning.
         check_strict(strict)
-        members = _members(self.parts)
+        members = self._readings
         if self.gaps and (not partial or not members):
             raise self._incomplete_error()
         if (hint := _search_warning(self)) is not None:
@@ -368,7 +405,7 @@ class AsyncAnswer:
     def _incomplete_error(self) -> IncompleteAnswerError:
         error = client_error(
             ANSWER_INCOMPLETE,
-            _display.incomplete_message(self),
+            _display.incomplete_message(self, codes=self._codes),
             trace_id=self.trace_id,
         )
         error.answer = self
@@ -404,6 +441,7 @@ async def resolve(
     *,
     question: str | None,
     timeout: CallTimeout,
+    codes: Sequence[str] | None = None,
 ) -> AsyncAnswer:
     """Post one Search input and read the answer.
 
@@ -417,6 +455,9 @@ async def resolve(
             `CLIENT_TIMEOUT` takes the client's `timeout`, else `SEARCH_TIMEOUT`.
             In the synchronous client, platform name resolution can run past
             this bound; the asynchronous client can cancel it.
+        codes: The series code each part of `request` asks for, in part order,
+            for a search by codes or a choice in its answer; `answer_from_body`
+            reads the answer by them.
 
     Raises:
         DfoError: The response is a problem document with a string `code` but
@@ -444,7 +485,7 @@ async def resolve(
         raise problem
     with describing(trace_id):
         return answer_from_body(
-            body, question=question, source=source, trace_id=trace_id
+            body, question=question, source=source, trace_id=trace_id, codes=codes
         )
 
 
@@ -455,14 +496,24 @@ def answer_from_body(
     question: str | None,
     source: SessionSource,
     trace_id: str | None = None,
+    codes: Sequence[str] | None = None,
 ) -> AsyncAnswer:
     """Read a decoded Search response into an answer.
 
-    `trace_id` is the trace id of the response the body came from.
+    `trace_id` is the trace id of the response the body came from. `codes` are
+    the series codes a search by codes asked, one per part in order, and the
+    code a part asked is the authority whatever its restatement names. Without
+    them, as for a question in words, a part's code is the `source_code` of its
+    restatement. A definite part asked by a code whose reading is not that
+    code's series alone is a gap of kind `no_data`, so `fetch` builds it only
+    beside `partial=True`, and then leaves it out. A code part whose spec has no `resolved.stat_vars`, as in an
+    answer development-finance 0.2.0 wrote, is such a gap too.
 
     Raises:
         ContractError: The body is not an object, its kind is unknown, or a member
-            the client acts on is missing.
+            the client acts on is missing; or, for a search by codes, the
+            parts do not match the codes one to one, or Search could not read
+            the years the client sent (`time_text_not_parsed`).
     """
     if not isinstance(body, Mapping):
         raise client_error(CONTRACT_VIOLATION, "The Search response is not an object")
@@ -495,6 +546,8 @@ def answer_from_body(
     status = body.get("status")
     sentence = body.get("rendered_sentence")
     parts = parse_parts(body)
+    if codes is not None:
+        check_reply(parts, warnings, codes)
     sentence = (
         sentence
         if isinstance(sentence, str) and sentence
@@ -507,16 +560,21 @@ def answer_from_body(
     gaps = tuple(
         gap
         for index, part in enumerate(parts)
-        if (gap := _gap(index, part)) is not None
+        if (
+            gap := _gap(index, part)
+            or code_gap(
+                index, part, codes[index] if codes is not None else asked_code(part)
+            )
+        )
+        is not None
     )
+    readings = _readings(parts, _display.answered(parts, gaps))
     return AsyncAnswer(
         kind=kind,
         status=status if isinstance(status, str) else _status(parts),
         sentence=sentence,
         parts=parts,
-        specs=tuple(
-            dict.fromkeys(part.spec for part in parts if isinstance(part, DefinitePart))
-        ),
+        specs=tuple(reading.spec for reading in readings),
         complete=not gaps,
         gaps=gaps,
         question=question,
@@ -525,6 +583,8 @@ def answer_from_body(
         trace_id=trace_id,
         raw=body,
         _source=source,
+        _readings=readings,
+        _codes=tuple(codes) if codes is not None else None,
     )
 
 
@@ -560,17 +620,17 @@ def _gap(index: int, part: Part) -> Gap | None:
             )
 
 
-def _members(parts: Sequence[Part]) -> list[Reading]:
-    """One reading per distinct spec, in query order.
+def _readings(parts: Sequence[Part], answered: frozenset[int]) -> tuple[Reading, ...]:
+    """One reading per distinct spec of the answered parts, in query order.
 
     Parts folded onto one spec share its reading, which names each of them that
     has variable text; a part without any names nothing.
     """
     grouped: dict[Spec, list[DefinitePart]] = {}
-    for part in parts:
-        if isinstance(part, DefinitePart):
+    for index, part in enumerate(parts):
+        if isinstance(part, DefinitePart) and index in answered:
             grouped.setdefault(part.spec, []).append(part)
-    return [
+    return tuple(
         Reading(
             tuple(part.variable_text for part in folded if part.variable_text),
             spec,
@@ -578,7 +638,7 @@ def _members(parts: Sequence[Part]) -> list[Reading]:
             tuple(folded),
         )
         for spec, folded in grouped.items()
-    ]
+    )
 
 
 def _part_index(
@@ -714,17 +774,24 @@ def _mentions(gap: Gap) -> set[str]:
     return {mention for option in _options(gap) for mention in option.mentions}
 
 
-def _entry(part: Part, chosen: Candidate | Option | None) -> dict[str, Any]:
-    """The `dataset_resubmit` entry for one part, settled by `chosen` when given."""
+def _entry(
+    part: Part, chosen: Candidate | Option | None, *, answered: bool
+) -> dict[str, Any]:
+    """The `dataset_resubmit` entry for one part, settled by `chosen` when given.
+
+    Only an answered part posts its reading's identity. A definite part with a
+    gap, whose reading is not its series code's alone, posts its restatement.
+    Search answers an identity entry with no restatement, so the code would be
+    lost and the inexact reading would come back without its gap.
+    """
     if isinstance(chosen, Candidate):
         return _identity_entry(part, chosen.raw)
     if chosen is not None:
         return {"entry_kind": "parsed", "part": _option_part(chosen)}
-    match part:
-        case DefinitePart():
-            return _identity_entry(part, part.raw["spec"])
-        case CandidatesPart():
-            return _candidates_entry(part)
+    if answered and isinstance(part, DefinitePart):
+        return _identity_entry(part, part.raw["spec"])
+    if isinstance(part, CandidatesPart):
+        return _candidates_entry(part)
     return _restated_entry(part)
 
 
@@ -745,6 +812,12 @@ def _restated_entry(part: Part) -> dict[str, Any]:
         case UnsupportedPart(reason):
             return _echo(
                 part, entry_kind="placeholder", status="unsupported", code=reason
+            )
+        case DefinitePart():
+            raise client_error(
+                CHOICE_INVALID,
+                f"Part {part.variable_text!r} has a gap and no restatement to post "
+                "back; search again.",
             )
     raise client_error(
         CHOICE_INVALID,

@@ -2,7 +2,7 @@
 
 import { registerClient } from "./search/answer.ts";
 import type { Answer, AnswerContext, SearchOptions } from "./search/answer.ts";
-import type { Dataset } from "./datasets/dataset.ts";
+import type { Dataset, DerivedMember, Member } from "./datasets/dataset.ts";
 import { clientError, DfoError, InvalidRequestError, messageOf, optionsOf } from "./core/errors.ts";
 import { present } from "./core/json.ts";
 import { trimTrailingSlashes } from "./core/text.ts";
@@ -12,7 +12,7 @@ import { Cards } from "./datasets/cards.ts";
 import type { Card, Served, Share, ShareUrl } from "./datasets/publication.ts";
 import { history, share, snapshot, unshare } from "./datasets/shares.ts";
 import type { ShareOptions, WriteTokenOptions } from "./datasets/shares.ts";
-import { pin } from "./datasets/pin.ts";
+import { fileUrl, pin } from "./datasets/pin.ts";
 import type { Recipe } from "./datasets/recipe.ts";
 import { fetchDataset } from "./datasets/resolve.ts";
 import type {
@@ -27,8 +27,9 @@ import type { ApiKeyOption } from "./config/keys.ts";
 import { Lookup } from "./search/lookups.ts";
 import { withEntityDcids } from "./search/lookup-results.ts";
 import type { LookupOptions } from "./search/lookups.ts";
-import type { DatasetRef, Spec } from "./core/ref.ts";
+import type { DatasetRef, DerivedRefMember, RefMember, Spec } from "./core/ref.ts";
 import { search } from "./search/search.ts";
+import type { CodeSearchOptions } from "./search/structured.ts";
 import { Transport } from "./http/transport.ts";
 import type { HeaderProvider, RawResponse } from "./http/transport.ts";
 import type { WarningHandler } from "./core/warnings.ts";
@@ -197,7 +198,28 @@ export class Client {
    *   surrogate, or `options` holds a key outside `SearchOptions` (`invalid_argument`).
    * @throws {ContractError} The answer lacks a member the client acts on.
    */
-  search(question: string, options: SearchOptions = {}): Promise<Answer> {
+  search(question: string, options?: SearchOptions): Promise<Answer>;
+  /**
+   * Asks Search for publisher series codes, one part per code. Each code answers on its own from
+   * the code's series, and the other keys apply to every code. A code DFO does not hold, and a
+   * reading that is not the code's series alone, are gaps of the answer, so `answer.fetch()`
+   * refuses until `{ partial: true }` builds the codes that read.
+   *
+   * ```ts
+   * const answer = await client.search({ codes: ["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD"],
+   *   entities: { destination: ["country/KEN"] }, window: [2015, 2023] });
+   * ```
+   *
+   * @throws {InvalidRequestError} `codes` is missing, a string, empty, or names a code twice; a
+   *   key breaks the rule `client.fetch` reads it by; a role key is not one `entities` or
+   *   `openRoles` takes; or the object holds a key outside `CodeSearchOptions`
+   *   (`invalid_argument`), before any request.
+   * @throws {ContractError} The answer lacks a member the client acts on.
+   * @throws {DfoError} The server refused the request, such as more codes than it takes in one
+   *   search (`request_invalid`).
+   */
+  search(codes: CodeSearchOptions): Promise<Answer>;
+  search(question: string | CodeSearchOptions, options?: SearchOptions): Promise<Answer> {
     return search(this.#answers, question, options);
   }
 
@@ -273,6 +295,23 @@ export class Client {
    */
   pin(data: Dataset): Promise<Dataset> {
     return pin(this.#transport, data);
+  }
+
+  /**
+   * The URL of a pinned member's file: a link a pipeline can commit and read with any HTTP client,
+   * with no key. `member` is one of `data.members` or `data.ref.members`. The URL names the file
+   * selector for the member's exact version under the client's base URL, with the query of the
+   * rendering the member was built in, so it serves the same table. The call reads the version's
+   * manifest once to check the version is pinned.
+   *
+   * @throws {VersionNotPinnedError} The version is not pinned (`version_not_pinned`), and
+   *   `heldUntil` says when DFO stops guaranteeing it. Run `client.pin(data)` first.
+   * @throws {InvalidRequestError} `member` is not a member of a dataset or its ref, or names a
+   *   frame DFO computed (`invalid_argument`), and no request is sent.
+   * @throws {NotFoundError} DFO never stored the version.
+   */
+  fileUrl(member: Member | RefMember | DerivedMember | DerivedRefMember): Promise<string> {
+    return fileUrl(this.#transport, member);
   }
 
   /**

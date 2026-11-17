@@ -60,7 +60,11 @@ describe("an options key a call does not take", () => {
       () => client.lookup.node("country/KEN", { as_of: "x" } as never),
       "asOf",
     ],
-    ["client.lookup.code", () => client.lookup.code("not_found", { singal: 1 } as never), "signal"],
+    [
+      "client.lookup.errorCode",
+      () => client.lookup.errorCode("not_found", { singal: 1 } as never),
+      "signal",
+    ],
     ["client.lookup.catalogue", () => client.lookup.catalogue({ plcae: "x" } as never), "place"],
   ];
   for (const [call, run, suggested] of rows) {

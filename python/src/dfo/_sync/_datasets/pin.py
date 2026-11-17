@@ -12,17 +12,33 @@ its error names their versions in `pinned` and in its message.
 
 The pin route takes dataset versions alone, so a derived Dataset, whose members
 name `ops_` frames, is refused before any request.
+
+`file_url` gives a pinned member's file as a link a pipeline can commit and read
+with any HTTP client. The link is the file selector, `GET
+/datasets/{spec_id}/{content_version}/file`, under the client's base URL, with
+the query of the rendering the member was built in, so it serves the same
+table. It reads the version's manifest first and refuses a version that is not
+pinned, since DFO holds an unpinned version for 30 days and a committed link to
+it breaks after that.
 """
 
 from collections.abc import Mapping
 from dataclasses import replace
 
-from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT
+import httpx2
+
+from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT, VERSION_NOT_PINNED
 from dfo._core.errors import DfoError, client_error, with_hint
-from dfo._core.refs import DerivedMember, Member
+from dfo._core.refs import (
+    DerivedMember,
+    DerivedRefMember,
+    Member,
+    RefMember,
+)
 from dfo._core.refusals import trace_id_of
-from dfo._datasets.build import response_json
-from dfo._datasets.dataset import Dataset
+from dfo._datasets.build import file_params, read_held_until, response_json
+from dfo._datasets.dataset import Dataset, day_text
+from dfo._sync._datasets.resolve import selector_path, stored_manifest
 from dfo._sync._http.transport import Transport
 
 
@@ -48,7 +64,12 @@ def pin(transport: Transport, data: Dataset) -> Dataset:
             if index == 0:
                 raise
             raise _part_way(error, members[:index]) from error
-    return replace(data, pinned=True, held_until=None)
+    return replace(
+        data,
+        members=tuple(
+            replace(member, pinned=True, held_until=None) for member in data.members
+        ),
+    )
 
 
 def _part_way(error: DfoError, pinned: tuple[Member, ...]) -> DfoError:
@@ -115,3 +136,64 @@ def _pin_member(
             f"{member.digest}",
             trace_id=trace_id_of(response, body),
         )
+
+
+def file_url(transport: Transport, member: object) -> str:
+    """The URL of a pinned member's file, in the rendering it was built in.
+
+    Raises:
+        VersionNotPinnedError: The version is not pinned (`version_not_pinned`),
+            with `held_until` naming the date DFO stops guaranteeing it.
+        InvalidRequestError: `member` is not a Member or RefMember, or names a
+            frame DFO computed (`invalid_argument`), and no request is sent.
+        DfoError: Whatever reading the version's manifest raised, such as
+            `NotFoundError` for a version DFO never stored.
+    """
+    reading = _reading(member, transport.caller)
+    spec_id, content_version = reading.spec.spec_id, reading.content_version
+    manifest, trace_id = stored_manifest(
+        transport,
+        spec_id,
+        content_version,
+        deadline=transport.deadline(transport.timeout),
+    )
+    retention = manifest.get("retention")
+    if not isinstance(retention, Mapping):
+        retention = {}
+    if retention.get("pinned") is not True:
+        held_until = read_held_until(retention.get("held_until"))
+        held = f", held until {day_text(held_until)}" if held_until else ""
+        error = client_error(
+            VERSION_NOT_PINNED,
+            f"{spec_id} at {content_version} is not pinned{held}, so a link to "
+            "it stops working once DFO drops the version. Pin the Dataset the "
+            f"member came from with {transport.caller}.pin(data), then ask for "
+            "the link again",
+            trace_id=trace_id,
+        )
+        error.held_until = held_until
+        raise error
+    url = httpx2.URL(
+        transport.base_url + selector_path(reading),
+        params=file_params(reading.rendering),
+    )
+    return str(url)
+
+
+def _reading(member: object, caller: str) -> Member | RefMember:
+    """`member`, refused unless it is a dataset version's member."""
+    if isinstance(member, DerivedMember | DerivedRefMember):
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"file_url links to dataset versions, and {member.spec.spec_id} at "
+            f"{member.content_version} is a frame DFO computed, which has no "
+            "stored file to link to. data.save(path) keeps its rows",
+        )
+    if not isinstance(member, Member | RefMember):
+        raise client_error(
+            INVALID_ARGUMENT,
+            "file_url takes a member of a Dataset, such as data.members[0] or "
+            f"data.ref.members[0] after data = {caller}.fetch(spec), not "
+            f"{type(member).__name__}",
+        )
+    return member

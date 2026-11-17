@@ -242,13 +242,13 @@ ROWS: list[tuple[str, Callable[[], object], str, bool]] = [
     (
         "lookup",
         _lookup,
-        "<Lookup: resolve(*names), node(dcid), code(code), catalogue()>",
+        "<Lookup: resolve(*names), node(dcid), error_code(code), catalogue()>",
         True,
     ),
     (
         "async-lookup",
         _async_lookup,
-        "<AsyncLookup: resolve(*names), node(dcid), code(code), catalogue()>",
+        "<AsyncLookup: resolve(*names), node(dcid), error_code(code), catalogue()>",
         True,
     ),
     (

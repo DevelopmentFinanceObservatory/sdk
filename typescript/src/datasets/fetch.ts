@@ -224,7 +224,7 @@ const LAST_YEAR = 2200;
  * @throws {InvalidRequestError} The window is not "all", "latest" or two integers from
  *   `FIRST_YEAR` to `LAST_YEAR`, the first no later than the second (`invalid_argument`).
  */
-function windowScope(window: unknown): Record<string, unknown> {
+export function windowScope(window: unknown): Record<string, unknown> {
   if (window === "all" || window === "latest") return { kind: window };
   if (Array.isArray(window) && window.length === 2) {
     const [start, end] = window as unknown[];
@@ -331,7 +331,7 @@ function entityScope(
 
 /** A role's dcids, each without surrounding white space, which no dcid holds; undefined unless
  *  the value is a non-empty list of strings that are not empty once trimmed. */
-function dcidsOf(value: unknown): readonly string[] | undefined {
+export function dcidsOf(value: unknown): readonly string[] | undefined {
   if (!Array.isArray(value) || value.length === 0) return undefined;
   const dcids = value.map((dcid: unknown) => (typeof dcid === "string" ? dcid.trim() : ""));
   return dcids.every(isText) ? dcids : undefined;

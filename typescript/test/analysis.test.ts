@@ -1,4 +1,4 @@
-// DFO's operations: running a recipe, reading derived frames, and pins. The replies are the
+// DFO's operations: running a recipe, reading derived frames, pins and links to pinned files. The replies are the
 // ones python/tests/_async/datasets/test_analysis.py replays, recorded from dfo-apis' analysis
 // runner over its test doubles: a chain of quotient_of then growth that drops three series over
 // two inputs, and a rolling rank that settles on 2022.
@@ -6,22 +6,25 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { describe, test } from "node:test";
 
+import { parquetWriteBuffer } from "hyparquet-writer";
+
 import { clientOver } from "../src/client.ts";
 import { envFrom } from "../src/config/env.ts";
 import { Dataset } from "../src/datasets/dataset.ts";
 import type { FetchedMember } from "../src/datasets/dataset.ts";
 import { derivedDataset } from "../src/datasets/derived.ts";
-import { pin } from "../src/datasets/pin.ts";
+import { fileUrl, pin } from "../src/datasets/pin.ts";
 import { recipe } from "../src/datasets/recipe.ts";
 import { fetchDataset } from "../src/datasets/resolve.ts";
+import { InvalidRequestError, VersionNotPinnedError } from "../src/core/errors.ts";
 import { latestYear } from "../src/core/periods.ts";
 import { DatasetRef, isDerived } from "../src/core/ref.ts";
-import type { DerivedRefMember, Spec } from "../src/core/ref.ts";
+import type { DerivedRefMember, Rendering, Spec } from "../src/core/ref.ts";
 import { Transport } from "../src/http/transport.ts";
 import { SeriesLeftOutWarning } from "../src/core/warnings.ts";
 import type { DfoWarning } from "../src/core/warnings.ts";
-import { scenarioBytes } from "./replay.ts";
-import { json, mockFetch, problem, recordedBytes, recordedJson } from "./support.ts";
+import { scenario, scenarioBytes } from "./replay.ts";
+import { contractJson, json, mockFetch, problem, recordedBytes, recordedJson } from "./support.ts";
 import type { Seen } from "./support.ts";
 
 const BASE = "https://api.example/api";
@@ -453,6 +456,25 @@ describe("pin", () => {
     assert.deepEqual(seen, []);
   });
 
+  test("refuses a dataset that names no version unsent", async () => {
+    const { metadata } = await contractJson<{ metadata: Record<string, string> }>(
+      "saved-files/saved-minimal.json",
+    );
+    const bytes = parquetWriteBuffer({
+      columnData: [{ name: "value", data: [], type: "INT64" }],
+      kvMetadata: Object.entries(metadata).map(([key, value]) => ({ key, value })),
+    });
+    const data = await Dataset.fromBytes(bytes);
+    assert.deepEqual(data.members, []);
+    const { transport, seen } = make(pinned);
+    await assert.rejects(pin(transport, data), {
+      name: "InvalidRequestError",
+      code: "invalid_argument",
+      message: /has no version to pin/,
+    });
+    assert.deepEqual(seen, []);
+  });
+
   for (const [name, answer, errorName] of [
     ["another version", json({ schema_version: 1, pinned: {} }), "ContractError"],
     [
@@ -480,6 +502,132 @@ describe("pin", () => {
     assert.deepEqual(error.pinned, [first!.contentVersion]);
     assert.ok(error.message.includes(`${first!.spec.spec_id} at ${first!.contentVersion}`));
     assert.ok(!error.message.includes(second!.contentVersion), error.message);
+  });
+});
+
+/** The stored version the contract's `fetch-ref` scenario reads, as a dataset built in
+ *  `rendering`, and the handler serving its manifest with `retention`. */
+async function storedVersion(retention: Record<string, unknown>, rendering: Rendering) {
+  const record = await scenario("fetch-ref");
+  const served = record.exchanges[0]!.response.json as Record<string, unknown>;
+  const [refMember] = DatasetRef.fromJSON((record.call[0] as { ref: unknown }).ref).members;
+  assert.ok(refMember && !isDerived(refMember));
+  const data = await scenarioBytes("fetch-ref.parquet");
+  const dataset = await Dataset.create(
+    [
+      {
+        ...refMember,
+        manifest: served,
+        digest: `sha256:${createHash("sha256").update(data).digest("hex")}`,
+        rendering,
+        data,
+      },
+    ],
+    { layout: rendering.layout ?? "long" },
+  );
+  return { dataset, manifest: json({ ...served, retention }) };
+}
+
+describe("fileUrl", () => {
+  for (const [source, rendering, query] of [
+    ["members", { format: "parquet", bundle: false }, "format=parquet&bundle=false"],
+    [
+      "ref",
+      { format: "parquet", bundle: false, layout: "frame" },
+      "format=parquet&bundle=false&layout=frame",
+    ],
+  ] as const) {
+    test(`links a pinned member of data.${source} in its rendering under the base URL`, async () => {
+      const { dataset, manifest } = await storedVersion({ pinned: true }, rendering);
+      const [reading] = source === "members" ? dataset.members : dataset.ref.members;
+      assert.ok(reading);
+      const { transport, seen } = make(manifest);
+      const url = await fileUrl(transport, reading);
+      const version = `${BASE}/datasets/${reading.spec.spec_id}/${reading.contentVersion}`;
+      assert.deepEqual(calls(seen), [`GET ${version}`]);
+      assert.equal(url, `${version}/file?${query}`);
+    });
+  }
+
+  test("refuses an unpinned version with its held-until date", async () => {
+    const { dataset, manifest } = await storedVersion(
+      { pinned: false, held_until: "2026-12-17T09:30:00Z" },
+      { format: "parquet", bundle: false },
+    );
+    const { transport, seen } = make(manifest);
+    await assert.rejects(fileUrl(transport, dataset.members[0]!), (error: unknown) => {
+      assert.ok(error instanceof VersionNotPinnedError);
+      assert.ok(error instanceof InvalidRequestError);
+      assert.equal(error.name, "VersionNotPinnedError");
+      assert.equal(error.code, "version_not_pinned");
+      assert.deepEqual(error.heldUntil, new Date("2026-12-17T00:00:00Z"));
+      assert.match(error.message, /client\.pin\(data\)/);
+      return true;
+    });
+    assert.equal(seen.length, 1);
+  });
+
+  for (const [name, target] of [
+    ["a derived ref member", async () => member("rank")],
+    [
+      "a derived member",
+      async () => {
+        const { dataset } = await derivedDataset(
+          await member("rank"),
+          await recordedJson("analysis-rank-manifest.json"),
+          await recordedBytes("analysis-rank-frame.parquet"),
+        );
+        return dataset.members[0];
+      },
+    ],
+    ["a dataset", versions],
+  ] as const) {
+    test(`refuses ${name} unsent`, async () => {
+      const { transport, seen } = make();
+      await assert.rejects(fileUrl(transport, (await target()) as never), {
+        name: "InvalidRequestError",
+        code: "invalid_argument",
+      });
+      assert.deepEqual(seen, []);
+    });
+  }
+
+  test("refuses a member-like object missing what its link is built from, unsent", async () => {
+    const { dataset, manifest } = await storedVersion(
+      { pinned: true },
+      { format: "parquet", bundle: false },
+    );
+    const { spec, contentVersion, rendering } = dataset.members[0]!;
+    const incomplete: Record<string, unknown>[] = [
+      { contentVersion, rendering },
+      { spec: { definition: {} }, contentVersion, rendering },
+      { spec: { ...spec, spec_id: 7 }, contentVersion, rendering },
+      { spec, rendering },
+      { spec, contentVersion: 7, rendering },
+      { spec, contentVersion },
+      { spec, contentVersion, rendering: { bundle: false } },
+      { spec, contentVersion, rendering: { format: "parquet" } },
+      { spec, contentVersion, rendering: { format: "parquet", bundle: false, layout: "wide" } },
+      { spec: { ...spec, spec_id: "../../keys" }, contentVersion, rendering },
+      { spec: { ...spec, spec_id: `${spec.spec_id}/../x` }, contentVersion, rendering },
+      { spec, contentVersion: "../../keys", rendering },
+      { spec, contentVersion: `${contentVersion}?x=1`, rendering },
+    ];
+    for (const target of incomplete) {
+      const { transport, seen } = make(manifest);
+      await assert.rejects(fileUrl(transport, target as never), {
+        name: "InvalidRequestError",
+        code: "invalid_argument",
+        message: /^fileUrl takes a member of a dataset/,
+      });
+      assert.deepEqual(seen, [], JSON.stringify(target));
+    }
+  });
+
+  test("of a version DFO never stored throws its refusal", async () => {
+    const { dataset } = await storedVersion({ pinned: true }, { format: "parquet", bundle: false });
+    const { transport } = make(problem({ status: 404, code: "snapshot_not_found" }));
+    await assert.rejects(fileUrl(transport, dataset.members[0]!), { name: "NotFoundError" });
   });
 });
 

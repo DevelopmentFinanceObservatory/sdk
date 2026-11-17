@@ -1,13 +1,14 @@
-"""The module functions `dfo.search`, `dfo.fetch`, `dfo.pin`, `dfo.share`,
-`dfo.snapshot`, `dfo.unshare`, `dfo.history` and `dfo.configure`, and the lookups
-of `dfo.lookup`, over a default client.
+"""The module functions `dfo.search`, `dfo.fetch`, `dfo.pin`, `dfo.file_url`,
+`dfo.share`, `dfo.snapshot`, `dfo.unshare`, `dfo.history` and `dfo.configure`,
+and the lookups of `dfo.lookup`, over a default client.
 
 The default client is built on first use, under a lock, so importing `dfo` reads
 neither the environment nor the network, and an invalid `DFO_TIMEOUT` raises at
-the first call. `configure` replaces it. An answer from
-`dfo.search` reads the default client when each of its requests runs, so it stays
-usable after `configure`. A replaced client closes once nothing uses it, since another thread may still be in a call on it, and the default client
-closes at exit.
+the first call. `configure` replaces it. An answer from `dfo.search` reads the
+default client when each of its requests runs, so it stays usable after
+`configure`. A replaced client closes once nothing uses it, since another thread
+may still be in a call on it, and the default client closes at exit.
+
 A forked child keeps the default client, and with it the options `configure`
 set. Its transport builds a fresh connection pool on the child's first request
 and leaves the parent's connections untouched. The child takes a fresh lock,
@@ -24,9 +25,19 @@ from datetime import date
 from os import PathLike
 from typing import overload
 
+from typing_extensions import deprecated
+
 from dfo._config.keys import ApiKeyArgument
+from dfo._core.codes import NAME_DEPRECATED
+from dfo._core.errors import client_warning, warn
 from dfo._core.lookup_results import Catalogue, Code, Match, Node
-from dfo._core.refs import DatasetRef
+from dfo._core.refs import (
+    DatasetRef,
+    DerivedMember,
+    DerivedRefMember,
+    Member,
+    RefMember,
+)
 from dfo._core.timeouts import (
     CLIENT_TIMEOUT,
     FROM_ENVIRONMENT,
@@ -111,19 +122,17 @@ def configure(
 
     Raises:
         InvalidRequestError: The base URL, passed or read from `DFO_BASE_URL`,
-            is invalid (`base_url_invalid`), a
-            header's name is not an HTTP token or names `X-DFO-Client`, or its
-            value not a string of visible ASCII, spaces and tabs (`header_invalid`), the key would
-            travel over plain http to a host that is not loopback
-            (`insecure_transport`), `timeout` is not None or a finite number
-            above 0, `attempt_timeout` not a finite number above 0, the retry
-            count not an integer from 0 to 10, `DFO_TIMEOUT` or
-            `DFO_MAX_RETRIES`, read for an argument left out, not seconds
-            above 0 such as `300` or `2.5` or a count from 0 to 10 in digits,
-            or, with `cache` on,
-            `cache_dir` an empty path, one holding a NUL character, or one
-            starting `~name` for a user with no home directory
-            (`invalid_argument`).
+            is invalid (`base_url_invalid`), a header's name is not an HTTP
+            token or names `X-DFO-Client`, or its value not a string of visible
+            ASCII, spaces and tabs (`header_invalid`), the key would travel over
+            plain http to a host that is not loopback (`insecure_transport`),
+            `timeout` is not None or a finite number above 0, `attempt_timeout`
+            not a finite number above 0, the retry count not an integer from 0
+            to 10, `DFO_TIMEOUT` or `DFO_MAX_RETRIES`, read for an argument left
+            out, not seconds above 0 such as `300` or `2.5` or a count from 0 to
+            10 in digits, or, with `cache` on, `cache_dir` an empty path, one
+            holding a NUL character, or one starting `~name` for a user with no
+            home directory (`invalid_argument`).
         AuthenticationError: The key lookup failed.
     """
     client = _DefaultClient(
@@ -141,11 +150,60 @@ def configure(
         _install(client)
 
 
-def search(question: str, /, *, timeout: CallTimeout = CLIENT_TIMEOUT) -> Answer:
-    """Ask Search what a question means, part by part, with the default client.
+@overload
+def search(question: str, /, *, timeout: CallTimeout = CLIENT_TIMEOUT) -> Answer: ...
+
+
+@overload
+def search(
+    *,
+    codes: Sequence[str],
+    variable: str | None = None,
+    entities: Entities | None = None,
+    window: Window | None = None,
+    open_roles: Sequence[str] | None = None,
+    source: str | None = None,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
+) -> Answer: ...
+
+
+def search(
+    question: str | None = None,
+    /,
+    *,
+    codes: Sequence[str] | None = None,
+    variable: str | None = None,
+    entities: Entities | None = None,
+    window: Window | None = None,
+    open_roles: Sequence[str] | None = None,
+    source: str | None = None,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
+) -> Answer:
+    """Ask Search what a question means, part by part, or ask it for publisher
+    series codes, one part per code, with the default client.
+
+    A search by codes takes no question. Each code answers on its own from the
+    code's series, and the other keywords apply to every code. A code DFO does
+    not hold, and a reading that is not the code's series alone, are gaps of
+    the answer, so `answer.fetch()` refuses until `partial=True` builds the
+    codes that read.
 
     Args:
         question: The question, in your words.
+        codes: Publisher series codes, such as
+            `["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD"]`.
+        variable: Words that choose among a code's variables, such as "debt
+            service". Left out, each code's part reads the code.
+        entities: Role keys bound to dcids, such as
+            `{"destination": ["country/KEN"]}`, or to what `dfo.lookup.resolve`
+            returns, as `dfo.fetch` takes them. `origin` reads as the giving
+            side and `destination` as the receiving side. `place` names no side.
+        window: `"all"`, `"latest"` or `(start_year, end_year)`, as `dfo.fetch`
+            takes it.
+        open_roles: Flow role keys, `origin` or `destination`, to answer member
+            by member, such as `["origin"]` for one row per creditor.
+        source: The source to read the codes from, in words, such as "IDS", for
+            a code two sources hold.
         timeout: The longest the call waits, retries included, in seconds. Each
             attempt reads until then, and None waits as long as Search takes.
             Left out, the `timeout` given to `dfo.configure` applies, else a
@@ -155,11 +213,26 @@ def search(question: str, /, *, timeout: CallTimeout = CLIENT_TIMEOUT) -> Answer
             client can cancel it.
 
     Raises:
-        InvalidRequestError: `question` is empty or only whitespace, or
-            `timeout` is not None or a finite number above 0 (`invalid_argument`).
+        InvalidRequestError: `question` is empty or only whitespace; a question
+            comes beside a keyword of a search by codes, or such a keyword comes
+            without `codes`; a keyword breaks its rule, such as `codes` given as
+            one string or naming a code twice; or `timeout` is not None or a
+            finite number above 0 (`invalid_argument`).
         ContractError: The answer lacks a member the client acts on.
+        DfoError: The server refused the request, such as more codes than it
+            takes in one search (`request_invalid`).
     """
-    return _search(_session, question, timeout=timeout)
+    return _search(
+        _session,
+        question,
+        codes=codes,
+        variable=variable,
+        entities=entities,
+        window=window,
+        open_roles=open_roles,
+        source=source,
+        timeout=timeout,
+    )
 
 
 @overload
@@ -310,6 +383,24 @@ def pin(data: Dataset, /) -> Dataset:
     return default_client().pin(data)
 
 
+def file_url(member: Member | RefMember | DerivedMember | DerivedRefMember, /) -> str:
+    """The URL of a pinned member's file, with the default client: a link a
+    pipeline can commit and read with any HTTP client, with no key.
+
+    Takes `Client.file_url`'s argument, one of `data.members` or
+    `data.ref.members`.
+
+    Raises:
+        VersionNotPinnedError: The version is not pinned (`version_not_pinned`),
+            and `held_until` says when DFO stops guaranteeing it. Run
+            `dfo.pin(data)` first.
+        InvalidRequestError: `member` is not a Member or RefMember, or names a
+            frame DFO computed (`invalid_argument`), and no request is sent.
+        NotFoundError: DFO never stored the version.
+    """
+    return default_client().file_url(member)
+
+
 def share(
     cards: Card | Sequence[Card],
     /,
@@ -410,16 +501,33 @@ def node(dcid: str, /, *, as_of: date | None = None) -> Node:
     return default_client().lookup.node(dcid, as_of=as_of)
 
 
-def code(code: str, /) -> Code:
-    """The registry entry for one code, such as `spec_not_found`, with the
-    default client.
+def error_code(code: str, /) -> Code:
+    """The registry entry for one of DFO's own error or warning codes, such as
+    `spec_not_found`, with the default client.
 
     Raises:
         InvalidRequestError: `code` is not lower-case snake case
             (`invalid_argument`); no request is sent.
         NotFoundError: The registry holds no such code.
     """
-    return default_client().lookup.code(code)
+    return default_client().lookup.error_code(code)
+
+
+# The marker is for type checkers alone. The call warns through the client.
+@deprecated("Use `dfo.lookup.error_code`.", category=None)
+def code(code: str, /) -> Code:
+    """The deprecated name of `error_code`, removed in 0.4.0.
+
+    Warns `DfoDeprecationWarning` (`name_deprecated`) at the caller's line.
+    """
+    warn(
+        client_warning(
+            NAME_DEPRECATED,
+            "dfo.lookup.code is deprecated and removed in 0.4.0; use "
+            "dfo.lookup.error_code",
+        )
+    )
+    return error_code(code)
 
 
 def catalogue(*, place: str | None = None) -> Catalogue:

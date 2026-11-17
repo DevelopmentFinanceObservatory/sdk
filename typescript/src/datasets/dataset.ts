@@ -8,23 +8,47 @@ import {
   stackedColumns,
 } from "./parquet.ts";
 import type { Row, Table } from "./parquet.ts";
-import { DatasetRef, isDerived } from "../core/ref.ts";
-import type { DerivedRefMember, Layout, Rendering, ResolvedPeriod, Spec } from "../core/ref.ts";
+import { DatasetRef, invalid, isDerived, loadRef, objectAt } from "../core/ref.ts";
+import type {
+  DatasetRefJson,
+  DerivedRefMember,
+  Layout,
+  RefMember,
+  Rendering,
+  ResolvedPeriod,
+  Spec,
+} from "../core/ref.ts";
 import { manifestWarningsOf } from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
 import type { Assumption, Departure, Notice, RequestedOperation } from "../wire.ts";
-import { canonicalJson, compareCodePoints, isRecord, list, objects, text } from "../core/json.ts";
+import { canonicalJson, isRecord, list, objects, parseJson, text } from "../core/json.ts";
 import { inline } from "../core/text.ts";
 import { clientError } from "../core/errors.ts";
-import { COLUMN_ROLE_KEYS } from "../generated/role-keys.ts";
+import { partyTotalsLine, partyTotalsOf, rootPartyTotalsOf } from "./party-totals.ts";
+import type { PartyTotalsLeftOut } from "./party-totals.ts";
 import { platformFileWriter } from "./save.ts";
+import {
+  arrayAt,
+  checkComplete,
+  checkRetention,
+  datasetRetention,
+  loadCitation,
+  loadDay,
+  loadGap,
+  loadRetention,
+  loadTime,
+  loadWarning,
+  readSaved,
+  requireKeys,
+  SAVED_DERIVED_FORMAT_VERSION,
+  SAVED_FORMAT_VERSION,
+  stringAt,
+} from "./saved.ts";
 
-/** The version of the provenance a file from `toBytes()` carries under `dfo.*` keys, the one
- *  Python's `Dataset.save` writes: 1 for a dataset of dataset versions, and 2 for a derived
- *  dataset, whose `dfo.ref` is a format 2 ref and which adds `dfo.left_out` and `dfo.steps`, so
- *  a client that reads format 1 alone refuses it as a later format. */
-const SAVED_FORMAT_VERSION = 1;
-const SAVED_DERIVED_FORMAT_VERSION = 2;
+export type { KeptSeries, PartyTotalsLeftOut } from "./party-totals.ts";
+
+/** The format of the record `Provenance.toJSON()` returns. */
+const PROVENANCE_FORMAT_VERSION = 1;
 
 /** One source a dataset cites. */
 export type CitationSource = {
@@ -46,7 +70,7 @@ export type Citation = {
   readonly sources: readonly CitationSource[];
 };
 
-/** One reading inside a dataset: the exact version built for it. */
+/** One reading inside a dataset: the exact version built for it, with its retention. */
 export type Member = {
   /** The variable text of each answer part the member answers, in query order, or empty for a
    *  spec fetched outside an answer. */
@@ -60,11 +84,23 @@ export type Member = {
   /** The SHA-256 digest of the member's Parquet file, which the fetch checked. */
   readonly digest: string;
   readonly rendering: Rendering;
+  /** Whether DFO keeps the version without a time limit, or null when the client does not know,
+   *  as for a file saved by a client before 0.3.0. */
+  readonly pinned: boolean | null;
+  /** The time the version can still be fetched without being pinned, as the server gives it, or
+   *  null when it is pinned, the server did not say, or the client does not know. A saved file
+   *  and a provenance record keep the day, which reads back as midnight UTC. */
+  readonly heldUntil: Date | null;
 };
 
+/** How long DFO keeps a member's version: whether it is pinned, and when it stops being
+ *  guaranteed. */
+type Retention = Pick<Member, "pinned" | "heldUntil">;
+
 /** One derived frame inside a dataset: the frame an analysis recipe computed, with its
- *  citation. */
-export type DerivedMember = DerivedRefMember & { readonly citation: Citation };
+ *  citation and retention. */
+export type DerivedMember = DerivedRefMember &
+  Pick<Member, "pinned" | "heldUntil"> & { readonly citation: Citation };
 
 /** The step of a recipe that dropped a series. */
 export type LeftOutStep = {
@@ -180,214 +216,6 @@ export function stepsText(steps: readonly DerivedStep[], source: string): string
   return done === "" ? `from ${source}` : `${done}, from ${source}`;
 }
 
-/** One series whose rows kept an entry's totals, and the periods in which they stayed. */
-export type KeptSeries = {
-  /** Each column of the frame's grain other than the entry's role, `time_period` and
-   *  `provenance`, such as `stat_var`, the other role columns, `unit` and `measurementMethod`,
-   *  mapped to the cell the series holds there: a string, null, or a unit as a JSON object. */
-  readonly series: Readonly<Record<string, unknown>>;
-  /** The `time_period` values, sorted by code point, in which the series kept the totals. */
-  readonly timePeriods: readonly string[];
-};
-
-/**
- * Group totals on one party role that a fetch left out of one member's rows. A fetch leaves
- * party totals out by default, so a sum over `value` counts each flow once. `partyTotals: true`
- * keeps them. DFO names what the cut dropped in the version's manifest, one entry per party role,
- * provenance and set of kept series and periods, and the dataset gathers those entries in member
- * order, then in the manifest's order. Two entries can share a role and a provenance. A derived
- * dataset's entries describe each reading its recipe ran on, in the order of its ref's roots.
- */
-export type PartyTotalsLeftOut = {
-  /** The spec of the member whose rows lost the totals, or for a derived dataset the reading's. */
-  readonly specId: string;
-  /** The party role, by DFO's column name, such as `financingProvider`. */
-  readonly role: string;
-  /** The key a caller names the role by in `entities`, `origin` or `destination`, or null for a
-   *  column the client does not know. */
-  readonly roleKey: string | null;
-  /** The dcids of the totals left out, such as `DACCountriesTotal`. */
-  readonly entities: readonly string[];
-  /** The dataset whose rows lost the totals, or null for rows with no provenance, or when
-   *  `everyProvenance` is true. */
-  readonly provenance: string | null;
-  /** Whether the totals left the rows of every dataset, as on a version DFO recorded before it
-   *  named the provenance. */
-  readonly everyProvenance: boolean;
-  /** The series whose rows kept these totals, each with the periods where they stayed, in the
-   *  manifest's order; empty when the totals left every series in every period. */
-  readonly keptIn: readonly KeptSeries[];
-};
-
-/** A non-empty string. */
-const isFilled = (value: unknown): value is string => typeof value === "string" && value !== "";
-
-/** Compares two lists element by element with `compare`, a shorter prefix first. */
-function compareLists<T>(
-  a: readonly T[],
-  b: readonly T[],
-  compare: (x: T, y: T) => number,
-): number {
-  for (let index = 0; index < a.length && index < b.length; index += 1) {
-    const order = compare(a[index]!, b[index]!);
-    if (order !== 0) return order;
-  }
-  return Math.sign(a.length - b.length);
-}
-
-/** One series cell's sort key: its column, then null before a string before an object, then the
- *  string or the object's JCS text. */
-type CellKey = readonly [column: string, kind: number, text: string];
-
-const compareCellKeys = (a: CellKey, b: CellKey): number =>
-  compareCodePoints(a[0], b[0]) || a[1] - b[1] || compareCodePoints(a[2], b[2]);
-
-/** A `kept_in` item as `{series, timePeriods}` with its sort key, or null when it is no object of
- *  exactly a `series` object whose cells are strings, nulls or objects and `time_periods`, a
- *  non-empty list of non-empty strings sorted by code point, each once. */
-function keptSeries(item: unknown): { kept: KeptSeries; key: CellKey[] } | null {
-  if (!isRecord(item)) return null;
-  const names = Object.keys(item);
-  if (names.length !== 2 || !Object.hasOwn(item, "series")) return null;
-  const { series, time_periods: periods } = item;
-  if (!isRecord(series) || !Array.isArray(periods) || periods.length === 0) return null;
-  if (
-    !periods.every(
-      (period: unknown, index) =>
-        isFilled(period) &&
-        (index === 0 || compareCodePoints(periods[index - 1] as string, period) < 0),
-    )
-  ) {
-    return null;
-  }
-  const key: CellKey[] = [];
-  for (const column of Object.keys(series).toSorted(compareCodePoints)) {
-    const cell = series[column];
-    if (cell === null) key.push([column, 0, ""]);
-    else if (typeof cell === "string") key.push([column, 1, cell]);
-    else if (isRecord(cell)) key.push([column, 2, canonicalJson(cell)]);
-    else return null;
-  }
-  const kept = Object.freeze({
-    series: Object.freeze(structuredClone(series)),
-    timePeriods: Object.freeze([...(periods as string[])]),
-  });
-  return { kept, key };
-}
-
-/** The series a trace entry's `kept_in` lists: empty when it is absent, and null when it is no
- *  non-empty list of well-formed items in the contract's order, no two with the same series. */
-function keptInOf(value: unknown): KeptSeries[] | null {
-  if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length === 0) return null;
-  const kept: KeptSeries[] = [];
-  let previous: CellKey[] | null = null;
-  for (const item of value) {
-    const read = keptSeries(item);
-    if (read === null) return null;
-    if (previous !== null && compareLists(previous, read.key, compareCellKeys) >= 0) return null;
-    kept.push(read.kept);
-    previous = read.key;
-  }
-  return kept;
-}
-
-/**
- * One entry of a manifest's `trace.party_totals_left_out` as `{role, entities, provenance,
- * kept_in}`, where an absent `provenance` means every dataset's rows; null when the entry is no
- * object, its `role` is no non-empty string, its `entities` is no list of non-empty strings, its
- * `provenance` is neither absent, a string nor null, or its `kept_in` is neither absent nor a
- * well-formed list in the contract's order. Other keys are ignored.
- */
-function partyTotalsEntry(entry: unknown, specId: string): PartyTotalsLeftOut | null {
-  if (!isRecord(entry)) return null;
-  const { role, entities, provenance } = entry;
-  if (!isFilled(role)) return null;
-  if (!Array.isArray(entities) || !entities.every(isFilled)) return null;
-  if (provenance !== undefined && provenance !== null && typeof provenance !== "string") {
-    return null;
-  }
-  const keptIn = keptInOf(entry["kept_in"]);
-  if (keptIn === null) return null;
-  return Object.freeze({
-    specId,
-    role,
-    roleKey: Object.hasOwn(COLUMN_ROLE_KEYS, role) ? (COLUMN_ROLE_KEYS[role] ?? null) : null,
-    entities: Object.freeze([...entities]),
-    provenance: provenance ?? null,
-    everyProvenance: !Object.hasOwn(entry, "provenance"),
-    keptIn: Object.freeze(keptIn),
-  });
-}
-
-/** The entries a list of trace entries names for `specId`: none when `served` is no list, and a
- *  malformed entry is dropped while the entries beside it still read. */
-function partyTotalsFrom(served: unknown, specId: string): PartyTotalsLeftOut[] {
-  if (!Array.isArray(served)) return [];
-  return served.flatMap((entry: unknown) => partyTotalsEntry(entry, specId) ?? []);
-}
-
-/**
- * The totals a manifest's `trace.party_totals_left_out` names for the member of `specId`. The
- * list is empty when the trace names none: a trace that is no object or a member that is no list
- * names none, and a malformed entry is dropped while the entries beside it still read.
- */
-function partyTotalsOf(
-  manifest: Readonly<Record<string, unknown>>,
-  specId: string,
-): PartyTotalsLeftOut[] {
-  const trace = manifest["trace"];
-  return partyTotalsFrom(isRecord(trace) ? trace["party_totals_left_out"] : undefined, specId);
-}
-
-/**
- * The totals each root's read left out, as a derived manifest's `roots[].party_totals_left_out`
- * names them, each entry under its root's spec id, in the order of the ref member's roots. Each
- * ref root pairs with the first manifest root of the same `spec_id` and `content_version` that no
- * earlier ref root took, and a manifest root that pairs with none names none. Empty against a
- * server older than the per-root report, and when the server could not read a root, so an empty
- * list leaves open whether the reads kept every total.
- */
-function rootPartyTotalsOf(member: Omit<FetchedDerivedMember, "data">): PartyTotalsLeftOut[] {
-  const served = objects(member.manifest["roots"]);
-  const taken = new Set<number>();
-  return member.roots.flatMap(({ specId, contentVersion }) => {
-    const index = served.findIndex(
-      (root, at) =>
-        !taken.has(at) && root["spec_id"] === specId && root["content_version"] === contentVersion,
-    );
-    if (index === -1) return [];
-    taken.add(index);
-    return partyTotalsFrom(served[index]!["party_totals_left_out"], specId);
-  });
-}
-
-/** The text form's line counting the totals left out on each role, with the key a caller names
- *  it by where the client knows it, as
- *  `Party totals left out: 15 on financingProvider (origin) · data.partyTotalsLeftOut`. A derived
- *  dataset's line counts the totals its readings left out. */
-function partyTotalsLine(
-  entries: readonly PartyTotalsLeftOut[],
-  derived: boolean,
-): string | undefined {
-  const byRole = new Map<string, { roleKey: string | null; dcids: Set<string> }>();
-  for (const { role, roleKey, entities } of entries) {
-    const counted = byRole.get(role) ?? { roleKey, dcids: new Set<string>() };
-    for (const entity of entities) counted.dcids.add(entity);
-    byRole.set(role, counted);
-  }
-  if (byRole.size === 0) return undefined;
-  const counts = [...byRole]
-    .map(
-      ([role, { roleKey, dcids }]) =>
-        `${dcids.size.toLocaleString("en-GB")} on ${role}` +
-        (roleKey === null ? "" : ` (${roleKey})`),
-    )
-    .join(", ");
-  const label = derived ? "Party totals left out of the readings" : "Party totals left out";
-  return `${label}: ${counts} · data.partyTotalsLeftOut`;
-}
-
 /** What a derived dataset adds to its member: every series its recipe left out, whether that
  *  list is whole, its steps in the order they ran, and the role word the call named each
  *  column by. */
@@ -471,26 +299,60 @@ function mergeCitations(citations: readonly Citation[]): Citation {
   return { text: [...texts].join("; "), sources: [...sources.values()] };
 }
 
-/** The earliest `held_until` across members, and whether every member is pinned. A member
- *  whose manifest has no `retention` counts as neither pinned nor dated. */
-function retentionOf(manifests: readonly Readonly<Record<string, unknown>>[]): {
-  heldUntil: Date | null;
-  pinned: boolean;
-} {
-  const retentions = manifests.map((manifest) => manifest["retention"]);
-  if (retentions.every((retention) => isRecord(retention) && retention["pinned"] === true)) {
-    return { heldUntil: null, pinned: true };
-  }
-  let heldUntil: Date | null = null;
-  for (const retention of retentions) {
-    if (!isRecord(retention) || retention["pinned"] === true) continue;
-    const held = retention["held_until"];
-    if (typeof held !== "string") continue;
-    const date = new Date(held);
-    if (Number.isNaN(date.getTime())) continue;
-    if (heldUntil === null || date < heldUntil) heldUntil = date;
-  }
-  return { heldUntil, pinned: false };
+/** The forms `heldUntilOf` reads: a date, `2026-11-18`, or a date-time with seconds, an optional
+ *  fraction and an optional `Z` or `±HH:MM` offset, `2026-11-18T23:30:00.5-05:00`. */
+const HELD_UNTIL =
+  /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))?)?$/;
+
+/**
+ * A retention's `held_until` as the UTC midnight of the date it names, or null when it is no
+ * string, is in another form, or names a date or time that does not exist, as `2026-02-30` or
+ * `T25:00:00`. It reads `2026-11-18` and `2026-11-18T23:30:00Z`, with an optional fraction of a
+ * second and `Z` or `±HH:MM` for the offset or none, the forms the server writes. The date is the
+ * one the text writes, in its own offset. Python's `read_held_until` reads the same forms with
+ * the same pattern, and its year 1 is the first either reads.
+ */
+export function heldUntilOf(value: unknown): Date | null {
+  if (typeof value !== "string") return null;
+  const found = HELD_UNTIL.exec(value);
+  if (found === null) return null;
+  // An absent time or offset reads as 0, which is in range.
+  const [year, month, day, hour, minute, second, offsetHour, offsetMinute] = found
+    .slice(1)
+    .map((part: string | undefined) => Number(part ?? 0)) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  // `Date.UTC` reads a year below 100 as 1900 plus it, so the year is set on its own.
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  const exists =
+    year > 0 &&
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day;
+  const inRange = hour < 24 && minute < 60 && second < 60 && offsetHour < 24 && offsetMinute < 60;
+  return exists && inRange ? date : null;
+}
+
+/** A version's retention as its manifest serves it: pinned with no day, or not pinned and held
+ *  until the day the server gives, null when it gives none. A manifest without `retention`
+ *  leaves both unknown, and a `pinned` that is not a boolean leaves it unknown. */
+function servedRetention(manifest: Readonly<Record<string, unknown>>): Retention {
+  const retention = manifest["retention"];
+  if (!isRecord(retention)) return { pinned: null, heldUntil: null };
+  const pinned = retention["pinned"];
+  if (pinned === true) return { pinned: true, heldUntil: null };
+  return {
+    pinned: typeof pinned === "boolean" ? pinned : null,
+    heldUntil: heldUntilOf(retention["held_until"]),
+  };
 }
 
 /** How `Dataset.create` assembles its members: the layout, the parts a partial fetch left out,
@@ -499,25 +361,116 @@ type DatasetOptions = {
   readonly layout: Layout;
   readonly missing?: readonly Gap[];
   readonly derived?: DerivedFacts;
-  /** The retention in place of the one the manifests state, as after a pin. */
-  readonly retention?: { readonly heldUntil: Date | null; readonly pinned: boolean };
   /** The question the dataset answers, when it came from an answer. */
   readonly question?: string | null;
-  /** When the data left the server, which the copies of a dataset keep. Now by default. */
+  /** When the data left the server. Now by default. */
   readonly fetchedAt?: Date;
-  /** The share slot a share fetch read, as the text form's "Shown by" line names it:
-   *  `share k3Qx8vTa, slot 2 "Malaria grants", on 3 October 2026`. */
-  readonly shownBy?: string;
 };
 
 /** A member a dataset is made from, without its bytes, which the dataset holds itself. */
 type MemberInput = Omit<FetchedMember, "data"> | Omit<FetchedDerivedMember, "data">;
 
+/**
+ * What a dataset holds beside its rows, as a fetch reads it from the members' manifests or a
+ * saved file from its `dfo.*` keys. A copy of a dataset, as after a pin, changes it and keeps
+ * the rows.
+ */
+export type DatasetState = {
+  readonly sentence: string;
+  readonly members: readonly (Member | DerivedMember)[];
+  readonly citation: Citation;
+  readonly warnings: readonly Notice[];
+  readonly departures: readonly Departure[];
+  readonly requestedOperations: readonly RequestedOperation[];
+  readonly assumptions: readonly Assumption[];
+  readonly complete: boolean;
+  readonly missing: readonly Gap[];
+  readonly layout: Layout;
+  readonly layoutVersion: string;
+  readonly question: string | null;
+  readonly fetchedAt: Date | null;
+  readonly leftOut: readonly LeftOutFields[];
+  readonly leftOutComplete: boolean;
+  /** The recipe's steps in the order they ran, each column named as `roles` names it. */
+  readonly steps: readonly DerivedStep[];
+  /** The role word the call named each column by, for the text forms alone. */
+  readonly roles: Readonly<Record<string, string>>;
+  readonly partyTotalsLeftOut: readonly PartyTotalsLeftOut[];
+  /** The share slot a share fetch read, as the text form's "Shown by" line names it:
+   *  `share k3Qx8vTa, slot 2 "Malaria grants", on 3 October 2026`. */
+  readonly shownBy?: string;
+};
+
+/** What a dataset reads from its members' manifests and the fetch's options. */
+function stateOf(members: readonly MemberInput[], options: DatasetOptions): DatasetState {
+  const built = members.map((member): Member | DerivedMember => {
+    const citation = citationOf(member.manifest);
+    const parts = Object.freeze([...member.parts]);
+    const retention = servedRetention(member.manifest);
+    if (isDerived(member)) {
+      return { ...derivedRefMember(member), parts, citation, ...retention };
+    }
+    return {
+      parts,
+      spec: member.spec,
+      contentVersion: member.contentVersion,
+      sentence: member.sentence,
+      citation,
+      digest: member.digest,
+      rendering: member.rendering,
+      ...retention,
+    };
+  });
+  const manifests = members.map((member) => member.manifest);
+  const facts = members.flatMap((member) => (isDerived(member) ? [] : (member.answerFacts ?? [])));
+  const missing = Object.freeze([...(options.missing ?? [])]);
+  const derived = options.derived;
+  const roles = derived?.roles ?? {};
+  return {
+    sentence: built.map((member) => member.sentence).join(" "),
+    members: Object.freeze(built),
+    citation: mergeCitations(built.map((member) => member.citation)),
+    warnings: Object.freeze(warningsOf(manifests)),
+    departures: Object.freeze(unique(facts.flatMap((part) => part.departures))),
+    requestedOperations: Object.freeze(unique(facts.flatMap((part) => part.operations))),
+    // Each assumption keeps the four members both clients save, so equal ones count once.
+    assumptions: Object.freeze(unique(facts.flatMap((part) => part.assumptions ?? []))),
+    complete: missing.length === 0,
+    missing,
+    layout: options.layout,
+    layoutVersion: [
+      ...new Set(members.map((member) => artifactLayout(member, options.layout))),
+    ].join("; "),
+    question: options.question ?? null,
+    fetchedAt: options.fetchedAt ?? new Date(),
+    leftOut: derived?.leftOut ?? [],
+    leftOutComplete: derived?.leftOutComplete ?? true,
+    steps: (derived?.steps ?? []).map((step) => ({
+      ...step,
+      by: step.by.map((column) => roles[column] ?? column),
+    })),
+    roles,
+    partyTotalsLeftOut: members.flatMap((member) =>
+      isDerived(member)
+        ? rootPartyTotalsOf(member)
+        : partyTotalsOf(member.manifest, member.spec.spec_id),
+    ),
+  };
+}
+
 /** Copies a dataset as pinned; Dataset's static block assigns it. */
 let pinnedCopy: (dataset: Dataset) => Dataset;
 
-/** `dataset` with every version kept without a time limit, as a pin leaves it. */
+/** `dataset` with every member's version kept without a time limit, as a pin leaves it. */
 export const pinnedDataset = (dataset: Dataset): Dataset => pinnedCopy(dataset);
+
+/** Reads a saved file's bytes as a dataset; Dataset's static block assigns it. */
+let savedDataset: (bytes: unknown, path?: string) => Promise<Dataset>;
+
+/** The dataset in the saved file `load(path)` read from `path`, as `Dataset.fromBytes` reads its
+ *  bytes, with a refusal of bytes that are no Parquet file naming `path`. */
+export const datasetAt = (bytes: Uint8Array, path: string): Promise<Dataset> =>
+  savedDataset(bytes, path);
 
 /** Copies a dataset with the share slot it was read from; Dataset's static block assigns it. */
 let shownCopy: (dataset: Dataset, shownBy: string) => Dataset;
@@ -573,28 +526,32 @@ export class Dataset {
   readonly complete: boolean;
   /** The parts a partial fetch left out. */
   readonly missing: readonly Gap[];
-  /** The earliest time any member's version can still be fetched, or null when every member is
-   *  pinned or while the server does not say. */
+  /** The earliest time any member's version not pinned can still be fetched, from the members'
+   *  `heldUntil`, or null when every member is pinned or none of the others' times is known. */
   readonly heldUntil: Date | null;
-  /** Whether every member's version is kept without a time limit. */
+  /** Whether every member's version is kept without a time limit; false with no members. */
   readonly pinned: boolean;
   readonly layout: Layout;
   /** The artifact layout each member's manifest names, distinct ones joined by "; ". */
   readonly layoutVersion: string;
   /** The question the dataset answers, when it came from `answer.fetch()`, else null. */
   readonly question: string | null;
-  /** When the data left the server, to the second. */
-  readonly fetchedAt: Date;
-  readonly #data: readonly Uint8Array[];
+  /** When the data left the server, to the second, or null when a saved file does not say, as
+   *  one Python wrote for a dataset read from a website bundle does not. */
+  readonly fetchedAt: Date | null;
+  /** Each member's file as the server built it, in member order, or null for a dataset read
+   *  from a saved file, which holds one table for every member. */
+  readonly #data: readonly Uint8Array[] | null;
   /** Each member's file, one per member in member order, labelled as its `part` column holds
-   *  it when several stack, in reading order. */
+   *  it when several stack, in reading order; or a saved file's one table, as the file holds
+   *  it. */
   readonly #table: Table;
+  /** Each member's row count in member order, which splits the table's rows by member. */
+  readonly #memberRows: readonly number[];
   /** Every series a step of the recipe behind a derived dataset dropped for missing data, at
    *  any step, each naming its step. Empty for a dataset of dataset versions. DFO lists at most
    *  2,000; `String(data)` says "at least" when it dropped more. */
   readonly leftOut: readonly LeftOutSeries[];
-  /** Whether `leftOut` lists every series the recipe dropped. */
-  readonly #leftOutComplete: boolean;
   /** The group totals a fetch left out of each member's rows, one entry per member, party role,
    *  provenance and set of kept series and periods, in member order and then the manifest's
    *  order. Empty when nothing was left out and when the fetch passed `partyTotals: true`. A
@@ -603,22 +560,36 @@ export class Dataset {
    *  the server could not read a reading, so an empty list there leaves open whether every total
    *  stayed. */
   readonly partyTotalsLeftOut: readonly PartyTotalsLeftOut[];
-  /** The recipe's steps in the order they ran, for the text form's derived line. */
-  readonly #steps: readonly DerivedStep[];
-  /** The members and options the dataset was made from, less their bytes, for a copy. */
-  readonly #inputs: { members: readonly MemberInput[]; options: DatasetOptions };
+  /** What the dataset holds beside its rows, for a copy. */
+  readonly #state: DatasetState;
 
   static {
     readTable = (dataset) => dataset.#table;
-    pinnedCopy = (dataset) => {
-      const { members, options } = dataset.#inputs;
-      const retention = { heldUntil: null, pinned: true };
-      return new Dataset(members, { ...options, retention }, dataset.#data, dataset.#table);
+    savedDataset = async (bytes, path) => {
+      const { state, table, memberRows } = await readSaved(bytes, path);
+      return new Dataset(state, table, memberRows, null);
     };
-    shownCopy = (dataset, shownBy) => {
-      const { members, options } = dataset.#inputs;
-      return new Dataset(members, { ...options, shownBy }, dataset.#data, dataset.#table);
-    };
+    pinnedCopy = (dataset) =>
+      new Dataset(
+        {
+          ...dataset.#state,
+          members: dataset.#state.members.map((member) => ({
+            ...member,
+            pinned: true,
+            heldUntil: null,
+          })),
+        },
+        dataset.#table,
+        dataset.#memberRows,
+        dataset.#data,
+      );
+    shownCopy = (dataset, shownBy) =>
+      new Dataset(
+        { ...dataset.#state, shownBy },
+        dataset.#table,
+        dataset.#memberRows,
+        dataset.#data,
+      );
   }
 
   /**
@@ -648,97 +619,91 @@ export class Dataset {
     // The dataset holds the bytes itself, once.
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the bytes are left out on purpose
     const inputs = members.map(({ data: _, ...member }) => member);
-    const fetchedAt = options.fetchedAt ?? new Date();
-    return new Dataset(inputs, { ...options, fetchedAt }, data, table);
+    return new Dataset(stateOf(inputs, options), table, memberRows(parts), data);
+  }
+
+  /**
+   * Reads the file `toBytes()` or `save()` writes, or Python's `data.save` or `data.to_bytes()`,
+   * with its rows, provenance and ref. It works in any runtime. A file of several members holds
+   * them in one table, `part` first, so the loaded dataset's `memberBytes` throws; its other
+   * conversions work as on the dataset that wrote it, and `toBytes()` writes the file again.
+   *
+   * @throws {BundleError} The bytes are no Parquet file, a damaged one, or one without a saved
+   *   dataset's `dfo.*` keys (`not_a_bundle`).
+   * @throws {FormatError} A `dfo.*` key is missing or breaks the saved format, or the file comes
+   *   from a later format version (`format_invalid`, or as `DatasetRef.fromJSON` throws for its
+   *   `dfo.ref`). The pointer starts with the key, as in `/dfo.dataset/missing`.
+   * @throws {InvalidRequestError} `bytes` is neither a Uint8Array nor an ArrayBuffer
+   *   (`invalid_argument`).
+   */
+  static async fromBytes(bytes: Uint8Array | ArrayBuffer): Promise<Dataset> {
+    return savedDataset(bytes);
   }
 
   private constructor(
-    members: readonly MemberInput[],
-    options: DatasetOptions,
-    data: readonly Uint8Array[],
+    state: DatasetState,
     table: Table,
+    memberRows: readonly number[],
+    data: readonly Uint8Array[] | null,
   ) {
-    this.#inputs = { members, options };
-    const built = members.map((member): Member | DerivedMember => {
-      const citation = citationOf(member.manifest);
-      const parts = Object.freeze([...member.parts]);
-      if (isDerived(member)) {
-        return { ...derivedRefMember(member), parts, citation };
-      }
-      return {
-        parts,
-        spec: member.spec,
-        contentVersion: member.contentVersion,
-        sentence: member.sentence,
-        citation,
-        digest: member.digest,
-        rendering: member.rendering,
-      };
-    });
-    const manifests = members.map((member) => member.manifest);
-    const facts = members.flatMap((member) =>
-      isDerived(member) ? [] : (member.answerFacts ?? []),
-    );
-    const retention = options.retention ?? retentionOf(manifests);
-    this.sentence = built.map((member) => member.sentence).join(" ");
-    this.members = Object.freeze(built);
-    this.citation = mergeCitations(built.map((member) => member.citation));
-    this.warnings = Object.freeze(warningsOf(manifests));
-    this.departures = Object.freeze(unique(facts.flatMap((part) => part.departures)));
-    this.requestedOperations = Object.freeze(unique(facts.flatMap((part) => part.operations)));
-    // Each assumption keeps the four members both clients save, so equal ones count once.
-    this.assumptions = Object.freeze(unique(facts.flatMap((part) => part.assumptions ?? [])));
-    this.missing = Object.freeze([...(options.missing ?? [])]);
-    this.complete = this.missing.length === 0;
-    this.heldUntil = retention.heldUntil;
-    this.pinned = retention.pinned;
-    this.layout = options.layout;
-    this.question = options.question ?? null;
-    // Seconds precision, as the saved file's `dfo.fetched_at` holds it.
-    this.fetchedAt = new Date(
-      Math.floor((options.fetchedAt ?? new Date()).getTime() / 1000) * 1000,
-    );
-    this.#data = data;
+    this.#state = state;
     this.#table = table;
-    const derived = options.derived;
-    const roles = derived?.roles ?? {};
+    this.#memberRows = Object.freeze([...memberRows]);
+    this.#data = data;
+    this.sentence = state.sentence;
+    this.members = Object.freeze([...state.members]);
+    this.citation = state.citation;
+    this.warnings = Object.freeze([...state.warnings]);
+    this.departures = Object.freeze([...state.departures]);
+    this.requestedOperations = Object.freeze([...state.requestedOperations]);
+    this.assumptions = Object.freeze([...state.assumptions]);
+    this.missing = Object.freeze([...state.missing]);
+    this.complete = state.complete;
+    ({ heldUntil: this.heldUntil, pinned: this.pinned } = datasetRetention(this.members));
+    this.layout = state.layout;
+    this.layoutVersion = state.layoutVersion;
+    this.question = state.question;
+    // Seconds precision, as the saved file's `dfo.fetched_at` holds it.
+    this.fetchedAt =
+      state.fetchedAt === null
+        ? null
+        : new Date(Math.floor(state.fetchedAt.getTime() / 1000) * 1000);
     this.leftOut = Object.freeze(
-      (derived?.leftOut ?? []).map((series) => new LeftOutSeries(series, roles)),
+      state.leftOut.map((series) => new LeftOutSeries(series, state.roles)),
     );
-    this.#leftOutComplete = derived?.leftOutComplete ?? true;
-    this.partyTotalsLeftOut = Object.freeze(
-      members.flatMap((member) =>
-        isDerived(member)
-          ? rootPartyTotalsOf(member)
-          : partyTotalsOf(member.manifest, member.spec.spec_id),
-      ),
-    );
-    this.#steps = Object.freeze(
-      (derived?.steps ?? []).map((step) =>
-        Object.freeze({ ...step, by: step.by.map((column) => roles[column] ?? column) }),
-      ),
-    );
-    this.layoutVersion = [
-      ...new Set(members.map((member) => artifactLayout(member, options.layout))),
-    ].join("; ");
+    this.partyTotalsLeftOut = Object.freeze([...state.partyTotalsLeftOut]);
   }
 
-  /** The exact versions the dataset holds, to fetch them again with `client.fetch(ref)`. */
+  /**
+   * The exact versions the dataset holds, to fetch them again with `client.fetch(ref)`.
+   *
+   * @throws {InvalidRequestError} The dataset names no version, as a file Python saved from a
+   *   website bundle's folder does not (`ref_unavailable`).
+   */
   get ref(): DatasetRef {
-    return new DatasetRef(
-      this.members.map((member) =>
-        isDerived(member)
-          ? derivedRefMember(member)
-          : {
-              parts: member.parts,
-              sentence: member.sentence,
-              spec: member.spec,
-              contentVersion: member.contentVersion,
-              digest: member.digest,
-              rendering: member.rendering,
-            },
-      ),
-    );
+    if (this.members.length === 0) {
+      throw clientError("ref_unavailable", {
+        detail:
+          "This dataset names no version, as a website bundle opened from a folder does not, so " +
+          "it has no ref.",
+      });
+    }
+    return refOf(this.members);
+  }
+
+  /** Where the data came from, as one record: `JSON.stringify(data.provenance)` writes it as
+   *  JSON to store beside the data, and `Provenance.fromJSON` reads it back. */
+  get provenance(): Provenance {
+    return provenanceOf({
+      sentence: this.sentence,
+      citation: this.citation,
+      fetchedAt: this.fetchedAt,
+      question: this.question,
+      warnings: this.warnings,
+      members: this.members,
+      complete: this.complete,
+      missing: this.missing,
+    });
   }
 
   /** The licences the sources publish under, joined by "; ", or empty when none says. */
@@ -797,16 +762,25 @@ export class Dataset {
     lines.push(...this.#derivedSummary());
     const totals = partyTotalsLine(this.partyTotalsLeftOut, this.members.some(isDerived));
     if (totals !== undefined) lines.push(totals);
-    if (this.#inputs.options.shownBy !== undefined) {
-      lines.push(`Shown by: ${this.#inputs.options.shownBy}`);
+    if (this.#state.shownBy !== undefined) {
+      lines.push(`Shown by: ${this.#state.shownBy}`);
     }
     const versions = this.members.map((member) => member.contentVersion);
-    const label = versions.length === 1 ? "Version" : "Versions";
-    lines.push(`${label}: ${versions.join(", ")} (exact)${retentionText(this)}`);
+    const retention = retentionText(this);
+    if (versions.length > 0) {
+      const label = versions.length === 1 ? "Version" : "Versions";
+      lines.push(`${label}: ${versions.join(", ")} (exact)${retention}`);
+    } else if (retention !== "") {
+      // Without versions, the retention stands alone, as `Held until 27 November 2026, not pinned`.
+      const alone = retention.slice(2);
+      lines.push(alone.charAt(0).toUpperCase() + alone.slice(1));
+    }
     lines.push(`Rows: ${this.rowCount.toLocaleString("en-GB")}${this.#periodType()}`);
     if (!this.complete) lines.push(`Incomplete: ${this.missing.length} part(s) left out`);
     lines.push(
-      "Keep: JSON.stringify(data.ref) · newest later: client.fetch(data.ref, { latest: true })",
+      versions.length > 0
+        ? "Keep: JSON.stringify(data.ref) · newest later: client.fetch(data.ref, { latest: true })"
+        : "Keep: await data.toBytes()",
     );
     return `<Dataset ${lines.map(inline).join("\n  ")}>`;
   }
@@ -833,11 +807,11 @@ export class Dataset {
     if (derived.length === 0) return [];
     const roots = unique(derived.flatMap((member) => member.roots));
     const readings = `${roots.length} reading${roots.length === 1 ? "" : "s"}`;
-    const lines = [`Derived: ${stepsText(this.#steps, readings)}`];
+    const lines = [`Derived: ${stepsText(this.#state.steps, readings)}`];
     const period = periodLine(derived[0]!.resolvedPeriods);
     if (period !== undefined) lines.push(period);
     if (this.leftOut.length > 0) {
-      const least = this.#leftOutComplete ? "" : "at least ";
+      const least = this.#state.leftOutComplete ? "" : "at least ";
       const count = this.leftOut.length.toLocaleString("en-GB");
       lines.push(`Missing data: ${least}${count} series left out · data.leftOut`);
     }
@@ -847,9 +821,17 @@ export class Dataset {
   /**
    * One member's Parquet file as the server built it, checked against its digest.
    *
-   * @throws {InvalidRequestError} The dataset has no member at `index` (`invalid_argument`).
+   * @throws {InvalidRequestError} The dataset has no member at `index`, or was read from a saved
+   *   file, which holds no member's own file (`invalid_argument`).
    */
   memberBytes(index: number): Uint8Array {
+    if (this.#data === null) {
+      throw clientError("invalid_argument", {
+        detail:
+          "This dataset was read from a saved file, which holds every member's rows in one " +
+          "table and none of the files the server built; client.fetch(data.ref) fetches them.",
+      });
+    }
     const data = this.#data[index];
     if (data === undefined) {
       throw clientError("invalid_argument", {
@@ -871,8 +853,10 @@ export class Dataset {
   }
 
   /** The provenance as the file's key-value metadata, in the shape Python's
-   *  `Dataset.save` writes, so `dfo.load` reads the file back. */
+   *  `Dataset.save` writes, so `dfo.load` reads the file back. The values
+   *  `Provenance.toJSON()` gives come from it, so the file and the record agree. */
   #metadata(): Record<string, string> {
+    const record = this.provenance.toJSON();
     const sources = this.citation.sources;
     const isDerivedDataset = this.members.some(isDerived);
     const derived = !isDerivedDataset
@@ -886,28 +870,23 @@ export class Dataset {
               reason,
               rows,
             })),
-            complete: this.#leftOutComplete,
+            complete: this.#state.leftOutComplete,
           }),
           "dfo.steps": JSON.stringify(
-            this.#steps.map(({ verb, by, limit }) => ({ verb, by, limit })),
+            this.#state.steps.map(({ verb, by, limit }) => ({ verb, by, limit })),
           ),
         };
     return {
       "dfo.format_version": String(
         isDerivedDataset ? SAVED_DERIVED_FORMAT_VERSION : SAVED_FORMAT_VERSION,
       ),
-      "dfo.sentence": this.sentence,
-      "dfo.citation": JSON.stringify(savedCitation(this.citation)),
+      "dfo.sentence": record.sentence,
+      "dfo.citation": JSON.stringify(record.citation),
       "dfo.sources": JSON.stringify(sources.map((source) => source.label)),
       "dfo.licence": this.licence,
       "dfo.dataset": JSON.stringify({
-        member_citations: this.members.map((member) => savedCitation(member.citation)),
-        warnings: this.warnings.map(({ code, severity, message }) => ({
-          code,
-          severity,
-          message,
-          spec_id: null,
-        })),
+        member_citations: record.members.map((member) => member.citation),
+        warnings: record.warnings,
         departures: this.departures.map(({ code, text, asked, shown, binding_ref }) => ({
           code,
           text,
@@ -924,20 +903,29 @@ export class Dataset {
           }),
         ),
         assumptions: this.assumptions,
-        complete: this.complete,
-        missing: this.missing.map(savedGap),
-        held_until: this.heldUntil?.toISOString().slice(0, 10) ?? null,
-        pinned: this.pinned,
+        complete: record.complete,
+        missing: record.missing,
+        held_until: record.held_until,
+        pinned: record.pinned,
         stale: false,
         layout_version: this.layoutVersion,
-        member_rows: memberRows(this.#table.parts),
+        member_rows: this.#memberRows,
       }),
-      "dfo.ref": JSON.stringify(this.ref),
+      ...(record.ref === null
+        ? {}
+        : {
+            "dfo.ref": JSON.stringify(record.ref),
+            "dfo.retention": JSON.stringify(
+              record.members.map(({ pinned, held_until }) => ({ pinned, held_until })),
+            ),
+          }),
       ...derived,
-      // Keys of their own, since Python 0.1.0's loader refuses any key in `dfo.dataset` it does
-      // not know and reads only the `dfo.*` keys it names.
-      ...(this.question === null ? {} : { "dfo.question": JSON.stringify(this.question) }),
-      "dfo.fetched_at": JSON.stringify(this.fetchedAt.toISOString().replace(".000Z", "Z")),
+      // Keys of their own, as `dfo.retention` above, since Python 0.1.0's loader refuses any key
+      // in `dfo.dataset` it does not know and reads only the `dfo.*` keys it names.
+      ...(record.question === null ? {} : { "dfo.question": JSON.stringify(record.question) }),
+      ...(record.fetched_at === null
+        ? {}
+        : { "dfo.fetched_at": JSON.stringify(record.fetched_at) }),
       ...(this.partyTotalsLeftOut.length === 0
         ? {}
         : {
@@ -962,6 +950,316 @@ export class Dataset {
           }),
     };
   }
+}
+
+/** The record `Provenance.toJSON()` returns: plain JSON values, in the format
+ *  `provenance.schema.json` gives, which Python's `Provenance.to_json` writes too. */
+export type ProvenanceJson = {
+  format_version: 1;
+  sentence: string;
+  citation: ReturnType<typeof savedCitation>;
+  /** When the data left the server, in UTC to the second, as `2026-11-27T09:14:05Z`. */
+  fetched_at: string | null;
+  question: string | null;
+  /** The ref `JSON.stringify(data.ref)` writes, or null for a dataset with no members. */
+  ref: DatasetRefJson | null;
+  pinned: boolean;
+  /** As `YYYY-MM-DD`. */
+  held_until: string | null;
+  warnings: { code: string; severity: string; message: string; spec_id: string | null }[];
+  complete: boolean;
+  /** One entry per part a partial fetch left out, as the saved file's `dfo.dataset` holds it. */
+  missing: ReturnType<typeof savedGap>[];
+  members: {
+    spec_id: string;
+    content_version: string;
+    digest: string;
+    parts: string[];
+    sentence: string;
+    citation: ReturnType<typeof savedCitation>;
+    /** Null when the client does not know. */
+    pinned: boolean | null;
+    /** As `YYYY-MM-DD`, or null. */
+    held_until: string | null;
+  }[];
+};
+
+/** Builds a `Provenance` from what it holds; its constructor is the class's own. */
+let provenanceOf: (fields: ProvenanceFields) => Provenance;
+
+/** What a `Provenance` holds. */
+type ProvenanceFields = Pick<
+  Provenance,
+  | "sentence"
+  | "citation"
+  | "fetchedAt"
+  | "question"
+  | "warnings"
+  | "members"
+  | "complete"
+  | "missing"
+>;
+
+/**
+ * Where a dataset came from, as one record to store beside the data. `JSON.stringify(provenance)`
+ * writes it, and `Provenance.fromJSON` reads it back, in this client or the Python one. It holds
+ * what the file `data.toBytes()` writes holds of the same dataset.
+ */
+export class Provenance {
+  /** What the data shows, as `Dataset.sentence`. */
+  readonly sentence: string;
+  /** How to cite the data, every member's sources together. */
+  readonly citation: Citation;
+  /** When the data left the server, to the second, or null when a member's fetch time is
+   *  unknown, as in a record Python wrote for such a dataset. */
+  readonly fetchedAt: Date | null;
+  /** The question the data answers, when it came from `answer.fetch()`, else null. */
+  readonly question: string | null;
+  /** Whether every member's version is kept without a time limit; false with no members. */
+  readonly pinned: boolean;
+  /** The earliest day any member's version not pinned can still be fetched, from the members'
+   *  `heldUntil`, or null when every member is pinned or none of the others' days is known. */
+  readonly heldUntil: Date | null;
+  /** The datasets surface's warnings about the members' data. */
+  readonly warnings: readonly Notice[];
+  /** One member per built spec or derived frame, each an exact version with its digest, parts,
+   *  sentence, citation and retention, its own `pinned` and `heldUntil`. Empty for a dataset
+   *  that names no version. */
+  readonly members: readonly (Member | DerivedMember)[];
+  /** Whether every part of the question has a member, as `Dataset.complete`. */
+  readonly complete: boolean;
+  /** The parts a partial fetch left out, as `Dataset.missing`. */
+  readonly missing: readonly Gap[];
+
+  static {
+    provenanceOf = (fields) => new Provenance(fields);
+  }
+
+  private constructor(fields: ProvenanceFields) {
+    this.sentence = fields.sentence;
+    this.citation = fields.citation;
+    this.fetchedAt = fields.fetchedAt;
+    this.question = fields.question;
+    this.warnings = Object.freeze([...fields.warnings]);
+    this.members = Object.freeze([...fields.members]);
+    this.complete = fields.complete;
+    this.missing = Object.freeze([...fields.missing]);
+    ({ heldUntil: this.heldUntil, pinned: this.pinned } = datasetRetention(this.members));
+    Object.freeze(this);
+  }
+
+  /** The exact versions the members name, to fetch them again with `client.fetch(ref)`, or null
+   *  when there are no members. */
+  get ref(): DatasetRef | null {
+    return this.members.length === 0 ? null : refOf(this.members);
+  }
+
+  /** The record as JSON values, which `JSON.stringify(provenance)` writes and
+   *  `Provenance.fromJSON` reads back. */
+  toJSON(): ProvenanceJson {
+    return {
+      format_version: PROVENANCE_FORMAT_VERSION,
+      sentence: this.sentence,
+      citation: savedCitation(this.citation),
+      fetched_at: this.fetchedAt === null ? null : isoTime(this.fetchedAt),
+      question: this.question,
+      ref: this.ref?.toJSON() ?? null,
+      pinned: this.pinned,
+      held_until: isoDay(this.heldUntil),
+      warnings: this.warnings.map(({ code, severity, message, spec_id }) => ({
+        code,
+        severity,
+        message,
+        spec_id: spec_id ?? null,
+      })),
+      complete: this.complete,
+      missing: this.missing.map(savedGap),
+      members: this.members.map((member) => ({
+        spec_id: member.spec.spec_id,
+        content_version: member.contentVersion,
+        digest: member.digest,
+        parts: [...member.parts],
+        sentence: member.sentence,
+        citation: savedCitation(member.citation),
+        pinned: member.pinned,
+        held_until: isoDay(member.heldUntil),
+      })),
+    };
+  }
+
+  /** Whether `other` is a `Provenance` holding the same facts, as Python's `==` compares two. */
+  equals(other: unknown): boolean {
+    return (
+      other instanceof Provenance && canonicalJson(this.toJSON()) === canonicalJson(other.toJSON())
+    );
+  }
+
+  /**
+   * Loads a record any DFO client wrote, from its JSON text or the value `JSON.parse` gives for
+   * it. Python's `Provenance.from_json` takes the text, as str or bytes, or the parsed object.
+   * A key the format does not name is ignored, at the top level, in a member, in a citation and
+   * its sources, in a warning, and in a missing part and its options, so a record a later client
+   * wrote reads here. The ref keeps its own versioned format, which `DatasetRef.fromJSON` reads
+   * strictly.
+   *
+   * @throws {FormatError} The value is neither JSON text nor a JSON object, breaks the provenance
+   *   format or comes from a later format version, a member differs from the member its ref
+   *   names, the record's `pinned` or `held_until` differs from what its members give, members
+   *   or none, `complete` is not whether `missing` is empty, or the ref breaks its own format, as
+   *   `DatasetRef.fromJSON` throws, with a pointer under `/ref`.
+   */
+  static fromJSON(value: unknown): Provenance {
+    let parsed: unknown = value;
+    if (typeof value === "string") {
+      try {
+        parsed = parseJson(value);
+      } catch (error) {
+        throw Object.assign(invalid("", "not JSON"), { cause: error });
+      }
+    }
+    const record = objectAt(parsed, "");
+    requireKeys(record, "", PROVENANCE_KEYS);
+    if (record["format_version"] !== PROVENANCE_FORMAT_VERSION) {
+      throw invalid("/format_version", `not ${PROVENANCE_FORMAT_VERSION}; a later client reads it`);
+    }
+    const stored = record["ref"] === null ? [] : loadRef(record["ref"], "/ref").members;
+    const entries = arrayAt(record["members"], "/members");
+    if (entries.length !== stored.length) {
+      throw invalid(
+        "/members",
+        `holds ${entries.length} members for the ${stored.length} members ref names`,
+      );
+    }
+    const pinned = record["pinned"];
+    if (typeof pinned !== "boolean") throw invalid("/pinned", "not a boolean");
+    const question = record["question"];
+    const heldUntil =
+      record["held_until"] === null ? null : loadDay(record["held_until"], "/held_until");
+    const members = entries.map((entry, index) =>
+      provenanceMember(entry, stored[index]!, `/members/${index}`),
+    );
+    checkRetention({ pinned, heldUntil }, members, "");
+    const complete = record["complete"];
+    if (typeof complete !== "boolean") throw invalid("/complete", "not a boolean");
+    const missing = arrayAt(record["missing"], "/missing").map((item, index) =>
+      loadGap(item, `/missing/${index}`, { closed: false }),
+    );
+    checkComplete(complete, missing, "");
+    return provenanceOf({
+      sentence: stringAt(record["sentence"], "/sentence"),
+      citation: loadCitation(record["citation"], "/citation", { closed: false }),
+      fetchedAt:
+        record["fetched_at"] === null ? null : loadTime(record["fetched_at"], "/fetched_at"),
+      question: question === null ? null : stringAt(question, "/question"),
+      warnings: arrayAt(record["warnings"], "/warnings").map((item, index) =>
+        loadWarning(item, `/warnings/${index}`, { provenance: true }),
+      ),
+      members,
+      complete,
+      missing,
+    });
+  }
+
+  /** The sentence, the number of members and the fetch time, as `Provenance(…, 2 members,
+   *  fetched 13 November 2026 09:14 UTC)`, on one line through `inline`. */
+  toString(): string {
+    const count = this.members.length;
+    const fetched =
+      this.fetchedAt === null ? "fetch time unknown" : `fetched ${timeText(this.fetchedAt)}`;
+    return inline(
+      `Provenance(${this.sentence}, ${count} member${count === 1 ? "" : "s"}, ${fetched})`,
+    );
+  }
+
+  /** Node's `console.log` and `util.inspect` show the record as `String(provenance)` does. */
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return this.toString();
+  }
+}
+
+/** The keys of a provenance record, and of one member in it. A reader requires these and
+ *  ignores any other. */
+const PROVENANCE_KEYS = [
+  "format_version",
+  "sentence",
+  "citation",
+  "fetched_at",
+  "question",
+  "ref",
+  "pinned",
+  "held_until",
+  "warnings",
+  "complete",
+  "missing",
+  "members",
+] as const;
+const PROVENANCE_MEMBER_KEYS = [
+  "spec_id",
+  "content_version",
+  "digest",
+  "parts",
+  "sentence",
+  "citation",
+  "pinned",
+  "held_until",
+] as const;
+
+/** A UTC time as the record writes it, to the second, such as `2026-11-27T09:14:05Z`. */
+const isoTime = (date: Date): string => `${date.toISOString().slice(0, 19)}Z`;
+
+/** A day as the record writes it, `YYYY-MM-DD`, or null. */
+const isoDay = (date: Date | null): string | null => date?.toISOString().slice(0, 10) ?? null;
+
+/** A UTC time as `toString` prints it, such as `27 November 2026 09:14 UTC`. */
+const timeText = (date: Date): string => `${dayText(date)} ${date.toISOString().slice(11, 16)} UTC`;
+
+/** A provenance member, which names the ref member at its position, with its citation and
+ *  retention. */
+function provenanceMember(
+  value: unknown,
+  stored: RefMember | DerivedRefMember,
+  pointer: string,
+): Member | DerivedMember {
+  const entry = objectAt(value, pointer);
+  requireKeys(entry, pointer, PROVENANCE_MEMBER_KEYS);
+  const named: Record<string, unknown> = {
+    spec_id: stored.spec.spec_id,
+    content_version: stored.contentVersion,
+    digest: stored.digest,
+    parts: stored.parts,
+    sentence: stored.sentence,
+  };
+  for (const [key, expected] of Object.entries(named)) {
+    if (JSON.stringify(entry[key]) !== JSON.stringify(expected)) {
+      throw invalid(
+        `${pointer}/${key}`,
+        `is not the ${key} of the ref's member at the same position`,
+      );
+    }
+  }
+  return {
+    ...stored,
+    citation: loadCitation(entry["citation"], `${pointer}/citation`, { closed: false }),
+    ...loadRetention(entry, pointer),
+  };
+}
+
+/** The ref to a dataset's members. */
+function refOf(members: readonly (Member | DerivedMember)[]): DatasetRef {
+  return new DatasetRef(
+    members.map((member) =>
+      isDerived(member)
+        ? derivedRefMember(member)
+        : {
+            parts: member.parts,
+            sentence: member.sentence,
+            spec: member.spec,
+            contentVersion: member.contentVersion,
+            digest: member.digest,
+            rendering: member.rendering,
+          },
+    ),
+  );
 }
 
 /** A derived member as a ref stores it, without what the dataset adds. */

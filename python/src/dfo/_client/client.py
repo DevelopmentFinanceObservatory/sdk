@@ -2,12 +2,12 @@
 
 A client asks Search what a question means (`search`), builds datasets (`fetch`),
 runs DFO's operations (`analysis`, and `fetch` of a recipe), pins versions
-(`pin`), stores cards DFO draws (`cards`), publishes them as links (`share`,
-`snapshot`, `unshare`, `history`), and looks up names, codes and Search's
-catalogue (`lookup`). `request`
-reaches any route the client does not wrap. The client
-owns its connection pool: `with_options` returns a copy that shares the pool and
-the cache, and only the client that built the pool closes it.
+(`pin`) and links to their files (`file_url`), stores cards DFO draws (`cards`),
+publishes them as links (`share`, `snapshot`, `unshare`, `history`), and looks up
+names, codes and Search's catalogue (`lookup`). `request` reaches any route the
+client does not wrap. The client owns its connection pool: `with_options`
+returns a copy that shares the pool and the cache, and only the client that
+built the pool closes it.
 """
 
 from collections.abc import Mapping, Sequence
@@ -18,7 +18,13 @@ from dfo._config.keys import ApiKeyArgument
 from dfo._core.codes import INVALID_ARGUMENT
 from dfo._core.errors import DfoError, client_error
 from dfo._core.raw_response import RawResponse
-from dfo._core.refs import DatasetRef
+from dfo._core.refs import (
+    DatasetRef,
+    DerivedMember,
+    DerivedRefMember,
+    Member,
+    RefMember,
+)
 from dfo._core.refusals import caller_refusal
 from dfo._core.timeouts import (
     CLIENT_TIMEOUT,
@@ -34,6 +40,7 @@ from dfo._datasets.cache import Cache
 from dfo._datasets.cards import AsyncCards
 from dfo._datasets.dataset import Dataset
 from dfo._datasets.fetch import Session
+from dfo._datasets.pin import file_url as pinned_file_url
 from dfo._datasets.pin import pin as pin_versions
 from dfo._datasets.publication import Card, Moment, Served, Share, ShareTarget
 from dfo._datasets.recipe import Recipe
@@ -63,8 +70,8 @@ class AsyncClient:
     lookup: AsyncLookup
     analysis: AsyncAnalysis
     cards: AsyncCards
-    # What the client's hints name the owner of a call they suggest, as in
-    # `client.fetch(spec)`; the default client behind `dfo.fetch` names `dfo`.
+    # The owner the client's hints name for a call they suggest, as in
+    # `client.fetch(spec)`. The default client behind `dfo.fetch` names `dfo`.
     _caller: ClassVar[str] = "client"
 
     def __init__(
@@ -114,17 +121,17 @@ class AsyncClient:
         Raises:
             InvalidRequestError: The base URL, passed or read from
                 `DFO_BASE_URL`, is invalid (`base_url_invalid`), a
-                header's name is not an HTTP token or names `X-DFO-Client`, or its
-                value not a string of visible ASCII, spaces and tabs (`header_invalid`), the
-                key would travel over plain http to a host that is not loopback
-                (`insecure_transport`), `timeout` is not None or a finite
-                number above 0, `attempt_timeout` not a finite number above 0,
-                the retry count not an integer from 0 to 10, `DFO_TIMEOUT` or
-                `DFO_MAX_RETRIES`, read for an argument left out, not seconds
-                above 0 such as `300` or `2.5` or a count from 0 to 10 in
-                digits, or, with `cache` on, `cache_dir` an empty path, one
-                holding a NUL character, or one starting `~name` for a user with no home directory
-                (`invalid_argument`).
+                header's name is not an HTTP token or names `X-DFO-Client`, or
+                its value not a string of visible ASCII, spaces and tabs
+                (`header_invalid`), the key would travel over plain http to a
+                host that is not loopback (`insecure_transport`), `timeout` is
+                not None or a finite number above 0, `attempt_timeout` not a
+                finite number above 0, the retry count not an integer from 0 to
+                10, `DFO_TIMEOUT` or `DFO_MAX_RETRIES`, read for an argument
+                left out, not seconds above 0 such as `300` or `2.5` or a count
+                from 0 to 10 in digits, or, with `cache` on, `cache_dir` an
+                empty path, one holding a NUL character, or one starting
+                `~name` for a user with no home directory (`invalid_argument`).
             AuthenticationError: The key lookup failed.
         """
         local = Cache(cache_dir, enabled=cache)
@@ -190,13 +197,64 @@ class AsyncClient:
         )
         return type(self)._over(Session(transport, self._session.cache))
 
+    @overload
     async def search(
         self, question: str, /, *, timeout: CallTimeout = CLIENT_TIMEOUT
+    ) -> AsyncAnswer: ...
+
+    @overload
+    async def search(
+        self,
+        /,
+        *,
+        codes: Sequence[str],
+        variable: str | None = None,
+        entities: Entities | None = None,
+        window: Window | None = None,
+        open_roles: Sequence[str] | None = None,
+        source: str | None = None,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
+    ) -> AsyncAnswer: ...
+
+    async def search(
+        self,
+        question: str | None = None,
+        /,
+        *,
+        codes: Sequence[str] | None = None,
+        variable: str | None = None,
+        entities: Entities | None = None,
+        window: Window | None = None,
+        open_roles: Sequence[str] | None = None,
+        source: str | None = None,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
     ) -> AsyncAnswer:
-        """Ask Search what a question means, part by part.
+        """Ask Search what a question means, part by part, or ask it for
+        publisher series codes, one part per code.
+
+        A search by codes takes no question. Each code answers on its own from
+        the code's series, and the other keywords apply to every code. A code
+        DFO does not hold, and a reading that is not the code's series alone,
+        are gaps of the answer, so `answer.fetch()` refuses until
+        `partial=True` builds the codes that read.
 
         Args:
             question: The question, in your words.
+            codes: Publisher series codes, such as
+                `["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD"]`.
+            variable: Words that choose among a code's variables, such as
+                "debt service". Left out, each code's part reads the code.
+            entities: Role keys bound to dcids, such as
+                `{"destination": ["country/KEN"]}`, or to what `lookup.resolve`
+                returns, as `fetch` takes them. `origin` reads as the giving
+                side and `destination` as the receiving side. `place` names
+                no side.
+            window: `"all"`, `"latest"` or `(start_year, end_year)`, as `fetch`
+                takes it.
+            open_roles: Flow role keys, `origin` or `destination`, to answer
+                member by member, such as `["origin"]` for one row per creditor.
+            source: The source to read the codes from, in words, such as
+                "IDS", for a code two sources hold.
             timeout: The longest the call waits, retries included, in seconds.
                 Each attempt reads until then, and None waits as long as Search
                 takes. Left out, the client's `timeout` applies, else 60
@@ -205,11 +263,26 @@ class AsyncClient:
 
         Raises:
             InvalidRequestError: `question` is not text, is empty or only
-                whitespace, or holds a lone surrogate; or `timeout` is not None
-                or a finite number above 0 (`invalid_argument`).
+                whitespace, or holds a lone surrogate; a question comes beside
+                a keyword of a search by codes, or such a keyword comes without
+                `codes`; a keyword breaks its rule, such as `codes` given as one
+                string or naming a code twice; or `timeout` is not None or a
+                finite number above 0 (`invalid_argument`). No request is sent.
             ContractError: The answer lacks a member the client acts on.
+            DfoError: The server refused the request, such as more codes than
+                it takes in one search (`request_invalid`).
         """
-        return await search(self._current, question, timeout=timeout)
+        return await search(
+            self._current,
+            question,
+            codes=codes,
+            variable=variable,
+            entities=entities,
+            window=window,
+            open_roles=open_roles,
+            source=source,
+            timeout=timeout,
+        )
 
     @overload
     async def fetch(
@@ -420,6 +493,31 @@ class AsyncClient:
                 (`allowance_exhausted`); `retry_after` says when it resets.
         """
         return await pin_versions(self._session.transport, data)
+
+    async def file_url(
+        self, member: Member | RefMember | DerivedMember | DerivedRefMember, /
+    ) -> str:
+        """The URL of a pinned member's file, a link a pipeline can commit and
+        read with any HTTP client, with no key.
+
+        The URL names the file selector for the member's exact version under
+        the client's base URL, with the query of the rendering the member was
+        built in, so it serves the same table. It reads the version's manifest
+        once to check the version is pinned.
+
+        Args:
+            member: One of `data.members` or `data.ref.members`.
+
+        Raises:
+            VersionNotPinnedError: The version is not pinned
+                (`version_not_pinned`), and `held_until` says when DFO stops
+                guaranteeing it. Run `client.pin(data)` first.
+            InvalidRequestError: `member` is not a Member or RefMember, or names
+                a frame DFO computed (`invalid_argument`), and no request is
+                sent.
+            NotFoundError: DFO never stored the version.
+        """
+        return await pinned_file_url(self._session.transport, member)
 
     async def share(
         self,

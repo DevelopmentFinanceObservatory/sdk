@@ -65,6 +65,7 @@
                 }
               },
               "resolved": {
+                "stat_vars": {},
                 "facets": {
                   "provenance": {
                     "label": "World Development Indicators"
@@ -220,6 +221,7 @@
                 }
               },
               "resolved": {
+                "stat_vars": {},
                 "facets": {
                   "provenance": {
                     "label": "Kenya Census"
@@ -478,6 +480,7 @@
             }
           },
           "resolved": {
+            "stat_vars": {},
             "entity_groups": {
               "observationAbout": {
                 "ref": "SubSaharanAfrica",
@@ -583,6 +586,6 @@
     ],
     "rendered_sentence": "Answered 1 of 2 parts. Mortality has 2 readings. Kenya's deaths rate per 1,000 people. World Development Indicators · 2013 to 2022. Kenya's number of deaths. Kenya Census · 2018 to 2022. GDP in the 48 countries in Sub-Saharan Africa, 2013 to 2022. Current US dollars · World Development Indicators. The data holds no values for 1 of the 48 countries in Sub-Saharan Africa. You asked for sub-Saharan Africa. This shows the countries in it, each on its own.",
     "status": "mixed",
-    "trace_id": "fdb0b0f55c924eb98a73ed7b7bc9d2d9"
+    "trace_id": "ab69fb8ec0ac4ca38d9567bad212f272"
   }
 }

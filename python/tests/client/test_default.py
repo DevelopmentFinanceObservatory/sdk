@@ -24,7 +24,7 @@ import pytest
 
 import dfo
 from dfo._client import default as _default
-from dfo._core.errors import InvalidRequestError
+from dfo._core.errors import DfoDeprecationWarning, InvalidRequestError
 from dfo._datasets.cache import Cache
 from dfo._sync._client.client import Client
 from dfo._sync._datasets.analysis import Analysis
@@ -64,9 +64,10 @@ def parameters(function: Callable[..., Any]) -> list[inspect.Parameter]:
         (dfo.configure, Client.__init__),
         (dfo.lookup.resolve, Lookup.resolve),
         (dfo.lookup.node, Lookup.node),
-        (dfo.lookup.code, Lookup.code),
+        (dfo.lookup.error_code, Lookup.error_code),
         (dfo.lookup.catalogue, Lookup.catalogue),
         (dfo.pin, Client.pin),
+        (dfo.file_url, Client.file_url),
         (dfo.share, Client.share),
         (dfo.snapshot, Client.snapshot),
         (dfo.unshare, Client.unshare),
@@ -229,9 +230,29 @@ def test_the_lookup_functions_ask_the_default_client(
     mock_clients(monkeypatch, {DEFAULT_URL: serve})
     dfo.lookup.resolve("Nigeria")
     dfo.lookup.node("country/NGA")
-    dfo.lookup.code("spec_not_found")
+    dfo.lookup.error_code("spec_not_found")
     dfo.lookup.catalogue()
     assert seen == list(bodies)
+
+
+def test_the_deprecated_code_function_warns_and_reads_as_error_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = {"code": "spec_not_found", "mappings": []}
+    mock_clients(
+        monkeypatch, {DEFAULT_URL: lambda request: httpx2.Response(200, json=body)}
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        current = dfo.lookup.error_code("spec_not_found")
+    with pytest.warns(DfoDeprecationWarning, match="removed in 0.4.0") as caught:
+        old = dfo.lookup.code("spec_not_found")  # ty: ignore[deprecated]
+    assert old == current
+    (warning,) = caught
+    assert (warning.filename, getattr(warning.message, "code", None)) == (
+        __file__,
+        "name_deprecated",
+    )
 
 
 def test_the_analysis_functions_run_on_the_default_client(

@@ -158,6 +158,37 @@ await client.unshare(saved.url, { writeToken: saved.writeToken });
 
 Taking a share down again with its token succeeds, so a retry after a lost reply is safe. After that, `client.history` and `client.fetch` of the share raise `NotFoundError`.
 
+## Shares from CI
+
+A site that shows DFO cards can refresh them from a CI job. Make the share once by hand, as above, and keep its URL and write token for the job. The job then replaces the cards on each data refresh, and every link the page has published keeps working.
+
+- Store `share.writeToken` as a CI secret, beside the share's URL and a DFO key. Anyone with the token can change the share or take it down, so keep it out of public repositories.
+- Run the replace in its own job, triggered by a data refresh or a schedule. A site build runs on every push, and each run would otherwise publish to DFO.
+- Pass `replace` with the stored URL and token, so the job puts new cards on the live share under the same URLs.
+
+<!-- docs-check: skip: needs a key and a live share's write token -->
+
+```ts
+import { Client } from "@developmentfinance/client";
+
+const client = new Client();
+const aid = await (await client.search("ODA from Germany to Kenya, 2018 to 2023")).fetch();
+const people = await (await client.search("Kenya population, 2018 to 2023")).fetch();
+const perPerson = await client.analysis.quotientOf(aid, people, { on: { destination: "place" } });
+const line = await client.cards.line(perPerson, { title: "German aid per person in Kenya" });
+
+const share = await client.share([line], {
+  latest: true,
+  replace: process.env["SHARE_URL"] as `${string}/s/${string}`,
+  writeToken: process.env["SHARE_WRITE_TOKEN"] as string,
+});
+console.log(String(share));
+```
+
+Two daily allowances apply. Each new share counts against the share allowance, and each card against the card allowance. A replace makes no new share, and each card it makes still counts against the card allowance, so a job that rebuilds many cards can reach it. `QuotaExceededError` (`allowance_exhausted`) carries `retryAfterMs`, the milliseconds until it resets.
+
+A pipeline that reads data needs no share. [Use DFO in a data pipeline](pipelines.md) covers refs, links, and offline tests.
+
 ## Reference
 
 ### `client.cards`

@@ -4,8 +4,9 @@
 //
 //   DFO_BASE_URL=https://.../api pnpm test:e2e
 //
-// `DFO_E2E_DIR` names a directory both clients share: this suite writes `ref-typescript.json`
-// there, and fetches `ref-python.json` when the Python suite has written it.
+// `DFO_E2E_DIR` names a directory both clients share: this suite writes `ref-typescript.json` and
+// `provenance-typescript.json` there, and reads `ref-python.json` and `provenance-python.json`
+// when the Python suite has written them.
 //
 // Step 6 builds the spec `tests/live/long-builds.json` assigns to this run by the UTC day's
 // parity, the language and `DFO_E2E_TARGET`, which is `api` or `website`. Each spec there is
@@ -23,8 +24,10 @@ import { join } from "node:path";
 import { describe, test } from "node:test";
 import { promisify } from "node:util";
 
+import { Ajv2020 } from "ajv/dist/2020.js";
+
 import { IncompleteAnswerError, InvalidRequestError, NotFoundError } from "../../src/errors.ts";
-import { Client, DatasetRef } from "../../src/index.ts";
+import { Client, DatasetRef, Provenance } from "../../src/index.ts";
 import type { Answer, Dataset, Spec } from "../../src/index.ts";
 import type { Row } from "../../src/types.ts";
 import { firstLogged, idTokenHeaders } from "../support.ts";
@@ -182,6 +185,12 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
   }
   return assert.fail("the call resolved");
 }
+
+/** A file of the client contract, parsed. */
+const contractJson = async (name: string): Promise<object> =>
+  JSON.parse(
+    await readFile(new URL(`../../../contract/${name}`, import.meta.url), "utf8"),
+  ) as object;
 
 const recordedColumns = async (): Promise<string[]> => {
   const scenario = JSON.parse(
@@ -446,6 +455,10 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
       assert.ok(healthData, "step 2 gave a dataset");
       await mkdir(e2eDir, { recursive: true });
       await writeFile(join(e2eDir, "ref-typescript.json"), JSON.stringify(healthData.ref, null, 2));
+      await writeFile(
+        join(e2eDir, "provenance-typescript.json"),
+        JSON.stringify(healthData.provenance),
+      );
 
       let text: string;
       try {
@@ -460,6 +473,108 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
         dataset.members.map((member) => [member.contentVersion, member.digest]),
         ref.members.map((member) => [member.contentVersion, member.digest]),
       );
+      // The provenance Python wrote beside its ref names the same versions.
+      let provenance: string;
+      try {
+        provenance = await readFile(join(e2eDir, "provenance-python.json"), "utf8");
+      } catch {
+        t.skip(`read ref-python.json; ${e2eDir} holds no provenance-python.json`);
+        return;
+      }
+      assert.ok(Provenance.fromJSON(provenance).ref?.equals(ref));
+    },
+  );
+
+  test(
+    "11. a search by codes answers each code held and names the rest",
+    { timeout: STEP_TIMEOUT },
+    async () => {
+      // Two IDS codes DFO holds as their series alone, and one no source holds.
+      const codes = ["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD", "XX.NOPE.CD"];
+      const answer = await client.search({
+        codes,
+        entities: { destination: ["country/KEN"] },
+        window: [2015, 2020],
+      });
+      assert.deepEqual(
+        answer.parts.map((part) => part.status),
+        ["definite", "definite", "no_data"],
+      );
+      // The wire's parts, as JSON, since the part type leaves `stat_vars` unchecked.
+      const wireParts = (
+        JSON.parse(JSON.stringify(answer.raw)) as {
+          parts: { spec?: { resolved: { stat_vars: { source_codes: unknown } } } }[];
+        }
+      ).parts;
+      for (const [index, part] of wireParts.slice(0, 2).entries()) {
+        assert.deepEqual(part.spec?.resolved.stat_vars.source_codes, [
+          {
+            provenance: "provenance/WorldBankInternationalDebtStatistics",
+            code: codes[index],
+            exact: true,
+          },
+        ]);
+      }
+      assert.deepEqual(
+        answer.gaps.map((gap) => [gap.partIndex, gap.kind]),
+        [[2, "no_data"]],
+      );
+      const error = await rejection(answer.fetch());
+      assert.ok(error instanceof IncompleteAnswerError, String(error));
+      const dataset = await answer.fetch({ partial: true });
+      assert.deepEqual(
+        dataset.members.map((member) => member.parts),
+        [[codes[0]], [codes[1]]],
+      );
+      assert.deepEqual(
+        dataset.missing.map((gap) => gap.partIndex),
+        [2],
+      );
+      const years = new Set((await dataset.toRows()).map(yearOf));
+      assert.ok(years.size > 0);
+      assert.ok(
+        [...years].every((year) => year >= 2015 && year <= 2020),
+        [...years].join(", "),
+      );
+    },
+  );
+
+  test(
+    "12. the dataset's provenance reads back and states each member's retention",
+    { timeout: STEP_TIMEOUT },
+    async () => {
+      assert.ok(healthData, "step 2 gave a dataset");
+      const text = JSON.stringify(healthData.provenance);
+      const ajv = new Ajv2020({ strict: false, allErrors: true });
+      for (const name of [
+        "dataset-ref.schema.json",
+        "saved-file.schema.json",
+        "scenario.schema.json",
+      ]) {
+        ajv.addSchema(await contractJson(name));
+      }
+      const validate = ajv.compile(await contractJson("provenance.schema.json"));
+      assert.ok(validate(JSON.parse(text)), JSON.stringify(validate.errors));
+      const provenance = Provenance.fromJSON(text);
+      assert.ok(provenance.equals(healthData.provenance));
+      assert.ok(provenance.ref?.equals(healthData.ref));
+
+      // Each member's retention is the one its stored version's manifest serves.
+      const [member] = provenance.members;
+      assert.ok(member && provenance.members.length === 1);
+      const snapshot = await client.request(
+        "GET",
+        `/datasets/${member.spec.spec_id}/${member.contentVersion}`,
+      );
+      const { retention } = snapshot.json() as {
+        retention: { pinned: boolean; held_until?: string | null };
+      };
+      const served = retention.pinned
+        ? [true, null]
+        : [false, retention.held_until?.slice(0, 10) ?? null];
+      const record = provenance.toJSON();
+      assert.deepEqual([record.members[0]!.pinned, record.members[0]!.held_until], served);
+      assert.deepEqual([record.pinned, record.held_until], served);
     },
   );
 });

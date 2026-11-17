@@ -1,0 +1,59 @@
+{
+ "schema_version": 1,
+ "input": {
+  "kind": "dataset_resubmit",
+  "entries": [
+   {
+    "entry_kind": "parsed",
+    "part": {
+     "variable_text": "DT.TDS.MLAT.CD",
+     "entities": [
+      {
+       "text": "country/KEN",
+       "role_text": "to",
+       "dcid": "country/KEN"
+      }
+     ],
+     "time_text": "2015 to 2020",
+     "sources": [],
+     "source_code": "DT.TDS.MLAT.CD",
+     "operations": [],
+     "separate": true
+    }
+   },
+   {
+    "entry_kind": "identity",
+    "identity": {
+     "identity_version": "spec1",
+     "shape": {
+      "kind": "statvar_schema",
+      "population_type": "EconomicUnit",
+      "measured_property": "primaryIncome",
+      "stat_type": "measuredValue",
+      "measurement_qualifier": "Nominal"
+     },
+     "slots": [
+      {
+       "property": "fixedCapitalConsumptionBasis",
+       "binding": {
+        "state": "value",
+        "ref": "GrossOfFixedCapitalConsumption"
+       }
+      }
+     ],
+     "entities": {
+      "observationAbout": [
+       "country/DEU"
+      ]
+     },
+     "requested_window": {
+      "kind": "range",
+      "start_year": 2015,
+      "end_year": 2022
+     }
+    },
+    "variable_text": "gross national income"
+   }
+  ]
+ }
+}

@@ -1,6 +1,6 @@
 # Answers and choices
 
-`dfo.search(question)` returns an `Answer`, which holds Search's reading of each part of the question. Print it to see Search's sentence and the line to type next. `answer.fetch()` builds the data when every part has a reading, and raises `IncompleteAnswerError` before any build when one does not.
+`dfo.search(question)` returns an `Answer`, which holds Search's reading of each part of the question. Print it to see Search's sentence and the line to type next. `answer.fetch()` builds the data when the answer has no gap, and raises `IncompleteAnswerError` before any build when it has one.
 
 The code blocks on this page run in order, as cells of one notebook.
 
@@ -18,7 +18,7 @@ import dfo
 
 answer = dfo.search("GDP of Kenya and health spending")
 print(answer)
-print(answer.complete)  # True: every part has a reading
+print(answer.complete)  # True: `gaps` is empty
 print(len(answer.specs))  # 2: one spec per distinct reading
 ```
 
@@ -29,7 +29,7 @@ print(len(answer.specs))  # 2: one spec per distinct reading
 | `sentence`  | Search's sentence for the whole answer (`None` for a declined or catalogue answer) |
 | `parts`     | One part per variable asked, in the question's order                               |
 | `specs`     | The readings, one per distinct spec                                                |
-| `complete`  | Whether every part has a reading                                                   |
+| `complete`  | Whether `gaps` is empty                                                            |
 | `gaps`      | The parts that stop a complete dataset, each a `Gap`                               |
 | `kind`      | `resolution`, `catalogue` or `declined`                                            |
 | `reason`    | Why Search declined, for a declined answer                                         |
@@ -218,6 +218,8 @@ print(restored == answer)  # True
 data = restored.choose(1).fetch()
 print(data.sentence)
 ```
+
+An answer to a search by codes is written at `format_version` 2 with the codes, one per part, so the answer read back checks each reading against the code asked for. An answer to a question in words stays at format 1.
 
 A web app uses this to show the readings on one request and build the reader's choice on the next. The JSON is plain data, and a browser can edit it before posting it back, so the answer can carry any reading and its builds run on your key. With a public-tier key that costs quota, so rate-limit the routes per visitor. With a key beyond the public tier, keep the JSON on the server under a random id the page sends back, or sign it before it leaves. The TypeScript client reads the same JSON with `Answer.fromJSON`.
 

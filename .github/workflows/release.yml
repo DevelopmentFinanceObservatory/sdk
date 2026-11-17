@@ -26,7 +26,7 @@ jobs:
       - name: Set up Python 3.12
         run: uv python install '3.12'
 
-      - name: Check that production accepts party_totals
+      - name: Check that production serves what this release calls
         run: uv run --python 3.12 python ../scripts/release_preflight.py
 
   python:

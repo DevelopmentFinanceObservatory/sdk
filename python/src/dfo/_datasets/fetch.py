@@ -71,6 +71,7 @@ from dfo._datasets.build import (
     check_strict,
     counted_rows,
     dcid_entities,
+    listed_entities,
     narrowings,
     pick_artifact,
     rendering_for,
@@ -200,7 +201,7 @@ async def fetch_members(
             'layout="frame" holds one reading; fetch each spec on its own for its '
             "frame",
         )
-    dcids = dcid_entities(entities)
+    dcids = dcid_entities(listed_entities(entities))
     scopes = narrowings(wants, window=window, entities=dcids, facets=facets)
     named = asked(entities=dcids, facets=facets)
     stale = offline()

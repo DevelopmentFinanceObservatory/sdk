@@ -16,8 +16,9 @@ or by hand, with the stack up and seeded (`just local-stack up` and
 
 The journey divides German ODA by Kenya's population on DFO, checks the derived
 Dataset's rows, ref, file and repr, reads it back under `latest`, saves and
-loads it, draws a line and a stat card of it, and walks a live share from create
-to unshare. It also runs a filter on ODA read summed by recipient, as a
+loads it, draws a line and a stat card of it, walks a live share from create
+to unshare. Its first step pins the ODA reading and reads its file through
+`file_url`. It also runs a filter on ODA read summed by recipient, as a
 data-mcp breakdown reads it, and checks that the root's groupby survives the
 ref, a save and load, a card and a share. The stack seeds four readings; the ids below are those its README
 lists, and a change to its fixture changes them.
@@ -34,6 +35,7 @@ directory and the crossing test skips.
 """
 
 import hashlib
+import io
 import json
 import os
 from collections.abc import Iterator, Mapping
@@ -42,13 +44,19 @@ from pathlib import Path
 from typing import Any, override
 
 import httpx2
+import pyarrow.parquet as pq
 import pytest
 
 import dfo
 from dfo import Client, Dataset, DatasetRef, Spec
 from dfo._sync._datasets.fetch import Session
 from dfo._sync._http.transport import Transport
-from dfo.errors import InvalidRequestError, NotFoundError, PermissionDeniedError
+from dfo.errors import (
+    InvalidRequestError,
+    NotFoundError,
+    PermissionDeniedError,
+    VersionNotPinnedError,
+)
 from dfo.types import Card, DerivedRefMember, Groupby, Share
 
 pytestmark = [
@@ -263,6 +271,29 @@ def _payload(client: Client, card_id: str) -> Mapping[str, Any]:
     return client.request("GET", f"/presentation/components/{card_id}").json()[
         "resolved_payload"
     ]
+
+
+def test_00_file_url_refuses_until_pinned_then_links_a_file_any_client_reads(
+    client: Client, oda: Dataset
+) -> None:
+    """`file_url` refuses the seeded ODA version until it is pinned, and then
+    gives a link a plain GET with no key reads: it follows the redirect to
+    storage and answers the member's rows as Parquet. It runs first, since a
+    share of a frame computed from ODA pins ODA too."""
+    (member,) = oda.members
+    with pytest.raises(VersionNotPinnedError) as caught:
+        client.file_url(member)
+    assert caught.value.code == "version_not_pinned"
+    assert caught.value.held_until is not None
+
+    client.pin(oda)
+    url = client.file_url(member)
+    assert url == client.file_url(oda.ref.members[0])
+    assert url.startswith(f"{client.base_url}/datasets/{ODA[0]}/{ODA[1]}/file?")
+    response = httpx2.get(url, follow_redirects=True)
+    response.raise_for_status()
+    table = pq.read_table(io.BytesIO(response.content))
+    assert table.select(ROW_COLUMNS).to_pylist() == _rows(oda)
 
 
 def test_01_quotient_of_answers_the_fixture_quotients(

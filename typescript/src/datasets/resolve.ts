@@ -84,7 +84,7 @@ import {
   mintOptions,
   OPS_ID,
   sameRendering,
-  selectorQuery,
+  selectorPath,
   servedCut,
   SPEC_ID,
 } from "../core/ref.ts";
@@ -302,7 +302,7 @@ async function fetchFrame(
 ): Promise<Dataset> {
   let found: Built;
   try {
-    found = await snapshot(transport, specId, contentVersion, wait);
+    found = await storedManifest(transport, specId, contentVersion, wait);
   } catch (error) {
     if (!(error instanceof DfoError) || error.code !== FILE_EXPIRED) throw error;
     const newest = await newestVersion(transport, specId, wait);
@@ -362,7 +362,7 @@ async function renderedFrame(
 ): Promise<FetchedMember> {
   const specId = specIdOf(manifest);
   const contentVersion = contentVersionOf(manifest);
-  const selector = `/datasets/${specId}/${contentVersion}/file?${selectorQuery(FRAME)}`;
+  const selector = selectorPath({ spec: { spec_id: specId }, contentVersion, rendering: FRAME });
   let digest = "";
   let traceId: string | null = null;
   try {
@@ -371,7 +371,7 @@ async function renderedFrame(
       // read.
       const data = await download(transport, { path: selector }, undefined, wait);
       digest = await digestOf(data);
-      const found = await snapshot(transport, specId, contentVersion, wait);
+      const found = await storedManifest(transport, specId, contentVersion, wait);
       traceId = found.traceId;
       const artifact = pickArtifact(found.manifest, FRAME, digest);
       if (artifact !== undefined) {
@@ -550,7 +550,8 @@ async function fetchVersion(
   let found: Built | undefined;
   try {
     found =
-      snapshotted ?? (await snapshot(transport, member.spec.spec_id, member.contentVersion, wait));
+      snapshotted ??
+      (await storedManifest(transport, member.spec.spec_id, member.contentVersion, wait));
   } catch (error) {
     if (!(error instanceof DfoError) || error.code !== FILE_EXPIRED) throw error;
     refusal = error;
@@ -638,7 +639,7 @@ function noteNewDigest(transport: Transport, member: RefMember, digest: string):
 }
 
 /** A stored version's manifest, and the trace id of the response that carried it. */
-async function snapshot(
+export async function storedManifest(
   transport: Transport,
   specId: string,
   contentVersion: string,
@@ -705,8 +706,7 @@ async function storedFile(
       refusal = error;
     }
   }
-  const query = selectorQuery(member.rendering);
-  const selector = `/datasets/${member.spec.spec_id}/${member.contentVersion}/file?${query}`;
+  const selector = selectorPath(member);
   // The selector's rendering can outgrow the stored artifact, so its cap is the default one.
   try {
     return { data: await download(transport, { path: selector }, member.digest, wait) };
