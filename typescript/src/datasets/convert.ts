@@ -9,7 +9,7 @@
  * `facets` narrow it, so Search judges the held years and places.
  *
  * A part Search answers with `no_data` or `unsupported` refuses the fetch, with the class
- * `contract/actions.json` gives its reason or code, or the base `DfoError` for one it lacks yet,
+ * `contract/actions.json` gives its reason or code, or the base `DfoError` for one it lacks,
  * even under `partial`, since the refusal is of this call's arguments. Its `cause`, such as the
  * rates the tables lack, stays on the error's `problem`. A converted member carries the converted
  * part's assumptions, departures and operations, and its `warn` and `degraded` warnings reach
@@ -55,16 +55,16 @@ export type Conversion = {
   /** The ISO 4217 code of the currency to convert to, in capitals, such as `"EUR"`.
    *  `unitConversion(spec)` lists the codes a reading converts to. */
   currency?: string;
-  /** `"current"`, each year's own prices, or `"constant"`, one base year's; `"current"` when
-   *  left out. Needs `currency`. */
+  /** `"current"` (each year's own prices, the default) or `"constant"` (one base year's).
+   *  Needs `currency`. */
   priceBasis?: "current" | "constant";
   /** The year whose prices constant-price values are in, such as 2022. Needed with
-   *  `priceBasis: "constant"`, refused otherwise; `unitConversion(spec).defaultBaseYear` names
-   *  the tables' default. */
+   *  `priceBasis: "constant"` and refused with `"current"`. `unitConversion(spec).defaultBaseYear`
+   *  names the tables' default. */
   baseYear?: number;
 };
 
-/** A call's conversion options as read: a JavaScript caller's need not hold the declared
+/** A call's conversion options as read. A JavaScript caller's need not hold the declared
  *  types. */
 export type ConversionArgs = { readonly [K in keyof Conversion]?: unknown };
 
@@ -153,7 +153,7 @@ const requestText = ({ currency, prices, base_year }: UnitRequest): string =>
     ? `${currency} at constant ${base_year} prices`
     : `${currency} at current prices`;
 
-/** A reading as a message names it: its first part's words, else the spec id. */
+/** A reading as a message names it, by its first part's words or else its spec id. */
 const readingName = ({ parts, spec }: MemberRequest): string =>
   parts[0] === undefined ? spec.spec_id : JSON.stringify(parts[0]);
 
@@ -185,8 +185,8 @@ export function conversionBody(
   );
 }
 
-/** Whether a converted spec's identity holds the posted request: the same `currency` and
- *  `prices`, and the same `base_year`, an absent one and a null one alike. */
+/** Whether a converted spec's identity holds the posted request, meaning the same `currency`,
+ *  `prices` and `base_year`, an absent base year and a null one alike. */
 function holdsRequest(spec: Record<string, unknown>, request: UnitRequest): boolean {
   const definition = spec["definition"];
   const identity = isRecord(definition) ? definition["identity"] : undefined;
@@ -209,7 +209,7 @@ function holdsRequest(spec: Record<string, unknown>, request: UnitRequest): bool
  *   refused the request, such as `recipe_not_declared` for a series no recipe converts.
  * @throws {ContractError} The reply does not hold one part per reading, a definite part's spec
  *   does not hold the request, or a part has another status (`contract_violation`).
- * @throws {DfoError} A part refused with a reason or code the contract does not list yet, as its
+ * @throws {DfoError} A part refused with a reason or code the contract does not list, as its
  *   code.
  */
 async function convert(
@@ -330,7 +330,7 @@ function partRefusal(
       : []),
   ].join(" ");
   // A problem document as the server would send it, so the class is the one its code maps to
-  // and `problem.cause` keeps what the tables lack. A code the contract does not know yet is a
+  // and `problem.cause` keeps what the tables lack. A code the contract does not list is a
   // reason the server added, so it raises the base class with that code.
   const problem = { code, detail, ...(cause === undefined ? {} : { cause }) };
   if (actionFor(code) === undefined) {

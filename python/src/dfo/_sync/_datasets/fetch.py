@@ -263,7 +263,7 @@ def fetch_members(
             transport, wants, unit, narrowed=narrowed, deadline=deadline
         )
         converted = list(conversions)
-        # The narrowing was checked on the held readings; the build applies it
+        # The narrowing was checked on the held readings. The build applies it
         # to the converted ones, whose identities it rebinds.
         scopes = narrowings(wants, window=window, entities=dcids, facets=facets)
     fetched: dict[str, FetchedMember] = {}
@@ -549,8 +549,8 @@ def finish_member(
 
     `converted` is what the conversion that gave `want` said, or None when the
     fetch converts nothing. Its warnings are issued, or the first raised under
-    `strict`, after the manifest's, once per code, each code the manifest issued
-    left out. A build that resubmits its identity for a sentence, as a narrowing
+    `strict`, after the manifest's, once per code, leaving out any code the manifest
+    issued. A build that resubmits its identity for a sentence, as a narrowing
     that changes the `spec_id` does, issues the warnings Search gives that
     resubmit in their place, a `no_data` part's included.
     """

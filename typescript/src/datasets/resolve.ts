@@ -114,10 +114,11 @@ const FRAME: Rendering = { format: "parquet", bundle: false, layout: "frame" };
 
 /**
  * Fetches a spec's latest version, in another unit when `currency` is given, the exact versions
- * a ref names, or with `latest` the newest versions of a ref's specs; or runs a recipe, or reads a ref of a frame DFO computed, which
- * take `latest`, `strict`, `timeout` and `signal`, and refuse `onProgress`, which DFO does not
- * report for them, and the options that narrow or render a spec. A share, or its URL, reads the exact
- * version its slot shows, or with `asOf` showed then; it takes `asOf`, `slot`, `strict`,
+ * a ref names, or with `latest` the newest versions of a ref's specs; or runs a recipe, or reads
+ * a ref of a frame DFO computed, which take `latest`, `strict`, `timeout` and `signal`, and
+ * refuse `onProgress`, which DFO does not report for them, and the options that narrow or render
+ * a spec. A share, or its URL, reads the exact version its slot shows, or with `asOf` showed
+ * then; it takes `asOf`, `slot`, `strict`,
  * `timeout`, `signal` and `onProgress`, and `layout` only as `frame`.
  *
  * @throws {InvalidRequestError} The target is neither a ref, a recipe nor a spec `checkedSpec`
@@ -125,8 +126,8 @@ const FRAME: Rendering = { format: "parquet", bundle: false, layout: "frame" };
  *   spec or a ref whose members differ in rendering, `latest` is not a boolean, or a recipe or
  *   a derived ref is given `window`, `entities`, `facets`, `partyTotals`, a conversion option
  *   or a layout other than `frame`; a ref is given a conversion option; a conversion option
- *   breaks its rule; a share is given a narrowing, a conversion option, `partyTotals`, `latest: true` or a layout other
- *   than `frame`, `slot` is not a number from 1, or `asOf` is malformed, all before any
+ *   breaks its rule; a share is given a narrowing, a conversion option, `partyTotals`,
+ *   `latest: true` or a layout other than `frame`, `slot` is not a number from 1, or `asOf` is malformed, all before any
  *   request; a share of several slots is given no `slot`, or one past its last; `asOf` is
  *   before the slot first served data; or `asOf` or `slot` is given another target.
  *   `entityDcids` reads a spec's entities once those checks pass, so a ref or share given a
@@ -255,9 +256,9 @@ function refWindowRefusal(window: unknown, latest: boolean | undefined): string 
 
 /**
  * The options a call names that convert, narrow or render a spec, which a share, a recipe and a
- * frame DFO computed refuse: each reads a frame in the frame layout as DFO stored or computed it. An empty
- * `entities` or `facets` names nothing, as for a spec or a ref, and `layout: "frame"` is the
- * frame's own.
+ * frame DFO computed refuse: each reads a frame in the frame layout as DFO stored or computed
+ * it. An empty `entities` or `facets` names nothing, as for a spec or a ref, and
+ * `layout: "frame"` is the frame's own.
  */
 function givenOptions(
   narrowing: Narrowing,

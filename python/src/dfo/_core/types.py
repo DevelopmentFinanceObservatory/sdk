@@ -183,14 +183,14 @@ class UnitConversion:
     """The currencies and price bases a spec's amounts convert to.
 
     `fetch(spec, currency=..., price_basis=..., base_year=...)` asks for one.
-    The server decides whether it converts; the offer describes the years of the
+    The server decides whether it converts. The offer describes the years of the
     spec that carries it.
 
     Attributes:
         currencies: The currencies, sorted by code as the server lists them.
         default_base_year: The base year Search reads constant prices at when a
             question names none. A fetch at constant prices names its own
-            `base_year`; pass this one to match Search.
+            `base_year`. Pass this one to match Search.
     """
 
     currencies: tuple[ConversionCurrency, ...]
@@ -253,14 +253,15 @@ class Spec:
 
         None when the spec did not come from a Search answer, as for a dataset
         member's spec or one written by hand, or when its amounts convert to no
-        currency, as for a debt stock. A fetch with `currency` still works on a
-        spec without an offer; the server decides.
+        currency, as for a debt stock. A fetch with `currency` works on a spec
+        without an offer, and the server decides.
 
         Raises:
             ContractError: The server's offer is malformed
                 (`contract_violation`), its pointer under the spec, as
-                `/resolved/unit_conversion/currencies/0/code`. Search and fetch
-                never read the offer, so it raises only here.
+                `/resolved/unit_conversion/currencies/0/code`. Only this
+                property reads the offer, so Search and fetch work on a spec
+                whose offer is malformed.
         """
         # The parser builds this module's classes, so it is imported on use.
         from dfo._core.parse import parse_unit_conversion  # noqa: PLC0415

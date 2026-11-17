@@ -393,7 +393,7 @@ class AsyncClient:
         `price_basis` and `base_year` columns hold the request. The conversion
         applies to the spec as held, and `window`, `entities` and `facets` then
         narrow the converted spec. `spec.unit_conversion` lists what a spec
-        from a search converts to; the server decides, and a refusal raises
+        from a search converts to. The server decides, and a refusal raises
         with its code, such as `rate_coverage_gap`. Each warning Search gives
         the conversion, such as `deflator_missing_omitted`, arrives as a
         `SearchWarning`.
@@ -429,11 +429,11 @@ class AsyncClient:
                 empty map narrows nothing.
             currency: Convert a spec's amounts to this ISO 4217 currency, such
                 as `"EUR"`.
-            price_basis: `"current"`, the default with `currency`, converts
-                each year at its own rate; `"constant"` converts at the prices
-                of `base_year`.
+            price_basis: `"current"` (the default with `currency`) converts
+                each year at its own rate, and `"constant"` converts at the
+                prices of `base_year`.
             base_year: The year of constant prices, which `"constant"` needs
-                and `"current"` refuses; `spec.unit_conversion` names Search's
+                and `"current"` refuses. `spec.unit_conversion` names Search's
                 default as `default_base_year`.
             layout: `long` or `frame`; None builds a spec in `long` and reads a
                 ref in the layout it holds.
@@ -479,7 +479,7 @@ class AsyncClient:
                 `timeout` is not None or a finite number above 0
                 (`invalid_argument`). A type checker rejects an option the
                 target does not take. Search refused the conversion
-                (`rate_coverage_gap`, `recipe_not_declared`); the error's
+                (`rate_coverage_gap`, `recipe_not_declared`), and the error's
                 `problem` holds the refusal's `cause`.
             NotFoundError: A share is unknown, its slot is empty, or with
                 `as_of` the slot showed no card then (`not_found`).

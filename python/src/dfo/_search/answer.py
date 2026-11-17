@@ -353,9 +353,9 @@ class AsyncAnswer:
             currency: Convert every reading's amounts to this ISO 4217
                 currency, such as `"EUR"`. Each spec's `unit_conversion` lists
                 the currencies it converts to.
-            price_basis: `"current"`, the default with `currency`, converts
-                each year at its own rate; `"constant"` converts at the prices
-                of `base_year`.
+            price_basis: `"current"` (the default with `currency`) converts
+                each year at its own rate, and `"constant"` converts at the
+                prices of `base_year`.
             base_year: The year of constant prices, which `"constant"` needs
                 and `"current"` refuses.
             strict: Raise the `SearchWarning`, and the datasets surface's
@@ -390,7 +390,7 @@ class AsyncAnswer:
                 each part's roles (`invalid_argument`). No build is sent.
                 Search refused the conversion of a reading
                 (`rate_coverage_gap`, `recipe_not_declared`), whatever
-                `partial` says; the error's `problem` holds the refusal's
+                `partial` says, and the error's `problem` holds the refusal's
                 `cause`.
             DfoTimeoutError: `timeout` passed (`deadline_exceeded`). The build
                 keeps running on the server, and the same fetch joins it.

@@ -259,7 +259,7 @@ console.log(data.members[0]!.sentence);
 Germany's net disbursements (bilateral flows) to Kenya for official development assistance, 2015 to 2022. Constant 2022 euros, donor prices · OECD DAC2a.
 ```
 
-On dev the offer listed 140 currencies. Euros convert at current prices for 2015 to 2022 and at constant prices for any base year from 1973 to 2025, and each row holds `currency: "EUR"`, `price_basis: "constant"` and `base_year: 2022`. `{ currency: "EUR" }` alone fetches current euros. A constant-price fetch names its `baseYear`; `offer.defaultBaseYear` is the year the conversion tables default to, for a page with no other choice.
+On dev the offer listed 140 currencies. Euros convert at current prices for 2015 to 2022 and at constant prices for any base year from 1973 to 2025, and each row holds `currency: "EUR"`, `price_basis: "constant"` and `base_year: 2022`. `{ currency: "EUR" }` alone fetches current euros. A constant-price fetch names its `baseYear`. `offer.defaultBaseYear` is the year the conversion tables default to, for a page with no other choice.
 
 The converted reading is a new spec, with its own `spec_id` and sentence, so the dataset's `ref` and `provenance` name what the reader saw. The conversion runs on the reading as Search resolved it, before `window`, `entities` and `facets` narrow it, and the offer's years are that reading's years. `unitConversion` returns null for a spec Search did not resolve, such as a ref member's, and for a series that converts to no currency, such as a debt stock. `client.fetch(spec, { currency })` still asks the server on such a spec.
 

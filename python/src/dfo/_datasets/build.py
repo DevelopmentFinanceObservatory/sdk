@@ -676,7 +676,7 @@ class UnitRequest:
     Attributes:
         currency: The ISO 4217 code, such as `EUR`.
         price_basis: `current` or `constant`.
-        base_year: The base year of constant prices; None for current prices.
+        base_year: The base year of constant prices, or None for current prices.
     """
 
     currency: str

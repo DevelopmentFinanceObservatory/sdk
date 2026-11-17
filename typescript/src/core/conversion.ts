@@ -15,11 +15,11 @@ export type ConversionCurrency = {
   /** The plural noun the sentence names the currency by, such as `"euros"`. */
   readonly noun: string;
   /** The first and last years a current-price fetch shows, within the years the spec as held
-   *  serves; null when no year converts. A wider or narrower `window` serves other years. */
+   *  serves, or null when no year converts. A wider or narrower `window` serves other years. */
   readonly currentYears: readonly [startYear: number, endYear: number] | null;
   /** The first and last years a constant-price fetch shows, read as `currentYears` is. */
   readonly constantYears: readonly [startYear: number, endYear: number] | null;
-  /** The first and last base years a constant-price fetch takes; null when none converts. */
+  /** The first and last base years a constant-price fetch takes, or null when none converts. */
   readonly baseYears: readonly [first: number, last: number] | null;
 };
 
@@ -27,8 +27,8 @@ export type ConversionCurrency = {
 export type UnitConversion = {
   /** Each currency the spec converts to, sorted by code as Search sends them. */
   readonly currencies: readonly ConversionCurrency[];
-  /** The base year the conversion tables declare as their default. A constant-price fetch still
-   *  names its `baseYear`; this is the year to pass when the caller has no other. */
+  /** The base year the conversion tables declare as their default. A constant-price fetch names
+   *  its own `baseYear`. Pass this year when the caller has no other. */
   readonly defaultBaseYear: number;
 };
 
@@ -38,7 +38,7 @@ const POINTER = "/resolved/unit_conversion";
  * The conversions a spec offers, from Search's `resolved.unit_conversion`, or null. It is null
  * when the spec carries no Search reading (`spec.resolved` is missing, as for a ref member's
  * spec or one written by hand) or when its values convert to no currency, as for a debt stock.
- * A fetch with `currency` still works on a spec with no reading: the server decides.
+ * A fetch with `currency` works on a spec with no reading, and the server decides.
  *
  * ```ts
  * const offer = unitConversion(answer.specs[0]!);

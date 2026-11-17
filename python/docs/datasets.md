@@ -85,7 +85,7 @@ print(
 
 - `currency` takes an ISO 4217 code in capitals, such as `"EUR"`.
 - `price_basis` takes `"current"`, each year at its own exchange rate, or `"constant"`, every year at the prices of one base year. Left out, it is `"current"`.
-- `base_year` names that base year. `"constant"` needs one and `"current"` takes none. You name it each time; `offer.default_base_year` is the one Search reads when a question names none.
+- `base_year` names that base year. `"constant"` needs one and `"current"` takes none. You name it each time. `offer.default_base_year` is the one Search reads when a question names none.
 
 A conversion is another reading of the same question, with its own `spec_id` and sentence, so `data.members[0].spec`, `data.sentence` and `data.ref` name the converted reading. Every row's `currency`, `price_basis` and `base_year` hold what you asked for. `dfo.fetch(spec, currency="EUR")` converts one spec, and `answer.fetch` converts every reading of the answer in one Search request.
 
