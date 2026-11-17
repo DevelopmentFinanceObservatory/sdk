@@ -27,7 +27,7 @@ import { clientError, DfoError, messageOf, optionsOf } from "../core/errors.ts";
 import type { DfoErrorOptions } from "../core/errors.ts";
 import { isRecord } from "../core/json.ts";
 import { trimEnd, WHITESPACE } from "../core/text.ts";
-import { isDerived, selectorQuery } from "../core/ref.ts";
+import { isDerived, selectorPath } from "../core/ref.ts";
 import type { DerivedRefMember, RefMember } from "../core/ref.ts";
 import type { Transport } from "../http/transport.ts";
 
@@ -112,9 +112,10 @@ async function pinMember(transport: Transport, member: Member, deadline: number)
 /**
  * The URL of a pinned member's file, in the rendering it was built in.
  *
+ * @throws {VersionNotPinnedError} The version is not pinned (`version_not_pinned`), with
+ *   `heldUntil` naming when DFO stops guaranteeing it.
  * @throws {InvalidRequestError} `member` is not a member of a dataset or its ref, or names a
- *   frame DFO computed (`invalid_argument`), and no request is sent; or its version is not pinned
- *   (`version_not_pinned`), with `heldUntil` naming when DFO stops guaranteeing it.
+ *   frame DFO computed (`invalid_argument`), and no request is sent.
  * @throws {DfoError} Whatever reading the version's manifest threw, such as `NotFoundError` for a
  *   version DFO never stored.
  */
@@ -140,10 +141,7 @@ export async function fileUrl(
       heldUntil,
     });
   }
-  const path = `/datasets/${specId}/${reading.contentVersion}/file`;
-  const url = transport.url({ path });
-  url.search = selectorQuery(reading.rendering).toString();
-  return url.href;
+  return transport.url({ path: selectorPath(reading) }).href;
 }
 
 /** `member`, refused unless it is a dataset version's member. */

@@ -248,8 +248,10 @@ def _open_saved(path: Path | bytes) -> Dataset:
     if table is None:
         raise BundleError(
             "not_a_bundle",
-            f"{named} a Parquet file without a saved dataset's provenance: "
-            "open a file Dataset.save wrote",
+            f"{named} a Parquet file without a saved dataset's provenance, "
+            "such as a file DFO serves. pyarrow.parquet.read_table reads it as a "
+            "table; dfo.fetch(ref) gives the same version as a Dataset with its "
+            "provenance; dfo.load opens a file Dataset.save wrote",
         )
     return saved_dataset(table, metadata)
 

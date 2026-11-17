@@ -15,12 +15,13 @@ with no key:
    2023, must answer both parts definitely with no gap, and its fetch must return
    rows. A failure means production does not accept structured search.
 4. The file route a `file_url` link points at. `file_url` of the control's member
-   must raise `version_not_pinned` while the version is unpinned, since an
-   anonymous caller cannot pin, or return a link when it happens to be pinned. The
-   script then builds the link from the client's own path and rendering query and
-   reads it with a plain HTTP client, with no key, following redirects; the
-   response must be a Parquet file with the member's row count. A failure means
-   production does not serve the file route anonymously.
+   returns a link when the version is pinned, and raises `version_not_pinned`
+   while it is not, since an anonymous caller cannot pin; the script then builds
+   the link from the client's own path and rendering query. Any other error from
+   `file_url` fails the check. The script reads the link with a plain HTTP
+   client, with no key, following redirects; the response must be a Parquet file
+   with the member's row count. A failure means production does not serve the
+   file route anonymously.
 
     cd python && uv run python ../scripts/release_preflight.py
 
@@ -37,7 +38,7 @@ from dfo import Client
 from dfo._core.refs import Member
 from dfo._datasets.build import file_params
 from dfo._datasets.resolve import selector_path
-from dfo.errors import DfoError, InvalidRequestError
+from dfo.errors import DfoError
 
 QUESTION = "Kenya population, 2015 to 2024"
 CODES = ["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD"]
@@ -117,18 +118,19 @@ def check_structured_search(client: Client) -> None:
 def check_file_route(client: Client, member: Member, rows: int) -> None:
     """Read the member's file with no key and compare its row count."""
     try:
-        state = f"pinned, link {client.file_url(member)}"
-    except InvalidRequestError as error:
+        url = httpx2.URL(client.file_url(member))
+        state = "pinned, file_url returned the link"
+    except DfoError as error:
         if error.code != "version_not_pinned":
             raise PreflightError(
                 f"{FILE_REFUSED}: file_url raised {type(error).__name__}"
                 f" {error.code}: {error}"
             ) from error
+        url = httpx2.URL(
+            client.base_url + selector_path(member),
+            params=file_params(member.rendering),
+        )
         state = "not pinned, file_url raised version_not_pinned"
-    url = httpx2.URL(
-        client.base_url + selector_path(member),
-        params=file_params(member.rendering),
-    )
     try:
         response = httpx2.get(url, follow_redirects=True, timeout=60)
         response.raise_for_status()
@@ -141,7 +143,10 @@ def check_file_route(client: Client, member: Member, rows: int) -> None:
         raise PreflightError(
             f"{FILE_REFUSED}: the file holds {served} rows, not {rows}"
         )
-    print(f"production serves the file route anonymously: {state}; GET {served} rows")
+    print(
+        f"production serves the file route anonymously: {state}; GET {url} gave"
+        f" {served} rows"
+    )
 
 
 def main() -> int:

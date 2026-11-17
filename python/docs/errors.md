@@ -189,6 +189,7 @@ An error the client raises before any request, such as `invalid_argument`, has a
 | `IncompleteAnswerError`   | A part of the question has no reading, or awaits a choice                                 | `answer.choose(...)`, `answer.fetch(partial=True)`, or reword the part   |
 | `DeclinedError`           | Search declined the question or answered with the catalogue                               | Ask for a published statistic about a place, a population, or a flow     |
 | `InvalidRequestError`     | The arguments break a rule, on the client or the server                                   | Fix the member the message names. `issues` and `alternatives` list fixes |
+| `VersionNotPinnedError`   | A file link is asked for a version that is not pinned (`version_not_pinned`)              | Run `dfo.pin(data)`, then ask again. `held_until` says when DFO drops it |
 | `NotFoundError`           | A spec, version, node, code, or other id is unknown                                       | Check the id                                                             |
 | `VersionUnavailableError` | A stored version can no longer be fetched, or a derived one can no longer be computed     | Call `dfo.fetch(ref, latest=True)`. `newest_version` names the newest    |
 | `AuthenticationError`     | A key is missing, unknown, revoked, expired, or malformed, or the credentials file is bad | Run `dfo auth login`, or fix the file the message names                  |
@@ -241,10 +242,10 @@ The client refuses a role the spec does not declare before any request, as `inva
 | `problem`     | The parsed problem document, or None                                        |
 | `docs_url`    | The page that documents the code, or None                                   |
 
-Four classes carry more:
+Five classes carry more:
 
 - `InvalidRequestError.issues` holds the problem document's `issues`, each a `dfo.errors.ProblemIssue` naming a request member, and `.alternatives` the problem document's top-level `alternatives`, each a `dfo.errors.Alternative`. An issue's own offers sit in `issue["alternatives"]`. Both tuples are empty when the server sent none.
-- `InvalidRequestError.held_until` is, for `version_not_pinned`, the date DFO stops guaranteeing the unpinned version, or None when it names none. It is None for every other code.
+- `VersionNotPinnedError.held_until` is the date DFO stops guaranteeing the unpinned version, or None when it names none. `VersionNotPinnedError` is an `InvalidRequestError`, so code that catches that class catches it too.
 - `IncompleteAnswerError.answer` is the answer whose fetch raised it, or None for a server refusal, and `.gaps` lists each part without a reading.
 - `VersionUnavailableError.newest_version` is the newest version the server names, or None. A ref cut with `party_totals` has a version of its own, so compare refs to tell whether data changed. For a derived version DFO can no longer compute from the same readings, it is None, and `dfo.fetch(ref, latest=True)` computes it on the newest data.
 - `ContractError.pointer` is the JSON Pointer of the member at fault, or None.
@@ -307,7 +308,7 @@ The client raises these codes itself, for a fault it finds before a request or i
 | `resource_limit`              | `BundleError`             | no        | A bundle passes a bound its reader sets on its descriptor, entries, resources, bytes or workbooks                                                                      |
 | `response_too_large`          | `ServerError`             | no        | A decoded response body passes its size cap                                                                                                                            |
 | `unexpected_response`         | `ContractError`           | no        | A response the call does not act on, such as a redirect it does not follow, a body that is not JSON, or a status the route does not answer                             |
-| `version_not_pinned`          | `InvalidRequestError`     | no        | A file URL is asked for a stored version that is not pinned                                                                                                            |
+| `version_not_pinned`          | `VersionNotPinnedError`   | no        | A file URL is asked for a stored version that is not pinned                                                                                                            |
 | `version_unavailable`         | `VersionUnavailableError` | no        | A stored version can no longer be fetched, and no refusal names why                                                                                                    |
 
 ### Errors about your files
@@ -337,6 +338,7 @@ The client issues these warnings itself:
 | `key_checksum_mismatch` | `DfoWarning`            | The key's body is empty or its checksum differs (the client sends it anyway)                                                      |
 | `key_not_base62`        | `DfoWarning`            | A character of the key after its prefix is outside base62 (the client sends it anyway)                                            |
 | `key_unknown_prefix`    | `DfoWarning`            | The key starts with neither `dfo_k_` nor `dfo_p_` (the client sends it anyway)                                                    |
+| `name_deprecated`       | `DfoDeprecationWarning` | A call uses a name a later release removes, such as `lookup.code`; the message names the replacement and that release             |
 | `ref_digest_changed`    | `DfoWarning`            | A ref's version served a file whose digest differs, because the server rendered the same data again (the client returns the data) |
 | `route_deprecated`      | `DfoDeprecationWarning` | A response carries a `Deprecation` or `Sunset` header, once per process for each pair of values                                   |
 | `series_left_out`       | `SeriesLeftOutWarning`  | A derived Dataset left series out for missing data, once per fetch (the client returns the data)                                  |

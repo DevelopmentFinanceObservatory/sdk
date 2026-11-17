@@ -14,6 +14,7 @@ import { derivedDataset } from "../src/datasets/derived.ts";
 import { fileUrl, pin } from "../src/datasets/pin.ts";
 import { recipe } from "../src/datasets/recipe.ts";
 import { fetchDataset } from "../src/datasets/resolve.ts";
+import { InvalidRequestError, VersionNotPinnedError } from "../src/core/errors.ts";
 import { latestYear } from "../src/core/periods.ts";
 import { DatasetRef, isDerived } from "../src/core/ref.ts";
 import type { DerivedRefMember, Rendering, Spec } from "../src/core/ref.ts";
@@ -533,11 +534,14 @@ describe("fileUrl", () => {
       { format: "parquet", bundle: false },
     );
     const { transport, seen } = make(manifest);
-    await assert.rejects(fileUrl(transport, dataset.members[0]!), {
-      name: "InvalidRequestError",
-      code: "version_not_pinned",
-      heldUntil: new Date("2026-12-17T09:30:00Z"),
-      message: /client\.pin\(data\)/,
+    await assert.rejects(fileUrl(transport, dataset.members[0]!), (error: unknown) => {
+      assert.ok(error instanceof VersionNotPinnedError);
+      assert.ok(error instanceof InvalidRequestError);
+      assert.equal(error.name, "VersionNotPinnedError");
+      assert.equal(error.code, "version_not_pinned");
+      assert.deepEqual(error.heldUntil, new Date("2026-12-17T09:30:00Z"));
+      assert.match(error.message, /client\.pin\(data\)/);
+      return true;
     });
     assert.equal(seen.length, 1);
   });

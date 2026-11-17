@@ -29,6 +29,7 @@ from dfo._core.errors import (
     SearchWarning,
     SeriesLeftOutWarning,
     ServerError,
+    VersionNotPinnedError,
     VersionUnavailableError,
 )
 from dfo._core.types import FormatError
@@ -61,5 +62,6 @@ __all__ = [
     "SearchWarning",
     "SeriesLeftOutWarning",
     "ServerError",
+    "VersionNotPinnedError",
     "VersionUnavailableError",
 ]

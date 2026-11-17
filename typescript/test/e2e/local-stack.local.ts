@@ -25,7 +25,12 @@ import { describe, test } from "node:test";
 
 import { parquetReadObjects } from "hyparquet";
 
-import { InvalidRequestError, NotFoundError, PermissionDeniedError } from "../../src/errors.ts";
+import {
+  InvalidRequestError,
+  NotFoundError,
+  PermissionDeniedError,
+  VersionNotPinnedError,
+} from "../../src/errors.ts";
 import { Client, DatasetRef, recipe } from "../../src/index.ts";
 import type { Dataset, Spec } from "../../src/index.ts";
 import { isDerived } from "../../src/types.ts";
@@ -299,7 +304,7 @@ describe(`the local-stack journey against ${baseUrl}`, { concurrency: false }, (
       () => assert.fail("an unpinned version was linked"),
       (error: unknown) => error,
     );
-    assert.ok(refused instanceof InvalidRequestError);
+    assert.ok(refused instanceof VersionNotPinnedError);
     assert.equal(refused.code, "version_not_pinned");
     assert.ok(refused.heldUntil instanceof Date);
 

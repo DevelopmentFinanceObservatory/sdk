@@ -86,6 +86,7 @@ test("each entry point exports these names and no others", async () => {
       "SearchWarning",
       "SeriesLeftOutWarning",
       "ServerError",
+      "VersionNotPinnedError",
       "VersionUnavailableError",
       "isDfoError",
     ],

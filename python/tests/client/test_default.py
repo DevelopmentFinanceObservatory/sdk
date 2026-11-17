@@ -24,7 +24,7 @@ import pytest
 
 import dfo
 from dfo._client import default as _default
-from dfo._core.errors import InvalidRequestError
+from dfo._core.errors import DfoDeprecationWarning, InvalidRequestError
 from dfo._datasets.cache import Cache
 from dfo._sync._client.client import Client
 from dfo._sync._datasets.analysis import Analysis
@@ -245,10 +245,14 @@ def test_the_deprecated_code_function_warns_and_reads_as_error_code(
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         current = dfo.lookup.error_code("spec_not_found")
-    with pytest.warns(DeprecationWarning, match="dfo.lookup.error_code") as caught:
+    with pytest.warns(DfoDeprecationWarning, match="removed in 0.4.0") as caught:
         old = dfo.lookup.code("spec_not_found")  # ty: ignore[deprecated]
     assert old == current
-    assert [warning.filename for warning in caught] == [__file__]
+    (warning,) = caught
+    assert (warning.filename, getattr(warning.message, "code", None)) == (
+        __file__,
+        "name_deprecated",
+    )
 
 
 def test_the_analysis_functions_run_on_the_default_client(

@@ -137,10 +137,10 @@ def file_url(transport: Transport, member: object) -> str:
     """The URL of a pinned member's file, in the rendering it was built in.
 
     Raises:
+        VersionNotPinnedError: The version is not pinned (`version_not_pinned`),
+            with `held_until` naming the date DFO stops guaranteeing it.
         InvalidRequestError: `member` is not a Member or RefMember, or names a
-            frame DFO computed (`invalid_argument`), and no request is sent; or
-            its version is not pinned (`version_not_pinned`), with `held_until`
-            naming the date DFO stops guaranteeing it.
+            frame DFO computed (`invalid_argument`), and no request is sent.
         DfoError: Whatever reading the version's manifest raised, such as
             `NotFoundError` for a version DFO never stored.
     """

@@ -22,8 +22,8 @@ from urllib.parse import quote
 import httpx2
 from typing_extensions import deprecated
 
-from dfo._core.codes import INVALID_ARGUMENT
-from dfo._core.errors import ContractError, client_error
+from dfo._core.codes import INVALID_ARGUMENT, NAME_DEPRECATED
+from dfo._core.errors import ContractError, client_error, client_warning, warn
 from dfo._core.lookup_results import (
     Catalogue,
     Code,
@@ -202,9 +202,19 @@ class Lookup:
             read_code,
         )
 
-    @deprecated("Use `lookup.error_code`.", category=DeprecationWarning, stacklevel=1)
+    # The marker is for type checkers alone; the call warns through the client.
+    @deprecated("Use `lookup.error_code`.", category=None)
     def code(self, code: str, /) -> Code:
-        """The deprecated name of `error_code`."""
+        """The deprecated name of `error_code`, removed in 0.4.0.
+
+        Warns `DfoDeprecationWarning` (`name_deprecated`) at the caller's line.
+        """
+        warn(
+            client_warning(
+                NAME_DEPRECATED,
+                "lookup.code is deprecated and removed in 0.4.0; use lookup.error_code",
+            )
+        )
         return self.error_code(code)
 
     def catalogue(self, *, place: str | None = None) -> Catalogue:

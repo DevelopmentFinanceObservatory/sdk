@@ -23,6 +23,7 @@ from dfo._core.errors import (
     NetworkError,
     SeriesLeftOutWarning,
     ServerError,
+    VersionNotPinnedError,
     VersionUnavailableError,
     WarningCode,
 )
@@ -70,12 +71,13 @@ PROXY_INVALID: Final = _client("proxy_invalid", InvalidRequestError)
 REF_UNAVAILABLE: Final = _client("ref_unavailable", InvalidRequestError)
 RESPONSE_TOO_LARGE: Final = _client("response_too_large", ServerError)
 UNEXPECTED_RESPONSE: Final = _client("unexpected_response", ContractError)
-VERSION_NOT_PINNED: Final = _client("version_not_pinned", InvalidRequestError)
+VERSION_NOT_PINNED: Final = _client("version_not_pinned", VersionNotPinnedError)
 VERSION_UNAVAILABLE: Final = _client("version_unavailable", VersionUnavailableError)
 
 KEY_CHECKSUM_MISMATCH: Final = _warning("key_checksum_mismatch", DfoWarning)
 KEY_NOT_BASE62: Final = _warning("key_not_base62", DfoWarning)
 KEY_UNKNOWN_PREFIX: Final = _warning("key_unknown_prefix", DfoWarning)
+NAME_DEPRECATED: Final = _warning("name_deprecated", DfoDeprecationWarning)
 REF_DIGEST_CHANGED: Final = _warning("ref_digest_changed", DfoWarning)
 ROUTE_DEPRECATED: Final = _warning("route_deprecated", DfoDeprecationWarning)
 SERIES_LEFT_OUT: Final = _warning("series_left_out", SeriesLeftOutWarning)

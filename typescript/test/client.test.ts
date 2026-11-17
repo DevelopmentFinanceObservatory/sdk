@@ -6,6 +6,8 @@ import { Client, clientOver } from "../src/client.ts";
 import type { ClientOptions } from "../src/client.ts";
 import { envFrom } from "../src/config/env.ts";
 import { InvalidRequestError, NotFoundError } from "../src/core/errors.ts";
+import { forgetEmittedWarnings } from "../src/core/warnings.ts";
+import type { DfoWarning } from "../src/core/warnings.ts";
 import { Transport } from "../src/http/transport.ts";
 import { json, mockFetch, problem, recordingSleep } from "./support.ts";
 
@@ -112,12 +114,23 @@ describe("lookups", () => {
     await assert.rejects(lookup.errorCode("nothing"), NotFoundError);
   });
 
-  test("lookup.code is the deprecated name of lookup.errorCode", async () => {
-    const { fetch } = mockFetch(json(ENTRY), json(ENTRY));
-    const lookup = client(fetch).lookup;
+  test("lookup.code is the deprecated name of lookup.errorCode, and warns once per process", async () => {
+    forgetEmittedWarnings();
+    const { fetch } = mockFetch(json(ENTRY), json(ENTRY), json(ENTRY));
+    const warnings: DfoWarning[] = [];
+    const lookup = client(fetch, { onWarning: (warning) => warnings.push(warning) }).lookup;
     // eslint-disable-next-line @typescript-eslint/no-deprecated -- the alias is the thing under test
     const old = await lookup.code("spec_not_found");
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- the alias is the thing under test
+    await lookup.code("spec_not_found");
     assert.deepEqual(old, await lookup.errorCode("spec_not_found"));
+    // The test key also draws a `key_checksum_mismatch` warning.
+    assert.deepEqual(
+      warnings
+        .filter((warning) => warning.name === "DfoDeprecationWarning")
+        .map((warning) => warning.code),
+      ["name_deprecated"],
+    );
   });
 
   for (const dcid of [

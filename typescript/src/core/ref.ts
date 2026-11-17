@@ -294,6 +294,18 @@ export function selectorQuery(rendering: Rendering): URLSearchParams {
   );
 }
 
+/** The file selector's path for a member's version, with the query of the rendering it names:
+ *  `/datasets/{spec_id}/{content_version}/file?format=…`. */
+export function selectorPath(member: {
+  readonly spec: { readonly spec_id: string };
+  readonly contentVersion: string;
+  readonly rendering: Rendering;
+}): string {
+  const query = selectorQuery(member.rendering).toString();
+  const path = `/datasets/${member.spec.spec_id}/${member.contentVersion}/file`;
+  return query === "" ? path : `${path}?${query}`;
+}
+
 /** Whether a manifest artifact's rendering object is this rendering. The server's object
  *  carries more members, such as the long layout's version, so it matches on format, bundle
  *  and whether its layout is the frame. `without_party_totals` plays no part: the version a

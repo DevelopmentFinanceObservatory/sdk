@@ -27,6 +27,8 @@ from typing import overload
 from typing_extensions import deprecated
 
 from dfo._config.keys import ApiKeyArgument
+from dfo._core.codes import NAME_DEPRECATED
+from dfo._core.errors import client_warning, warn
 from dfo._core.lookup_results import Catalogue, Code, Match, Node
 from dfo._core.refs import (
     DatasetRef,
@@ -390,10 +392,11 @@ def file_url(member: Member | RefMember | DerivedMember | DerivedRefMember, /) -
     `data.ref.members`.
 
     Raises:
+        VersionNotPinnedError: The version is not pinned (`version_not_pinned`),
+            and `held_until` says when DFO stops guaranteeing it. Run
+            `dfo.pin(data)` first.
         InvalidRequestError: `member` is not a Member or RefMember, or names a
-            frame DFO computed (`invalid_argument`), and no request is sent; or
-            its version is not pinned (`version_not_pinned`), and `held_until`
-            says when DFO stops guaranteeing it. Run `dfo.pin(data)` first.
+            frame DFO computed (`invalid_argument`), and no request is sent.
         NotFoundError: DFO never stored the version.
     """
     return default_client().file_url(member)
@@ -511,9 +514,20 @@ def error_code(code: str, /) -> Code:
     return default_client().lookup.error_code(code)
 
 
-@deprecated("Use `dfo.lookup.error_code`.", category=DeprecationWarning, stacklevel=1)
+# The marker is for type checkers alone; the call warns through the client.
+@deprecated("Use `dfo.lookup.error_code`.", category=None)
 def code(code: str, /) -> Code:
-    """The deprecated name of `error_code`."""
+    """The deprecated name of `error_code`, removed in 0.4.0.
+
+    Warns `DfoDeprecationWarning` (`name_deprecated`) at the caller's line.
+    """
+    warn(
+        client_warning(
+            NAME_DEPRECATED,
+            "dfo.lookup.code is deprecated and removed in 0.4.0; use "
+            "dfo.lookup.error_code",
+        )
+    )
     return error_code(code)
 
 

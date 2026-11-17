@@ -288,7 +288,7 @@ await data.save("kenya-gdp.parquet");
 console.log(String(await load("kenya-gdp.parquet")));
 ```
 
-A file of several members holds them in one table, `part` first, so `memberBytes` throws `InvalidRequestError` (`invalid_argument`) on a loaded dataset; `client.fetch(data.ref)` fetches each member's own file. Bytes that hold no saved dataset throw `BundleError` (`not_a_bundle`), and a damaged or later-format provenance throws `FormatError`. A file Python saved from a website bundle's folder names no version, so its `fetchedAt` is null and `data.ref` throws `InvalidRequestError` (`ref_unavailable`). In a browser, `load(path)` throws `InvalidRequestError` (`invalid_argument`); read the file's bytes with `Dataset.fromBytes`.
+A file of several members holds them in one table, `part` first, so `memberBytes` throws `InvalidRequestError` (`invalid_argument`) on a loaded dataset; `client.fetch(data.ref)` fetches each member's own file. Bytes that hold no saved dataset throw `BundleError` (`not_a_bundle`). This client reads the files `data.save` wrote; a bundle downloaded from the website opens with the Python client's `dfo.load`. A damaged or later-format provenance throws `FormatError`. A file Python saved from a website bundle's folder names no version, so its `fetchedAt` is null and `data.ref` throws `InvalidRequestError` (`ref_unavailable`). In a browser, `load(path)` throws `InvalidRequestError` (`invalid_argument`); read the file's bytes with `Dataset.fromBytes`.
 
 ## Save an answer and revive it
 
@@ -385,22 +385,23 @@ try {
 
 Branch on the class, or on `error.code` for one case. The bracket's text may change between releases, so read `error.code` and `error.traceId` in code. Each error also carries `status`, `detail`, `traceId`, `retryable` and `retryAfterMs`. `isDfoError(error)` recognises one from any copy of the package.
 
-| Class                     | Raised when                                                                                                     |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `InvalidRequestError`     | An argument breaks a rule. `issues` and `alternatives` name the valid values; `heldUntil` says when an unpinned version stops being guaranteed (`version_not_pinned`) |
-| `IncompleteAnswerError`   | You fetch an answer with a part that has no reading. `gaps` lists them                                          |
-| `DeclinedError`           | You fetch an answer Search declined or answered with the catalogue. `answer.reason` says why a decline happened |
-| `NotFoundError`           | A spec, place, code, or version is unknown                                                                      |
-| `VersionUnavailableError` | A ref's version can no longer be built. `newestVersion` names the current one                                   |
-| `AuthenticationError`     | The key is malformed, unknown, revoked, or expired, or the credentials file is broken                           |
-| `PermissionDeniedError`   | The key lacks a scope, or a share's write token is wrong (`write_token_invalid`)                                |
-| `RateLimitError`          | Too many requests. `retryAfterMs` says how long to wait                                                         |
-| `QuotaExceededError`      | The day's allowance of pins, cards, or shares is spent (`allowance_exhausted`). `retryAfterMs` names the reset  |
-| `DfoTimeoutError`         | A `timeout` passed (`deadline_exceeded`)                                                                        |
-| `NetworkError`            | The connection failed                                                                                           |
-| `ServerError`             | The server failed or a download did not verify. A retryable failure is retried before you see it                |
-| `ContractError`           | A response the client cannot act on. Upgrade the package                                                        |
-| `BundleError`             | `Dataset.fromBytes` or `load` read bytes that hold no saved dataset (`not_a_bundle`)                            |
+| Class                     | Raised when                                                                                                                                                 |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `InvalidRequestError`     | An argument breaks a rule. `issues` and `alternatives` name the valid values                                                                                |
+| `VersionNotPinnedError`   | `fileUrl` is asked for a version that is not pinned (`version_not_pinned`). `heldUntil` says when DFO stops guaranteeing it. It is an `InvalidRequestError` |
+| `IncompleteAnswerError`   | You fetch an answer with a part that has no reading. `gaps` lists them                                                                                      |
+| `DeclinedError`           | You fetch an answer Search declined or answered with the catalogue. `answer.reason` says why a decline happened                                             |
+| `NotFoundError`           | A spec, place, code, or version is unknown                                                                                                                  |
+| `VersionUnavailableError` | A ref's version can no longer be built. `newestVersion` names the current one                                                                               |
+| `AuthenticationError`     | The key is malformed, unknown, revoked, or expired, or the credentials file is broken                                                                       |
+| `PermissionDeniedError`   | The key lacks a scope, or a share's write token is wrong (`write_token_invalid`)                                                                            |
+| `RateLimitError`          | Too many requests. `retryAfterMs` says how long to wait                                                                                                     |
+| `QuotaExceededError`      | The day's allowance of pins, cards, or shares is spent (`allowance_exhausted`). `retryAfterMs` names the reset                                              |
+| `DfoTimeoutError`         | A `timeout` passed (`deadline_exceeded`)                                                                                                                    |
+| `NetworkError`            | The connection failed                                                                                                                                       |
+| `ServerError`             | The server failed or a download did not verify. A retryable failure is retried before you see it                                                            |
+| `ContractError`           | A response the client cannot act on. Upgrade the package                                                                                                    |
+| `BundleError`             | `Dataset.fromBytes` or `load` read bytes that hold no saved dataset (`not_a_bundle`)                                                                        |
 
 `client.lookup.errorCode(code)` explains one of DFO's own error or warning codes, such as one the server sends. The client raises these itself: `answer_declined`, `answer_incomplete`, `base_url_invalid`, `choice_invalid`, `contract_violation`, `credentials_file_invalid`, `credentials_file_unreadable`, `deadline_exceeded`, `digest_mismatch`, `download_failed`, `header_invalid`, `insecure_transport`, `invalid_argument`, `key_empty`, `key_invalid`, `match_unresolved`, `network_error`, `not_a_bundle`, `offline`, `profile_not_found`, `profile_without_key`, `ref_unavailable`, `refusal_without_code`, `response_too_large`, `unexpected_response`, `version_not_pinned`, and `version_unavailable`.
 

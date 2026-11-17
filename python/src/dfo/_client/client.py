@@ -509,11 +509,12 @@ class AsyncClient:
             member: One of `data.members` or `data.ref.members`.
 
         Raises:
+            VersionNotPinnedError: The version is not pinned
+                (`version_not_pinned`), and `held_until` says when DFO stops
+                guaranteeing it. Run `client.pin(data)` first.
             InvalidRequestError: `member` is not a Member or RefMember, or names
                 a frame DFO computed (`invalid_argument`), and no request is
-                sent; or its version is not pinned (`version_not_pinned`), and
-                `held_until` says when DFO stops guaranteeing it. Run
-                `client.pin(data)` first.
+                sent.
             NotFoundError: DFO never stored the version.
         """
         return await pinned_file_url(self._session.transport, member)

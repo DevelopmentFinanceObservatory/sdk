@@ -30,6 +30,7 @@ from dfo._core.errors import (
     QuotaExceededError,
     SeriesLeftOutWarning,
     ServerError,
+    VersionNotPinnedError,
     VersionUnavailableError,
 )
 from dfo._core.periods import latest_year
@@ -599,8 +600,9 @@ def test_file_url_refuses_an_unpinned_version_with_its_held_until() -> None:
         stored({"pinned": False, "held_until": "2026-12-17T09:30:00+00:00"})
     )
     with make(server) as transport:
-        with pytest.raises(InvalidRequestError) as caught:
+        with pytest.raises(VersionNotPinnedError) as caught:
             file_url(transport, built().members[0])
+    assert isinstance(caught.value, InvalidRequestError)
     assert caught.value.code == "version_not_pinned"
     assert caught.value.held_until == date(2026, 12, 17)
     assert "client.pin(data)" in str(caught.value)
@@ -627,6 +629,7 @@ def test_file_url_refuses_what_is_not_a_stored_version_unsent(
     with make(server) as transport:
         with pytest.raises(InvalidRequestError) as caught:
             file_url(transport, target())
+    assert type(caught.value) is InvalidRequestError
     assert caught.value.code == "invalid_argument"
     assert server.requests == []
 

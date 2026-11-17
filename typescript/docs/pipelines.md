@@ -118,7 +118,9 @@ https://developmentfinance.org/api/v1/datasets/spec_5e5170d48b8a22e7f5d2e8591939
 
 The link serves the member's version as Parquet, in the rendering the member was built in. It answers with a redirect to a storage address that is signed for five minutes, so read it with a client that follows redirects, and commit the API link, not the address it redirects to. `data.ref.members` holds members too, and `client.fileUrl` takes them.
 
-`fileUrl` reads the version's manifest once. An unpinned version throws `InvalidRequestError` with the code `version_not_pinned`, because DFO keeps it for 30 days and a committed link to it would break after that. `error.heldUntil` is the `Date` DFO stops guaranteeing it. Run `client.pin(data)`, then ask again. A member of a derived dataset from `client.analysis` throws `invalid_argument`.
+`fileUrl` reads the version's manifest once. An unpinned version throws `VersionNotPinnedError`, an `InvalidRequestError` with the code `version_not_pinned`, because DFO keeps it for 30 days and a committed link to it would break after that. `error.heldUntil` is the `Date` DFO stops guaranteeing it. Run `client.pin(data)`, then ask again. A member of a derived dataset from `client.analysis` throws `invalid_argument`.
+
+The link serves a plain Parquet file, which a Parquet reader such as hyparquet reads. `load` reads the files `data.save` writes and refuses this one with `not_a_bundle`; `client.fetch(ref)` gives the same version as a Dataset with its provenance.
 
 ## Record provenance
 

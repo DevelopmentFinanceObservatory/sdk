@@ -13,6 +13,7 @@
 
 import { clientError, problemAt200, REFUSAL_CODE } from "../core/errors.ts";
 import { checkOptions, declareOptions } from "../core/options.ts";
+import { clientWarning, warnOnce } from "../core/warnings.ts";
 import { isRecord } from "../core/json.ts";
 import { checkRequired } from "../core/strict.ts";
 import type { JsonType } from "../core/strict.ts";
@@ -246,8 +247,23 @@ export class Lookup {
     );
   }
 
-  /** @deprecated Use errorCode. */
+  /**
+   * The old name of `errorCode`, removed in 0.4.0. It reports a `DfoDeprecationWarning`
+   * (`name_deprecated`) to the client's `onWarning`, once per process.
+   *
+   * @deprecated Use errorCode.
+   */
   code(code: string, options: LookupOptions = {}): Promise<Code> {
+    warnOnce(
+      "name_deprecated:lookup.code",
+      clientWarning(
+        "name_deprecated",
+        "lookup.code is deprecated and removed in 0.4.0; use lookup.errorCode.",
+      ),
+      (warning) => {
+        this.#transport.warn(warning);
+      },
+    );
     return this.errorCode(code, options);
   }
 

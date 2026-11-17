@@ -304,10 +304,10 @@ export class Client {
    * rendering the member was built in, so it serves the same table. The call reads the version's
    * manifest once to check the version is pinned.
    *
+   * @throws {VersionNotPinnedError} The version is not pinned (`version_not_pinned`), and
+   *   `heldUntil` says when DFO stops guaranteeing it. Run `client.pin(data)` first.
    * @throws {InvalidRequestError} `member` is not a member of a dataset or its ref, or names a
-   *   frame DFO computed (`invalid_argument`), and no request is sent; or its version is not
-   *   pinned (`version_not_pinned`), and `heldUntil` says when DFO stops guaranteeing it. Run
-   *   `client.pin(data)` first.
+   *   frame DFO computed (`invalid_argument`), and no request is sent.
    * @throws {NotFoundError} DFO never stored the version.
    */
   fileUrl(member: Member | RefMember | DerivedMember | DerivedRefMember): Promise<string> {

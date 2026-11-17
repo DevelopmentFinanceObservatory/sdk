@@ -18,6 +18,7 @@ export {
   QuotaExceededError,
   RateLimitError,
   ServerError,
+  VersionNotPinnedError,
   VersionUnavailableError,
 } from "./core/errors.ts";
 export type {

@@ -6,6 +6,7 @@ import json
 import pickle
 import warnings
 from collections.abc import Callable
+from datetime import date
 from pathlib import Path
 from typing import TypeAliasType, get_args
 
@@ -32,6 +33,7 @@ from dfo._core.errors import (
     QuotaExceededError,
     RateLimitError,
     ServerError,
+    VersionNotPinnedError,
     VersionUnavailableError,
     WarningCode,
     status_class,
@@ -139,6 +141,17 @@ def test_an_error_pickles_with_its_fields() -> None:
         NotFoundError,
         "spec_not_found",
         404,
+    )
+
+
+def test_a_version_not_pinned_error_pickles_with_its_held_until() -> None:
+    error = _errors.client_error(_codes.VERSION_NOT_PINNED, "Pin it first.")
+    error.held_until = date(2026, 12, 17)
+    copy = pickle.loads(pickle.dumps(error))
+    assert (type(copy), copy.code, copy.held_until) == (
+        VersionNotPinnedError,
+        "version_not_pinned",
+        date(2026, 12, 17),
     )
 
 

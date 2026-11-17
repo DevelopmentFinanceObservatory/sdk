@@ -262,6 +262,20 @@ describe("load(path)", () => {
     }
   });
 
+  test("refuses a file that is no Parquet file, such as a website bundle, naming its path", async () => {
+    installFileReader(() => Promise.resolve(new Uint8Array([0x50, 0x4b, 0x03, 0x04])));
+    try {
+      await assert.rejects(load("bundle.zip"), (error: unknown) => {
+        assert.ok(error instanceof BundleError);
+        assert.equal(error.code, "not_a_bundle");
+        assert.match(error.message, /^bundle\.zip /);
+        return true;
+      });
+    } finally {
+      installFileReader(undefined);
+    }
+  });
+
   test("names Dataset.fromBytes where the runtime has no file system", async () => {
     await assert.rejects(load("data.parquet"), (error: unknown) => {
       assert.ok(error instanceof InvalidRequestError);

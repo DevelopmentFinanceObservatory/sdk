@@ -142,8 +142,10 @@ function savedFile(bytes: Uint8Array): ParquetFile {
   if (!keys.includes("dfo.format_version")) {
     throw new BundleError(
       "not_a_bundle",
-      "The bytes are a Parquet file without a saved dataset's provenance: read a file " +
-        "data.toBytes() or data.save() wrote.",
+      "The bytes are a Parquet file without a saved dataset's provenance, such as a file DFO " +
+        "serves. A Parquet reader such as hyparquet reads it as a table; client.fetch(ref) " +
+        "gives the same version as a Dataset with its provenance; Dataset.fromBytes reads " +
+        "the bytes data.toBytes() or data.save() wrote.",
     );
   }
   return file;

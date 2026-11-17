@@ -16,6 +16,7 @@ import pytest
 from dfo._client.client import AsyncClient
 from dfo._core.errors import (
     ContractError,
+    DfoDeprecationWarning,
     DfoError,
     InvalidRequestError,
     NetworkError,
@@ -486,10 +487,14 @@ async def test_the_deprecated_code_lookup_warns_and_reads_as_error_code() -> Non
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             current = await client.lookup.error_code("spec_not_found")
-        with pytest.warns(DeprecationWarning, match="lookup.error_code") as caught:
-            old = await client.lookup.code("spec_not_found")
+        with pytest.warns(DfoDeprecationWarning, match="removed in 0.4.0") as caught:
+            old = await client.lookup.code("spec_not_found")  # ty: ignore[deprecated]
     assert old == current
-    assert [warning.filename for warning in caught] == [__file__]
+    (warning,) = caught
+    assert (warning.filename, getattr(warning.message, "code", None)) == (
+        __file__,
+        "name_deprecated",
+    )
 
 
 async def test_lookups_reach_the_graph_the_registry_and_the_catalogue() -> None:

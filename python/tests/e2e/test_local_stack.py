@@ -51,7 +51,12 @@ import dfo
 from dfo import Client, Dataset, DatasetRef, Spec
 from dfo._sync._datasets.fetch import Session
 from dfo._sync._http.transport import Transport
-from dfo.errors import InvalidRequestError, NotFoundError, PermissionDeniedError
+from dfo.errors import (
+    InvalidRequestError,
+    NotFoundError,
+    PermissionDeniedError,
+    VersionNotPinnedError,
+)
 from dfo.types import Card, DerivedRefMember, Groupby, Share
 
 pytestmark = [
@@ -276,7 +281,7 @@ def test_00_file_url_refuses_until_pinned_then_links_a_file_any_client_reads(
     storage and answers the member's rows as Parquet. It runs first, since a
     share of a frame computed from ODA pins ODA too."""
     (member,) = oda.members
-    with pytest.raises(InvalidRequestError) as caught:
+    with pytest.raises(VersionNotPinnedError) as caught:
         client.file_url(member)
     assert caught.value.code == "version_not_pinned"
     assert caught.value.held_until is not None

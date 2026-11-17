@@ -35,7 +35,7 @@ export const CLIENT_CODE_CLASSES = {
   resource_limit: "BundleError",
   response_too_large: "ServerError",
   unexpected_response: "ContractError",
-  version_not_pinned: "InvalidRequestError",
+  version_not_pinned: "VersionNotPinnedError",
   version_unavailable: "VersionUnavailableError",
 } as const;
 

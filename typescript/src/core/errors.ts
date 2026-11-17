@@ -162,18 +162,24 @@ export class InvalidRequestError extends DfoError {
    *  request named; an item without a string `ref` and `label` is left out. Empty when the
    *  server sent none. */
   readonly alternatives: readonly Alternative[];
-  /** For `version_not_pinned`, when DFO stops guaranteeing the unpinned version, or null when it
-   *  names no time. Null for every other code. */
-  readonly heldUntil: Date | null;
 
-  constructor(options: DfoErrorOptions & { heldUntil?: Date | null }) {
+  constructor(options: DfoErrorOptions) {
     super(options);
-    this.heldUntil = options.heldUntil ?? null;
     this.issues = objects(options.problem?.["issues"]);
     this.alternatives = objects(options.problem?.["alternatives"]).filter(
       (item): item is Alternative =>
         typeof item["ref"] === "string" && typeof item["label"] === "string",
     );
+  }
+}
+/** A link is asked for a version DFO keeps for a limited time. The caller pins it first. */
+export class VersionNotPinnedError extends InvalidRequestError {
+  /** When DFO stops guaranteeing the unpinned version, or null when it names no time. */
+  readonly heldUntil: Date | null;
+
+  constructor(options: DfoErrorOptions & { heldUntil?: Date | null }) {
+    super(options);
+    this.heldUntil = options.heldUntil ?? null;
   }
 }
 /** A spec, version or operation is unknown. The caller checks the id. */
@@ -239,6 +245,7 @@ export class DfoTimeoutError extends DfoError {}
 for (const [name, errorClass] of Object.entries({
   DfoError,
   InvalidRequestError,
+  VersionNotPinnedError,
   NotFoundError,
   IncompleteAnswerError,
   DeclinedError,
@@ -391,6 +398,7 @@ const CLIENT_CLASSES = {
   InvalidRequestError,
   NetworkError,
   ServerError,
+  VersionNotPinnedError,
   VersionUnavailableError,
 } satisfies Record<ClientClassName, ErrorClass>;
 

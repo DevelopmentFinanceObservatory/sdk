@@ -41,13 +41,20 @@ class InvalidRequestError(DfoError):
         alternatives: The problem document's `alternatives`, the graph nodes the
             server offers in place of what the request named. Empty when the
             server sent none.
-        held_until: For `version_not_pinned`, the date the unpinned version
-            stops being guaranteed, or None when DFO named none. None for every
-            other code.
     """
 
     issues: tuple[ProblemIssue, ...] = ()
     alternatives: tuple[Alternative, ...] = ()
+
+
+class VersionNotPinnedError(InvalidRequestError):
+    """A link to a version DFO keeps for a limited time. The caller pins it first.
+
+    Attributes:
+        held_until: The date DFO stops guaranteeing the unpinned version, or
+            None when DFO named none.
+    """
+
     held_until: date | None = None
 
 
