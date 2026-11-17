@@ -673,8 +673,9 @@ function gapFor(partIndex: number, part: Part): Gap | null {
 }
 
 /** A refusal's choices, from `no_data.options`, read tolerantly. Each option's `data_query` is
- *  the input that settles it. */
-function queryOptions(noData: NoDataPart["no_data"]): Option[] {
+ *  the input that settles it. A stored no_data gap reads its options here too, so it equals the
+ *  live one. */
+export function queryOptions(noData: NoDataPart["no_data"]): Option[] {
   return objects(noData.options).map((option) => ({
     kind: "query",
     label: text(option["label"]) ?? "",

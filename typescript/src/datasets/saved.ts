@@ -24,11 +24,12 @@ import { clientError, DfoError, isDfoError } from "../core/errors.ts";
 import type { ClientErrorCode } from "../core/errors.ts";
 import { parseJson } from "../core/json.ts";
 import { parsedInputOf } from "../core/parse.ts";
-import type { CandidatesPart, Part } from "../core/parts.ts";
+import type { CandidatesPart, NoDataPart, Part } from "../core/parts.ts";
 import { checkKeys, invalid, isDerived, layoutOf, loadRef, objectAt } from "../core/ref.ts";
 import type { DerivedRefMember, RefMember } from "../core/ref.ts";
 import { CLIENT_CODE_CLASSES } from "../generated/client-codes.ts";
 import { GAP_KINDS } from "../generated/actions.ts";
+import { queryOptions } from "../search/answer.ts";
 import type { Gap, GapKind, Option } from "../search/answer.ts";
 import type { Assumption, Departure, Notice, RequestedOperation } from "../wire.ts";
 
@@ -434,12 +435,17 @@ export function loadGap(value: unknown, pointer: string, { closed = true } = {})
   const kind = gap["kind"];
   if (!isGapKind(kind)) throw invalid(`${pointer}/kind`, "not a gap kind");
   const part = loadPart(gap["part"], `${pointer}/part`);
+  // A part that carries its own options gives them as a live answer reads them, so a loaded
+  // gap equals the live one; the saved list is read and checked all the same.
+  const stored = arrayAt(gap["options"], `${pointer}/options`).map((option, index) =>
+    loadOption(option, `${pointer}/options/${index}`, closed),
+  );
   const options =
     part.status === "candidates"
       ? candidatesOf(part as CandidatesPart)
-      : arrayAt(gap["options"], `${pointer}/options`).map((option, index) =>
-          loadOption(option, `${pointer}/options/${index}`, closed),
-        );
+      : part.status === "no_data"
+        ? queryOptions((part as NoDataPart).no_data)
+        : stored;
   return {
     partIndex: partIndex as number,
     part,
@@ -795,14 +801,18 @@ export function datasetRetention(members: readonly Retention[]): {
 }
 
 /**
- * Refuses a stored record whose `complete` is true while `missing` holds a part: a saved file's
- * `dfo.dataset` or a provenance record.
+ * Refuses a stored record whose `complete` is not whether `missing` is empty: a saved file's
+ * `dfo.dataset` or a provenance record. Every client writes `complete` as true exactly when no
+ * part was left out.
  *
  * @throws {FormatError} At `${pointer}/complete` (`format_invalid`).
  */
 export function checkComplete(complete: boolean, missing: readonly Gap[], pointer: string): void {
-  if (complete && missing.length > 0) {
-    throw invalid(`${pointer}/complete`, "is true while missing holds a part");
+  if (complete === missing.length > 0) {
+    throw invalid(
+      `${pointer}/complete`,
+      "is not whether missing is empty: true exactly when no part was left out",
+    );
   }
 }
 

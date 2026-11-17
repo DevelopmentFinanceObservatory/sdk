@@ -63,6 +63,7 @@ from dfo._core.types import (
     FormatError,
     Gap,
     Layout,
+    NoDataPart,
     Notice,
     Option,
     Part,
@@ -495,8 +496,8 @@ class Provenance:
         client's `Provenance.fromJSON` takes the text or the parsed value too.
 
         A key the format does not name is ignored, at the top level, in a
-        member, in a citation and its sources and in a warning, so a record a
-        later client wrote reads here. The ref keeps its own versioned format,
+        member, in a citation and its sources, in a warning, and in a missing
+        part and its options, so a record a later client wrote reads here. The ref keeps its own versioned format,
         which `DatasetRef.from_json` reads strictly.
 
         Raises:
@@ -504,8 +505,8 @@ class Provenance:
                 breaks the provenance format or comes from a later format
                 version, a member differs from the member its ref names, the
                 record's `pinned` or `held_until` differs from what its members
-                give, members or none, `complete` is true while `missing`
-                holds a part, or the ref breaks its own format, as
+                give, members or none, `complete` is not whether `missing`
+                is empty, or the ref breaks its own format, as
                 `DatasetRef.from_json` raises, with a pointer under `/ref`.
         """
         record = (
@@ -677,17 +678,18 @@ def _load_retention(entry: Mapping[str, Any], pointer: str) -> _Retention:
 
 
 def check_complete(complete: bool, missing: Sequence[Gap], pointer: str) -> None:
-    """Refuse a stored record whose `complete` is true while `missing` holds a
-    part: a saved file's `dfo.dataset` or a provenance record.
+    """Refuse a stored record whose `complete` is not whether `missing` is
+    empty: a saved file's `dfo.dataset` or a provenance record. Every client
+    writes `complete` as true exactly when no part was left out.
 
     Raises:
         FormatError: At `{pointer}/complete`.
     """
-    if complete and missing:
+    if complete == bool(missing):
         raise FormatError(
             "format_invalid",
             f"{pointer}/complete",
-            "is true while missing holds a part",
+            "is not whether missing is empty: true exactly when no part was left out",
         )
 
 
@@ -2621,9 +2623,11 @@ def _gap_object(gap: Gap) -> dict[str, Any]:
 
 
 def _load_gap(value: object, pointer: str, *, closed: bool = True) -> Gap:
-    """A stored gap. A candidates part's options are its candidates, as in an
-    answer. A saved file's gap and its options are closed; a provenance
-    record's are open, so a key they do not name is ignored."""
+    """A stored gap. A candidates part's options are its candidates and a no_data
+    part's are its `no_data.options`, read from the stored part as an answer
+    reads them, so a loaded gap equals the live one, `entity_choice` included.
+    A saved file's gap and its options are closed; a provenance record's are
+    open, so a key they do not name is ignored."""
     obj = object_at(value, pointer)
     keys = ("part_index", "part", "kind", "message", "options")
     if closed:
@@ -2642,14 +2646,15 @@ def _load_gap(value: object, pointer: str, *, closed: bool = True) -> Gap:
         raise FormatError(
             "format_invalid", f"{pointer}/part", message_of(error)
         ) from error
-    options: tuple[Candidate | Option, ...] = (
-        part.candidates
-        if isinstance(part, CandidatesPart)
-        else tuple(
+    options: tuple[Candidate | Option, ...]
+    if isinstance(part, CandidatesPart):
+        options = part.candidates
+    else:
+        stored = tuple(
             _load_option(option, f"{pointer}/options/{index}", closed=closed)
             for index, option in enumerate(_array(obj["options"], f"{pointer}/options"))
         )
-    )
+        options = part.options if isinstance(part, NoDataPart) else stored
     return Gap(
         part_index=int(part_index),
         part=part,
