@@ -220,6 +220,15 @@ const FORMATS: readonly string[] = ["csv", "xlsx", "parquet"];
 const isFormat = (value: unknown): value is Rendering["format"] =>
   typeof value === "string" && FORMATS.includes(value);
 
+/** Whether a value is a rendering as `selectorPath` reads it: a known format, a boolean
+ *  `bundle`, `layout` absent or `"frame"`, and `without_party_totals` absent or true. */
+export const isRendering = (value: unknown): value is Rendering =>
+  isRecord(value) &&
+  isFormat(value["format"]) &&
+  typeof value["bundle"] === "boolean" &&
+  (value["layout"] === undefined || value["layout"] === "frame") &&
+  (value["without_party_totals"] === undefined || value["without_party_totals"] === true);
+
 /**
  * The bare Parquet rendering both clients build for a layout, cut of party totals or not.
  *

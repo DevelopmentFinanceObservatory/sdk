@@ -6,6 +6,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { describe, test } from "node:test";
 
+import { parquetWriteBuffer } from "hyparquet-writer";
+
 import { clientOver } from "../src/client.ts";
 import { envFrom } from "../src/config/env.ts";
 import { Dataset } from "../src/datasets/dataset.ts";
@@ -22,7 +24,7 @@ import { Transport } from "../src/http/transport.ts";
 import { SeriesLeftOutWarning } from "../src/core/warnings.ts";
 import type { DfoWarning } from "../src/core/warnings.ts";
 import { scenario, scenarioBytes } from "./replay.ts";
-import { json, mockFetch, problem, recordedBytes, recordedJson } from "./support.ts";
+import { contractJson, json, mockFetch, problem, recordedBytes, recordedJson } from "./support.ts";
 import type { Seen } from "./support.ts";
 
 const BASE = "https://api.example/api";
@@ -454,6 +456,25 @@ describe("pin", () => {
     assert.deepEqual(seen, []);
   });
 
+  test("refuses a dataset that names no version unsent", async () => {
+    const { metadata } = await contractJson<{ metadata: Record<string, string> }>(
+      "saved-files/saved-minimal.json",
+    );
+    const bytes = parquetWriteBuffer({
+      columnData: [{ name: "value", data: [], type: "INT64" }],
+      kvMetadata: Object.entries(metadata).map(([key, value]) => ({ key, value })),
+    });
+    const data = await Dataset.fromBytes(bytes);
+    assert.deepEqual(data.members, []);
+    const { transport, seen } = make(pinned);
+    await assert.rejects(pin(transport, data), {
+      name: "InvalidRequestError",
+      code: "invalid_argument",
+      message: /has no version to pin/,
+    });
+    assert.deepEqual(seen, []);
+  });
+
   for (const [name, answer, errorName] of [
     ["another version", json({ schema_version: 1, pinned: {} }), "ContractError"],
     [
@@ -570,6 +591,34 @@ describe("fileUrl", () => {
       assert.deepEqual(seen, []);
     });
   }
+
+  test("refuses a member-like object missing what its link is built from, unsent", async () => {
+    const { dataset, manifest } = await storedVersion(
+      { pinned: true },
+      { format: "parquet", bundle: false },
+    );
+    const { spec, contentVersion, rendering } = dataset.members[0]!;
+    const incomplete: Record<string, unknown>[] = [
+      { contentVersion, rendering },
+      { spec: { definition: {} }, contentVersion, rendering },
+      { spec: { ...spec, spec_id: 7 }, contentVersion, rendering },
+      { spec, rendering },
+      { spec, contentVersion: 7, rendering },
+      { spec, contentVersion },
+      { spec, contentVersion, rendering: { bundle: false } },
+      { spec, contentVersion, rendering: { format: "parquet" } },
+      { spec, contentVersion, rendering: { format: "parquet", bundle: false, layout: "wide" } },
+    ];
+    for (const target of incomplete) {
+      const { transport, seen } = make(manifest);
+      await assert.rejects(fileUrl(transport, target as never), {
+        name: "InvalidRequestError",
+        code: "invalid_argument",
+        message: /^fileUrl takes a member of a dataset/,
+      });
+      assert.deepEqual(seen, [], JSON.stringify(target));
+    }
+  });
 
   test("of a version DFO never stored throws its refusal", async () => {
     const { dataset } = await storedVersion({ pinned: true }, { format: "parquet", bundle: false });

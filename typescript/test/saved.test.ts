@@ -3,10 +3,12 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, test } from "node:test";
+import { describe, mock, test } from "node:test";
 
 import { parquetMetadata } from "hyparquet";
-import { parquetWriteBuffer } from "hyparquet-writer";
+import type { FileMetaData } from "hyparquet";
+import { ByteWriter, parquetWriteBuffer } from "hyparquet-writer";
+import { writeMetadata } from "hyparquet-writer/src/metadata.js";
 
 import { clientOver } from "../src/client.ts";
 import { InvalidRequestError } from "../src/core/errors.ts";
@@ -66,6 +68,29 @@ const examples = async (): Promise<SavedExample[]> => {
   assert.ok(names.length > 0, "the contract holds no saved-file examples");
   return Promise.all(names.map((name) => contractJson<SavedExample>(`saved-files/${name}`)));
 };
+
+/** A Parquet file of `metadata` alone, its footer and no pages. */
+function footerOnly(metadata: FileMetaData): Uint8Array {
+  const writer = new ByteWriter();
+  writer.appendUint32(0x31524150);
+  writeMetadata(writer, metadata);
+  writer.appendUint32(0x31524150);
+  return new Uint8Array(writer.getBuffer());
+}
+
+/** `bytes` with its footer rewritten by `change`, its pages as they stand. */
+function withFooter(
+  bytes: Uint8Array,
+  change: (metadata: FileMetaData) => FileMetaData,
+): Uint8Array {
+  const metadata = parquetMetadata(bytes.slice().buffer);
+  const pages = bytes.subarray(0, bytes.length - 8 - metadata.metadata_length);
+  const footer = footerOnly(change(metadata)).subarray(4);
+  const rewritten = new Uint8Array(pages.length + footer.length);
+  rewritten.set(pages);
+  rewritten.set(footer, pages.length);
+  return rewritten;
+}
 
 /** A saved file's `dfo.*` metadata. */
 const metadataOf = (bytes: Uint8Array): Record<string, string | undefined> =>
@@ -168,6 +193,8 @@ describe("Dataset.fromBytes reads back the file toBytes() writes", () => {
       assert.deepEqual(loaded.ref.toJSON(), data.ref.toJSON());
       assert.deepEqual(loaded.columns, data.columns);
       assert.equal(loaded.rowCount, data.rowCount);
+      // The file holds its rows in reading order, so the loaded table keeps no row index.
+      assert.deepEqual(datasetTable(loaded).order.rows, { kind: "range", length: data.rowCount });
       assert.deepEqual(
         await decodeStored(datasetTable(loaded)),
         await decodeStored(datasetTable(data)),
@@ -193,6 +220,14 @@ describe("Dataset.fromBytes reads back the file toBytes() writes", () => {
     );
     assert.equal(table.numRows, fetched.numRows);
     assert.deepEqual(loaded.missing, data.missing);
+  });
+
+  test("a loaded dataset converts from the decode that checked its pages", async () => {
+    const data = await sources["two members of an answer"]!();
+    const loaded = await Dataset.fromBytes(await data.toBytes());
+    // Pages overwritten after the read would refuse any second decode.
+    new Uint8Array(datasetTable(loaded).parts[0]!.file.buffer).fill(0xff, 4, 2000);
+    assert.deepEqual(await loaded.toRows(), await data.toRows());
   });
 
   test("a loaded dataset has no member's own file", async () => {
@@ -245,6 +280,64 @@ describe("Dataset.fromBytes refuses what holds no saved dataset", () => {
     const pages = bytes.slice();
     pages.fill(0xff, 4, 2000);
     await refused(pages, "not_a_bundle");
+  });
+
+  test("a footer that declares more rows than the file holds, before allocating for them", async () => {
+    const minimal = (await examples()).find(({ name }) => name === "saved-minimal");
+    assert.ok(minimal);
+    // Three rows of the minimal example, which names no member, so any row count is its own.
+    const file = new Uint8Array(
+      parquetWriteBuffer({
+        columnData: [{ name: "value", data: [1n, 2n, 3n], type: "INT64" }],
+        kvMetadata: Object.entries(minimal.metadata).map(([key, value]) => ({ key, value })),
+      }),
+    );
+    assert.equal((await Dataset.fromBytes(file)).rowCount, 3);
+    const billion = 1_000_000_000n;
+    const declared: [Uint8Array, RegExp][] = [
+      // 61 bytes of a later format version and no row group, declaring a billion rows.
+      [
+        footerOnly({
+          version: 2,
+          schema: [{ name: "root", num_children: 0 }],
+          num_rows: billion,
+          row_groups: [],
+          key_value_metadata: [{ key: "dfo.format_version", value: "99" }],
+          metadata_length: 0,
+        }),
+        /later client/,
+      ],
+      [
+        withFooter(file, (metadata) => ({ ...metadata, num_rows: billion })),
+        /declares 1000000000 rows and its row groups hold 3/,
+      ],
+      [
+        withFooter(file, (metadata) => ({
+          ...metadata,
+          num_rows: billion,
+          row_groups: metadata.row_groups.map((group) => ({ ...group, num_rows: billion })),
+        })),
+        /declares 1000000000 rows in \d+ bytes/,
+      ],
+    ];
+    // The reader once built an index of one entry per declared row before checking anything.
+    const from = Uint32Array.from.bind(Uint32Array);
+    const spy = mock.method(Uint32Array, "from", (...args: [ArrayLike<number>, ...unknown[]]) => {
+      const { length } = args[0];
+      if (length > 1_000_000) assert.fail(`allocated an index of ${length} rows`);
+      return Reflect.apply(from, undefined, args) as Uint32Array;
+    });
+    try {
+      for (const [bytes, reason] of declared) {
+        await assert.rejects(Dataset.fromBytes(bytes), (error: unknown) => {
+          assert.ok(error instanceof BundleError || error instanceof FormatError, String(error));
+          assert.match(error.message, reason);
+          return true;
+        });
+      }
+    } finally {
+      spy.mock.restore();
+    }
   });
 
   test("a value that is no bytes", async () => {
