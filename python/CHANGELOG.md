@@ -4,6 +4,12 @@ All notable changes to this package are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `dfo.lookup.error_code` and `client.lookup.error_code` replace `lookup.code` for the registry entry of one of DFO's own error or warning codes, so the name no longer reads as a lookup of a publisher's codes. `lookup.code` stays as a deprecated alias that returns the same `Code` and raises a `DeprecationWarning` naming `lookup.error_code`, and is removed in 0.4.0.
+
 ## [0.2.0] - 2026-11-14
 
 ### Added

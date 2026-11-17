@@ -193,7 +193,7 @@ export class Code {
   /** The registry's response body, untouched. */
   readonly raw: CodeRegistryEntry;
 
-  /** @internal Codes come from `client.lookup.code`. */
+  /** @internal Codes come from `client.lookup.errorCode`. */
   constructor(entry: CodeRegistryEntry) {
     this.code = entry.code;
     this.definition = entry.definition ?? null;

@@ -260,11 +260,11 @@ _FOREIGN_MEMBER = RefMember(
         lambda client: client.lookup.node("country/\tNGA"),
         lambda client: client.lookup.node(""),
         lambda client: client.fetch(DatasetRef((_FOREIGN_MEMBER,))),
-        lambda client: client.lookup.code("../datasets"),
-        lambda client: client.lookup.code("Spec_Not_Found"),
-        lambda client: client.lookup.code("spec not found"),
-        lambda client: client.lookup.code("_spec"),
-        lambda client: client.lookup.code(""),
+        lambda client: client.lookup.error_code("../datasets"),
+        lambda client: client.lookup.error_code("Spec_Not_Found"),
+        lambda client: client.lookup.error_code("spec not found"),
+        lambda client: client.lookup.error_code("_spec"),
+        lambda client: client.lookup.error_code(""),
     ],
     ids=[
         "dcid-dots",
@@ -332,7 +332,7 @@ def test_an_argument_the_client_checks_is_refused_unsent(call) -> None:
 LOOKUPS = {
     "resolve": lambda client: client.lookup.resolve("Nigeria"),
     "node": lambda client: client.lookup.node("country/NGA"),
-    "code": lambda client: client.lookup.code("spec_not_found"),
+    "error_code": lambda client: client.lookup.error_code("spec_not_found"),
     "catalogue": lambda client: client.lookup.catalogue(),
 }
 
@@ -401,8 +401,8 @@ KENYA = {
         ("node", {**NODE_REQUIRED, "kind": 1}, "/kind"),
         ("node", {"kind": "country"}, "/ref"),
         ("node", {**NODE_REQUIRED, "types": None}, "/types"),
-        ("code", None, ""),
-        ("code", {"mappings": []}, "/code"),
+        ("error_code", None, ""),
+        ("error_code", {"mappings": []}, "/code"),
         ("catalogue", {"counts": {}, "examples": []}, "/catalogue_version"),
         ("catalogue", {**CATALOGUE, "counts": []}, "/counts"),
         ("catalogue", {**CATALOGUE, "examples": None}, "/examples"),
@@ -475,6 +475,18 @@ PLACE_CATALOGUE = {
 }
 
 
+def test_the_deprecated_code_lookup_warns_and_reads_as_error_code() -> None:
+    server = Server(json_response(200, ENTRY), json_response(200, ENTRY))
+    with client_over(server) as client:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            current = client.lookup.error_code("spec_not_found")
+        with pytest.warns(DeprecationWarning, match="lookup.error_code") as caught:
+            old = client.lookup.code("spec_not_found")
+    assert old == current
+    assert [warning.filename for warning in caught] == [__file__]
+
+
 def test_lookups_reach_the_graph_the_registry_and_the_catalogue() -> None:
     server = Server(
         json_response(200, RESOLVED),
@@ -487,7 +499,7 @@ def test_lookups_reach_the_graph_the_registry_and_the_catalogue() -> None:
             "Nigeria", "Sahel", kinds=["country", "group"], expand_members=True
         )
         node = client.lookup.node("country/NGA", as_of=date(2026, 1, 31))
-        entry = client.lookup.code("spec_not_found")
+        entry = client.lookup.error_code("spec_not_found")
         catalogue = client.lookup.catalogue(place="country/NGA")
     nigeria = Entity("country/NGA", "Nigeria", "country")
     assert resolved == [

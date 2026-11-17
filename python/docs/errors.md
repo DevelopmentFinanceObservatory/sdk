@@ -160,7 +160,7 @@ A `DfoTimeoutError` is retryable, and the retry joins the build the first attemp
 
 ## Reading the code and the trace id
 
-The bracket at the end of every message holds the code, then `trace=` and the trace id when a response carried one. Its wording can change in any release, so read the attributes. `error.code` holds the code, for code that branches on it, and `error.trace_id` the trace id, to quote when you report a fault. `dfo.lookup.code` returns the registry entry for a server code, which prints the code and what it means:
+The bracket at the end of every message holds the code, then `trace=` and the trace id when a response carried one. Its wording can change in any release, so read the attributes. `error.code` holds the code, for code that branches on it, and `error.trace_id` the trace id, to quote when you report a fault. `dfo.lookup.error_code` returns the registry entry for a server code, which prints the code and what it means:
 
 ```text
 graph does not hold 'country/XYZ' at /dcid [node_not_held trace=33955aa626074d4b8e3805c33f7179b8]
@@ -177,7 +177,7 @@ try:
 except NotFoundError as error:
     print(error)
     print(error.code, error.status, error.trace_id)
-    print(dfo.lookup.code(error.code))
+    print(dfo.lookup.error_code(error.code))
 ```
 
 An error the client raises before any request, such as `invalid_argument`, has a code and no trace id.

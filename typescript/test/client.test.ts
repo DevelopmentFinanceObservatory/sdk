@@ -85,7 +85,7 @@ describe("lookups", () => {
       ["country/NGA", "Nigeria", "country", ["Country"]],
     );
     assert.deepEqual(read.raw, node);
-    const code = await lookup.code("spec_not_found");
+    const code = await lookup.errorCode("spec_not_found");
     assert.deepEqual([code.code, code.definition], ["spec_not_found", "No spec."]);
     const held = await lookup.catalogue();
     assert.deepEqual([held.version, held.counts, held.examples], ["c1", {}, ["GDP of Kenya"]]);
@@ -101,15 +101,23 @@ describe("lookups", () => {
     assert.equal(seen[1]!.url, `${BASE}/graph/node/dc/g/A%20B?as_of=2024-01-01`);
   });
 
-  test("lookup.code reads the registry at the origin root, and raises for an unknown code", async () => {
+  test("lookup.errorCode reads the registry at the origin root, and raises for an unknown code", async () => {
     const { fetch, seen } = mockFetch(
       json(ENTRY),
       problem({ code: "code_not_found", status: 404 }),
     );
     const lookup = client(fetch).lookup;
-    assert.deepEqual((await lookup.code("spec_not_found")).raw, ENTRY);
+    assert.deepEqual((await lookup.errorCode("spec_not_found")).raw, ENTRY);
     assert.equal(seen[0]!.url, "https://api.example.org/codes/spec_not_found");
-    await assert.rejects(lookup.code("nothing"), NotFoundError);
+    await assert.rejects(lookup.errorCode("nothing"), NotFoundError);
+  });
+
+  test("lookup.code is the deprecated name of lookup.errorCode", async () => {
+    const { fetch } = mockFetch(json(ENTRY), json(ENTRY));
+    const lookup = client(fetch).lookup;
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- the alias is the thing under test
+    const old = await lookup.code("spec_not_found");
+    assert.deepEqual(old, await lookup.errorCode("spec_not_found"));
   });
 
   for (const dcid of [
@@ -135,9 +143,9 @@ describe("lookups", () => {
   }
 
   for (const code of ["..", "../datasets", "Spec_not_found", ""]) {
-    test(`lookup.code refuses the code ${JSON.stringify(code)} before any request`, async () => {
+    test(`lookup.errorCode refuses the code ${JSON.stringify(code)} before any request`, async () => {
       const { fetch, seen } = mockFetch();
-      await assert.rejects(client(fetch).lookup.code(code), { code: "invalid_argument" });
+      await assert.rejects(client(fetch).lookup.errorCode(code), { code: "invalid_argument" });
       assert.equal(seen.length, 0);
     });
   }
@@ -155,7 +163,7 @@ describe("lookups", () => {
   const unknown200 = { ...problem200, code: "code_from_a_newer_server" };
   const lookups = [
     ["lookup.catalogue", (dfo: Client) => dfo.lookup.catalogue()],
-    ["lookup.code", (dfo: Client) => dfo.lookup.code("spec_not_found")],
+    ["lookup.errorCode", (dfo: Client) => dfo.lookup.errorCode("spec_not_found")],
     ["lookup.node", (dfo: Client) => dfo.lookup.node("country/NGA")],
     ["lookup.resolve", (dfo: Client) => dfo.lookup.resolve("Kenya")],
   ] as const;
@@ -184,8 +192,13 @@ describe("lookups", () => {
   // member the wire schema requires and admits no null for, missing or of another type.
   for (const [name, call, body, pointer] of [
     ["lookup.catalogue", (dfo: Client) => dfo.lookup.catalogue(), unknown200, "/code"],
-    ["lookup.code", (dfo: Client) => dfo.lookup.code("spec_not_found"), null, ""],
-    ["lookup.code", (dfo: Client) => dfo.lookup.code("spec_not_found"), unknown200, "/code"],
+    ["lookup.errorCode", (dfo: Client) => dfo.lookup.errorCode("spec_not_found"), null, ""],
+    [
+      "lookup.errorCode",
+      (dfo: Client) => dfo.lookup.errorCode("spec_not_found"),
+      unknown200,
+      "/code",
+    ],
     ["lookup.node", (dfo: Client) => dfo.lookup.node("country/NGA"), { code: "x" }, "/code"],
     ["lookup.node", (dfo: Client) => dfo.lookup.node("country/NGA"), { ...NODE, kind: 1 }, "/kind"],
     ["lookup.node", (dfo: Client) => dfo.lookup.node("country/NGA"), { kind: "country" }, "/ref"],
@@ -195,7 +208,12 @@ describe("lookups", () => {
       { ...NODE, types: null },
       "/types",
     ],
-    ["lookup.code", (dfo: Client) => dfo.lookup.code("spec_not_found"), { mappings: [] }, "/code"],
+    [
+      "lookup.errorCode",
+      (dfo: Client) => dfo.lookup.errorCode("spec_not_found"),
+      { mappings: [] },
+      "/code",
+    ],
     ["lookup.resolve", (dfo: Client) => dfo.lookup.resolve("Kenya"), [], ""],
     ["lookup.resolve", (dfo: Client) => dfo.lookup.resolve("Kenya"), { results: {} }, "/results"],
     [
@@ -536,7 +554,7 @@ describe("limits", () => {
       // call ends it after one attempt.
       const { fetch, seen } = mockFetch(hang, hang, hang);
       const dfo = client(fetch, { ...options, attemptTimeout: 60_000 });
-      await assert.rejects(dfo.lookup.code("spec_not_found", call), {
+      await assert.rejects(dfo.lookup.errorCode("spec_not_found", call), {
         name: "DfoTimeoutError",
         code: "deadline_exceeded",
       });
@@ -550,7 +568,7 @@ describe("limits", () => {
     const dfo = clientOver(
       new Transport({ baseUrl: BASE, apiKey: false, fetch, sleep, attemptTimeout: 20 }),
     );
-    assert.equal((await dfo.lookup.code("spec_not_found")).code, "spec_not_found");
+    assert.equal((await dfo.lookup.errorCode("spec_not_found")).code, "spec_not_found");
     assert.equal(seen.length, 2);
   });
 
@@ -573,7 +591,7 @@ describe("limits", () => {
           attemptTimeout: 20,
         }),
       ).withOptions(limits);
-      const call = dfo.lookup.code("spec_not_found");
+      const call = dfo.lookup.errorCode("spec_not_found");
       if (settles) {
         assert.equal((await call).code, "spec_not_found");
         assert.equal(seen.length, 2);
