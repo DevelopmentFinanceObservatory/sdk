@@ -1,11 +1,12 @@
 /**
- * A candidates part's readings as `Candidate`s, which an answer's gap and a saved dataset's
- * `missing` both offer.
+ * A candidates part's readings as `Candidate`s, and a no_data part's choices as `Option`s, which
+ * an answer's gap and a stored dataset's `missing` both offer, so a stored gap reads as the live
+ * one.
  */
-import { isRecord, objects, text } from "./json.ts";
-import { partFacts } from "./parse.ts";
-import type { CandidatesPart, DefinitePart } from "./parts.ts";
-import type { Candidate } from "../search/answer.ts";
+import { isRecord, objects, strings, text } from "./json.ts";
+import { parsedInputOf, partFacts } from "./parse.ts";
+import type { CandidatesPart, DefinitePart, NoDataPart } from "./parts.ts";
+import type { Candidate, Option } from "../search/answer.ts";
 import type { Assumption } from "../wire.ts";
 
 const NO_ASSUMPTIONS: readonly Assumption[] = Object.freeze([]);
@@ -48,4 +49,21 @@ function candidateFrom(spec: DefinitePart["spec"], assumptions: readonly Assumpt
     unit: unit ?? null,
     assumptions,
   });
+}
+
+/** A refusal's choices, from `no_data.options`, read tolerantly. Each option's `data_query` is
+ *  the input that settles it. */
+export function queryOptions(noData: NoDataPart["no_data"]): Option[] {
+  return objects(noData.options).map((option) => ({
+    kind: "query",
+    label: text(option["label"]) ?? "",
+    mentions: strings(option["mentions"]),
+    dataQuery: parsedInputOf(option["data_query"]),
+    entityChoice: indexOf(option["entity_choice"]),
+  }));
+}
+
+/** A non-negative JSON integer, or null for any other value. */
+function indexOf(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
 }

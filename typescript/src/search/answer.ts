@@ -29,11 +29,11 @@ import type {
 } from "../datasets/fetch.ts";
 import { CODE_GAP_KINDS } from "../generated/actions.ts";
 import type { GAP_KINDS } from "../generated/actions.ts";
-import { candidatesOf } from "../core/candidates.ts";
-import { parsedInputOf, partFacts, warningsOf } from "../core/parse.ts";
+import { candidatesOf, queryOptions } from "../core/candidates.ts";
+import { partFacts, warningsOf } from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
 import { definiteParts, isKnownPart, partSentence, partText } from "../core/parts.ts";
-import type { DefinitePart, KnownPart, NoDataPart, Part } from "../core/parts.ts";
+import type { DefinitePart, KnownPart, Part } from "../core/parts.ts";
 import { checkOptions, declareOptions } from "../core/options.ts";
 import { withEntityDcids } from "./lookup-results.ts";
 import { askedCode, checkReply, codeGap } from "./structured.ts";
@@ -52,7 +52,7 @@ import type {
   RawTextInput,
 } from "../wire.ts";
 import type { Spec } from "../core/ref.ts";
-import { isRecord, list, objects, strings, text } from "../core/json.ts";
+import { isRecord, list, text } from "../core/json.ts";
 
 /** Longer than Search's 45-second soft deadline, so a slow answer arrives whole. */
 const SEARCH_TIMEOUT_MS = 60_000;
@@ -671,22 +671,4 @@ function gapFor(partIndex: number, part: Part): Gap | null {
     case "unsupported":
       return gap("unsupported", text(part.unsupported.detail) || part.unsupported.code);
   }
-}
-
-/** A refusal's choices, from `no_data.options`, read tolerantly. Each option's `data_query` is
- *  the input that settles it. A stored no_data gap reads its options here too, so it equals the
- *  live one. */
-export function queryOptions(noData: NoDataPart["no_data"]): Option[] {
-  return objects(noData.options).map((option) => ({
-    kind: "query",
-    label: text(option["label"]) ?? "",
-    mentions: strings(option["mentions"]),
-    dataQuery: parsedInputOf(option["data_query"]),
-    entityChoice: indexOf(option["entity_choice"]),
-  }));
-}
-
-/** A non-negative JSON integer, or null for any other value. */
-function indexOf(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
 }

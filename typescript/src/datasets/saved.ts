@@ -19,7 +19,7 @@ import type {
   LeftOutFields,
   Member,
 } from "./dataset.ts";
-import { candidatesOf } from "../core/candidates.ts";
+import { candidatesOf, queryOptions } from "../core/candidates.ts";
 import { clientError, DfoError, isDfoError } from "../core/errors.ts";
 import type { ClientErrorCode } from "../core/errors.ts";
 import { parseJson } from "../core/json.ts";
@@ -29,7 +29,6 @@ import { checkKeys, invalid, isDerived, layoutOf, loadRef, objectAt } from "../c
 import type { DerivedRefMember, RefMember } from "../core/ref.ts";
 import { CLIENT_CODE_CLASSES } from "../generated/client-codes.ts";
 import { GAP_KINDS } from "../generated/actions.ts";
-import { queryOptions } from "../search/answer.ts";
 import type { Gap, GapKind, Option } from "../search/answer.ts";
 import type { Assumption, Departure, Notice, RequestedOperation } from "../wire.ts";
 
