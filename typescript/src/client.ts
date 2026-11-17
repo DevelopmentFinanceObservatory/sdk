@@ -2,7 +2,7 @@
 
 import { registerClient } from "./search/answer.ts";
 import type { Answer, AnswerContext, SearchOptions } from "./search/answer.ts";
-import type { Dataset } from "./datasets/dataset.ts";
+import type { Dataset, DerivedMember, Member } from "./datasets/dataset.ts";
 import { clientError, DfoError, InvalidRequestError, messageOf, optionsOf } from "./core/errors.ts";
 import { present } from "./core/json.ts";
 import { trimTrailingSlashes } from "./core/text.ts";
@@ -12,7 +12,7 @@ import { Cards } from "./datasets/cards.ts";
 import type { Card, Served, Share, ShareUrl } from "./datasets/publication.ts";
 import { history, share, snapshot, unshare } from "./datasets/shares.ts";
 import type { ShareOptions, WriteTokenOptions } from "./datasets/shares.ts";
-import { pin } from "./datasets/pin.ts";
+import { fileUrl, pin } from "./datasets/pin.ts";
 import type { Recipe } from "./datasets/recipe.ts";
 import { fetchDataset } from "./datasets/resolve.ts";
 import type {
@@ -27,7 +27,7 @@ import type { ApiKeyOption } from "./config/keys.ts";
 import { Lookup } from "./search/lookups.ts";
 import { withEntityDcids } from "./search/lookup-results.ts";
 import type { LookupOptions } from "./search/lookups.ts";
-import type { DatasetRef, Spec } from "./core/ref.ts";
+import type { DatasetRef, DerivedRefMember, RefMember, Spec } from "./core/ref.ts";
 import { search } from "./search/search.ts";
 import type { CodeSearchOptions } from "./search/structured.ts";
 import { Transport } from "./http/transport.ts";
@@ -295,6 +295,23 @@ export class Client {
    */
   pin(data: Dataset): Promise<Dataset> {
     return pin(this.#transport, data);
+  }
+
+  /**
+   * The URL of a pinned member's file: a link a pipeline can commit and read with any HTTP client,
+   * with no key. `member` is one of `data.members` or `data.ref.members`. The URL names the file
+   * selector for the member's exact version under the client's base URL, with the query of the
+   * rendering the member was built in, so it serves the same table. The call reads the version's
+   * manifest once to check the version is pinned.
+   *
+   * @throws {InvalidRequestError} `member` is not a member of a dataset or its ref, or names a
+   *   frame DFO computed (`invalid_argument`), and no request is sent; or its version is not
+   *   pinned (`version_not_pinned`), and `heldUntil` says when DFO stops guaranteeing it. Run
+   *   `client.pin(data)` first.
+   * @throws {NotFoundError} DFO never stored the version.
+   */
+  fileUrl(member: Member | RefMember | DerivedMember | DerivedRefMember): Promise<string> {
+    return fileUrl(this.#transport, member);
   }
 
   /**

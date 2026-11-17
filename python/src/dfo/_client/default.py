@@ -1,6 +1,6 @@
-"""The module functions `dfo.search`, `dfo.fetch`, `dfo.pin`, `dfo.share`,
-`dfo.snapshot`, `dfo.unshare`, `dfo.history` and `dfo.configure`, and the lookups
-of `dfo.lookup`, over a default client.
+"""The module functions `dfo.search`, `dfo.fetch`, `dfo.pin`, `dfo.file_url`,
+`dfo.share`, `dfo.snapshot`, `dfo.unshare`, `dfo.history` and `dfo.configure`,
+and the lookups of `dfo.lookup`, over a default client.
 
 The default client is built on first use, under a lock, so importing `dfo` reads
 neither the environment nor the network, and an invalid `DFO_TIMEOUT` raises at
@@ -28,7 +28,13 @@ from typing_extensions import deprecated
 
 from dfo._config.keys import ApiKeyArgument
 from dfo._core.lookup_results import Catalogue, Code, Match, Node
-from dfo._core.refs import DatasetRef
+from dfo._core.refs import (
+    DatasetRef,
+    DerivedMember,
+    DerivedRefMember,
+    Member,
+    RefMember,
+)
 from dfo._core.timeouts import (
     CLIENT_TIMEOUT,
     FROM_ENVIRONMENT,
@@ -374,6 +380,23 @@ def pin(data: Dataset, /) -> Dataset:
         QuotaExceededError: The daily pin allowance is spent (`allowance_exhausted`).
     """
     return default_client().pin(data)
+
+
+def file_url(member: Member | RefMember | DerivedMember | DerivedRefMember, /) -> str:
+    """The URL of a pinned member's file, with the default client: a link a
+    pipeline can commit and read with any HTTP client, with no key.
+
+    Takes `Client.file_url`'s argument, one of `data.members` or
+    `data.ref.members`.
+
+    Raises:
+        InvalidRequestError: `member` is not a Member or RefMember, or names a
+            frame DFO computed (`invalid_argument`), and no request is sent; or
+            its version is not pinned (`version_not_pinned`), and `held_until`
+            says when DFO stops guaranteeing it. Run `dfo.pin(data)` first.
+        NotFoundError: DFO never stored the version.
+    """
+    return default_client().file_url(member)
 
 
 def share(

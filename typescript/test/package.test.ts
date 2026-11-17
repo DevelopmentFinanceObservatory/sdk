@@ -11,6 +11,7 @@ import ts from "typescript";
 import "../src/index.node.ts";
 import { envFrom } from "../src/config/env.ts";
 import { resolveApiKey } from "../src/config/keys.ts";
+import { Client } from "../src/client.ts";
 import { VERSION } from "../src/version.ts";
 
 const readJson = async <T>(path: string): Promise<T> =>
@@ -229,6 +230,26 @@ test("each entry point exports these names and no others", async () => {
       "Year",
     ],
   });
+});
+
+test("a client has these methods and no others", () => {
+  // Python's `Client` holds the same calls, in snake case.
+  const methods = Object.getOwnPropertyNames(Client.prototype).filter(
+    (name) => name !== "constructor" && name !== "toString",
+  );
+  assert.deepEqual(methods.sort(), [
+    "baseUrl",
+    "fetch",
+    "fileUrl",
+    "history",
+    "pin",
+    "request",
+    "search",
+    "share",
+    "snapshot",
+    "unshare",
+    "withOptions",
+  ]);
 });
 
 test("VERSION matches package.json", async () => {

@@ -14,13 +14,16 @@
 // The local stack has no Search, so each seeded spec carries its sentence, and its download
 // links point at the storage emulator, which the client refuses as a host other than the API
 // and Google Cloud Storage. `shim` moves those links onto the API's origin and forwards them to
-// the emulator, and records every request. One step reads ODA summed by recipient, as a data-mcp
+// the emulator, and records every request. One step pins GNI and reads its file through
+// `fileUrl` with the platform's fetch. One step reads ODA summed by recipient, as a data-mcp
 // breakdown reads it, and checks the root's groupby survives the ref, a card and a share.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, test } from "node:test";
+
+import { parquetReadObjects } from "hyparquet";
 
 import { InvalidRequestError, NotFoundError, PermissionDeniedError } from "../../src/errors.ts";
 import { Client, DatasetRef, recipe } from "../../src/index.ts";
@@ -39,6 +42,12 @@ const ODA = {
   specId: "spec_7f535e528a2a527aa54b316d4eccbb6e",
   contentVersion: "cv_46e66114368dacdffa282c61ee456e0f",
   sentence: "ODA from Germany to Kenya, Ghana and Nigeria, 2018 to 2023",
+};
+// The reading the file-link step pins. The Python journey pins ODA and nothing pins this one.
+const GNI = {
+  specId: "spec_fb3e3180bb4bac8acb968f3b6fccc6dd",
+  contentVersion: "cv_96556e3d3e312acb219d633392cd1d05",
+  sentence: "Kenya GNI (PPP), 2015 to 2024",
 };
 const POPULATION = {
   specId: "spec_429926a07022f78c65e0379e8004ae6d",
@@ -280,6 +289,40 @@ describe(`the local-stack journey against ${baseUrl}`, { concurrency: false }, (
     assert.ok(refused instanceof InvalidRequestError);
     assert.equal(refused.code, "invalid_argument");
     assert.equal(sent.length, before);
+  });
+
+  test("fileUrl refuses until the version is pinned, then links a file any client reads", async () => {
+    const data = await seeded(GNI);
+    const [member] = data.members;
+    assert.ok(member && !isDerived(member));
+    const refused = await client.fileUrl(member).then(
+      () => assert.fail("an unpinned version was linked"),
+      (error: unknown) => error,
+    );
+    assert.ok(refused instanceof InvalidRequestError);
+    assert.equal(refused.code, "version_not_pinned");
+    assert.ok(refused.heldUntil instanceof Date);
+
+    await client.pin(data);
+    const url = await client.fileUrl(member);
+    assert.equal(url, await client.fileUrl(data.ref.members[0]!));
+    assert.ok(
+      url.startsWith(`${client.baseUrl}/datasets/${GNI.specId}/${GNI.contentVersion}/file?`),
+    );
+    // The platform's fetch, with no key and no header, follows the redirect to storage.
+    const response = await fetch(url);
+    assert.equal(response.status, 200);
+    const rows = await parquetReadObjects({ file: await response.arrayBuffer() });
+    // hyparquet reads an int64 as a bigint, and `toRows` gives a number.
+    const numbered = rows.map((row) =>
+      Object.fromEntries(
+        Object.entries(row).map(([key, value]) => [
+          key,
+          typeof value === "bigint" ? Number(value) : value,
+        ]),
+      ),
+    );
+    assert.deepEqual(numbered, await data.toRows());
   });
 
   test("a ref the Python journey wrote reads the same rows and data", async (t) => {

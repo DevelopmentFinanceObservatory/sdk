@@ -1,4 +1,5 @@
-"""Tests for DFO's operations: running a recipe, reading derived frames, and pins.
+"""Tests for DFO's operations: running a recipe, reading derived frames, pins and
+links to pinned files.
 
 The replies are recorded from dfo-apis' analysis runner over its test doubles
 (`tests/datasets_api/_analysis_doubles.py` and `test_derived.py`): a chain of
@@ -10,6 +11,7 @@ passes the same tests.
 
 import json
 import warnings
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -31,15 +33,16 @@ from dfo._core.errors import (
 )
 from dfo._core.periods import latest_year
 from dfo._core.refs import DatasetRef, DerivedMember, DerivedRefMember
-from dfo._core.types import Spec
+from dfo._core.types import Layout, Rendering, Spec
 from dfo._datasets.analysis import AsyncAnalysis
 from dfo._datasets.cache import Cache
-from dfo._datasets.dataset import build_dataset, derived_dataset
-from dfo._datasets.pin import pin
+from dfo._datasets.dataset import Dataset, build_dataset, derived_dataset
+from dfo._datasets.pin import file_url, pin
 from dfo._datasets.recipe import recipe
 from dfo._datasets.resolve import fetch
 from dfo._http.transport import AsyncTransport
 from tests._data import DATA, load
+from tests._datasets import manifest as recorded_manifest
 from tests._datasets import other_member, recorded_member
 from tests._fetch_support import BASE, Server, json_response, problem
 from tests.rule_vectors import vectors
@@ -557,3 +560,84 @@ async def test_a_pin_that_fails_part_way_names_the_versions_it_pinned() -> None:
     assert caught.value.pinned == (first.content_version,)
     assert f"{first.spec.spec_id} at {first.content_version}" in str(caught.value)
     assert second.content_version not in str(caught.value)
+
+
+def stored(retention: dict[str, Any]) -> httpx2.Response:
+    """The recorded build's manifest, as the snapshot route serves it, with
+    `retention`."""
+    return json_response(200, {**recorded_manifest(), "retention": retention})
+
+
+def built(layout: Layout = "long") -> Dataset:
+    rendering = Rendering("parquet", False, "frame" if layout == "frame" else None)
+    return build_dataset(
+        [recorded_member(rendering=rendering)],
+        layout=layout,
+        complete=True,
+        missing=(),
+        stale=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "layout", "query"),
+    [
+        ("members", "long", "format=parquet&bundle=false"),
+        ("ref", "frame", "format=parquet&bundle=false&layout=frame"),
+    ],
+)
+async def test_file_url_links_a_pinned_member_in_its_rendering_under_the_base_url(
+    source: str, layout: Layout, query: str
+) -> None:
+    data = built(layout)
+    (reading,) = data.members if source == "members" else data.ref.members
+    server = Server(stored({"pinned": True}))
+    async with make(server) as transport:
+        url = await file_url(transport, reading)
+    version = f"datasets/{reading.spec.spec_id}/{reading.content_version}"
+    assert [r.url for r in server.requests] == [f"{BASE}/{version}"]
+    assert url == f"{BASE}/{version}/file?{query}"
+
+
+async def test_file_url_refuses_an_unpinned_version_with_its_held_until() -> None:
+    server = Server(
+        stored({"pinned": False, "held_until": "2026-12-17T09:30:00+00:00"})
+    )
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await file_url(transport, built().members[0])
+    assert caught.value.code == "version_not_pinned"
+    assert caught.value.held_until == date(2026, 12, 17)
+    assert "client.pin(data)" in str(caught.value)
+    assert len(server.requests) == 1
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        lambda: member("rank"),
+        lambda: derived_dataset(
+            member("rank"),
+            load("analysis-rank-manifest.json"),
+            (DATA / "analysis-rank-frame.parquet").read_bytes(),
+        ).members[0],
+        built,
+    ],
+    ids=["derived-ref-member", "derived-member", "dataset"],
+)
+async def test_file_url_refuses_what_is_not_a_stored_version_unsent(
+    target: Any,
+) -> None:
+    server = Server()
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await file_url(transport, target())
+    assert caught.value.code == "invalid_argument"
+    assert server.requests == []
+
+
+async def test_file_url_of_a_version_dfo_never_stored_raises_its_refusal() -> None:
+    server = Server(problem(404, "snapshot_not_found"))
+    async with make(server) as transport:
+        with pytest.raises(NotFoundError):
+            await file_url(transport, built().members[0])

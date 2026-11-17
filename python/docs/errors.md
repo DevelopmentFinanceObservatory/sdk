@@ -244,6 +244,7 @@ The client refuses a role the spec does not declare before any request, as `inva
 Four classes carry more:
 
 - `InvalidRequestError.issues` holds the problem document's `issues`, each a `dfo.errors.ProblemIssue` naming a request member, and `.alternatives` the problem document's top-level `alternatives`, each a `dfo.errors.Alternative`. An issue's own offers sit in `issue["alternatives"]`. Both tuples are empty when the server sent none.
+- `InvalidRequestError.held_until` is, for `version_not_pinned`, the date DFO stops guaranteeing the unpinned version, or None when it names none. It is None for every other code.
 - `IncompleteAnswerError.answer` is the answer whose fetch raised it, or None for a server refusal, and `.gaps` lists each part without a reading.
 - `VersionUnavailableError.newest_version` is the newest version the server names, or None. A ref cut with `party_totals` has a version of its own, so compare refs to tell whether data changed. For a derived version DFO can no longer compute from the same readings, it is None, and `dfo.fetch(ref, latest=True)` computes it on the newest data.
 - `ContractError.pointer` is the JSON Pointer of the member at fault, or None.
@@ -306,6 +307,7 @@ The client raises these codes itself, for a fault it finds before a request or i
 | `resource_limit`              | `BundleError`             | no        | A bundle passes a bound its reader sets on its descriptor, entries, resources, bytes or workbooks                                                                      |
 | `response_too_large`          | `ServerError`             | no        | A decoded response body passes its size cap                                                                                                                            |
 | `unexpected_response`         | `ContractError`           | no        | A response the call does not act on, such as a redirect it does not follow, a body that is not JSON, or a status the route does not answer                             |
+| `version_not_pinned`          | `InvalidRequestError`     | no        | A file URL is asked for a stored version that is not pinned                                                                                                            |
 | `version_unavailable`         | `VersionUnavailableError` | no        | A stored version can no longer be fetched, and no refusal names why                                                                                                    |
 
 ### Errors about your files

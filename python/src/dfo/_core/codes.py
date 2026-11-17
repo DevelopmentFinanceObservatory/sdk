@@ -70,6 +70,7 @@ PROXY_INVALID: Final = _client("proxy_invalid", InvalidRequestError)
 REF_UNAVAILABLE: Final = _client("ref_unavailable", InvalidRequestError)
 RESPONSE_TOO_LARGE: Final = _client("response_too_large", ServerError)
 UNEXPECTED_RESPONSE: Final = _client("unexpected_response", ContractError)
+VERSION_NOT_PINNED: Final = _client("version_not_pinned", InvalidRequestError)
 VERSION_UNAVAILABLE: Final = _client("version_unavailable", VersionUnavailableError)
 
 KEY_CHECKSUM_MISMATCH: Final = _warning("key_checksum_mismatch", DfoWarning)

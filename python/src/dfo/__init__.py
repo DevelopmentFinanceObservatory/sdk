@@ -8,7 +8,8 @@ which `to_object()` gives as JSON values and `Provenance.from_object` reads
 back. `Client` and `AsyncClient` carry the same calls for one configuration
 each.
 
-`dfo.pin(data)` keeps a Dataset's versions fetchable with no time limit, and
+`dfo.pin(data)` keeps a Dataset's versions fetchable with no time limit,
+`dfo.file_url(member)` links to a pinned member's file for any HTTP client, and
 `dfo.latest_year(offset)` names a year DFO settles each time an operation runs.
 `dfo.share(cards, latest=...)` publishes cards from `dfo.cards` as a link that
 follows new data or stays fixed; `dfo.snapshot`, `dfo.unshare` and
@@ -25,6 +26,7 @@ from dfo._client.client import AsyncClient
 from dfo._client.default import (
     configure,
     fetch,
+    file_url,
     history,
     pin,
     search,
@@ -56,6 +58,7 @@ __all__ = [
     "configure",
     "errors",
     "fetch",
+    "file_url",
     "history",
     "latest_year",
     "load",

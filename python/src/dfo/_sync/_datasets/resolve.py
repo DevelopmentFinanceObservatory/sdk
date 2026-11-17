@@ -64,7 +64,7 @@ from dfo._core.errors import (
     recast,
     warn,
 )
-from dfo._core.refs import OPS_ID, DatasetRef, DerivedRefMember, RefMember
+from dfo._core.refs import OPS_ID, DatasetRef, DerivedRefMember, Member, RefMember
 from dfo._core.refusals import describing, trace_id_of
 from dfo._core.text import cited
 from dfo._core.timeouts import CLIENT_TIMEOUT, CallTimeout
@@ -480,7 +480,7 @@ def _fetch_frame(
             list as the frame artifact (`contract_violation`).
     """
     try:
-        stored = _snapshot(transport, spec_id, content_version, deadline=deadline)
+        stored = stored_manifest(transport, spec_id, content_version, deadline=deadline)
     except DfoError as error:
         if error.code != _FILE_EXPIRED:
             raise
@@ -582,7 +582,7 @@ def _rendered_frame(
                 deadline=deadline,
             )
             digest = sync_offload(sha256_digest, data)
-            listed, trace_id = _snapshot(
+            listed, trace_id = stored_manifest(
                 transport, spec_id, content_version, deadline=deadline
             )
             artifact = pick_artifact(listed, _FRAME, digest=digest)
@@ -841,7 +841,7 @@ def _fetch_version(
                 f"DFO_OFFLINE=1 is set, and the cache lacks {spec_id} at {version}",
             )
         try:
-            manifest, trace_id = stored or _snapshot(
+            manifest, trace_id = stored or stored_manifest(
                 transport, spec_id, version, deadline=deadline
             )
         except DfoError as error:
@@ -979,7 +979,7 @@ def _listing(
     if pick_artifact(manifest, member.rendering, digest=member.digest) is not None:
         return manifest
     selector = httpx2.URL(
-        transport.base_url.removeprefix(transport.origin) + _selector_path(member),
+        transport.base_url.removeprefix(transport.origin) + selector_path(member),
         params=file_params(member.rendering),
     )
     entry = {
@@ -991,7 +991,7 @@ def _listing(
     return {**manifest, "artifacts": [*manifest["artifacts"], entry]}
 
 
-def _selector_path(member: RefMember) -> str:
+def selector_path(member: RefMember | Member) -> str:
     """The file selector's path for the member's version, under the base URL."""
     return f"/datasets/{member.spec.spec_id}/{member.content_version}/file"
 
@@ -1010,7 +1010,7 @@ def _digest_changed(member: RefMember, digest: str) -> DfoWarning:
     )
 
 
-def _snapshot(
+def stored_manifest(
     transport: Transport,
     spec_id: str,
     content_version: str,
@@ -1080,7 +1080,7 @@ def _stored_file(
     try:
         data = download(
             transport,
-            _selector_path(member),
+            selector_path(member),
             member.digest,
             params=file_params(member.rendering),
             deadline=deadline,
