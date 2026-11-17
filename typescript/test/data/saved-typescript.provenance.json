@@ -1,0 +1,158 @@
+{
+  "format_version": 1,
+  "sentence": "Germany's gross ODA disbursements to Kenya for education, health, and population policy, programme, and reproductive health, 1997 to 2024. Current US dollars · OECD Creditor Reporting System (CRS). Kenya's GDP, 1960 to 2025. Current US dollars · World Development Indicators.",
+  "citation": {
+    "text": "OECD Creditor Reporting System (CRS) (2026), via the Development Finance Observatory; World Development Indicators (2026), via the Development Finance Observatory",
+    "sources": [
+      {
+        "ref": "provenance/OECDCreditorReportingSystem",
+        "label": "OECD Creditor Reporting System (CRS)",
+        "licence": "OECD Terms and Conditions",
+        "licence_url": "https://www.oecd.org/en/about/terms-conditions.html",
+        "url": "https://data-explorer.oecd.org/vis?tm=crs&pg=0&snb=30&df[ds]=dsDisseminateFinalDMZ&df[id]=DSD_CRS%40DF_CRS&df[ag]=OECD.DCD.FSD&df[vs]=1.6&isAvailabilityDisabled=false&page=0"
+      },
+      {
+        "ref": "dc/base/WorldDevelopmentIndicators",
+        "label": "World Development Indicators",
+        "licence": "Creative Commons Attribution License",
+        "licence_url": "https://datacatalog.worldbank.org/search/dataset/0037712",
+        "url": "https://datatopics.worldbank.org/world-development-indicators/"
+      }
+    ]
+  },
+  "fetched_at": "2026-11-17T14:16:53Z",
+  "question": "ODA disbursements for health and for education from Germany to Kenya, and GDP of Kenya",
+  "ref": {
+    "format_version": 1,
+    "members": [
+      {
+        "parts": ["ODA disbursements for health", "ODA disbursements for education"],
+        "sentence": "Germany's gross ODA disbursements to Kenya for education, health, and population policy, programme, and reproductive health, 1997 to 2024. Current US dollars · OECD Creditor Reporting System (CRS).",
+        "spec": {
+          "spec_id": "spec_7a02b6facd2dc17b5d0d7c35c11bf5d2",
+          "definition": {
+            "schema_version": 1,
+            "spec_id": "spec_7a02b6facd2dc17b5d0d7c35c11bf5d2",
+            "identity": {
+              "shape": {
+                "kind": "statvar_schema",
+                "stat_type": "measuredValue",
+                "population_type": "FinancialFlow",
+                "measured_property": "amount",
+                "measurement_qualifier": "Nominal"
+              },
+              "slots": [
+                { "binding": { "state": "unbound" }, "property": "crsCooperationModality" },
+                {
+                  "binding": {
+                    "refs": ["CRSPurposeCode110", "CRSPurposeCode120", "CRSPurposeCode130"],
+                    "state": "set"
+                  },
+                  "property": "crsPurpose"
+                },
+                { "binding": { "state": "unbound" }, "property": "crsTypeOfFinance" },
+                {
+                  "binding": { "ref": "CRSTypeOfFlow10", "state": "value" },
+                  "property": "crsTypeOfFlow"
+                },
+                {
+                  "binding": { "ref": "Disbursement", "state": "value" },
+                  "property": "financialFlowType"
+                },
+                { "binding": { "ref": "Gross", "state": "value" }, "property": "nettingBasis" }
+              ],
+              "entities": { "origin": ["country/DEU"], "destination": ["country/KEN"] },
+              "identity_version": "spec1",
+              "requested_window": { "kind": "all" }
+            }
+          }
+        },
+        "content_version": "cv_b600e3429190c07d98f8d59720cde7ba",
+        "artifact": {
+          "digest": "sha256:228f4a6d447c0e6a811c951c10522dda47f68ae38efede7be384c4c7e7d6f2d2",
+          "rendering": { "format": "parquet", "bundle": false, "without_party_totals": true }
+        }
+      },
+      {
+        "parts": ["GDP"],
+        "sentence": "Kenya's GDP, 1960 to 2025. Current US dollars · World Development Indicators.",
+        "spec": {
+          "spec_id": "spec_b5673e60c045b10f8beeed2ce50dbd18",
+          "definition": {
+            "schema_version": 1,
+            "spec_id": "spec_b5673e60c045b10f8beeed2ce50dbd18",
+            "identity": {
+              "shape": {
+                "kind": "statvar_schema",
+                "stat_type": "measuredValue",
+                "population_type": "EconomicActivity",
+                "measured_property": "amount",
+                "measurement_qualifier": "Nominal"
+              },
+              "slots": [
+                {
+                  "binding": { "ref": "GrossDomesticProduction", "state": "value" },
+                  "property": "activitySource"
+                },
+                { "binding": { "state": "unbound" }, "property": "economicSector" },
+                { "binding": { "state": "unbound" }, "property": "naics" },
+                { "binding": { "state": "unbound" }, "property": "schoolGradeLevel" }
+              ],
+              "entities": { "observationAbout": ["country/KEN"] },
+              "identity_version": "spec1",
+              "requested_window": { "kind": "all" }
+            }
+          }
+        },
+        "content_version": "cv_00f3d36b33447b0675e100ebc84120ee",
+        "artifact": {
+          "digest": "sha256:808854a365316cc5024b25f3585fee44f79a5699b49e7cf71c1513c8a12452cd",
+          "rendering": { "format": "parquet", "bundle": false, "without_party_totals": true }
+        }
+      }
+    ]
+  },
+  "pinned": false,
+  "held_until": "2026-11-28",
+  "warnings": [],
+  "members": [
+    {
+      "spec_id": "spec_7a02b6facd2dc17b5d0d7c35c11bf5d2",
+      "content_version": "cv_b600e3429190c07d98f8d59720cde7ba",
+      "digest": "sha256:228f4a6d447c0e6a811c951c10522dda47f68ae38efede7be384c4c7e7d6f2d2",
+      "parts": ["ODA disbursements for health", "ODA disbursements for education"],
+      "sentence": "Germany's gross ODA disbursements to Kenya for education, health, and population policy, programme, and reproductive health, 1997 to 2024. Current US dollars · OECD Creditor Reporting System (CRS).",
+      "citation": {
+        "text": "OECD Creditor Reporting System (CRS) (2026), via the Development Finance Observatory",
+        "sources": [
+          {
+            "ref": "provenance/OECDCreditorReportingSystem",
+            "label": "OECD Creditor Reporting System (CRS)",
+            "licence": "OECD Terms and Conditions",
+            "licence_url": "https://www.oecd.org/en/about/terms-conditions.html",
+            "url": "https://data-explorer.oecd.org/vis?tm=crs&pg=0&snb=30&df[ds]=dsDisseminateFinalDMZ&df[id]=DSD_CRS%40DF_CRS&df[ag]=OECD.DCD.FSD&df[vs]=1.6&isAvailabilityDisabled=false&page=0"
+          }
+        ]
+      }
+    },
+    {
+      "spec_id": "spec_b5673e60c045b10f8beeed2ce50dbd18",
+      "content_version": "cv_00f3d36b33447b0675e100ebc84120ee",
+      "digest": "sha256:808854a365316cc5024b25f3585fee44f79a5699b49e7cf71c1513c8a12452cd",
+      "parts": ["GDP"],
+      "sentence": "Kenya's GDP, 1960 to 2025. Current US dollars · World Development Indicators.",
+      "citation": {
+        "text": "World Development Indicators (2026), via the Development Finance Observatory",
+        "sources": [
+          {
+            "ref": "dc/base/WorldDevelopmentIndicators",
+            "label": "World Development Indicators",
+            "licence": "Creative Commons Attribution License",
+            "licence_url": "https://datacatalog.worldbank.org/search/dataset/0037712",
+            "url": "https://datatopics.worldbank.org/world-development-indicators/"
+          }
+        ]
+      }
+    }
+  ]
+}

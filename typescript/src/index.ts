@@ -8,6 +8,7 @@ export { Answer } from "./search/answer.ts";
 export { Client } from "./client.ts";
 export type { ClientOptions } from "./client.ts";
 export { Dataset, Provenance } from "./datasets/dataset.ts";
+export { load } from "./datasets/load.ts";
 export { recipe } from "./datasets/recipe.ts";
 export { latestYear } from "./core/periods.ts";
 export { DatasetRef } from "./core/ref.ts";

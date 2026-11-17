@@ -554,7 +554,7 @@ describe("provenance", async () => {
 
   test("keeps the question and the fetch time to the second, and saves both", async () => {
     assert.equal(dataset.question, "Aid to Nigeria");
-    assert.equal(dataset.fetchedAt.toISOString(), "2026-11-13T09:15:42.000Z");
+    assert.equal(dataset.fetchedAt?.toISOString(), "2026-11-13T09:15:42.000Z");
     const metadata = Object.fromEntries(
       (parquetMetadata((await dataset.toBytes()).slice().buffer).key_value_metadata ?? []).map(
         ({ key, value }) => [key, value],
@@ -576,15 +576,16 @@ describe("provenance", async () => {
   test("a pinned copy keeps the question and the fetch time", () => {
     const pinned = pinnedDataset(dataset);
     assert.equal(pinned.question, "Aid to Nigeria");
-    assert.equal(pinned.fetchedAt.getTime(), dataset.fetchedAt.getTime());
+    assert.deepEqual(pinned.fetchedAt, dataset.fetchedAt);
   });
 
   test("a dataset with no question has none, and is stamped when it was made", async () => {
     const before = Math.floor(Date.now() / 1000) * 1000;
     const plain = await Dataset.create([member(data)], { layout: "long" });
     assert.equal(plain.question, null);
-    assert.ok(plain.fetchedAt.getTime() >= before && plain.fetchedAt.getTime() <= Date.now());
-    assert.equal(plain.fetchedAt.getMilliseconds(), 0);
+    const fetchedAt = plain.fetchedAt?.getTime() ?? NaN;
+    assert.ok(fetchedAt >= before && fetchedAt <= Date.now());
+    assert.equal(fetchedAt % 1000, 0);
   });
 
   test("save(path) writes the file toBytes() returns", async () => {
