@@ -190,6 +190,21 @@ describe("a search by codes", () => {
     });
   }
 
+  test("names codes for a list asked as the question, beside a key too", async () => {
+    const { context, posted } = serving();
+    await assert.rejects(
+      search(
+        context,
+        ["DT.TDS.MLAT.CD"] as unknown as CodeSearchOptions,
+        {
+          entities: { place: ["country/KEN"] },
+        } as unknown as SearchOptions,
+      ),
+      (error: Error) => /series codes/.test(error.message) && !/not both/.test(error.message),
+    );
+    assert.deepEqual(posted(), []);
+  });
+
   test("reads a key of a search by codes set to undefined as absent beside a question", async () => {
     const { context, posted } = serving(await reply());
     const options = { window: undefined, codes: undefined } as unknown as SearchOptions;
@@ -300,7 +315,7 @@ describe("a search by codes", () => {
           }
         }
       }
-      const revived = answerFromBody(stored, context, null);
+      const revived = answerFromBody(stored, context, null, null, undefined, true);
       const expected = writtenBy === "0.3" ? answer.gaps : answer.gaps.slice(1);
       assert.deepEqual(
         revived.gaps.map((gap) => [gap.partIndex, gap.message]),
@@ -308,6 +323,18 @@ describe("a search by codes", () => {
       );
     });
   }
+
+  test("reads a live code part without stat_vars as a gap", async () => {
+    const body = await reply();
+    for (const part of body.parts) {
+      if (part.spec !== undefined) delete (part.spec.resolved as { stat_vars?: unknown }).stat_vars;
+    }
+    const answer = answerFromBody(body, serving().context, null, null, CODES);
+    assert.deepEqual(
+      answer.gaps.map((gap) => gap.partIndex),
+      [0, 1, 2],
+    );
+  });
 
   test("posts a code-gapped part restated beside a choice", async () => {
     // Search answers an identity entry with no restatement, so posting the code-gapped part by

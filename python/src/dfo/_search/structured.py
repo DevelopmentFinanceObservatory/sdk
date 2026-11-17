@@ -6,7 +6,7 @@ Search's answer.
 alone.
 """
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT
@@ -14,7 +14,7 @@ from dfo._core.errors import client_error
 from dfo._core.lookup_results import Entity, Match
 from dfo._core.text import cited
 from dfo._core.types import DefinitePart, Gap, Notice, Part, Window
-from dfo._datasets.build import Entities, dcid_entities, scope
+from dfo._datasets.build import Entities, dcid_entities, listed_entities, scope
 from dfo._generated.role_keys import FLOW_KEYS, ROLE_KEYS
 
 # The `role_text` word each caller key posts; `place` posts none and is undirected.
@@ -140,24 +140,28 @@ def asked_code(part: Part) -> str | None:
     return code if isinstance(code, str) and code else None
 
 
-def code_gap(index: int, part: Part, code: str | None) -> Gap | None:
+def code_gap(
+    index: int, part: Part, code: str | None, *, stored: bool = False
+) -> Gap | None:
     """The gap a definite part asked by `code` leaves when its reading is not that
     code's series alone; None when it is, or when no code was asked.
 
     Every entry of the spec's `resolved.stat_vars.source_codes` must be an object
     naming `code`, compared upper-cased as Search compares codes, with `exact`
     true. A spec that lists no code is not known to be the code's series, so it
-    leaves a gap. A spec without `resolved.stat_vars`, as answer JSON from
-    development-finance 0.2.0 stores it, cannot be checked and leaves none.
+    leaves a gap, and so does a live reply's spec without `resolved.stat_vars`.
+    Only `stored`, an answer read back from JSON, may predate the cut that keeps
+    `stat_vars` (development-finance 0.2.0), so there such a spec cannot be
+    checked and leaves none.
     """
     if code is None or not isinstance(part, DefinitePart):
         return None
     held = _source_codes(part)
-    if held is None:
+    if held is None and stored:
         return None
     if held and all(_exact(entry, code) for entry in held):
         return None
-    if not held:
+    if not held:  # an empty list, or a live spec without `stat_vars`
         fact = (
             f"Search's reading for series code {cited(code)} names no series code, "
             "so it may hold another series"
@@ -245,7 +249,7 @@ def _entities(entities: Entities) -> list[dict[str, str]]:
         )
     # Each role's entities are read twice, for dcids and for names, so a
     # generator is read once into a list.
-    entities = {role: _listed(bound) for role, bound in entities.items()}
+    entities = listed_entities(entities) or {}
     for role, bound in entities.items():
         _role_key("entities", role, tuple(ROLE_KEYS))
         if bound is None or bound == []:
@@ -269,14 +273,6 @@ def _entities(entities: Entities) -> list[dict[str, str]]:
                 entity["role_text"] = _ROLE_TEXT[role]
             parsed.append(entity)
     return parsed
-
-
-def _listed(bound: object) -> Any:
-    """A role's binding as a list when it is an iterable other than text or a
-    map; any other value as it is, for `scope` to refuse."""
-    if isinstance(bound, Iterable) and not isinstance(bound, str | bytes | Mapping):
-        return list(bound)
-    return bound
 
 
 def _name(bound: object) -> str | None:

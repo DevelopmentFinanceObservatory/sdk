@@ -148,10 +148,8 @@ class Answer:
     trace_id: str | None = field(default=None, compare=False)
     raw: Mapping[str, Any] = field(default_factory=dict, compare=False)
     _source: SessionSource = field(compare=False)
-    # The parts with a reading, by index, and their readings, which `fetch`
-    # builds: computed once in `answer_from_body`, so `fetch`, `specs`, the
-    # display and `choose` agree on which parts are answered.
-    _answered: frozenset[int] = field(default=frozenset(), compare=False)
+    # The readings `fetch` builds, one per distinct spec of the answered parts
+    # (those with no gap): computed once in `answer_from_body`.
     _readings: tuple[Reading, ...] = field(default=(), compare=False)
     # The session `from_json` reads through when it names no client: the
     # default client's, which `dfo._client.default` sets, since this layer
@@ -223,7 +221,7 @@ class Answer:
             )
         with describing(trace_id):
             return answer_from_body(
-                body, question=question, source=source, trace_id=trace_id
+                body, question=question, source=source, trace_id=trace_id, stored=True
             )
 
     def choose(self, option: int | str, /, *, part: int | str | None = None) -> Answer:
@@ -268,11 +266,12 @@ class Answer:
         if len(self.parts) == 1 and isinstance(chosen, Option):
             _option_part(chosen)
             return chosen.data_query
+        gapped = {each.part_index for each in self.gaps}
         entries = [
             _entry(
                 each,
                 chosen if index == gap.part_index else None,
-                answered=index in self._answered,
+                answered=index not in gapped,
             )
             for index, each in enumerate(self.parts)
         ]
@@ -475,6 +474,7 @@ def answer_from_body(
     source: SessionSource,
     trace_id: str | None = None,
     codes: Sequence[str] | None = None,
+    stored: bool = False,
 ) -> Answer:
     """Read a decoded Search response into an answer.
 
@@ -483,7 +483,9 @@ def answer_from_body(
     them, a part's code is the `source_code` of its restatement. A definite part
     asked by a code whose reading is not that code's series alone is a gap of
     kind `no_data`, so `fetch` builds it only beside `partial=True`, and then
-    leaves it out.
+    leaves it out. `stored` marks a body read back from JSON, which may predate
+    the cut that keeps `resolved.stat_vars`, so its code parts without it leave
+    no gap; a live reply's part without it is a gap.
 
     Raises:
         ContractError: The body is not an object, its kind is unknown, or a member
@@ -539,7 +541,10 @@ def answer_from_body(
         if (
             gap := _gap(index, part)
             or code_gap(
-                index, part, codes[index] if codes is not None else asked_code(part)
+                index,
+                part,
+                codes[index] if codes is not None else asked_code(part),
+                stored=stored,
             )
         )
         is not None
@@ -561,7 +566,6 @@ def answer_from_body(
         trace_id=trace_id,
         raw=body,
         _source=source,
-        _answered=answered,
         _readings=readings,
     )
 

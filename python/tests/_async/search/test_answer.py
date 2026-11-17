@@ -1133,9 +1133,19 @@ async def test_an_answer_by_codes_keeps_its_gaps_through_json(written_by: str) -
         read_answer_json(json.dumps(stored))[1],
         question=None,
         source=lambda: Session(client),
+        stored=True,
     )
     expected = answer.gaps if written_by == "0.3" else answer.gaps[1:]
     assert revived.gaps == expected
+
+
+async def test_a_live_code_part_without_stat_vars_is_a_gap() -> None:
+    body = load("search-codes.json")
+    for part in body["parts"]:
+        if "spec" in part:
+            del part["spec"]["resolved"]["stat_vars"]
+    answer, _ = await ask_codes(body, codes=CODES)
+    assert [gap.part_index for gap in answer.gaps] == [0, 1, 2]
 
 
 async def test_a_choice_beside_a_code_gap_posts_the_code_part_restated() -> None:
@@ -1191,6 +1201,20 @@ async def test_codes_passed_as_the_question_are_refused_with_the_keyword() -> No
     with pytest.raises(InvalidRequestError) as refused:
         await search(lambda: Session(client), codes)
     assert "search(codes=[...])" in str(refused.value)
+
+
+async def test_codes_passed_as_the_question_beside_a_keyword_get_the_codes_hint() -> (
+    None
+):
+    server = Server()
+    client = transport(server)
+    codes: Any = ["DT.TDS.MLAT.CD"]
+    with pytest.raises(InvalidRequestError) as refused:
+        await search(
+            lambda: Session(client), codes, entities={"place": ["country/KEN"]}
+        )
+    assert "search(codes=[...])" in str(refused.value)
+    assert "not both" not in str(refused.value)
 
 
 def without_last_part(body: dict[str, Any]) -> dict[str, Any]:

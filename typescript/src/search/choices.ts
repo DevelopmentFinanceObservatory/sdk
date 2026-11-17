@@ -29,7 +29,6 @@ import { isRecord } from "../core/json.ts";
 import { nearest } from "../core/nearest.ts";
 import { resolvedOf } from "../datasets/fetch.ts";
 import { assumptionsReadOf, operationsOf, parsedPartOf } from "../core/parse.ts";
-import { isAnswered } from "./answered.ts";
 import { isKnownPart, partText } from "../core/parts.ts";
 import type { Part } from "../core/parts.ts";
 import { inline, trimEnd } from "../core/text.ts";
@@ -207,6 +206,11 @@ export function pick(gap: Gap, key: ChoiceKey, mention?: ChoiceKey): Candidate |
     `${found.length} options of part ${gap.partIndex} are labelled ${JSON.stringify(key)}; ` +
       "use an index.",
   );
+}
+
+/** Whether part `index` of `answer` has a reading `fetch` builds: the parts that leave no gap. */
+export function isAnswered(answer: Answer, index: number): boolean {
+  return !answer.gaps.some((gap) => gap.partIndex === index);
 }
 
 /**

@@ -161,15 +161,22 @@ export function askedCode(part: Part): string | null {
  * alone; null when it is, or when no code was asked. Every entry of the spec's
  * `resolved.stat_vars.source_codes` must be an object naming `code`, compared upper-cased as
  * Search compares codes, with `exact` true. A spec that lists no code is not known to be the
- * code's series, so it leaves a gap. A spec without `resolved.stat_vars`, as answer JSON from
- * `@developmentfinance/client` 0.2.0 stores it, cannot be checked and leaves none.
+ * code's series, so it leaves a gap, and so does a live reply's spec without
+ * `resolved.stat_vars`. Only `stored`, a body read back from JSON, may predate the cut that
+ * keeps `stat_vars` (`@developmentfinance/client` 0.2.0), so there such a spec cannot be checked
+ * and leaves none.
  */
-export function codeGap(partIndex: number, part: Part, code: string | null): Gap | null {
+export function codeGap(
+  partIndex: number,
+  part: Part,
+  code: string | null,
+  stored = false,
+): Gap | null {
   if (code === null || !isKnownPart(part) || part.status !== "definite") return null;
   const resolved: unknown = part.spec.resolved;
   const statVars = isRecord(resolved) ? resolved["stat_vars"] : undefined;
-  if (!isRecord(statVars)) return null;
-  const held = list(statVars["source_codes"]);
+  if (!isRecord(statVars) && stored) return null;
+  const held = isRecord(statVars) ? list(statVars["source_codes"]) : [];
   const asked = code.toUpperCase();
   const exact = held.every(
     (entry) =>

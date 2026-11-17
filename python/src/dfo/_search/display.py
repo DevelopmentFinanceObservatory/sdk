@@ -66,8 +66,6 @@ class AnswerView(Protocol):
     @property
     def complete(self) -> bool: ...
     @property
-    def _answered(self) -> frozenset[int]: ...
-    @property
     def warnings(self) -> tuple[Notice, ...]: ...
 
 
@@ -80,8 +78,9 @@ def hints(answer: AnswerView, /, *, departures: bool) -> list[tuple[str, str]]:
     them out. `info` warnings stay hidden.
     """
     found: dict[str, str] = {}
+    gapped = {gap.part_index for gap in answer.gaps}
     for index, part in enumerate(answer.parts):
-        if not isinstance(part, DefinitePart) or index not in answer._answered:
+        if not isinstance(part, DefinitePart) or index in gapped:
             continue
         for operation in part.operations:
             found.setdefault(
@@ -179,7 +178,7 @@ def _plural(count: int, noun: str) -> str:
 def _incomplete(answer: AnswerView, *, lead: str) -> str:
     """What is answered and what is missing, with the calls that settle each gap."""
     gaps = {gap.part_index: gap for gap in answer.gaps}
-    answered = len(answer._answered)
+    answered = len(answer.parts) - len(gaps)
     lines = [f"{lead} {answered} of {_asked(answer.parts)}."]
     for index, part in enumerate(answer.parts):
         name = _quote(part.variable_text)

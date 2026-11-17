@@ -3,8 +3,7 @@
  * message, which lists every gap and the call that settles it.
  */
 import type { Answer, Gap } from "./answer.ts";
-import { isAnswered } from "./answered.ts";
-import { mentionsOf, optionLine, waitingGaps } from "./choices.ts";
+import { isAnswered, mentionsOf, optionLine, waitingGaps } from "./choices.ts";
 import { askedCode } from "./structured.ts";
 import { partFacts } from "../core/parse.ts";
 import { definiteParts, partSentence, partText } from "../core/parts.ts";

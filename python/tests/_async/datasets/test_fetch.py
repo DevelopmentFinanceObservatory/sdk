@@ -325,8 +325,21 @@ async def test_a_narrowed_spec_stores_the_built_identity_and_asks_search_its_sen
             {"origin": (match("France", "resolved", FRANCE),)},
             {"destination": ["country/NGA"], "origin": ["country/FRA"]},
         ),
+        (
+            {"origin": (dcid for dcid in ["country/FRA"])},
+            {"destination": ["country/NGA"], "origin": ["country/FRA"]},
+        ),
     ],
-    ids=["dcid", "stripped", "dropped", "none", "empty", "entity", "match"],
+    ids=[
+        "dcid",
+        "stripped",
+        "dropped",
+        "none",
+        "empty",
+        "entity",
+        "match",
+        "generator",
+    ],
 )
 async def test_entities_rebind_only_the_roles_named(
     entities: dict | None, posted: dict | None

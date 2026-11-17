@@ -37,7 +37,6 @@ import type { DefinitePart, KnownPart, NoDataPart, Part } from "../core/parts.ts
 import { checkOptions, declareOptions } from "../core/options.ts";
 import { withEntityDcids } from "./lookup-results.ts";
 import { askedCode, checkReply, codeGap } from "./structured.ts";
-import { recordAnswered } from "./answered.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
 import type { Transport } from "../http/transport.ts";
@@ -212,6 +211,9 @@ type AnswerInit = {
   context: AnswerContext;
   /** The series code each part was asked by, for a search by codes. */
   codes?: readonly string[] | undefined;
+  /** Whether the body is JSON read back by `Answer.fromJSON`, which may predate the cut that
+   *  keeps `resolved.stat_vars`; the code check then skips a part without it. */
+  stored?: boolean | undefined;
 };
 
 /** The context each client's answers use, for `Answer.fromJSON`. */
@@ -280,16 +282,16 @@ export class Answer {
     this.traceId = init.traceId ?? null;
     this.raw = init.raw;
     this.#context = init.context;
-    const { codes } = init;
+    const { codes, stored = false } = init;
     this.gaps = this.parts.flatMap((part, index) => {
       const gap =
-        gapFor(index, part) ?? codeGap(index, part, codes ? codes[index]! : askedCode(part));
+        gapFor(index, part) ??
+        codeGap(index, part, codes ? codes[index]! : askedCode(part), stored);
       return gap === null ? [] : [gap];
     });
     this.complete = this.kind === "resolution" && this.gaps.length === 0;
     const gapped = new Set(this.gaps.map((gap) => gap.partIndex));
     const answered = new Set(this.parts.flatMap((_, index) => (gapped.has(index) ? [] : [index])));
-    recordAnswered(this, answered);
     const members = membersOf(this.parts, answered);
     this.#members = members;
     this.specs = members.map((member) => member.spec);
@@ -435,7 +437,9 @@ export class Answer {
       });
     }
     const { question, body, traceId } = readAnswerJson(value);
-    return describing(traceId, () => answerFromBody(body, context, question, traceId));
+    return describing(traceId, () =>
+      answerFromBody(body, context, question, traceId, undefined, true),
+    );
   }
 }
 
@@ -464,7 +468,9 @@ export async function resolveAnswer(
  * the body came from. `codes` are the series codes a search by codes asked, one per part in
  * order; without them, a part's code is the `source_code` of its restatement. A definite part
  * asked by a code whose reading is not that code's series alone is a gap of kind `no_data`, so
- * `fetch` builds it only beside `partial: true`, and then leaves it out.
+ * `fetch` builds it only beside `partial: true`, and then leaves it out. `stored` marks a body
+ * read back from JSON, which may predate the cut that keeps `resolved.stat_vars`, so its code
+ * parts without it leave no gap; a live reply's part without it is a gap.
  *
  * @throws {DfoError} The body is a problem document (a `code` and no `kind`): the class the
  *   contract's actions give its code, or `ContractError` (`contract_violation`) for a code they
@@ -480,6 +486,7 @@ export function answerFromBody(
   question: string | null,
   traceId: string | null = null,
   codes?: readonly string[],
+  stored = false,
 ): Answer {
   if (!isRecord(body)) {
     throw clientError("contract_violation", {
@@ -539,6 +546,7 @@ export function answerFromBody(
     raw: body,
     context,
     codes,
+    stored,
   });
 }
 

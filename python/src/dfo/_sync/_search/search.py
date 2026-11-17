@@ -74,6 +74,12 @@ def search(
         "source": source,
     }
     given = [name for name, value in structured.items() if value is not None]
+    if isinstance(question, list | tuple):
+        raise client_error(
+            INVALID_ARGUMENT,
+            "search reads a positional argument as a question in words; pass "
+            "series codes by keyword: search(codes=[...])",
+        )
     if question is not None and given:
         raise client_error(
             INVALID_ARGUMENT,
@@ -107,12 +113,6 @@ def search(
         raise client_error(
             INVALID_ARGUMENT,
             "search takes a question in words, or series codes: search(codes=[...])",
-        )
-    if isinstance(question, list | tuple):
-        raise client_error(
-            INVALID_ARGUMENT,
-            "search reads a positional argument as a question in words; pass "
-            "series codes by keyword: search(codes=[...])",
         )
     if not isinstance(question, str) or not question.strip():
         raise client_error(

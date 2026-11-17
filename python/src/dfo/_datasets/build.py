@@ -264,10 +264,28 @@ type DcidEntities = Mapping[str, list[str] | tuple[str, ...] | None]
 """`entities` once `dcid_entities` has replaced each entity and match by its dcid."""
 
 
+def listed_entities(entities: Entities | None) -> Entities | None:
+    """`entities` with each role's one-shot iterable, such as a generator, read into
+    a list, so the role can be read more than once. Text, bytes, maps and every
+    other value pass through, for `scope` to refuse."""
+    if not isinstance(entities, Mapping):
+        return entities
+    return {
+        role: (
+            list(bound)
+            if isinstance(bound, Iterable)
+            and not isinstance(bound, str | bytes | Mapping)
+            else bound
+        )
+        for role, bound in entities.items()
+    }
+
+
 def dcid_entities(entities: Entities | None) -> DcidEntities | None:
     """`entities` with each `Entity` and resolved `Match` replaced by its dcid.
 
-    A value that is not a list or tuple passes through, for `scope` to refuse.
+    A role bound to a one-shot iterable is read into a list first. A value that is
+    not a list, tuple or iterable passes through, for `scope` to refuse.
 
     Raises:
         InvalidRequestError: A match did not resolve: it is ambiguous, found
@@ -277,6 +295,7 @@ def dcid_entities(entities: Entities | None) -> DcidEntities | None:
             (`invalid_argument`). The message names the role, the text and what
             to pass instead.
     """
+    entities = listed_entities(entities)
     if not isinstance(entities, Mapping):
         return entities
     for role, bound in entities.items():
