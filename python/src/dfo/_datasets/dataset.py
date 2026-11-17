@@ -546,10 +546,7 @@ class Provenance:
             _load_gap(item, f"/missing/{index}", closed=False)
             for index, item in enumerate(_array(record["missing"], "/missing"))
         )
-        if complete and missing:
-            raise FormatError(
-                "format_invalid", "/complete", "is true while missing holds a part"
-            )
+        check_complete(complete, missing, "")
         return cls(
             sentence=_string(record["sentence"], "/sentence"),
             citation=_load_citation(record["citation"], "/citation", closed=False),
@@ -677,6 +674,21 @@ def _load_retention(entry: Mapping[str, Any], pointer: str) -> _Retention:
             "format_invalid", f"{pointer}/pinned", "not a boolean or null"
         )
     return pinned, _load_day(entry["held_until"], f"{pointer}/held_until")
+
+
+def check_complete(complete: bool, missing: Sequence[Gap], pointer: str) -> None:
+    """Refuse a stored record whose `complete` is true while `missing` holds a
+    part: a saved file's `dfo.dataset` or a provenance record.
+
+    Raises:
+        FormatError: At `{pointer}/complete`.
+    """
+    if complete and missing:
+        raise FormatError(
+            "format_invalid",
+            f"{pointer}/complete",
+            "is true while missing holds a part",
+        )
 
 
 def check_retention(
@@ -2099,6 +2111,11 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
             f"is {values['dfo.format_version']} for a file whose dfo.ref "
             f"{'holds' if derived else 'holds no'} derived member; it is {expected}",
         )
+    complete = _flag(rest, "complete")
+    missing = tuple(
+        _load_gap(item, pointer) for pointer, item in _items(rest, "missing")
+    )
+    check_complete(complete, missing, "/dfo.dataset")
     party_totals = (
         _load_party_totals(text, ref_members)
         if (text := values.get("dfo.party_totals_left_out")) is not None
@@ -2133,10 +2150,8 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
             _load_assumption(item, pointer)
             for pointer, item in _items(rest, "assumptions")
         ),
-        complete=_flag(rest, "complete"),
-        missing=tuple(
-            _load_gap(item, pointer) for pointer, item in _items(rest, "missing")
-        ),
+        complete=complete,
+        missing=missing,
         stale=_flag(rest, "stale"),
         layout_version=_string(rest["layout_version"], "/dfo.dataset/layout_version"),
         _table=table.replace_schema_metadata(None),

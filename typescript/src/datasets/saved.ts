@@ -262,6 +262,9 @@ function savedState(file: ParquetFile): Omit<SavedDataset, "table"> {
   const partyTotals = values.get("dfo.party_totals_left_out");
   const fetchedAt = values.get("dfo.fetched_at");
   const question = values.get("dfo.question");
+  const complete = flag(rest, "complete");
+  const missing = items(rest, "missing", loadGap);
+  checkComplete(complete, missing, "/dfo.dataset");
   const state: DatasetState = {
     sentence: required(values, "dfo.sentence"),
     members,
@@ -275,8 +278,8 @@ function savedState(file: ParquetFile): Omit<SavedDataset, "table"> {
     departures: items(rest, "departures", loadDeparture),
     requestedOperations: items(rest, "requested_operations", loadOperation),
     assumptions: items(rest, "assumptions", loadAssumption),
-    complete: flag(rest, "complete"),
-    missing: items(rest, "missing", loadGap),
+    complete,
+    missing,
     layout: members[0] === undefined ? "long" : layoutOf(members[0].rendering),
     layoutVersion: stringAt(rest["layout_version"], "/dfo.dataset/layout_version"),
     question:
@@ -789,6 +792,18 @@ export function datasetRetention(members: readonly Retention[]): {
     if (heldUntil === null || member.heldUntil < heldUntil) heldUntil = member.heldUntil;
   }
   return { heldUntil, pinned: false };
+}
+
+/**
+ * Refuses a stored record whose `complete` is true while `missing` holds a part: a saved file's
+ * `dfo.dataset` or a provenance record.
+ *
+ * @throws {FormatError} At `${pointer}/complete` (`format_invalid`).
+ */
+export function checkComplete(complete: boolean, missing: readonly Gap[], pointer: string): void {
+  if (complete && missing.length > 0) {
+    throw invalid(`${pointer}/complete`, "is true while missing holds a part");
+  }
 }
 
 /**

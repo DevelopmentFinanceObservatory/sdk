@@ -29,6 +29,7 @@ import type { PartyTotalsLeftOut } from "./party-totals.ts";
 import { platformFileWriter } from "./save.ts";
 import {
   arrayAt,
+  checkComplete,
   checkRetention,
   datasetRetention,
   loadCitation,
@@ -1142,9 +1143,7 @@ export class Provenance {
     const missing = arrayAt(record["missing"], "/missing").map((item, index) =>
       loadGap(item, `/missing/${index}`, { closed: false }),
     );
-    if (complete && missing.length > 0) {
-      throw invalid("/complete", "is true while missing holds a part");
-    }
+    checkComplete(complete, missing, "");
     return provenanceOf({
       sentence: stringAt(record["sentence"], "/sentence"),
       citation: loadCitation(record["citation"], "/citation", { closed: false }),
