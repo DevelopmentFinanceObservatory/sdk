@@ -221,7 +221,7 @@ class Answer:
             )
         with describing(trace_id):
             return answer_from_body(
-                body, question=question, source=source, trace_id=trace_id, stored=True
+                body, question=question, source=source, trace_id=trace_id
             )
 
     def choose(self, option: int | str, /, *, part: int | str | None = None) -> Answer:
@@ -266,12 +266,12 @@ class Answer:
         if len(self.parts) == 1 and isinstance(chosen, Option):
             _option_part(chosen)
             return chosen.data_query
-        gapped = {each.part_index for each in self.gaps}
+        read = _display.answered(self.parts, self.gaps)
         entries = [
             _entry(
                 each,
                 chosen if index == gap.part_index else None,
-                answered=index not in gapped,
+                answered=index in read,
             )
             for index, each in enumerate(self.parts)
         ]
@@ -474,7 +474,6 @@ def answer_from_body(
     source: SessionSource,
     trace_id: str | None = None,
     codes: Sequence[str] | None = None,
-    stored: bool = False,
 ) -> Answer:
     """Read a decoded Search response into an answer.
 
@@ -483,9 +482,8 @@ def answer_from_body(
     them, a part's code is the `source_code` of its restatement. A definite part
     asked by a code whose reading is not that code's series alone is a gap of
     kind `no_data`, so `fetch` builds it only beside `partial=True`, and then
-    leaves it out. `stored` marks a body read back from JSON, which may predate
-    the cut that keeps `resolved.stat_vars`, so its code parts without it leave
-    no gap; a live reply's part without it is a gap.
+    leaves it out. A code part whose spec has no `resolved.stat_vars`, as in an
+    answer development-finance 0.2.0 wrote, is such a gap too.
 
     Raises:
         ContractError: The body is not an object, its kind is unknown, or a member
@@ -541,17 +539,12 @@ def answer_from_body(
         if (
             gap := _gap(index, part)
             or code_gap(
-                index,
-                part,
-                codes[index] if codes is not None else asked_code(part),
-                stored=stored,
+                index, part, codes[index] if codes is not None else asked_code(part)
             )
         )
         is not None
     )
-    gapped = {gap.part_index for gap in gaps}
-    answered = frozenset(index for index in range(len(parts)) if index not in gapped)
-    readings = _readings(parts, answered)
+    readings = _readings(parts, _display.answered(parts, gaps))
     return Answer(
         kind=kind,
         status=status if isinstance(status, str) else _status(parts),

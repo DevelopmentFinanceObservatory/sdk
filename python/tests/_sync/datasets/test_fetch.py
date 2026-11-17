@@ -217,6 +217,27 @@ def test_a_switch_that_is_not_a_bool_sends_nothing(target: str, options: dict) -
     assert server.requests == []
 
 
+@pytest.mark.parametrize(
+    "bound",
+    [
+        {"country/FRA", "country/DEU"},
+        frozenset({"country/FRA"}),
+        {"country/FRA": "France"},
+        {"country/FRA": "France"}.values(),
+    ],
+    ids=["set", "frozenset", "dict", "dict-values"],
+)
+def test_an_unordered_binding_in_entities_sends_nothing(bound: object) -> None:
+    # The entities of a set or a map's view post in an order that changes
+    # between runs, so the role is refused with the list to pass instead.
+    server = Server()
+    with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            fetch(transport, spec(), entities={"origin": bound})
+    assert caught.value.code == "invalid_argument"
+    assert server.requests == []
+
+
 def test_a_spec_with_its_sentence_replays_the_recorded_build() -> None:
     replay = Replay("fetch-spec-known-sentence", base_url=BASE)
     call = replay.record["call"][0]["spec"]

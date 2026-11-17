@@ -475,8 +475,13 @@ def pinned_answer(request: httpx2.Request) -> httpx2.Response:
 
 def test_pin_pins_each_member_and_returns_the_dataset_pinned() -> None:
     data = build_dataset(
-        [recorded_member()], layout="long", complete=True, missing=(), stale=False
+        [recorded_member(parts=("ODA",)), other_member()],
+        layout="long",
+        complete=True,
+        missing=(),
+        stale=False,
     )
+    assert not any(member.pinned for member in data.members)
     requests: list[httpx2.Request] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -485,17 +490,14 @@ def test_pin_pins_each_member_and_returns_the_dataset_pinned() -> None:
 
     with make(handler) as transport:
         kept = pin(transport, data)
-    (only,) = data.members
     assert [(r.method, r.url.path) for r in requests] == [
-        (
-            "POST",
-            f"/api/v1/datasets/{only.spec.spec_id}/{only.content_version}/pin",
-        )
+        ("POST", f"/api/v1/datasets/{m.spec.spec_id}/{m.content_version}/pin")
+        for m in data.members
     ]
-    assert json.loads(requests[0].content) == {
-        "schema_version": 1,
-        "artifact_digest": only.digest,
-    }
+    assert [json.loads(r.content) for r in requests] == [
+        {"schema_version": 1, "artifact_digest": m.digest} for m in data.members
+    ]
+    assert [(m.pinned, m.held_until) for m in kept.members] == [(True, None)] * 2
     assert (kept.pinned, kept.held_until, kept.ref) == (True, None, data.ref)
     assert "pinned" in repr(kept)
 

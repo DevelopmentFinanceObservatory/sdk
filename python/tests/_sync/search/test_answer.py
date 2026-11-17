@@ -35,6 +35,7 @@ from dfo._core.types import CandidatesPart, DefinitePart
 from dfo._datasets.build import Reading
 from dfo._datasets.dataset import build_dataset
 from dfo._search.answer_json import read_answer_json
+from dfo._sync._client.client import Client
 from dfo._sync._datasets.fetch import Session
 from dfo._sync._http.transport import Transport
 from dfo._sync._search.answer import Answer, answer_from_body
@@ -1112,20 +1113,20 @@ def test_an_answer_by_codes_keeps_its_gaps_through_json(written_by: str) -> None
     stored = json.loads(answer.to_json())
     if written_by == "0.2.0":
         # development-finance 0.2.0 cut `resolved.stat_vars` from answer JSON, so
-        # its answers cannot be checked by code and read as they did then.
+        # no code part of its answers is known to be its code's series alone.
         for part in stored["answer"]["parts"]:
             if "spec" in part:
                 del part["spec"]["resolved"]["stat_vars"]
-    server = Server()
-    client = transport(server)
-    revived = answer_from_body(
-        read_answer_json(json.dumps(stored))[1],
-        question=None,
-        source=lambda: Session(client),
-        stored=True,
-    )
-    expected = answer.gaps if written_by == "0.3" else answer.gaps[1:]
-    assert revived.gaps == expected
+    with Client(base_url=BASE, api_key=False, cache=False) as client:
+        revived = Answer.from_json(json.dumps(stored), client=client)
+    if written_by == "0.3":
+        assert revived.gaps == answer.gaps
+    else:
+        assert [(gap.part_index, gap.kind) for gap in revived.gaps] == [
+            (0, "no_data"),
+            (1, "no_data"),
+            (2, "no_data"),
+        ]
 
 
 def test_a_live_code_part_without_stat_vars_is_a_gap() -> None:

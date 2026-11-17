@@ -666,6 +666,14 @@ describe("retention", () => {
     ["2026-11-18T23:59:60Z", null],
     ["soon", null],
     [20261118, null],
+    ["20261118", null],
+    ["2026-11-18T24:00:00Z", null],
+    ["2026-11-18T10:00Z", null],
+    ["2026-11-18 10:00:00Z", null],
+    ["2026-W47-3", null],
+    ["2026-11-18T10:00:00+05:60", null],
+    ["0050-01-01", "0050-01-01"],
+    ["0000-01-01", null],
   ] as const) {
     test(`reads held_until ${JSON.stringify(heldUntil)} as ${String(expected)}`, async () => {
       const dataset = await retained({ pinned: false, held_until: heldUntil });

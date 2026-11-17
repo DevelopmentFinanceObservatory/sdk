@@ -16,6 +16,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+import dfo._datasets.dataset as dataset_module
 from dfo._core.errors import ContractError, DfoError
 from dfo._core.parse import parse_parts
 from dfo._core.refs import (
@@ -182,6 +183,14 @@ _HELD_UNTIL_FORMS = [
     ("2026-11-18T23:59:60Z", None),
     ("soon", None),
     (20261118, None),
+    ("20261118", None),
+    ("2026-11-18T24:00:00Z", None),
+    ("2026-11-18T10:00Z", None),
+    ("2026-11-18 10:00:00Z", None),
+    ("2026-W47-3", None),
+    ("2026-11-18T10:00:00+05:60", None),
+    ("0050-01-01", date(50, 1, 1)),
+    ("0000-01-01", None),
 ]
 
 
@@ -194,6 +203,19 @@ def test_held_until_reads_the_date_the_text_writes(
     )
     assert data.members[0].held_until == expected
     assert data.held_until == expected
+
+
+def test_retention_is_read_from_the_members_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = built()
+    expected = (data.held_until, data.pinned)
+
+    def again(_: object) -> None:
+        raise AssertionError("retention read again after the dataset was made")
+
+    monkeypatch.setattr(dataset_module, "dataset_retention", again)
+    assert (data.held_until, data.pinned) == expected
 
 
 def test_retention_absent_reads_none_and_is_not_shown() -> None:

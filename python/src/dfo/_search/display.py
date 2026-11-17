@@ -10,7 +10,7 @@ import html
 import importlib
 import json
 import sys
-from collections.abc import Generator, Sequence
+from collections.abc import Generator, Iterable, Sequence
 from contextlib import contextmanager
 from typing import Any, Protocol
 
@@ -69,6 +69,13 @@ class AnswerView(Protocol):
     def warnings(self) -> tuple[Notice, ...]: ...
 
 
+def answered(parts: Sequence[Part], gaps: Iterable[Gap]) -> frozenset[int]:
+    """The indices of the parts with a reading `fetch` builds: the parts that
+    leave no gap."""
+    gapped = {gap.part_index for gap in gaps}
+    return frozenset(index for index in range(len(parts)) if index not in gapped)
+
+
 def hints(answer: AnswerView, /, *, departures: bool) -> list[tuple[str, str]]:
     """How the answered parts differ from the question, as `(code, line)` pairs.
 
@@ -78,9 +85,9 @@ def hints(answer: AnswerView, /, *, departures: bool) -> list[tuple[str, str]]:
     them out. `info` warnings stay hidden.
     """
     found: dict[str, str] = {}
-    gapped = {gap.part_index for gap in answer.gaps}
+    read = answered(answer.parts, answer.gaps)
     for index, part in enumerate(answer.parts):
-        if not isinstance(part, DefinitePart) or index in gapped:
+        if not isinstance(part, DefinitePart) or index not in read:
             continue
         for operation in part.operations:
             found.setdefault(
@@ -178,8 +185,8 @@ def _plural(count: int, noun: str) -> str:
 def _incomplete(answer: AnswerView, *, lead: str) -> str:
     """What is answered and what is missing, with the calls that settle each gap."""
     gaps = {gap.part_index: gap for gap in answer.gaps}
-    answered = len(answer.parts) - len(gaps)
-    lines = [f"{lead} {answered} of {_asked(answer.parts)}."]
+    count = len(answered(answer.parts, answer.gaps))
+    lines = [f"{lead} {count} of {_asked(answer.parts)}."]
     for index, part in enumerate(answer.parts):
         name = _quote(part.variable_text)
         gap = gaps.get(index)
@@ -197,8 +204,8 @@ def _incomplete(answer: AnswerView, *, lead: str) -> str:
         for gap in answer.gaps
         if (call := _choose_call(answer, gap, several=several)) is not None
     )
-    if answered:
-        noun = "part" if answered == 1 else "parts"
+    if count:
+        noun = "part" if count == 1 else "parts"
         lines.append(f"  Or take the answered {noun}: answer.fetch(partial=True)")
     return _text_lines(lines)
 

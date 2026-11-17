@@ -428,19 +428,28 @@ class Provenance:
     question: str | None
     warnings: tuple[Notice, ...]
     members: tuple[Member | DerivedMember, ...]
+    # `held_until` and `pinned`, from the members once, when the record is made.
+    _retention_of_members: tuple[date | None, bool] = field(
+        init=False, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "_retention_of_members", dataset_retention(self.members)
+        )
 
     @property
     def pinned(self) -> bool:
         """Whether every member's version is kept without a time limit; False
         with no members."""
-        return dataset_retention(self.members)[1]
+        return self._retention_of_members[1]
 
     @property
     def held_until(self) -> date | None:
         """The earliest date any member's version not pinned can still be
         fetched; None when every member is pinned or no such member's date is
         known."""
-        return dataset_retention(self.members)[0]
+        return self._retention_of_members[0]
 
     @property
     def ref(self) -> DatasetRef | None:
@@ -488,9 +497,9 @@ class Provenance:
             FormatError: The value is neither JSON text nor a JSON object,
                 breaks the provenance format or comes from a later format
                 version, a member differs from the member its ref names, the
-                record's `pinned` or `held_until` disagrees with its members',
-                or the ref breaks its own format, as `DatasetRef.from_json`
-                raises, with a pointer under `/ref`.
+                record's `pinned` or `held_until` differs from what its members
+                give, members or none, or the ref breaks its own format, as
+                `DatasetRef.from_json` raises, with a pointer under `/ref`.
         """
         record = (
             decode(value) if isinstance(value, str | bytes) else object_at(value, "")
@@ -652,25 +661,24 @@ def check_retention(
     members: Sequence[Member | DerivedMember],
     pointer: str,
 ) -> None:
-    """Refuse a stored record's `pinned` or `held_until` that disagrees with
-    its members' retention, as `dataset_retention` derives it: a saved file's
-    `dfo.dataset` against its `dfo.retention`, or a provenance record against
-    its members. With no member there is nothing to agree with. A member whose
-    `pinned` is unknown leaves `held_until` unchecked, since the date may be
-    that member's.
+    """Refuse a stored record's `pinned` or `held_until` that differs from what
+    its members' retention gives, as `dataset_retention` derives it: a saved
+    file's `dfo.dataset` against its members, or a provenance record against
+    its members. A record with no member is not pinned and has no
+    `held_until`, so what a reader takes is what the record states.
 
     Raises:
         FormatError: At `{pointer}/pinned` or `{pointer}/held_until`.
     """
-    if not members:
-        return
     derived_held, derived_pinned = dataset_retention(members)
     if pinned != derived_pinned:
         raise FormatError(
-            "format_invalid", f"{pointer}/pinned", "disagrees with the members' pinned"
+            "format_invalid",
+            f"{pointer}/pinned",
+            "is not what the members' pinned gives: true exactly when there are "
+            "members and every one is pinned",
         )
-    known = all(member.pinned is not None for member in members)
-    if known and held_until != derived_held:
+    if held_until != derived_held:
         raise FormatError(
             "format_invalid",
             f"{pointer}/held_until",
@@ -825,8 +833,15 @@ class Dataset:
     from_cache: bool = False
     fetched_at: datetime | None = None
     question: str | None = None
+    # `held_until` and `pinned`, from the members once, when the dataset is made.
+    _retention_of_members: tuple[date | None, bool] = field(
+        init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "_retention_of_members", dataset_retention(self.members)
+        )
         rows = self._member_rows
         if len(rows) != len(self.members) or (
             rows and sum(rows) != self._table.num_rows
@@ -844,13 +859,13 @@ class Dataset:
     def held_until(self) -> date | None:
         """The earliest date any member's version not pinned can still be
         fetched, from the members' `held_until`."""
-        return dataset_retention(self.members)[0]
+        return self._retention_of_members[0]
 
     @property
     def pinned(self) -> bool:
         """Whether every member's version is kept without a time limit; False
         with no members."""
-        return dataset_retention(self.members)[1]
+        return self._retention_of_members[1]
 
     @property
     def ref(self) -> DatasetRef:

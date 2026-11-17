@@ -140,28 +140,22 @@ def asked_code(part: Part) -> str | None:
     return code if isinstance(code, str) and code else None
 
 
-def code_gap(
-    index: int, part: Part, code: str | None, *, stored: bool = False
-) -> Gap | None:
+def code_gap(index: int, part: Part, code: str | None) -> Gap | None:
     """The gap a definite part asked by `code` leaves when its reading is not that
     code's series alone; None when it is, or when no code was asked.
 
     Every entry of the spec's `resolved.stat_vars.source_codes` must be an object
     naming `code`, compared upper-cased as Search compares codes, with `exact`
-    true. A spec that lists no code is not known to be the code's series, so it
-    leaves a gap, and so does a live reply's spec without `resolved.stat_vars`.
-    Only `stored`, an answer read back from JSON, may predate the cut that keeps
-    `stat_vars` (development-finance 0.2.0), so there such a spec cannot be
-    checked and leaves none.
+    true. A spec that lists no code, or has no `resolved.stat_vars`, is not
+    known to be the code's series, so it leaves a gap, in a live reply and in
+    an answer read back from JSON alike.
     """
     if code is None or not isinstance(part, DefinitePart):
         return None
     held = _source_codes(part)
-    if held is None and stored:
-        return None
     if held and all(_exact(entry, code) for entry in held):
         return None
-    if not held:  # an empty list, or a live spec without `stat_vars`
+    if not held:
         fact = (
             f"Search's reading for series code {cited(code)} names no series code, "
             "so it may hold another series"
@@ -180,14 +174,14 @@ def code_gap(
     return Gap(index, part, "no_data", f"{fact}. {exits}")
 
 
-def _source_codes(part: DefinitePart) -> list[object] | None:
+def _source_codes(part: DefinitePart) -> list[object]:
     """The spec's `resolved.stat_vars.source_codes` entries, empty when it lists
-    none; None when the spec has no `resolved.stat_vars`."""
+    none or has no `resolved.stat_vars`."""
     spec = part.raw.get("spec")
     resolved = spec.get("resolved") if isinstance(spec, Mapping) else None
     stat_vars = resolved.get("stat_vars") if isinstance(resolved, Mapping) else None
     if not isinstance(stat_vars, Mapping):
-        return None
+        return []
     held = stat_vars.get("source_codes")
     return list(held) if isinstance(held, list) else []
 
@@ -249,8 +243,8 @@ def _entities(entities: Entities) -> list[dict[str, str]]:
         )
     # Each role's entities are read twice, for dcids and for names, so a
     # generator is read once into a list.
-    entities = listed_entities(entities) or {}
-    for role, bound in entities.items():
+    listed = listed_entities(entities) or {}
+    for role, bound in listed.items():
         _role_key("entities", role, tuple(ROLE_KEYS))
         if bound is None or bound == []:
             raise client_error(
@@ -259,14 +253,14 @@ def _entities(entities: Entities) -> list[dict[str, str]]:
                 "names to at least one entity, so leave the role out to leave it "
                 "open",
             )
-    dcids = dcid_entities(entities) or {}
+    dcids = dcid_entities(listed) or {}
     # `scope` refuses what `fetch` refuses, so one form of `entities` serves both.
     checked = scope(
         entities={role: bound for role, bound in dcids.items() if bound is not None}
     )
     parsed = []
     for role, bound_dcids in (checked or {}).get("entities", {}).items():
-        names = [_name(each) for each in entities[role] or ()]
+        names = [_name(each) for each in listed[role] or ()]
         for dcid, name in zip(bound_dcids, names, strict=True):
             entity = {"text": name or dcid, "dcid": dcid}
             if role in _ROLE_TEXT:

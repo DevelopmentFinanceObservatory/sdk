@@ -211,9 +211,6 @@ type AnswerInit = {
   context: AnswerContext;
   /** The series code each part was asked by, for a search by codes. */
   codes?: readonly string[] | undefined;
-  /** Whether the body is JSON read back by `Answer.fromJSON`, which may predate the cut that
-   *  keeps `resolved.stat_vars`; the code check then skips a part without it. */
-  stored?: boolean | undefined;
 };
 
 /** The context each client's answers use, for `Answer.fromJSON`. */
@@ -282,11 +279,10 @@ export class Answer {
     this.traceId = init.traceId ?? null;
     this.raw = init.raw;
     this.#context = init.context;
-    const { codes, stored = false } = init;
+    const { codes } = init;
     this.gaps = this.parts.flatMap((part, index) => {
       const gap =
-        gapFor(index, part) ??
-        codeGap(index, part, codes ? codes[index]! : askedCode(part), stored);
+        gapFor(index, part) ?? codeGap(index, part, codes ? codes[index]! : askedCode(part));
       return gap === null ? [] : [gap];
     });
     this.complete = this.kind === "resolution" && this.gaps.length === 0;
@@ -437,9 +433,7 @@ export class Answer {
       });
     }
     const { question, body, traceId } = readAnswerJson(value);
-    return describing(traceId, () =>
-      answerFromBody(body, context, question, traceId, undefined, true),
-    );
+    return describing(traceId, () => answerFromBody(body, context, question, traceId));
   }
 }
 
@@ -468,9 +462,9 @@ export async function resolveAnswer(
  * the body came from. `codes` are the series codes a search by codes asked, one per part in
  * order; without them, a part's code is the `source_code` of its restatement. A definite part
  * asked by a code whose reading is not that code's series alone is a gap of kind `no_data`, so
- * `fetch` builds it only beside `partial: true`, and then leaves it out. `stored` marks a body
- * read back from JSON, which may predate the cut that keeps `resolved.stat_vars`, so its code
- * parts without it leave no gap; a live reply's part without it is a gap.
+ * `fetch` builds it only beside `partial: true`, and then leaves it out. A code part whose spec
+ * has no `resolved.stat_vars`, as in an answer `@developmentfinance/client` 0.2.0 wrote, is such
+ * a gap too.
  *
  * @throws {DfoError} The body is a problem document (a `code` and no `kind`): the class the
  *   contract's actions give its code, or `ContractError` (`contract_violation`) for a code they
@@ -486,7 +480,6 @@ export function answerFromBody(
   question: string | null,
   traceId: string | null = null,
   codes?: readonly string[],
-  stored = false,
 ): Answer {
   if (!isRecord(body)) {
     throw clientError("contract_violation", {
@@ -546,7 +539,6 @@ export function answerFromBody(
     raw: body,
     context,
     codes,
-    stored,
   });
 }
 

@@ -307,9 +307,8 @@ const HELD_UNTIL =
  * string, is in another form, or names a date or time that does not exist, as `2026-02-30` or
  * `T25:00:00`. It reads `2026-11-18` and `2026-11-18T23:30:00Z`, with an optional fraction of a
  * second and `Z` or `±HH:MM` for the offset or none, the forms the server writes. The date is the
- * one the text writes, in its own offset, as Python's `datetime.fromisoformat(value).date()`
- * reads each of these forms. Python also reads forms the server does not write, such as
- * `20261118` and `T24:00:00`, the next day's midnight, which this reads as null.
+ * one the text writes, in its own offset. Python's `read_held_until` reads the same forms with
+ * the same pattern, and its year 1 is the first either reads.
  */
 export function heldUntilOf(value: unknown): Date | null {
   if (typeof value !== "string") return null;
@@ -328,9 +327,14 @@ export function heldUntilOf(value: unknown): Date | null {
     number,
     number,
   ];
-  const date = new Date(Date.UTC(year, month - 1, day));
+  // `Date.UTC` reads a year below 100 as 1900 plus it, so the year is set on its own.
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
   const exists =
-    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+    year > 0 &&
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day;
   const inRange = hour < 24 && minute < 60 && second < 60 && offsetHour < 24 && offsetMinute < 60;
   return exists && inRange ? date : null;
 }
@@ -1077,8 +1081,9 @@ export class Provenance {
    *
    * @throws {FormatError} The value is neither JSON text nor a JSON object, breaks the provenance
    *   format or comes from a later format version, a member differs from the member its ref
-   *   names, the record's `pinned` or `held_until` disagrees with its members', or the ref breaks
-   *   its own format, as `DatasetRef.fromJSON` throws, with a pointer under `/ref`.
+   *   names, the record's `pinned` or `held_until` differs from what its members give, members
+   *   or none, or the ref breaks its own format, as `DatasetRef.fromJSON` throws, with a pointer
+   *   under `/ref`.
    */
   static fromJSON(value: unknown): Provenance {
     let parsed: unknown = value;

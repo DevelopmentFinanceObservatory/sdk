@@ -625,9 +625,8 @@ export function arrayAt(value: unknown, pointer: string): unknown[] {
   return value;
 }
 
-/** A stored citation, its sources' licence spelled `licence`. */
-/** A stored citation. A saved file's is closed; a provenance record's is open, so a key it or a
- *  source does not name is ignored. */
+/** A stored citation, its sources' licence spelled `licence`. A saved file's is closed; a
+ *  provenance record's is open, so a key it or a source does not name is ignored. */
 export function loadCitation(
   value: unknown,
   pointer: string,
@@ -749,11 +748,10 @@ export function datasetRetention(members: readonly Retention[]): {
 }
 
 /**
- * Refuses a stored record's `pinned` or `heldUntil` that disagrees with its members' retention, as
- * `datasetRetention` derives it: a saved file's `dfo.dataset` against its `dfo.retention`, or a
- * provenance record against its members. With no member there is nothing to agree with. A
- * member whose `pinned` is unknown leaves `heldUntil` unchecked, since the day may be that
- * member's.
+ * Refuses a stored record's `pinned` or `heldUntil` that differs from what its members' retention
+ * gives, as `datasetRetention` derives it: a saved file's `dfo.dataset` against its members, or a
+ * provenance record against its members. A record with no member is not pinned and has no
+ * `held_until`, so what a reader takes is what the record states.
  *
  * @throws {FormatError} At `${pointer}/pinned` or `${pointer}/held_until` (`format_invalid`).
  */
@@ -762,13 +760,14 @@ export function checkRetention(
   members: readonly Retention[],
   pointer: string,
 ): void {
-  if (members.length === 0) return;
   const derived = datasetRetention(members);
   if (dataset.pinned !== derived.pinned) {
-    throw invalid(`${pointer}/pinned`, "disagrees with the members' pinned");
+    throw invalid(
+      `${pointer}/pinned`,
+      "is not what the members' pinned gives: true exactly when there are members and every one is pinned",
+    );
   }
-  const known = members.every((member) => member.pinned !== null);
-  if (known && dataset.heldUntil?.getTime() !== derived.heldUntil?.getTime()) {
+  if (dataset.heldUntil?.getTime() !== derived.heldUntil?.getTime()) {
     throw invalid(
       `${pointer}/held_until`,
       "is not the earliest held_until of the members not pinned",

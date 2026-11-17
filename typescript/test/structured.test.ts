@@ -4,7 +4,8 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { answerFromBody } from "../src/search/answer.ts";
+import { Answer, answerFromBody } from "../src/search/answer.ts";
+import { Client } from "../src/client.ts";
 import type { AnswerContext, SearchOptions } from "../src/search/answer.ts";
 import { answerText, incompleteMessage } from "../src/search/answer-text.ts";
 import { Entity, Match } from "../src/search/lookup-results.ts";
@@ -307,20 +308,31 @@ describe("a search by codes", () => {
       const answer = answerFromBody(await held([{ ...MLAT, exact: false }]), context, null);
       const stored = structuredClone(answer.toJSON().answer) as Body;
       if (writtenBy === "0.2.0") {
-        // @developmentfinance/client 0.2.0 cut `resolved.stat_vars` from answer JSON, so its
-        // answers cannot be checked by code and read as they did then.
+        // @developmentfinance/client 0.2.0 cut `resolved.stat_vars` from answer JSON, so no
+        // code part of its answers is known to be its code's series alone.
         for (const part of stored.parts) {
           if (part.spec !== undefined) {
             delete (part.spec.resolved as { stat_vars?: unknown }).stat_vars;
           }
         }
       }
-      const revived = answerFromBody(stored, context, null, null, undefined, true);
-      const expected = writtenBy === "0.3" ? answer.gaps : answer.gaps.slice(1);
-      assert.deepEqual(
-        revived.gaps.map((gap) => [gap.partIndex, gap.message]),
-        expected.map((gap) => [gap.partIndex, gap.message]),
-      );
+      const client = new Client({ baseUrl: "https://api.example.org/api", apiKey: false });
+      const revived = Answer.fromJSON({ ...answer.toJSON(), answer: stored }, client);
+      if (writtenBy === "0.3") {
+        assert.deepEqual(
+          revived.gaps.map((gap) => [gap.partIndex, gap.message]),
+          answer.gaps.map((gap) => [gap.partIndex, gap.message]),
+        );
+      } else {
+        assert.deepEqual(
+          revived.gaps.map((gap) => [gap.partIndex, gap.kind]),
+          [
+            [0, "no_data"],
+            [1, "no_data"],
+            [2, "no_data"],
+          ],
+        );
+      }
     });
   }
 

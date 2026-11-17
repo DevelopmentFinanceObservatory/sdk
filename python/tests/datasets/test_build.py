@@ -12,6 +12,7 @@ from dfo._datasets.build import (
     Reading,
     dcid_entities,
     file_params,
+    listed_entities,
     narrowings,
     read_operation,
     rebind,
@@ -293,6 +294,6 @@ def test_an_unawaited_resolve_in_entities_is_refused(listed: bool) -> None:
     pending = resolve()
     entities: Any = {"destination": [pending] if listed else pending}
     with pytest.raises(InvalidRequestError) as caught:
-        dcid_entities(entities)
+        dcid_entities(listed_entities(entities))
     assert caught.value.code == "invalid_argument"
     assert pending.cr_frame is None  # closed, so Python does not warn it never ran
