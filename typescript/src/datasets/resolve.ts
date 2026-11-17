@@ -443,7 +443,7 @@ async function sentenceOr(
   wait: Wait,
 ): Promise<string> {
   try {
-    return await sentenceFor(transport, manifest, [], undefined, wait);
+    return (await sentenceFor(transport, manifest, [], undefined, wait)).sentence;
   } catch (error) {
     if (!(error instanceof DfoError)) throw error;
     return fallback;

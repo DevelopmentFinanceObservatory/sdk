@@ -157,8 +157,9 @@ def parse_spec(spec: object, pointer: str = "", /) -> Spec:
 
     Raises:
         ContractError: `spec_id`, `definition`, `resolved` or `definition.identity`
-            is missing, null or of another JSON type, `definition.spec_id` is
-            not the spec's `spec_id`, or `resolved.unit_conversion` is malformed.
+            is missing, null or of another JSON type, or `definition.spec_id` is
+            not the spec's `spec_id`. `resolved.unit_conversion` is kept as
+            sent and read by `Spec.unit_conversion`.
     """
     spec = require(spec, "Spec", pointer)
     definition = require(spec["definition"], "SpecDefinition", f"{pointer}/definition")
@@ -175,9 +176,7 @@ def parse_spec(spec: object, pointer: str = "", /) -> Spec:
         definition,
         _optional_text(resolved.get("rendered_sentence")),
         groups if isinstance(groups, Mapping) and groups else None,
-        parse_unit_conversion(
-            resolved.get("unit_conversion"), f"{pointer}/resolved/unit_conversion"
-        ),
+        resolved.get("unit_conversion"),
     )
 
 
@@ -187,9 +186,10 @@ def parse_unit_conversion(offer: object, pointer: str = "", /) -> UnitConversion
     Raises:
         ContractError: The offer is not an object; its `currencies` is not a
             list or its `default_base_year` not an integer; a currency lacks a
-            string `code` or `noun`; a year span is not null or an object of
-            two integers; or one of `base_year_min` and `base_year_max` is null
-            and the other is not.
+            string `code` or `noun`, or its `code` is empty; a year span is not
+            null or an object of two integers, or ends before it starts; or one
+            of `base_year_min` and `base_year_max` is null and the other is
+            not, or the latest is before the earliest.
     """
     if offer is None:
         return None
@@ -215,6 +215,11 @@ def _conversion_currency(currency: object, pointer: str) -> ConversionCurrency:
         (("code", "string"), ("noun", "string")),
         pointer,
     )
+    if not currency["code"]:
+        raise violation(
+            f"ConversionCurrency.code is empty at {pointer}/code in the response",
+            pointer=f"{pointer}/code",
+        )
     low, high = currency.get("base_year_min"), currency.get("base_year_max")
     if (low is None) != (high is None):
         raise violation(
@@ -231,6 +236,12 @@ def _conversion_currency(currency: object, pointer: str) -> ConversionCurrency:
             pointer,
         )
         base_years = (int(bounds["base_year_min"]), int(bounds["base_year_max"]))
+        if base_years[1] < base_years[0]:
+            raise violation(
+                f"ConversionCurrency.base_year_max is before base_year_min at "
+                f"{pointer} in the response",
+                pointer=f"{pointer}/base_year_max",
+            )
     return ConversionCurrency(
         code=currency["code"],
         noun=currency["noun"],
@@ -254,7 +265,13 @@ def _year_span(window: object, pointer: str) -> tuple[int, int] | None:
         (("start_year", "integer"), ("end_year", "integer")),
         pointer,
     )
-    return int(window["start_year"]), int(window["end_year"])
+    start, end = int(window["start_year"]), int(window["end_year"])
+    if end < start:
+        raise violation(
+            f"TimeWindow.end_year is before start_year at {pointer} in the response",
+            pointer=f"{pointer}/end_year",
+        )
+    return start, end
 
 
 def parse_candidate(

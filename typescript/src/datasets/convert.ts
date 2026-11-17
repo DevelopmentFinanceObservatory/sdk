@@ -10,13 +10,13 @@
  *
  * A part Search answers with `no_data` or `unsupported` refuses the fetch, with the class
  * `contract/actions.json` gives its reason or code, or the base `DfoError` for one it lacks yet,
- * even under `partial`, since the refusal is of this call's arguments. Its `cause`, such as the rates the tables lack, stays on the
- * error's `problem`. A part's `warn` and `degraded` warnings, such as `deflator_missing_omitted`
- * when constant prices leave rows out, reach the warning handler as one `SearchWarning` each
- * once the data is built, unless a manifest already gave the same code, and `strict` raises the
- * first before any build. A narrowed fetch takes those warnings from the resubmit that gives
- * each built reading its sentence instead, since the held reading's speak of years and places
- * the narrowing may cut, and `strict` raises the first once the data is built.
+ * even under `partial`, since the refusal is of this call's arguments. Its `cause`, such as the
+ * rates the tables lack, stays on the error's `problem`. A converted member carries the converted
+ * part's assumptions, departures and operations, and its `warn` and `degraded` warnings reach
+ * the warning handler as `SearchWarning`s once the member is built (`fetchMembers`), or the first
+ * raises under `strict`. A narrowed build whose sentence comes from resubmitting the built
+ * reading takes that reply's warnings instead, since the held reading's speak of years and
+ * places the narrowing may cut.
  */
 import {
   actionFor,
@@ -31,18 +31,18 @@ import { isRecord, list, text } from "../core/json.ts";
 import { warningsOf } from "../core/parse.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
-import { SearchWarning } from "../core/warnings.ts";
 import type { Spec } from "../core/ref.ts";
 import type { Transport } from "../http/transport.ts";
 import type { Dataset } from "./dataset.ts";
 import {
   checkMembers,
   fetchMembers,
+  identityEntry,
   invalid,
   narrows,
   RESOLVE_PATH,
-  RESOLVE_SCHEMA_VERSION,
   resolvedOf,
+  resubmitBody,
   UNNAMED_PART,
 } from "./fetch.ts";
 import type { FetchMembersOptions, MemberRequest } from "./fetch.ts";
@@ -167,13 +167,11 @@ function entryOf(member: MemberRequest, request: UnitRequest): Record<string, un
     );
   }
   const facets = isRecord(identity["facets"]) ? identity["facets"] : {};
-  const groups = member.entityGroups ?? resolvedOf(member.spec).entityGroups;
-  return {
-    entry_kind: "identity",
-    variable_text: member.parts[0] ?? UNNAMED_PART,
-    identity: { ...identity, facets: { ...facets, unit: { state: "value", request } } },
-    ...(groups === null || Object.keys(groups).length === 0 ? {} : { entity_groups: groups }),
-  };
+  return identityEntry(
+    member.parts[0] ?? UNNAMED_PART,
+    { ...identity, facets: { ...facets, unit: { state: "value", request } } },
+    member.entityGroups ?? resolvedOf(member.spec).entityGroups,
+  );
 }
 
 /** The body that resubmits every reading with the unit request. */
@@ -181,36 +179,27 @@ export function conversionBody(
   members: readonly MemberRequest[],
   request: UnitRequest,
 ): Record<string, unknown> {
-  return {
-    schema_version: RESOLVE_SCHEMA_VERSION,
-    input: {
-      kind: "dataset_resubmit",
-      entries: members.map((member) => entryOf(member, request)),
-    },
-    response_options: { include_observations: false },
-  };
+  return resubmitBody(
+    members.map((member) => entryOf(member, request)),
+    { include_observations: false },
+  );
 }
 
-/** Whether a converted spec's identity holds the posted request. */
+/** Whether a converted spec's identity holds the posted request: the same `currency` and
+ *  `prices`, and the same `base_year`, an absent one and a null one alike. */
 function holdsRequest(spec: Record<string, unknown>, request: UnitRequest): boolean {
   const definition = spec["definition"];
   const identity = isRecord(definition) ? definition["identity"] : undefined;
   const facets = isRecord(identity) ? identity["facets"] : undefined;
   const unit = isRecord(facets) ? facets["unit"] : undefined;
   const echoed = isRecord(unit) ? unit["request"] : undefined;
-  if (!isRecord(echoed)) return false;
-  const posted: Readonly<Record<string, unknown>> = request;
-  const keys = Object.keys(posted);
   return (
-    Object.keys(echoed).length === keys.length && keys.every((key) => echoed[key] === posted[key])
+    isRecord(echoed) &&
+    echoed["currency"] === request.currency &&
+    echoed["prices"] === request.prices &&
+    (echoed["base_year"] ?? null) === (request.base_year ?? null)
   );
 }
-
-/** What a conversion gives the fetch: the converted readings, and Search's warnings about them. */
-type Converted = {
-  readonly members: readonly MemberRequest[];
-  readonly warnings: readonly SearchWarning[];
-};
 
 /**
  * Asks Search for each reading in `request`'s unit, in one request.
@@ -229,7 +218,7 @@ async function convert(
   request: UnitRequest,
   wait: Wait,
   narrowed: boolean,
-): Promise<Converted> {
+): Promise<MemberRequest[]> {
   const response = await transport.request({
     path: RESOLVE_PATH,
     json: conversionBody(members, request),
@@ -258,8 +247,8 @@ async function convert(
         pointer: "/parts",
       });
     }
-    const warnings: SearchWarning[] = [];
-    const converted = members.map((member, index) => {
+    const unit = requestText(request);
+    return members.map((member, index): MemberRequest => {
       const part = parts[index];
       const status = isRecord(part) ? part["status"] : undefined;
       if (!isRecord(part) || status !== "definite") {
@@ -281,20 +270,16 @@ async function convert(
           pointer: `/parts/${index}/spec/definition/identity/facets/unit/request`,
         });
       }
-      for (const { code, severity, message } of warningsOf(part["warnings"])) {
-        if (severity !== "warn" && severity !== "degraded") continue;
-        warnings.push(
-          new SearchWarning(
-            code,
-            `Converting ${readingName(member)} to ${requestText(request)}: ${message}`,
-            traceId,
-          ),
-        );
-      }
       const reading = spec as Spec;
-      return { ...member, spec: reading, ...resolvedOf(reading) };
+      // The converted part states the reading's assumptions, departures and operations.
+      return {
+        ...member,
+        spec: reading,
+        ...resolvedOf(reading),
+        answerParts: [{ ...part, status }],
+        converted: { unit, warnings: warningsOf(part["warnings"]), traceId },
+      };
     });
-    return { members: converted, warnings };
   });
 }
 
@@ -334,7 +319,8 @@ function partRefusal(
     : [];
   const more = isRecord(cause) && cause["truncated"] === true ? ", and more" : "";
   const detail = [
-    `Search cannot convert ${readingName(member)} to ${requestText(request)}: ${said.trim()}`,
+    `Search cannot convert ${readingName(member)} to ${requestText(request)}: ` +
+      capped(said.trim()),
     ...(missing.length === 0 ? [] : [`Missing: ${missing.join(", ")}${more}.`]),
     ...(narrowed
       ? [
@@ -360,21 +346,6 @@ function partRefusal(
   return problemAt200(problem, traceId)!;
 }
 
-/** Search's warnings about a conversion whose code no manifest of the dataset gave. */
-function issueWarnings(
-  transport: Transport,
-  dataset: Dataset,
-  warnings: readonly SearchWarning[],
-  strict: boolean,
-): void {
-  const given = new Set(dataset.warnings.map((warning) => warning.code));
-  for (const warning of warnings) {
-    if (warning.code !== null && given.has(warning.code)) continue;
-    if (strict) throw warning;
-    transport.warn(warning);
-  }
-}
-
 /**
  * Builds the members in `request`'s unit, or as they are when `request` is undefined. The
  * conversion's arguments and the narrowing are checked before any request, the conversion
@@ -398,17 +369,5 @@ export async function fetchConverted(
   const wait = options.wait ?? waitFor(transport, options);
   const narrowed = narrows(options.narrowing ?? {});
   const converted = await convert(transport, wants, request, wait, narrowed);
-  // Search's verdict on the reading as held speaks of years and places a narrowing may cut, so
-  // a narrowed fetch takes the warnings Search gives each built reading instead.
-  const searchWarnings: SearchWarning[] = [];
-  const warnings = narrowed ? searchWarnings : converted.warnings;
-  const [first] = converted.warnings;
-  if (!narrowed && options.strict === true && first !== undefined) throw first;
-  const dataset = await build(transport, converted.members, {
-    ...options,
-    wait,
-    ...(narrowed ? { searchWarnings } : {}),
-  });
-  issueWarnings(transport, dataset, warnings, options.strict === true);
-  return dataset;
+  return build(transport, converted, { ...options, wait });
 }

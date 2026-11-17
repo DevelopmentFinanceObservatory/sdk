@@ -66,7 +66,7 @@ from dfo._core.errors import (
 )
 from dfo._core.refs import OPS_ID, DatasetRef, DerivedRefMember, Member, RefMember
 from dfo._core.refusals import describing, trace_id_of
-from dfo._core.text import cited
+from dfo._core.text import capped, cited
 from dfo._core.timeouts import CLIENT_TIMEOUT, CallTimeout
 from dfo._core.types import (
     CONTENT_VERSION,
@@ -326,8 +326,8 @@ def fetch(
                 INVALID_ARGUMENT,
                 f"A ref fetch reads the exact versions it names and takes no "
                 f"{', '.join(converting)}; convert a member's spec instead: "
-                f'{caller}.fetch(member.spec, currency="EUR") for a RefMember in '
-                "ref.members.",
+                f"{caller}.fetch(member.spec, currency={_shown_currency(currency)}) "
+                "for a RefMember in ref.members.",
             )
         layout = _checked_ref_layout(members, layout=layout, party_totals=party_totals)
         if latest:
@@ -413,6 +413,12 @@ def _given(
     if layout not in (None, "frame"):
         given.append(f"layout={layout!r}")
     return given
+
+
+def _shown_currency(currency: object) -> str:
+    """A currency as a refusal's example call shows it: the caller's when it is
+    a string."""
+    return cited(capped(currency) if isinstance(currency, str) else "EUR")
 
 
 def _converting(currency: object, price_basis: object, base_year: object) -> list[str]:

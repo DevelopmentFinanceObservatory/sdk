@@ -40,7 +40,7 @@ from dfo._core.types import DefinitePart, Departure, FormatError, Rendering, Spe
 from dfo._datasets.build import Reading
 from dfo._datasets.bundle import load as load_saved
 from dfo._datasets.cache import Cache, file_entry, manifest_entry, sha256_digest
-from dfo._datasets.dataset import build_dataset
+from dfo._datasets.dataset import FetchedMember, build_dataset
 from dfo._datasets.fetch import fetch_members
 from dfo._datasets.resolve import fetch
 from dfo._http.transport import AsyncTransport
@@ -530,6 +530,8 @@ async def test_a_conversion_posts_the_recorded_request_and_builds_the_converted_
     None
 ):
     reply = load("probe-resubmit-unit-constant.json")
+    departure = {"code": "closest_match", "text": "Shows the closest year."}
+    reply["parts"][0]["departures"] = [departure]
     body = converted_manifest()
     server = Server(
         json_response(200, reply), json_response(200, body), redirect(), parquet()
@@ -555,13 +557,20 @@ async def test_a_conversion_posts_the_recorded_request_and_builds_the_converted_
         converted["spec_id"],
         sentence,
     )
+    # The member reports the converted reading's facts, not the held one's.
+    assert isinstance(member, FetchedMember)
+    assert [
+        (d.code, d.text) for part in member.answer_parts for d in part.departures
+    ] == [("closest_match", "Shows the closest year.")]
 
 
 async def test_a_spec_converts_at_current_prices_under_no_parts_name() -> None:
     reply = load("probe-resubmit-unit-constant.json")
     current = {"currency": "EUR", "prices": "current"}
+    # A null base year echoes a current request as an absent one does.
+    echoed = current | {"base_year": None}
     converted_spec(reply)["definition"]["identity"]["facets"]["unit"]["request"] = (
-        current
+        echoed
     )
     server = Server(
         json_response(200, reply),
@@ -614,6 +623,25 @@ async def test_a_rate_coverage_gap_raises_its_code_with_the_missing_rates(
     assert len(server.requests) == 1
 
 
+async def test_a_refusal_message_caps_the_servers_sentence() -> None:
+    reply = load("probe-resubmit-unit-rate-gap.json")
+    long = "No data. " + "x" * 2000
+    reply["parts"][0]["rendered_sentence"] = long
+    server = Server(json_response(200, reply))
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await fetch_members(
+                transport,
+                [oda()],
+                currency="EUR",
+                price_basis="constant",
+                base_year=1900,
+            )
+    assert long not in (caught.value.detail or "")
+    assert long not in message_of(caught.value)
+    assert "Missing: CurrencyEUR@1900." in message_of(caught.value)
+
+
 def _unsupported(part: dict[str, Any]) -> None:
     del part["no_data"]
     part["status"] = "unsupported"
@@ -624,13 +652,19 @@ def _unlisted_reason(part: dict[str, Any]) -> None:
     part["no_data"]["reason"] = "rate_table_retired"
 
 
+def _proxy_reason(part: dict[str, Any]) -> None:
+    # A code the website proxy answers itself, which actions.json does not list.
+    part["no_data"]["reason"] = "rate_limited"
+
+
 @pytest.mark.parametrize(
     ("edit", "raised", "code"),
     [
         (_unsupported, InvalidRequestError, "recipe_not_declared"),
         (_unlisted_reason, DfoError, "rate_table_retired"),
+        (_proxy_reason, DfoError, "rate_limited"),
     ],
-    ids=["unsupported", "unlisted-reason"],
+    ids=["unsupported", "unlisted-reason", "proxy-code"],
 )
 async def test_a_refused_part_raises_the_class_its_code_maps_to(
     edit: Any, raised: type[DfoError], code: str
@@ -774,20 +808,35 @@ OMITTED = {
 }
 
 
+DEGRADED = {"code": "date_coverage_partial", "severity": "degraded", "message": "cut"}
+SEARCH_ONLY = [
+    (SearchWarning, "deflator_missing_omitted"),
+    (SearchWarning, "date_coverage_partial"),
+]
+
+
 @pytest.mark.parametrize(
     ("manifest_warnings", "issued"),
     [
-        ([], [(SearchWarning, "deflator_missing_omitted")]),
-        ([OMITTED], [(DataWarning, "deflator_missing_omitted")]),
+        ([], SEARCH_ONLY),
+        (
+            [OMITTED],
+            [
+                (DataWarning, "deflator_missing_omitted"),
+                (SearchWarning, "date_coverage_partial"),
+            ],
+        ),
+        # A manifest warning at info is not issued, so it hides nothing.
+        ([OMITTED | {"severity": "info"}], SEARCH_ONLY),
     ],
-    ids=["search-only", "manifest-too"],
+    ids=["search-only", "manifest-too", "manifest-info"],
 )
 async def test_a_conversion_warning_is_issued_once(
     manifest_warnings: list[dict[str, str]], issued: list[tuple[type, str]]
 ) -> None:
     reply = load("probe-resubmit-unit-constant.json")
     info = {"code": "unit_conversion_applied", "severity": "info", "message": "x"}
-    reply["parts"][0]["warnings"] = [OMITTED, info]
+    reply["parts"][0]["warnings"] = [OMITTED, info, DEGRADED, OMITTED]
     server = Server(
         json_response(200, reply),
         json_response(200, converted_manifest(warnings=manifest_warnings)),
@@ -801,6 +850,39 @@ async def test_a_conversion_warning_is_issued_once(
     assert [
         (type(item.message), getattr(item.message, "code", None)) for item in caught
     ] == issued
+    searched = [item for item in caught if item.category is SearchWarning]
+    assert str(searched[0].message).startswith(
+        'Converting "bilateral ODA" to EUR at constant 2022 prices: '
+    )
+
+
+@pytest.mark.parametrize("strict", [False, True])
+async def test_a_narrowing_that_keeps_the_spec_id_issues_the_conversions_warnings(
+    strict: bool,
+) -> None:
+    reply = load("probe-resubmit-unit-constant.json")
+    reply["parts"][0]["warnings"] = [OMITTED]
+    server = Server(
+        json_response(200, reply),
+        json_response(200, converted_manifest()),
+        redirect(),
+        parquet(),
+    )
+    async with make(server) as transport:
+        if strict:
+            with pytest.raises(SearchWarning) as raised:
+                await fetch_members(
+                    transport, [oda()], window="all", strict=True, **CONSTANT
+                )
+            assert raised.value.code == "deflator_missing_omitted"
+            assert len(server.requests) == 2
+            return
+        with pytest.warns(SearchWarning) as caught:
+            await fetch_members(transport, [oda()], window="all", **CONSTANT)
+    assert [getattr(item.message, "code", None) for item in caught] == [
+        "deflator_missing_omitted"
+    ]
+    assert server.body(1)["input"]["scope"]["window"] == {"kind": "all"}
 
 
 async def test_strict_raises_a_conversion_warning_before_downloading() -> None:
@@ -2223,8 +2305,8 @@ async def test_incomplete_metadata_artifact_stays_eligible_offline(
         ("ref", {"facets": {"unit": "USD"}}, "{caller}.fetch(member.spec"),
         (
             "ref",
-            {"currency": "EUR", "price_basis": "constant", "base_year": 2022},
-            '{caller}.fetch(member.spec, currency="EUR")',
+            {"currency": "GBP", "price_basis": "constant", "base_year": 2022},
+            '{caller}.fetch(member.spec, currency="GBP")',
         ),
         ("ref", {"latest": 1}, "not 1"),
         ("spec", {"latest": True}, "{caller}.fetch(spec)"),

@@ -220,19 +220,17 @@ class Spec:
         entity_groups: How Search resolved each role's group of places, keyed by
             role, when the spec came from an answer. It is posted back with its
             identity so Search reads the groups the same way.
-        unit_conversion: The currencies and price bases the amounts convert to,
-            which `fetch(spec, currency=...)` asks for. None when the spec
-            did not come from a Search answer, as for a dataset member's spec
-            or one written by hand, or when its amounts convert to no
-            currency, as for a debt stock. A fetch with `currency` still works
-            on a spec without an offer; the server decides.
+        unit_conversion: The currencies and price bases the amounts convert to;
+            see the property.
     """
 
     spec_id: str
     definition: Mapping[str, Any]
     sentence: str | None = None
     entity_groups: Mapping[str, Any] | None = None
-    unit_conversion: UnitConversion | None = None
+    # `resolved.unit_conversion` as the server sent it, read on access so a
+    # malformed offer breaks only the code that reads it.
+    _unit_conversion: object = field(default=None, repr=False)
 
     @override
     def __eq__(self, other: object) -> bool:
@@ -247,6 +245,27 @@ class Spec:
     @override
     def __repr__(self) -> str:
         return _joined("Spec", self.spec_id, _quoted(self.sentence))
+
+    @property
+    def unit_conversion(self) -> UnitConversion | None:
+        """The currencies and price bases the amounts convert to, which
+        `fetch(spec, currency=...)` asks for.
+
+        None when the spec did not come from a Search answer, as for a dataset
+        member's spec or one written by hand, or when its amounts convert to no
+        currency, as for a debt stock. A fetch with `currency` still works on a
+        spec without an offer; the server decides.
+
+        Raises:
+            ContractError: The server's offer is malformed
+                (`contract_violation`), its pointer under the spec, as
+                `/resolved/unit_conversion/currencies/0/code`. Search and fetch
+                never read the offer, so it raises only here.
+        """
+        # The parser builds this module's classes, so it is imported on use.
+        from dfo._core.parse import parse_unit_conversion  # noqa: PLC0415
+
+        return parse_unit_conversion(self._unit_conversion, "/resolved/unit_conversion")
 
     @property
     def roles(self) -> dict[str, tuple[str, ...] | None]:

@@ -10,7 +10,7 @@ import { unitConversion } from "../src/core/conversion.ts";
 import { ContractError, DfoError, InvalidRequestError } from "../src/core/errors.ts";
 import { DatasetRef } from "../src/core/ref.ts";
 import type { Spec } from "../src/core/ref.ts";
-import { SearchWarning } from "../src/core/warnings.ts";
+import { DataWarning, SearchWarning } from "../src/core/warnings.ts";
 import type { DfoWarning } from "../src/core/warnings.ts";
 import type { Dataset } from "../src/datasets/dataset.ts";
 import type { FetchMembersOptions, MemberRequest } from "../src/datasets/fetch.ts";
@@ -180,7 +180,8 @@ describe("an answer fetched in another unit", () => {
   test("in current prices posts no base year", async () => {
     const reply = structuredClone(CONSTANT);
     const unit = unitOf(partSpec(reply));
-    unit["request"] = { currency: "EUR", prices: "current" };
+    // An echo that states the absent base year as null holds the same request.
+    unit["request"] = { currency: "EUR", prices: "current", base_year: null };
     const { answer, seen } = answerOver(ODA, [json(reply)]);
     await answer.fetch({ currency: "EUR" });
     const request = structuredClone(CONSTANT_REQUEST);
@@ -224,36 +225,6 @@ describe("an answer fetched in another unit", () => {
     assert.deepEqual(posted(seen), RECIPE_REFUSED_REQUEST);
     assert.ok(error instanceof InvalidRequestError);
     assert.equal(error.code, "recipe_not_declared");
-    assert.equal(built.length, 0);
-  });
-
-  test("passes Search's warning about the converted reading to the handler", async () => {
-    const { answer, warnings, built } = answerOver(ODA, [json(withWarning(CONSTANT))]);
-    await answer.fetch(EUR_2022);
-    assert.equal(built.length, 1);
-    assert.deepEqual(
-      warnings.map((warning) => [warning.constructor, warning.code]),
-      [[SearchWarning, "deflator_missing_omitted"]],
-    );
-    assert.equal(warnings[0]!.traceId, "45509ade64444e089de0ad9e04d41113");
-  });
-
-  test("issues a warning once when a manifest gave the same code", async () => {
-    const manifestWarning = { code: "deflator_missing_omitted", severity: "warn", message: "x" };
-    const { answer, warnings } = answerOver(ODA, [json(withWarning(CONSTANT))], {
-      warnings: [manifestWarning],
-    });
-    await answer.fetch(EUR_2022);
-    assert.deepEqual(warnings, []);
-  });
-
-  test("raises Search's warning under strict before any build", async () => {
-    const quiet = structuredClone(ODA);
-    (quiet["parts"] as Body[])[0]!["warnings"] = [];
-    const { answer, built } = answerOver(quiet, [json(withWarning(CONSTANT))]);
-    const error = await rejection(answer.fetch({ ...EUR_2022, strict: true }));
-    assert.ok(error instanceof SearchWarning);
-    assert.equal(error.code, "deflator_missing_omitted");
     assert.equal(built.length, 0);
   });
 
@@ -432,6 +403,27 @@ async function convertedBuild(request: Body): Promise<Scenario> {
   };
 }
 
+/**
+ * An answer to the recorded question whose fetch replays `convertedBuild` with `reply` as the
+ * conversion's answer and `manifest` edited, recording the warnings issued. The answer's own
+ * warnings are dropped. A `scoped` build posts a scope, so its request body is not checked.
+ */
+async function convertedRun(reply: Body, manifest?: (manifest: Body) => void, scoped = false) {
+  const record = await convertedBuild(CONSTANT_REQUEST);
+  record.exchanges[0]!.response.json = reply;
+  const build = record.exchanges[1]!;
+  manifest?.(build.response.json as Body);
+  if (scoped) delete build.request.json;
+  const warnings: DfoWarning[] = [];
+  const { transport, remaining } = replay(record, {
+    onWarning: (warning) => warnings.push(warning),
+  });
+  const quiet = structuredClone(ODA);
+  (quiet["parts"] as Body[])[0]!["warnings"] = [];
+  const answer = answerFromBody(quiet, { transport }, null);
+  return { answer, warnings, remaining };
+}
+
 describe("a converted fetch", () => {
   test("of an answer builds the converted spec under its sentence", async () => {
     const { transport, remaining } = replay(await convertedBuild(CONSTANT_REQUEST));
@@ -479,6 +471,64 @@ describe("a converted fetch", () => {
       warnings.map((warning) => [warning.constructor, warning.code]),
       [[SearchWarning, "date_coverage_partial"]],
     );
+  });
+
+  test("issues Search's warnings about the converted reading once it is built", async () => {
+    const warned = withWarning(CONSTANT);
+    const part = (warned["parts"] as Body[])[0]!;
+    // The same code twice, and an info warning, issue one warning.
+    part["warnings"] = [
+      ...(part["warnings"] as Body[]),
+      ...(part["warnings"] as Body[]),
+      { code: "unit_converted", severity: "info", message: "Converted." },
+    ];
+    const run = await convertedRun(warned);
+    await run.answer.fetch(EUR_2022);
+    assert.deepEqual(run.remaining(), []);
+    assert.deepEqual(
+      run.warnings.map((warning) => [warning.constructor, warning.code]),
+      [[SearchWarning, "deflator_missing_omitted"]],
+    );
+    assert.equal(run.warnings[0]!.traceId, "45509ade64444e089de0ad9e04d41113");
+    assert.match(
+      run.warnings[0]!.message,
+      /^Converting "bilateral ODA" to EUR at constant 2022 prices: A constant-price/,
+    );
+  });
+
+  test("skips a warning the member's manifest already issued", async () => {
+    const run = await convertedRun(withWarning(CONSTANT), (manifest) => {
+      manifest["warnings"] = [
+        { code: "deflator_missing_omitted", severity: "warn", message: "Rows left out." },
+      ];
+    });
+    await run.answer.fetch(EUR_2022);
+    assert.deepEqual(
+      run.warnings.map((warning) => [warning.constructor, warning.code]),
+      [[DataWarning, "deflator_missing_omitted"]],
+    );
+  });
+
+  for (const window of [undefined, [2015, 2022] as const]) {
+    const narrowing = window === undefined ? "" : ", narrowed to its own spec";
+    test(`raises Search's warning under strict once built${narrowing}`, async () => {
+      const run = await convertedRun(withWarning(CONSTANT), undefined, window !== undefined);
+      const error = await rejection(
+        run.answer.fetch({ ...EUR_2022, strict: true, ...(window ? { window } : {}) }),
+      );
+      assert.deepEqual(run.remaining(), []);
+      assert.ok(error instanceof SearchWarning, String(error));
+      assert.equal(error.code, "deflator_missing_omitted");
+    });
+  }
+
+  test("carries the converted part's departures", async () => {
+    const reply = structuredClone(CONSTANT);
+    const departure = { code: "year_unavailable", binding_ref: "unit:", text: "Rates stop." };
+    (reply["parts"] as Body[])[0]!["departures"] = [departure];
+    const run = await convertedRun(reply);
+    const dataset = await run.answer.fetch(EUR_2022);
+    assert.deepEqual(dataset.departures, [departure]);
   });
 
   test("of a spec names no part and builds the converted spec", async () => {

@@ -85,7 +85,13 @@ from dfo._core.types import (
     option_line,
     shown_text,
 )
-from dfo._datasets.build import Entities, Reading, check_strict, response_json
+from dfo._datasets.build import (
+    Entities,
+    Reading,
+    check_strict,
+    response_json,
+    unit_request,
+)
 from dfo._datasets.dataset import Dataset
 from dfo._generated import strict as _strict
 from dfo._generated.error_map import GAP_KINDS
@@ -389,6 +395,14 @@ class Answer:
                 keeps running on the server, and the same fetch joins it.
             DfoError: The server refused a request.
         """
+        # The conversion's arguments are the caller's to fix, so they are
+        # checked before what the answer itself lacks.
+        unit_request(
+            currency=currency,
+            price_basis=price_basis,
+            base_year=base_year,
+            facets=facets,
+        )
         if self.kind != _strict.RESOLUTION_KIND:
             raise client_error(
                 ANSWER_DECLINED,

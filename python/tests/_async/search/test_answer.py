@@ -1025,6 +1025,22 @@ async def test_a_refused_conversion_raises_its_code_under_partial() -> None:
     assert len(server.posted) == 2
 
 
+@pytest.mark.parametrize(
+    "body", ["search-two-parts-candidates.json", "search-declined.json"]
+)
+async def test_a_malformed_conversion_raises_before_the_answers_own_refusal(
+    body: str, fetched: list[tuple[Any, Any, Any]]
+) -> None:
+    answer, server = await ask("ODA", load(body))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SearchWarning)
+        with pytest.raises(InvalidRequestError) as caught:
+            await answer.fetch(currency="eur")
+    assert caught.value.code == "invalid_argument"
+    assert len(server.posted) == 1
+    assert fetched == []
+
+
 async def test_an_answer_read_back_keeps_each_specs_conversion_offer() -> None:
     answer, _ = await ask("ODA", load("search-oda-deu-ken.json"))
     offer = answer.specs[0].unit_conversion

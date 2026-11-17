@@ -46,12 +46,7 @@ from dfo._datasets.build import (
     rendering_for,
     resubmit_body,
 )
-from dfo.errors import (
-    DfoError,
-    IncompleteAnswerError,
-    InvalidRequestError,
-    NotFoundError,
-)
+from dfo.errors import IncompleteAnswerError, InvalidRequestError, NotFoundError
 from dfo.types import Member
 from tests._data import CONTRACT
 from tests.e2e.cloud_run import id_token_headers
@@ -550,12 +545,8 @@ def test_13_a_conversion_fetches_rows_in_the_currency_asked_for(
         (row["currency"], row["price_basis"], int(row["base_year"])) for row in rows
     } == {("EUR", "constant", 2022)}
 
-    # A pin needs a key the website proxy may not hold; the fetched dataset goes on.
-    kept = data
-    try:
-        kept = client.pin(data)
-    except DfoError as error:
-        print(f"the pin was refused ({error.code}); saving the unpinned dataset")
+    kept = client.pin(data)
+    assert kept.pinned
     path = tmp_path / "converted.parquet"
     kept.save(path)
     saved = dfo.load(path)

@@ -26,12 +26,7 @@ import { promisify } from "node:util";
 
 import { Ajv2020 } from "ajv/dist/2020.js";
 
-import {
-  DfoError,
-  IncompleteAnswerError,
-  InvalidRequestError,
-  NotFoundError,
-} from "../../src/errors.ts";
+import { IncompleteAnswerError, InvalidRequestError, NotFoundError } from "../../src/errors.ts";
 import { Client, Dataset, DatasetRef, Provenance, unitConversion } from "../../src/index.ts";
 import type { Answer, Spec } from "../../src/index.ts";
 import type { Row } from "../../src/types.ts";
@@ -610,14 +605,7 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
         );
       }
 
-      // A pin needs a key the website proxy may not hold; the dataset as fetched goes on.
-      let kept = dataset;
-      try {
-        kept = await client.pin(dataset);
-      } catch (error) {
-        if (!(error instanceof DfoError) || error.code === null) throw error;
-        t.diagnostic(`the pin was refused (${error.code}); saving the unpinned dataset`);
-      }
+      const kept = await client.pin(dataset);
       const saved = await Dataset.fromBytes(await kept.toBytes());
       assert.ok(saved.ref.equals(kept.ref));
       assert.equal(saved.members[0]!.sentence, member.sentence);
