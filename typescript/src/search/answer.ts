@@ -325,9 +325,9 @@ export class Answer {
    *   posted back (`choice_invalid`); or `options` is not an object or holds a key outside
    *   `ChooseOptions` (`invalid_argument`). A part or label that names nothing is refused with the nearest
    *   match and the valid choices.
-   * @throws {ContractError} The chosen option carries no one-part `data_query`, and the error
-   *   carries the answer's trace id; or, in an answer to a search by codes, Search answers with
-   *   another number of parts than codes (`contract_violation`).
+   * @throws {ContractError} The chosen option carries no one-part `data_query`. In an answer to a
+   *   search by codes, also Search answers with another number of parts than codes
+   *   (`contract_violation`). The error carries the answer's trace id.
    */
   async choose(option: ChoiceKey, options: ChooseOptions = {}): Promise<Answer> {
     const { part, ...request } = checkOptions(CHOOSE_OPTIONS, options);
@@ -479,11 +479,10 @@ export async function resolveAnswer(
  * the body came from. `codes` are the series codes a search by codes asked, one per part in
  * order, and the code a part asked is the authority whatever its restatement names. Without
  * them, as for a question in words, a part's code is the `source_code` of its restatement. A
- * definite part
- * asked by a code whose reading is not that code's series alone is a gap of kind `no_data`, so
- * `fetch` builds it only beside `partial: true`, and then leaves it out. A code part whose spec
- * has no `resolved.stat_vars`, as in an answer `@developmentfinance/client` 0.2.0 wrote, is such
- * a gap too.
+ * definite part asked by a code whose reading is not that code's series alone is a gap of kind
+ * `no_data`, so `fetch` builds it only beside `partial: true`, and then leaves it out. A code
+ * part whose spec has no `resolved.stat_vars`, as in an answer `@developmentfinance/client`
+ * 0.2.0 wrote, is such a gap too.
  *
  * @throws {DfoError} The body is a problem document (a `code` and no `kind`): the class the
  *   contract's actions give its code, or `ContractError` (`contract_violation`) for a code they

@@ -129,8 +129,8 @@ export async function readSaved(input: unknown, path?: string): Promise<SavedDat
   return { ...saved, table };
 }
 
-/** The most rows this client loads from a saved file: 2**24, since decoding holds every value
- *  in memory and a browser tab runs out well before a table of this size doubles. */
+/** The most rows this client loads from a saved file, 2**24. Decoding holds every value in
+ *  memory, and the cap bounds what a file's footer can make the reader allocate. */
 export const MAX_SAVED_ROWS = 2 ** 24;
 
 /** The most rows a byte of a saved file holds. A column of one repeated value packs about
@@ -431,7 +431,7 @@ const isGapKind = (value: unknown): value is GapKind =>
 const GAP_KEYS = ["part_index", "part", "kind", "message", "options"];
 
 /** A stored gap. A candidates part's options are its candidates, as in an answer. A saved file's
- *  gap and its options are closed; a provenance record's are open, so a key they do not name is
+ *  gap and its options are closed. A provenance record's are open, so a key they do not name is
  *  ignored. */
 export function loadGap(value: unknown, pointer: string, { closed = true } = {}): Gap {
   const gap = objectAt(value, pointer);
@@ -442,7 +442,7 @@ export function loadGap(value: unknown, pointer: string, { closed = true } = {})
   if (!isGapKind(kind)) throw invalid(`${pointer}/kind`, "not a gap kind");
   const part = loadPart(gap["part"], `${pointer}/part`);
   // A part that carries its own options gives them as a live answer reads them, so a loaded
-  // gap equals the live one; the saved list is read and checked all the same.
+  // gap equals the live one. The saved list is also read and checked.
   const stored = arrayAt(gap["options"], `${pointer}/options`).map((option, index) =>
     loadOption(option, `${pointer}/options/${index}`, closed),
   );

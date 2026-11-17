@@ -497,8 +497,9 @@ class Provenance:
 
         A key the format does not name is ignored, at the top level, in a
         member, in a citation and its sources, in a warning, and in a missing
-        part and its options, so a record a later client wrote reads here. The ref keeps its own versioned format,
-        which `DatasetRef.from_json` reads strictly.
+        part and its options, so a record a later client wrote reads here. The
+        ref keeps its own versioned format, which `DatasetRef.from_json` reads
+        strictly.
 
         Raises:
             FormatError: The value is neither JSON text nor a JSON object,
@@ -678,8 +679,8 @@ def _load_retention(entry: Mapping[str, Any], pointer: str) -> _Retention:
 
 
 def check_complete(complete: bool, missing: Sequence[Gap], pointer: str) -> None:
-    """Refuse a stored record whose `complete` is not whether `missing` is
-    empty: a saved file's `dfo.dataset` or a provenance record. Every client
+    """Refuse a stored record, a saved file's `dfo.dataset` or a provenance
+    record, whose `complete` is not whether `missing` is empty. Every client
     writes `complete` as true exactly when no part was left out.
 
     Raises:
@@ -2626,7 +2627,7 @@ def _load_gap(value: object, pointer: str, *, closed: bool = True) -> Gap:
     """A stored gap. A candidates part's options are its candidates and a no_data
     part's are its `no_data.options`, read from the stored part as an answer
     reads them, so a loaded gap equals the live one, `entity_choice` included.
-    A saved file's gap and its options are closed; a provenance record's are
+    A saved file's gap and its options are closed. A provenance record's are
     open, so a key they do not name is ignored."""
     obj = object_at(value, pointer)
     keys = ("part_index", "part", "kind", "message", "options")

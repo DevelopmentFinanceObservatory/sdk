@@ -4,16 +4,16 @@
 An answer to a question in words is `{"format_version": 1, "question": ...,
 "answer": ...}`. An answer to a search by codes is `{"format_version": 2, ...}`
 with `"codes": [...]` beside the same members, so a reader that knows only
-format 1 refuses it. `question` is the question asked, or null. `answer` is the Search response body cut to the
-members a client reads, which `KEPT` lists, with the answer's trace id as its
-`trace_id` when it has one. `codes` holds the series code each part was asked
-by, one per part in part order, read as `search(codes=...)` reads them, so an
-answer read back checks each reading against the code the caller asked for. The
-cut drops what no read rule names, such as each
-spec's `resolved.trace` and slots, the sentence-plan tokens' references, part
-timings, and the diagnostics beyond `timed_out` and `warnings`. A member the cut
-keeps holds the value the response held, malformed or not, so the body reads back
-as the response read.
+format 1 refuses it. `question` is the question asked, or null. `answer` is the
+Search response body cut to the members a client reads, which `KEPT` lists, with
+the answer's trace id as its `trace_id` when it has one. `codes` holds the series
+code each part was asked by, one per part in part order, read as
+`search(codes=...)` reads them, so an answer read back checks each reading
+against the code the caller asked for. The cut drops what no read rule names,
+such as each spec's `resolved.trace` and slots, the sentence-plan tokens'
+references, part timings, and the diagnostics beyond `timed_out` and `warnings`.
+A member the cut keeps holds the value the response held, malformed or not, so
+the body reads back as the response read.
 """
 
 from collections.abc import Mapping, Sequence

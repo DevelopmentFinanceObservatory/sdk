@@ -2,15 +2,16 @@
  * The answer format: an answer as JSON, which `answer.toJSON()` writes and `Answer.fromJSON`
  * reads, the same in every DFO client.
  *
- * The format is `{"format_version": 1, "question": …, "answer": …}`, and `"codes": […]` beside
- * them for an answer to a search by codes. `question` is the question asked, or null. `answer`
- * is the Search response body cut to the members a client reads, which `KEPT` lists, with the
- * answer's trace id as its `trace_id` when it has one. `codes` holds the series code each part
- * was asked by, one per part in part order, so an answer read back checks each reading against
- * the code the caller asked for. An answer to a question in words holds no `codes`. The cut drops what no rule reads,
- * such as each spec's `resolved.trace` and slots, the sentence-plan tokens' references, and the
- * diagnostics beyond `timed_out` and `warnings`. A member the cut keeps holds the value the
- * response held, malformed or not, so the body reads back exactly as the response read.
+ * The format is `{"format_version": 1, "question": …, "answer": …}`. An answer to a search by
+ * codes is `format_version` 2 with `"codes": […]` beside the same members. `question` is the
+ * question asked, or null. `answer` is the Search response body cut to the members a client
+ * reads, which `KEPT` lists, with the answer's trace id as its `trace_id` when it has one.
+ * `codes` holds the series code each part was asked by, one per part in part order, so an
+ * answer read back checks each reading against the code the caller asked for. An answer to a
+ * question in words holds no `codes`. The cut drops what no rule reads, such as each spec's
+ * `resolved.trace` and slots, the sentence-plan tokens' references, and the diagnostics beyond
+ * `timed_out` and `warnings`. A member the cut keeps holds the value the response held,
+ * malformed or not, so the body reads back exactly as the response read.
  */
 import { InvalidRequestError } from "../core/errors.ts";
 import { FormatError } from "../core/ref.ts";

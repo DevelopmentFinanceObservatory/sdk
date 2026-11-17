@@ -259,9 +259,9 @@ class AsyncAnswer:
                 part or option; the part offers no options; or a part cannot be
                 posted back (`choice_invalid`).
             ContractError: The chosen option's `data_query` is not a parsed
-                input of one part, and the error carries the answer's trace id;
-                or, in an answer to a search by codes, Search answers with
-                another number of parts than codes (`contract_violation`).
+                input of one part. In an answer to a search by codes, also
+                Search answers with another number of parts than codes
+                (`contract_violation`). The error carries the answer's trace id.
         """
         with describing(self.trace_id):
             request = self._choice_input(option, part)
@@ -504,10 +504,9 @@ def answer_from_body(
     the series codes a search by codes asked, one per part in order, and the
     code a part asked is the authority whatever its restatement names. Without
     them, as for a question in words, a part's code is the `source_code` of its
-    restatement. A definite part
-    asked by a code whose reading is not that code's series alone is a gap of
-    kind `no_data`, so `fetch` builds it only beside `partial=True`, and then
-    leaves it out. A code part whose spec has no `resolved.stat_vars`, as in an
+    restatement. A definite part asked by a code whose reading is not that
+    code's series alone is a gap of kind `no_data`, so `fetch` builds it only
+    beside `partial=True`, and then leaves it out. A code part whose spec has no `resolved.stat_vars`, as in an
     answer development-finance 0.2.0 wrote, is such a gap too.
 
     Raises:
