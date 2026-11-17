@@ -1,0 +1,18 @@
+{
+  "status": 422,
+  "headers": {
+    "content-type": "application/problem+json",
+    "x-dfo-trace-id": "8e0a8ae8ca3f498b92eff365f50eeaf7"
+  },
+  "body": {
+    "type": "/codes/recipe_not_declared",
+    "title": "Recipe Not Declared",
+    "status": 422,
+    "detail": "StatVar 'Amount_FinancialPosition_AmountOutstanding_Nominal' has populationType ('FinancialPosition',); conversionRecipe 'ConversionRecipeIDS' converts only ['FinancialFlow', 'FinancialObligation']",
+    "code": "recipe_not_declared",
+    "pointer": "/input/entries/0/identity/facets/unit",
+    "trace_id": "8e0a8ae8ca3f498b92eff365f50eeaf7",
+    "capability_version": "cap_347c5393b96434eb",
+    "retryable": false
+  }
+}

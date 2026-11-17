@@ -21,6 +21,7 @@ from dfo._core.types import (
     CandidatesPart,
     Citation,
     CitationSource,
+    ConversionCurrency,
     DefinitePart,
     Departure,
     NoDataPart,
@@ -29,6 +30,7 @@ from dfo._core.types import (
     Part,
     RequestedOperation,
     Spec,
+    UnitConversion,
     UnknownPart,
     UnsupportedPart,
     Wire,
@@ -150,12 +152,13 @@ def parse_part(part: object, pointer: str = "", /) -> Part:
 
 
 def parse_spec(spec: object, pointer: str = "", /) -> Spec:
-    """A spec, with Search's sentence for it when the response carries one.
+    """A spec, with Search's sentence and conversion offer for it when the
+    response carries them.
 
     Raises:
         ContractError: `spec_id`, `definition`, `resolved` or `definition.identity`
-            is missing, null or of another JSON type, or `definition.spec_id` is
-            not the spec's `spec_id`.
+            is missing, null or of another JSON type, `definition.spec_id` is
+            not the spec's `spec_id`, or `resolved.unit_conversion` is malformed.
     """
     spec = require(spec, "Spec", pointer)
     definition = require(spec["definition"], "SpecDefinition", f"{pointer}/definition")
@@ -172,7 +175,86 @@ def parse_spec(spec: object, pointer: str = "", /) -> Spec:
         definition,
         _optional_text(resolved.get("rendered_sentence")),
         groups if isinstance(groups, Mapping) and groups else None,
+        parse_unit_conversion(
+            resolved.get("unit_conversion"), f"{pointer}/resolved/unit_conversion"
+        ),
     )
+
+
+def parse_unit_conversion(offer: object, pointer: str = "", /) -> UnitConversion | None:
+    """A resolved spec's conversion offer, or None when it carries none.
+
+    Raises:
+        ContractError: The offer is not an object; its `currencies` is not a
+            list or its `default_base_year` not an integer; a currency lacks a
+            string `code` or `noun`; a year span is not null or an object of
+            two integers; or one of `base_year_min` and `base_year_max` is null
+            and the other is not.
+    """
+    if offer is None:
+        return None
+    offer = require_members(
+        offer,
+        "UnitConversion",
+        (("currencies", "array"), ("default_base_year", "integer")),
+        pointer,
+    )
+    return UnitConversion(
+        tuple(
+            _conversion_currency(currency, f"{pointer}/currencies/{index}")
+            for index, currency in enumerate(offer["currencies"])
+        ),
+        int(offer["default_base_year"]),
+    )
+
+
+def _conversion_currency(currency: object, pointer: str) -> ConversionCurrency:
+    currency = require_members(
+        currency,
+        "ConversionCurrency",
+        (("code", "string"), ("noun", "string")),
+        pointer,
+    )
+    low, high = currency.get("base_year_min"), currency.get("base_year_max")
+    if (low is None) != (high is None):
+        raise violation(
+            "ConversionCurrency.base_year_min and base_year_max are not both "
+            f"integers or both null at {pointer} in the response",
+            pointer=pointer,
+        )
+    base_years = None
+    if low is not None:
+        bounds = require_members(
+            currency,
+            "ConversionCurrency",
+            (("base_year_min", "integer"), ("base_year_max", "integer")),
+            pointer,
+        )
+        base_years = (int(bounds["base_year_min"]), int(bounds["base_year_max"]))
+    return ConversionCurrency(
+        code=currency["code"],
+        noun=currency["noun"],
+        current_years=_year_span(
+            currency.get("current_years"), f"{pointer}/current_years"
+        ),
+        constant_years=_year_span(
+            currency.get("constant_years"), f"{pointer}/constant_years"
+        ),
+        base_years=base_years,
+    )
+
+
+def _year_span(window: object, pointer: str) -> tuple[int, int] | None:
+    """A `TimeWindow` as its first and last year, or None for null."""
+    if window is None:
+        return None
+    window = require_members(
+        window,
+        "TimeWindow",
+        (("start_year", "integer"), ("end_year", "integer")),
+        pointer,
+    )
+    return int(window["start_year"]), int(window["end_year"])
 
 
 def parse_candidate(

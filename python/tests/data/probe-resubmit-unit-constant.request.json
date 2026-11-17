@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "input": {
+    "kind": "dataset_resubmit",
+    "entries": [
+      {
+        "entry_kind": "identity",
+        "variable_text": "bilateral ODA",
+        "identity": {
+          "identity_version": "spec1",
+          "shape": {
+            "kind": "statvar_schema",
+            "population_type": "FinancialFlow",
+            "measured_property": "amount",
+            "stat_type": "measuredValue",
+            "measurement_qualifier": "Nominal"
+          },
+          "slots": [
+            {
+              "property": "dac2aAidType",
+              "binding": {
+                "state": "value",
+                "ref": "DAC2aAidType206"
+              }
+            },
+            {
+              "property": "dacTypeOfFinance",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "financialFlowType",
+              "binding": {
+                "state": "value",
+                "ref": "Disbursement"
+              }
+            },
+            {
+              "property": "nettingBasis",
+              "binding": {
+                "state": "value",
+                "ref": "Net"
+              }
+            }
+          ],
+          "entities": {
+            "destination": [
+              "country/KEN"
+            ],
+            "origin": [
+              "country/DEU"
+            ]
+          },
+          "requested_window": {
+            "kind": "range",
+            "start_year": 2015,
+            "end_year": 2022
+          },
+          "facets": {
+            "provenance": {
+              "state": "value",
+              "ref": "provenance/ONEDAC2aBilateral"
+            },
+            "unit": {
+              "state": "value",
+              "request": {
+                "currency": "EUR",
+                "prices": "constant",
+                "base_year": 2022
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "response_options": {
+    "include_observations": false
+  }
+}

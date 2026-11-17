@@ -90,6 +90,8 @@ import {
 } from "../core/ref.ts";
 import type { Layout, Rendering, RefMember, Spec } from "../core/ref.ts";
 import { checkOptions } from "../core/options.ts";
+import { checkedConversion, fetchConverted, givenConversion } from "./convert.ts";
+import type { ConversionArgs } from "./convert.ts";
 import { describing } from "../core/trace.ts";
 import type { Transport } from "../http/transport.ts";
 import { isRecord, present } from "../core/json.ts";
@@ -111,8 +113,8 @@ const FILE_GONE: ReadonlySet<string | null> = new Set([
 const FRAME: Rendering = { format: "parquet", bundle: false, layout: "frame" };
 
 /**
- * Fetches a spec's latest version, the exact versions a ref names, or with `latest` the newest
- * versions of a ref's specs; or runs a recipe, or reads a ref of a frame DFO computed, which
+ * Fetches a spec's latest version, in another unit when `currency` is given, the exact versions
+ * a ref names, or with `latest` the newest versions of a ref's specs; or runs a recipe, or reads a ref of a frame DFO computed, which
  * take `latest`, `strict`, `timeout` and `signal`, and refuse `onProgress`, which DFO does not
  * report for them, and the options that narrow or render a spec. A share, or its URL, reads the exact
  * version its slot shows, or with `asOf` showed then; it takes `asOf`, `slot`, `strict`,
@@ -121,8 +123,9 @@ const FRAME: Rendering = { format: "parquet", bundle: false, layout: "frame" };
  * @throws {InvalidRequestError} The target is neither a ref, a recipe nor a spec `checkedSpec`
  *   accepts, a ref is narrowed or given another layout or `partyTotals`, `latest` is given a
  *   spec or a ref whose members differ in rendering, `latest` is not a boolean, or a recipe or
- *   a derived ref is given `window`, `entities`, `facets`, `partyTotals` or a layout other than
- *   `frame`; a share is given a narrowing, `partyTotals`, `latest: true` or a layout other
+ *   a derived ref is given `window`, `entities`, `facets`, `partyTotals`, a conversion option
+ *   or a layout other than `frame`; a ref is given a conversion option; a conversion option
+ *   breaks its rule; a share is given a narrowing, a conversion option, `partyTotals`, `latest: true` or a layout other
  *   than `frame`, `slot` is not a number from 1, or `asOf` is malformed, all before any
  *   request; a share of several slots is given no `slot`, or one past its last; `asOf` is
  *   before the slot first served data; or `asOf` or `slot` is given another target.
@@ -137,16 +140,18 @@ export async function fetchDataset(
   options: FetchOptions = {},
   entityDcids: (narrowing: Narrowing) => Narrowing = (narrowing) => narrowing,
 ): Promise<Dataset> {
-  const { window, entities, facets, latest, asOf, slot, ...rest } = checkOptions(
-    FETCH_OPTIONS,
-    options,
-  );
+  const { window, entities, facets, currency, priceBasis, baseYear, latest, asOf, slot, ...rest } =
+    checkOptions(FETCH_OPTIONS, options);
   const narrowing = narrowingOf({ window, entities, facets });
+  const conversion = { currency, priceBasis, baseYear };
   if (latest !== undefined && typeof latest !== "boolean") {
     throw invalid(`latest is true or false, not ${JSON.stringify(latest)}.`);
   }
   if (shareIdIn(target) !== null) {
-    const given = [...givenOptions(narrowing, rest), ...(latest === true ? ["latest: true"] : [])];
+    const given = [
+      ...givenOptions(narrowing, rest, conversion),
+      ...(latest === true ? ["latest: true"] : []),
+    ];
     if (given.length > 0) {
       throw invalid(
         `A share fetch reads the exact frame a slot shows and takes no ${given.join(", ")}; ` +
@@ -168,7 +173,7 @@ export async function fetchDataset(
     target instanceof Recipe ||
     (target instanceof DatasetRef && target.members.some(isDerived))
   ) {
-    const given = givenOptions(narrowing, rest);
+    const given = givenOptions(narrowing, rest, conversion);
     if (given.length > 0) {
       throw invalid(
         `A recipe or a frame DFO computed takes no ${given.join(", ")}; set them on the ` +
@@ -194,6 +199,15 @@ export async function fetchDataset(
   if (target instanceof DatasetRef) {
     const members = datasetMembers(target);
     if (narrowing.window !== undefined) throw invalid(refWindowRefusal(narrowing.window, latest));
+    const converting = givenConversion(conversion);
+    if (converting.length > 0) {
+      throw invalid(
+        `A ref fetch reads the versions it names and takes no ${converting.join(", ")}; ` +
+          "convert a dataset member's spec instead: " +
+          `client.fetch(member.spec, { currency: ${shownCurrency(currency)} }) for a member of ` +
+          "ref.members where isDatasetMember(member).",
+      );
+    }
     if (narrows(narrowing)) {
       throw invalid(
         "A ref fetch takes no entities or facets; narrow a dataset member's spec instead: " +
@@ -212,9 +226,19 @@ export async function fetchDataset(
         "client.fetch(spec).",
     );
   }
+  const request = checkedConversion(conversion, narrowing.facets);
   const member = { parts: [], spec, ...resolvedOf(spec) };
-  return fetchMembers(transport, [member], { ...rest, narrowing: entityDcids(narrowing) });
+  return fetchConverted(
+    transport,
+    [member],
+    { ...rest, narrowing: entityDcids(narrowing) },
+    request,
+  );
 }
+
+/** A currency as a refusal's example call shows it: the caller's when it is a string. */
+const shownCurrency = (currency: unknown): string =>
+  JSON.stringify(typeof currency === "string" ? capped(currency) : "EUR");
 
 /** Why a ref fetch refuses `window`, and the call that does what it asks: `latest: true` for
  *  the newest version, else a dataset member's spec for a narrower window. */
@@ -230,13 +254,18 @@ function refWindowRefusal(window: unknown, latest: boolean | undefined): string 
 }
 
 /**
- * The options a call names that narrow or render a spec, which a share, a recipe and a frame DFO
- * computed refuse: each reads a frame in the frame layout as DFO stored or computed it. An empty
+ * The options a call names that convert, narrow or render a spec, which a share, a recipe and a
+ * frame DFO computed refuse: each reads a frame in the frame layout as DFO stored or computed it. An empty
  * `entities` or `facets` names nothing, as for a spec or a ref, and `layout: "frame"` is the
  * frame's own.
  */
-function givenOptions(narrowing: Narrowing, options: CallOptions): string[] {
+function givenOptions(
+  narrowing: Narrowing,
+  options: CallOptions,
+  conversion: ConversionArgs,
+): string[] {
   return [
+    ...givenConversion(conversion),
     narrowing.window !== undefined && "window",
     narrows({ entities: narrowing.entities }) && "entities",
     narrows({ facets: narrowing.facets }) && "facets",

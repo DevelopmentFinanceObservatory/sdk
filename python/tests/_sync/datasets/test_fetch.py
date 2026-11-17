@@ -10,6 +10,7 @@ import json
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx2
 import pyarrow.parquet as pq
@@ -28,8 +29,10 @@ from dfo._core.errors import (
     NetworkError,
     NotFoundError,
     PermissionDeniedError,
+    SearchWarning,
     ServerError,
     VersionUnavailableError,
+    message_of,
 )
 from dfo._core.lookup_results import Entity, Match
 from dfo._core.parse import parse_spec
@@ -489,6 +492,350 @@ def test_an_empty_narrowing_takes_the_sentence_of_its_no_data_part(
     assert built.members[0].sentence == NO_DATA
     assert built.members[0].spec.spec_id == NARROWED_ID
     assert [item.message.code for item in caught_warnings] == ["coverage_below_scope"]
+
+
+ODA = "bilateral ODA"
+CONSTANT = {"currency": "EUR", "price_basis": "constant", "base_year": 2022}
+
+
+def oda() -> Reading:
+    """The reading of Germany's bilateral ODA to Kenya, as its answer posts it."""
+    held = parse_spec(load("search-oda-deu-ken.json")["parts"][0]["spec"])
+    return Reading((ODA,), held, held.sentence)
+
+
+def converted_spec(answer: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The converted spec of a recorded conversion answer."""
+    body = load("probe-resubmit-unit-constant.json") if answer is None else answer
+    return body["parts"][0]["spec"]
+
+
+def converted_manifest(**options: Any) -> dict[str, Any]:
+    """The build of the converted spec, carrying its definition."""
+    spec = converted_spec()
+    body = manifest(spec["spec_id"], **options)
+    body["definition"] = spec["definition"]
+    return body
+
+
+def as_sent(body: object) -> str:
+    """A JSON body as the client serialises it, so key order counts."""
+    return json.dumps(body, ensure_ascii=False)
+
+
+def test_a_conversion_posts_the_recorded_request_and_builds_the_converted_spec() -> (
+    None
+):
+    reply = load("probe-resubmit-unit-constant.json")
+    body = converted_manifest()
+    server = Server(
+        json_response(200, reply), json_response(200, body), redirect(), parquet()
+    )
+    with make(server) as transport:
+        built = fetch_members(transport, [oda()], **CONSTANT)
+    assert server.calls() == [
+        f"POST {BASE}/search/resolve",
+        f"POST {BASE}/datasets",
+        f"GET {files_path(body)}",
+        f"GET {SIGNED.split('?')[0]}",
+    ]
+    recorded = load("probe-resubmit-unit-constant.request.json")
+    assert as_sent(server.body(0)) == as_sent(recorded)
+    converted = converted_spec(reply)
+    assert server.body(1)["input"]["spec_id"] == converted["spec_id"]
+    assert server.body(1)["input"]["definition"] == converted["definition"]
+    (member,) = built.members
+    sentence = converted["resolved"]["rendered_sentence"]
+    assert "Constant 2022 euros" in sentence
+    assert (member.parts, member.spec.spec_id, member.sentence) == (
+        (ODA,),
+        converted["spec_id"],
+        sentence,
+    )
+
+
+def test_a_spec_converts_at_current_prices_under_no_parts_name() -> None:
+    reply = load("probe-resubmit-unit-constant.json")
+    current = {"currency": "EUR", "prices": "current"}
+    converted_spec(reply)["definition"]["identity"]["facets"]["unit"]["request"] = (
+        current
+    )
+    server = Server(
+        json_response(200, reply),
+        json_response(200, converted_manifest()),
+        redirect(),
+        parquet(),
+    )
+    with make(server) as transport:
+        built = fetch(transport, oda().spec, currency="EUR")
+    (entry,) = server.body(0)["input"]["entries"]
+    assert entry["variable_text"] == "dataset"
+    assert entry["identity"]["facets"]["unit"] == {"state": "value", "request": current}
+    assert built.members[0].spec.spec_id == converted_spec(reply)["spec_id"]
+
+
+@pytest.mark.parametrize(
+    "narrowing", [{}, {"window": (2015, 2020)}], ids=["held", "narrowed"]
+)
+def test_a_rate_coverage_gap_raises_its_code_with_the_missing_rates(
+    narrowing: dict[str, Any],
+) -> None:
+    reply = load("probe-resubmit-unit-rate-gap.json")
+    server = Server(json_response(200, reply))
+    with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            fetch_members(
+                transport,
+                [oda()],
+                currency="EUR",
+                price_basis="constant",
+                base_year=1900,
+                **narrowing,
+            )
+    error = caught.value
+    assert (error.code, error.trace_id) == (
+        "rate_coverage_gap",
+        reply["diagnostics"]["trace_id"],
+    )
+    assert error.problem is not None
+    assert error.problem["code"] == "rate_coverage_gap"
+    assert error.problem["cause"] == reply["parts"][0]["no_data"]["cause"]
+    assert error.problem["detail"] == error.detail == message_of(error)
+    assert message_of(error).startswith(
+        'Search cannot convert "bilateral ODA" to EUR at constant 1900 prices: '
+    )
+    assert "Missing: CurrencyEUR@1900." in str(error)
+    assert ("convert ds.members[0].spec" in str(error)) == bool(narrowing)
+    recorded = load("probe-resubmit-unit-rate-gap.request.json")
+    assert as_sent(server.body(0)) == as_sent(recorded)
+    assert len(server.requests) == 1
+
+
+def _unsupported(part: dict[str, Any]) -> None:
+    del part["no_data"]
+    part["status"] = "unsupported"
+    part["unsupported"] = {"code": "recipe_not_declared", "detail": "No recipe."}
+
+
+def _unlisted_reason(part: dict[str, Any]) -> None:
+    part["no_data"]["reason"] = "rate_table_retired"
+
+
+@pytest.mark.parametrize(
+    ("edit", "raised", "code"),
+    [
+        (_unsupported, InvalidRequestError, "recipe_not_declared"),
+        (_unlisted_reason, DfoError, "rate_table_retired"),
+    ],
+    ids=["unsupported", "unlisted-reason"],
+)
+def test_a_refused_part_raises_the_class_its_code_maps_to(
+    edit: Any, raised: type[DfoError], code: str
+) -> None:
+    reply = load("probe-resubmit-unit-rate-gap.json")
+    edit(reply["parts"][0])
+    server = Server(json_response(200, reply))
+    with make(server) as transport:
+        with pytest.raises(DfoError) as caught:
+            fetch_members(transport, [oda()], **CONSTANT)
+    assert type(caught.value) is raised
+    assert (caught.value.code, caught.value.status) == (code, 200)
+    assert caught.value.problem is not None
+    assert caught.value.problem["code"] == code
+
+
+def test_a_series_no_recipe_converts_raises_the_servers_refusal() -> None:
+    held = parse_spec(load("search-debt-stock-ken.json")["parts"][0]["spec"])
+    assert held.unit_conversion is None
+    recorded = load("probe-resubmit-unit-recipe-refused.json")
+    server = Server(
+        json_response(recorded["status"], recorded["body"], recorded["headers"])
+    )
+    with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            fetch_members(
+                transport,
+                [Reading(("external debt stocks",), held, held.sentence)],
+                currency="EUR",
+            )
+    assert (caught.value.code, caught.value.status) == ("recipe_not_declared", 422)
+    request = load("probe-resubmit-unit-recipe-refused.request.json")
+    assert as_sent(server.body(0)) == as_sent(request)
+    assert len(server.requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("options", "names"),
+    [
+        ({"price_basis": "constant", "base_year": 2022}, 'currency="EUR"'),
+        ({"base_year": 2022}, 'currency="EUR"'),
+        ({"currency": "eur"}, '"eur"'),
+        ({"currency": "EURO"}, '"EURO"'),
+        ({"currency": 978}, "978"),
+        ({"currency": "EUR", "price_basis": "real"}, '"real"'),
+        ({"currency": "EUR", "price_basis": "constant"}, "default_base_year"),
+        ({"currency": "EUR", "base_year": 2022}, 'price_basis="constant"'),
+        (
+            {"currency": "EUR", "price_basis": "current", "base_year": 2022},
+            'price_basis="constant"',
+        ),
+        ({"currency": "EUR", "price_basis": "constant", "base_year": True}, "True"),
+        ({"currency": "EUR", "price_basis": "constant", "base_year": "2022"}, '"2022"'),
+        ({"currency": "EUR", "facets": {"unit": "USD"}}, 'facets["unit"]'),
+    ],
+    ids=[
+        "basis-without-currency",
+        "base-year-without-currency",
+        "lower-case",
+        "four-letters",
+        "number",
+        "unknown-basis",
+        "constant-without-base-year",
+        "base-year-at-current-by-default",
+        "base-year-at-current",
+        "bool-base-year",
+        "text-base-year",
+        "unit-facet",
+    ],
+)
+def test_a_malformed_conversion_sends_nothing(
+    options: dict[str, Any], names: str
+) -> None:
+    server = Server()
+    with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            fetch(transport, oda().spec, **options)
+    assert caught.value.code == "invalid_argument"
+    assert names in str(caught.value)
+    assert server.requests == []
+
+
+def test_offline_a_conversion_is_refused_unsent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DFO_OFFLINE", "1")
+    server = Server()
+    with make(server) as transport:
+        with pytest.raises(NetworkError) as caught:
+            fetch(transport, oda().spec, cache=FakeCache(), currency="EUR")
+    assert caught.value.code == "offline"
+    assert server.requests == []
+
+
+def _two_parts(reply: dict[str, Any]) -> None:
+    reply["parts"].append(copy.deepcopy(reply["parts"][0]))
+
+
+def _another_request(reply: dict[str, Any]) -> None:
+    identity = converted_spec(reply)["definition"]["identity"]
+    identity["facets"]["unit"]["request"]["base_year"] = 2021
+
+
+def _no_request(reply: dict[str, Any]) -> None:
+    del converted_spec(reply)["definition"]["identity"]["facets"]["unit"]
+
+
+def _unknown_status(reply: dict[str, Any]) -> None:
+    reply["parts"][0]["status"] = "later"
+
+
+def _no_resolution(reply: dict[str, Any]) -> None:
+    reply["kind"] = "catalogue"
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [_two_parts, _another_request, _no_request, _unknown_status, _no_resolution],
+    ids=["two-parts", "another-request", "no-request", "unknown-status", "kind"],
+)
+def test_a_conversion_reply_that_does_not_echo_the_request_raises(
+    edit: Any,
+) -> None:
+    reply = load("probe-resubmit-unit-constant.json")
+    edit(reply)
+    server = Server(json_response(200, reply))
+    with make(server) as transport:
+        with pytest.raises(ContractError) as caught:
+            fetch_members(transport, [oda()], **CONSTANT)
+    assert (caught.value.code, caught.value.trace_id) == (
+        "contract_violation",
+        reply["diagnostics"]["trace_id"],
+    )
+    assert len(server.requests) == 1
+
+
+OMITTED = {
+    "code": "deflator_missing_omitted",
+    "severity": "warn",
+    "message": "A constant-price conversion left out rows of 1 entity.",
+}
+
+
+@pytest.mark.parametrize(
+    ("manifest_warnings", "issued"),
+    [
+        ([], [(SearchWarning, "deflator_missing_omitted")]),
+        ([OMITTED], [(DataWarning, "deflator_missing_omitted")]),
+    ],
+    ids=["search-only", "manifest-too"],
+)
+def test_a_conversion_warning_is_issued_once(
+    manifest_warnings: list[dict[str, str]], issued: list[tuple[type, str]]
+) -> None:
+    reply = load("probe-resubmit-unit-constant.json")
+    info = {"code": "unit_conversion_applied", "severity": "info", "message": "x"}
+    reply["parts"][0]["warnings"] = [OMITTED, info]
+    server = Server(
+        json_response(200, reply),
+        json_response(200, converted_manifest(warnings=manifest_warnings)),
+        redirect(),
+        parquet(),
+    )
+    with make(server) as transport:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            fetch_members(transport, [oda()], **CONSTANT)
+    assert [
+        (type(item.message), getattr(item.message, "code", None)) for item in caught
+    ] == issued
+
+
+def test_strict_raises_a_conversion_warning_before_downloading() -> None:
+    reply = load("probe-resubmit-unit-constant.json")
+    reply["parts"][0]["warnings"] = [OMITTED]
+    server = Server(json_response(200, reply), json_response(200, converted_manifest()))
+    with make(server) as transport:
+        with pytest.raises(SearchWarning) as caught:
+            fetch_members(transport, [oda()], strict=True, **CONSTANT)
+    assert (caught.value.code, caught.value.trace_id) == (
+        "deflator_missing_omitted",
+        reply["diagnostics"]["trace_id"],
+    )
+    assert len(server.requests) == 2
+
+
+def test_a_narrowed_conversion_takes_the_warnings_of_its_built_identity() -> None:
+    reply = load("probe-resubmit-unit-constant.json")
+    reply["parts"][0]["warnings"] = [OMITTED]
+    built = resubmitted()
+    clipped = {"code": "date_coverage_partial", "severity": "warn", "message": "cut"}
+    built["parts"][0]["warnings"] = [clipped]
+    server = Server(
+        json_response(200, reply),
+        json_response(200, manifest()),
+        json_response(200, built),
+        redirect(),
+        parquet(),
+    )
+    with make(server) as transport:
+        with pytest.warns(SearchWarning) as caught:
+            fetched = fetch_members(transport, [oda()], window=(2015, 2020), **CONSTANT)
+    assert [getattr(item.message, "code", None) for item in caught] == [
+        "date_coverage_partial"
+    ]
+    assert server.body(1)["input"]["spec_id"] == converted_spec()["spec_id"]
+    assert server.body(1)["input"]["scope"]["window"]["end_year"] == 2020
+    assert fetched.members[0].sentence == SENTENCE
 
 
 def test_strict_raises_a_dataset_warning_before_downloading() -> None:
@@ -1863,6 +2210,11 @@ def test_incomplete_metadata_artifact_stays_eligible_offline(
             "{caller}.fetch(member.spec, entities=...) for a RefMember",
         ),
         ("ref", {"facets": {"unit": "USD"}}, "{caller}.fetch(member.spec"),
+        (
+            "ref",
+            {"currency": "EUR", "price_basis": "constant", "base_year": 2022},
+            '{caller}.fetch(member.spec, currency="EUR")',
+        ),
         ("ref", {"latest": 1}, "not 1"),
         ("spec", {"latest": True}, "{caller}.fetch(spec)"),
         ("spec", {"latest": "yes"}, "not 'yes'"),
@@ -1874,6 +2226,7 @@ def test_incomplete_metadata_artifact_stays_eligible_offline(
         "latest-ref-years",
         "ref-entities",
         "ref-facets",
+        "ref-conversion",
         "latest-not-a-bool",
         "latest-spec",
         "latest-spec-not-a-bool",

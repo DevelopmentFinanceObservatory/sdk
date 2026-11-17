@@ -115,6 +115,8 @@ export type {
   UnsupportedPart,
 } from "./core/parts.ts";
 export { specRoles } from "./core/roles.ts";
+export type { ConversionCurrency, UnitConversion } from "./core/conversion.ts";
+export type { Conversion } from "./datasets/convert.ts";
 export { isDatasetMember, isDerived } from "./core/ref.ts";
 export type {
   DatasetRefJson,

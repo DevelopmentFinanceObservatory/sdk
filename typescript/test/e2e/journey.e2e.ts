@@ -26,9 +26,14 @@ import { promisify } from "node:util";
 
 import { Ajv2020 } from "ajv/dist/2020.js";
 
-import { IncompleteAnswerError, InvalidRequestError, NotFoundError } from "../../src/errors.ts";
-import { Client, DatasetRef, Provenance } from "../../src/index.ts";
-import type { Answer, Dataset, Spec } from "../../src/index.ts";
+import {
+  DfoError,
+  IncompleteAnswerError,
+  InvalidRequestError,
+  NotFoundError,
+} from "../../src/errors.ts";
+import { Client, Dataset, DatasetRef, Provenance, unitConversion } from "../../src/index.ts";
+import type { Answer, Spec } from "../../src/index.ts";
 import type { Row } from "../../src/types.ts";
 import { firstLogged, idTokenHeaders } from "../support.ts";
 
@@ -575,6 +580,57 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
       const record = provenance.toJSON();
       assert.deepEqual([record.members[0]!.pinned, record.members[0]!.held_until], served);
       assert.deepEqual([record.pinned, record.held_until], served);
+    },
+  );
+
+  test(
+    "13. a reading fetched in constant euros pins, saves and fetches again",
+    { timeout: STEP_TIMEOUT },
+    async (t) => {
+      const answer = await client.search("bilateral ODA from Germany to Kenya 2015 to 2022");
+      const [spec] = answer.specs;
+      assert.ok(spec, "the answer has a reading");
+      const offer = unitConversion(spec);
+      assert.ok(offer, "the reading offers conversions");
+      const eur = offer.currencies.find((currency) => currency.code === "EUR");
+      assert.ok(eur?.constantYears, "the reading converts to euros at constant prices");
+
+      const request = { currency: "EUR", priceBasis: "constant", baseYear: 2022 } as const;
+      const dataset = await answer.fetch(request);
+      const [member] = dataset.members;
+      assert.ok(member && dataset.members.length === 1);
+      assert.notEqual(member.spec.spec_id, spec.spec_id, "the converted reading is a new spec");
+      assert.match(member.sentence, /Constant 2022 euros/);
+      const rows = await dataset.toRows();
+      assert.ok(rows.length > 0);
+      for (const row of rows) {
+        assert.deepEqual(
+          [row["currency"], row["price_basis"], Number(row["base_year"])],
+          ["EUR", "constant", 2022],
+        );
+      }
+
+      // A pin needs a key the website proxy may not hold; the dataset as fetched goes on.
+      let kept = dataset;
+      try {
+        kept = await client.pin(dataset);
+      } catch (error) {
+        if (!(error instanceof DfoError) || error.code === null) throw error;
+        t.diagnostic(`the pin was refused (${error.code}); saving the unpinned dataset`);
+      }
+      const saved = await Dataset.fromBytes(await kept.toBytes());
+      assert.ok(saved.ref.equals(kept.ref));
+      assert.equal(saved.members[0]!.sentence, member.sentence);
+      const again = await client.fetch(saved.ref);
+      assert.deepEqual(
+        again.members.map((m) => [m.spec.spec_id, m.contentVersion, m.digest]),
+        [[member.spec.spec_id, member.contentVersion, member.digest]],
+      );
+
+      const gap = await rejection(answer.fetch({ ...request, baseYear: 1900 }));
+      assert.ok(gap instanceof InvalidRequestError, String(gap));
+      assert.equal(gap.code, "rate_coverage_gap");
+      t.diagnostic(`${rows.length} rows in ${member.spec.spec_id}`);
     },
   );
 });

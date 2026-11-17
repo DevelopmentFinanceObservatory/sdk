@@ -11,6 +11,7 @@ export { Dataset, Provenance } from "./datasets/dataset.ts";
 export { load } from "./datasets/load.ts";
 export { recipe } from "./datasets/recipe.ts";
 export { latestYear } from "./core/periods.ts";
+export { unitConversion } from "./core/conversion.ts";
 export { DatasetRef } from "./core/ref.ts";
 export type { Spec } from "./core/ref.ts";
 export { VERSION } from "./version.ts";

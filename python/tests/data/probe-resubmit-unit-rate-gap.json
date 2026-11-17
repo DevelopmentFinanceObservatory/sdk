@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "query_echo": {
+    "entry_path": "dataset_resubmit",
+    "extract_skipped": true
+  },
+  "diagnostics": {
+    "engine_build": "beb2be5827ddc15f4f86589c594a1fd6045101ca",
+    "trace_id": "80ed7b982e2d4f14be30e26fd94c5328",
+    "warnings": [],
+    "timing_ms": {
+      "total": 3,
+      "by_step": {
+        "coverage": 0
+      }
+    },
+    "timed_out": false
+  },
+  "kind": "resolution",
+  "parts": [
+    {
+      "variable_text": "bilateral ODA",
+      "warnings": [
+        {
+          "code": "deflator_missing_omitted",
+          "severity": "warn",
+          "message": "A constant-price conversion left out each entity's rows in the years the deflator table holds no value for it, and every row of an entity it holds no value for in the base year. It left out rows of 1 entity.",
+          "params": {
+            "count": 1,
+            "entities": [
+              "country/DEU"
+            ],
+            "entity_labels": [
+              "Germany"
+            ],
+            "entity_years": [
+              "2015-2022"
+            ]
+          }
+        }
+      ],
+      "timing_ms": {
+        "total": 0,
+        "by_step": {
+          "response_cache_part_memo": 0,
+          "served_entry": 0
+        }
+      },
+      "rendered_sentence": "No data is available for this query. Constant prices leave out Germany, which the price deflators do not cover.",
+      "sentence_plan": [
+        {
+          "kind": "text",
+          "text": "No data is available for this query.",
+          "segment": "heading",
+          "entity_refs": [],
+          "states": []
+        },
+        {
+          "kind": "text",
+          "text": " ",
+          "segment": "departure",
+          "entity_refs": [],
+          "states": []
+        },
+        {
+          "kind": "text",
+          "text": "Constant prices leave out Germany, which the price deflators do not cover.",
+          "segment": "departure",
+          "entity_refs": [],
+          "states": []
+        }
+      ],
+      "entity_refs": [],
+      "operations": [],
+      "departures": [
+        {
+          "code": "year_unavailable",
+          "binding_ref": "unit:",
+          "text": "Constant prices leave out Germany, which the price deflators do not cover."
+        }
+      ],
+      "assumptions": [],
+      "status": "no_data",
+      "no_data": {
+        "reason": "rate_coverage_gap",
+        "cause": {
+          "code": "rate_missing",
+          "entities": [
+            "CurrencyEUR@1900"
+          ],
+          "truncated": false
+        },
+        "category": "absent",
+        "message": "No data is available for this query.",
+        "elected_count": 1,
+        "entity_terms": [],
+        "ambiguous_entities": [],
+        "source_terms": [],
+        "ambiguous_sources": [],
+        "unbound_qualifiers": [],
+        "options": []
+      }
+    }
+  ],
+  "rendered_sentence": "No data is available for this query. Constant prices leave out Germany, which the price deflators do not cover.",
+  "sentence_plan": [
+    {
+      "kind": "text",
+      "text": "No data is available for this query.",
+      "segment": "heading",
+      "entity_refs": [],
+      "states": [],
+      "part_index": 0
+    },
+    {
+      "kind": "text",
+      "text": " ",
+      "segment": "departure",
+      "entity_refs": [],
+      "states": [],
+      "part_index": 0
+    },
+    {
+      "kind": "text",
+      "text": "Constant prices leave out Germany, which the price deflators do not cover.",
+      "segment": "departure",
+      "entity_refs": [],
+      "states": [],
+      "part_index": 0
+    }
+  ],
+  "status": "no_data"
+}

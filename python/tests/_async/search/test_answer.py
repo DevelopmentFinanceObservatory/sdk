@@ -844,9 +844,15 @@ async def test_fetch_builds_one_member_per_distinct_spec(
     unnamed["variable_text"] = ""
     wire["parts"].append(unnamed)
     answer, _ = await ask(TWO_PARTS, wire)
-    assert (
-        await answer.fetch(layout="long", party_totals=True, timeout=10.0) == "dataset"
+    converted = await answer.fetch(
+        layout="long",
+        party_totals=True,
+        timeout=10.0,
+        currency="EUR",
+        price_basis="constant",
+        base_year=2022,
     )
+    assert converted == "dataset"
     ((transport_used, members, options),) = fetched
     oda, gni = wire["parts"][0]["spec"], wire["parts"][1]["spec"]
     assert [(m.parts, m.spec.spec_id, m.sentence) for m in members] == [
@@ -873,6 +879,9 @@ async def test_fetch_builds_one_member_per_distinct_spec(
         "window": None,
         "entities": None,
         "facets": None,
+        "currency": "EUR",
+        "price_basis": "constant",
+        "base_year": 2022,
         "question": "Germany's ODA and GNI from 2015 to 2022",
     }
     assert isinstance(transport_used, AsyncTransport)
@@ -991,6 +1000,38 @@ async def test_a_partial_fetch_holds_no_client_in_its_dataset(
         data = await answer.fetch(partial=True)
     assert data.missing == answer.gaps
     assert client_references(data) == []
+
+
+async def test_a_refused_conversion_raises_its_code_under_partial() -> None:
+    wire = load("search-oda-deu-ken.json")
+    wire["parts"].append(load("search-two-parts-candidates.json")["parts"][1])
+    wire["status"] = "mixed"
+    refused = load("probe-resubmit-unit-rate-gap.json")
+    answer, server = await ask("ODA", wire, refused)
+    assert [gap.part_index for gap in answer.gaps] == [1]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SearchWarning)
+        with pytest.raises(InvalidRequestError) as caught:
+            await answer.fetch(
+                partial=True, currency="EUR", price_basis="constant", base_year=1900
+            )
+    assert caught.value.code == "rate_coverage_gap"
+    assert caught.value.trace_id == refused["diagnostics"]["trace_id"]
+    assert caught.value.problem is not None
+    assert caught.value.problem["code"] == "rate_coverage_gap"
+    assert caught.value.problem["cause"] == refused["parts"][0]["no_data"]["cause"]
+    # Only the part with a reading converts.
+    assert server.posted[1] == load("probe-resubmit-unit-rate-gap.request.json")
+    assert len(server.posted) == 2
+
+
+async def test_an_answer_read_back_keeps_each_specs_conversion_offer() -> None:
+    answer, _ = await ask("ODA", load("search-oda-deu-ken.json"))
+    offer = answer.specs[0].unit_conversion
+    assert offer is not None
+    async with AsyncClient(base_url=BASE, api_key=False, cache=False) as client:
+        revived = AsyncAnswer.from_json(answer.to_json(), client=client)
+    assert revived.specs[0].unit_conversion == offer
 
 
 async def test_fetch_narrows_every_reading_and_refuses_a_role_one_lacks() -> None:

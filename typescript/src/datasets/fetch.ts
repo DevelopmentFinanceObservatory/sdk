@@ -25,6 +25,7 @@
  */
 
 import type { Gap } from "../search/answer.ts";
+import type { Conversion } from "./convert.ts";
 import { Dataset } from "./dataset.ts";
 import type { FetchedMember } from "./dataset.ts";
 import {
@@ -38,7 +39,7 @@ import {
 import type { ClientErrorCode, DfoErrorOptions } from "../core/errors.ts";
 import { build, downloadBuilt, waitFor } from "./operation.ts";
 import type { Built, Manifest, ProgressHandler, Wait } from "./operation.ts";
-import { manifestWarningsOf, partFacts } from "../core/parse.ts";
+import { manifestWarningsOf, partFacts, warningsOf } from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
 import { mintOptions, renderingFor, renderingMatches } from "../core/ref.ts";
 import type { Layout, Rendering, Spec } from "../core/ref.ts";
@@ -49,7 +50,7 @@ import { DEFAULT_MAX_BYTES, passedDeadline } from "../http/transport.ts";
 import type { Target, Transport } from "../http/transport.ts";
 import type { EntityGroup } from "../wire.ts";
 import type { Part } from "../core/parts.ts";
-import { DataWarning } from "../core/warnings.ts";
+import { DataWarning, SearchWarning } from "../core/warnings.ts";
 import { isRecord, present, text } from "../core/json.ts";
 import { nearest } from "../core/nearest.ts";
 import { declareOptions } from "../core/options.ts";
@@ -136,8 +137,10 @@ export type CallOptions = {
   partyTotals?: boolean;
 };
 
-/** The options a spec takes: every option but `latest`, `asOf` and `slot`. */
-export type SpecFetchOptions = CallOptions & Narrowing;
+/** The options a spec takes: every option but `latest`, `asOf` and `slot`. `currency`,
+ *  `priceBasis` and `baseYear` fetch the reading in another unit, converted before `window`,
+ *  `entities` and `facets` narrow it. */
+export type SpecFetchOptions = CallOptions & Narrowing & Conversion;
 
 /** The options a ref takes. Its `layout` must be the ref's own, and a ref of a frame DFO
  *  computed takes no `onProgress`. */
@@ -185,6 +188,9 @@ export const FETCH_OPTIONS = declareOptions<FetchOptions>("client.fetch", {
   window: true,
   entities: true,
   facets: true,
+  currency: true,
+  priceBasis: true,
+  baseYear: true,
   latest: true,
   asOf: true,
   slot: true,
@@ -197,11 +203,16 @@ export type FetchMembersOptions = CallOptions & {
   narrowing?: Narrowing;
   /** The question the members answer, which the dataset keeps, when an answer fetches them. */
   question?: string | null;
+  /** The wait a caller already started, such as a conversion's, which the builds share. */
+  wait?: Wait;
+  /** Collects Search's `warn` and `degraded` warnings about each narrowed reading, from the
+   *  resubmit that gives its sentence, when the caller issues them itself. */
+  searchWarnings?: SearchWarning[];
 };
 
 /** The variable text an identity resubmit sends for a spec no answer part names. Search
  *  echoes it onto the part, and it does not change the sentence. */
-const UNNAMED_PART = "dataset";
+export const UNNAMED_PART = "dataset";
 
 export const DIGEST_MISMATCH = "digest_mismatch" satisfies ClientErrorCode;
 
@@ -677,6 +688,7 @@ export async function sentenceFor(
   parts: readonly string[],
   held: Held | undefined,
   wait: Wait,
+  searchWarnings?: SearchWarning[],
 ): Promise<string> {
   const definition = definitionOf(manifest);
   const specId = specIdOf(manifest);
@@ -711,6 +723,11 @@ export async function sentenceFor(
         const spec = part["spec"] as Record<string, unknown>;
         const meta = spec["resolved"];
         if (spec["spec_id"] === specId && isRecord(meta)) sentence = meta["rendered_sentence"];
+        for (const { code, severity, message } of warningsOf(part["warnings"])) {
+          if (severity !== "warn" && severity !== "degraded") continue;
+          const name = JSON.stringify(parts[0] ?? specId);
+          searchWarnings?.push(new SearchWarning(code, `${name}: ${message}`, response.traceId));
+        }
       } else if (
         resolved.length === 1 &&
         isRecord(part) &&
@@ -746,6 +763,8 @@ export type Finishing = {
   readonly rendering: Rendering;
   readonly strict: boolean;
   readonly answerFacts?: readonly PartFacts[];
+  /** Collects Search's warnings about the built reading when its sentence is resubmitted. */
+  readonly searchWarnings?: SearchWarning[] | undefined;
 };
 
 /** Downloads a built version's artifact and gives it Search's sentence, within `downloadBuilt`'s
@@ -753,7 +772,7 @@ export type Finishing = {
 export async function finish(
   transport: Transport,
   built: Built,
-  { parts, posted, sentence, rendering, strict, answerFacts }: Finishing,
+  { parts, posted, sentence, rendering, strict, answerFacts, searchWarnings }: Finishing,
   wait: Wait,
 ): Promise<FetchedMember> {
   const { manifest } = built;
@@ -775,7 +794,9 @@ export async function finish(
   const known = posted?.spec.spec_id === specId && isText(sentence);
   const digest = String(artifact["artifact_digest"]);
   const { told, data } = await downloadBuilt(transport, built, wait, async (within) => ({
-    told: known ? sentence : await sentenceFor(transport, manifest, parts, posted, within),
+    told: known
+      ? sentence
+      : await sentenceFor(transport, manifest, parts, posted, within, searchWarnings),
     data: await download(transport, { url: route.href }, digest, within, artifact["bytes"]),
   }));
   checkArtifact(data, manifest, digest);
@@ -880,6 +901,36 @@ function joined(
 }
 
 /**
+ * The distinct members a fetch builds, each one's build `scope`, and the rendering, once the
+ * layout, `partyTotals` and the narrowing pass their rules for every member.
+ *
+ * @throws {InvalidRequestError} No member, `layout: "frame"` with several members, or a
+ *   narrowing that breaks its rule for any member or names a role a member does not take
+ *   (`invalid_argument`).
+ */
+export function checkMembers(
+  members: readonly MemberRequest[],
+  options: FetchMembersOptions,
+): {
+  wants: MemberRequest[];
+  scopes: (Record<string, unknown> | undefined)[];
+  rendering: Rendering;
+} {
+  const layout = options.layout ?? "long";
+  const rendering = renderingFor(layout, !checkedPartyTotals(options.partyTotals));
+  const wants = distinct(members);
+  if (wants.length === 0) throw invalid("A fetch needs at least one spec.");
+  if (layout === "frame" && wants.length > 1) {
+    throw invalid('layout "frame" holds one reading; fetch each spec on its own for its frame.');
+  }
+  const narrowing = options.narrowing ?? {};
+  // Every reading's narrowing is checked before the first request.
+  const scopes = wants.map(({ spec }) => scopeOf(spec, narrowing));
+  checkRoles(wants, narrowing.entities);
+  return { wants, scopes, rendering };
+}
+
+/**
  * Builds the latest version of each spec and assembles one dataset. A spec listed twice builds
  * once, answering both parts. Two specs whose narrowed builds are one spec, which the build's
  * manifest names, make one member answering both, downloaded once.
@@ -896,17 +947,9 @@ export async function fetchMembers(
   options: FetchMembersOptions = {},
 ): Promise<Dataset> {
   const layout = options.layout ?? "long";
-  const rendering = renderingFor(layout, !checkedPartyTotals(options.partyTotals));
-  const wants = distinct(members);
-  if (wants.length === 0) throw invalid("A fetch needs at least one spec.");
-  if (layout === "frame" && wants.length > 1) {
-    throw invalid('layout "frame" holds one reading; fetch each spec on its own for its frame.');
-  }
+  const { wants, scopes, rendering } = checkMembers(members, options);
   const narrowing = options.narrowing ?? {};
-  // Every reading's narrowing is checked before the first build.
-  const scopes = wants.map(({ spec }) => scopeOf(spec, narrowing));
-  checkRoles(wants, narrowing.entities);
-  const wait = waitFor(transport, options);
+  const wait = options.wait ?? waitFor(transport, options);
   const fetched: FetchedMember[] = [];
   /** Where each built spec sits in `fetched`. */
   const builtAt = new Map<string, number>();
@@ -939,6 +982,7 @@ export async function fetchMembers(
       rendering,
       strict: options.strict ?? false,
       ...(answerFacts === undefined ? {} : { answerFacts }),
+      searchWarnings: options.searchWarnings,
     };
     try {
       fetched.push(await finish(transport, built, finishing, wait));

@@ -35,6 +35,7 @@ from dfo._core.types import (
     OPERATION_ID,
     Layout,
     Part,
+    PriceBasis,
     Rendering,
     Spec,
     Window,
@@ -61,6 +62,15 @@ WINDOW_LAST_YEAR = 2200
 
 # Each wire role a caller key renames, such as observationAbout, with that key.
 _WIRE_SPELLINGS = {wire: key for key, wire in ROLE_KEYS.items() if wire != key}
+
+# The variable text an identity resubmit sends for a spec no answer part names;
+# Search echoes it onto the part, and it does not change the sentence.
+UNNAMED_PART = "dataset"
+
+# A currency `fetch(currency=...)` takes: an ISO 4217 code, as the server reads it.
+_CURRENCY = re.compile(r"[A-Z]{3}")
+
+_PRICE_BASES: tuple[PriceBasis, ...] = ("current", "constant")
 
 
 @dataclass(frozen=True, slots=True)
@@ -656,6 +666,146 @@ def resubmit_body(
     return {
         "schema_version": 1,
         "input": {"kind": "dataset_resubmit", "entries": [entry]},
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class UnitRequest:
+    """The currency and price basis a fetch converts its readings to.
+
+    Attributes:
+        currency: The ISO 4217 code, such as `EUR`.
+        price_basis: `current` or `constant`.
+        base_year: The base year of constant prices; None for current prices.
+    """
+
+    currency: str
+    price_basis: PriceBasis
+    base_year: int | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """The request as the unit facet of an identity holds it, with
+        `price_basis` under its wire name `prices`."""
+        wire: dict[str, Any] = {"currency": self.currency, "prices": self.price_basis}
+        if self.base_year is not None:
+            wire["base_year"] = self.base_year
+        return wire
+
+
+def unit_request(
+    *,
+    currency: object,
+    price_basis: object,
+    base_year: object,
+    facets: object = None,
+) -> UnitRequest | None:
+    """The conversion a fetch's `currency`, `price_basis` and `base_year` ask
+    for, or None when `currency` is None and so are the other two.
+
+    Raises:
+        InvalidRequestError: `price_basis` or `base_year` is given without
+            `currency`; `currency` is not three capital letters; `price_basis`
+            is neither `current` nor `constant`; `base_year` is not an int, is
+            missing for constant prices or is given for current ones; or
+            `facets` binds the unit as well (`invalid_argument`).
+    """
+    if currency is None:
+        if price_basis is not None or base_year is not None:
+            raise client_error(
+                INVALID_ARGUMENT,
+                "price_basis and base_year convert to a currency; name it as well, "
+                'such as currency="EUR"',
+            )
+        return None
+    if not isinstance(currency, str) or not _CURRENCY.fullmatch(currency):
+        raise client_error(
+            INVALID_ARGUMENT,
+            "currency is an ISO 4217 code of three capital letters, such as "
+            f'"EUR", not {cited(currency)}',
+        )
+    if price_basis is None:
+        price_basis = "current"
+    if price_basis not in _PRICE_BASES:
+        raise client_error(
+            INVALID_ARGUMENT,
+            f'price_basis is "current" or "constant", not {cited(price_basis)}',
+        )
+    if base_year is not None and (
+        not isinstance(base_year, int) or isinstance(base_year, bool)
+    ):
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"base_year is a year as an int, such as 2022, not {cited(base_year)}",
+        )
+    if price_basis == "constant" and base_year is None:
+        raise client_error(
+            INVALID_ARGUMENT,
+            'price_basis="constant" takes a base_year, such as base_year=2022; '
+            "spec.unit_conversion.default_base_year names the one Search reads by "
+            "default, and each currency's base_years the range it converts at",
+        )
+    if price_basis == "current" and base_year is not None:
+        raise client_error(
+            INVALID_ARGUMENT,
+            'base_year goes with price_basis="constant"; current prices convert '
+            "each year at its own rate and take none",
+        )
+    if isinstance(facets, Mapping) and "unit" in facets:
+        raise client_error(
+            INVALID_ARGUMENT,
+            'facets["unit"] and currency both set the unit; pass one of them',
+        )
+    return UnitRequest(
+        currency,
+        "constant" if price_basis == "constant" else "current",
+        base_year,
+    )
+
+
+def conversion_body(
+    readings: Sequence[Reading], request: UnitRequest
+) -> dict[str, Any]:
+    """The Search request that converts each reading to `request`: one identity
+    entry per reading, in order, its identity's unit facet set to the request.
+
+    Each entry names the reading's first part, else `UNNAMED_PART`, and carries
+    the spec's entity groups, as `resubmit_body` does.
+
+    Raises:
+        InvalidRequestError: A reading's definition holds no identity object
+            (`invalid_argument`).
+    """
+    entries = []
+    for reading in readings:
+        spec = reading.spec
+        identity = spec.definition.get("identity")
+        if not isinstance(identity, Mapping):
+            raise client_error(
+                INVALID_ARGUMENT,
+                f"The definition of {spec.spec_id} holds no identity to convert; use "
+                "a spec from a search, such as answer.specs[0], or a saved "
+                "dataset's data.members[0].spec",
+            )
+        facets = identity.get("facets")
+        unit = {"state": "value", "request": request.to_wire()}
+        entry: dict[str, Any] = {
+            "entry_kind": "identity",
+            "variable_text": reading.parts[0] if reading.parts else UNNAMED_PART,
+            "identity": {
+                **identity,
+                "facets": {
+                    **(facets if isinstance(facets, Mapping) else {}),
+                    "unit": unit,
+                },
+            },
+        }
+        if spec.entity_groups:
+            entry["entity_groups"] = spec.entity_groups
+        entries.append(entry)
+    return {
+        "schema_version": 1,
+        "input": {"kind": "dataset_resubmit", "entries": entries},
+        "response_options": {"include_observations": False},
     }
 
 

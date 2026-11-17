@@ -45,7 +45,7 @@ from dfo._core.timeouts import (
     ClientTimeoutArgument,
     MaxRetriesArgument,
 )
-from dfo._core.types import Layout, Spec, Window
+from dfo._core.types import Layout, PriceBasis, Spec, Window
 from dfo._datasets.build import Entities
 from dfo._datasets.dataset import Dataset
 from dfo._datasets.publication import Card, Moment, Served, Share, ShareTarget
@@ -243,6 +243,9 @@ def fetch(
     window: Window | None = None,
     entities: Entities | None = None,
     facets: Mapping[str, str | None] | None = None,
+    currency: str | None = None,
+    price_basis: PriceBasis | None = None,
+    base_year: int | None = None,
     layout: Layout | None = None,
     party_totals: bool | None = None,
     strict: bool = False,
@@ -307,6 +310,9 @@ def fetch(
     window: Window | None = None,
     entities: Entities | None = None,
     facets: Mapping[str, str | None] | None = None,
+    currency: str | None = None,
+    price_basis: PriceBasis | None = None,
+    base_year: int | None = None,
     layout: Layout | None = None,
     party_totals: bool | None = None,
     latest: bool = False,
@@ -335,11 +341,13 @@ def fetch(
             `frame`, `slot` is 0, or `as_of` is malformed, all before any
             request; a share of several slots is given no `slot`, or one past
             its last; `as_of` is before the slot first served data; `window`,
-            `entities`, `facets` or `layout` is malformed; `entities` holds a
+            `entities`, `facets`, the conversion or `layout` is malformed, or
+            a ref, share or recipe is given a conversion; `entities` holds a
             match that did not resolve, or names a role the spec does not
             declare; or `timeout` is not None or a finite number above 0
             (`invalid_argument`). A type checker rejects an option the target
-            does not take.
+            does not take. Search refused the conversion
+            (`rate_coverage_gap`, `recipe_not_declared`).
         VersionUnavailableError: A ref's version can no longer be fetched.
         ContractError: An artifact is not Parquet (`unexpected_response`), or
             lacks a `time_period` or numeric `value` column
@@ -358,6 +366,9 @@ def fetch(
         window=window,
         entities=entities,
         facets=facets,
+        currency=currency,
+        price_basis=price_basis,
+        base_year=base_year,
         layout=layout,
         party_totals=party_totals,
         latest=latest,

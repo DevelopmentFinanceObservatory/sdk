@@ -72,6 +72,7 @@ from dfo._core.types import (
     SPEC_ID,
     FormatError,
     Layout,
+    PriceBasis,
     Rendering,
     Spec,
     Window,
@@ -147,6 +148,9 @@ async def fetch(
     window: Window | None = None,
     entities: Entities | None = None,
     facets: Mapping[str, str | None] | None = None,
+    currency: str | None = None,
+    price_basis: PriceBasis | None = None,
+    base_year: int | None = None,
     layout: Layout | None = None,
     party_totals: bool | None = None,
     latest: bool = False,
@@ -163,7 +167,8 @@ async def fetch(
     `timeout`, and refuse `progress`, which DFO does not report for them, and
     the options that narrow or render a spec. A share
     takes `as_of`, `slot`, `strict`, `timeout` and `progress`, and `layout`
-    only as `frame`.
+    only as `frame`. Only a spec takes `currency`, `price_basis` and
+    `base_year`.
 
     Args:
         transport: The transport requests go through.
@@ -178,6 +183,10 @@ async def fetch(
             are the spec's role keys, `spec.roles`. The spec's other roles keep
             their binding, and an empty map narrows nothing.
         facets: Bind a spec's provenance, measurement method or unit.
+        currency: Convert a spec's amounts to this ISO 4217 currency, as
+            `fetch_members` does, before any narrowing.
+        price_basis: `current`, the default, or `constant` prices.
+        base_year: The base year of constant prices.
         layout: `long` (the default for a spec) or `frame`. A ref holds its own
             layout; naming another raises.
         party_totals: Keep the rows of parties the code index declares totals,
@@ -199,12 +208,14 @@ async def fetch(
             such as a spec id; a ref is narrowed or given another layout or
             `party_totals`; `latest` is not a bool, is given a spec, or
             is given a ref whose members differ in rendering; a recipe or a
-            frame DFO computed is given `progress`; `window`,
-            `entities`, `facets`, `layout`, `strict`, `progress` or `timeout` is
-            malformed; `entities` holds a match that did not resolve or names a
-            role the spec does not declare; or `entities` rebinds a spec whose
-            definition holds no identity.
-            No request is sent.
+            frame DFO computed is given `progress`; a ref, share or recipe is
+            given `currency`, `price_basis` or `base_year`; `window`,
+            `entities`, `facets`, the conversion, `layout`, `strict`,
+            `progress` or `timeout` is malformed; `entities` holds a match that
+            did not resolve or names a role the spec does not declare; or
+            `entities` rebinds a spec whose definition holds no identity.
+            No request is sent. Search refused a conversion with a code the
+            contract maps to it, such as `rate_coverage_gap`.
         VersionUnavailableError: A ref's version can no longer be fetched.
         FormatError: A ref's stored version lists the member's digest under
             another rendering than the member's (`format_invalid` at
@@ -227,6 +238,7 @@ async def fetch(
             facets=facets,
             layout=layout,
             party_totals=party_totals,
+            converted=(currency, price_basis, base_year),
         )
         if latest:
             given.append("latest=True")
@@ -264,6 +276,7 @@ async def fetch(
             facets=facets,
             layout=layout,
             party_totals=party_totals,
+            converted=(currency, price_basis, base_year),
         ):
             raise client_error(
                 INVALID_ARGUMENT,
@@ -306,6 +319,14 @@ async def fetch(
                 "A ref fetch takes no entities or facets; narrow a dataset member's "
                 f"spec instead: {caller}.fetch(member.spec, entities=...) for a "
                 "RefMember in ref.members.",
+            )
+        if converting := _converting(currency, price_basis, base_year):
+            raise client_error(
+                INVALID_ARGUMENT,
+                f"A ref fetch reads the exact versions it names and takes no "
+                f"{', '.join(converting)}; convert a member's spec instead: "
+                f'{caller}.fetch(member.spec, currency="EUR") for a RefMember in '
+                "ref.members.",
             )
         layout = _checked_ref_layout(members, layout=layout, party_totals=party_totals)
         if latest:
@@ -352,6 +373,9 @@ async def fetch(
         window=window,
         entities=entities,
         facets=facets,
+        currency=currency,
+        price_basis=price_basis,
+        base_year=base_year,
     )
 
 
@@ -367,11 +391,13 @@ def _given(
     facets: object,
     layout: object,
     party_totals: object,
+    converted: tuple[object, object, object],
 ) -> list[str]:
-    """The options a call names that narrow or render a spec, which a share, a
-    recipe and a frame DFO computed refuse: each reads a frame in the frame
-    layout as DFO stored or computed it. An empty `entities` or `facets` names
-    nothing, as for a spec or a ref, and `layout="frame"` is the frame's own."""
+    """The options a call names that narrow, convert or render a spec, which a
+    share, a recipe and a frame DFO computed refuse: each reads a frame in the
+    frame layout as DFO stored or computed it. An empty `entities` or `facets`
+    names nothing, as for a spec or a ref, and `layout="frame"` is the frame's
+    own."""
     given = [
         name
         for name, value in (
@@ -382,9 +408,23 @@ def _given(
         )
         if value
     ]
+    given.extend(_converting(*converted))
     if layout not in (None, "frame"):
         given.append(f"layout={layout!r}")
     return given
+
+
+def _converting(currency: object, price_basis: object, base_year: object) -> list[str]:
+    """The conversion options a call names, which only a spec takes."""
+    return [
+        name
+        for name, value in (
+            ("currency", currency),
+            ("price_basis", price_basis),
+            ("base_year", base_year),
+        )
+        if value is not None
+    ]
 
 
 async def _fetch_shown(

@@ -32,11 +32,11 @@ export { BundleError } from "./datasets/saved.ts";
 export type { BundleErrorReason } from "./datasets/saved.ts";
 export { FormatError } from "./core/ref.ts";
 export type { FormatErrorReason } from "./core/ref.ts";
-export { SearchWarning } from "./search/answer.ts";
 export {
   DataWarning,
   DfoDeprecationWarning,
   DfoWarning,
+  SearchWarning,
   SeriesLeftOutWarning,
 } from "./core/warnings.ts";
 export type { WarningHandler } from "./core/warnings.ts";

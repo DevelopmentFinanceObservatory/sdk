@@ -1,4 +1,4 @@
-"""The live journey: twelve steps against the DFO API at `DFO_BASE_URL`.
+"""The live journey: thirteen steps against the DFO API at `DFO_BASE_URL`.
 
 Marked `live` and deselected by default; run it with `pytest -m live`. Each step
 asserts on what the wire carries: codes, ids, digests, row counts and years. A
@@ -38,6 +38,7 @@ import jsonschema
 import pytest
 from referencing import Registry, Resource
 
+import dfo
 from dfo import Answer, Client, Dataset, DatasetRef, Provenance, Spec
 from dfo._datasets.build import (
     build_body,
@@ -45,7 +46,12 @@ from dfo._datasets.build import (
     rendering_for,
     resubmit_body,
 )
-from dfo.errors import IncompleteAnswerError, InvalidRequestError, NotFoundError
+from dfo.errors import (
+    DfoError,
+    IncompleteAnswerError,
+    InvalidRequestError,
+    NotFoundError,
+)
 from dfo.types import Member
 from tests._data import CONTRACT
 from tests.e2e.cloud_run import id_token_headers
@@ -61,6 +67,8 @@ SEVERAL = (
     "and GDP of Kenya"
 )
 PLACE = "ODA disbursements from Germany to Congo"
+# A flow Search reads in US dollars that converts to euros at constant prices.
+CONVERTED = "bilateral ODA from Germany to Kenya 2015 to 2022"
 # Two IDS codes DFO holds as their series alone, and one no source holds.
 CODES = ["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD", "XX.NOPE.CD"]
 LONG_BUILDS = Path(__file__).parents[3] / "tests" / "live" / "long-builds.json"
@@ -518,3 +526,44 @@ def test_12_provenance_reads_back_and_states_each_members_retention(
         member.pinned,
         member.held_until,
     )
+
+
+def test_13_a_conversion_fetches_rows_in_the_currency_asked_for(
+    client: Client, tmp_path: Path
+) -> None:
+    answer = client.search(CONVERTED)
+    (spec,) = answer.specs
+    offer = spec.unit_conversion
+    assert offer is not None
+    eur = next(currency for currency in offer.currencies if currency.code == "EUR")
+    assert eur.constant_years is not None
+
+    data = answer.fetch(
+        currency="EUR", price_basis="constant", base_year=2022, progress=False
+    )
+    (member,) = data.members
+    assert member.spec.spec_id != spec.spec_id
+    assert "Constant 2022 euros" in member.sentence
+    rows = data.to_arrow().to_pylist()
+    assert rows
+    assert {
+        (row["currency"], row["price_basis"], int(row["base_year"])) for row in rows
+    } == {("EUR", "constant", 2022)}
+
+    # A pin needs a key the website proxy may not hold; the fetched dataset goes on.
+    kept = data
+    try:
+        kept = client.pin(data)
+    except DfoError as error:
+        print(f"the pin was refused ({error.code}); saving the unpinned dataset")
+    path = tmp_path / "converted.parquet"
+    kept.save(path)
+    saved = dfo.load(path)
+    assert saved.ref == kept.ref
+    assert saved.members[0].sentence == member.sentence
+    again = client.fetch(saved.ref, progress=False)
+    assert _versions(again.members) == _versions(data.members)
+
+    with pytest.raises(InvalidRequestError) as caught:
+        answer.fetch(currency="EUR", price_basis="constant", base_year=1900)
+    assert caught.value.code == "rate_coverage_gap"

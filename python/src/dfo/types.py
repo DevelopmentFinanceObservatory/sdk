@@ -10,7 +10,9 @@ the `Card` a `dfo.cards` call stores, the `Share` `dfo.share` publishes and the
 It also holds the argument types the public signatures name: `Start`, `Year`,
 `Columns`, `Pairing`, `Aggregation` and `GrowthChange` for `dfo.analysis`;
 `Source` and `StatChange` for `dfo.cards`; and `ShareTarget` and `Moment` for
-the share calls and `dfo.fetch(share, as_of=...)`. `CallTimeout` types a
+the share calls and `dfo.fetch(share, as_of=...)`; and `PriceBasis` for
+`dfo.fetch(spec, price_basis=...)`, whose choices a spec's `UnitConversion`
+and its `ConversionCurrency` entries describe. `CallTimeout` types a
 call's `timeout`, and `CLIENT_TIMEOUT`, its default, stands for the client's
 `timeout`, so a wrapper can pass it through. `ClientTimeoutArgument` and
 `MaxRetriesArgument` type a client's `timeout` and `max_retries`, and
@@ -49,6 +51,7 @@ from dfo._core.types import (
     CandidatesPart,
     Citation,
     CitationSource,
+    ConversionCurrency,
     DefinitePart,
     Departure,
     Gap,
@@ -58,8 +61,10 @@ from dfo._core.types import (
     Notice,
     Option,
     Part,
+    PriceBasis,
     Rendering,
     RequestedOperation,
+    UnitConversion,
     UnknownPart,
     UnsupportedPart,
     Window,
@@ -120,6 +125,7 @@ __all__ = [
     "ClientTimeoutArgument",
     "Code",
     "Columns",
+    "ConversionCurrency",
     "DeclinedReason",
     "DefinitePart",
     "Departure",
@@ -149,6 +155,7 @@ __all__ = [
     "Pairing",
     "Part",
     "PartyTotalsLeftOut",
+    "PriceBasis",
     "Progress",
     "RawResponse",
     "Recipe",
@@ -165,6 +172,7 @@ __all__ = [
     "Source",
     "Start",
     "StatChange",
+    "UnitConversion",
     "UnknownPart",
     "UnsupportedPart",
     "Window",

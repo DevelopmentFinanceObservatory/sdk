@@ -50,6 +50,56 @@ A narrowed fetch is a reading of its own, with its own `spec_id` in `data.member
 
 A question that leaves the donor open, such as "ODA to Ethiopia from each donor", comes back with Search's note that no provider was named, so the answer covers every provider. `answer.fetch()` repeats that note as a `SearchWarning`. `dfo.fetch(spec)` fetches the same reading and issues no `SearchWarning`, so the examples below that leave the donor open fetch the spec.
 
+## Fetch in another currency
+
+Amounts arrive in the unit Search read, usually current US dollars. `currency`, `price_basis` and `base_year` ask for another, named after the row columns they set:
+
+```text
+ConversionCurrency(EUR "euros", current 2015-2022, constant 2015-2022, base 1973-2025)
+<Dataset Germany's net disbursements (bilateral flows) to Kenya for official development assistance, 2015 to 2022. Constant 2022 euros, donor prices · OECD DAC2a.
+  Source: OECD DAC2A
+  Version: cv_dd7b2e411a7cb88d1c35dab96a9eb2db (exact), pinned
+  Rows: 8, time_period as integer years
+  Keep: data.save(path) · newest later: dfo.fetch(data.ref, latest=True)>
+   time_period         value currency price_basis  base_year
+0         2015  5.011898e+07      EUR    constant       2022
+1         2016  3.075620e+07      EUR    constant       2022
+2         2017  7.778941e+07      EUR    constant       2022
+```
+
+```python
+import dfo
+
+answer = dfo.search("bilateral ODA from Germany to Kenya 2015 to 2022")
+offer = answer.specs[0].unit_conversion
+print(next(c for c in offer.currencies if c.code == "EUR"))
+
+data = answer.fetch(currency="EUR", price_basis="constant", base_year=2022)
+print(data)
+print(
+    data.to_pandas()[
+        ["time_period", "value", "currency", "price_basis", "base_year"]
+    ].head(3)
+)
+```
+
+- `currency` takes an ISO 4217 code in capitals, such as `"EUR"`.
+- `price_basis` takes `"current"`, each year at its own exchange rate, or `"constant"`, every year at the prices of one base year. Left out, it is `"current"`.
+- `base_year` names that base year. `"constant"` needs one and `"current"` takes none. You name it each time; `offer.default_base_year` is the one Search reads when a question names none.
+
+A conversion is another reading of the same question, with its own `spec_id` and sentence, so `data.members[0].spec`, `data.sentence` and `data.ref` name the converted reading. Every row's `currency`, `price_basis` and `base_year` hold what you asked for. `dfo.fetch(spec, currency="EUR")` converts one spec, and `answer.fetch` converts every reading of the answer in one Search request.
+
+`spec.unit_conversion` lists the currencies a spec converts to, as a `dfo.types.UnitConversion`. Each `dfo.types.ConversionCurrency` holds the years the amounts convert at current prices (`current_years`) and at constant prices (`constant_years`), and the range of base years (`base_years`). Those years are the spec's own window, so a fetch with another `window` can convert other years. The offer is None for a spec that did not come from a search, such as a dataset member's spec, and for a series that converts to no currency, such as a debt stock. A fetch with `currency` still goes to the server, which decides.
+
+The conversion applies to the reading as you hold it, then `window`, `entities` and `facets` narrow the converted reading. `facets={"unit": ...}` beside `currency` raises `InvalidRequestError` before any request, since both set the unit. A ref, a share and a recipe hold their units already and refuse all three arguments.
+
+When the server cannot convert, the fetch raises with its code, even under `partial=True`:
+
+- `rate_coverage_gap`, an `InvalidRequestError`, when the rate or price tables lack a year the request needs. The message names what is missing, such as `CurrencyEUR@1900`, and `error.problem["cause"]` holds it as data.
+- `recipe_not_declared`, an `InvalidRequestError`, for a series no recipe converts, such as a debt stock.
+
+A conversion that leaves some rows out, such as an entity the deflators do not cover, keeps the rest and issues a `SearchWarning` with the code `deflator_missing_omitted`. `strict=True` raises it. Under `DFO_OFFLINE=1` a fetch with `currency` raises `NetworkError` (`offline`), since only the server knows the converted reading.
+
 ## Sum a column
 
 A provider or recipient column in DFO data can hold group totals beside their members. "DAC countries" sits in the same column as Germany. `fetch` leaves those rows out, so a sum over `value` counts each donor once. Pass `party_totals=True` to keep the published group figures:
