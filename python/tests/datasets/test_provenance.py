@@ -40,18 +40,21 @@ def _validator() -> jsonschema.Draft202012Validator:
     return jsonschema.Draft202012Validator(schemas[0], registry=registry)
 
 
-def _named(record: dict[str, Any]) -> dict[str, Any]:
-    """`record` with only the keys the schema names, at the top level and in
-    each member, as a reader writes it back."""
-    member_keys = _SCHEMA["properties"]["members"]["items"]["properties"]
-    named = {
-        key: value for key, value in record.items() if key in _SCHEMA["properties"]
-    }
-    named["members"] = [
-        {key: value for key, value in member.items() if key in member_keys}
-        for member in record["members"]
-    ]
-    return named
+def _named(value: object, schema: dict[str, Any] = _SCHEMA) -> object:
+    """`value` with only the keys the schema names, in every object it holds
+    but the ref, which follows its own schema, as a reader writes it back."""
+    if (ref := schema.get("$ref", "")).startswith("#/$defs/"):
+        schema = _SCHEMA["$defs"][ref.removeprefix("#/$defs/")]
+    if isinstance(value, dict) and "properties" in schema:
+        properties = schema["properties"]
+        return {
+            key: _named(item, properties[key])
+            for key, item in value.items()
+            if key in properties
+        }
+    if isinstance(value, list) and "items" in schema:
+        return [_named(item, schema["items"]) for item in value]
+    return value
 
 
 def test_the_examples_exist() -> None:
@@ -76,7 +79,25 @@ def test_a_key_the_format_does_not_name_is_ignored() -> None:
     record = json.loads(_saved().provenance.to_json())
     record["release"] = "2026-11"
     record["members"][0]["release"] = {"name": "2026-11"}
-    assert dfo.Provenance.from_json(json.dumps(record)) == _saved().provenance
+    record["citation"]["doi"] = "10.1787/x"
+    record["citation"]["sources"][0]["publisher"] = "OECD"
+    record["members"][1]["citation"]["doi"] = "10.1787/x"
+    record["warnings"] = [
+        {"code": "c", "severity": "info", "message": "m", "spec_id": None, "url": "u"}
+    ]
+    expected = json.loads(_saved().provenance.to_json())
+    expected["warnings"] = [
+        {"code": "c", "severity": "info", "message": "m", "spec_id": None}
+    ]
+    read = dfo.Provenance.from_json(json.dumps(record))
+    assert json.loads(read.to_json()) == expected
+
+
+@pytest.mark.parametrize("value", [42, None, ["{}"]], ids=["number", "null", "list"])
+def test_a_value_neither_json_text_nor_an_object_is_refused(value: object) -> None:
+    with pytest.raises(FormatError) as caught:
+        dfo.Provenance.from_json(value)  # ty: ignore[invalid-argument-type]
+    assert (caught.value.reason, caught.value.pointer) == ("format_invalid", "")
 
 
 @pytest.mark.parametrize(
@@ -90,6 +111,7 @@ def test_a_dataset_and_its_saved_copy_hold_one_provenance(
     _validator().validate(json.loads(text))
     assert dfo.Provenance.from_json(text) == data.provenance
     assert dfo.Provenance.from_json(text.encode()) == data.provenance
+    assert dfo.Provenance.from_json(json.loads(text)) == data.provenance
     path = tmp_path / "saved.parquet"
     data.save(path)
     loaded = load_saved(path)
@@ -113,15 +135,51 @@ def test_each_member_carries_its_own_retention() -> None:
     assert (record["pinned"], record["held_until"]) == (False, "2026-11-18")
 
 
-def test_a_pinned_dataset_pins_every_member() -> None:
-    pinned = replace(_saved(), pinned=True, held_until=None)
-    assert [(m.pinned, m.held_until) for m in pinned.members] == [(True, None)] * 2
-    assert dfo.Provenance.from_json(pinned.provenance.to_json()) == pinned.provenance
+_NOV_18, _NOV_19 = date(2026, 11, 18), date(2026, 11, 19)
+
+
+@pytest.mark.parametrize(
+    ("retention", "expected"),
+    [
+        ([(True, None), (True, None)], (True, None)),
+        ([(True, None), (False, _NOV_19)], (False, _NOV_19)),
+        ([(False, _NOV_19), (False, _NOV_18)], (False, _NOV_18)),
+        ([(None, None), (False, _NOV_19)], (False, _NOV_19)),
+        ([(None, None), (None, None)], (False, None)),
+        ([(True, None), (None, _NOV_18)], (False, _NOV_18)),
+        ([], (False, None)),
+    ],
+    ids=[
+        "every-member-pinned",
+        "one-held",
+        "earliest-held",
+        "one-unknown",
+        "all-unknown",
+        "unknown-with-a-date",
+        "no-members",
+    ],
+)
+def test_the_dataset_retention_is_the_members(
+    retention: list[tuple[bool | None, date | None]],
+    expected: tuple[bool, date | None],
+) -> None:
+    saved = _saved()
+    members = tuple(
+        replace(member, pinned=pinned, held_until=held)
+        for member, (pinned, held) in zip(saved.members, retention, strict=False)
+    )
+    rows = saved._member_rows if members else ()
+    data = replace(saved, members=members, _member_rows=rows)
+    assert (data.pinned, data.held_until) == expected
+    assert (data.provenance.pinned, data.provenance.held_until) == expected
 
 
 @pytest.mark.parametrize(
     ("pinned", "expected"),
-    [(False, [(None, None), (None, None)]), (True, [(True, None), (True, None)])],
+    [
+        (False, [(None, date(2026, 11, 18))] * 2),
+        (True, [(True, None), (True, None)]),
+    ],
     ids=["not-pinned", "pinned"],
 )
 def test_a_file_without_member_retention_reads_what_the_dataset_states(
@@ -129,7 +187,12 @@ def test_a_file_without_member_retention_reads_what_the_dataset_states(
 ) -> None:
     data = _saved()
     if pinned:
-        data = replace(data, pinned=True, held_until=None)
+        data = replace(
+            data,
+            members=tuple(
+                replace(member, pinned=True, held_until=None) for member in data.members
+            ),
+        )
     path = tmp_path / "saved.parquet"
     data.save(path)
     table = pq.read_table(path)
