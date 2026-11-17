@@ -1,7 +1,7 @@
 """Answers: what Search understood a question to ask, part by part.
 
-An answer holds readings. `fetch` builds the dataset when every part has
-a reading, and raises `IncompleteAnswerError` before any build when one does not.
+An answer holds readings. `fetch` builds the dataset when the answer is
+complete, and raises `IncompleteAnswerError` before any build when it has a gap.
 `choose` settles a part that awaits a choice and returns a new answer.
 
 Every choice makes one Search request, and the new answer is Search's response.
@@ -10,11 +10,13 @@ unchanged, a parsed input that Search binds again. Any other choice posts a
 `dataset_resubmit` with one entry per part, so Search composes the sentence and
 folds the parts again; a pick in a one-part answer posts one entry:
 
-- a definite part posts its spec's identity and entity groups;
+- an answered definite part posts its spec's identity and entity groups;
 - the chosen candidate posts its identity, and the chosen option its one parsed part;
 - a candidates part left alone posts its candidate set in the server's order;
 - any other part posts its `restatement`, which Search resolves again and so keeps
   its message and its choices; a part without one is restated as a placeholder.
+  A definite part with a gap from its series code is one: its restatement keeps
+  the code, so the new answer checks the reading again.
 
 Each identity echoes its reading's assumptions: a definite part's `assumptions`,
 and a candidate's entry in its part's `reading_assumptions`. Search then states
@@ -110,12 +112,15 @@ class AsyncAnswer:
         kind: `resolution`, `catalogue` or `declined`.
         status: The parts' shared status (`definite`, `candidates`, `no_data`,
             `unsupported`), `mixed` when they differ, or the kind for a declined or
-            catalogue answer.
+            catalogue answer. It is Search's status, so a definite answer can
+            still have a gap from a series code; `complete` says whether it has
+            none.
         sentence: Search's sentence for the whole answer; None for a declined or
             catalogue answer, which Search gives none.
         parts: One part per variable asked, in query order.
         specs: The readings, one per distinct spec, in query order.
-        complete: Whether every part has a reading.
+        complete: Whether every part has a reading: each part is definite, and a
+            part asked by a series code reads that code's series alone.
         gaps: The parts that stop a complete dataset, in query order. A definite
             part asked by a series code whose reading is not that code's series
             alone is one, of kind `no_data`.
@@ -142,6 +147,11 @@ class AsyncAnswer:
     trace_id: str | None = field(default=None, compare=False)
     raw: Mapping[str, Any] = field(default_factory=dict, compare=False)
     _source: SessionSource = field(compare=False)
+    # The parts with a reading, by index, and their readings, which `fetch`
+    # builds: computed once in `answer_from_body`, so `fetch`, `specs`, the
+    # display and `choose` agree on which parts are answered.
+    _answered: frozenset[int] = field(default=frozenset(), compare=False)
+    _readings: tuple[Reading, ...] = field(default=(), compare=False)
     # The session `from_json` reads through when it names no client: the
     # default client's, which `dfo._client.default` sets, since this layer
     # cannot import the client layer.
@@ -260,7 +270,11 @@ class AsyncAnswer:
             _option_part(chosen)
             return chosen.data_query
         entries = [
-            _entry(each, chosen if index == gap.part_index else None)
+            _entry(
+                each,
+                chosen if index == gap.part_index else None,
+                answered=index in self._answered,
+            )
             for index, each in enumerate(self.parts)
         ]
         return {"kind": "dataset_resubmit", "entries": entries}
@@ -344,7 +358,7 @@ class AsyncAnswer:
         # `fetch_members` checks `strict` too. This check runs first so a bad
         # value raises before the incomplete-answer error or the warning.
         check_strict(strict)
-        members = _members(self.parts, self.gaps)
+        members = self._readings
         if self.gaps and (not partial or not members):
             raise self._incomplete_error()
         if (hint := _search_warning(self)) is not None:
@@ -531,12 +545,15 @@ def answer_from_body(
         )
         is not None
     )
+    gapped = {gap.part_index for gap in gaps}
+    answered = frozenset(index for index in range(len(parts)) if index not in gapped)
+    readings = _readings(parts, answered)
     return AsyncAnswer(
         kind=kind,
         status=status if isinstance(status, str) else _status(parts),
         sentence=sentence,
         parts=parts,
-        specs=tuple(reading.spec for reading in _members(parts, gaps)),
+        specs=tuple(reading.spec for reading in readings),
         complete=not gaps,
         gaps=gaps,
         question=question,
@@ -545,6 +562,8 @@ def answer_from_body(
         trace_id=trace_id,
         raw=body,
         _source=source,
+        _answered=answered,
+        _readings=readings,
     )
 
 
@@ -580,18 +599,17 @@ def _gap(index: int, part: Part) -> Gap | None:
             )
 
 
-def _members(parts: Sequence[Part], gaps: Sequence[Gap]) -> list[Reading]:
-    """One reading per distinct spec of the parts without a gap, in query order.
+def _readings(parts: Sequence[Part], answered: frozenset[int]) -> tuple[Reading, ...]:
+    """One reading per distinct spec of the answered parts, in query order.
 
     Parts folded onto one spec share its reading, which names each of them that
     has variable text; a part without any names nothing.
     """
-    gapped = {gap.part_index for gap in gaps}
     grouped: dict[Spec, list[DefinitePart]] = {}
     for index, part in enumerate(parts):
-        if isinstance(part, DefinitePart) and index not in gapped:
+        if isinstance(part, DefinitePart) and index in answered:
             grouped.setdefault(part.spec, []).append(part)
-    return [
+    return tuple(
         Reading(
             tuple(part.variable_text for part in folded if part.variable_text),
             spec,
@@ -599,7 +617,7 @@ def _members(parts: Sequence[Part], gaps: Sequence[Gap]) -> list[Reading]:
             tuple(folded),
         )
         for spec, folded in grouped.items()
-    ]
+    )
 
 
 def _part_index(
@@ -735,17 +753,24 @@ def _mentions(gap: Gap) -> set[str]:
     return {mention for option in _options(gap) for mention in option.mentions}
 
 
-def _entry(part: Part, chosen: Candidate | Option | None) -> dict[str, Any]:
-    """The `dataset_resubmit` entry for one part, settled by `chosen` when given."""
+def _entry(
+    part: Part, chosen: Candidate | Option | None, *, answered: bool
+) -> dict[str, Any]:
+    """The `dataset_resubmit` entry for one part, settled by `chosen` when given.
+
+    Only an answered part posts its reading's identity. A definite part with a
+    gap, whose reading is not its series code's alone, posts its restatement:
+    Search answers an identity entry with no restatement, so the code would be
+    lost and the inexact reading would come back without its gap.
+    """
     if isinstance(chosen, Candidate):
         return _identity_entry(part, chosen.raw)
     if chosen is not None:
         return {"entry_kind": "parsed", "part": _option_part(chosen)}
-    match part:
-        case DefinitePart():
-            return _identity_entry(part, part.raw["spec"])
-        case CandidatesPart():
-            return _candidates_entry(part)
+    if answered and isinstance(part, DefinitePart):
+        return _identity_entry(part, part.raw["spec"])
+    if isinstance(part, CandidatesPart):
+        return _candidates_entry(part)
     return _restated_entry(part)
 
 
@@ -766,6 +791,12 @@ def _restated_entry(part: Part) -> dict[str, Any]:
         case UnsupportedPart(reason):
             return _echo(
                 part, entry_kind="placeholder", status="unsupported", code=reason
+            )
+        case DefinitePart():
+            raise client_error(
+                CHOICE_INVALID,
+                f"Part {part.variable_text!r} has a gap and no restatement to post "
+                "back; search again.",
             )
     raise client_error(
         CHOICE_INVALID,

@@ -11,10 +11,8 @@ The examples on this page form one program. Each block after the first continues
 A pipeline that knows its publisher's series codes asks for them by code. `entities` binds roles as `client.fetch` takes them, and `window` is `"all"`, `"latest"`, or a `[startYear, endYear]` pair:
 
 ```text
-Answered 3 of 3 parts of your question.
-  answered "DT.TDS.MLAT.CD": Kenya's external debt service owed to multilateral creditors, 2015 to 2023. Current US dollars · World Bank International Debt Statistics (IDS).
-  answered "DT.TDS.BLAT.CD": Kenya's external debt service owed to bilateral creditors, 2015 to 2023. Current US dollars · World Bank International Debt Statistics (IDS).
-  answered "DT.TDS.PBND.CD": Kenya's external debt service owed to bondholders, 2015 to 2023. Current US dollars · World Bank International Debt Statistics (IDS).
+Kenya's external debt service owed to multilateral creditors, external debt service owed to bilateral creditors, and external debt service owed to bondholders, 2015 to 2023. Current US dollars · World Bank International Debt Statistics (IDS).
+  Fetch: answer.fetch()
 ```
 
 ```ts
@@ -32,19 +30,19 @@ const answer = await client.search({
 console.log(String(answer));
 ```
 
-Each code becomes one part. A code DFO does not hold, or reads as more than that code's series, comes back as a gap on the answer, so the answer shows which codes failed before any data is fetched. Read the gaps first, and stop the run when one appears:
+Each code becomes one part. Two kinds of code come back as a gap on the answer, so the answer shows them before any data is fetched: a code DFO does not hold, and a code whose reading holds more than that code's series. Read the gaps first, and stop the run when one appears:
 
 ```ts
 if (!answer.complete) {
   for (const gap of answer.gaps) console.log(gap.kind, gap.message);
-  throw new Error("DFO does not hold every code");
+  throw new Error("A series code did not read as its own series; see the gaps above");
 }
 
 const data = await answer.fetch();
 console.log(data.rowCount, "rows");
 ```
 
-`answer.fetch()` refuses an answer with gaps (`answer_incomplete`). `answer.fetch({ partial: true })` builds the codes that did read. `variable` adds words that choose among the variables of a code, `source: "IDS"` names the source to read the codes from, and `openRoles: ["origin"]` answers creditor by creditor. A question string beside any of these is refused.
+`answer.fetch()` refuses an answer with gaps (`answer_incomplete`). `answer.fetch({ partial: true })` builds the codes that did read. The message of a code that reads as more than its series names the codes its reading holds, and gives two ways on: narrow the search with `variable` or `source`, or take the reading as it is with `client.fetch((answer.parts[i] as DefinitePart).spec)`. `variable` adds words that choose among the variables of a code, `source: "IDS"` names the source to read the codes from, and `openRoles: ["origin"]` answers creditor by creditor. A question string beside any of these is refused.
 
 When a search holds more codes than the server takes in one request, the server refuses with `request_invalid`. Search in chunks, fetch each, and join the members into one ref:
 

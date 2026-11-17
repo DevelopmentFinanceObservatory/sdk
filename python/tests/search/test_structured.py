@@ -76,8 +76,22 @@ def test_the_recorded_request_is_what_the_keywords_build() -> None:
         ({"window": "all"}, {}),
         ({"open_roles": ("origin",)}, {"open_roles": ["origin"]}),
         ({"source": "IDS"}, {"sources": [{"text": "IDS"}]}),
+        (
+            {"entities": {"place": (entity for entity in [KENYA])}},
+            {"entities": [{"text": "Kenya", "dcid": "country/KEN"}]},
+        ),
     ],
-    ids=["code", "variable", "place", "flow", "latest", "all", "open", "source"],
+    ids=[
+        "code",
+        "variable",
+        "place",
+        "flow",
+        "latest",
+        "all",
+        "open",
+        "source",
+        "generator",
+    ],
 )
 def test_each_keyword_fills_every_part(
     keywords: dict[str, Any], expected: dict[str, Any]
@@ -100,6 +114,7 @@ def test_each_keyword_fills_every_part(
         {"entities": ["country/KEN"]},
         {"entities": {"recipient": ["country/KEN"]}},
         {"entities": {"place": None}},
+        {"entities": {"origin": []}},
         {"entities": {"place": "country/KEN"}},
         {"window": (2020, 2015)},
         {"open_roles": "origin"},
@@ -115,6 +130,7 @@ def test_each_keyword_fills_every_part(
         "entities-list",
         "entities-wire-word",
         "entities-none",
+        "entities-empty",
         "entities-string",
         "window-reversed",
         "open-roles-string",
@@ -127,6 +143,14 @@ def test_a_keyword_that_breaks_its_rule_is_refused(keywords: dict[str, Any]) -> 
     with pytest.raises(InvalidRequestError) as caught:
         parsed_input(arguments.pop("codes"), **arguments)
     assert caught.value.code == "invalid_argument"
+
+
+def test_an_empty_binding_is_refused_in_searchs_own_words() -> None:
+    with pytest.raises(InvalidRequestError) as caught:
+        parsed_input(["DT.TDS.MLAT.CD"], entities={"origin": []})
+    # `fetch` reads an empty binding as a role to drop with None, which a search
+    # refuses, so its hint would send the caller to another refusal.
+    assert "None" not in str(caught.value)
 
 
 def test_an_unresolved_match_is_refused_as_fetch_refuses_it() -> None:
@@ -162,8 +186,17 @@ MLAT = {"provenance": IDS, "code": "DT.TDS.MLAT.CD", "exact": True}
             [(0, "no_data"), (2, "no_data")],
         ),
         ([], [(0, "no_data"), (2, "no_data")]),
+        ([MLAT, "DT.TDS.MLAT.CD"], [(0, "no_data"), (2, "no_data")]),
     ],
-    ids=["exact", "lower-case", "not-exact", "exact-left-out", "second-code", "none"],
+    ids=[
+        "exact",
+        "lower-case",
+        "not-exact",
+        "exact-left-out",
+        "second-code",
+        "none",
+        "not-an-object",
+    ],
 )
 @pytest.mark.parametrize("by", ["codes", "restatement"])
 def test_a_reading_that_is_not_its_codes_series_alone_is_a_gap(
@@ -184,8 +217,9 @@ def test_a_code_gap_names_the_asked_code_and_the_codes_the_part_holds() -> None:
     assert '"DT.TDS.MLAT.CD" (not exact)' in message
     assert '"DT.X"' in message
     assert "series code" in message
+    assert "dfo.fetch(answer.parts[0].spec)" in message
     lines = incomplete_message(answer).splitlines()
-    assert lines[0] == "Search answered 1 of 3 parts of your question."
+    assert lines[0] == "Search answered 1 of 3 series codes."
     assert lines[1].startswith('  missing  "DT.TDS.MLAT.CD": ')
 
     unlisted = read(held([]))

@@ -1,8 +1,8 @@
 /**
  * An answer is what Search understood a question to ask, part by part.
  *
- * An answer holds readings. `fetch` builds the dataset when every part has a reading,
- * and raises `IncompleteAnswerError` before any build when one does not. `choose` settles a part
+ * An answer holds readings. `fetch` builds the dataset when the answer is complete, and raises
+ * `IncompleteAnswerError` before any build when it has a gap. `choose` settles a part
  * that awaits a choice and returns a new answer. `toJSON` and `Answer.fromJSON` carry an answer
  * across a request, as between a web page and its server.
  */
@@ -37,6 +37,7 @@ import type { DefinitePart, KnownPart, NoDataPart, Part } from "../core/parts.ts
 import { checkOptions, declareOptions } from "../core/options.ts";
 import { withEntityDcids } from "./lookup-results.ts";
 import { askedCode, checkReply, codeGap } from "./structured.ts";
+import { recordAnswered } from "./answered.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
 import type { Transport } from "../http/transport.ts";
@@ -224,6 +225,9 @@ export function registerClient(client: Client, context: AnswerContext): void {
 /** What Search understood a question to ask, as one reading per part. */
 export class Answer {
   readonly kind: AnswerKind;
+  /** The parts' shared status, `mixed` when they differ, or the kind of a declined or catalogue
+   *  answer. It is Search's status, so a definite answer can still have a gap from a series
+   *  code; `complete` says whether it has none. */
   readonly status: AnswerStatus;
   /** Search's sentence for the whole answer; null for a declined or catalogue answer. */
   readonly sentence: string | null;
@@ -233,7 +237,8 @@ export class Answer {
   readonly parts: readonly Part[];
   /** The readings, one per distinct `spec_id`, in query order. */
   readonly specs: readonly Spec[];
-  /** Whether every part has a reading. */
+  /** Whether every part has a reading `fetch` builds: each part is definite, and a part asked by
+   *  a series code reads that code's series alone. */
   readonly complete: boolean;
   /** The parts that stop a complete dataset, in query order. A definite part asked by a series
    *  code whose reading is not that code's series alone is one, of kind `no_data`. */
@@ -282,7 +287,10 @@ export class Answer {
       return gap === null ? [] : [gap];
     });
     this.complete = this.kind === "resolution" && this.gaps.length === 0;
-    const members = membersOf(this.parts, this.gaps);
+    const gapped = new Set(this.gaps.map((gap) => gap.partIndex));
+    const answered = new Set(this.parts.flatMap((_, index) => (gapped.has(index) ? [] : [index])));
+    recordAnswered(this, answered);
+    const members = membersOf(this.parts, answered);
     this.#members = members;
     this.specs = members.map((member) => member.spec);
   }
@@ -587,19 +595,18 @@ function sharedStatus(parts: readonly Part[]): string {
   return statuses.size === 1 ? [...statuses][0]! : "mixed";
 }
 
-/** One member per distinct `spec_id` of the parts without a gap, in query order, with the first
+/** One member per distinct `spec_id` of the answered parts, in query order, with the first
  *  part's spec; folded parts share their spec's member, which names each of them that has
  *  variable text. A part without any names nothing. */
 function membersOf(
   parts: readonly Part[],
-  gaps: readonly Gap[],
+  answered: ReadonlySet<number>,
 ): (MemberRequest & { readonly spec: DefinitePart["spec"] })[] {
-  const gapped = new Set(gaps.map((gap) => gap.partIndex));
   const grouped = new Map<
     string,
     { spec: DefinitePart["spec"]; parts: string[]; answerParts: Part[] }
   >();
-  for (const part of definiteParts(parts.filter((_, index) => !gapped.has(index)))) {
+  for (const part of definiteParts(parts.filter((_, index) => answered.has(index)))) {
     const { spec } = part;
     const entry = grouped.get(spec.spec_id) ?? { spec, parts: [], answerParts: [] };
     const name = partText(part);

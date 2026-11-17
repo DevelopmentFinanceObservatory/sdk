@@ -7,11 +7,14 @@
  * assumptions:
  *
  * - the chosen option posts its one parsed part, and a chosen candidate its identity;
- * - a definite part posts its spec's identity and entity groups;
+ * - an answered definite part posts its spec's identity and entity groups;
  * - a candidates part left alone posts its candidate set in the server's order, with `ordering`
  *   and `truncated` echoed, since Search cannot recompute that order from a restatement;
  * - any other part posts its `restatement`, which Search resolves again and so keeps its message
- *   and its choices, or a placeholder of its refusal when it has none.
+ *   and its choices, or a placeholder of its refusal when it has none. A definite part with a gap
+ *   from its series code is one: Search answers an identity entry with no restatement, so the
+ *   code and its gap would be lost, while the restatement keeps the code for the new answer to
+ *   check again.
  *
  * Each identity echoes its reading's assumptions: a picked or listed candidate its part's
  * `reading_assumptions` under its `spec_id`, a definite part its own `assumptions`. Each list,
@@ -26,6 +29,7 @@ import { isRecord } from "../core/json.ts";
 import { nearest } from "../core/nearest.ts";
 import { resolvedOf } from "../datasets/fetch.ts";
 import { assumptionsReadOf, operationsOf, parsedPartOf } from "../core/parse.ts";
+import { isAnswered } from "./answered.ts";
 import { isKnownPart, partText } from "../core/parts.ts";
 import type { Part } from "../core/parts.ts";
 import { inline, trimEnd } from "../core/text.ts";
@@ -220,7 +224,7 @@ export function choiceInput(
   return {
     kind: "dataset_resubmit",
     entries: answer.parts.map((part, index) =>
-      index === gap.partIndex ? chosenEntry(part, chosen) : entry(part),
+      index === gap.partIndex ? chosenEntry(part, chosen) : entry(part, isAnswered(answer, index)),
     ),
   };
 }
@@ -247,8 +251,10 @@ function chosenEntry(part: Part, chosen: Candidate | Option): Entry {
   return { entry_kind: "parsed", part: onePart(chosen).part };
 }
 
-function entry(part: Part): Entry {
-  if (isKnownPart(part) && part.status === "definite") return identityEntry(part, part.spec);
+function entry(part: Part, answered: boolean): Entry {
+  if (answered && isKnownPart(part) && part.status === "definite") {
+    return identityEntry(part, part.spec);
+  }
   if (isKnownPart(part) && part.status === "candidates") {
     // The client does not check these. They go back as Search sent them, and Search checks them.
     const { ordering, truncated } = part.candidates;
@@ -279,6 +285,11 @@ function entry(part: Part): Entry {
           status: "unsupported",
           code: part.unsupported.code,
         };
+      case "definite":
+        throw refuse(
+          `Part ${JSON.stringify(partText(part) ?? "")} has a gap and no restatement to post ` +
+            "back; search again.",
+        );
     }
   }
   throw refuse(

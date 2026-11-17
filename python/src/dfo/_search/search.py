@@ -77,15 +77,16 @@ async def search(
         raise client_error(
             INVALID_ARGUMENT,
             f"search takes a question in words or series codes, not both; Search "
-            f"does not read a question beside {', '.join(given)}. Name the places "
+            f"does not read a question beside {_listed(given)}. Name the places "
             "and years in the keywords: search(codes=[...], entities=..., "
             "window=...)",
         )
     if given:
         if codes is None:
+            verb = "qualifies" if len(given) == 1 else "qualify"
             raise client_error(
                 INVALID_ARGUMENT,
-                f"{', '.join(given)} qualify the series codes a search asks for; "
+                f"{_listed(given)} {verb} the series codes a search asks for; "
                 "pass codes=[...], or ask a question in words",
             )
         request = parsed_input(
@@ -106,6 +107,12 @@ async def search(
             INVALID_ARGUMENT,
             "search takes a question in words, or series codes: search(codes=[...])",
         )
+    if isinstance(question, list | tuple):
+        raise client_error(
+            INVALID_ARGUMENT,
+            "search reads a positional argument as a question in words; pass "
+            "series codes by keyword: search(codes=[...])",
+        )
     if not isinstance(question, str) or not question.strip():
         raise client_error(
             INVALID_ARGUMENT, f"question is the text to search for, not {question!r}"
@@ -125,3 +132,10 @@ async def search(
             question=question,
             timeout=timeout,
         )
+
+
+def _listed(names: Sequence[str]) -> str:
+    """Names as a sentence lists them: `a`, `a and b`, `a, b and c`."""
+    if len(names) == 1:
+        return names[0]
+    return f"{', '.join(names[:-1])} and {names[-1]}"

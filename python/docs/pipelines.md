@@ -11,10 +11,8 @@ The blocks on this page run in order, as cells of one notebook.
 A pipeline that knows its publisher's series codes asks for them by code. `entities` binds roles as `dfo.fetch` takes them, and `window` is `"all"`, `"latest"`, or a `(start_year, end_year)` pair:
 
 ```text
-Answered 3 of 3 parts of your question.
-  answered "DT.TDS.MLAT.CD": Kenya's external debt service owed to multilateral creditors, 2015 to 2023. Current US dollars · World Bank International Debt Statistics (IDS).
-  answered "DT.TDS.BLAT.CD": Kenya's external debt service owed to bilateral creditors, 2015 to 2023. Current US dollars · World Bank International Debt Statistics (IDS).
-  answered "DT.TDS.PBND.CD": Kenya's external debt service owed to bondholders, 2015 to 2023. Current US dollars · World Bank International Debt Statistics (IDS).
+Kenya's external debt service owed to multilateral creditors, external debt service owed to bilateral creditors, and external debt service owed to bondholders, 2015 to 2023. Current US dollars · World Bank International Debt Statistics (IDS).
+  Fetch: answer.fetch()
 ```
 
 ```python
@@ -30,19 +28,19 @@ answer = dfo.search(
 print(answer)
 ```
 
-Each code becomes one part. A code DFO does not hold, or reads as more than that code's series, comes back as a gap on the answer, so the answer shows which codes failed before any data is fetched. Read the gaps first, and stop the run when one appears:
+Each code becomes one part. Two kinds of code come back as a gap on the answer, so the answer shows them before any data is fetched: a code DFO does not hold, and a code whose reading holds more than that code's series. Read the gaps first, and stop the run when one appears:
 
 ```python
 if not answer.complete:
     for gap in answer.gaps:
         print(gap.kind, gap.message)
-    raise SystemExit("DFO does not hold every code")
+    raise SystemExit("A series code did not read as its own series; see the gaps above")
 
 data = answer.fetch()
 print(len(data), "rows")
 ```
 
-`answer.fetch()` refuses an answer with gaps (`answer_incomplete`). `answer.fetch(partial=True)` builds the codes that did read. `variable` adds words that choose among the variables of a code, `source="IDS"` names the source to read the codes from, and `open_roles=["origin"]` answers creditor by creditor. A positional question beside any of these raises `InvalidRequestError` (`invalid_argument`).
+`answer.fetch()` refuses an answer with gaps (`answer_incomplete`). `answer.fetch(partial=True)` builds the codes that did read. The message of a code that reads as more than its series names the codes its reading holds, and gives two ways on: narrow the search with `variable` or `source`, or take the reading as it is with `dfo.fetch(answer.parts[i].spec)`. `variable` adds words that choose among the variables of a code, `source="IDS"` names the source to read the codes from, and `open_roles=["origin"]` answers creditor by creditor. A positional question beside any of these raises `InvalidRequestError` (`invalid_argument`).
 
 When a search holds more codes than the server takes in one request, the server refuses with `request_invalid`. Search in chunks, fetch each, and join the members into one ref:
 
@@ -129,7 +127,9 @@ import json
 record = newest.provenance.to_object()
 Path("debt-service.provenance.json").write_text(json.dumps(record, indent=2))
 
-same = dfo.Provenance.from_object(json.loads(Path("debt-service.provenance.json").read_text()))
+same = dfo.Provenance.from_object(
+    json.loads(Path("debt-service.provenance.json").read_text())
+)
 print(same.sentence)
 print(same.ref == newest.ref)
 ```

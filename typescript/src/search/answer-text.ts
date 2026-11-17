@@ -3,9 +3,12 @@
  * message, which lists every gap and the call that settles it.
  */
 import type { Answer, Gap } from "./answer.ts";
+import { isAnswered } from "./answered.ts";
 import { mentionsOf, optionLine, waitingGaps } from "./choices.ts";
+import { askedCode } from "./structured.ts";
 import { partFacts } from "../core/parse.ts";
 import { definiteParts, partSentence, partText } from "../core/parts.ts";
+import type { Part } from "../core/parts.ts";
 import { inline } from "../core/text.ts";
 import type { Notice } from "../wire.ts";
 
@@ -43,8 +46,7 @@ export function readingHints(answer: Answer, { departures }: { departures: boole
       if (SHOWN_SEVERITIES.has(severity) && message) add(`Note: ${message}`, code);
     }
   };
-  const gapped = new Set(answer.gaps.map((gap) => gap.partIndex));
-  for (const part of definiteParts(answer.parts.filter((_, index) => !gapped.has(index)))) {
+  for (const part of definiteParts(answer.parts.filter((_, index) => isAnswered(answer, index)))) {
     const facts = partFacts(part);
     for (const { verb, phrase } of facts.operations) {
       add(`Not done: ${verb} (${JSON.stringify(phrase)})`, verb);
@@ -98,12 +100,21 @@ const quote = (value: string | null | undefined): string => JSON.stringify(value
 
 const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
+/** What the parts ask for: series codes when each part was asked by one, else parts of the
+ *  question. */
+function asked(parts: readonly Part[]): string {
+  if (parts.length > 0 && parts.every((part) => askedCode(part) !== null)) {
+    return plural(parts.length, "series code");
+  }
+  return `${plural(parts.length, "part")} of your question`;
+}
+
 /** An incomplete answer's text: how many parts it answered, each part with its gap and
  *  options, and the calls that settle the gaps. Each line passes through `inline`. */
 function gapText(answer: Answer, lead: string): string {
   const gaps = new Map(answer.gaps.map((gap) => [gap.partIndex, gap]));
-  const count = answer.parts.length - gaps.size;
-  const lines = [`${lead} ${count} of ${plural(answer.parts.length, "part")} of your question.`];
+  const count = answer.parts.filter((_, index) => isAnswered(answer, index)).length;
+  const lines = [`${lead} ${count} of ${asked(answer.parts)}.`];
   for (const [index, part] of answer.parts.entries()) {
     const name = quote(partText(part));
     const gap = gaps.get(index);
