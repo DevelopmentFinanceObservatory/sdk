@@ -73,8 +73,13 @@ export type ParquetFile = {
 /** A file in a stacked table, with the label its `part` column holds when there are several. */
 export type TablePart = { readonly file: ParquetFile; readonly label: string };
 
-/** A stacked table's files and the reading order it presents them in. */
-export type Table = { readonly parts: readonly TablePart[]; readonly order: ReadingOrder };
+/** A stacked table's files and the reading order it presents them in, with its stacked columns
+ *  when a read already decoded them, as a saved file's read does to check its pages. */
+export type Table = {
+  readonly parts: readonly TablePart[];
+  readonly order: ReadingOrder;
+  readonly stacked?: readonly StoredColumn[];
+};
 
 const PART_COLUMN = "part";
 
@@ -475,18 +480,32 @@ export const memberRows = (parts: readonly TablePart[]): number[] =>
  *
  * @throws {ContractError} A file's pages cannot be decoded (`unexpected_response`).
  */
-export async function decodeStored({ parts, order }: Table): Promise<StoredColumn[]> {
-  const stacked = new Map((await decodeStacked(parts)).map((column) => [column.name, column]));
+export async function decodeStored({
+  parts,
+  order,
+  stacked: kept,
+}: Table): Promise<StoredColumn[]> {
+  const stacked = new Map(
+    (kept ?? (await decodeStacked(parts))).map((column) => [column.name, column]),
+  );
+  const { rows } = order;
   return order.columns.map((name) => {
     const column = stacked.get(name)!;
-    const values = Array.from(order.rows, (row) => column.values[row]);
+    // A copy either way, since a table may keep its stacked columns for the next decode.
+    const values =
+      rows instanceof Uint32Array
+        ? Array.from(rows, (row) => column.values[row])
+        : column.values.slice(0, rows.length);
     return { ...column, values };
   });
 }
 
 /** Every column of the stacked table with its stored values, in the order `stackedColumns`
- *  gives, the members' rows one after another. */
-async function decodeStacked(parts: readonly TablePart[]): Promise<StoredColumn[]> {
+ *  gives, the members' rows one after another.
+ *
+ * @throws {ContractError} A file's pages cannot be decoded (`unexpected_response`).
+ */
+export async function decodeStacked(parts: readonly TablePart[]): Promise<StoredColumn[]> {
   const decoded = await Promise.all(parts.map(({ file }) => storedRows(file)));
   return stackedColumns(parts).map(({ name, type }) => {
     const isPart = parts.length > 1 && name === PART_COLUMN;

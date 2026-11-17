@@ -27,15 +27,15 @@ import { clientError, DfoError, messageOf, optionsOf } from "../core/errors.ts";
 import type { DfoErrorOptions } from "../core/errors.ts";
 import { isRecord } from "../core/json.ts";
 import { trimEnd, WHITESPACE } from "../core/text.ts";
-import { isDerived, selectorPath } from "../core/ref.ts";
+import { isDerived, isRendering, selectorPath } from "../core/ref.ts";
 import type { DerivedRefMember, RefMember } from "../core/ref.ts";
 import type { Transport } from "../http/transport.ts";
 
 /**
  * Keeps `data`'s versions fetchable with no time limit, and returns it pinned.
  *
- * @throws {InvalidRequestError} `data` is not a Dataset, or holds frames DFO computed
- *   (`invalid_argument`); no request is sent.
+ * @throws {InvalidRequestError} `data` is not a Dataset, names no version, or holds frames DFO
+ *   computed (`invalid_argument`); no request is sent.
  * @throws {QuotaExceededError} The caller's daily pin allowance is spent
  *   (`allowance_exhausted`).
  * @throws {ContractError} DFO answered for another version or artifact (`contract_violation`).
@@ -73,6 +73,12 @@ function partWay(error: DfoError, pinned: readonly Member[]): DfoError {
 function datasetMembers(data: unknown): readonly Member[] {
   if (!(data instanceof Dataset)) {
     throw invalid(`pin takes a Dataset, such as await client.fetch(spec), not ${typeName(data)}.`);
+  }
+  if (data.members.length === 0) {
+    throw invalid(
+      "The dataset has no members, as one read from a saved file that names no version, so " +
+        "it has no version to pin. Fetch the dataset with client.fetch, then pin it.",
+    );
   }
   const derived = data.members.find(isDerived);
   if (derived !== undefined) {
@@ -144,13 +150,21 @@ export async function fileUrl(
   return transport.url({ path: selectorPath(reading) }).href;
 }
 
-/** `member`, refused unless it is a dataset version's member. */
+/** `member`, refused unless it is a dataset version's member, with the spec id, version and
+ *  rendering its link is built from. */
 function readingOf(member: unknown): Member | RefMember {
-  if (!isRecord(member) || !isRecord(member["spec"]) || !("contentVersion" in member)) {
-    throw invalid(
+  const notMember = () =>
+    invalid(
       "fileUrl takes a member of a dataset, such as data.members[0] or data.ref.members[0] " +
         `after const data = await client.fetch(spec), not ${member instanceof Dataset ? "a Dataset" : typeName(member)}.`,
     );
+  if (
+    !isRecord(member) ||
+    !isRecord(member["spec"]) ||
+    typeof member["spec"]["spec_id"] !== "string" ||
+    typeof member["contentVersion"] !== "string"
+  ) {
+    throw notMember();
   }
   const reading = member as Member | RefMember | DerivedRefMember;
   if (isDerived(reading)) {
@@ -160,5 +174,6 @@ function readingOf(member: unknown): Member | RefMember {
         "data.toBytes() keeps its rows.",
     );
   }
+  if (!isRendering(reading.rendering)) throw notMember();
   return reading;
 }
