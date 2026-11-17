@@ -24,6 +24,7 @@ const SPEC: Kept = {
   resolved: {
     rendered_sentence: true,
     entity_groups: true,
+    stat_vars: { source_codes: true },
     sentence_plan: { segment: true, kind: true, axis: true, text: true },
     facets: { provenance: { label: true } },
   },

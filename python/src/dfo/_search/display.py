@@ -77,8 +77,9 @@ def hints(answer: AnswerView, /, *, departures: bool) -> list[tuple[str, str]]:
     them out. `info` warnings stay hidden.
     """
     found: dict[str, str] = {}
-    for part in answer.parts:
-        if not isinstance(part, DefinitePart):
+    gapped = {gap.part_index for gap in answer.gaps}
+    for index, part in enumerate(answer.parts):
+        if not isinstance(part, DefinitePart) or index in gapped:
             continue
         for operation in part.operations:
             found.setdefault(
@@ -175,8 +176,8 @@ def _plural(count: int, noun: str) -> str:
 
 def _incomplete(answer: AnswerView, *, lead: str) -> str:
     """What is answered and what is missing, with the calls that settle each gap."""
-    answered = sum(isinstance(part, DefinitePart) for part in answer.parts)
     gaps = {gap.part_index: gap for gap in answer.gaps}
+    answered = len(answer.parts) - len(gaps)
     lines = [
         f"{lead} {answered} of {_plural(len(answer.parts), 'part')} of your question."
     ]

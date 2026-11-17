@@ -43,7 +43,8 @@ export function readingHints(answer: Answer, { departures }: { departures: boole
       if (SHOWN_SEVERITIES.has(severity) && message) add(`Note: ${message}`, code);
     }
   };
-  for (const part of definiteParts(answer.parts)) {
+  const gapped = new Set(answer.gaps.map((gap) => gap.partIndex));
+  for (const part of definiteParts(answer.parts.filter((_, index) => !gapped.has(index)))) {
     const facts = partFacts(part);
     for (const { verb, phrase } of facts.operations) {
       add(`Not done: ${verb} (${JSON.stringify(phrase)})`, verb);
@@ -100,8 +101,8 @@ const plural = (count: number, noun: string): string => `${count} ${noun}${count
 /** An incomplete answer's text: how many parts it answered, each part with its gap and
  *  options, and the calls that settle the gaps. Each line passes through `inline`. */
 function gapText(answer: Answer, lead: string): string {
-  const count = definiteParts(answer.parts).length;
   const gaps = new Map(answer.gaps.map((gap) => [gap.partIndex, gap]));
+  const count = answer.parts.length - gaps.size;
   const lines = [`${lead} ${count} of ${plural(answer.parts.length, "part")} of your question.`];
   for (const [index, part] of answer.parts.entries()) {
     const name = quote(partText(part));

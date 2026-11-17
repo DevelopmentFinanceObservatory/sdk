@@ -138,6 +138,7 @@ test("each entry point exports these names and no others", async () => {
       "Citation",
       "CitationSource",
       "CodeRegistryEntry",
+      "CodeSearchOptions",
       "Columns",
       "DatasetRefJson",
       "DeclinedReason",

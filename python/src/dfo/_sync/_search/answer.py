@@ -85,6 +85,7 @@ from dfo._generated.error_map import GAP_KINDS
 from dfo._generated.wire import DeclinedReason
 from dfo._search import display as _display
 from dfo._search.answer_json import answer_json, read_answer_json
+from dfo._search.structured import asked_code, check_reply, code_gap
 from dfo._sync._datasets.fetch import SessionSource, fetch_members
 
 if TYPE_CHECKING:
@@ -116,7 +117,9 @@ class Answer:
         parts: One part per variable asked, in query order.
         specs: The readings, one per distinct spec, in query order.
         complete: Whether every part has a reading.
-        gaps: The parts that stop a complete dataset, in query order.
+        gaps: The parts that stop a complete dataset, in query order. A definite
+            part asked by a series code whose reading is not that code's series
+            alone is one, of kind `no_data`.
         question: The question asked, when the answer came from one.
         reason: Why Search declined, for a declined answer.
         warnings: Search's warnings for the whole answer.
@@ -340,7 +343,7 @@ class Answer:
         # `fetch_members` checks `strict` too. This check runs first so a bad
         # value raises before the incomplete-answer error or the warning.
         check_strict(strict)
-        members = _members(self.parts)
+        members = _members(self.parts, self.gaps)
         if self.gaps and (not partial or not members):
             raise self._incomplete_error()
         if (hint := _search_warning(self)) is not None:
@@ -403,6 +406,7 @@ def resolve(
     *,
     question: str | None,
     timeout: CallTimeout,
+    codes: Sequence[str] | None = None,
 ) -> Answer:
     """Post one Search input and read the answer.
 
@@ -416,6 +420,8 @@ def resolve(
             `CLIENT_TIMEOUT` takes the client's `timeout`, else `SEARCH_TIMEOUT`.
             In the synchronous client, platform name resolution can run past
             this bound; the asynchronous client can cancel it.
+        codes: The series code each part of `request` asks for, in part order,
+            for a search by codes; `answer_from_body` reads the answer by them.
 
     Raises:
         DfoError: The response is a problem document with a string `code` but
@@ -443,7 +449,7 @@ def resolve(
         raise problem
     with describing(trace_id):
         return answer_from_body(
-            body, question=question, source=source, trace_id=trace_id
+            body, question=question, source=source, trace_id=trace_id, codes=codes
         )
 
 
@@ -454,14 +460,22 @@ def answer_from_body(
     question: str | None,
     source: SessionSource,
     trace_id: str | None = None,
+    codes: Sequence[str] | None = None,
 ) -> Answer:
     """Read a decoded Search response into an answer.
 
-    `trace_id` is the trace id of the response the body came from.
+    `trace_id` is the trace id of the response the body came from. `codes` are
+    the series codes a search by codes asked, one per part in order. Without
+    them, a part's code is the `source_code` of its restatement. A definite part
+    asked by a code whose reading is not that code's series alone is a gap of
+    kind `no_data`, so `fetch` builds it only beside `partial=True`, and then
+    leaves it out.
 
     Raises:
         ContractError: The body is not an object, its kind is unknown, or a member
-            the client acts on is missing.
+            the client acts on is missing; or, for a search by codes, the
+            parts do not match the codes one to one, or Search could not read
+            the years the client sent (`time_text_not_parsed`).
     """
     if not isinstance(body, Mapping):
         raise client_error(CONTRACT_VIOLATION, "The Search response is not an object")
@@ -494,6 +508,8 @@ def answer_from_body(
     status = body.get("status")
     sentence = body.get("rendered_sentence")
     parts = parse_parts(body)
+    if codes is not None:
+        check_reply(parts, warnings, codes)
     sentence = (
         sentence
         if isinstance(sentence, str) and sentence
@@ -506,16 +522,20 @@ def answer_from_body(
     gaps = tuple(
         gap
         for index, part in enumerate(parts)
-        if (gap := _gap(index, part)) is not None
+        if (
+            gap := _gap(index, part)
+            or code_gap(
+                index, part, codes[index] if codes is not None else asked_code(part)
+            )
+        )
+        is not None
     )
     return Answer(
         kind=kind,
         status=status if isinstance(status, str) else _status(parts),
         sentence=sentence,
         parts=parts,
-        specs=tuple(
-            dict.fromkeys(part.spec for part in parts if isinstance(part, DefinitePart))
-        ),
+        specs=tuple(reading.spec for reading in _members(parts, gaps)),
         complete=not gaps,
         gaps=gaps,
         question=question,
@@ -559,15 +579,16 @@ def _gap(index: int, part: Part) -> Gap | None:
             )
 
 
-def _members(parts: Sequence[Part]) -> list[Reading]:
-    """One reading per distinct spec, in query order.
+def _members(parts: Sequence[Part], gaps: Sequence[Gap]) -> list[Reading]:
+    """One reading per distinct spec of the parts without a gap, in query order.
 
     Parts folded onto one spec share its reading, which names each of them that
     has variable text; a part without any names nothing.
     """
+    gapped = {gap.part_index for gap in gaps}
     grouped: dict[Spec, list[DefinitePart]] = {}
-    for part in parts:
-        if isinstance(part, DefinitePart):
+    for index, part in enumerate(parts):
+        if isinstance(part, DefinitePart) and index not in gapped:
             grouped.setdefault(part.spec, []).append(part)
     return [
         Reading(

@@ -65,6 +65,7 @@
                 }
               },
               "resolved": {
+                "stat_vars": {},
                 "facets": {
                   "provenance": {
                     "label": "World Development Indicators"
@@ -220,6 +221,7 @@
                 }
               },
               "resolved": {
+                "stat_vars": {},
                 "facets": {
                   "provenance": {
                     "label": "Kenya Census"
@@ -478,6 +480,7 @@
             }
           },
           "resolved": {
+            "stat_vars": {},
             "entity_groups": {
               "observationAbout": {
                 "ref": "SubSaharanAfrica",

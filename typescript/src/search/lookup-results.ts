@@ -280,7 +280,7 @@ export function withEntityDcids<T>(options: T): T {
  * @throws {InvalidRequestError} A `Match` did not resolve (`match_unresolved`). The message
  *   names the dcid of its first candidate, else of its nearest match.
  */
-function entityDcid(role: string, item: unknown): unknown {
+export function entityDcid(role: string, item: unknown): unknown {
   if (item instanceof Entity) return item.dcid;
   if (!(item instanceof Match)) return item;
   if (item.status === "resolved" && item.entity !== null) return item.entity.dcid;

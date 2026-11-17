@@ -190,13 +190,64 @@ class AsyncClient:
         )
         return type(self)._over(Session(transport, self._session.cache))
 
+    @overload
     async def search(
         self, question: str, /, *, timeout: CallTimeout = CLIENT_TIMEOUT
+    ) -> AsyncAnswer: ...
+
+    @overload
+    async def search(
+        self,
+        /,
+        *,
+        codes: Sequence[str],
+        variable: str | None = None,
+        entities: Entities | None = None,
+        window: Window | None = None,
+        open_roles: Sequence[str] | None = None,
+        source: str | None = None,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
+    ) -> AsyncAnswer: ...
+
+    async def search(
+        self,
+        question: str | None = None,
+        /,
+        *,
+        codes: Sequence[str] | None = None,
+        variable: str | None = None,
+        entities: Entities | None = None,
+        window: Window | None = None,
+        open_roles: Sequence[str] | None = None,
+        source: str | None = None,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
     ) -> AsyncAnswer:
-        """Ask Search what a question means, part by part.
+        """Ask Search what a question means, part by part, or ask it for
+        publisher series codes, one part per code.
+
+        A search by codes takes no question. Each code answers on its own from
+        the code's series, and the other keywords apply to every code. A code
+        DFO does not hold, and a reading that is not the code's series alone,
+        are gaps of the answer, so `answer.fetch()` refuses until
+        `partial=True` builds the codes that read.
 
         Args:
             question: The question, in your words.
+            codes: Publisher series codes, such as
+                `["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD"]`.
+            variable: Words that choose among a code's variables, such as
+                "debt service". Left out, each code's part reads the code.
+            entities: Role keys bound to dcids, such as
+                `{"destination": ["country/KEN"]}`, or to what `lookup.resolve`
+                returns, as `fetch` takes them. `origin` reads as the giving
+                side and `destination` as the receiving side; `place` names
+                no side.
+            window: `"all"`, `"latest"` or `(start_year, end_year)`, as `fetch`
+                takes it.
+            open_roles: Flow role keys, `origin` or `destination`, to answer
+                member by member, such as `["origin"]` for one row per creditor.
+            source: The source to read the codes from, in words, such as
+                "IDS", for a code two sources hold.
             timeout: The longest the call waits, retries included, in seconds.
                 Each attempt reads until then, and None waits as long as Search
                 takes. Left out, the client's `timeout` applies, else 60
@@ -205,11 +256,26 @@ class AsyncClient:
 
         Raises:
             InvalidRequestError: `question` is not text, is empty or only
-                whitespace, or holds a lone surrogate; or `timeout` is not None
-                or a finite number above 0 (`invalid_argument`).
+                whitespace, or holds a lone surrogate; a question comes beside
+                a keyword of a search by codes, or such a keyword comes without
+                `codes`; a keyword breaks its rule, such as `codes` given as one
+                string or naming a code twice; or `timeout` is not None or a
+                finite number above 0 (`invalid_argument`). No request is sent.
             ContractError: The answer lacks a member the client acts on.
+            DfoError: The server refused the request, such as more codes than
+                it takes in one search (`request_invalid`).
         """
-        return await search(self._current, question, timeout=timeout)
+        return await search(
+            self._current,
+            question,
+            codes=codes,
+            variable=variable,
+            entities=entities,
+            window=window,
+            open_roles=open_roles,
+            source=source,
+            timeout=timeout,
+        )
 
     @overload
     async def fetch(

@@ -4,6 +4,18 @@ All notable changes to this package are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `client.search({ codes, ... })` takes publisher series codes in place of a question: `client.search({ codes: ["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD"], entities: { destination: ["country/KEN"] }, window: [2015, 2023] })`. Each code is its own part of the answer. `variable` gives words that choose among a code's variables and defaults to the code itself. `entities` and `window` take the forms `client.fetch` takes, `openRoles` takes `origin` or `destination` to answer member by member, and `source` names the source in words, such as `"IDS"`, for a code two sources hold. `CodeSearchOptions`, exported from `@developmentfinance/client/types`, types the object. A question beside any of these keys, an object without `codes`, `codes` as one string or naming a code twice, or a second options object beside the codes throws `InvalidRequestError` (`invalid_argument`) before any request. The client caps neither codes nor entities; a server refusal arrives as `request_invalid`.
+- An answer flags a part asked by a series code whose reading is not that code's series alone: every code in the spec's `resolved.stat_vars.source_codes` must be the asked code with `exact` true. Such a part keeps its reading and becomes a gap of kind `no_data` whose message names the asked code and the codes the reading holds, so `answer.fetch()` throws `IncompleteAnswerError` (`answer_incomplete`) and `answer.fetch({ partial: true })` builds the other parts. The check reads the asked code from the part's restatement, so it holds for an answer read back by `Answer.fromJSON` and for a code Search found in a question's words.
+
+### Changed
+
+- `answer.toJSON()` keeps each spec's `resolved.stat_vars.source_codes`, which the exact-code check reads.
+- An answer counts and builds only the parts without a gap: `answer.specs` and `answer.fetch({ partial: true })` leave out a definite part that is a gap, and the printed answer counts it as missing.
+
 ## [0.2.0] - 2026-11-14
 
 ### Added
