@@ -263,6 +263,33 @@ console.log(newest.ref.equals(ref) ? "unchanged" : "new data");
 
 `equals` compares specs, versions and renderings, and leaves out file digests, which change when the server renders the same version again. The ref format is shared with the Python client, so a ref saved by one reads in the other. A ref keeps the `partyTotals` choice it was fetched with, and refuses a narrowing. A version the server can no longer build raises `VersionUnavailableError`, and `{ latest: true }` fetches the current one.
 
+## Save the rows and read them back
+
+`data.toBytes()` gives the dataset as one Parquet file, with its provenance and ref under `dfo.*` keys, and `Dataset.fromBytes(bytes)` reads it back, in Node or in a browser. On Node, `data.save(path)` writes the file and `load(path)` reads it. The Python client's `dfo.load` reads the same file, and this client reads a file Python's `data.save` wrote. The loaded dataset prints, converts and saves as the one that wrote it did, and its `provenance` and `ref` come back equal:
+
+```text
+true 66
+<Dataset Kenya's GDP, 1960 to 2025. Current US dollars · World Development Indicators.
+  Source: World Development Indicators
+  Version: cv_00f3d36b33447b0675e100ebc84120ee (exact), pinned
+  Rows: 66, time_period as integer years
+  Keep: JSON.stringify(data.ref) · newest later: client.fetch(data.ref, { latest: true })>
+```
+
+```ts
+import { Client, Dataset, load } from "@developmentfinance/client";
+
+const client = new Client();
+const data = await (await client.search("GDP of Kenya")).fetch();
+const again = await Dataset.fromBytes(await data.toBytes());
+console.log(again.ref.equals(data.ref), again.rowCount);
+
+await data.save("kenya-gdp.parquet");
+console.log(String(await load("kenya-gdp.parquet")));
+```
+
+A file of several members holds them in one table, `part` first, so `memberBytes` throws `InvalidRequestError` (`invalid_argument`) on a loaded dataset; `client.fetch(data.ref)` fetches each member's own file. Bytes that hold no saved dataset throw `BundleError` (`not_a_bundle`), and a damaged or later-format provenance throws `FormatError`. A file Python saved from a website bundle's folder names no version, so its `fetchedAt` is null and `data.ref` throws `InvalidRequestError` (`ref_unavailable`). In a browser, `load(path)` throws `InvalidRequestError` (`invalid_argument`); read the file's bytes with `Dataset.fromBytes`.
+
 ## Save an answer and revive it
 
 `JSON.stringify(answer)` writes the answer, and `Answer.fromJSON(value, client)` reads it back, so a choice can arrive in a later request:
@@ -373,12 +400,13 @@ Branch on the class, or on `error.code` for one case. The bracket's text may cha
 | `NetworkError`            | The connection failed                                                                                           |
 | `ServerError`             | The server failed or a download did not verify. A retryable failure is retried before you see it                |
 | `ContractError`           | A response the client cannot act on. Upgrade the package                                                        |
+| `BundleError`             | `Dataset.fromBytes` or `load` read bytes that hold no saved dataset (`not_a_bundle`)                            |
 
-`client.lookup.errorCode(code)` explains one of DFO's own error or warning codes, such as one the server sends. The client raises these itself: `answer_declined`, `answer_incomplete`, `base_url_invalid`, `choice_invalid`, `contract_violation`, `credentials_file_invalid`, `credentials_file_unreadable`, `deadline_exceeded`, `digest_mismatch`, `download_failed`, `header_invalid`, `insecure_transport`, `invalid_argument`, `key_empty`, `key_invalid`, `match_unresolved`, `network_error`, `offline`, `profile_not_found`, `profile_without_key`, `refusal_without_code`, `response_too_large`, `unexpected_response`, `version_not_pinned`, and `version_unavailable`.
+`client.lookup.errorCode(code)` explains one of DFO's own error or warning codes, such as one the server sends. The client raises these itself: `answer_declined`, `answer_incomplete`, `base_url_invalid`, `choice_invalid`, `contract_violation`, `credentials_file_invalid`, `credentials_file_unreadable`, `deadline_exceeded`, `digest_mismatch`, `download_failed`, `header_invalid`, `insecure_transport`, `invalid_argument`, `key_empty`, `key_invalid`, `match_unresolved`, `network_error`, `not_a_bundle`, `offline`, `profile_not_found`, `profile_without_key`, `ref_unavailable`, `refusal_without_code`, `response_too_large`, `unexpected_response`, `version_not_pinned`, and `version_unavailable`.
 
 Some faults raise other errors. An aborted call rejects with its signal's `reason`. A `strict` fetch throws its first `SearchWarning`, `DataWarning`, or `SeriesLeftOutWarning` in place of passing it to `onWarning`. `SeriesLeftOutWarning` (`series_left_out`) says an operation dropped series for missing data, which `data.leftOut` lists.
 
-`DatasetRef.fromJSON` and `Answer.fromJSON` throw a `FormatError` for JSON in the wrong format. `FormatError` is a `DfoError` whose `code` equals its `reason`: `format_invalid`, `definition_spec_id_mismatch` or `repeated_spec_id`. Its `reason` and `pointer` name the fault. In a browser, `new Client()` throws an `InvalidRequestError` (`invalid_argument`) for a secret key from `apiKey`, as the first request does for one in `headers` or from `headerProvider`.
+`DatasetRef.fromJSON`, `Answer.fromJSON` and `Dataset.fromBytes` throw a `FormatError` for stored data in the wrong format. `FormatError` is a `DfoError` whose `code` equals its `reason`: `format_invalid`, `definition_spec_id_mismatch` or `repeated_spec_id`. Its `reason` and `pointer` name the fault. In a browser, `new Client()` throws an `InvalidRequestError` (`invalid_argument`) for a secret key from `apiKey`, as the first request does for one in `headers` or from `headerProvider`.
 
 ## Use it in a web app
 

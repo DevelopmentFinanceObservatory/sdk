@@ -58,6 +58,7 @@ test("each entry point exports these names and no others", async () => {
       "Provenance",
       "VERSION",
       "latestYear",
+      "load",
       "recipe",
     ],
     types: ["ClientOptions", "Spec"],
@@ -66,6 +67,7 @@ test("each entry point exports these names and no others", async () => {
   assert.deepEqual(listed["./errors"], {
     values: [
       "AuthenticationError",
+      "BundleError",
       "ContractError",
       "DataWarning",
       "DeclinedError",
@@ -90,6 +92,7 @@ test("each entry point exports these names and no others", async () => {
     types: [
       "Action",
       "Alternative",
+      "BundleErrorReason",
       "ClientErrorCode",
       "DfoErrorCode",
       "DfoErrorOptions",

@@ -27,6 +27,8 @@ export type {
   DfoErrorOptions,
   ServerErrorCode,
 } from "./core/errors.ts";
+export { BundleError } from "./datasets/saved.ts";
+export type { BundleErrorReason } from "./datasets/saved.ts";
 export { FormatError } from "./core/ref.ts";
 export type { FormatErrorReason } from "./core/ref.ts";
 export { SearchWarning } from "./search/answer.ts";

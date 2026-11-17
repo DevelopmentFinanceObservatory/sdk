@@ -21,18 +21,26 @@ import type {
 import { manifestWarningsOf } from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
 import type { Assumption, Departure, Notice, RequestedOperation } from "../wire.ts";
-import { canonicalJson, compareCodePoints, isRecord, list, objects, text } from "../core/json.ts";
+import { isRecord, list, objects, text } from "../core/json.ts";
 import { inline } from "../core/text.ts";
 import { clientError } from "../core/errors.ts";
-import { COLUMN_ROLE_KEYS } from "../generated/role-keys.ts";
+import { partyTotalsLine, partyTotalsOf, rootPartyTotalsOf } from "./party-totals.ts";
+import type { PartyTotalsLeftOut } from "./party-totals.ts";
 import { platformFileWriter } from "./save.ts";
+import {
+  arrayAt,
+  loadCitation,
+  loadDay,
+  loadTime,
+  loadWarning,
+  readSaved,
+  SAVED_DERIVED_FORMAT_VERSION,
+  SAVED_FORMAT_VERSION,
+  stringAt,
+} from "./saved.ts";
 
-/** The version of the provenance a file from `toBytes()` carries under `dfo.*` keys, the one
- *  Python's `Dataset.save` writes: 1 for a dataset of dataset versions, and 2 for a derived
- *  dataset, whose `dfo.ref` is a format 2 ref and which adds `dfo.left_out` and `dfo.steps`, so
- *  a client that reads format 1 alone refuses it as a later format. */
-const SAVED_FORMAT_VERSION = 1;
-const SAVED_DERIVED_FORMAT_VERSION = 2;
+export type { KeptSeries, PartyTotalsLeftOut } from "./party-totals.ts";
+
 /** The format of the object `Provenance.toObject()` returns. */
 const PROVENANCE_FORMAT_VERSION = 1;
 
@@ -190,214 +198,6 @@ export function stepsText(steps: readonly DerivedStep[], source: string): string
   return done === "" ? `from ${source}` : `${done}, from ${source}`;
 }
 
-/** One series whose rows kept an entry's totals, and the periods in which they stayed. */
-export type KeptSeries = {
-  /** Each column of the frame's grain other than the entry's role, `time_period` and
-   *  `provenance`, such as `stat_var`, the other role columns, `unit` and `measurementMethod`,
-   *  mapped to the cell the series holds there: a string, null, or a unit as a JSON object. */
-  readonly series: Readonly<Record<string, unknown>>;
-  /** The `time_period` values, sorted by code point, in which the series kept the totals. */
-  readonly timePeriods: readonly string[];
-};
-
-/**
- * Group totals on one party role that a fetch left out of one member's rows. A fetch leaves
- * party totals out by default, so a sum over `value` counts each flow once. `partyTotals: true`
- * keeps them. DFO names what the cut dropped in the version's manifest, one entry per party role,
- * provenance and set of kept series and periods, and the dataset gathers those entries in member
- * order, then in the manifest's order. Two entries can share a role and a provenance. A derived
- * dataset's entries describe each reading its recipe ran on, in the order of its ref's roots.
- */
-export type PartyTotalsLeftOut = {
-  /** The spec of the member whose rows lost the totals, or for a derived dataset the reading's. */
-  readonly specId: string;
-  /** The party role, by DFO's column name, such as `financingProvider`. */
-  readonly role: string;
-  /** The key a caller names the role by in `entities`, `origin` or `destination`, or null for a
-   *  column the client does not know. */
-  readonly roleKey: string | null;
-  /** The dcids of the totals left out, such as `DACCountriesTotal`. */
-  readonly entities: readonly string[];
-  /** The dataset whose rows lost the totals, or null for rows with no provenance, or when
-   *  `everyProvenance` is true. */
-  readonly provenance: string | null;
-  /** Whether the totals left the rows of every dataset, as on a version DFO recorded before it
-   *  named the provenance. */
-  readonly everyProvenance: boolean;
-  /** The series whose rows kept these totals, each with the periods where they stayed, in the
-   *  manifest's order; empty when the totals left every series in every period. */
-  readonly keptIn: readonly KeptSeries[];
-};
-
-/** A non-empty string. */
-const isFilled = (value: unknown): value is string => typeof value === "string" && value !== "";
-
-/** Compares two lists element by element with `compare`, a shorter prefix first. */
-function compareLists<T>(
-  a: readonly T[],
-  b: readonly T[],
-  compare: (x: T, y: T) => number,
-): number {
-  for (let index = 0; index < a.length && index < b.length; index += 1) {
-    const order = compare(a[index]!, b[index]!);
-    if (order !== 0) return order;
-  }
-  return Math.sign(a.length - b.length);
-}
-
-/** One series cell's sort key: its column, then null before a string before an object, then the
- *  string or the object's JCS text. */
-type CellKey = readonly [column: string, kind: number, text: string];
-
-const compareCellKeys = (a: CellKey, b: CellKey): number =>
-  compareCodePoints(a[0], b[0]) || a[1] - b[1] || compareCodePoints(a[2], b[2]);
-
-/** A `kept_in` item as `{series, timePeriods}` with its sort key, or null when it is no object of
- *  exactly a `series` object whose cells are strings, nulls or objects and `time_periods`, a
- *  non-empty list of non-empty strings sorted by code point, each once. */
-function keptSeries(item: unknown): { kept: KeptSeries; key: CellKey[] } | null {
-  if (!isRecord(item)) return null;
-  const names = Object.keys(item);
-  if (names.length !== 2 || !Object.hasOwn(item, "series")) return null;
-  const { series, time_periods: periods } = item;
-  if (!isRecord(series) || !Array.isArray(periods) || periods.length === 0) return null;
-  if (
-    !periods.every(
-      (period: unknown, index) =>
-        isFilled(period) &&
-        (index === 0 || compareCodePoints(periods[index - 1] as string, period) < 0),
-    )
-  ) {
-    return null;
-  }
-  const key: CellKey[] = [];
-  for (const column of Object.keys(series).toSorted(compareCodePoints)) {
-    const cell = series[column];
-    if (cell === null) key.push([column, 0, ""]);
-    else if (typeof cell === "string") key.push([column, 1, cell]);
-    else if (isRecord(cell)) key.push([column, 2, canonicalJson(cell)]);
-    else return null;
-  }
-  const kept = Object.freeze({
-    series: Object.freeze(structuredClone(series)),
-    timePeriods: Object.freeze([...(periods as string[])]),
-  });
-  return { kept, key };
-}
-
-/** The series a trace entry's `kept_in` lists: empty when it is absent, and null when it is no
- *  non-empty list of well-formed items in the contract's order, no two with the same series. */
-function keptInOf(value: unknown): KeptSeries[] | null {
-  if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length === 0) return null;
-  const kept: KeptSeries[] = [];
-  let previous: CellKey[] | null = null;
-  for (const item of value) {
-    const read = keptSeries(item);
-    if (read === null) return null;
-    if (previous !== null && compareLists(previous, read.key, compareCellKeys) >= 0) return null;
-    kept.push(read.kept);
-    previous = read.key;
-  }
-  return kept;
-}
-
-/**
- * One entry of a manifest's `trace.party_totals_left_out` as `{role, entities, provenance,
- * kept_in}`, where an absent `provenance` means every dataset's rows; null when the entry is no
- * object, its `role` is no non-empty string, its `entities` is no list of non-empty strings, its
- * `provenance` is neither absent, a string nor null, or its `kept_in` is neither absent nor a
- * well-formed list in the contract's order. Other keys are ignored.
- */
-function partyTotalsEntry(entry: unknown, specId: string): PartyTotalsLeftOut | null {
-  if (!isRecord(entry)) return null;
-  const { role, entities, provenance } = entry;
-  if (!isFilled(role)) return null;
-  if (!Array.isArray(entities) || !entities.every(isFilled)) return null;
-  if (provenance !== undefined && provenance !== null && typeof provenance !== "string") {
-    return null;
-  }
-  const keptIn = keptInOf(entry["kept_in"]);
-  if (keptIn === null) return null;
-  return Object.freeze({
-    specId,
-    role,
-    roleKey: Object.hasOwn(COLUMN_ROLE_KEYS, role) ? (COLUMN_ROLE_KEYS[role] ?? null) : null,
-    entities: Object.freeze([...entities]),
-    provenance: provenance ?? null,
-    everyProvenance: !Object.hasOwn(entry, "provenance"),
-    keptIn: Object.freeze(keptIn),
-  });
-}
-
-/** The entries a list of trace entries names for `specId`: none when `served` is no list, and a
- *  malformed entry is dropped while the entries beside it still read. */
-function partyTotalsFrom(served: unknown, specId: string): PartyTotalsLeftOut[] {
-  if (!Array.isArray(served)) return [];
-  return served.flatMap((entry: unknown) => partyTotalsEntry(entry, specId) ?? []);
-}
-
-/**
- * The totals a manifest's `trace.party_totals_left_out` names for the member of `specId`. The
- * list is empty when the trace names none: a trace that is no object or a member that is no list
- * names none, and a malformed entry is dropped while the entries beside it still read.
- */
-function partyTotalsOf(
-  manifest: Readonly<Record<string, unknown>>,
-  specId: string,
-): PartyTotalsLeftOut[] {
-  const trace = manifest["trace"];
-  return partyTotalsFrom(isRecord(trace) ? trace["party_totals_left_out"] : undefined, specId);
-}
-
-/**
- * The totals each root's read left out, as a derived manifest's `roots[].party_totals_left_out`
- * names them, each entry under its root's spec id, in the order of the ref member's roots. Each
- * ref root pairs with the first manifest root of the same `spec_id` and `content_version` that no
- * earlier ref root took, and a manifest root that pairs with none names none. Empty against a
- * server older than the per-root report, and when the server could not read a root, so an empty
- * list leaves open whether the reads kept every total.
- */
-function rootPartyTotalsOf(member: Omit<FetchedDerivedMember, "data">): PartyTotalsLeftOut[] {
-  const served = objects(member.manifest["roots"]);
-  const taken = new Set<number>();
-  return member.roots.flatMap(({ specId, contentVersion }) => {
-    const index = served.findIndex(
-      (root, at) =>
-        !taken.has(at) && root["spec_id"] === specId && root["content_version"] === contentVersion,
-    );
-    if (index === -1) return [];
-    taken.add(index);
-    return partyTotalsFrom(served[index]!["party_totals_left_out"], specId);
-  });
-}
-
-/** The text form's line counting the totals left out on each role, with the key a caller names
- *  it by where the client knows it, as
- *  `Party totals left out: 15 on financingProvider (origin) · data.partyTotalsLeftOut`. A derived
- *  dataset's line counts the totals its readings left out. */
-function partyTotalsLine(
-  entries: readonly PartyTotalsLeftOut[],
-  derived: boolean,
-): string | undefined {
-  const byRole = new Map<string, { roleKey: string | null; dcids: Set<string> }>();
-  for (const { role, roleKey, entities } of entries) {
-    const counted = byRole.get(role) ?? { roleKey, dcids: new Set<string>() };
-    for (const entity of entities) counted.dcids.add(entity);
-    byRole.set(role, counted);
-  }
-  if (byRole.size === 0) return undefined;
-  const counts = [...byRole]
-    .map(
-      ([role, { roleKey, dcids }]) =>
-        `${dcids.size.toLocaleString("en-GB")} on ${role}` +
-        (roleKey === null ? "" : ` (${roleKey})`),
-    )
-    .join(", ");
-  const label = derived ? "Party totals left out of the readings" : "Party totals left out";
-  return `${label}: ${counts} · data.partyTotalsLeftOut`;
-}
-
 /** What a derived dataset adds to its member: every series its recipe left out, whether that
  *  list is whole, its steps in the order they ran, and the role word the call named each
  *  column by. */
@@ -509,19 +309,105 @@ type DatasetOptions = {
   readonly layout: Layout;
   readonly missing?: readonly Gap[];
   readonly derived?: DerivedFacts;
-  /** The retention in place of the one the manifests state, as after a pin. */
-  readonly retention?: { readonly heldUntil: Date | null; readonly pinned: boolean };
   /** The question the dataset answers, when it came from an answer. */
   readonly question?: string | null;
-  /** When the data left the server, which the copies of a dataset keep. Now by default. */
+  /** When the data left the server. Now by default. */
   readonly fetchedAt?: Date;
+};
+
+/** A member a dataset is made from, without its bytes, which the dataset holds itself. */
+type MemberInput = Omit<FetchedMember, "data"> | Omit<FetchedDerivedMember, "data">;
+
+/**
+ * What a dataset holds beside its rows, as a fetch reads it from the members' manifests or a
+ * saved file from its `dfo.*` keys. A copy of a dataset, as after a pin, changes it and keeps
+ * the rows.
+ */
+export type DatasetState = {
+  readonly sentence: string;
+  readonly members: readonly (Member | DerivedMember)[];
+  readonly citation: Citation;
+  readonly warnings: readonly Notice[];
+  readonly departures: readonly Departure[];
+  readonly requestedOperations: readonly RequestedOperation[];
+  readonly assumptions: readonly Assumption[];
+  readonly complete: boolean;
+  readonly missing: readonly Gap[];
+  readonly heldUntil: Date | null;
+  readonly pinned: boolean;
+  readonly layout: Layout;
+  readonly layoutVersion: string;
+  readonly question: string | null;
+  readonly fetchedAt: Date | null;
+  readonly leftOut: readonly LeftOutFields[];
+  readonly leftOutComplete: boolean;
+  /** The recipe's steps in the order they ran, each column named as `roles` names it. */
+  readonly steps: readonly DerivedStep[];
+  /** The role word the call named each column by, for the text forms alone. */
+  readonly roles: Readonly<Record<string, string>>;
+  readonly partyTotalsLeftOut: readonly PartyTotalsLeftOut[];
   /** The share slot a share fetch read, as the text form's "Shown by" line names it:
    *  `share k3Qx8vTa, slot 2 "Malaria grants", on 3 October 2026`. */
   readonly shownBy?: string;
 };
 
-/** A member a dataset is made from, without its bytes, which the dataset holds itself. */
-type MemberInput = Omit<FetchedMember, "data"> | Omit<FetchedDerivedMember, "data">;
+/** What a dataset reads from its members' manifests and the fetch's options. */
+function stateOf(members: readonly MemberInput[], options: DatasetOptions): DatasetState {
+  const built = members.map((member): Member | DerivedMember => {
+    const citation = citationOf(member.manifest);
+    const parts = Object.freeze([...member.parts]);
+    if (isDerived(member)) {
+      return { ...derivedRefMember(member), parts, citation };
+    }
+    return {
+      parts,
+      spec: member.spec,
+      contentVersion: member.contentVersion,
+      sentence: member.sentence,
+      citation,
+      digest: member.digest,
+      rendering: member.rendering,
+    };
+  });
+  const manifests = members.map((member) => member.manifest);
+  const facts = members.flatMap((member) => (isDerived(member) ? [] : (member.answerFacts ?? [])));
+  const { heldUntil, pinned } = retentionOf(manifests);
+  const missing = Object.freeze([...(options.missing ?? [])]);
+  const derived = options.derived;
+  const roles = derived?.roles ?? {};
+  return {
+    sentence: built.map((member) => member.sentence).join(" "),
+    members: Object.freeze(built),
+    citation: mergeCitations(built.map((member) => member.citation)),
+    warnings: Object.freeze(warningsOf(manifests)),
+    departures: Object.freeze(unique(facts.flatMap((part) => part.departures))),
+    requestedOperations: Object.freeze(unique(facts.flatMap((part) => part.operations))),
+    // Each assumption keeps the four members both clients save, so equal ones count once.
+    assumptions: Object.freeze(unique(facts.flatMap((part) => part.assumptions ?? []))),
+    complete: missing.length === 0,
+    missing,
+    heldUntil,
+    pinned,
+    layout: options.layout,
+    layoutVersion: [
+      ...new Set(members.map((member) => artifactLayout(member, options.layout))),
+    ].join("; "),
+    question: options.question ?? null,
+    fetchedAt: options.fetchedAt ?? new Date(),
+    leftOut: derived?.leftOut ?? [],
+    leftOutComplete: derived?.leftOutComplete ?? true,
+    steps: (derived?.steps ?? []).map((step) => ({
+      ...step,
+      by: step.by.map((column) => roles[column] ?? column),
+    })),
+    roles,
+    partyTotalsLeftOut: members.flatMap((member) =>
+      isDerived(member)
+        ? rootPartyTotalsOf(member)
+        : partyTotalsOf(member.manifest, member.spec.spec_id),
+    ),
+  };
+}
 
 /** Copies a dataset as pinned; Dataset's static block assigns it. */
 let pinnedCopy: (dataset: Dataset) => Dataset;
@@ -593,18 +479,22 @@ export class Dataset {
   readonly layoutVersion: string;
   /** The question the dataset answers, when it came from `answer.fetch()`, else null. */
   readonly question: string | null;
-  /** When the data left the server, to the second. */
-  readonly fetchedAt: Date;
-  readonly #data: readonly Uint8Array[];
+  /** When the data left the server, to the second, or null when a saved file does not say, as
+   *  one Python wrote for a dataset read from a website bundle does not. */
+  readonly fetchedAt: Date | null;
+  /** Each member's file as the server built it, in member order, or null for a dataset read
+   *  from a saved file, which holds one table for every member. */
+  readonly #data: readonly Uint8Array[] | null;
   /** Each member's file, one per member in member order, labelled as its `part` column holds
-   *  it when several stack, in reading order. */
+   *  it when several stack, in reading order; or a saved file's one table, as the file holds
+   *  it. */
   readonly #table: Table;
+  /** Each member's row count in member order, which splits the table's rows by member. */
+  readonly #memberRows: readonly number[];
   /** Every series a step of the recipe behind a derived dataset dropped for missing data, at
    *  any step, each naming its step. Empty for a dataset of dataset versions. DFO lists at most
    *  2,000; `String(data)` says "at least" when it dropped more. */
   readonly leftOut: readonly LeftOutSeries[];
-  /** Whether `leftOut` lists every series the recipe dropped. */
-  readonly #leftOutComplete: boolean;
   /** The group totals a fetch left out of each member's rows, one entry per member, party role,
    *  provenance and set of kept series and periods, in member order and then the manifest's
    *  order. Empty when nothing was left out and when the fetch passed `partyTotals: true`. A
@@ -613,22 +503,25 @@ export class Dataset {
    *  the server could not read a reading, so an empty list there leaves open whether every total
    *  stayed. */
   readonly partyTotalsLeftOut: readonly PartyTotalsLeftOut[];
-  /** The recipe's steps in the order they ran, for the text form's derived line. */
-  readonly #steps: readonly DerivedStep[];
-  /** The members and options the dataset was made from, less their bytes, for a copy. */
-  readonly #inputs: { members: readonly MemberInput[]; options: DatasetOptions };
+  /** What the dataset holds beside its rows, for a copy. */
+  readonly #state: DatasetState;
 
   static {
     readTable = (dataset) => dataset.#table;
-    pinnedCopy = (dataset) => {
-      const { members, options } = dataset.#inputs;
-      const retention = { heldUntil: null, pinned: true };
-      return new Dataset(members, { ...options, retention }, dataset.#data, dataset.#table);
-    };
-    shownCopy = (dataset, shownBy) => {
-      const { members, options } = dataset.#inputs;
-      return new Dataset(members, { ...options, shownBy }, dataset.#data, dataset.#table);
-    };
+    pinnedCopy = (dataset) =>
+      new Dataset(
+        { ...dataset.#state, heldUntil: null, pinned: true },
+        dataset.#table,
+        dataset.#memberRows,
+        dataset.#data,
+      );
+    shownCopy = (dataset, shownBy) =>
+      new Dataset(
+        { ...dataset.#state, shownBy },
+        dataset.#table,
+        dataset.#memberRows,
+        dataset.#data,
+      );
   }
 
   /**
@@ -658,83 +551,77 @@ export class Dataset {
     // The dataset holds the bytes itself, once.
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the bytes are left out on purpose
     const inputs = members.map(({ data: _, ...member }) => member);
-    const fetchedAt = options.fetchedAt ?? new Date();
-    return new Dataset(inputs, { ...options, fetchedAt }, data, table);
+    return new Dataset(stateOf(inputs, options), table, memberRows(parts), data);
+  }
+
+  /**
+   * Reads the file `toBytes()` or `save()` writes, or Python's `data.save` or `data.to_bytes()`,
+   * with its rows, provenance and ref. It works in any runtime. A file of several members holds
+   * them in one table, `part` first, so the loaded dataset's `memberBytes` throws; its other
+   * conversions work as on the dataset that wrote it, and `toBytes()` writes the file again.
+   *
+   * @throws {BundleError} The bytes are no Parquet file, a damaged one, or one without a saved
+   *   dataset's `dfo.*` keys (`not_a_bundle`).
+   * @throws {FormatError} A `dfo.*` key is missing or breaks the saved format, or the file comes
+   *   from a later format version (`format_invalid`, or as `DatasetRef.fromJSON` throws for its
+   *   `dfo.ref`). The pointer starts with the key, as in `/dfo.dataset/missing`.
+   * @throws {InvalidRequestError} `bytes` is neither a Uint8Array nor an ArrayBuffer
+   *   (`invalid_argument`).
+   */
+  static async fromBytes(bytes: Uint8Array | ArrayBuffer): Promise<Dataset> {
+    const { state, table, memberRows } = await readSaved(bytes);
+    return new Dataset(state, table, memberRows, null);
   }
 
   private constructor(
-    members: readonly MemberInput[],
-    options: DatasetOptions,
-    data: readonly Uint8Array[],
+    state: DatasetState,
     table: Table,
+    memberRows: readonly number[],
+    data: readonly Uint8Array[] | null,
   ) {
-    this.#inputs = { members, options };
-    const built = members.map((member): Member | DerivedMember => {
-      const citation = citationOf(member.manifest);
-      const parts = Object.freeze([...member.parts]);
-      if (isDerived(member)) {
-        return { ...derivedRefMember(member), parts, citation };
-      }
-      return {
-        parts,
-        spec: member.spec,
-        contentVersion: member.contentVersion,
-        sentence: member.sentence,
-        citation,
-        digest: member.digest,
-        rendering: member.rendering,
-      };
-    });
-    const manifests = members.map((member) => member.manifest);
-    const facts = members.flatMap((member) =>
-      isDerived(member) ? [] : (member.answerFacts ?? []),
-    );
-    const retention = options.retention ?? retentionOf(manifests);
-    this.sentence = built.map((member) => member.sentence).join(" ");
-    this.members = Object.freeze(built);
-    this.citation = mergeCitations(built.map((member) => member.citation));
-    this.warnings = Object.freeze(warningsOf(manifests));
-    this.departures = Object.freeze(unique(facts.flatMap((part) => part.departures)));
-    this.requestedOperations = Object.freeze(unique(facts.flatMap((part) => part.operations)));
-    // Each assumption keeps the four members both clients save, so equal ones count once.
-    this.assumptions = Object.freeze(unique(facts.flatMap((part) => part.assumptions ?? [])));
-    this.missing = Object.freeze([...(options.missing ?? [])]);
-    this.complete = this.missing.length === 0;
-    this.heldUntil = retention.heldUntil;
-    this.pinned = retention.pinned;
-    this.layout = options.layout;
-    this.question = options.question ?? null;
-    // Seconds precision, as the saved file's `dfo.fetched_at` holds it.
-    this.fetchedAt = new Date(
-      Math.floor((options.fetchedAt ?? new Date()).getTime() / 1000) * 1000,
-    );
-    this.#data = data;
+    this.#state = state;
     this.#table = table;
-    const derived = options.derived;
-    const roles = derived?.roles ?? {};
+    this.#memberRows = Object.freeze([...memberRows]);
+    this.#data = data;
+    this.sentence = state.sentence;
+    this.members = Object.freeze([...state.members]);
+    this.citation = state.citation;
+    this.warnings = Object.freeze([...state.warnings]);
+    this.departures = Object.freeze([...state.departures]);
+    this.requestedOperations = Object.freeze([...state.requestedOperations]);
+    this.assumptions = Object.freeze([...state.assumptions]);
+    this.missing = Object.freeze([...state.missing]);
+    this.complete = state.complete;
+    this.heldUntil = state.heldUntil;
+    this.pinned = state.pinned;
+    this.layout = state.layout;
+    this.layoutVersion = state.layoutVersion;
+    this.question = state.question;
+    // Seconds precision, as the saved file's `dfo.fetched_at` holds it.
+    this.fetchedAt =
+      state.fetchedAt === null
+        ? null
+        : new Date(Math.floor(state.fetchedAt.getTime() / 1000) * 1000);
     this.leftOut = Object.freeze(
-      (derived?.leftOut ?? []).map((series) => new LeftOutSeries(series, roles)),
+      state.leftOut.map((series) => new LeftOutSeries(series, state.roles)),
     );
-    this.#leftOutComplete = derived?.leftOutComplete ?? true;
-    this.partyTotalsLeftOut = Object.freeze(
-      members.flatMap((member) =>
-        isDerived(member)
-          ? rootPartyTotalsOf(member)
-          : partyTotalsOf(member.manifest, member.spec.spec_id),
-      ),
-    );
-    this.#steps = Object.freeze(
-      (derived?.steps ?? []).map((step) =>
-        Object.freeze({ ...step, by: step.by.map((column) => roles[column] ?? column) }),
-      ),
-    );
-    this.layoutVersion = [
-      ...new Set(members.map((member) => artifactLayout(member, options.layout))),
-    ].join("; ");
+    this.partyTotalsLeftOut = Object.freeze([...state.partyTotalsLeftOut]);
   }
 
-  /** The exact versions the dataset holds, to fetch them again with `client.fetch(ref)`. */
+  /**
+   * The exact versions the dataset holds, to fetch them again with `client.fetch(ref)`.
+   *
+   * @throws {InvalidRequestError} The dataset names no version, as a file Python saved from a
+   *   website bundle's folder does not (`ref_unavailable`).
+   */
   get ref(): DatasetRef {
+    if (this.members.length === 0) {
+      throw clientError("ref_unavailable", {
+        detail:
+          "This dataset names no version, as a website bundle opened from a folder does not, so " +
+          "it has no ref.",
+      });
+    }
     return refOf(this.members);
   }
 
@@ -809,16 +696,25 @@ export class Dataset {
     lines.push(...this.#derivedSummary());
     const totals = partyTotalsLine(this.partyTotalsLeftOut, this.members.some(isDerived));
     if (totals !== undefined) lines.push(totals);
-    if (this.#inputs.options.shownBy !== undefined) {
-      lines.push(`Shown by: ${this.#inputs.options.shownBy}`);
+    if (this.#state.shownBy !== undefined) {
+      lines.push(`Shown by: ${this.#state.shownBy}`);
     }
     const versions = this.members.map((member) => member.contentVersion);
-    const label = versions.length === 1 ? "Version" : "Versions";
-    lines.push(`${label}: ${versions.join(", ")} (exact)${retentionText(this)}`);
+    const retention = retentionText(this);
+    if (versions.length > 0) {
+      const label = versions.length === 1 ? "Version" : "Versions";
+      lines.push(`${label}: ${versions.join(", ")} (exact)${retention}`);
+    } else if (retention !== "") {
+      // Without versions, the retention stands alone, as `Held until 27 November 2026, not pinned`.
+      const alone = retention.slice(2);
+      lines.push(alone.charAt(0).toUpperCase() + alone.slice(1));
+    }
     lines.push(`Rows: ${this.rowCount.toLocaleString("en-GB")}${this.#periodType()}`);
     if (!this.complete) lines.push(`Incomplete: ${this.missing.length} part(s) left out`);
     lines.push(
-      "Keep: JSON.stringify(data.ref) · newest later: client.fetch(data.ref, { latest: true })",
+      versions.length > 0
+        ? "Keep: JSON.stringify(data.ref) · newest later: client.fetch(data.ref, { latest: true })"
+        : "Keep: await data.toBytes()",
     );
     return `<Dataset ${lines.map(inline).join("\n  ")}>`;
   }
@@ -845,11 +741,11 @@ export class Dataset {
     if (derived.length === 0) return [];
     const roots = unique(derived.flatMap((member) => member.roots));
     const readings = `${roots.length} reading${roots.length === 1 ? "" : "s"}`;
-    const lines = [`Derived: ${stepsText(this.#steps, readings)}`];
+    const lines = [`Derived: ${stepsText(this.#state.steps, readings)}`];
     const period = periodLine(derived[0]!.resolvedPeriods);
     if (period !== undefined) lines.push(period);
     if (this.leftOut.length > 0) {
-      const least = this.#leftOutComplete ? "" : "at least ";
+      const least = this.#state.leftOutComplete ? "" : "at least ";
       const count = this.leftOut.length.toLocaleString("en-GB");
       lines.push(`Missing data: ${least}${count} series left out · data.leftOut`);
     }
@@ -859,9 +755,17 @@ export class Dataset {
   /**
    * One member's Parquet file as the server built it, checked against its digest.
    *
-   * @throws {InvalidRequestError} The dataset has no member at `index` (`invalid_argument`).
+   * @throws {InvalidRequestError} The dataset has no member at `index`, or was read from a saved
+   *   file, which holds no member's own file (`invalid_argument`).
    */
   memberBytes(index: number): Uint8Array {
+    if (this.#data === null) {
+      throw clientError("invalid_argument", {
+        detail:
+          "This dataset was read from a saved file, which holds every member's rows in one " +
+          "table and none of the files the server built; client.fetch(data.ref) fetches them.",
+      });
+    }
     const data = this.#data[index];
     if (data === undefined) {
       throw clientError("invalid_argument", {
@@ -900,10 +804,10 @@ export class Dataset {
               reason,
               rows,
             })),
-            complete: this.#leftOutComplete,
+            complete: this.#state.leftOutComplete,
           }),
           "dfo.steps": JSON.stringify(
-            this.#steps.map(({ verb, by, limit }) => ({ verb, by, limit })),
+            this.#state.steps.map(({ verb, by, limit }) => ({ verb, by, limit })),
           ),
         };
     return {
@@ -939,7 +843,7 @@ export class Dataset {
         pinned: record.pinned,
         stale: false,
         layout_version: this.layoutVersion,
-        member_rows: memberRows(this.#table.parts),
+        member_rows: this.#memberRows,
       }),
       ...(record.ref === null ? {} : { "dfo.ref": JSON.stringify(record.ref) }),
       ...derived,
@@ -1127,10 +1031,12 @@ export class Provenance {
     return provenanceOf({
       sentence: stringAt(record["sentence"], "/sentence"),
       citation: loadCitation(record["citation"], "/citation"),
-      fetchedAt: record["fetched_at"] === null ? null : loadTime(record["fetched_at"]),
+      fetchedAt:
+        record["fetched_at"] === null ? null : loadTime(record["fetched_at"], "/fetched_at"),
       question: question === null ? null : stringAt(question, "/question"),
       pinned,
-      heldUntil: record["held_until"] === null ? null : loadDay(record["held_until"]),
+      heldUntil:
+        record["held_until"] === null ? null : loadDay(record["held_until"], "/held_until"),
       warnings: arrayAt(record["warnings"], "/warnings").map((item, index) =>
         loadWarning(item, `/warnings/${index}`),
       ),
@@ -1179,86 +1085,11 @@ const PROVENANCE_MEMBER_KEYS = [
   "citation",
 ] as const;
 
-/** The forms a provenance record writes a time and a day in, as its schema gives them. */
-const ISO_TIME = /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
-const ISO_DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
-
 /** A UTC time as the record writes it, to the second, such as `2026-11-27T09:14:05Z`. */
 const isoTime = (date: Date): string => `${date.toISOString().slice(0, 19)}Z`;
 
 /** A UTC time as `toString` prints it, such as `27 November 2026 09:14 UTC`. */
 const timeText = (date: Date): string => `${dayText(date)} ${date.toISOString().slice(11, 16)} UTC`;
-
-/** Whether the year, month and day a pattern matched name a day on the calendar. */
-function dayExists(match: RegExpExecArray): boolean {
-  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return (
-    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
-  );
-}
-
-function loadTime(value: unknown): Date {
-  const match = ISO_TIME.exec(stringAt(value, "/fetched_at"));
-  const date = match === null ? null : new Date(match[0]);
-  if (match === null || !dayExists(match) || Number.isNaN(date!.getTime())) {
-    throw invalid("/fetched_at", "not an ISO 8601 time with a zone on a day that exists");
-  }
-  return date!;
-}
-
-function loadDay(value: unknown): Date {
-  const match = ISO_DAY.exec(stringAt(value, "/held_until"));
-  if (match === null || !dayExists(match)) {
-    throw invalid("/held_until", "not an ISO date on a day that exists");
-  }
-  return new Date(`${match[0]}T00:00:00Z`);
-}
-
-function stringAt(value: unknown, pointer: string): string {
-  if (typeof value !== "string") throw invalid(pointer, "not a string");
-  return value;
-}
-
-function nullableStringAt(value: unknown, pointer: string): string | null {
-  return value === null ? null : stringAt(value, pointer);
-}
-
-function arrayAt(value: unknown, pointer: string): unknown[] {
-  if (!Array.isArray(value)) throw invalid(pointer, "not an array");
-  return value;
-}
-
-function loadCitation(value: unknown, pointer: string): Citation {
-  const citation = objectAt(value, pointer);
-  checkKeys(citation, pointer, ["text", "sources"]);
-  return {
-    text: stringAt(citation["text"], `${pointer}/text`),
-    sources: arrayAt(citation["sources"], `${pointer}/sources`).map((item, index) => {
-      const at = `${pointer}/sources/${index}`;
-      const source = objectAt(item, at);
-      checkKeys(source, at, ["ref", "label"], ["licence", "licence_url", "url"]);
-      return Object.freeze({
-        ref: stringAt(source["ref"], `${at}/ref`),
-        label: stringAt(source["label"], `${at}/label`),
-        licence: nullableStringAt(source["licence"] ?? null, `${at}/licence`),
-        licenceUrl: nullableStringAt(source["licence_url"] ?? null, `${at}/licence_url`),
-        url: nullableStringAt(source["url"] ?? null, `${at}/url`),
-      });
-    }),
-  };
-}
-
-function loadWarning(value: unknown, pointer: string): Notice {
-  const warning = objectAt(value, pointer);
-  checkKeys(warning, pointer, ["code", "severity", "message", "spec_id"]);
-  return {
-    code: stringAt(warning["code"], `${pointer}/code`),
-    severity: stringAt(warning["severity"], `${pointer}/severity`),
-    message: stringAt(warning["message"], `${pointer}/message`),
-    spec_id: nullableStringAt(warning["spec_id"], `${pointer}/spec_id`),
-  };
-}
 
 /** A provenance member, which names the ref member at its position, with its citation. */
 function provenanceMember(

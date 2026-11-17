@@ -89,7 +89,15 @@ async function twoMembers(): Promise<Dataset> {
       member(1, {
         citation: citation("WDI"),
         retention: { pinned: false, held_until: "2026-11-27T00:00:00Z" },
-        warnings: [{ code: "slot_defaulted", severity: "warn", message: "Every aid type." }],
+        warnings: [
+          { code: "slot_defaulted", severity: "warn", message: "Every aid type." },
+          {
+            code: "date_coverage_partial",
+            severity: "info",
+            message: "Some years.",
+            spec_id: `spec_${"1".repeat(32)}`,
+          },
+        ],
       }),
       member(2, { citation: citation("CRS"), retention: { pinned: true } }),
     ],
@@ -170,6 +178,11 @@ describe("a dataset's provenance", async () => {
     assert.deepEqual(
       record.members.map((member) => member.parts),
       [["aid"], []],
+    );
+    // A manifest warning keeps the spec it names, as Python records it.
+    assert.deepEqual(
+      record.warnings.map((warning) => warning.spec_id),
+      [null, `spec_${"1".repeat(32)}`],
     );
   });
 

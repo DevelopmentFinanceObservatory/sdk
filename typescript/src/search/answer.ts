@@ -29,6 +29,7 @@ import type {
 } from "../datasets/fetch.ts";
 import { CODE_GAP_KINDS } from "../generated/actions.ts";
 import type { GAP_KINDS } from "../generated/actions.ts";
+import { candidatesOf } from "../core/candidates.ts";
 import { parsedInputOf, partFacts, warningsOf } from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
 import { definiteParts, isKnownPart, partSentence, partText } from "../core/parts.ts";
@@ -55,8 +56,6 @@ import { isRecord, list, objects, strings, text } from "../core/json.ts";
 
 /** Longer than Search's 45-second soft deadline, so a slow answer arrives whole. */
 const SEARCH_TIMEOUT_MS = 60_000;
-
-const NO_ASSUMPTIONS: readonly Assumption[] = Object.freeze([]);
 
 /** What a gap needs to settle it: the contract's gap kinds, or one the client derives. */
 export type GapKind = (typeof GAP_KINDS)[number] | "unknown";
@@ -633,10 +632,7 @@ function gapFor(partIndex: number, part: Part): Gap | null {
     case "definite":
       return null;
     case "candidates": {
-      const { readingAssumptions } = partFacts(part);
-      const candidates = part.candidates.specs.map((spec) =>
-        candidateFrom(spec, readingAssumptions.get(spec.spec_id) ?? NO_ASSUMPTIONS),
-      );
+      const candidates = candidatesOf(part);
       return gap("choice", `${candidates.length} readings`, candidates);
     }
     case "no_data": {
@@ -666,36 +662,4 @@ function queryOptions(noData: NoDataPart["no_data"]): Option[] {
 /** A non-negative JSON integer, or null for any other value. */
 function indexOf(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
-}
-
-/** A candidate from its full spec and what Search assumed for it. The label is the sentence's
- *  heading and the unit the byline's unit slot, so label, unit and source together say what the
- *  sentence says. */
-function candidateFrom(spec: DefinitePart["spec"], assumptions: readonly Assumption[]): Candidate {
-  const { resolved } = spec;
-  const tokens = objects(resolved.sentence_plan);
-  const heading = tokens
-    .filter((token) => (text(token["segment"]) ?? "heading") === "heading")
-    .map((token) => text(token["text"]) ?? "")
-    .join("")
-    .trim();
-  const unit = tokens
-    .filter(
-      (token) =>
-        token["segment"] === "byline" && token["kind"] === "slot" && token["axis"] === "unit",
-    )
-    .map((token) => text(token["text"]))
-    .find(Boolean);
-  const sentence = text(resolved.rendered_sentence);
-  const facets: unknown = resolved.facets;
-  const provenance = isRecord(facets) ? facets["provenance"] : undefined;
-  return Object.freeze({
-    kind: "candidate",
-    spec,
-    sentence,
-    label: heading || sentence || null,
-    source: isRecord(provenance) ? text(provenance["label"]) : null,
-    unit: unit ?? null,
-    assumptions,
-  });
 }
