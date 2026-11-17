@@ -42,6 +42,8 @@ print(len(data), "rows")
 
 `answer.fetch()` refuses an answer with gaps (`answer_incomplete`). `answer.fetch(partial=True)` builds the codes that did read. The message of a code that reads as more than its series names the codes its reading holds, and says to narrow the search with `variable` or `source`, or to take the reading as it is with `dfo.fetch(answer.parts[i].spec)`. `variable` adds words that choose among the variables of a code, `source="IDS"` names the source to read the codes from, and `open_roles=["origin"]` answers creditor by creditor. A positional question beside any of these raises `InvalidRequestError` (`invalid_argument`).
 
+The answer keeps the codes it asked for. `answer.choose` and `answer.to_json()` carry them, so a choice and an answer read back with `dfo.Answer.from_json` check each reading against its code as the first answer did.
+
 When a search holds more codes than the server takes in one request, the server refuses with `request_invalid`. Search in chunks, fetch each, and join the members into one ref:
 
 ```python

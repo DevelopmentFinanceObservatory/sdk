@@ -154,6 +154,10 @@ def edited(change: Callable[[dict[str, Any]], object]) -> str:
         (edited(lambda value: value.update(format_version=True)), "/format_version"),
         (edited(lambda value: value.update(question=5)), "/question"),
         (edited(lambda value: value.update(answer=[])), "/answer"),
+        (edited(lambda value: value.update(codes="DT.TDS.MLAT.CD")), "/codes"),
+        (edited(lambda value: value.update(codes=["DT.TDS.MLAT.CD"])), "/codes"),
+        (edited(lambda value: value.update(codes=["DT.TDS.MLAT.CD", " "])), "/codes/1"),
+        (edited(lambda value: value.update(codes=[1, "DT.TDS.MLAT.CD"])), "/codes/0"),
     ],
     ids=[
         "not-json",
@@ -164,6 +168,10 @@ def edited(change: Callable[[dict[str, Any]], object]) -> str:
         "a-boolean-format-version",
         "a-question-that-is-not-a-string",
         "an-answer-that-is-not-an-object",
+        "codes-that-are-not-an-array",
+        "codes-short-of-the-parts",
+        "a-blank-code",
+        "a-code-that-is-not-a-string",
     ],
 )
 @pytest.mark.parametrize("flavour", FLAVOURS)

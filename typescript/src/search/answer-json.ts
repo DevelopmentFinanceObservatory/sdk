@@ -2,9 +2,12 @@
  * The answer format: an answer as JSON, which `answer.toJSON()` writes and `Answer.fromJSON`
  * reads, the same in every DFO client.
  *
- * The format is `{"format_version": 1, "question": …, "answer": …}`. `question` is the question
- * asked, or null. `answer` is the Search response body cut to the members a client reads, which
- * `KEPT` lists, with the answer's trace id as its `trace_id` when it has one. The cut drops what no rule reads,
+ * The format is `{"format_version": 1, "question": …, "answer": …}`, and `"codes": […]` beside
+ * them for an answer to a search by codes. `question` is the question asked, or null. `answer`
+ * is the Search response body cut to the members a client reads, which `KEPT` lists, with the
+ * answer's trace id as its `trace_id` when it has one. `codes` holds the series code each part
+ * was asked by, one per part in part order, so an answer read back checks each reading against
+ * the code the caller asked for. An answer to a question in words holds no `codes`. The cut drops what no rule reads,
  * such as each spec's `resolved.trace` and slots, the sentence-plan tokens' references, and the
  * diagnostics beyond `timed_out` and `warnings`. A member the cut keeps holds the value the
  * response held, malformed or not, so the body reads back exactly as the response read.
@@ -68,6 +71,8 @@ export type AnswerJson = {
   format_version: 1;
   question: string | null;
   answer: Readonly<Record<string, unknown>>;
+  /** The series code each part was asked by, for an answer to a search by codes. */
+  codes?: string[];
 };
 
 /** The value with only the members `kept` names: an object's, or each object item's of an
@@ -84,17 +89,20 @@ function cut(value: unknown, kept: Kept): unknown {
   return out;
 }
 
-/** A Search response body in the answer format, its trace id set to `traceId`. */
+/** A Search response body in the answer format, its trace id set to `traceId`, and `codes` the
+ *  series code each part was asked by, or null for a question in words. */
 export function answerJson(
   question: string | null,
   body: Readonly<Record<string, unknown>>,
   traceId: string | null,
+  codes: readonly string[] | null,
 ): AnswerJson {
   const answer = cut(body, KEPT) as Record<string, unknown>;
   return {
     format_version: ANSWER_FORMAT_VERSION,
     question,
     answer: traceId === null ? answer : { ...answer, trace_id: traceId },
+    ...(codes === null ? {} : { codes: [...codes] }),
   };
 }
 
@@ -102,17 +110,20 @@ const invalid = (pointer: string, detail: string): FormatError =>
   new FormatError("format_invalid", pointer, detail);
 
 /**
- * The question, the body and its trace id from JSON in the answer format, its text or the
- * parsed value. The body is checked as a Search response is, by the caller.
+ * The question, the body, its trace id and the codes its parts were asked by, from JSON in the
+ * answer format, its text or the parsed value. The codes are null when the JSON holds none. The
+ * body is checked as a Search response is, by the caller.
  *
  * @throws {FormatError} The value is not JSON, not an object, has a member the format does not
- *   name or lacks one, its `format_version` is not 1, its `question` is not a string or null, or
- *   its `answer` is not an object (`format_invalid`).
+ *   name or lacks one, its `format_version` is not 1, its `question` is not a string or null, its
+ *   `answer` is not an object, or its `codes` is not an array of non-blank strings with one entry
+ *   per part of the answer (`format_invalid`).
  */
 export function readAnswerJson(value: unknown): {
   question: string | null;
   body: Record<string, unknown>;
   traceId: string | null;
+  codes: readonly string[] | null;
 } {
   let parsed: unknown = value;
   if (typeof value === "string") {
@@ -128,7 +139,9 @@ export function readAnswerJson(value: unknown): {
     if (!Object.hasOwn(parsed, member)) throw invalid(`/${member}`, "missing");
   }
   for (const member of Object.keys(parsed)) {
-    if (!members.includes(member)) throw invalid(`/${member}`, "not a member of the format");
+    if (!members.includes(member) && member !== CODES) {
+      throw invalid(`/${member}`, "not a member of the format");
+    }
   }
   if (parsed["format_version"] !== ANSWER_FORMAT_VERSION) {
     throw invalid("/format_version", `not ${ANSWER_FORMAT_VERSION}`);
@@ -138,5 +151,26 @@ export function readAnswerJson(value: unknown): {
     throw invalid("/question", "not a string or null");
   }
   if (!isRecord(answer)) throw invalid("/answer", "not an object");
-  return { question, body: answer, traceId: traceIdFrom(answer["trace_id"]) };
+  const codes = Object.hasOwn(parsed, CODES) ? readCodes(parsed[CODES], answer) : null;
+  return { question, body: answer, traceId: traceIdFrom(answer["trace_id"]), codes };
+}
+
+const CODES = "codes";
+
+/** The `codes` member: one non-blank string per part of `body`. */
+function readCodes(value: unknown, body: Readonly<Record<string, unknown>>): readonly string[] {
+  const pointer = `/${CODES}`;
+  if (!Array.isArray(value)) throw invalid(pointer, "not an array");
+  const codes = value.map((code: unknown, index) => {
+    if (typeof code !== "string" || code.trim() === "") {
+      throw invalid(`${pointer}/${index}`, "not a non-blank string");
+    }
+    return code;
+  });
+  const parts = body["parts"];
+  const count = Array.isArray(parts) ? parts.length : 0;
+  if (count !== codes.length) {
+    throw invalid(pointer, `holds ${codes.length} codes for ${count} parts; it holds one per part`);
+  }
+  return codes;
 }

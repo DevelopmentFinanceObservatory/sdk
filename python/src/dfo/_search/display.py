@@ -67,6 +67,8 @@ class AnswerView(Protocol):
     def complete(self) -> bool: ...
     @property
     def warnings(self) -> tuple[Notice, ...]: ...
+    @property
+    def _codes(self) -> tuple[str, ...] | None: ...
 
 
 def answered(parts: Sequence[Part], gaps: Iterable[Gap]) -> frozenset[int]:
@@ -186,7 +188,7 @@ def _incomplete(answer: AnswerView, *, lead: str) -> str:
     """What is answered and what is missing, with the calls that settle each gap."""
     gaps = {gap.part_index: gap for gap in answer.gaps}
     count = len(answered(answer.parts, answer.gaps))
-    lines = [f"{lead} {count} of {_asked(answer.parts)}."]
+    lines = [f"{lead} {count} of {_asked(answer)}."]
     for index, part in enumerate(answer.parts):
         name = _quote(part.variable_text)
         gap = gaps.get(index)
@@ -210,9 +212,12 @@ def _incomplete(answer: AnswerView, *, lead: str) -> str:
     return _text_lines(lines)
 
 
-def _asked(parts: Sequence[Part]) -> str:
-    """What the parts ask for: series codes when each part was asked by one, else
-    parts of the question."""
+def _asked(answer: AnswerView) -> str:
+    """What the parts ask for: series codes for an answer to a search by codes, or
+    when each part's restatement names one, else parts of the question."""
+    parts = answer.parts
+    if answer._codes is not None:
+        return _plural(len(parts), "series code")
     if parts and all(asked_code(part) is not None for part in parts):
         return _plural(len(parts), "series code")
     return f"{_plural(len(parts), 'part')} of your question"

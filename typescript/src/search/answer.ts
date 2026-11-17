@@ -36,6 +36,7 @@ import { definiteParts, isKnownPart, partSentence, partText } from "../core/part
 import type { DefinitePart, KnownPart, NoDataPart, Part } from "../core/parts.ts";
 import { checkOptions, declareOptions } from "../core/options.ts";
 import { withEntityDcids } from "./lookup-results.ts";
+import { requestedCodes, setRequestedCodes } from "./requested-codes.ts";
 import { askedCode, checkReply, codeGap } from "./structured.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
@@ -279,7 +280,9 @@ export class Answer {
     this.traceId = init.traceId ?? null;
     this.raw = init.raw;
     this.#context = init.context;
-    const { codes } = init;
+    const codes = init.codes ?? null;
+    // The gaps check each reading against these, and `toJSON` and `choose` carry them on.
+    if (codes !== null) setRequestedCodes(this, codes);
     this.gaps = this.parts.flatMap((part, index) => {
       const gap =
         gapFor(index, part) ?? codeGap(index, part, codes ? codes[index]! : askedCode(part));
@@ -311,23 +314,31 @@ export class Answer {
    * Search to bind it again. The option is named by its index or its label. `part` names the
    * part by its index, its variable text, or a word of the question its options settle, and is
    * needed only when several parts await a choice: `answer.choose(0, { part: "GDP" })`. The
-   * chosen answer's sentence and assumptions are Search's.
+   * chosen answer's sentence and assumptions are Search's. A choice in an answer to a search by
+   * codes keeps the codes, part for part, so the new answer checks each reading against the code
+   * asked for.
    *
    * @throws {InvalidRequestError} No part, or more than one, awaits a choice and `part` is not
    *   given; the part or option is unknown; the part offers no options; or a part cannot be
    *   posted back (`choice_invalid`); or `options` is not an object or holds a key outside
    *   `ChooseOptions` (`invalid_argument`). A part or label that names nothing is refused with the nearest
    *   match and the valid choices.
-   * @throws {ContractError} The chosen option carries no one-part `data_query`. The error carries
-   *   the answer's trace id.
+   * @throws {ContractError} The chosen option carries no one-part `data_query`, and the error
+   *   carries the answer's trace id; or, in an answer to a search by codes, Search answers with
+   *   another number of parts than codes (`contract_violation`).
    */
   async choose(option: ChoiceKey, options: ChooseOptions = {}): Promise<Answer> {
     const { part, ...request } = checkOptions(CHOOSE_OPTIONS, options);
+    const codes = requestedCodes(this);
     const input = describing(this.traceId, () => {
       const gap = part === undefined ? onlyChoice(this) : gapNamed(this, part);
       return choiceInput(this, gap, pick(gap, option, part));
     });
-    return resolveAnswer(this.#context, input, { ...request, question: this.question });
+    return resolveAnswer(this.#context, input, {
+      ...request,
+      question: this.question,
+      ...(codes === null ? {} : { codes }),
+    });
   }
 
   /**
@@ -398,10 +409,12 @@ export class Answer {
   /**
    * The answer in the answer format, `{format_version: 1, question, answer}`, which every DFO
    * client reads. `answer` is the Search response cut to the members a client reads, with the
-   * answer's trace id. `JSON.stringify(answer)` and `Response.json({ answer })` write it.
+   * answer's trace id. An answer to a search by codes also holds `codes`, one per part, so the
+   * answer read back checks each reading against the code asked for, as the live answer does.
+   * `JSON.stringify(answer)` and `Response.json({ answer })` write it.
    */
   toJSON(): AnswerJson {
-    return answerJson(this.question, this.raw, this.traceId);
+    return answerJson(this.question, this.raw, this.traceId, requestedCodes(this));
   }
 
   /**
@@ -418,7 +431,8 @@ export class Answer {
    * beyond the public tier, keep the answer on the server, stored under a random id that the
    * page sends back, or sign it before it leaves.
    *
-   * @throws {FormatError} The value is not JSON in the answer format (`format_invalid`).
+   * @throws {FormatError} The value is not JSON in the answer format, or its `codes` is not one
+   *   non-blank string per part (`format_invalid`).
    * @throws {InvalidRequestError} `client` is not a `Client` (`invalid_argument`).
    * @throws {DfoError} The body is a problem document, as a Search response would raise it.
    * @throws {ContractError} The body lacks a member the client acts on, as a Search response
@@ -432,8 +446,10 @@ export class Answer {
           "Answer.fromJSON needs the client its requests go through: Answer.fromJSON(value, client).",
       });
     }
-    const { question, body, traceId } = readAnswerJson(value);
-    return describing(traceId, () => answerFromBody(body, context, question, traceId));
+    const { question, body, traceId, codes } = readAnswerJson(value);
+    return describing(traceId, () =>
+      answerFromBody(body, context, question, traceId, codes ?? undefined),
+    );
   }
 }
 
@@ -460,7 +476,9 @@ export async function resolveAnswer(
 /**
  * Reads a decoded Search response into an answer. `traceId` is the trace id of the response
  * the body came from. `codes` are the series codes a search by codes asked, one per part in
- * order; without them, a part's code is the `source_code` of its restatement. A definite part
+ * order, and the code a part asked is the authority whatever its restatement names. Without
+ * them, as for a question in words, a part's code is the `source_code` of its restatement. A
+ * definite part
  * asked by a code whose reading is not that code's series alone is a gap of kind `no_data`, so
  * `fetch` builds it only beside `partial: true`, and then leaves it out. A code part whose spec
  * has no `resolved.stat_vars`, as in an answer `@developmentfinance/client` 0.2.0 wrote, is such

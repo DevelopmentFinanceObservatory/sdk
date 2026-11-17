@@ -293,7 +293,7 @@ def test_a_part_that_timed_out_marks_the_answer_and_its_json_timed_out() -> None
     wire["parts"][1]["no_data"]["reason"] = "timed_out"
     answer, _ = ask("debt", wire)
     assert answer.timed_out
-    question, body, trace_id = read_answer_json(answer.to_json())
+    question, body, trace_id, _ = read_answer_json(answer.to_json())
     revived = answer_from_body(
         body, question=question, source=answer._source, trace_id=trace_id
     )
@@ -1105,6 +1105,46 @@ def test_a_search_by_codes_posts_one_part_per_code_and_builds_the_exact_ones(
     assert options["missing"] == answer.gaps
 
 
+def with_missing_echo(body: dict[str, Any]) -> dict[str, Any]:
+    """The reply with its first part inexact and its restatement naming no code."""
+    del with_inexact_first_code(body)["parts"][0]["restatement"]["source_code"]
+    return body
+
+
+def with_incorrect_echo(body: dict[str, Any]) -> dict[str, Any]:
+    """The reply with its first part reading another code exactly, which its
+    restatement names in place of the code asked."""
+    part = body["parts"][0]
+    (entry,) = part["spec"]["resolved"]["stat_vars"]["source_codes"]
+    entry["code"] = part["restatement"]["source_code"] = "DT.TDS.BLAT.CD"
+    return body
+
+
+ECHOES = [with_inexact_first_code, with_missing_echo, with_incorrect_echo]
+ECHO_IDS = ["echoed", "missing-echo", "incorrect-echo"]
+
+
+@pytest.mark.parametrize("edit", ECHOES, ids=ECHO_IDS)
+def test_the_asked_code_decides_a_gap_live_and_through_json(
+    edit: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
+    answer, _ = ask_codes(edit(load("search-codes.json")), codes=CODES)
+    stored = json.loads(answer.to_json())
+    assert stored["codes"] == CODES
+    with Client(base_url=BASE, api_key=False, cache=False) as client:
+        revived = Answer.from_json(json.dumps(stored), client=client)
+    for read in (answer, revived):
+        assert [(gap.part_index, gap.kind) for gap in read.gaps] == [
+            (0, "no_data"),
+            (2, "no_data"),
+        ]
+        assert not read.complete
+        assert [spec.spec_id for spec in read.specs] == [
+            answer.parts[1].spec.spec_id  # ty: ignore[unresolved-attribute]
+        ]
+    assert json.loads(revived.to_json()) == stored
+
+
 @pytest.mark.parametrize("written_by", ["0.3", "0.2.0"])
 def test_an_answer_by_codes_keeps_its_gaps_through_json(written_by: str) -> None:
     answer, _ = ask_codes(
@@ -1112,8 +1152,10 @@ def test_an_answer_by_codes_keeps_its_gaps_through_json(written_by: str) -> None
     )
     stored = json.loads(answer.to_json())
     if written_by == "0.2.0":
-        # development-finance 0.2.0 cut `resolved.stat_vars` from answer JSON, so
-        # no code part of its answers is known to be its code's series alone.
+        # development-finance 0.2.0 cut `resolved.stat_vars` from answer JSON and
+        # wrote no `codes`, so no code part of its answers is known to be its
+        # code's series alone.
+        del stored["codes"]
         for part in stored["answer"]["parts"]:
             if "spec" in part:
                 del part["spec"]["resolved"]["stat_vars"]
@@ -1154,6 +1196,38 @@ def test_a_choice_beside_a_code_gap_posts_the_code_part_restated() -> None:
     assert server.posted[1] == load("probe-resubmit-code-part.request.json")
     assert [(gap.part_index, gap.kind) for gap in chosen.gaps] == [(0, "no_data")]
     assert len(chosen.specs) == 1
+
+
+def with_candidates_second(body: dict[str, Any]) -> dict[str, Any]:
+    """The reply with its second part awaiting a choice of reading."""
+    body["parts"][1] = load("search-two-parts-candidates.json")["parts"][1]
+    return body
+
+
+@pytest.mark.parametrize("edit", ECHOES, ids=ECHO_IDS)
+def test_a_choice_in_an_answer_by_codes_keeps_the_codes(
+    edit: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
+    first = with_candidates_second(load("search-codes.json"))
+    answer, _ = ask_codes(first, edit(load("search-codes.json")), codes=CODES)
+    chosen = answer.choose(0)
+    assert [(gap.part_index, gap.kind) for gap in chosen.gaps] == [
+        (0, "no_data"),
+        (2, "no_data"),
+    ]
+    assert not chosen.complete
+    assert len(chosen.specs) == 1
+    assert json.loads(chosen.to_json())["codes"] == CODES
+
+
+def test_a_choice_answered_with_a_part_short_violates_the_contract() -> None:
+    first = with_candidates_second(load("search-codes.json"))
+    answer, _ = ask_codes(
+        first, without_last_part(load("search-codes.json")), codes=CODES
+    )
+    with pytest.raises(ContractError) as violated:
+        answer.choose(0)
+    assert violated.value.code == "contract_violation"
 
 
 @pytest.mark.parametrize(

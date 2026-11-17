@@ -85,6 +85,14 @@ describe("the answer format", () => {
     ["another format version", () => ({ ...parsed(), format_version: 2 }), "/format_version"],
     ["a question that is not a string", () => ({ ...parsed(), question: 5 }), "/question"],
     ["an answer that is not an object", () => ({ ...parsed(), answer: [] }), "/answer"],
+    ["codes that are not an array", () => ({ ...parsed(), codes: "DT.TDS.MLAT.CD" }), "/codes"],
+    ["codes short of the parts", () => ({ ...parsed(), codes: ["DT.TDS.MLAT.CD"] }), "/codes"],
+    ["a blank code", () => ({ ...parsed(), codes: ["DT.TDS.MLAT.CD", " "] }), "/codes/1"],
+    [
+      "a code that is not a string",
+      () => ({ ...parsed(), codes: [1, "DT.TDS.MLAT.CD"] }),
+      "/codes/0",
+    ],
   ];
   for (const [name, value, pointer] of refusals) {
     test(`refuses ${name} as format_invalid`, () => {
@@ -132,7 +140,7 @@ describe("the answer format", () => {
       '{"kind":"resolution","constructor":{"a":1},"toString":"x","hasOwnProperty":2,' +
         '"__proto__":{"b":1},"secret":1}',
     ) as Record<string, unknown>;
-    const { answer } = answerJson(null, body, null);
+    const { answer } = answerJson(null, body, null, null);
     assert.deepEqual(answer, { kind: "resolution" });
     assert.equal(Object.getPrototypeOf(answer), Object.prototype);
   });
