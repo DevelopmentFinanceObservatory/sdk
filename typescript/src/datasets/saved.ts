@@ -378,10 +378,14 @@ function loadAssumption(value: unknown, pointer: string): Assumption {
 const isGapKind = (value: unknown): value is GapKind =>
   value === "unknown" || (GAP_KINDS as readonly unknown[]).includes(value);
 
-/** A saved gap. A candidates part's options are its candidates, as in an answer. */
-function loadGap(value: unknown, pointer: string): Gap {
+const GAP_KEYS = ["part_index", "part", "kind", "message", "options"];
+
+/** A stored gap. A candidates part's options are its candidates, as in an answer. A saved file's
+ *  gap and its options are closed; a provenance record's are open, so a key they do not name is
+ *  ignored. */
+export function loadGap(value: unknown, pointer: string, { closed = true } = {}): Gap {
   const gap = objectAt(value, pointer);
-  checkKeys(gap, pointer, ["part_index", "part", "kind", "message", "options"]);
+  (closed ? checkKeys : requireKeys)(gap, pointer, GAP_KEYS);
   const partIndex = gap["part_index"];
   if (!Number.isSafeInteger(partIndex)) throw invalid(`${pointer}/part_index`, "not an integer");
   const kind = gap["kind"];
@@ -391,7 +395,7 @@ function loadGap(value: unknown, pointer: string): Gap {
     part.status === "candidates"
       ? candidatesOf(part as CandidatesPart)
       : arrayAt(gap["options"], `${pointer}/options`).map((option, index) =>
-          loadOption(option, `${pointer}/options/${index}`),
+          loadOption(option, `${pointer}/options/${index}`, closed),
         );
   return {
     partIndex: partIndex as number,
@@ -446,9 +450,9 @@ function loadSpec(value: unknown, pointer: string): void {
   objectAt(spec["resolved"], `${pointer}/resolved`);
 }
 
-function loadOption(value: unknown, pointer: string): Option {
+function loadOption(value: unknown, pointer: string, closed: boolean): Option {
   const option = objectAt(value, pointer);
-  checkKeys(option, pointer, ["label", "mentions", "data_query"]);
+  (closed ? checkKeys : requireKeys)(option, pointer, ["label", "mentions", "data_query"]);
   const mentions = arrayAt(option["mentions"], `${pointer}/mentions`).map((mention, index) =>
     stringAt(mention, `${pointer}/mentions/${index}`),
   );

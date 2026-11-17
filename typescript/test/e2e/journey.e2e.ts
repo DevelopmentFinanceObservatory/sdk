@@ -546,7 +546,11 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
       assert.ok(healthData, "step 2 gave a dataset");
       const text = JSON.stringify(healthData.provenance);
       const ajv = new Ajv2020({ strict: false, allErrors: true });
-      for (const name of ["dataset-ref.schema.json", "saved-file.schema.json"]) {
+      for (const name of [
+        "dataset-ref.schema.json",
+        "saved-file.schema.json",
+        "scenario.schema.json",
+      ]) {
         ajv.addSchema(await contractJson(name));
       }
       const validate = ajv.compile(await contractJson("provenance.schema.json"));

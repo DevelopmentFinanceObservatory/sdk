@@ -32,6 +32,7 @@ def _validator() -> jsonschema.Draft202012Validator:
             "provenance.schema.json",
             "dataset-ref.schema.json",
             "saved-file.schema.json",
+            "scenario.schema.json",
         )
     ]
     registry = Registry().with_resources(
@@ -82,6 +83,7 @@ def test_a_key_the_format_does_not_name_is_ignored() -> None:
     record["citation"]["doi"] = "10.1787/x"
     record["citation"]["sources"][0]["publisher"] = "OECD"
     record["members"][1]["citation"]["doi"] = "10.1787/x"
+    record["missing"][1]["source"] = "OECD"
     record["warnings"] = [
         {"code": "c", "severity": "info", "message": "m", "spec_id": None, "url": "u"}
     ]
@@ -117,6 +119,20 @@ def test_a_dataset_and_its_saved_copy_hold_one_provenance(
     loaded = load_saved(path)
     assert loaded.provenance == data.provenance
     assert loaded.provenance.to_json() == text
+
+
+def test_a_partial_dataset_states_what_it_left_out() -> None:
+    partial = _saved()
+    complete = replace(partial, complete=True, missing=())
+    record = json.loads(partial.provenance.to_json())
+    assert (record["complete"], [gap["kind"] for gap in record["missing"]]) == (
+        False,
+        ["choice", "no_data"],
+    )
+    assert json.loads(complete.provenance.to_json())["missing"] == []
+    assert partial.provenance != complete.provenance
+    read = dfo.Provenance.from_json(record)
+    assert (read.complete, read.missing) == (partial.complete, partial.missing)
 
 
 def test_the_provenance_names_the_versions_the_ref_names() -> None:
@@ -243,6 +259,16 @@ def _without_member_key(key: str) -> Callable[[dict[str, Any]], object]:
         (_without_member_key("held_until"), "/members/0/held_until"),
         (lambda record: {**record, "pinned": True, "held_until": None}, "/pinned"),
         (_member(0, held_until="2026-12-30"), "/held_until"),
+        (lambda record: {**record, "complete": "no"}, "/complete"),
+        (lambda record: {**record, "complete": True}, "/complete"),
+        (lambda record: {**record, "missing": {}}, "/missing"),
+        (
+            lambda record: {
+                **record,
+                "missing": [{**record["missing"][0], "kind": "gone"}],
+            },
+            "/missing/0/kind",
+        ),
     ],
     ids=[
         "not-json",
@@ -258,6 +284,10 @@ def _without_member_key(key: str) -> Callable[[dict[str, Any]], object]:
         "member-held-until-missing",
         "pinned-disagrees",
         "held-until-disagrees",
+        "complete-not-boolean",
+        "complete-beside-missing",
+        "missing-not-a-list",
+        "missing-kind",
     ],
 )
 def test_a_malformed_record_is_refused_at_its_pointer(

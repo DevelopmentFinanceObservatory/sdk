@@ -20,7 +20,7 @@
       }
     ]
   },
-  "fetched_at": "2026-11-17T15:00:18Z",
+  "fetched_at": "2026-11-17T18:28:08Z",
   "question": "ODA disbursements for health and for education from Germany to Kenya, and GDP of Kenya",
   "ref": {
     "format_version": 1,
@@ -187,6 +187,8 @@
   "pinned": false,
   "held_until": "2026-11-28",
   "warnings": [],
+  "complete": true,
+  "missing": [],
   "members": [
     {
       "spec_id": "spec_7a02b6facd2dc17b5d0d7c35c11bf5d2",

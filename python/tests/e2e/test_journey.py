@@ -487,6 +487,7 @@ def _provenance_validator() -> jsonschema.Draft202012Validator:
             "provenance.schema.json",
             "dataset-ref.schema.json",
             "saved-file.schema.json",
+            "scenario.schema.json",
         )
     ]
     registry = Registry().with_resources(

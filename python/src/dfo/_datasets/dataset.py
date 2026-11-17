@@ -419,6 +419,9 @@ class Provenance:
         members: One member per built spec or derived frame, each an exact
             version with its digest, parts, sentence, citation, `pinned` and
             `held_until`. Empty for a website bundle opened from a folder.
+        complete: Whether every part of the question has a member, as
+            `Dataset.complete`.
+        missing: The parts a partial fetch left out, as `Dataset.missing`.
     """
 
     sentence: str
@@ -427,6 +430,8 @@ class Provenance:
     question: str | None
     warnings: tuple[Notice, ...]
     members: tuple[Member | DerivedMember, ...]
+    complete: bool
+    missing: tuple[Gap, ...]
     # `held_until` and `pinned`, from the members once, when the record is made.
     _retention_of_members: tuple[date | None, bool] = field(
         init=False, repr=False, compare=False
@@ -474,10 +479,12 @@ class Provenance:
         any DFO client.
 
         The keys are `format_version`, `sentence`, `citation`, `fetched_at`,
-        `question`, `ref`, `pinned`, `held_until`, `warnings`, and `members`,
-        each member's `spec_id`, `content_version`, `digest`, `parts`,
-        `sentence`, `citation`, `pinned` and `held_until`. `ref` is the
-        object `DatasetRef.to_json` writes, or null with no members.
+        `question`, `ref`, `pinned`, `held_until`, `warnings`, `complete`,
+        `missing`, and `members`, each member's `spec_id`, `content_version`,
+        `digest`, `parts`, `sentence`, `citation`, `pinned` and `held_until`.
+        `ref` is the object `DatasetRef.to_json` writes, or null with no
+        members. Each `missing` entry is the part's `part_index`, `part`,
+        `kind`, `message` and `options`, as the saved file holds it.
         """
         return json.dumps(provenance_object(self), ensure_ascii=False)
 
@@ -497,7 +504,8 @@ class Provenance:
                 breaks the provenance format or comes from a later format
                 version, a member differs from the member its ref names, the
                 record's `pinned` or `held_until` differs from what its members
-                give, members or none, or the ref breaks its own format, as
+                give, members or none, `complete` is true while `missing`
+                holds a part, or the ref breaks its own format, as
                 `DatasetRef.from_json` raises, with a pointer under `/ref`.
         """
         record = (
@@ -531,6 +539,17 @@ class Provenance:
             for index, (entry, member) in enumerate(zip(entries, stored, strict=True))
         )
         check_retention(pinned, held_until, members, "")
+        complete = record["complete"]
+        if not isinstance(complete, bool):
+            raise FormatError("format_invalid", "/complete", "not a boolean")
+        missing = tuple(
+            _load_gap(item, f"/missing/{index}", closed=False)
+            for index, item in enumerate(_array(record["missing"], "/missing"))
+        )
+        if complete and missing:
+            raise FormatError(
+                "format_invalid", "/complete", "is true while missing holds a part"
+            )
         return cls(
             sentence=_string(record["sentence"], "/sentence"),
             citation=_load_citation(record["citation"], "/citation", closed=False),
@@ -547,6 +566,8 @@ class Provenance:
                 for index, item in enumerate(_array(record["warnings"], "/warnings"))
             ),
             members=members,
+            complete=complete,
+            missing=missing,
         )
 
 
@@ -565,6 +586,8 @@ def provenance_object(provenance: Provenance) -> dict[str, Any]:
         "pinned": provenance.pinned,
         "held_until": _day_text(provenance.held_until),
         "warnings": [asdict(notice) for notice in provenance.warnings],
+        "complete": provenance.complete,
+        "missing": [_gap_object(gap) for gap in provenance.missing],
         "members": [
             {
                 "spec_id": member.spec.spec_id,
@@ -601,6 +624,8 @@ _PROVENANCE_KEYS = (
     "pinned",
     "held_until",
     "warnings",
+    "complete",
+    "missing",
     "members",
 )
 _PROVENANCE_MEMBER_KEYS = (
@@ -898,6 +923,8 @@ class Dataset:
             question=self.question,
             warnings=self.warnings,
             members=self.members,
+            complete=self.complete,
+            missing=self.missing,
         )
 
     @property
@@ -1136,8 +1163,8 @@ class Dataset:
                         asdict(item) for item in self.requested_operations
                     ],
                     "assumptions": [asdict(item) for item in self.assumptions],
-                    "complete": self.complete,
-                    "missing": [_gap_object(gap) for gap in self.missing],
+                    "complete": record["complete"],
+                    "missing": record["missing"],
                     "held_until": record["held_until"],
                     "pinned": record["pinned"],
                     "stale": self.stale,
@@ -2578,12 +2605,16 @@ def _gap_object(gap: Gap) -> dict[str, Any]:
     }
 
 
-def _load_gap(value: object, pointer: str) -> Gap:
-    """A saved gap. A candidates part's options are its candidates, as in an answer."""
+def _load_gap(value: object, pointer: str, *, closed: bool = True) -> Gap:
+    """A stored gap. A candidates part's options are its candidates, as in an
+    answer. A saved file's gap and its options are closed; a provenance
+    record's are open, so a key they do not name is ignored."""
     obj = object_at(value, pointer)
-    check_keys(
-        obj, pointer, required=("part_index", "part", "kind", "message", "options")
-    )
+    keys = ("part_index", "part", "kind", "message", "options")
+    if closed:
+        check_keys(obj, pointer, required=keys)
+    else:
+        _require(obj, pointer, keys)
     part_index = obj["part_index"]
     if not is_integer(part_index):
         raise FormatError("format_invalid", f"{pointer}/part_index", "not an integer")
@@ -2600,7 +2631,7 @@ def _load_gap(value: object, pointer: str) -> Gap:
         part.candidates
         if isinstance(part, CandidatesPart)
         else tuple(
-            _load_option(option, f"{pointer}/options/{index}")
+            _load_option(option, f"{pointer}/options/{index}", closed=closed)
             for index, option in enumerate(_array(obj["options"], f"{pointer}/options"))
         )
     )
@@ -2613,9 +2644,13 @@ def _load_gap(value: object, pointer: str) -> Gap:
     )
 
 
-def _load_option(value: object, pointer: str) -> Option:
+def _load_option(value: object, pointer: str, *, closed: bool) -> Option:
     obj = object_at(value, pointer)
-    check_keys(obj, pointer, required=("label", "mentions", "data_query"))
+    keys = ("label", "mentions", "data_query")
+    if closed:
+        check_keys(obj, pointer, required=keys)
+    else:
+        _require(obj, pointer, keys)
     mentions = _array(obj["mentions"], f"{pointer}/mentions")
     return Option(
         label=_string(obj["label"], f"{pointer}/label"),

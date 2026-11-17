@@ -33,6 +33,7 @@ import {
   datasetRetention,
   loadCitation,
   loadDay,
+  loadGap,
   loadRetention,
   loadTime,
   loadWarning,
@@ -699,6 +700,8 @@ export class Dataset {
       question: this.question,
       warnings: this.warnings,
       members: this.members,
+      complete: this.complete,
+      missing: this.missing,
     });
   }
 
@@ -899,8 +902,8 @@ export class Dataset {
           }),
         ),
         assumptions: this.assumptions,
-        complete: this.complete,
-        missing: this.missing.map(savedGap),
+        complete: record.complete,
+        missing: record.missing,
         held_until: record.held_until,
         pinned: record.pinned,
         stale: false,
@@ -963,6 +966,9 @@ export type ProvenanceJson = {
   /** As `YYYY-MM-DD`. */
   held_until: string | null;
   warnings: { code: string; severity: string; message: string; spec_id: string | null }[];
+  complete: boolean;
+  /** One entry per part a partial fetch left out, as the saved file's `dfo.dataset` holds it. */
+  missing: ReturnType<typeof savedGap>[];
   members: {
     spec_id: string;
     content_version: string;
@@ -983,7 +989,14 @@ let provenanceOf: (fields: ProvenanceFields) => Provenance;
 /** What a `Provenance` holds. */
 type ProvenanceFields = Pick<
   Provenance,
-  "sentence" | "citation" | "fetchedAt" | "question" | "warnings" | "members"
+  | "sentence"
+  | "citation"
+  | "fetchedAt"
+  | "question"
+  | "warnings"
+  | "members"
+  | "complete"
+  | "missing"
 >;
 
 /**
@@ -1012,6 +1025,10 @@ export class Provenance {
    *  sentence, citation and retention, its own `pinned` and `heldUntil`. Empty for a dataset
    *  that names no version. */
   readonly members: readonly (Member | DerivedMember)[];
+  /** Whether every part of the question has a member, as `Dataset.complete`. */
+  readonly complete: boolean;
+  /** The parts a partial fetch left out, as `Dataset.missing`. */
+  readonly missing: readonly Gap[];
 
   static {
     provenanceOf = (fields) => new Provenance(fields);
@@ -1024,6 +1041,8 @@ export class Provenance {
     this.question = fields.question;
     this.warnings = Object.freeze([...fields.warnings]);
     this.members = Object.freeze([...fields.members]);
+    this.complete = fields.complete;
+    this.missing = Object.freeze([...fields.missing]);
     ({ heldUntil: this.heldUntil, pinned: this.pinned } = datasetRetention(this.members));
     Object.freeze(this);
   }
@@ -1052,6 +1071,8 @@ export class Provenance {
         message,
         spec_id: spec_id ?? null,
       })),
+      complete: this.complete,
+      missing: this.missing.map(savedGap),
       members: this.members.map((member) => ({
         spec_id: member.spec.spec_id,
         content_version: member.contentVersion,
@@ -1082,7 +1103,7 @@ export class Provenance {
    * @throws {FormatError} The value is neither JSON text nor a JSON object, breaks the provenance
    *   format or comes from a later format version, a member differs from the member its ref
    *   names, the record's `pinned` or `held_until` differs from what its members give, members
-   *   or none, or the ref breaks its own format, as `DatasetRef.fromJSON` throws, with a pointer
+   *   or none, `complete` is true while `missing` holds a part, or the ref breaks its own format, as `DatasetRef.fromJSON` throws, with a pointer
    *   under `/ref`.
    */
   static fromJSON(value: unknown): Provenance {
@@ -1116,6 +1137,14 @@ export class Provenance {
       provenanceMember(entry, stored[index]!, `/members/${index}`),
     );
     checkRetention({ pinned, heldUntil }, members, "");
+    const complete = record["complete"];
+    if (typeof complete !== "boolean") throw invalid("/complete", "not a boolean");
+    const missing = arrayAt(record["missing"], "/missing").map((item, index) =>
+      loadGap(item, `/missing/${index}`, { closed: false }),
+    );
+    if (complete && missing.length > 0) {
+      throw invalid("/complete", "is true while missing holds a part");
+    }
     return provenanceOf({
       sentence: stringAt(record["sentence"], "/sentence"),
       citation: loadCitation(record["citation"], "/citation", { closed: false }),
@@ -1126,6 +1155,8 @@ export class Provenance {
         loadWarning(item, `/warnings/${index}`, { provenance: true }),
       ),
       members,
+      complete,
+      missing,
     });
   }
 
@@ -1158,6 +1189,8 @@ const PROVENANCE_KEYS = [
   "pinned",
   "held_until",
   "warnings",
+  "complete",
+  "missing",
   "members",
 ] as const;
 const PROVENANCE_MEMBER_KEYS = [

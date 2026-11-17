@@ -6,11 +6,13 @@ import { describe, test } from "node:test";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { parquetMetadata } from "hyparquet";
 
+import { clientOver } from "../src/client.ts";
 import { DatasetRef, FormatError, isDerived } from "../src/core/ref.ts";
 import { Dataset, pinnedDataset, Provenance } from "../src/datasets/dataset.ts";
 import type { FetchedMember, ProvenanceJson } from "../src/datasets/dataset.ts";
+import type { Gap } from "../src/search/answer.ts";
 import { derivedDataset } from "../src/datasets/derived.ts";
-import { scenarioBytes } from "./replay.ts";
+import { replay, scenario, scenarioBytes, stepOf } from "./replay.ts";
 import { contractJson, recordedBytes, recordedJson } from "./support.ts";
 
 type ProvenanceRecord = {
@@ -31,7 +33,11 @@ const records = async (): Promise<ProvenanceRecord[]> => {
 /** The provenance schema, with the schemas it refers to by `$id`. */
 async function validator(): Promise<(value: unknown) => boolean> {
   const ajv = new Ajv2020({ strict: false, allErrors: true });
-  for (const name of ["dataset-ref.schema.json", "saved-file.schema.json"]) {
+  for (const name of [
+    "dataset-ref.schema.json",
+    "saved-file.schema.json",
+    "scenario.schema.json",
+  ]) {
     ajv.addSchema(await contractJson<object>(name));
   }
   const validate = ajv.compile(await contractJson<object>("provenance.schema.json"));
@@ -97,8 +103,9 @@ describe("the contract's provenance examples", async () => {
 const digestOf = (data: Uint8Array): string =>
   `sha256:${createHash("sha256").update(data).digest("hex")}`;
 
-/** A dataset of two members, one answering a part, with retention and a question. */
-async function twoMembers(): Promise<Dataset> {
+/** A dataset of two members, one answering a part, with retention and a question, and the
+ *  parts a partial fetch left out when `missing` names any. */
+async function twoMembers({ missing }: { missing?: readonly Gap[] } = {}): Promise<Dataset> {
   const data = await scenarioBytes("fetch-ref.parquet");
   const member = (index: number, manifest: Record<string, unknown>): FetchedMember => {
     const specId = `spec_${String(index).repeat(32)}`;
@@ -134,8 +141,22 @@ async function twoMembers(): Promise<Dataset> {
       }),
       member(2, { citation: citation("CRS"), retention: { pinned: true } }),
     ],
-    { layout: "long", question: "Aid to Nigeria", fetchedAt: new Date("2026-11-13T09:15:42Z") },
+    {
+      layout: "long",
+      question: "Aid to Nigeria",
+      fetchedAt: new Date("2026-11-13T09:15:42Z"),
+      ...(missing === undefined ? {} : { missing }),
+    },
   );
+}
+
+/** The dataset `answer-mixed-fetch-partial` fetches: one member, and one part left out. */
+async function partialAnswer(): Promise<Dataset> {
+  const record = await scenario("answer-mixed-fetch-partial");
+  const answer = await clientOver(replay(record).transport).search(
+    stepOf(record, 0, "search").question,
+  );
+  return answer.fetch({ partial: true });
 }
 
 async function derived(): Promise<Dataset> {
@@ -176,6 +197,8 @@ function provenanceOfFile(metadata: Record<string, string>): ProvenanceJson {
     pinned: saved["pinned"] as boolean,
     held_until: saved["held_until"] as string | null,
     warnings: saved["warnings"] as ProvenanceJson["warnings"],
+    complete: saved["complete"] as boolean,
+    missing: saved["missing"] as ProvenanceJson["missing"],
     members: ref.members.map((member, index) => ({
       spec_id: member.spec.spec_id,
       content_version: member.content_version,
@@ -193,6 +216,7 @@ describe("a dataset's provenance", async () => {
   for (const [name, make] of [
     ["two members", twoMembers],
     ["a derived member", derived],
+    ["a partial answer", partialAnswer],
   ] as const) {
     test(`of ${name} meets the schema, reads back, and agrees with the saved file`, async () => {
       const dataset = await make();
@@ -230,6 +254,20 @@ describe("a dataset's provenance", async () => {
       record.warnings.map((warning) => warning.spec_id),
       [null, `spec_${"1".repeat(32)}`],
     );
+  });
+
+  test("of a partial dataset states what it left out", async () => {
+    const left = (await partialAnswer()).missing;
+    const [complete, partial] = [await twoMembers(), await twoMembers({ missing: left })];
+    const record = partial.provenance.toJSON();
+    assert.deepEqual(
+      [record.complete, record.missing.map((gap) => gap.kind)],
+      [false, ["not_understood"]],
+    );
+    assert.deepEqual(complete.provenance.toJSON().missing, []);
+    assert.ok(!partial.provenance.equals(complete.provenance));
+    const read = Provenance.fromJSON(JSON.stringify(record));
+    assert.deepEqual([read.complete, read.missing], [partial.complete, partial.missing]);
   });
 
   test("prints its sentence, members and fetch time", async () => {
@@ -279,6 +317,16 @@ describe("Provenance.fromJSON ignores a key the format does not name", () => {
     assert.ok(Provenance.fromJSON(JSON.stringify(added)).equals(provenance));
   });
 
+  test("in a missing part", async () => {
+    const provenance = (await partialAnswer()).provenance;
+    const record = provenance.toJSON();
+    const added = {
+      ...record,
+      missing: record.missing.map((gap) => ({ ...gap, source: "OECD" })),
+    };
+    assert.deepEqual(Provenance.fromJSON(added).toJSON(), record);
+  });
+
   test("in a citation, its sources and a warning", async () => {
     const provenance = (await twoMembers()).provenance;
     const record = provenance.toJSON();
@@ -300,6 +348,7 @@ describe("Provenance.fromJSON ignores a key the format does not name", () => {
 describe("Provenance.fromJSON refuses", async () => {
   const record = (await twoMembers()).provenance.toJSON();
   const [first, second] = record.members;
+  const partial = (await partialAnswer()).provenance.toJSON();
   for (const [name, value, pointer] of [
     ["text that is not JSON", "{", ""],
     ["a value that is not an object", [], ""],
@@ -333,6 +382,14 @@ describe("Provenance.fromJSON refuses", async () => {
       "a member that differs from its ref member",
       { ...record, members: [{ ...first!, parts: [] }, second] },
       "/members/0/parts",
+    ],
+    ["a complete flag that is not a boolean", { ...record, complete: "no" }, "/complete"],
+    ["a complete record with a part missing", { ...partial, complete: true }, "/complete"],
+    ["a missing list that is not a list", { ...record, missing: {} }, "/missing"],
+    [
+      "a missing part of no gap kind",
+      { ...partial, missing: [{ ...partial.missing[0]!, kind: "gone" }] },
+      "/missing/0/kind",
     ],
   ] as const) {
     test(name, () => {

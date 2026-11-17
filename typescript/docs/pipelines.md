@@ -122,7 +122,7 @@ The link serves a plain Parquet file, which a Parquet reader such as hyparquet r
 
 ## Record provenance
 
-`data.provenance` is the record of where the data came from: its sentence, citation, the time it left the server, the question, the ref, `pinned` and `heldUntil`, the warnings, and each member's spec, version, digest and retention. `JSON.stringify` writes it:
+`data.provenance` is the record of where the data came from: its sentence, citation, the time it left the server, the question, the ref, `pinned` and `heldUntil`, the warnings, whether the dataset is complete and the parts it left out, and each member's spec, version, digest and retention. `JSON.stringify` writes it:
 
 ```ts
 await writeFile("debt-service.provenance.json", JSON.stringify(newest.provenance));
@@ -134,7 +134,9 @@ console.log(same.equals(newest.provenance));
 
 Each member carries its own `pinned` and `heldUntil`, so a record of several readings says which one stops being guaranteed first, and the dataset's `pinned` and `heldUntil` come from them. The dataset is pinned when every member is, and held until the earliest day of the members that are not. A member's `pinned` is null when the client does not know it, as in a dataset read from a file an older client saved, and its `heldUntil` is then the day that file saved for the whole dataset, a day the member is held until at least. After `client.pin(data)`, every member reads as pinned.
 
-`Provenance.fromJSON` takes the text or its parsed value, throws `FormatError` when it breaks the format, and reads a record with keys it does not know, in a member, a citation or a warning too, so a record a later client wrote still loads. The Python client writes the same text with `provenance.to_json()` and reads it with `Provenance.from_json`, so a Python job and a TypeScript site can share one file. The same record sits inside a file saved with `data.save`.
+A dataset fetched with `{ partial: true }` records `complete` as false and one `missing` entry per part the fetch left out, with the part's index, gap kind, message and options and the part as Search served it, as the saved file holds them. A record whose `complete` is true and whose `missing` names a part is refused as `format_invalid`.
+
+`Provenance.fromJSON` takes the text or its parsed value, throws `FormatError` when it breaks the format, and reads a record with keys it does not know, in a member, a citation, a warning or a missing part too, so a record a later client wrote still loads. The Python client writes the same text with `provenance.to_json()` and reads it with `Provenance.from_json`, so a Python job and a TypeScript site can share one file. The same record sits inside a file saved with `data.save`.
 
 ## Test offline
 
