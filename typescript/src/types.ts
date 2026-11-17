@@ -50,6 +50,7 @@ export type {
   LeftOutStep,
   Member,
   PartyTotalsLeftOut,
+  ProvenanceJson,
 } from "./datasets/dataset.ts";
 export { Analysis } from "./datasets/analysis.ts";
 export type { RunOptions } from "./datasets/analysis.ts";

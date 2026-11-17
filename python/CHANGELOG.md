@@ -4,6 +4,12 @@ All notable changes to this package are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `data.provenance` is a `dfo.Provenance`, a frozen record of where a Dataset came from: its sentence, citation, `fetched_at`, question, `pinned`, `held_until`, warnings and members, each with its spec id, version, digest, parts, sentence and citation, and `ref`, the `DatasetRef` the members name. `to_object()` gives it as JSON values in the format `provenance.schema.json` in the client contract gives, so `json.dump(data.provenance.to_object(), f)` stores it, and `Provenance.from_object(json.load(f))` reads a record either client wrote. A record that breaks the format, or whose members differ from the members its ref names, raises `FormatError` (`format_invalid`) at a JSON Pointer, and a ref that breaks its own format raises as `DatasetRef.from_json` does, under `/ref`. A derived Dataset's provenance names its derived members. `data.save` writes the same facts from the same record, so the provenance of a Dataset `dfo.load` read equals the provenance of the Dataset that saved it. The saved file's format is unchanged.
+
 ## [0.2.0] - 2026-11-14
 
 ### Added

@@ -61,6 +61,7 @@ type ClientCodeName = Literal[
     "resource_limit",
     "response_too_large",
     "unexpected_response",
+    "version_not_pinned",
     "version_unavailable",
 ]
 # Every code the client raises itself, the one whose class follows the status
@@ -289,6 +290,7 @@ CLIENT_CODES: Final[dict[ClientCodeName, tuple[str, bool]]] = {
     "resource_limit": ("BundleError", False),
     "response_too_large": ("ServerError", False),
     "unexpected_response": ("ContractError", False),
+    "version_not_pinned": ("InvalidRequestError", False),
     "version_unavailable": ("VersionUnavailableError", False),
 }
 

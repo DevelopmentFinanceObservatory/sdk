@@ -79,15 +79,15 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/search/schema": {
+  "/api/search/json-schema": {
     parameters: {
       query?: never;
       header?: never;
       path?: never;
       cookie?: never;
     };
-    /** Get Schema */
-    get: operations["search_get_schema"];
+    /** Get Json Schema */
+    get: operations["search_get_json_schema"];
     put?: never;
     post?: never;
     delete?: never;
@@ -152,15 +152,15 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/datasets/schema": {
+  "/api/datasets/json-schema": {
     parameters: {
       query?: never;
       header?: never;
       path?: never;
       cookie?: never;
     };
-    /** Get Schema */
-    get: operations["datasets_get_schema"];
+    /** Get Json Schema */
+    get: operations["datasets_get_json_schema"];
     put?: never;
     post?: never;
     delete?: never;
@@ -692,15 +692,15 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/graph/schema": {
+  "/api/graph/json-schema": {
     parameters: {
       query?: never;
       header?: never;
       path?: never;
       cookie?: never;
     };
-    /** Get Schema */
-    get: operations["graph_get_schema"];
+    /** Get Json Schema */
+    get: operations["graph_get_json_schema"];
     put?: never;
     post?: never;
     delete?: never;
@@ -754,6 +754,74 @@ export interface paths {
     get: operations["graph_list_sources"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/graph/schema": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Schema */
+    get: operations["graph_get_schema"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/graph/schema/terms": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Schema Terms */
+    get: operations["graph_get_schema_terms"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/graph/schema/usage": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Schema Usage */
+    get: operations["graph_get_schema_usage"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/graph/schema/check": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Post Schema Check */
+    post: operations["graph_post_schema_check"];
     delete?: never;
     options?: never;
     head?: never;
@@ -1888,7 +1956,7 @@ export interface components {
       operations?: components["schemas"]["Operation"][];
       /**
        * Departures
-       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, member_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, organisation_read_as_source, direction_inferred, organisation_read_as_party, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
+       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, member_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, organisation_read_as_source, direction_inferred, organisation_read_as_party, core_contribution_read, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
        */
       departures?: components["schemas"]["Departure"][];
       /**
@@ -1932,7 +2000,7 @@ export interface components {
       spec_id: string;
       /**
        * Identity
-       * @description the identity-core document, shaped as search.models.identity.BaseIdentity and published at GET /api/search/schema
+       * @description the identity-core document, shaped as search.models.identity.BaseIdentity and published at GET /api/search/json-schema
        */
       identity: {
         [key: string]: unknown;
@@ -2763,6 +2831,7 @@ export interface components {
       property: components["schemas"]["NodeRef"];
       value: components["schemas"]["NodeRef"];
     };
+    ConstraintValue: string | number | boolean | null;
     /** ContinentNode */
     ContinentNode: {
       /**
@@ -3460,6 +3529,17 @@ export interface components {
       content_version: string;
       rendering?: components["schemas"]["RootRendering"];
     };
+    /**
+     * DatasetUsage
+     * @description How each Provenance of the code index uses the model.
+     */
+    DatasetUsage: {
+      /**
+       * Provenances
+       * @description sorted by ref
+       */
+      provenances: components["schemas"]["ProvenanceUsage"][];
+    };
     /** DatasetVersion */
     DatasetVersion: {
       /** Content Version */
@@ -3535,6 +3615,7 @@ export interface components {
        */
       end?: string | null;
     };
+    DeclaredBy: ("dfo" | "base" | "un_system") | (string & {});
     /**
      * DeclinedAnswer
      * @description A resolve response to a question search does not answer.
@@ -3611,7 +3692,7 @@ export interface components {
       operations?: components["schemas"]["Operation"][];
       /**
        * Departures
-       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, member_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, organisation_read_as_source, direction_inferred, organisation_read_as_party, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
+       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, member_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, organisation_read_as_source, direction_inferred, organisation_read_as_party, core_contribution_read, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
        */
       departures?: components["schemas"]["Departure"][];
       /**
@@ -3653,7 +3734,7 @@ export interface components {
       spec_id: string;
       /**
        * Identity
-       * @description the identity-core document, shaped as search.models.identity.BaseIdentity and published at GET /api/search/schema
+       * @description the identity-core document, shaped as search.models.identity.BaseIdentity and published at GET /api/search/json-schema
        */
       identity: {
         [key: string]: unknown;
@@ -3712,7 +3793,7 @@ export interface components {
     Departure: {
       /**
        * Code
-       * @description what kind of departure this is. 'closest_match': the answer shows the nearest measure the graph holds, not the one asked; a client draws a muted 'Closest match:' lead before the heading, and on a candidates part, whose readings stand in for a measure with no data, once before the first reading. 'measure_not_applied': a named measure qualifier was not applied. 'operation_not_applied': an operation the request named (a share, a ranking) was not run, so the amounts behind it are shown. 'breakdown_not_applied': a breakdown the request named was not applied, so the total is shown. 'entity_unavailable': an entity the request named holds no values in the series the answer reads, one departure per role; for a role the request named as a group, asked is the request's words for the group and the text counts the members without values; the text names any source holding values there that Search does not read. 'member_unavailable': a variable of the answer holds no values under the source, unit and method a reading reads, so it shows none; asked names those variables and shown the source read, and the text names that source and its unit, so each reading of a candidates part states its own; editing the source or the set binding that names the variables clears it. 'year_unavailable': a named year or range falls outside the years served. 'modelled_values': the served values are modelled or estimated. 'group_read_as_members': a named group was read as its member entities; on a flow role the text names the amounts the group's published total counts that no member holds, and, for a group whose published total is not its members' sum, says the source publishes its own figure for the group. 'whole_total_read': a flow side is read as its whole population, the total its source publishes for every party of that side (official donors (DAC) for 'official donors' or a donor side the request named nothing on or summed over; official and private donors (DAC) for 'all donors'); the text says what the total holds and how to list the side's members: in the question's words ('by donor') on the raw_text door, with open_roles on the others. 'whole_total_unpublished': the request named a whole population ('all donors', 'all recipients') on a side whose dataset publishes no total of it and holds no party outside it, so the side is left unnamed and the answer covers every party the dataset holds there; asked is the request's words, and the text names the dataset. 'direction_discarded': a flow direction the request's own words named was not applied. 'organisation_read_as_source': an organisation the request named as a party to a flow, on an answer whose series has flow roles, is read as the source of the data, since the data that best matches the question does not list it as a party to a flow; asked is the request's words for it. 'direction_inferred': a place the request named without a direction is read on one direction, which over names, for one of four reasons: an operation runs over the other direction, a place the request named with a direction stands on the other and data holds the place on this one, only this direction holds data in the years asked, or a dataset lists the place among its providers, which the text names. 'organisation_read_as_party': an organisation the request named is read as a party to the flow, because the request named it as a party where it could also be the source, because another source the request named lists it as a party, because its words name no single source, or because none of the data it publishes measures what the request asked; asked is the request's words for it, and the text says which reason. 'scope_limited': a no_data answer's check covered only values the engine chose, which the request did not name; its text names only what the check covered ('This check covered only ODA.')
+       * @description what kind of departure this is. 'closest_match': the answer shows the nearest measure the graph holds, not the one asked; a client draws a muted 'Closest match:' lead before the heading, and on a candidates part, whose readings stand in for a measure with no data, once before the first reading. 'measure_not_applied': a named measure qualifier was not applied. 'operation_not_applied': an operation the request named (a share, a ranking) was not run, so the amounts behind it are shown. 'breakdown_not_applied': a breakdown the request named was not applied, so the total is shown. 'entity_unavailable': an entity the request named holds no values in the series the answer reads, one departure per role; for a role the request named as a group, asked is the request's words for the group and the text counts the members without values; the text names any source holding values there that Search does not read. 'member_unavailable': a variable of the answer holds no values under the source, unit and method a reading reads, so it shows none; asked names those variables and shown the source read, and the text names that source and its unit, so each reading of a candidates part states its own; editing the source or the set binding that names the variables clears it. 'year_unavailable': a named year or range falls outside the years served. 'modelled_values': the served values are modelled or estimated. 'group_read_as_members': a named group was read as its member entities; on a flow role the text names the amounts the group's published total counts that no member holds, and, for a group whose published total is not its members' sum, says the source publishes its own figure for the group. 'whole_total_read': a flow side is read as its whole population, the total its source publishes for every party of that side (official donors (DAC) for 'official donors' or a donor side the request named nothing on or summed over; official and private donors (DAC) for 'all donors'); the text says what the total holds and how to list the side's members: in the question's words ('by donor') on the raw_text door, with open_roles on the others. 'whole_total_unpublished': the request named a whole population ('all donors', 'all recipients') on a side whose dataset publishes no total of it and holds no party outside it, so the side is left unnamed and the answer covers every party the dataset holds there; asked is the request's words, and the text names the dataset. 'direction_discarded': a flow direction the request's own words named was not applied. 'organisation_read_as_source': an organisation the request named as a party to a flow, on an answer whose series has flow roles, is read as the source of the data, since the data that best matches the question does not list it as a party to a flow; asked is the request's words for it. 'direction_inferred': a place the request named without a direction is read on one direction, which over names, for one of four reasons: an operation runs over the other direction, a place the request named with a direction stands on the other and data holds the place on this one, only this direction holds data in the years asked, or a dataset lists the place among its providers, which the text names. 'organisation_read_as_party': an organisation the request named is read as a party to the flow, because the request named it as a party where it could also be the source, because another source the request named lists it as a party, because its words name no single source, or because none of the data it publishes measures what the request asked; asked is the request's words for it, and the text says which reason. 'core_contribution_read': the answer names a multilateral organisation as the recipient, so its figures are the donor's core contributions to it, which total ODA counts and a bilateral reading leaves out; shown is the organisation's name. 'scope_limited': a no_data answer's check covered only values the engine chose, which the request did not name; its text names only what the check covered ('This check covered only ODA.')
        */
       code: DepartureCode | (string & {});
       /**
@@ -4915,26 +4996,10 @@ export interface components {
       refresh_type: string | null;
     };
     /**
-     * GraphRef
-     * @description Every graph identifier in the contract.
+     * GraphJsonSchema
+     * @description The full `GET /api/graph/json-schema` document.
      */
-    GraphRef: {
-      /**
-       * Ref
-       * @description the graph identifier
-       */
-      ref: string;
-      /**
-       * Label
-       * @description plain-language display name, read from the graph
-       */
-      label: string;
-    };
-    /**
-     * GraphSchema
-     * @description The full `GET /api/graph/schema` document.
-     */
-    GraphSchema: {
+    GraphJsonSchema: {
       /**
        * Schemas
        * @description JSON Schema of each served request and response body, keyed by name
@@ -4949,6 +5014,22 @@ export interface components {
        * @description path of this surface's capability document
        */
       capabilities: string;
+    };
+    /**
+     * GraphRef
+     * @description Every graph identifier in the contract.
+     */
+    GraphRef: {
+      /**
+       * Ref
+       * @description the graph identifier
+       */
+      ref: string;
+      /**
+       * Label
+       * @description plain-language display name, read from the graph
+       */
+      label: string;
     };
     /** GroupNode */
     GroupNode: {
@@ -6181,7 +6262,7 @@ export interface components {
       operations?: components["schemas"]["Operation"][];
       /**
        * Departures
-       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, member_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, organisation_read_as_source, direction_inferred, organisation_read_as_party, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
+       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, member_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, organisation_read_as_source, direction_inferred, organisation_read_as_party, core_contribution_read, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
        */
       departures?: components["schemas"]["Departure"][];
       /**
@@ -6694,13 +6775,14 @@ export interface components {
                 | "stated_choice_not_applied"
                 | "option_not_covered"
                 | "contributions_counted"
+                | "multilateral_destination"
               )
             | (string & {})
           )
         | null;
       /**
        * Detail
-       * @description the code's parameters: `why` for provider_not_offered, `dataset` for basis_not_published and contributions_counted, `entry` and `cause` for conflicts_with
+       * @description the code's parameters: `why` for provider_not_offered, with `slot`, the property at fault, where why is slot_not_served, and `pointer`, the identity member at fault, where why is composite_not_servable, `dataset` for basis_not_published and contributions_counted, `destination` for multilateral_destination, the multilateral agency the part names as recipient, whose flows are core contributions, `entry` and `cause` for conflicts_with
        */
       detail?: {
         [key: string]: string;
@@ -7488,6 +7570,41 @@ export interface components {
       documentation?: string;
     };
     /**
+     * ProvenanceUsage
+     * @description How one Provenance's StatVars use the model.
+     */
+    ProvenanceUsage: {
+      /**
+       * Ref
+       * @description the Provenance's dcid
+       */
+      ref: string;
+      /**
+       * Label
+       * @description the Provenance node's name in the graph; null when it has none
+       */
+      label: string | null;
+      /**
+       * Description
+       * @description the Provenance node's description in the graph; null when it has none
+       */
+      description: string | null;
+      /** Stat Var Count */
+      stat_var_count: number;
+      /**
+       * Patterns
+       * @description sorted by StatVar count descending, then by the pattern's fields
+       */
+      patterns: components["schemas"]["SchemaPattern"][];
+      /**
+       * Constraint Values
+       * @description one entry per constraint property the StatVars set, sorted by property
+       */
+      constraint_values: components["schemas"]["SchemaConstraintValues"][];
+      /** @description facts of the coverage facets; empty lists when coverage holds none */
+      facets: components["schemas"]["SchemaFacets"];
+    };
+    /**
      * ProviderBinding
      * @description An option that sets whose spending the answer counts.
      */
@@ -7509,7 +7626,7 @@ export interface components {
       window?: [number, number] | null;
       /**
        * Provenance
-       * @description the composite provenance the inclusive scope binds as the identity's source, which stacks the part's bilateral flows on the imputed multilateral line of its own table; None for every other scope
+       * @description the composite provenance the option binds as the identity's source: for the inclusive scope, the part's bilateral flows stacked on the imputed multilateral line of its own table; for the bilateral scope on DAC2a's total ODA, its bilateral destinations alone; None for every other option
        */
       provenance?: string | null;
     };
@@ -8645,7 +8762,7 @@ export interface components {
       role_axis_facts?: components["schemas"]["RoleAxisFact"][] | null;
       /** @description the currencies and price bases a unit request can convert this answer to. Null when the served members' unit is no currency, no conversion recipe converts them (a stock, a series not in nominal prices, or a provenance that declares no recipe), the recipe's tables lack the native currency's rate in a served year, so nothing converts, or no conversion catalogue is loaded, which the part's unit_conversion_unavailable warning states. Never a member of BaseIdentity, never hashed. */
       unit_conversion?: components["schemas"]["UnitConversion"] | null;
-      /** @description how the part this Spec answers was counted: one ScopeChoice per axis a declared rule or the request settled (sector, region, measure basis, provider scope), with its options and their availability, the explicit and carried entries applied, and the identity they compile to (see PartScope). To switch an option, post base.identity as identity on a dataset_resubmit identity entry, with entries as scope_entries, the entry on the switched axis replaced by the switch: one entry per axis. None when no axis was settled and no scope entries were posted. Never a member of BaseIdentity, never hashed. */
+      /** @description how the part this Spec answers was counted: one ScopeChoice per axis a declared rule or the request settled (sector, region, measure basis, provider scope), with its options and their availability, the explicit and carried entries applied, and the identity they compile to (see PartScope). To switch an option, post base.identity as identity on a dataset_resubmit identity entry, with entries as scope_entries, the entry on the switched axis replaced by the switch: one entry per axis. Empty choices when no axis was settled but the part is served from a composite, which compiled.identity and compiled.components name (a DAC2a ranking read to its bilateral destinations). None when no axis was settled, no composite serves the part and no scope entries were posted. Never a member of BaseIdentity, never hashed. */
       scope_choices?: components["schemas"]["PartScope"] | null;
     };
     /**
@@ -9032,6 +9149,356 @@ export interface components {
       built_from: {
         [key: string]: string;
       };
+    };
+    /**
+     * GraphSchemaCheckRequest
+     * @description `rows`: 1 to `CHECK_MAX_ROWS` candidate StatVar definitions, checked in order from the
+     *     first.
+     */
+    SchemaCheckRequest: {
+      /** Rows */
+      rows: components["schemas"]["SchemaCheckRow"][];
+    };
+    /**
+     * SchemaCheckResponse
+     * @description The findings over the rows one check took, from the first.
+     */
+    SchemaCheckResponse: {
+      /**
+       * Generation
+       * @description the graph generation the rows were checked against; null when unknown
+       */
+      generation: string | null;
+      /**
+       * Rows Checked
+       * @description how many rows were checked, counted from the first row of the request; at least 1. A caller resumes at this index when it is less than the rows sent
+       */
+      rows_checked: number;
+      /**
+       * Findings
+       * @description one finding per fault in the rows checked, in row order; empty when none of them has a fault
+       */
+      findings: components["schemas"]["SchemaFinding"][];
+    };
+    /**
+     * GraphSchemaCheckRow
+     * @description A candidate StatisticalVariable definition. Each string is at most 512 characters, and
+     *     an empty string counts as absent.
+     */
+    SchemaCheckRow: {
+      /** @description the StatVar's dcid; when the code index serves it, the row is compared */
+      dcid?: components["schemas"]["_OptionalText"];
+      population_type?: components["schemas"]["_OptionalText"];
+      /** @description absent or empty gets a `value_missing` finding */
+      measured_property?: components["schemas"]["_OptionalText"];
+      stat_type?: components["schemas"]["_OptionalText"];
+      measurement_qualifier?: components["schemas"]["_OptionalText"];
+      measurement_denominator?: components["schemas"]["_OptionalText"];
+      /**
+       * Constraint Properties
+       * @description each constraint property and its value node; an empty value counts as null
+       */
+      constraint_properties?: {
+        [key: string]: components["schemas"]["ConstraintValue"];
+      };
+      /** Observation Properties */
+      observation_properties?: components["schemas"]["_Text"][];
+    };
+    /**
+     * SchemaConstraintValues
+     * @description The values one constraint property takes over a Provenance's StatVars.
+     */
+    SchemaConstraintValues: {
+      /** Property */
+      property: string;
+      /**
+       * Values
+       * @description sorted by value
+       */
+      values: components["schemas"]["SchemaValueCount"][];
+    };
+    /**
+     * SchemaDocument
+     * @description The deployment's model as one document.
+     */
+    SchemaDocument: {
+      /**
+       * Generation
+       * @description the graph generation the document was built from; null when unknown
+       */
+      generation: string | null;
+      /** Nodes */
+      nodes: components["schemas"]["SchemaNode"][];
+    };
+    /**
+     * SchemaFacets
+     * @description The facet facts of a Provenance's coverage series, each list sorted and distinct.
+     */
+    SchemaFacets: {
+      /** Units */
+      units: string[];
+      /** Scaling Factors */
+      scaling_factors: string[];
+      /** Measurement Methods */
+      measurement_methods: string[];
+      /**
+       * Observation Periods
+       * @description ISO 8601 durations, such as `P1Y`
+       */
+      observation_periods: string[];
+      /**
+       * Currencies
+       * @description ISO 4217 codes of the currency units
+       */
+      currencies: string[];
+    };
+    /**
+     * SchemaFinding
+     * @description One fault in one checked row.
+     */
+    SchemaFinding: {
+      /**
+       * Row
+       * @description the row's index in the request's `rows`
+       */
+      row: number;
+      /**
+       * Field
+       * @description the row member the finding is about
+       */
+      field:
+        | (
+            | "dcid"
+            | "population_type"
+            | "measured_property"
+            | "stat_type"
+            | "measurement_qualifier"
+            | "measurement_denominator"
+            | "constraint_properties"
+            | "observation_properties"
+          )
+        | (string & {});
+      /**
+       * Property
+       * @description the constraint or observation property the finding is about; null for the other members
+       */
+      property: string | null;
+      /**
+       * Subject
+       * @description `property` when the finding judges a constraint or observation property itself, `value` otherwise
+       */
+      subject: ("property" | "value") | (string & {});
+      /**
+       * Value
+       * @description what the row sent in the judged cell: the property's dcid when `subject` is `property`, a list for `observation_properties` on `definition_differs`, null where the row sent none
+       */
+      value: components["schemas"]["ConstraintValue"] | string[];
+      /**
+       * Served
+       * @description for `definition_differs`, the value the code index serves (a sorted list for `observation_properties`, null where it serves none); null for every other code
+       */
+      served: components["schemas"]["ConstraintValue"] | string[];
+      /** Code */
+      code:
+        | (
+            | "node_not_held"
+            | "not_a_node"
+            | "node_provisional"
+            | "node_untyped"
+            | "origin_not_served"
+            | "value_missing"
+            | "not_a_property"
+            | "not_a_class"
+            | "value_outside_range"
+            | "range_not_judged"
+            | "property_outside_domain"
+            | "definition_differs"
+          )
+        | (string & {});
+      /** Severity */
+      severity: ("error" | "warning") | (string & {});
+    };
+    /**
+     * SchemaInstances
+     * @description The nodes typed by a Class or by any of its subclasses.
+     */
+    SchemaInstances: {
+      /**
+       * Refs
+       * @description the dcids of the instances listed, sorted
+       */
+      refs: string[];
+      /**
+       * Complete
+       * @description true when `refs` is every instance the graph holds: the class and each of its subclasses were listed from the graph and each listing read all of them; false when it holds some of them
+       */
+      complete: boolean;
+    };
+    /**
+     * SchemaLiteral
+     * @description A literal value as the graph holds it, a string even where it reads as a number, date or
+     *     boolean.
+     */
+    SchemaLiteral: {
+      /** Value */
+      value: string;
+    };
+    /**
+     * SchemaNode
+     * @description One node of the schema document.
+     */
+    SchemaNode: {
+      /**
+       * Ref
+       * @description the node's dcid
+       */
+      ref: string;
+      /**
+       * Label
+       * @description the node's name; null when the graph gives none
+       */
+      label: string | null;
+      /**
+       * Description
+       * @description the node's prose in the graph; null when it has none
+       */
+      description: string | null;
+      /**
+       * Types
+       * @description the node's typeOf values
+       */
+      types: string[];
+      /** Alternate Name */
+      alternate_name: string[];
+      /** Sub Class Of */
+      sub_class_of: string[];
+      /** Sub Property Of */
+      sub_property_of: string[];
+      /** Specialization Of */
+      specialization_of: string[];
+      /** Domain Includes */
+      domain_includes: string[];
+      /** Range Includes */
+      range_includes: string[];
+      /** Classification Code */
+      classification_code: string[];
+      /**
+       * Other Properties
+       * @description every other outgoing property the graph holds on the node, by property dcid, sorted; the named members are a closed set, and a property promoted to one leaves this map. Each value has exactly one member, {ref: string} for a node or {value: string} for a literal, never parsed to a number or boolean, sorted by its text. A literal longer than 2,000 characters is left out, and a property keeps its first 100 values. {} when the node holds none
+       */
+      other_properties: {
+        [key: string]: (
+          components["schemas"]["SchemaNodeReference"] | components["schemas"]["SchemaLiteral"]
+        )[];
+      };
+      /**
+       * Provenances
+       * @description the Provenances declaring the node's typeOf arcs, verbatim, empty when declared_by is null
+       */
+      provenances: string[];
+      /** @description the origin declaring the node: dfo when any of its provenances is DFO's, base when every one is base Data Commons', un_system otherwise; null when the graph names no declaring Provenance for the node: it has no typeOf arc, or none of its typeOf targets carries one */
+      declared_by: components["schemas"]["DeclaredBy"] | null;
+      /** @description the nodes typed by the Class or any of its subclasses, on a DFO Class that descends from Enumeration or that a DFO property ranges on, a DFO subclass of one, or a base enumeration; null on every other node and on a Class whose list holds no node and is not complete */
+      instances: components["schemas"]["SchemaInstances"] | null;
+    };
+    /**
+     * SchemaNodeReference
+     * @description A value that names a node of the graph, by its dcid.
+     */
+    SchemaNodeReference: {
+      /**
+       * Ref
+       * @description the node's dcid
+       */
+      ref: string;
+    };
+    /**
+     * SchemaPattern
+     * @description One distinct way a Provenance's StatVars use the model.
+     */
+    SchemaPattern: {
+      /** Population Type */
+      population_type: string | null;
+      /** Measured Property */
+      measured_property: string;
+      /** Stat Type */
+      stat_type: string | null;
+      /** Measurement Qualifier */
+      measurement_qualifier: string | null;
+      /** Measurement Denominator */
+      measurement_denominator: string | null;
+      /**
+       * Constraint Properties
+       * @description the names of the constraint properties the StatVars set, sorted
+       */
+      constraint_properties: string[];
+      /**
+       * Observation Properties
+       * @description the observation properties the StatVars declare, sorted
+       */
+      observation_properties: string[];
+      /**
+       * Stat Var Count
+       * @description how many of the Provenance's StatVars follow it
+       */
+      stat_var_count: number;
+      /**
+       * Examples
+       * @description the first three of those StatVars' dcids in sorted order
+       */
+      examples: string[];
+    };
+    /**
+     * SchemaTerm
+     * @description One Class or Property on the graph.
+     */
+    SchemaTerm: {
+      /**
+       * Ref
+       * @description the term's dcid
+       */
+      ref: string;
+      /**
+       * Label
+       * @description the term's name; null when the graph gives none
+       */
+      label: string | null;
+      /**
+       * Types
+       * @description whether the term is typed Class, Property or both
+       */
+      types: (("Class" | "Property") | (string & {}))[];
+      /**
+       * Provenances
+       * @description the Provenances declaring the term's typeOf arc, verbatim, empty when declared_by is null
+       */
+      provenances: string[];
+      /** @description the origin declaring the term, by the node's rule; null when the graph names no declaring Provenance for the term: its listing entries carry none */
+      declared_by: components["schemas"]["DeclaredBy"] | null;
+    };
+    /**
+     * SchemaTerms
+     * @description Every Class and Property the DFO graph lists by `typeOf`, base Data Commons terms
+     *     included. The UN origin's terms are not listed, even where the deployment serves it.
+     */
+    SchemaTerms: {
+      /**
+       * Generation
+       * @description the graph generation the list was built from; null when unknown
+       */
+      generation: string | null;
+      /** Terms */
+      terms: components["schemas"]["SchemaTerm"][];
+    };
+    /**
+     * SchemaValueCount
+     * @description One value a constraint property takes, and how many StatVars take it.
+     */
+    SchemaValueCount: {
+      /** Value */
+      value: string;
+      /** Stat Var Count */
+      stat_var_count: number;
     };
     /**
      * Scope
@@ -11353,7 +11820,7 @@ export interface components {
       operations?: components["schemas"]["Operation"][];
       /**
        * Departures
-       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, member_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, organisation_read_as_source, direction_inferred, organisation_read_as_party, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
+       * @description every way this part's answer differs from what its request asked, ordered by how much each changes the number: closest_match, measure_not_applied, operation_not_applied, breakdown_not_applied, entity_unavailable, member_unavailable, year_unavailable, modelled_values, group_read_as_members, whole_total_read, whole_total_unpublished, direction_discarded, organisation_read_as_source, direction_inferred, organisation_read_as_party, core_contribution_read, scope_limited. [] when the answer is what was asked. A client that renders its own sentence reads them here; each one's text also closes the sentence that carries this part (see Departure.text). A warning on the same part reports run health and stays separate
        */
       departures?: components["schemas"]["Departure"][];
       /**
@@ -11513,8 +11980,8 @@ export interface components {
      * @description A run-health signal. Note: this name shadows the Python builtin Warning.
      *
      *     Only `observations_series_truncated`, `elected_shape_no_data`, `un_system_unavailable`,
-     *     `whole_total_available`, `currency_unmapped_omitted`, `deflator_missing_omitted` and
-     *     `deflator_projected` set `params`. A `None` `params` is left out of every dump, so other codes' warnings stay
+     *     `whole_total_available`, `bilateral_reading_unavailable`, `currency_unmapped_omitted`,
+     *     `deflator_missing_omitted`, `deflator_projected` and `role_scope_defaulted` set `params`. A `None` `params` is left out of every dump, so other codes' warnings stay
      *     exactly `{code, severity, message}` plus `spec_id` where one applies.
      */
     Warning: {
@@ -11540,7 +12007,7 @@ export interface components {
       spec_id?: string | null;
       /**
        * Params
-       * @description the counts and labels the message states, for a client to compose its own text. observations_series_truncated: {shown, total, order}, the series shown, the confirmed series behind them, and how the shown series were chosen: 'ranked' (the most recent and largest) or 'fixed' (a selection made before values were read, not ranked by value). elected_shape_no_data: {no_data, elected}, the labels of the readings with no data and of the readings answered instead. un_system_unavailable: {places, variables, variable_labels}, the place dcids the UN front door refused, the variables of the UN reads that failed, each empty when none, and each variable's graph name, in variables order, '' where the graph holds none; a warning without params says the UN search itself was unavailable. whole_total_available: {total, total_label, whole_of}, the dcid and label of the total the source publishes for the side the answer lists member by member, and the classes of party it covers, comma-joined (official, private, residual). currency_unmapped_omitted: {count, entities, entity_labels}, how many entities the conversion left out, the dcids of the first ten, sorted, and each one's name, in entities order, '' where the conversion tables hold none, which is usual here, since an entity no currency names, such as a regional aggregate, is rarely in those tables; its dcid stays in entities. deflator_missing_omitted: the same with entity_years, the years each entity's rows were left out, as runs of consecutive years ('1990-2001, 2004'), in entities order; a warning without params says the loaded tables cannot tell which entities. deflator_projected: {count, examples}, how many rows took a projected rate or deflator, and at most ten distinct entity@year keys among them, sorted; count counts rows, not keys, and examples may leave keys out. Omitted for every other code
+       * @description the counts and labels the message states, for a client to compose its own text. observations_series_truncated: {shown, total, order}, the series shown, the confirmed series behind them, and how the shown series were chosen: 'ranked' (the most recent and largest) or 'fixed' (a selection made before values were read, not ranked by value). elected_shape_no_data: {no_data, elected}, the labels of the readings with no data and of the readings answered instead. un_system_unavailable: {places, variables, variable_labels}, the place dcids the UN front door refused, the variables of the UN reads that failed, each empty when none, and each variable's graph name, in variables order, '' where the graph holds none; a warning without params says the UN search itself was unavailable. whole_total_available: {total, total_label, whole_of}, the dcid and label of the total the source publishes for the side the answer lists member by member, and the classes of party it covers, comma-joined (official, private, residual). bilateral_reading_unavailable: {why, slot}, why a DAC2a total ODA answer could not read its bilateral destinations alone, one of the reasons dfo-spec-kit's registries/warning-reasons.json lists for the code (destination_unclassified, option_not_covered, read_window_not_covered, scope_undecided, slot_not_served), and for slot_not_served alone the property of the slot the bilateral composite cannot serve. currency_unmapped_omitted: {count, entities, entity_labels}, how many entities the conversion left out, the dcids of the first ten, sorted, and each one's name, in entities order, '' where the conversion tables hold none, which is usual here, since an entity no currency names, such as a regional aggregate, is rarely in those tables; its dcid stays in entities. deflator_missing_omitted: the same with entity_years, the years each entity's rows were left out, as runs of consecutive years ('1990-2001, 2004'), in entities order; a warning without params says the loaded tables cannot tell which entities. deflator_projected: {count, examples}, how many rows took a projected rate or deflator, and at most ten distinct entity@year keys among them, sorted; count counts rows, not keys, and examples may leave keys out. role_scope_defaulted: {axis}, the open role axis the answer covers in full, origin or destination. Omitted for every other code
        */
       params?: {
         [key: string]: number | string | string[];
@@ -11753,6 +12220,7 @@ export interface components {
       revision: number;
       frame: components["schemas"]["_ExportFrame"] | null;
     };
+    _OptionalText: components["schemas"]["_Text"] | null;
     /** _Ref */
     _Ref: {
       /**
@@ -11797,6 +12265,7 @@ export interface components {
       /** Spec Id */
       spec_id: string;
     };
+    _Text: string;
     /**
      * Capabilities
      * @description The full `GET /api/datasets/capabilities` document.
@@ -12094,6 +12563,21 @@ export interface components {
        * @description the most dcids one POST /api/graph/nodes request names; a longer list is refused 400 request_invalid
        */
       max_node_batch_dcids: number;
+      /**
+       * Max Check Rows
+       * @description the most rows one POST /api/graph/schema/check request carries; a request with more is refused 400 request_invalid. A request within it may be answered for its first rows only, rows_checked counting them
+       */
+      max_check_rows: number;
+      /**
+       * Max Check Constraint Properties
+       * @description the most entries in one POST /api/graph/schema/check row's constraint_properties; a row with more is refused 400 request_invalid
+       */
+      max_check_constraint_properties: number;
+      /**
+       * Max Check Observation Properties
+       * @description the most entries in one POST /api/graph/schema/check row's observation_properties; a row with more is refused 400 request_invalid
+       */
+      max_check_observation_properties: number;
     };
     /**
      * CapabilityDoor
@@ -12102,7 +12586,7 @@ export interface components {
     graph_api__capabilities__CapabilityDoor: {
       /**
        * Name
-       * @description resolve, node, members, roots, sources, or schema
+       * @description resolve, node, members, roots, sources, json_schema, or schema
        */
       name: string;
       /**
@@ -12716,7 +13200,7 @@ export interface operations {
       };
     };
   };
-  search_get_schema: {
+  search_get_json_schema: {
     parameters: {
       query?: never;
       header?: never;
@@ -12852,7 +13336,7 @@ export interface operations {
       };
     };
   };
-  datasets_get_schema: {
+  datasets_get_json_schema: {
     parameters: {
       query?: never;
       header?: never;
@@ -14170,7 +14654,7 @@ export interface operations {
       };
     };
   };
-  graph_get_schema: {
+  graph_get_json_schema: {
     parameters: {
       query?: never;
       header?: never;
@@ -14185,7 +14669,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["GraphSchema"];
+          "application/json": components["schemas"]["GraphJsonSchema"];
         };
       };
       /** @description any non-2xx response uses this envelope */
@@ -14297,6 +14781,135 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["SourceCatalogue"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  graph_get_schema: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SchemaDocument"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  graph_get_schema_terms: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SchemaTerms"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  graph_get_schema_usage: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DatasetUsage"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  graph_post_schema_check: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SchemaCheckRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SchemaCheckResponse"];
+        };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
         };
       };
       /** @description any non-2xx response uses this envelope */
@@ -15464,6 +16077,7 @@ export type ComponentReadResponse = components["schemas"]["ComponentReadResponse
 export type ComposedUnit = components["schemas"]["ComposedUnit"];
 export type ComposedUnitModel = components["schemas"]["ComposedUnitModel"];
 export type Constraint = components["schemas"]["Constraint"];
+export type ConstraintValue = components["schemas"]["ConstraintValue"];
 export type ContinentNode = components["schemas"]["ContinentNode"];
 export type ContinentalUnionNode = components["schemas"]["ContinentalUnionNode"];
 export type ConversionCurrency = components["schemas"]["ConversionCurrency"];
@@ -15486,9 +16100,11 @@ export type DatasetEntry = components["schemas"]["DatasetEntry"];
 export type DatasetNode = components["schemas"]["DatasetNode"];
 export type DatasetResubmitInput = components["schemas"]["DatasetResubmitInput"];
 export type DatasetRoot = components["schemas"]["DatasetRoot"];
+export type DatasetUsage = components["schemas"]["DatasetUsage"];
 export type DatasetVersion = components["schemas"]["DatasetVersion"];
 export type DatasetVersionsPage = components["schemas"]["DatasetVersionsPage"];
 export type DateRange = components["schemas"]["DateRange"];
+export type DeclaredBy = components["schemas"]["DeclaredBy"];
 export type DeclinedAnswer = components["schemas"]["DeclinedAnswer"];
 export type DefinitePart = components["schemas"]["DefinitePart"];
 export type DefinitionMembersRequest = components["schemas"]["DefinitionMembersRequest"];
@@ -15549,8 +16165,8 @@ export type FramePair = components["schemas"]["FramePair"];
 export type FramePending = components["schemas"]["FramePending"];
 export type FrameStructuralViewResponse = components["schemas"]["FrameStructuralViewResponse"];
 export type Freshness = components["schemas"]["Freshness"];
+export type GraphJsonSchema = components["schemas"]["GraphJsonSchema"];
 export type GraphRef = components["schemas"]["GraphRef"];
-export type GraphSchema = components["schemas"]["GraphSchema"];
 export type GroupNode = components["schemas"]["GroupNode"];
 export type GroupbyOptions = components["schemas"]["GroupbyOptions"];
 export type GroupbyOptionsModel = components["schemas"]["GroupbyOptionsModel"];
@@ -15648,6 +16264,7 @@ export type ProjectionCount = components["schemas"]["ProjectionCount"];
 export type ProvenanceEntry = components["schemas"]["ProvenanceEntry"];
 export type ProvenanceNode = components["schemas"]["ProvenanceNode"];
 export type ProvenanceRef = components["schemas"]["ProvenanceRef"];
+export type ProvenanceUsage = components["schemas"]["ProvenanceUsage"];
 export type ProviderBinding = components["schemas"]["ProviderBinding"];
 export type PublishFrameRequest = components["schemas"]["PublishFrameRequest"];
 export type PublishFrameResponse = components["schemas"]["PublishFrameResponse"];
@@ -15694,6 +16311,21 @@ export type RoleAxisFact = components["schemas"]["RoleAxisFact"];
 export type RootEntry = components["schemas"]["RootEntry"];
 export type RootRendering = components["schemas"]["RootRendering"];
 export type Roots = components["schemas"]["Roots"];
+export type SchemaCheckRequest = components["schemas"]["SchemaCheckRequest"];
+export type SchemaCheckResponse = components["schemas"]["SchemaCheckResponse"];
+export type SchemaCheckRow = components["schemas"]["SchemaCheckRow"];
+export type SchemaConstraintValues = components["schemas"]["SchemaConstraintValues"];
+export type SchemaDocument = components["schemas"]["SchemaDocument"];
+export type SchemaFacets = components["schemas"]["SchemaFacets"];
+export type SchemaFinding = components["schemas"]["SchemaFinding"];
+export type SchemaInstances = components["schemas"]["SchemaInstances"];
+export type SchemaLiteral = components["schemas"]["SchemaLiteral"];
+export type SchemaNode = components["schemas"]["SchemaNode"];
+export type SchemaNodeReference = components["schemas"]["SchemaNodeReference"];
+export type SchemaPattern = components["schemas"]["SchemaPattern"];
+export type SchemaTerm = components["schemas"]["SchemaTerm"];
+export type SchemaTerms = components["schemas"]["SchemaTerms"];
+export type SchemaValueCount = components["schemas"]["SchemaValueCount"];
 export type ScopeInput = components["schemas"]["Scope-Input"];
 export type ScopeOutput = components["schemas"]["Scope-Output"];
 export type ScopeAndUnits = components["schemas"]["ScopeAndUnits"];
@@ -15805,11 +16437,13 @@ export type YearRangeModel = components["schemas"]["YearRangeModel"];
 export type FieldContentVersion = components["schemas"]["_ContentVersion"];
 export type FieldExportFrame = components["schemas"]["_ExportFrame"];
 export type FieldExportSlot = components["schemas"]["_ExportSlot"];
+export type FieldOptionalText = components["schemas"]["_OptionalText"];
 export type FieldRef = components["schemas"]["_Ref"];
 export type FieldRefArtifact = components["schemas"]["_RefArtifact"];
 export type FieldRefMember = components["schemas"]["_RefMember"];
 export type FieldRefRendering = components["schemas"]["_RefRendering"];
 export type FieldRefSpec = components["schemas"]["_RefSpec"];
+export type FieldText = components["schemas"]["_Text"];
 export type DatasetsApiCapabilitiesCapabilities =
   components["schemas"]["datasets_api__capabilities__Capabilities"];
 export type DatasetsApiCapabilitiesCapabilityCaps =
@@ -15865,6 +16499,7 @@ export type DepartureCode =
   | "organisation_read_as_source"
   | "direction_inferred"
   | "organisation_read_as_party"
+  | "core_contribution_read"
   | "scope_limited";
 
 /** Why a part has no data. The values of `NoData.reason` in the served document. */

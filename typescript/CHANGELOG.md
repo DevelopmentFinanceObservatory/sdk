@@ -4,6 +4,12 @@ All notable changes to this package are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `data.provenance` is a `Provenance`, exported from the root, a frozen record of where a dataset came from: its sentence, citation, `fetchedAt`, question, `pinned`, `heldUntil`, warnings and members, each with its spec id, version, digest, parts, sentence and citation, and `ref`, the `DatasetRef` the members name. `toObject()` gives it as JSON values, typed `ProvenanceJson` in `@developmentfinance/client/types`, in the format `provenance.schema.json` in the client contract gives, and `JSON.stringify(provenance)` writes the same object. `Provenance.fromObject(JSON.parse(text))` reads a record either client wrote. A record that breaks the format, or whose members differ from the members its ref names, throws `FormatError` (`format_invalid`) at a JSON Pointer, and a ref that breaks its own format throws as `DatasetRef.fromJSON` does, under `/ref`. `data.toBytes()` writes the same facts from the same record. A saved warning's `spec_id` now comes from the record, which holds null because the client does not yet keep a manifest warning's `spec_id`, so the file is unchanged.
+
 ## [0.2.0] - 2026-11-14
 
 ### Added

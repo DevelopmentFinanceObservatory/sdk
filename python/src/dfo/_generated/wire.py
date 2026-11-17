@@ -221,6 +221,9 @@ class ComponentBody(TypedDict):
     composition_id: NotRequired[str | None]
 
 
+type ConstraintValue = str | int | float | bool | None
+
+
 class ConvertedUnitModel(TypedDict):
     currency: str
     prices: Literal["current", "constant"]
@@ -254,6 +257,9 @@ class DataBuilds(TypedDict):
 class DateRange(TypedDict):
     start: NotRequired[str | None]
     end: NotRequired[str | None]
+
+
+type DeclaredBy = Literal["dfo", "base", "un_system"]
 
 
 class DefinitionMembersRequest(TypedDict):
@@ -294,6 +300,7 @@ class Departure(TypedDict):
         "organisation_read_as_source",
         "direction_inferred",
         "organisation_read_as_party",
+        "core_contribution_read",
         "scope_limited",
     ]
     binding_ref: NotRequired[str | None]
@@ -562,14 +569,14 @@ class Freshness(TypedDict):
     refresh_type: str | None
 
 
+class GraphJsonSchema(TypedDict):
+    schemas: dict[str, dict[str, Any]]
+    capabilities: str
+
+
 class GraphRef(TypedDict):
     ref: str
     label: str
-
-
-class GraphSchema(TypedDict):
-    schemas: dict[str, dict[str, Any]]
-    capabilities: str
 
 
 type ByItem = str
@@ -862,6 +869,7 @@ class OptionAvailability(TypedDict):
             "stated_choice_not_applied",
             "option_not_covered",
             "contributions_counted",
+            "multilateral_destination",
         ]
         | None
     ]
@@ -1183,6 +1191,90 @@ class Roots(TypedDict):
     built_from: dict[
         Literal["code_index", "origin_catalogue", "coverage_index", "membership"], str
     ]
+
+
+class SchemaFacets(TypedDict):
+    units: list[str]
+    scaling_factors: list[str]
+    measurement_methods: list[str]
+    observation_periods: list[str]
+    currencies: list[str]
+
+
+class SchemaFinding(TypedDict):
+    row: int
+    field: Literal[
+        "dcid",
+        "population_type",
+        "measured_property",
+        "stat_type",
+        "measurement_qualifier",
+        "measurement_denominator",
+        "constraint_properties",
+        "observation_properties",
+    ]
+    property: str | None
+    subject: Literal["property", "value"]
+    value: ConstraintValue | list[str]
+    served: ConstraintValue | list[str]
+    code: Literal[
+        "node_not_held",
+        "not_a_node",
+        "node_provisional",
+        "node_untyped",
+        "origin_not_served",
+        "value_missing",
+        "not_a_property",
+        "not_a_class",
+        "value_outside_range",
+        "range_not_judged",
+        "property_outside_domain",
+        "definition_differs",
+    ]
+    severity: Literal["error", "warning"]
+
+
+class SchemaInstances(TypedDict):
+    refs: list[str]
+    complete: bool
+
+
+class SchemaLiteral(TypedDict):
+    value: str
+
+
+class SchemaNodeReference(TypedDict):
+    ref: str
+
+
+class SchemaPattern(TypedDict):
+    population_type: str | None
+    measured_property: str
+    stat_type: str | None
+    measurement_qualifier: str | None
+    measurement_denominator: str | None
+    constraint_properties: list[str]
+    observation_properties: list[str]
+    stat_var_count: int
+    examples: list[str]
+
+
+class SchemaTerm(TypedDict):
+    ref: str
+    label: str | None
+    types: list[Literal["Class", "Property"]]
+    provenances: list[str]
+    declared_by: DeclaredBy | None
+
+
+class SchemaTerms(TypedDict):
+    generation: str | None
+    terms: list[SchemaTerm]
+
+
+class SchemaValueCount(TypedDict):
+    value: str
+    stat_var_count: int
 
 
 class ScopeOutput(TypedDict):
@@ -1593,6 +1685,9 @@ class FieldRefSpec(TypedDict):
     spec_id: str
 
 
+type FieldText = str
+
+
 class DatasetsApiCapabilitiesCapabilityCaps(TypedDict):
     definition_candidate_cap: int
     definition_subject_ceiling: int
@@ -1617,6 +1712,9 @@ class GraphApiCapabilitiesCapabilityCaps(TypedDict):
     node_timeout_seconds: int
     max_dcid_chars: int
     max_node_batch_dcids: int
+    max_check_rows: int
+    max_check_constraint_properties: int
+    max_check_observation_properties: int
 
 
 class GraphApiCapabilitiesCapabilityDoor(TypedDict):
@@ -2362,6 +2460,35 @@ class ResubmitParsedEntry(TypedDict):
     part: ParsedPart
 
 
+class SchemaCheckResponse(TypedDict):
+    generation: str | None
+    rows_checked: int
+    findings: list[SchemaFinding]
+
+
+class SchemaConstraintValues(TypedDict):
+    property: str
+    values: list[SchemaValueCount]
+
+
+class SchemaNode(TypedDict):
+    ref: str
+    label: str | None
+    description: str | None
+    types: list[str]
+    alternate_name: list[str]
+    sub_class_of: list[str]
+    sub_property_of: list[str]
+    specialization_of: list[str]
+    domain_includes: list[str]
+    range_includes: list[str]
+    classification_code: list[str]
+    other_properties: dict[str, list[SchemaNodeReference | SchemaLiteral]]
+    provenances: list[str]
+    declared_by: DeclaredBy | None
+    instances: SchemaInstances | None
+
+
 class ScopeChoice(TypedDict):
     id: str
     axis: Literal["sector", "region", "measure_basis", "provider"]
@@ -2672,6 +2799,9 @@ class WriteReplyResponse(TypedDict):
     changed: list[ChangedFieldModel]
     fact_summary: FactSummaryModel
     resolved_payload: dict[str, Any]
+
+
+type FieldOptionalText = FieldText | None
 
 
 class FieldRefArtifact(TypedDict):
@@ -3130,6 +3260,16 @@ class ProvenanceNode(TypedDict):
     provenance: SourceBlock
 
 
+class ProvenanceUsage(TypedDict):
+    ref: str
+    label: str | None
+    description: str | None
+    stat_var_count: int
+    patterns: list[SchemaPattern]
+    constraint_values: list[SchemaConstraintValues]
+    facets: SchemaFacets
+
+
 class Recipe(TypedDict):
     schema_version: Literal[1]
     normal_form_hash: str
@@ -3184,6 +3324,22 @@ class ResubmitIdentityEntry(TypedDict):
     operations: NotRequired[list[Operation]]
     assumptions: NotRequired[list[Assumption] | None]
     scope_entries: NotRequired[list[Entry] | None]
+
+
+class SchemaCheckRow(TypedDict):
+    dcid: NotRequired[FieldOptionalText]
+    population_type: NotRequired[FieldOptionalText]
+    measured_property: NotRequired[FieldOptionalText]
+    stat_type: NotRequired[FieldOptionalText]
+    measurement_qualifier: NotRequired[FieldOptionalText]
+    measurement_denominator: NotRequired[FieldOptionalText]
+    constraint_properties: NotRequired[dict[FieldText, ConstraintValue]]
+    observation_properties: NotRequired[list[FieldText]]
+
+
+class SchemaDocument(TypedDict):
+    generation: str | None
+    nodes: list[SchemaNode]
 
 
 class ScopeInput(TypedDict):
@@ -3351,6 +3507,10 @@ class DatasetResubmitInput(TypedDict):
     raw_query: NotRequired[str | None]
 
 
+class DatasetUsage(TypedDict):
+    provenances: list[ProvenanceUsage]
+
+
 class DerivedManifest(TypedDict):
     spec_id: str
     content_version: str
@@ -3497,6 +3657,10 @@ class RefRoot(TypedDict):
 class RelatedMeasure(TypedDict):
     stat_var: GraphRef
     definition: SpecDefinition
+
+
+class SchemaCheckRequest(TypedDict):
+    rows: list[SchemaCheckRow]
 
 
 class SpecAlternativeMeasure(TypedDict):
@@ -3759,6 +3923,7 @@ type DepartureCode = Literal[
     "organisation_read_as_source",
     "direction_inferred",
     "organisation_read_as_party",
+    "core_contribution_read",
     "scope_limited",
 ]
 """How a reading differs from what the question asked.

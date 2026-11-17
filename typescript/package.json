@@ -71,6 +71,7 @@
   "devDependencies": {
     "@eslint/js": "^10",
     "@types/node": "^22.18",
+    "ajv": "^8.20",
     "apache-arrow": "21.2.0",
     "eslint": "^10",
     "globals": "^17.13.0",
