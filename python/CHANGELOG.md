@@ -21,6 +21,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `answer.to_json()` keeps each spec's `resolved.stat_vars.source_codes`, which the exact-code check reads.
 - An answer counts and builds only the parts without a gap: `answer.specs` and `answer.fetch(partial=True)` leave out a definite part that is a gap, and the printed answer counts it as missing.
 
+### Fixed
+
+- A redirect whose `Location` does not resolve to an http or https URL with a host, such as a `javascript:` or `ftp:` URL, raises `ContractError` (`unexpected_response`). Under httpx2 2.16.2 such a redirect reached the caller.
+
 ## [0.2.0] - 2026-11-14
 
 ### Added

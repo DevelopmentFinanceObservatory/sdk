@@ -1468,8 +1468,9 @@ def test_a_download_stops_at_its_limit() -> None:
         httpx2.Response(302, headers={"location": "https://[::1/x"}),
         httpx2.Response(302, headers={"location": "https://[zz::1]/x"}),
         httpx2.Response(302, headers={"location": "https://api.example.org:abc/x"}),
+        httpx2.Response(302, headers={"location": "ftp://api.example.org/x"}),
     ],
-    ids=["bad-gzip", "location", "unclosed-ipv6", "bad-ipv6", "bad-port"],
+    ids=["bad-gzip", "location", "unclosed-ipv6", "bad-ipv6", "bad-port", "ftp"],
 )
 def test_a_response_the_client_cannot_read_is_unexpected(
     response: httpx2.Response,
