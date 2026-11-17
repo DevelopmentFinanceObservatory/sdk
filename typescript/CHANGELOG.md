@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `data.heldUntil`, each member's `heldUntil` and `VersionNotPinnedError.heldUntil` hold the date the server names, at midnight UTC, as Python's `held_until` does and as a saved file keeps it. 0.2.0 kept the time of day, so a fetched dataset and its saved copy disagreed.
 - `client.lookup.errorCode` replaces `client.lookup.code` for the registry entry of one of DFO's own error or warning codes, so the name no longer reads as a lookup of a publisher's codes. `client.lookup.code` stays as a deprecated alias that returns the same `Code`, carries a `@deprecated` tag, and reports a `DfoDeprecationWarning` (`name_deprecated`) to `onWarning` once per process, naming `lookup.errorCode` and 0.4.0, the release that removes it. Calls to `errorCode` that pass an unknown option name `client.lookup.errorCode` in the error.
 - `answer.toJSON()` keeps each spec's `resolved.stat_vars.source_codes`, which the exact-code check reads.
 - An answer counts and builds only the parts without a gap: `answer.specs` and `answer.fetch({ partial: true })` leave out a definite part that is a gap, and the printed answer counts it as missing.

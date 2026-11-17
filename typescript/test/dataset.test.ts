@@ -637,13 +637,13 @@ describe("retention", () => {
       { pinned: false, held_until: "2026-11-02T08:30:00Z" },
       { pinned: true },
     );
-    assert.equal(dataset.heldUntil?.toISOString(), "2026-11-02T08:30:00.000Z");
+    assert.equal(dataset.heldUntil?.toISOString(), "2026-11-02T00:00:00.000Z");
     assert.equal(dataset.pinned, false);
     assert.deepEqual(
       dataset.members.map(({ pinned, heldUntil }) => [pinned, heldUntil?.toISOString() ?? null]),
       [
-        [false, "2026-11-18T10:00:00.000Z"],
-        [false, "2026-11-02T08:30:00.000Z"],
+        [false, "2026-11-18T00:00:00.000Z"],
+        [false, "2026-11-02T00:00:00.000Z"],
         [true, null],
       ],
     );
@@ -811,7 +811,7 @@ describe("a derived dataset", () => {
     assert.ok(dataset.ref.equals(new DatasetRef([await derivedMember()])));
     assert.deepEqual(
       [dataset.heldUntil?.toISOString(), dataset.pinned, dataset.layoutVersion],
-      ["2026-11-27T15:10:16.473Z", false, "frame"],
+      ["2026-11-27T00:00:00.000Z", false, "frame"],
     );
   });
 

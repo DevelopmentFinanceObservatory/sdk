@@ -297,11 +297,15 @@ function mergeCitations(citations: readonly Citation[]): Citation {
   return { text: [...texts].join("; "), sources: [...sources.values()] };
 }
 
-/** A retention's `held_until` as a date, or null when it is not one. */
+/** A retention's `held_until` as the UTC midnight of the date it names, or null when it is not
+ *  an ISO 8601 date or date-time string. The date is the one the text writes, in its own
+ *  offset, as the Python client reads it. */
 export function heldUntilOf(value: unknown): Date | null {
   if (typeof value !== "string") return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
+  const found = /^(\d{4})-(\d{2})-(\d{2})(?:$|T)/.exec(value);
+  if (found === null || Number.isNaN(new Date(value).getTime())) return null;
+  const [, year, month, date] = found.map(Number) as [number, number, number, number];
+  return new Date(Date.UTC(year, month - 1, date));
 }
 
 /** A version's retention as its manifest serves it: pinned with no day, or not pinned and held

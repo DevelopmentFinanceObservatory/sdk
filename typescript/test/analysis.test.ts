@@ -528,7 +528,7 @@ describe("fileUrl", () => {
     });
   }
 
-  test("refuses an unpinned version with its held-until time", async () => {
+  test("refuses an unpinned version with its held-until date", async () => {
     const { dataset, manifest } = await storedVersion(
       { pinned: false, held_until: "2026-12-17T09:30:00Z" },
       { format: "parquet", bundle: false },
@@ -539,7 +539,7 @@ describe("fileUrl", () => {
       assert.ok(error instanceof InvalidRequestError);
       assert.equal(error.name, "VersionNotPinnedError");
       assert.equal(error.code, "version_not_pinned");
-      assert.deepEqual(error.heldUntil, new Date("2026-12-17T09:30:00Z"));
+      assert.deepEqual(error.heldUntil, new Date("2026-12-17T00:00:00Z"));
       assert.match(error.message, /client\.pin\(data\)/);
       return true;
     });

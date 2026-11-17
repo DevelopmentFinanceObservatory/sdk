@@ -19,7 +19,7 @@
  * an unpinned version for 30 days and a committed link to it breaks after that.
  */
 
-import { Dataset, dayText, pinnedDataset } from "./dataset.ts";
+import { Dataset, dayText, heldUntilOf, pinnedDataset } from "./dataset.ts";
 import type { DerivedMember, Member } from "./dataset.ts";
 import { invalid } from "./fetch.ts";
 import { storedManifest } from "./resolve.ts";
@@ -161,11 +161,4 @@ function readingOf(member: unknown): Member | RefMember {
     );
   }
   return reading;
-}
-
-/** A retention's `held_until` as a date, or null when it is not one. */
-function heldUntilOf(value: unknown): Date | null {
-  if (typeof value !== "string") return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
 }

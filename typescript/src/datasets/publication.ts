@@ -13,7 +13,7 @@
  * getter, which `toString`, `util.inspect`, `JSON.stringify` and a spread leave out.
  */
 
-import { dayText } from "./dataset.ts";
+import { dayText, heldUntilOf } from "./dataset.ts";
 import { clientError } from "../core/errors.ts";
 import type { ContractError } from "../core/errors.ts";
 import { isRecord } from "../core/json.ts";
@@ -273,17 +273,6 @@ const day = (date: Date): string =>
 
 const clipped = (text: string): string =>
   text.length <= TITLE_SHOWN_MAX ? text : `${text.slice(0, TITLE_SHOWN_MAX - 1).trimEnd()}…`;
-
-/** A retention's `held_until` as the UTC midnight of the date it names, or null when it is not
- *  an ISO 8601 date or date-time string. The date is the one the text writes, in its own
- *  offset. */
-function heldUntilOf(value: unknown): Date | null {
-  if (typeof value !== "string") return null;
-  const found = /^(\d{4})-(\d{2})-(\d{2})(?:$|T)/.exec(value);
-  if (found === null || Number.isNaN(new Date(value).getTime())) return null;
-  const [, year, month, date] = found.map(Number) as [number, number, number, number];
-  return new Date(Date.UTC(year, month - 1, date));
-}
 
 /**
  * The card a create reply names.
