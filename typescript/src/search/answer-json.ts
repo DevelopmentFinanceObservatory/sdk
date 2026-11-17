@@ -12,9 +12,11 @@
  * diagnostics beyond `timed_out` and `warnings`. A member the cut keeps holds the value the
  * response held, malformed or not, so the body reads back exactly as the response read.
  */
+import { InvalidRequestError } from "../core/errors.ts";
 import { FormatError } from "../core/ref.ts";
 import { isRecord, parseJson } from "../core/json.ts";
 import { traceIdFrom } from "../core/trace.ts";
+import { checkedCodes } from "./structured.ts";
 
 /** The members a cut keeps under one object: `true` keeps the member's value whole, and a nested
  *  table keeps only its members, of the object the member holds or of each object item of the
@@ -65,15 +67,23 @@ export const KEPT: Kept = {
 };
 
 export const ANSWER_FORMAT_VERSION = 1;
+/** The format of an answer to a search by codes, which holds `codes`. */
+export const CODES_FORMAT_VERSION = 2;
 
-/** An answer as JSON, in the answer format. */
-export type AnswerJson = {
-  format_version: 1;
-  question: string | null;
-  answer: Readonly<Record<string, unknown>>;
-  /** The series code each part was asked by, for an answer to a search by codes. */
-  codes?: string[];
-};
+/** An answer as JSON, in the answer format: format 1 for an answer to a question in words, and
+ *  format 2, with the series code each part was asked by, for an answer to a search by codes. */
+export type AnswerJson =
+  | {
+      format_version: 1;
+      question: string | null;
+      answer: Readonly<Record<string, unknown>>;
+    }
+  | {
+      format_version: 2;
+      question: string | null;
+      answer: Readonly<Record<string, unknown>>;
+      codes: string[];
+    };
 
 /** The value with only the members `kept` names: an object's, or each object item's of an
  *  array. Any other value stays as it is. */
@@ -97,13 +107,10 @@ export function answerJson(
   traceId: string | null,
   codes: readonly string[] | null,
 ): AnswerJson {
-  const answer = cut(body, KEPT) as Record<string, unknown>;
-  return {
-    format_version: ANSWER_FORMAT_VERSION,
-    question,
-    answer: traceId === null ? answer : { ...answer, trace_id: traceId },
-    ...(codes === null ? {} : { codes: [...codes] }),
-  };
+  const cutBody = cut(body, KEPT) as Record<string, unknown>;
+  const answer = traceId === null ? cutBody : { ...cutBody, trace_id: traceId };
+  if (codes === null) return { format_version: ANSWER_FORMAT_VERSION, question, answer };
+  return { format_version: CODES_FORMAT_VERSION, question, answer, codes: [...codes] };
 }
 
 const invalid = (pointer: string, detail: string): FormatError =>
@@ -115,8 +122,9 @@ const invalid = (pointer: string, detail: string): FormatError =>
  * body is checked as a Search response is, by the caller.
  *
  * @throws {FormatError} The value is not JSON, not an object, has a member the format does not
- *   name or lacks one, its `format_version` is not 1, its `question` is not a string or null, its
- *   `answer` is not an object, or its `codes` is not an array of non-blank strings with one entry
+ *   name or lacks one, its `format_version` is not 1 or 2, it holds `codes` at format 1 or lacks
+ *   them at format 2, its `question` is not a string or null, its `answer` is not an object, or
+ *   its `codes` break the rule `client.search({ codes })` holds them to or do not hold one code
  *   per part of the answer (`format_invalid`).
  */
 export function readAnswerJson(value: unknown): {
@@ -143,30 +151,36 @@ export function readAnswerJson(value: unknown): {
       throw invalid(`/${member}`, "not a member of the format");
     }
   }
-  if (parsed["format_version"] !== ANSWER_FORMAT_VERSION) {
-    throw invalid("/format_version", `not ${ANSWER_FORMAT_VERSION}`);
+  const version = parsed["format_version"];
+  if (version !== ANSWER_FORMAT_VERSION && version !== CODES_FORMAT_VERSION) {
+    throw invalid("/format_version", `not ${ANSWER_FORMAT_VERSION} or ${CODES_FORMAT_VERSION}`);
+  }
+  const hasCodes = Object.hasOwn(parsed, CODES);
+  if (version === CODES_FORMAT_VERSION && !hasCodes) throw invalid(`/${CODES}`, "missing");
+  if (version === ANSWER_FORMAT_VERSION && hasCodes) {
+    throw invalid(`/${CODES}`, `not in format ${ANSWER_FORMAT_VERSION}`);
   }
   const { question, answer } = parsed;
   if (typeof question !== "string" && question !== null) {
     throw invalid("/question", "not a string or null");
   }
   if (!isRecord(answer)) throw invalid("/answer", "not an object");
-  const codes = Object.hasOwn(parsed, CODES) ? readCodes(parsed[CODES], answer) : null;
+  const codes = hasCodes ? readCodes(parsed[CODES], answer) : null;
   return { question, body: answer, traceId: traceIdFrom(answer["trace_id"]), codes };
 }
 
 const CODES = "codes";
 
-/** The `codes` member: one non-blank string per part of `body`. */
+/** The `codes` member, read as `client.search({ codes })` reads codes, one per part of `body`. */
 function readCodes(value: unknown, body: Readonly<Record<string, unknown>>): readonly string[] {
   const pointer = `/${CODES}`;
-  if (!Array.isArray(value)) throw invalid(pointer, "not an array");
-  const codes = value.map((code: unknown, index) => {
-    if (typeof code !== "string" || code.trim() === "") {
-      throw invalid(`${pointer}/${index}`, "not a non-blank string");
-    }
-    return code;
-  });
+  let codes: string[];
+  try {
+    codes = checkedCodes(value);
+  } catch (error) {
+    if (!(error instanceof InvalidRequestError)) throw error;
+    throw Object.assign(invalid(pointer, error.detail), { cause: error });
+  }
   const parts = body["parts"];
   const count = Array.isArray(parts) ? parts.length : 0;
   if (count !== codes.length) {

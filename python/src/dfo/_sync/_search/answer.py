@@ -166,10 +166,10 @@ class Answer:
 
     @override
     def __repr__(self) -> str:
-        return _display.answer_text(self)
+        return _display.answer_text(self, codes=self._codes)
 
     def _repr_html_(self) -> str:
-        return _display.answer_html(self)
+        return _display.answer_html(self, codes=self._codes)
 
     def __getattr__(self, name: str) -> NoReturn:
         if name in _DATA_METHODS:
@@ -185,9 +185,10 @@ class Answer:
 
         The JSON holds the question and Search's response cut to the members the
         client reads, so a web page can hold an answer and post it back with the
-        reader's choice. An answer to a search by codes also holds the codes, one
-        per part, so the answer read back checks each reading against the code
-        asked for, as the live answer does.
+        reader's choice. An answer to a search by codes is format 2 and also
+        holds the codes, one per part, so the answer read back checks each
+        reading against the code asked for, as the live answer does, and a
+        reader of format 1 alone refuses it.
         """
         return json.dumps(
             answer_json(self.question, self.raw, self.trace_id, self._codes),
@@ -214,7 +215,8 @@ class Answer:
 
         Raises:
             FormatError: The text is not JSON in the answer format, or its
-                `codes` is not one non-blank string per part (`format_invalid`).
+                `codes` are not codes `search(codes=...)` takes, one per part
+                (`format_invalid`).
             ContractError: The answer lacks a member the client acts on.
             InvalidRequestError: `client` is None and no default client is
                 set (`invalid_argument`).
@@ -402,7 +404,7 @@ class Answer:
     def _incomplete_error(self) -> IncompleteAnswerError:
         error = client_error(
             ANSWER_INCOMPLETE,
-            _display.incomplete_message(self),
+            _display.incomplete_message(self, codes=self._codes),
             trace_id=self.trace_id,
         )
         error.answer = self

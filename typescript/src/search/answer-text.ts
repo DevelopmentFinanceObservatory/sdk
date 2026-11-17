@@ -4,10 +4,10 @@
  */
 import type { Answer, Gap } from "./answer.ts";
 import { isAnswered, mentionsOf, optionLine, waitingGaps } from "./choices.ts";
-import { requestedCodes } from "./requested-codes.ts";
 import { askedCode } from "./structured.ts";
 import { partFacts } from "../core/parse.ts";
 import { definiteParts, partSentence, partText } from "../core/parts.ts";
+import type { Part } from "../core/parts.ts";
 import { inline } from "../core/text.ts";
 import type { Notice } from "../wire.ts";
 
@@ -61,8 +61,9 @@ export function readingHints(answer: Answer, { departures }: { departures: boole
 
 /** The answer as a reader sees it: the sentence, its hints and the call that fetches it, what
  *  is missing, or why Search gave no readings and the call that lists what it holds. Each line
- *  passes through `inline`, so the server's text keeps to its line. */
-export function answerText(answer: Answer): string {
+ *  passes through `inline`, so the server's text keeps to its line. `codes` are the series codes
+ *  its parts were asked by, null for a question in words. */
+export function answerText(answer: Answer, codes: readonly string[] | null): string {
   if (answer.kind !== "resolution") return declinedText(answer.kind, answer.reason);
   if (answer.complete) {
     const hints = readingHints(answer, { departures: false });
@@ -74,7 +75,7 @@ export function answerText(answer: Answer): string {
       .map(inline)
       .join("\n");
   }
-  return gapText(answer, "Answered");
+  return gapText(answer, "Answered", codes);
 }
 
 /** Why Search gave a declined or catalogue answer, which holds no readings, and the call that
@@ -90,9 +91,10 @@ export function declinedText(kind: string, reason: string | null): string {
   return inline(`Search answered with kind ${JSON.stringify(kind)}, which holds no readings.`);
 }
 
-/** The `IncompleteAnswerError` message: every gap and the call that settles it. */
-export function incompleteMessage(answer: Answer): string {
-  return gapText(answer, "Search answered");
+/** The `IncompleteAnswerError` message: every gap and the call that settles it. `codes` are as
+ *  `answerText` takes them. */
+export function incompleteMessage(answer: Answer, codes: readonly string[] | null): string {
+  return gapText(answer, "Search answered", codes);
 }
 
 const quote = (value: string | null | undefined): string => JSON.stringify(value ?? "");
@@ -101,9 +103,8 @@ const plural = (count: number, noun: string): string => `${count} ${noun}${count
 
 /** What the parts ask for: series codes for an answer to a search by codes, or when each part's
  *  restatement names one, else parts of the question. */
-function asked(answer: Answer): string {
-  const { parts } = answer;
-  if (requestedCodes(answer) !== null) return plural(parts.length, "series code");
+function asked(parts: readonly Part[], codes: readonly string[] | null): string {
+  if (codes !== null) return plural(parts.length, "series code");
   if (parts.length > 0 && parts.every((part) => askedCode(part) !== null)) {
     return plural(parts.length, "series code");
   }
@@ -112,10 +113,10 @@ function asked(answer: Answer): string {
 
 /** An incomplete answer's text: how many parts it answered, each part with its gap and
  *  options, and the calls that settle the gaps. Each line passes through `inline`. */
-function gapText(answer: Answer, lead: string): string {
+function gapText(answer: Answer, lead: string, codes: readonly string[] | null): string {
   const gaps = new Map(answer.gaps.map((gap) => [gap.partIndex, gap]));
   const count = answer.parts.filter((_, index) => isAnswered(answer, index)).length;
-  const lines = [`${lead} ${count} of ${asked(answer)}.`];
+  const lines = [`${lead} ${count} of ${asked(answer.parts, codes)}.`];
   for (const [index, part] of answer.parts.entries()) {
     const name = quote(partText(part));
     const gap = gaps.get(index);

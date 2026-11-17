@@ -36,7 +36,6 @@ import { definiteParts, isKnownPart, partSentence, partText } from "../core/part
 import type { DefinitePart, KnownPart, NoDataPart, Part } from "../core/parts.ts";
 import { checkOptions, declareOptions } from "../core/options.ts";
 import { withEntityDcids } from "./lookup-results.ts";
-import { requestedCodes, setRequestedCodes } from "./requested-codes.ts";
 import { askedCode, checkReply, codeGap } from "./structured.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
@@ -262,6 +261,10 @@ export class Answer {
    *  body it held. */
   readonly raw: Readonly<Record<string, unknown>>;
   readonly #context: AnswerContext;
+  /** The series code each part was asked by, in part order, for an answer to a search by codes;
+   *  null for a question in words. The gaps check each reading against these, and `toJSON`,
+   *  `choose` and the text carry them on. */
+  readonly #codes: readonly string[] | null;
   #facts: readonly PartFacts[] | undefined;
   /** The members `fetch` builds, one per distinct spec. */
   readonly #members: readonly MemberRequest[];
@@ -281,8 +284,7 @@ export class Answer {
     this.raw = init.raw;
     this.#context = init.context;
     const codes = init.codes ?? null;
-    // The gaps check each reading against these, and `toJSON` and `choose` carry them on.
-    if (codes !== null) setRequestedCodes(this, codes);
+    this.#codes = codes;
     this.gaps = this.parts.flatMap((part, index) => {
       const gap =
         gapFor(index, part) ?? codeGap(index, part, codes ? codes[index]! : askedCode(part));
@@ -329,7 +331,6 @@ export class Answer {
    */
   async choose(option: ChoiceKey, options: ChooseOptions = {}): Promise<Answer> {
     const { part, ...request } = checkOptions(CHOOSE_OPTIONS, options);
-    const codes = requestedCodes(this);
     const input = describing(this.traceId, () => {
       const gap = part === undefined ? onlyChoice(this) : gapNamed(this, part);
       return choiceInput(this, gap, pick(gap, option, part));
@@ -337,7 +338,7 @@ export class Answer {
     return resolveAnswer(this.#context, input, {
       ...request,
       question: this.question,
-      ...(codes === null ? {} : { codes }),
+      ...(this.#codes === null ? {} : { codes: this.#codes }),
     });
   }
 
@@ -370,7 +371,7 @@ export class Answer {
     const members = this.#members;
     if (this.gaps.length > 0 && (partial !== true || members.length === 0)) {
       throw clientError("answer_incomplete", {
-        detail: incompleteMessage(this),
+        detail: incompleteMessage(this, this.#codes),
         traceId: this.traceId,
         answer: this,
         gaps: this.gaps,
@@ -398,7 +399,7 @@ export class Answer {
   /** The answer as a reader sees it: the sentence and the call that fetches it, or what is
    *  missing and the calls that settle it. */
   toString(): string {
-    return answerText(this);
+    return answerText(this, this.#codes);
   }
 
   /** Node's `console.log` and `util.inspect` show the answer as `String(answer)` does. */
@@ -414,7 +415,7 @@ export class Answer {
    * `JSON.stringify(answer)` and `Response.json({ answer })` write it.
    */
   toJSON(): AnswerJson {
-    return answerJson(this.question, this.raw, this.traceId, requestedCodes(this));
+    return answerJson(this.question, this.raw, this.traceId, this.#codes);
   }
 
   /**

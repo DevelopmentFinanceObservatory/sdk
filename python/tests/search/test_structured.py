@@ -229,7 +229,7 @@ def test_a_code_gap_names_the_asked_code_and_the_codes_the_part_holds(by: str) -
     assert '"DT.X"' in message
     assert "series code" in message
     assert "dfo.fetch(answer.parts[0].spec)" in message
-    lines = incomplete_message(answer).splitlines()
+    lines = incomplete_message(answer, codes=codes).splitlines()
     assert lines[0] == "Search answered 1 of 3 series codes."
     assert lines[1].startswith('  missing  "DT.TDS.MLAT.CD": ')
 

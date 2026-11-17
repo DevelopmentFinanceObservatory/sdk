@@ -339,10 +339,11 @@ describe("a search by codes", () => {
       assert.match(message, /"DT\.TDS\.MLAT\.CD" \(not exact\)/);
       assert.match(message, /"DT\.X"/);
       assert.ok(message.includes("client.fetch((answer.parts[0] as DefinitePart).spec)"));
-      const lines = incompleteMessage(answer).split("\n");
+      const codes = by === "restatement" ? null : CODES;
+      const lines = incompleteMessage(answer, codes).split("\n");
       assert.equal(lines[0], "Search answered 1 of 3 series codes.");
       assert.ok(lines[1]!.startsWith('  missing  "DT.TDS.MLAT.CD": '));
-      assert.equal(answerText(answer).split("\n")[0], "Answered 1 of 3 series codes.");
+      assert.equal(answerText(answer, codes).split("\n")[0], "Answered 1 of 3 series codes.");
     });
   }
 
@@ -352,6 +353,7 @@ describe("a search by codes", () => {
       edit(body);
       const answer = await search(serving(body).context, { codes: CODES });
       const stored = answer.toJSON();
+      assert.equal(stored.format_version, 2);
       assert.deepEqual(stored.codes, CODES);
       const client = new Client({ baseUrl: "https://api.example.org/api", apiKey: false });
       const revived = Answer.fromJSON(JSON.parse(JSON.stringify(stored)), client);
@@ -387,7 +389,8 @@ describe("a search by codes", () => {
       );
       assert.equal(chosen.complete, false);
       assert.equal(chosen.specs.length, 1);
-      assert.deepEqual(chosen.toJSON().codes, CODES);
+      const written = chosen.toJSON();
+      assert.deepEqual(written.format_version === 2 ? written.codes : null, CODES);
     });
   }
 

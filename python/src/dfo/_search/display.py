@@ -67,8 +67,6 @@ class AnswerView(Protocol):
     def complete(self) -> bool: ...
     @property
     def warnings(self) -> tuple[Notice, ...]: ...
-    @property
-    def _codes(self) -> tuple[str, ...] | None: ...
 
 
 def answered(parts: Sequence[Part], gaps: Iterable[Gap]) -> frozenset[int]:
@@ -104,8 +102,9 @@ def hints(answer: AnswerView, /, *, departures: bool) -> list[tuple[str, str]]:
     return [(code, line) for line, code in found.items()]
 
 
-def answer_text(answer: AnswerView, /) -> str:
-    """The answer as a reader sees it: the sentence, or what is missing."""
+def answer_text(answer: AnswerView, /, *, codes: Sequence[str] | None) -> str:
+    """The answer as a reader sees it: the sentence, or what is missing. `codes`
+    are the series codes its parts were asked by, None for a question in words."""
     if answer.kind != "resolution":
         return declined_text(answer.kind, answer.reason)
     if answer.complete:
@@ -113,12 +112,12 @@ def answer_text(answer: AnswerView, /) -> str:
         return _text_lines(
             [answer.sentence or "", *(f"  {line}" for line in lines), _FETCH_LINE]
         )
-    return _incomplete(answer, lead="Answered")
+    return _incomplete(answer, lead="Answered", codes=codes)
 
 
-def answer_html(answer: AnswerView, /) -> str:
+def answer_html(answer: AnswerView, /, *, codes: Sequence[str] | None) -> str:
     """The answer for a notebook, with every server string escaped."""
-    head, _, rest = answer_text(answer).partition("\n")
+    head, _, rest = answer_text(answer, codes=codes).partition("\n")
     body = f"<pre>{html.escape(rest)}</pre>" if rest else ""
     return f'<div class="dfo-answer"><p>{html.escape(head)}</p>{body}</div>'
 
@@ -139,9 +138,10 @@ def declined_text(kind: str, reason: str | None, /) -> str:
     return single_line(f"Search answered with kind {kind!r}, which holds no readings.")
 
 
-def incomplete_message(answer: AnswerView, /) -> str:
-    """The `IncompleteAnswerError` message: every gap and the line that settles it."""
-    return _incomplete(answer, lead="Search answered")
+def incomplete_message(answer: AnswerView, /, *, codes: Sequence[str] | None) -> str:
+    """The `IncompleteAnswerError` message: every gap and the line that settles it.
+    `codes` are as `answer_text` takes them."""
+    return _incomplete(answer, lead="Search answered", codes=codes)
 
 
 @contextmanager
@@ -184,11 +184,11 @@ def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
-def _incomplete(answer: AnswerView, *, lead: str) -> str:
+def _incomplete(answer: AnswerView, *, lead: str, codes: Sequence[str] | None) -> str:
     """What is answered and what is missing, with the calls that settle each gap."""
     gaps = {gap.part_index: gap for gap in answer.gaps}
     count = len(answered(answer.parts, answer.gaps))
-    lines = [f"{lead} {count} of {_asked(answer)}."]
+    lines = [f"{lead} {count} of {_asked(answer.parts, codes)}."]
     for index, part in enumerate(answer.parts):
         name = _quote(part.variable_text)
         gap = gaps.get(index)
@@ -212,11 +212,10 @@ def _incomplete(answer: AnswerView, *, lead: str) -> str:
     return _text_lines(lines)
 
 
-def _asked(answer: AnswerView) -> str:
+def _asked(parts: Sequence[Part], codes: Sequence[str] | None) -> str:
     """What the parts ask for: series codes for an answer to a search by codes, or
     when each part's restatement names one, else parts of the question."""
-    parts = answer.parts
-    if answer._codes is not None:
+    if codes is not None:
         return _plural(len(parts), "series code")
     if parts and all(asked_code(part) is not None for part in parts):
         return _plural(len(parts), "series code")

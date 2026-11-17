@@ -87,12 +87,13 @@ export function parsedInput(search: CodeSearchOptions): ParsedInput & { parts: P
 }
 
 /**
- * The codes a search asks for, each without surrounding white space.
+ * The codes a search asks for, each without the surrounding white space `WHITESPACE` lists,
+ * which `String.prototype.trim` removes, as both clients trim it.
  *
  * @throws {InvalidRequestError} They are a string, not a non-empty array of non-empty strings,
  *   or name one code twice, compared upper-cased as Search compares them (`invalid_argument`).
  */
-function checkedCodes(codes: unknown): string[] {
+export function checkedCodes(codes: unknown): string[] {
   if (typeof codes === "string") {
     throw invalid(
       `codes is an array of series codes; for one code pass [${JSON.stringify(codes)}].`,

@@ -219,7 +219,7 @@ data = restored.choose(1).fetch()
 print(data.sentence)
 ```
 
-An answer to a search by codes also writes the codes, one per part, so the answer read back checks each reading against the code asked for.
+An answer to a search by codes is written at `format_version` 2 with the codes, one per part, so the answer read back checks each reading against the code asked for. An answer to a question in words stays at format 1.
 
 A web app uses this to show the readings on one request and build the reader's choice on the next. The JSON is plain data, and a browser can edit it before posting it back, so the answer can carry any reading and its builds run on your key. With a public-tier key that costs quota, so rate-limit the routes per visitor. With a key beyond the public tier, keep the JSON on the server under a random id the page sends back, or sign it before it leaves. The TypeScript client reads the same JSON with `Answer.fromJSON`.
 
