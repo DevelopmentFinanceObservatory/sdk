@@ -35,6 +35,10 @@ call's own default."""
 type CallTimeout = float | Literal[ClientTimeout.CLIENT_TIMEOUT] | None
 """A call's `timeout`: seconds, None for no bound, or `CLIENT_TIMEOUT`."""
 
+SEARCH_TIMEOUT: Final = 60.0
+"""The bound on a Search request a call's `timeout` leaves open, in seconds:
+longer than Search's 45-second soft deadline, so a slow answer arrives whole."""
+
 
 class FromEnvironment(Enum):
     """The type of `FROM_ENVIRONMENT`, a client's `timeout` or `max_retries`

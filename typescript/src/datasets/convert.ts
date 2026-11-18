@@ -25,22 +25,25 @@ import {
   capped,
   clientError,
   DfoError,
+  errorClassFor,
+  isRetryable,
   problemAt200,
-  refusalMessage,
   serverCode,
 } from "../core/errors.ts";
 import { isRecord, list, text } from "../core/json.ts";
-import { assumptionsReadOf, operationsOf, warningsOf } from "../core/parse.ts";
+import { warningsOf } from "../core/parse.ts";
 import type { Notice } from "../wire.ts";
 import { partText } from "../core/parts.ts";
 import type { Part } from "../core/parts.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
 import type { Spec } from "../core/ref.ts";
+import { SEARCH_TIMEOUT_MS } from "../http/transport.ts";
 import type { Transport } from "../http/transport.ts";
 import type { Dataset } from "./dataset.ts";
 import {
   checkMembers,
+  echoedReading,
   fetchMembers,
   identityEntry,
   invalid,
@@ -162,38 +165,29 @@ const requestText = ({ currency, prices, base_year }: UnitRequest): string =>
 const readingName = ({ parts, spec }: MemberRequest): string =>
   parts[0] === undefined ? spec.spec_id : JSON.stringify(parts[0]);
 
-/** The answer parts a conversion posts one entry each for, or `[undefined]` for a member with
- *  none, which posts one entry for the member itself. */
-const convertedParts = ({ answerParts }: MemberRequest): readonly (Part | undefined)[] =>
-  answerParts === undefined || answerParts.length === 0 ? [undefined] : answerParts;
-
 /** A part's variable text as a member's `parts` name it: none when it has none. */
 function textsOf(part: Part): string[] {
   const variableText = partText(part);
   return variableText === null || variableText === "" ? [] : [variableText];
 }
 
-/** The members an identity entry echoes from the answer part it converts: `separate` when true,
- *  `operations` when any item reads, and `assumptions` when the part holds a list, in the read
- *  forms a choice posts. */
-function echoedReading(part: Part): Record<string, unknown> {
-  const operations = operationsOf(part.operations);
-  const assumptions = assumptionsReadOf(part.assumptions);
-  return {
-    ...(part.separate === true ? { separate: true } : {}),
-    ...(operations.length > 0 ? { operations: [...operations] } : {}),
-    ...(assumptions === undefined ? {} : { assumptions: [...assumptions] }),
-  };
-}
+/** What a conversion posts one entry each for, in member order: a member for each of its answer
+ *  parts, naming that part and answering it alone, or the member itself when it has none. */
+const convertedParts = (members: readonly MemberRequest[]): MemberRequest[] =>
+  members.flatMap((member) =>
+    member.answerParts === undefined || member.answerParts.length === 0
+      ? [member]
+      : member.answerParts.map((part): MemberRequest => ({
+          ...member,
+          parts: textsOf(part),
+          answerParts: [part],
+        })),
+  );
 
-/** The identity entry that asks Search for one part of a reading, or for the reading itself
- *  when `part` is undefined, in `request`'s unit. It names the part's variable text, else the
- *  member's first part, else `UNNAMED_PART`. */
-function entryOf(
-  member: MemberRequest,
-  part: Part | undefined,
-  request: UnitRequest,
-): Record<string, unknown> {
+/** The identity entry that asks Search for one of `convertedParts`' members in `request`'s
+ *  unit. It names the member's answer part's variable text, else its first part, else
+ *  `UNNAMED_PART`, and echoes the answer part's members `echoedReading` gives. */
+function entryOf(member: MemberRequest, request: UnitRequest): Record<string, unknown> {
   const identity = member.spec.definition["identity"];
   if (!isRecord(identity)) {
     throw invalid(
@@ -202,11 +196,10 @@ function entryOf(
     );
   }
   const facets = isRecord(identity["facets"]) ? identity["facets"] : {};
-  const variableText =
-    part === undefined ? (member.parts[0] ?? UNNAMED_PART) : (textsOf(part)[0] ?? UNNAMED_PART);
+  const part = member.answerParts?.[0];
   return {
     ...identityEntry(
-      variableText,
+      member.parts[0] ?? UNNAMED_PART,
       { ...identity, facets: { ...facets, unit: { state: "value", request } } },
       member.entityGroups ?? resolvedOf(member.spec).entityGroups,
     ),
@@ -214,17 +207,14 @@ function entryOf(
   };
 }
 
-/** The body that resubmits every reading with the unit request, one entry per part
- *  `convertedParts` gives, so each answer part keeps its own operations, assumptions and
- *  `separate` flag. */
+/** The body that resubmits each of `convertedParts`' members with the unit request, so each
+ *  answer part keeps its own operations, assumptions and `separate` flag. */
 export function conversionBody(
-  members: readonly MemberRequest[],
+  posted: readonly MemberRequest[],
   request: UnitRequest,
 ): Record<string, unknown> {
   return resubmitBody(
-    members.flatMap((member) =>
-      convertedParts(member).map((part) => entryOf(member, part, request)),
-    ),
+    posted.map((member) => entryOf(member, request)),
     { include_observations: false },
   );
 }
@@ -267,15 +257,16 @@ async function convert(
   wait: Wait,
   narrowed: boolean,
 ): Promise<MemberRequest[]> {
-  const posted = members.flatMap((member) =>
-    convertedParts(member).map((part): MemberRequest =>
-      part === undefined ? member : { ...member, parts: textsOf(part), answerParts: [part] },
-    ),
-  );
+  const posted = convertedParts(members);
+  // Search answers within its own time limit, so the conversion waits for it as a search does:
+  // each attempt runs to the fetch's deadline, else to `SEARCH_TIMEOUT_MS` from now.
   const response = await transport.request({
     path: RESOLVE_PATH,
-    json: conversionBody(members, request),
-    deadline: wait.deadline,
+    json: conversionBody(posted, request),
+    attemptTimeout: Infinity,
+    deadline: Number.isFinite(wait.deadline)
+      ? wait.deadline
+      : transport.callDeadline(SEARCH_TIMEOUT_MS),
     signal: wait.signal,
   });
   const { body, traceId } = response;
@@ -343,7 +334,7 @@ async function convert(
     }
     return [...grouped.values()].map(({ member, warnings }): MemberRequest => ({
       ...member,
-      converted: { unit, warnings, traceId },
+      converted: { label: `Converting ${readingName(member)} to ${unit}`, warnings, traceId },
     }));
   });
 }
@@ -377,7 +368,9 @@ function partRefusal(
     });
   }
   const said =
-    text(part["rendered_sentence"]) ?? text(refusal["message"]) ?? text(refusal["detail"]) ?? code;
+    [part["rendered_sentence"], refusal["message"], refusal["detail"]]
+      .map(text)
+      .find((found) => found !== null && found !== "") ?? code;
   const cause = refusal["cause"];
   const missing = isRecord(cause)
     ? list(cause["entities"]).filter((entity) => typeof entity === "string")
@@ -397,18 +390,19 @@ function partRefusal(
   // A problem document as the server would send it, so the class is the one its code maps to
   // and `problem.cause` keeps what the tables lack. A code the contract does not list is a
   // reason the server added, so it raises the base class with that code.
+  // The message is the detail whole: its sentence is capped, and the missing rates and the
+  // hint after it stay.
   const problem = { code, detail, ...(cause === undefined ? {} : { cause }) };
-  if (actionFor(code) === undefined) {
-    return new DfoError({
-      code: serverCode(code),
-      status: 200,
-      detail,
-      message: refusalMessage(detail, undefined),
-      traceId,
-      problem,
-    });
-  }
-  return problemAt200(problem, traceId)!;
+  const ErrorClass = actionFor(code) === undefined ? DfoError : errorClassFor(code, 200);
+  return new ErrorClass({
+    code: serverCode(code),
+    status: 200,
+    detail,
+    message: detail,
+    traceId,
+    retryable: isRetryable(200, problem),
+    problem,
+  });
 }
 
 /**

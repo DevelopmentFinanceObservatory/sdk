@@ -41,6 +41,7 @@ import { withEntityDcids } from "./lookup-results.ts";
 import { askedCode, checkReply, codeGap } from "./structured.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
+import { SEARCH_TIMEOUT_MS } from "../http/transport.ts";
 import type { Transport } from "../http/transport.ts";
 import { emitWarning, SearchWarning } from "../core/warnings.ts";
 import type { WarningHandler } from "../core/warnings.ts";
@@ -57,9 +58,6 @@ import type { Spec } from "../core/ref.ts";
 import { isRecord, list, text } from "../core/json.ts";
 
 export { SearchWarning } from "../core/warnings.ts";
-
-/** Longer than Search's 45-second soft deadline, so a slow answer arrives whole. */
-const SEARCH_TIMEOUT_MS = 60_000;
 
 /** What a gap needs to settle it: the contract's gap kinds, or one the client derives. */
 export type GapKind = (typeof GAP_KINDS)[number] | "unknown";

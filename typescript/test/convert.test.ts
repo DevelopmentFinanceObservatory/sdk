@@ -320,6 +320,56 @@ describe("an answer fetched in another unit", () => {
     assert.equal(built.length, 0);
   });
 
+  test("caps the server's sentence and keeps the missing rates and the hint", async () => {
+    const reply = structuredClone(RATE_GAP);
+    const long = "No rates. " + "x".repeat(2000);
+    (reply["parts"] as Body[])[0]!["rendered_sentence"] = long;
+    const { answer } = answerOver(ODA, [json(reply)]);
+    const error = await rejection(
+      answer.fetch({ ...EUR_2022, baseYear: 1900, window: [2016, 2020] }),
+    );
+    assert.ok(error instanceof InvalidRequestError);
+    assert.ok(!error.message.includes(long));
+    assert.match(error.message, /Missing: CurrencyEUR@1900\./);
+    assert.match(error.message, /narrow first and convert ds\.members\[0\]\.spec/);
+  });
+
+  test("passes over an empty sentence for the refusal's message", async () => {
+    const reply = structuredClone(RATE_GAP);
+    const [part] = reply["parts"] as Body[];
+    part!["rendered_sentence"] = "";
+    (part!["no_data"] as Body)["message"] = "The rate tables start in 1960.";
+    const { answer } = answerOver(ODA, [json(reply)]);
+    const error = await rejection(answer.fetch({ ...EUR_2022, baseYear: 1900 }));
+    assert.ok(error instanceof InvalidRequestError);
+    assert.match(error.detail, /prices: The rate tables start in 1960\. Missing/);
+  });
+
+  test("waits for Search past the client's attempt timeout", async () => {
+    // The client's 20 ms attempt timeout does not cut off a conversion that takes 60 ms.
+    const slow = (_request: unknown, init: RequestInit): Promise<Response> =>
+      new Promise((resolve, reject) => {
+        const socket = setTimeout(() => {
+          resolve(json(RATE_GAP)());
+        }, 60);
+        init.signal?.addEventListener("abort", () => {
+          clearTimeout(socket);
+          reject(init.signal?.reason);
+        });
+      });
+    const { fetch, seen } = mockFetch(slow);
+    const { transport } = replay(NO_EXCHANGES, { fetch, attemptTimeout: 20 });
+    const answer = answerFromBody(
+      structuredClone(ODA),
+      { transport, onWarning: () => undefined },
+      null,
+    );
+    const error = await rejection(answer.fetch({ ...EUR_2022, baseYear: 1900 }));
+    assert.ok(error instanceof InvalidRequestError, String(error));
+    assert.equal(error.code, "rate_coverage_gap");
+    assert.equal(seen.length, 1);
+  });
+
   const mismatched: [string, (reply: Body) => void, string][] = [
     [
       "a spec that does not hold the request",
@@ -537,7 +587,15 @@ describe("a converted fetch", () => {
     const record = await convertedBuild(CONSTANT_POSTED);
     // The held reading's reply warns; the narrowed build is another spec, whose sentence
     // resubmit warns about its own years.
-    record.exchanges[0]!.response.json = withWarning(CONSTANT);
+    const reply = withWarning(CONSTANT);
+    // The resubmit for the narrowed sentence echoes the converted part's facts.
+    const echoed = {
+      separate: true,
+      operations: [{ verb: "rank", phrase: "top 5 donors", over: "origin" }],
+      assumptions: [{ kind: "place_scope", binding_ref: "where:", text: "every place" }],
+    };
+    Object.assign((reply["parts"] as Body[])[0]!, echoed);
+    record.exchanges[0]!.response.json = reply;
     const narrowedId = `spec_${"1".repeat(32)}`;
     const narrowed = { ...CONVERTED.definition, spec_id: narrowedId };
     const build = record.exchanges[1]!;
@@ -549,8 +607,18 @@ describe("a converted fetch", () => {
     part["warnings"] = [
       { code: "date_coverage_partial", severity: "warn", message: "The years stop in 2020." },
     ];
+    const entry = {
+      entry_kind: "identity",
+      variable_text: "bilateral ODA",
+      identity: CONVERTED.definition["identity"],
+      ...echoed,
+    };
     record.exchanges.splice(2, 0, {
-      request: { method: "POST", path: "/search/resolve" },
+      request: {
+        method: "POST",
+        path: "/search/resolve",
+        json: { input: { kind: "dataset_resubmit", entries: [entry] } },
+      },
       response: { status: 200, headers: { "content-type": "application/json" }, json: sentence },
     });
     const warnings: DfoWarning[] = [];
@@ -609,12 +677,16 @@ describe("a converted fetch", () => {
 
   for (const window of [undefined, [2015, 2022] as const]) {
     const narrowing = window === undefined ? "" : ", narrowed to its own spec";
-    test(`raises Search's warning under strict once built${narrowing}`, async () => {
+    test(`raises Search's warning under strict once built, before the download${narrowing}`, async () => {
       const run = await convertedRun(withWarning(CONSTANT), undefined, window !== undefined);
       const error = await rejection(
         run.answer.fetch({ ...EUR_2022, strict: true, ...(window ? { window } : {}) }),
       );
-      assert.deepEqual(run.remaining(), []);
+      // The route and the signed fetch are left unasked, as in Python.
+      assert.deepEqual(
+        run.remaining().map(({ request }) => request.method),
+        ["GET", "GET"],
+      );
       assert.ok(error instanceof SearchWarning, String(error));
       assert.equal(error.code, "deflator_missing_omitted");
     });
@@ -640,14 +712,14 @@ describe("a converted fetch", () => {
     };
     record.exchanges = [build!, resubmit, ...download, structuredClone(build!)];
     const { transport, remaining } = replay(record);
-    const unit = "EUR at constant 2022 prices";
+    const label = "Converting to EUR at constant 2022 prices";
     const other = `spec_${"2".repeat(32)}`;
     const members: MemberRequest[] = [
       {
         parts: ["bilateral ODA"],
         spec: CONVERTED,
         sentence: CONVERTED_SENTENCE,
-        converted: { unit, warnings: [], traceId: null },
+        converted: { label, warnings: [], traceId: null },
       },
       {
         parts: ["ODA grants"],
@@ -658,7 +730,7 @@ describe("a converted fetch", () => {
         },
         sentence: CONVERTED_SENTENCE,
         converted: {
-          unit,
+          label,
           warnings: [
             { code: "date_coverage_partial", severity: "warn", message: "The years stop in 2017." },
           ],

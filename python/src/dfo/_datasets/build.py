@@ -36,7 +36,7 @@ from dfo._core.parse import (
     violation,
 )
 from dfo._core.refusals import sent_key, trace_id_of
-from dfo._core.text import cited, quoted, redacted_json
+from dfo._core.text import capped, cited, quoted, redacted_json
 from dfo._core.types import (
     CONTENT_VERSION,
     OPERATION_ID,
@@ -655,13 +655,18 @@ def _kept_entity_groups(held: Spec | None, built: Wire) -> dict[str, Any]:
 
 
 def resubmit_body(
-    built: Wire, variable_text: str, held: Spec | None = None
+    built: Wire,
+    variable_text: str,
+    held: Spec | None = None,
+    echoed: Part | None = None,
 ) -> dict[str, Any]:
     """The Search request that re-resolves one built definition for its sentence.
 
     `held` is the spec the client built from, None for a resumed build. Its
     groups that `_kept_entity_groups` keeps go with the identity, so a group of
-    places reads the same way again.
+    places reads the same way again. `echoed` is the answer part a converted
+    reading answers, whose members `echoed_reading` gives go with the entry as
+    they went with the conversion's, or None to echo none.
     """
     entry: dict[str, Any] = {
         "entry_kind": "identity",
@@ -670,6 +675,8 @@ def resubmit_body(
     }
     if groups := _kept_entity_groups(held, built):
         entry["entity_groups"] = groups
+    if echoed is not None:
+        entry |= echoed_reading(echoed)
     return {
         "schema_version": 1,
         "input": {"kind": "dataset_resubmit", "entries": [entry]},
@@ -728,21 +735,21 @@ def unit_request(
         raise client_error(
             INVALID_ARGUMENT,
             "currency is an ISO 4217 code of three capital letters, such as "
-            f'"EUR", not {cited(currency)}',
+            f'"EUR", not {_shown(currency)}',
         )
     if price_basis is None:
         price_basis = "current"
     if price_basis not in _PRICE_BASES:
         raise client_error(
             INVALID_ARGUMENT,
-            f'price_basis is "current" or "constant", not {cited(price_basis)}',
+            f'price_basis is "current" or "constant", not {_shown(price_basis)}',
         )
     if base_year is not None and (
         not isinstance(base_year, int) or isinstance(base_year, bool)
     ):
         raise client_error(
             INVALID_ARGUMENT,
-            f"base_year is a year as an int, such as 2022, not {cited(base_year)}",
+            f"base_year is a year as an int, such as 2022, not {_shown(base_year)}",
         )
     if price_basis == "constant" and base_year is None:
         raise client_error(
@@ -769,18 +776,31 @@ def unit_request(
     )
 
 
-def converted_parts(reading: Reading, /) -> tuple[Part | None, ...]:
-    """The parts a conversion posts one entry each for: the reading's answer
-    parts, else None alone for a spec fetched outside an answer."""
-    return reading.answer_parts or (None,)
+def _shown(value: object, /) -> str:
+    """A caller's value as a refusal quotes it, cut to `MESSAGE_TEXT_MAX`
+    characters."""
+    return cited(capped(value)) if isinstance(value, str) else capped(cited(value))
+
+
+def converted_parts(
+    readings: Sequence[Reading], /
+) -> list[tuple[Reading, Part | None]]:
+    """What a conversion posts one entry each for, in reading order: each
+    reading's answer parts, else the reading alone, paired with None, for a spec
+    fetched outside an answer."""
+    return [
+        (reading, part)
+        for reading in readings
+        for part in reading.answer_parts or (None,)
+    ]
 
 
 def conversion_body(
-    readings: Sequence[Reading], request: UnitRequest
+    posted: Sequence[tuple[Reading, Part | None]], request: UnitRequest
 ) -> dict[str, Any]:
     """The Search request that converts each reading to `request`: one identity
-    entry per part `converted_parts` gives, in reading order, its identity's unit
-    facet set to the request.
+    entry per pair `converted_parts` gives, in order, its identity's unit facet
+    set to the request.
 
     Each entry carries the spec's entity groups, as `resubmit_body` does, and
     names its answer part's variable text, else the reading's first part, else
@@ -795,7 +815,8 @@ def conversion_body(
             (`invalid_argument`).
     """
     entries = []
-    for reading in readings:
+    unit = {"state": "value", "request": request.to_wire()}
+    for reading, part in posted:
         spec = reading.spec
         identity = spec.definition.get("identity")
         if not isinstance(identity, Mapping):
@@ -806,22 +827,22 @@ def conversion_body(
                 "dataset's data.members[0].spec",
             )
         facets = identity.get("facets")
-        unit = {"state": "value", "request": request.to_wire()}
-        converted = {
-            **identity,
-            "facets": {**(facets if isinstance(facets, Mapping) else {}), "unit": unit},
+        entry: dict[str, Any] = {
+            "entry_kind": "identity",
+            "variable_text": _variable_text(reading, part),
+            "identity": {
+                **identity,
+                "facets": {
+                    **(facets if isinstance(facets, Mapping) else {}),
+                    "unit": unit,
+                },
+            },
         }
-        for part in converted_parts(reading):
-            entry: dict[str, Any] = {
-                "entry_kind": "identity",
-                "variable_text": _variable_text(reading, part),
-                "identity": converted,
-            }
-            if spec.entity_groups:
-                entry["entity_groups"] = spec.entity_groups
-            if part is not None:
-                entry |= _echoed_reading(part)
-            entries.append(entry)
+        if spec.entity_groups:
+            entry["entity_groups"] = spec.entity_groups
+        if part is not None:
+            entry |= echoed_reading(part)
+        entries.append(entry)
     return {
         "schema_version": 1,
         "input": {"kind": "dataset_resubmit", "entries": entries},
@@ -837,10 +858,10 @@ def _variable_text(reading: Reading, part: Part | None, /) -> str:
     return reading.parts[0] if reading.parts else UNNAMED_PART
 
 
-def _echoed_reading(part: Part, /) -> dict[str, Any]:
-    """The members an identity entry echoes from the answer part it converts:
+def echoed_reading(part: Part, /) -> dict[str, Any]:
+    """The members an identity entry echoes from the answer part it stands for:
     `separate` when true, `operations` when any item reads, and `assumptions`
-    when the part holds a list."""
+    when the part holds a list, in the read forms a choice posts."""
     echoed: dict[str, Any] = {}
     if part.separate:
         echoed["separate"] = True

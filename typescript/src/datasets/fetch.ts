@@ -39,7 +39,13 @@ import {
 import type { ClientErrorCode, DfoErrorOptions } from "../core/errors.ts";
 import { build, downloadBuilt, waitFor } from "./operation.ts";
 import type { Built, Manifest, ProgressHandler, Wait } from "./operation.ts";
-import { manifestWarningsOf, partFacts, warningsOf } from "../core/parse.ts";
+import {
+  assumptionsReadOf,
+  manifestWarningsOf,
+  operationsOf,
+  partFacts,
+  warningsOf,
+} from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
 import { mintOptions, renderingFor, renderingMatches } from "../core/ref.ts";
 import type { Layout, Rendering, Spec } from "../core/ref.ts";
@@ -99,12 +105,12 @@ export type MemberRequest = {
   readonly entityGroups?: EntityGroups | null | undefined;
   /** The answer parts the reading answers, when it comes from an answer. */
   readonly answerParts?: readonly Part[];
-  /** For a reading Search converted to another unit: the unit in words, as `EUR at constant
-   *  2022 prices`, and the converted part's warnings, with the trace id of the reply that held
-   *  them. */
+  /** For a reading Search converted to another unit: the label its warnings lead with, as
+   *  `Converting "bilateral ODA" to EUR at constant 2022 prices`, and the converted parts'
+   *  warnings, with the trace id of the reply that held them. */
   readonly converted?:
     | {
-        readonly unit: string;
+        readonly label: string;
         readonly warnings: readonly Notice[];
         readonly traceId: string | null;
       }
@@ -244,6 +250,19 @@ export function identityEntry(
     variable_text: variableText,
     identity,
     ...(groups === null || Object.keys(groups).length === 0 ? {} : { entity_groups: groups }),
+  };
+}
+
+/** The members an identity entry echoes from the answer part it stands for: `separate` when
+ *  true, `operations` when any item reads, and `assumptions` when the part holds a list, in the
+ *  read forms a choice posts. */
+export function echoedReading(part: Part): Record<string, unknown> {
+  const operations = operationsOf(part.operations);
+  const assumptions = assumptionsReadOf(part.assumptions);
+  return {
+    ...(part.separate === true ? { separate: true } : {}),
+    ...(operations.length > 0 ? { operations: [...operations] } : {}),
+    ...(assumptions === undefined ? {} : { assumptions: [...assumptions] }),
   };
 }
 
@@ -734,13 +753,15 @@ export async function sentenceFor(
   parts: readonly string[],
   held: Held | undefined,
   wait: Wait,
+  echoed?: Part,
 ): Promise<BuiltReading> {
   const definition = definitionOf(manifest);
   const specId = specIdOf(manifest);
   const groups = keptEntityGroups(held, definition);
+  const entry = identityEntry(parts[0] ?? UNNAMED_PART, definition["identity"], groups);
   const response = await transport.request({
     path: RESOLVE_PATH,
-    json: resubmitBody([identityEntry(parts[0] ?? UNNAMED_PART, definition["identity"], groups)]),
+    json: resubmitBody([echoed === undefined ? entry : { ...entry, ...echoedReading(echoed) }]),
     ...wait,
   });
   return describing(response.traceId, () => {
@@ -793,27 +814,26 @@ export type Finishing = {
   readonly rendering: Rendering;
   readonly strict: boolean;
   readonly answerFacts?: readonly PartFacts[];
+  /** What Search said about the reading when the fetch converted it. */
+  readonly converted?: ConvertedReading | undefined;
+  /** The converted answer part whose operations, assumptions and `separate` flag a resubmit for
+   *  the built reading's sentence echoes, as the conversion posted them. */
+  readonly echoed?: Part | undefined;
 };
 
-/** Downloads a built version's artifact and gives it Search's sentence, within `downloadBuilt`'s
- *  time. The manifest's warnings and its artifact's `url` are checked before any request. */
+/**
+ * Downloads a built version's artifact and gives it Search's sentence, within `downloadBuilt`'s
+ * time. The manifest's warnings and its artifact's `url` are checked before any request, and a
+ * converted reading's warnings are issued, or the first thrown under strict, before the download.
+ *
+ * @throws {SearchWarning} `strict` is true and Search warned about the converted reading.
+ */
 export async function finish(
   transport: Transport,
   built: Built,
-  finishing: Finishing,
+  { parts, posted, sentence, rendering, strict, answerFacts, converted, echoed }: Finishing,
   wait: Wait,
 ): Promise<FetchedMember> {
-  return (await finishReading(transport, built, finishing, wait)).member;
-}
-
-/** `finish`, with Search's answer for the built reading when the sentence came from resubmitting
- *  it, else undefined. */
-async function finishReading(
-  transport: Transport,
-  built: Built,
-  { parts, posted, sentence, rendering, strict, answerFacts }: Finishing,
-  wait: Wait,
-): Promise<{ member: FetchedMember; reading: BuiltReading | undefined }> {
   const { manifest } = built;
   const definition = definitionOf(manifest);
   const specId = specIdOf(manifest);
@@ -832,12 +852,20 @@ async function finishReading(
   });
   const known = posted?.spec.spec_id === specId && isText(sentence);
   const digest = String(artifact["artifact_digest"]);
-  const { reading, data } = await downloadBuilt(transport, built, wait, async (within) => ({
-    reading: known ? undefined : await sentenceFor(transport, manifest, parts, posted, within),
-    data: await download(transport, { url: route.href }, digest, within, artifact["bytes"]),
-  }));
+  const { reading, data } = await downloadBuilt(transport, built, wait, async (within) => {
+    const resubmitted = known
+      ? undefined
+      : await sentenceFor(transport, manifest, parts, posted, within, echoed);
+    if (converted !== undefined) {
+      noteConversion(transport, converted, resubmitted, manifest, strict);
+    }
+    return {
+      reading: resubmitted,
+      data: await download(transport, { url: route.href }, digest, within, artifact["bytes"]),
+    };
+  });
   checkArtifact(data, manifest, digest);
-  const member: FetchedMember = {
+  return {
     parts,
     spec: { spec_id: specId, definition },
     sentence: reading?.sentence ?? (sentence as string),
@@ -848,11 +876,10 @@ async function finishReading(
     data,
     ...(answerFacts === undefined ? {} : { answerFacts }),
   };
-  return { member, reading };
 }
 
 /**
- * Issues Search's warnings about a converted reading once its build is done: the warnings of the
+ * Issues Search's warnings about a converted reading once it is built, before its download: the warnings of the
  * resubmit that gave the built reading its sentence when there was one, else the conversion's.
  * Only `warn` and `degraded` warnings are issued, each code once, and a code the member's
  * manifest already issued is skipped. Under strict the first raises.
@@ -861,7 +888,6 @@ async function finishReading(
  */
 function noteConversion(
   transport: Transport,
-  want: MemberRequest,
   converted: ConvertedReading,
   reading: BuiltReading | undefined,
   manifest: Manifest,
@@ -873,15 +899,10 @@ function noteConversion(
       .filter(({ severity }) => severity !== "info")
       .map(({ code }) => code),
   );
-  const name = want.parts[0] === undefined ? want.spec.spec_id : JSON.stringify(want.parts[0]);
   for (const { code, severity, message } of warnings) {
     if ((severity !== "warn" && severity !== "degraded") || issued.has(code)) continue;
     issued.add(code);
-    const warning = new SearchWarning(
-      code,
-      `Converting ${name} to ${converted.unit}: ${message}`,
-      traceId,
-    );
+    const warning = new SearchWarning(code, `${converted.label}: ${message}`, traceId);
     if (strict) throw warning;
     transport.warn(warning);
   }
@@ -1054,24 +1075,20 @@ export async function fetchMembers(
       continue;
     }
     builtAt.set(builtId, fetched.length);
-    const finishing = {
+    const finishing: Finishing = {
       parts,
       posted: { spec, entityGroups },
       sentence,
       rendering,
       strict,
       ...(answerFacts === undefined ? {} : { answerFacts }),
+      ...(converted === undefined ? {} : { converted, echoed: answerParts?.[0] }),
     };
-    let finished: Awaited<ReturnType<typeof finishReading>>;
     try {
-      finished = await finishReading(transport, built, finishing, wait);
+      fetched.push(await finish(transport, built, finishing, wait));
     } catch (error) {
       // Search refuses an entity of the built identity when it resubmits it for its sentence.
       throw narrowingRefusal(error, narrowing);
-    }
-    fetched.push(finished.member);
-    if (converted !== undefined) {
-      noteConversion(transport, want, converted, finished.reading, built.manifest, strict);
     }
   }
   return Dataset.create(fetched, {

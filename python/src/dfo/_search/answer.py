@@ -66,7 +66,7 @@ from dfo._core.parse import (
 )
 from dfo._core.refusals import describing, trace_id_of
 from dfo._core.text import cited
-from dfo._core.timeouts import CLIENT_TIMEOUT, CallTimeout
+from dfo._core.timeouts import CLIENT_TIMEOUT, SEARCH_TIMEOUT, CallTimeout
 from dfo._core.types import (
     Candidate,
     CandidatesPart,
@@ -107,8 +107,6 @@ if TYPE_CHECKING:
 RESOLVE_PATH = "/search/resolve"
 SCHEMA_VERSION = 1
 
-# Longer than Search's 45-second soft deadline, so a slow answer arrives whole.
-SEARCH_TIMEOUT = 60.0
 
 _DATA_METHODS = frozenset(
     {"to_pandas", "to_polars", "to_arrow", "to_rows", "save", "__arrow_c_stream__"}

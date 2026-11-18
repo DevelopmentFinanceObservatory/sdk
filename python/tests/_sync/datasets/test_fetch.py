@@ -37,6 +37,7 @@ from dfo._core.errors import (
 from dfo._core.lookup_results import Entity, Match
 from dfo._core.parse import parse_parts, parse_spec
 from dfo._core.refs import DatasetRef, RefMember
+from dfo._core.timeouts import SEARCH_TIMEOUT
 from dfo._core.types import DefinitePart, Departure, FormatError, Rendering, Spec
 from dfo._datasets.build import Reading
 from dfo._datasets.bundle import load as load_saved
@@ -702,6 +703,68 @@ def test_a_refusal_message_caps_the_servers_sentence() -> None:
     assert "Missing: CurrencyEUR@1900." in message_of(caught.value)
 
 
+def test_a_refusal_reads_only_a_list_of_missing_entities() -> None:
+    reply = load("probe-resubmit-unit-rate-gap.json")
+    reply["parts"][0]["no_data"]["cause"]["entities"] = "CurrencyEUR@1900"
+    server = Server(json_response(200, reply))
+    with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            fetch_members(
+                transport,
+                [oda()],
+                currency="EUR",
+                price_basis="constant",
+                base_year=1900,
+            )
+    assert "Missing" not in message_of(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("timeout", "read"), [(None, SEARCH_TIMEOUT), (100.0, 100.0)], ids=["none", "call"]
+)
+def test_a_conversion_waits_for_search_past_the_attempt_timeout(
+    timeout: float | None, read: float
+) -> None:
+    # Each attempt runs to the fetch's deadline, else to SEARCH_TIMEOUT, as a
+    # search does, rather than the client's 30-second attempt_timeout.
+    server = Server(json_response(200, load("probe-resubmit-unit-rate-gap.json")))
+    with make(server) as transport:
+        with pytest.raises(InvalidRequestError):
+            fetch_members(
+                transport,
+                [oda()],
+                timeout=timeout,
+                currency="EUR",
+                price_basis="constant",
+                base_year=1900,
+            )
+    assert server.requests[0].extensions["timeout"]["read"] == pytest.approx(read)
+
+
+def test_a_frame_refuses_folded_parts_that_convert_to_several_specs() -> None:
+    answer = load("search-oda-deu-ken.json")
+    answer["parts"].append(copy.deepcopy(answer["parts"][0]) | {"variable_text": "aid"})
+    parts = parse_parts(answer)
+    held = parts[0].spec
+    reply = load("probe-resubmit-unit-constant.json")
+    other = copy.deepcopy(reply["parts"][0]) | {"variable_text": "aid"}
+    other_id = "spec_" + "3" * 32
+    other["spec"]["spec_id"] = other["spec"]["definition"]["spec_id"] = other_id
+    reply["parts"].append(other)
+    server = Server(json_response(200, reply))
+    with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            fetch_members(
+                transport,
+                [Reading((ODA, "aid"), held, held.sentence, tuple(parts))],
+                layout="frame",
+                **CONSTANT,
+            )
+    assert caught.value.code == "invalid_argument"
+    assert 'layout="frame" holds one reading' in str(caught.value)
+    assert len(server.requests) == 1
+
+
 def _unsupported(part: dict[str, Any]) -> None:
     del part["no_data"]
     part["status"] = "unsupported"
@@ -779,6 +842,8 @@ def test_a_series_no_recipe_converts_raises_the_servers_refusal() -> None:
         ({"currency": "EUR", "price_basis": "constant", "base_year": True}, "True"),
         ({"currency": "EUR", "price_basis": "constant", "base_year": "2022"}, '"2022"'),
         ({"currency": "EUR", "facets": {"unit": "USD"}}, 'facets["unit"]'),
+        # The caller's value is quoted cut to MESSAGE_TEXT_MAX characters.
+        ({"currency": "X" * 2000}, '"' + "X" * 1000 + '…"'),
     ],
     ids=[
         "basis-without-currency",
@@ -793,6 +858,7 @@ def test_a_series_no_recipe_converts_raises_the_servers_refusal() -> None:
         "bool-base-year",
         "text-base-year",
         "unit-facet",
+        "long-currency",
     ],
 )
 def test_a_malformed_conversion_sends_nothing(
@@ -988,6 +1054,14 @@ def test_strict_raises_a_conversion_warning_before_downloading() -> None:
 def test_a_narrowed_conversion_takes_the_warnings_of_its_built_identity() -> None:
     reply = load("probe-resubmit-unit-constant.json")
     reply["parts"][0]["warnings"] = [OMITTED]
+    # The resubmit for the narrowed sentence echoes the converted part's facts.
+    rank = {"verb": "rank", "phrase": "top 5 donors", "over": "origin"}
+    assumed = {"kind": "place_scope", "binding_ref": "where:", "text": "every place"}
+    reply["parts"][0] |= {
+        "operations": [rank],
+        "assumptions": [assumed],
+        "separate": True,
+    }
     built = resubmitted()
     clipped = {"code": "date_coverage_partial", "severity": "warn", "message": "cut"}
     built["parts"][0]["warnings"] = [clipped]
@@ -1006,6 +1080,12 @@ def test_a_narrowed_conversion_takes_the_warnings_of_its_built_identity() -> Non
     ]
     assert server.body(1)["input"]["spec_id"] == converted_spec()["spec_id"]
     assert server.body(1)["input"]["scope"]["window"]["end_year"] == 2020
+    (entry,) = server.body(2)["input"]["entries"]
+    assert (entry["operations"], entry["assumptions"], entry["separate"]) == (
+        [rank],
+        [assumed],
+        True,
+    )
     assert fetched.members[0].sentence == SENTENCE
 
 

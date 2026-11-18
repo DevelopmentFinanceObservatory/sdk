@@ -22,6 +22,7 @@ fetches of one artifact download it once, through `Cache.downloading`.
 """
 
 import json
+import math
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
@@ -49,6 +50,7 @@ from dfo._core.nearest import nearest
 from dfo._core.parse import parse_notices, parse_parts
 from dfo._core.refusals import describing, error_class, trace_id_of
 from dfo._core.text import capped, cited
+from dfo._core.timeouts import SEARCH_TIMEOUT
 from dfo._core.types import (
     CUT_SPELLINGS,
     RENDERING_SELECTORS,
@@ -232,12 +234,7 @@ async def fetch_members(
     wants = _distinct(readings)
     rendering = rendering_for(layout, party_totals=party_totals)
     check_strict(strict)
-    if layout == "frame" and len(wants) > 1:
-        raise client_error(
-            INVALID_ARGUMENT,
-            'layout="frame" holds one reading; fetch each spec on its own for its '
-            "frame",
-        )
+    _check_frame(layout, wants)
     dcids = dcid_entities(listed_entities(entities))
     scopes = narrowings(wants, window=window, entities=dcids, facets=facets)
     named = asked(entities=dcids, facets=facets)
@@ -265,6 +262,9 @@ async def fetch_members(
             transport, wants, unit, narrowed=narrowed, deadline=deadline
         )
         converted = list(conversions)
+        # Folded parts can convert to several specs, so a frame holds one
+        # converted reading too.
+        _check_frame(layout, wants)
         # The narrowing was checked on the held readings. The build applies it
         # to the converted ones, whose identities it rebinds.
         scopes = narrowings(wants, window=window, entities=dcids, facets=facets)
@@ -332,6 +332,21 @@ async def fetch_members(
         caller=transport.caller,
         question=question,
     )
+
+
+def _check_frame(layout: Layout, wants: Sequence[Reading], /) -> None:
+    """Refuse `layout="frame"` over several readings.
+
+    Raises:
+        InvalidRequestError: `layout` is `frame` and there are several readings
+            (`invalid_argument`).
+    """
+    if layout == "frame" and len(wants) > 1:
+        raise client_error(
+            INVALID_ARGUMENT,
+            'layout="frame" holds one reading; fetch each spec on its own for its '
+            "frame",
+        )
 
 
 async def _build_latest(
@@ -554,7 +569,9 @@ async def finish_member(
     `strict`, after the manifest's, once per code, leaving out any code the manifest
     issued. A build that resubmits its identity for a sentence, as a narrowing
     that changes the `spec_id` does, issues the warnings Search gives that
-    resubmit in their place, a `no_data` part's included.
+    resubmit in their place, a `no_data` part's included. That resubmit echoes
+    the first converted part's operations, assumptions and `separate` flag, as
+    the conversion posted them.
     """
     definition = manifest["definition"]
     spec_id = definition["spec_id"]
@@ -578,6 +595,11 @@ async def finish_member(
             parts,
             None if want is None else want.spec,
             deadline=deadline,
+            echoed=(
+                want.answer_parts[0]
+                if converted is not None and want is not None and want.answer_parts
+                else None
+            ),
         )
         if converted is not None:
             converted = replace(
@@ -868,15 +890,20 @@ async def _built_reading(
     held: Spec | None,
     *,
     deadline: float | None,
+    echoed: Part | None = None,
 ) -> tuple[str, tuple[Notice, ...], str | None]:
     """`built_sentence`'s sentence, with the warnings Search gives the part
-    that carries it and the trace id of Search's response."""
+    that carries it and the trace id of Search's response. `echoed` is the
+    converted answer part whose operations, assumptions and `separate` flag the
+    resubmit echoes, as the conversion did."""
     definition = manifest["definition"]
     spec_id = definition["spec_id"]
     response = await transport.request(
         "POST",
         "/search/resolve",
-        json=resubmit_body(definition, parts[0] if parts else UNNAMED_PART, held),
+        json=resubmit_body(
+            definition, parts[0] if parts else UNNAMED_PART, held, echoed
+        ),
         deadline=deadline,
     )
     answer = response_json(response)
@@ -932,14 +959,16 @@ async def _converted(
             `unsupported`, or a spec whose unit request is not `request`
             (`contract_violation`).
     """
-    posted = [
-        (reading, held) for reading in readings for held in converted_parts(reading)
-    ]
+    posted = converted_parts(readings)
+    # Search answers within its own time limit, so the conversion waits for it
+    # as a search does: each attempt runs to the fetch's deadline, else to
+    # `SEARCH_TIMEOUT` from now.
     response = await transport.request(
         "POST",
         "/search/resolve",
-        json=conversion_body(readings, request),
-        deadline=deadline,
+        json=conversion_body(posted, request),
+        timeout=math.inf,
+        deadline=transport.deadline(SEARCH_TIMEOUT) if deadline is None else deadline,
     )
     body = response_json(response)
     trace_id = trace_id_of(response, body)
@@ -1076,8 +1105,11 @@ def _conversion_refusal(
     lead = f"Search cannot convert {_named(reading)} to {_request_text(request)}: "
     pieces: list[str] = []
     if isinstance(cause, Mapping):
+        listed = cause.get("entities")
         entities = [
-            item for item in cause.get("entities") or () if isinstance(item, str)
+            item
+            for item in (listed if isinstance(listed, list) else ())
+            if isinstance(item, str)
         ]
         if entities:
             more = ", and more" if cause.get("truncated") is True else ""
