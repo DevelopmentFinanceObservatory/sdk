@@ -3,8 +3,10 @@
  *
  * A converted unit is another reading of the same question: the spec's identity with
  * `facets.unit` set to the request, which has its own `spec_id` and sentence. The client posts
- * every reading's identity with the request to Search as one `dataset_resubmit`, takes each
- * definite part's spec, sentence and entity groups in place of the held ones, and builds those
+ * one identity entry with the request per answer part to Search as one `dataset_resubmit`, each
+ * echoing its part's `separate` flag, operations and assumptions, so Search states for the
+ * converted part the assumptions that still hold. It groups the definite parts of the reply by
+ * spec, takes each spec, sentence and entity groups in place of the held ones, and builds those
  * as any fetch does. The conversion runs on the reading as held, before `window`, `entities` and
  * `facets` narrow it, so Search judges the held years and places.
  *
@@ -28,7 +30,10 @@ import {
   serverCode,
 } from "../core/errors.ts";
 import { isRecord, list, text } from "../core/json.ts";
-import { warningsOf } from "../core/parse.ts";
+import { assumptionsReadOf, operationsOf, warningsOf } from "../core/parse.ts";
+import type { Notice } from "../wire.ts";
+import { partText } from "../core/parts.ts";
+import type { Part } from "../core/parts.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
 import type { Spec } from "../core/ref.ts";
@@ -157,8 +162,38 @@ const requestText = ({ currency, prices, base_year }: UnitRequest): string =>
 const readingName = ({ parts, spec }: MemberRequest): string =>
   parts[0] === undefined ? spec.spec_id : JSON.stringify(parts[0]);
 
-/** The identity entry that asks Search for a reading in `request`'s unit. */
-function entryOf(member: MemberRequest, request: UnitRequest): Record<string, unknown> {
+/** The answer parts a conversion posts one entry each for, or `[undefined]` for a member with
+ *  none, which posts one entry for the member itself. */
+const convertedParts = ({ answerParts }: MemberRequest): readonly (Part | undefined)[] =>
+  answerParts === undefined || answerParts.length === 0 ? [undefined] : answerParts;
+
+/** A part's variable text as a member's `parts` name it: none when it has none. */
+function textsOf(part: Part): string[] {
+  const variableText = partText(part);
+  return variableText === null || variableText === "" ? [] : [variableText];
+}
+
+/** The members an identity entry echoes from the answer part it converts: `separate` when true,
+ *  `operations` when any item reads, and `assumptions` when the part holds a list, in the read
+ *  forms a choice posts. */
+function echoedReading(part: Part): Record<string, unknown> {
+  const operations = operationsOf(part.operations);
+  const assumptions = assumptionsReadOf(part.assumptions);
+  return {
+    ...(part.separate === true ? { separate: true } : {}),
+    ...(operations.length > 0 ? { operations: [...operations] } : {}),
+    ...(assumptions === undefined ? {} : { assumptions: [...assumptions] }),
+  };
+}
+
+/** The identity entry that asks Search for one part of a reading, or for the reading itself
+ *  when `part` is undefined, in `request`'s unit. It names the part's variable text, else the
+ *  member's first part, else `UNNAMED_PART`. */
+function entryOf(
+  member: MemberRequest,
+  part: Part | undefined,
+  request: UnitRequest,
+): Record<string, unknown> {
   const identity = member.spec.definition["identity"];
   if (!isRecord(identity)) {
     throw invalid(
@@ -167,20 +202,29 @@ function entryOf(member: MemberRequest, request: UnitRequest): Record<string, un
     );
   }
   const facets = isRecord(identity["facets"]) ? identity["facets"] : {};
-  return identityEntry(
-    member.parts[0] ?? UNNAMED_PART,
-    { ...identity, facets: { ...facets, unit: { state: "value", request } } },
-    member.entityGroups ?? resolvedOf(member.spec).entityGroups,
-  );
+  const variableText =
+    part === undefined ? (member.parts[0] ?? UNNAMED_PART) : (textsOf(part)[0] ?? UNNAMED_PART);
+  return {
+    ...identityEntry(
+      variableText,
+      { ...identity, facets: { ...facets, unit: { state: "value", request } } },
+      member.entityGroups ?? resolvedOf(member.spec).entityGroups,
+    ),
+    ...(part === undefined ? {} : echoedReading(part)),
+  };
 }
 
-/** The body that resubmits every reading with the unit request. */
+/** The body that resubmits every reading with the unit request, one entry per part
+ *  `convertedParts` gives, so each answer part keeps its own operations, assumptions and
+ *  `separate` flag. */
 export function conversionBody(
   members: readonly MemberRequest[],
   request: UnitRequest,
 ): Record<string, unknown> {
   return resubmitBody(
-    members.map((member) => entryOf(member, request)),
+    members.flatMap((member) =>
+      convertedParts(member).map((part) => entryOf(member, part, request)),
+    ),
     { include_observations: false },
   );
 }
@@ -202,12 +246,16 @@ function holdsRequest(spec: Record<string, unknown>, request: UnitRequest): bool
 }
 
 /**
- * Asks Search for each reading in `request`'s unit, in one request.
+ * Asks Search for each reading in `request`'s unit, in one request with one entry per answer
+ * part. The reply's parts are grouped by their converted spec, as an answer groups its parts: a
+ * converted member answers the original parts whose replies name its spec, and takes the spec,
+ * its sentence and entity groups, and those reply parts, which state the reading's assumptions,
+ * departures and operations. Members come back in first-seen order.
  *
  * @throws {InvalidRequestError} A part refused the conversion with a code the contract maps to
  *   it, such as `rate_coverage_gap` (its `problem.cause` names the missing rates), or the server
  *   refused the request, such as `recipe_not_declared` for a series no recipe converts.
- * @throws {ContractError} The reply does not hold one part per reading, a definite part's spec
+ * @throws {ContractError} The reply does not hold one part per entry, a definite part's spec
  *   does not hold the request, or a part has another status (`contract_violation`).
  * @throws {DfoError} A part refused with a reason or code the contract does not list, as its
  *   code.
@@ -219,16 +267,18 @@ async function convert(
   wait: Wait,
   narrowed: boolean,
 ): Promise<MemberRequest[]> {
+  const posted = members.flatMap((member) =>
+    convertedParts(member).map((part): MemberRequest =>
+      part === undefined ? member : { ...member, parts: textsOf(part), answerParts: [part] },
+    ),
+  );
   const response = await transport.request({
     path: RESOLVE_PATH,
     json: conversionBody(members, request),
     deadline: wait.deadline,
     signal: wait.signal,
   });
-  const { body } = response;
-  const diagnostics = isRecord(body) ? body["diagnostics"] : undefined;
-  const traceId =
-    text(isRecord(diagnostics) ? diagnostics["trace_id"] : undefined) ?? response.traceId;
+  const { body, traceId } = response;
   return describing(traceId, () => {
     const refused = problemAt200(body, traceId);
     if (refused !== undefined) throw refused;
@@ -239,16 +289,18 @@ async function convert(
     }
     checkStrict("Resolution", body);
     const parts = list(body["parts"]);
-    if (parts.length !== members.length) {
+    if (parts.length !== posted.length) {
       throw clientError("contract_violation", {
         detail:
-          `Search answered ${parts.length} parts to a conversion of ${members.length} ` +
-          `reading${members.length === 1 ? "" : "s"}.`,
+          `Search answered ${parts.length} parts to a conversion of ${posted.length} ` +
+          `part${posted.length === 1 ? "" : "s"}.`,
         pointer: "/parts",
       });
     }
     const unit = requestText(request);
-    return members.map((member, index): MemberRequest => {
+    /** Each converted spec's member and its parts' warnings, by `spec_id`. */
+    const grouped = new Map<string, { member: MemberRequest; warnings: Notice[] }>();
+    for (const [index, member] of posted.entries()) {
       const part = parts[index];
       const status = isRecord(part) ? part["status"] : undefined;
       if (!isRecord(part) || status !== "definite") {
@@ -271,15 +323,28 @@ async function convert(
         });
       }
       const reading = spec as Spec;
-      // The converted part states the reading's assumptions, departures and operations.
-      return {
-        ...member,
-        spec: reading,
-        ...resolvedOf(reading),
-        answerParts: [{ ...part, status }],
-        converted: { unit, warnings: warningsOf(part["warnings"]), traceId },
+      const answered: Part = { ...part, status };
+      const warnings = warningsOf(part["warnings"]);
+      const seen = grouped.get(reading.spec_id);
+      if (seen === undefined) {
+        grouped.set(reading.spec_id, {
+          member: { ...member, spec: reading, ...resolvedOf(reading), answerParts: [answered] },
+          warnings: [...warnings],
+        });
+        continue;
+      }
+      const { member: first } = seen;
+      seen.member = {
+        ...first,
+        parts: [...first.parts, ...member.parts.filter((name) => !first.parts.includes(name))],
+        answerParts: [...(first.answerParts ?? []), answered],
       };
-    });
+      seen.warnings.push(...warnings);
+    }
+    return [...grouped.values()].map(({ member, warnings }): MemberRequest => ({
+      ...member,
+      converted: { unit, warnings, traceId },
+    }));
   });
 }
 

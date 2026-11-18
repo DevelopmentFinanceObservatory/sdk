@@ -39,7 +39,7 @@ from dfo._http.transport import AsyncTransport
 from dfo._search.answer import AsyncAnswer, answer_from_body
 from dfo._search.answer_json import read_answer_json
 from dfo._search.search import search
-from tests._data import load
+from tests._data import CONTRACT, load
 from tests._datasets import recorded_member
 
 pytestmark = pytest.mark.anyio
@@ -1007,6 +1007,9 @@ async def test_a_refused_conversion_raises_its_code_under_partial() -> None:
     wire["parts"].append(load("search-two-parts-candidates.json")["parts"][1])
     wire["status"] = "mixed"
     refused = load("probe-resubmit-unit-rate-gap.json")
+    # The body's top-level trace id names the response; `diagnostics.trace_id`
+    # is not read.
+    refused["trace_id"] = "top-trace"
     answer, server = await ask("ODA", wire, refused)
     assert [gap.part_index for gap in answer.gaps] == [1]
     with warnings.catch_warnings():
@@ -1016,13 +1019,40 @@ async def test_a_refused_conversion_raises_its_code_under_partial() -> None:
                 partial=True, currency="EUR", price_basis="constant", base_year=1900
             )
     assert caught.value.code == "rate_coverage_gap"
-    assert caught.value.trace_id == refused["diagnostics"]["trace_id"]
+    assert caught.value.trace_id == "top-trace"
     assert caught.value.problem is not None
     assert caught.value.problem["code"] == "rate_coverage_gap"
     assert caught.value.problem["cause"] == refused["parts"][0]["no_data"]["cause"]
     # Only the part with a reading converts.
-    assert server.posted[1] == load("probe-resubmit-unit-rate-gap.request.json")
+    posted = load("probe-resubmit-unit-rate-gap.request.json")
+    # The entry echoes the part's assumptions, which state none.
+    posted["input"]["entries"][0]["assumptions"] = []
+    assert server.posted[1] == posted
     assert len(server.posted) == 2
+
+
+async def test_a_conversion_echoes_the_parts_operations_and_assumptions() -> None:
+    record = json.loads(
+        (CONTRACT / "scenarios" / "search-warning-top5.json").read_text()
+    )
+    wire = record["exchanges"][0]["response"]["json"]
+    (held,) = wire["parts"]
+    assert held["operations"] and held["assumptions"]
+    answer, server = await ask(
+        "top 5 donors", wire, load("probe-resubmit-unit-rate-gap.json")
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SearchWarning)
+        with pytest.raises(InvalidRequestError):
+            await answer.fetch(currency="EUR", price_basis="constant", base_year=1900)
+    # The ranking and the declared ODA default go with the converted reading.
+    (entry,) = server.posted[1]["input"]["entries"]
+    assert (entry["variable_text"], entry["operations"], entry["assumptions"]) == (
+        "aid",
+        held["operations"],
+        held["assumptions"],
+    )
+    assert "separate" not in entry
 
 
 @pytest.mark.parametrize(

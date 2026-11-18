@@ -13,9 +13,11 @@ import type { Spec } from "../src/core/ref.ts";
 import { DataWarning, SearchWarning } from "../src/core/warnings.ts";
 import type { DfoWarning } from "../src/core/warnings.ts";
 import type { Dataset } from "../src/datasets/dataset.ts";
+import { fetchMembers } from "../src/datasets/fetch.ts";
 import type { FetchMembersOptions, MemberRequest } from "../src/datasets/fetch.ts";
 import { recipe } from "../src/datasets/recipe.ts";
 import { fetchDataset } from "../src/datasets/resolve.ts";
+import { list } from "../src/core/json.ts";
 import { Answer, answerFromBody } from "../src/search/answer.ts";
 import { NO_EXCHANGES, replay, scenario, stepOf } from "./replay.ts";
 import type { Exchange, Scenario } from "./replay.ts";
@@ -40,6 +42,19 @@ const RECIPE_REFUSED_REQUEST = await recordedJson<Body>(
 );
 
 const EUR_2022 = { currency: "EUR", priceBasis: "constant", baseYear: 2022 } as const;
+
+/** A recorded conversion request as a fetch of `answer` posts it: each entry echoes the
+ *  assumptions of the part it converts, which the probe did not post. */
+function echoing(request: Body, answer: Body): Body {
+  const echoed = structuredClone(request);
+  const parts = answer["parts"] as Body[];
+  for (const [index, entry] of (echoed["input"] as { entries: Body[] }).entries.entries()) {
+    entry["assumptions"] = parts[index]!["assumptions"];
+  }
+  return echoed;
+}
+
+const CONSTANT_POSTED = echoing(CONSTANT_REQUEST, ODA);
 
 /** The first part's spec of a recorded reply. */
 const partSpec = (body: Body, index = 0): Spec => (body["parts"] as { spec: Spec }[])[index]!.spec;
@@ -169,12 +184,86 @@ describe("an answer fetched in another unit", () => {
     await answer.fetch(EUR_2022);
     assert.equal(seen.length, 1);
     assert.match(seen[0]!.url, /\/search\/resolve$/);
-    assert.deepEqual(posted(seen), CONSTANT_REQUEST);
+    assert.deepEqual(posted(seen), CONSTANT_POSTED);
     const member = built[0]!.members[0]!;
     assert.deepEqual(member.parts, ["bilateral ODA"]);
     assert.equal(member.spec.spec_id, CONVERTED.spec_id);
     assert.equal(member.sentence, CONVERTED_SENTENCE);
     assert.match(CONVERTED_SENTENCE, /Constant 2022 euros/);
+  });
+
+  test("echoes each part's operations and assumptions on its entry", async () => {
+    const record = await scenario("search-warning-top5");
+    const top5 = record.exchanges[0]!.response.json as Body;
+    const [held] = top5["parts"] as Body[];
+    assert.ok(held !== undefined && list(held["operations"]).length > 0);
+    assert.ok(list(held["assumptions"]).length > 0);
+    const { answer, seen } = answerOver(top5, [json(RATE_GAP)]);
+    await rejection(answer.fetch({ ...EUR_2022, baseYear: 1900 }));
+    // The ranking and the declared ODA default go with the converted reading.
+    const [entry, ...more] = (posted(seen) as { input: { entries: Body[] } }).input.entries;
+    assert.deepEqual(more, []);
+    assert.deepEqual(
+      [entry!["variable_text"], entry!["operations"], entry!["assumptions"]],
+      ["aid", held["operations"], held["assumptions"]],
+    );
+    assert.ok(!Object.hasOwn(entry!, "separate"));
+  });
+
+  test("posts folded parts one entry each, and keeps each part's own facts", async () => {
+    const body = structuredClone(ODA);
+    const [first] = body["parts"] as Body[];
+    const rank = { verb: "rank", phrase: "top 5 donors", over: "origin" };
+    const assumed = {
+      kind: "declared_default",
+      binding_ref: "how:dac2aAidType",
+      text: "official development assistance",
+      refs: ["DAC2aAidType206"],
+    };
+    first!["operations"] = [rank];
+    const second = {
+      ...structuredClone(first!),
+      variable_text: "aid",
+      operations: [],
+      assumptions: [assumed],
+      separate: true,
+    };
+    (body["parts"] as Body[]).push(second);
+    const reply = structuredClone(CONSTANT);
+    const [converted] = reply["parts"] as Body[];
+    converted!["operations"] = [rank];
+    (reply["parts"] as Body[]).push({
+      ...structuredClone(converted!),
+      variable_text: "aid",
+      operations: [],
+      assumptions: [assumed],
+    });
+    const { answer, seen, built } = answerOver(body, [json(reply)]);
+    await answer.fetch(EUR_2022);
+    const entries = (posted(seen) as { input: { entries: Body[] } }).input.entries;
+    assert.deepEqual(
+      entries.map((entry) => [
+        entry["variable_text"],
+        entry["operations"],
+        entry["assumptions"],
+        entry["separate"],
+      ]),
+      [
+        ["bilateral ODA", [rank], [], undefined],
+        ["aid", undefined, [assumed], true],
+      ],
+    );
+    const [member, ...others] = built[0]!.members;
+    assert.deepEqual(others, []);
+    assert.equal(member!.spec.spec_id, CONVERTED.spec_id);
+    assert.deepEqual(member!.parts, ["bilateral ODA", "aid"]);
+    assert.deepEqual(
+      member!.answerParts!.map((part) => [part["operations"], part["assumptions"]]),
+      [
+        [[rank], []],
+        [[], [assumed]],
+      ],
+    );
   });
 
   test("in current prices posts no base year", async () => {
@@ -184,7 +273,7 @@ describe("an answer fetched in another unit", () => {
     unit["request"] = { currency: "EUR", prices: "current", base_year: null };
     const { answer, seen } = answerOver(ODA, [json(reply)]);
     await answer.fetch({ currency: "EUR" });
-    const request = structuredClone(CONSTANT_REQUEST);
+    const request = structuredClone(CONSTANT_POSTED);
     const entry = (request["input"] as { entries: { identity: Spec["definition"] }[] }).entries[0]!;
     unitOf({ spec_id: "", definition: { identity: entry.identity } })["request"] = {
       currency: "EUR",
@@ -195,12 +284,15 @@ describe("an answer fetched in another unit", () => {
 
   for (const partial of [false, true]) {
     test(`refuses a base year the tables do not cover${partial ? ", under partial" : ""}`, async () => {
-      const { answer, seen, built } = answerOver(ODA, [json(RATE_GAP)]);
+      const served = json(RATE_GAP, 200, { "x-dfo-trace-id": "header-trace" });
+      const { answer, seen, built } = answerOver(ODA, [served]);
       const error = await rejection(answer.fetch({ ...EUR_2022, baseYear: 1900, partial }));
-      assert.deepEqual(posted(seen), RATE_GAP_REQUEST);
+      assert.deepEqual(posted(seen), echoing(RATE_GAP_REQUEST, ODA));
       assert.ok(error instanceof InvalidRequestError);
       assert.equal(error.code, "rate_coverage_gap");
-      assert.equal(error.traceId, "80ed7b982e2d4f14be30e26fd94c5328");
+      // The header names the response; the reply's diagnostics.trace_id differs and is not read.
+      assert.notEqual((RATE_GAP["diagnostics"] as Body)["trace_id"], "header-trace");
+      assert.equal(error.traceId, "header-trace");
       assert.deepEqual((error.problem?.["cause"] as Body)["entities"], ["CurrencyEUR@1900"]);
       assert.match(error.detail, /"bilateral ODA"/);
       assert.match(error.detail, /CurrencyEUR@1900/);
@@ -222,7 +314,7 @@ describe("an answer fetched in another unit", () => {
     const { status, headers, body } = RECIPE_REFUSED;
     const { answer, seen, built } = answerOver(DEBT, [json(body, status, headers)]);
     const error = await rejection(answer.fetch({ currency: "EUR" }));
-    assert.deepEqual(posted(seen), RECIPE_REFUSED_REQUEST);
+    assert.deepEqual(posted(seen), echoing(RECIPE_REFUSED_REQUEST, DEBT));
     assert.ok(error instanceof InvalidRequestError);
     assert.equal(error.code, "recipe_not_declared");
     assert.equal(built.length, 0);
@@ -264,13 +356,15 @@ describe("an answer fetched in another unit", () => {
   test("raises a no_data reason the contract does not know as the base DfoError", async () => {
     const reply = structuredClone(RATE_GAP);
     ((reply["parts"] as Body[])[0]!["no_data"] as Body)["reason"] = "brand_new_reason";
-    const { answer } = answerOver(ODA, [json(reply)]);
+    // The body's top-level trace id wins over the header and over diagnostics.trace_id.
+    reply["trace_id"] = "body-trace";
+    const { answer } = answerOver(ODA, [json(reply, 200, { "x-dfo-trace-id": "header-trace" })]);
     const error = await rejection(answer.fetch(EUR_2022));
     assert.ok(error instanceof DfoError);
     assert.equal(error.constructor, DfoError);
     assert.equal(error.code, "brand_new_reason");
     assert.equal(error.status, 200);
-    assert.equal(error.traceId, "80ed7b982e2d4f14be30e26fd94c5328");
+    assert.equal(error.traceId, "body-trace");
     assert.deepEqual((error.problem?.["cause"] as Body)["entities"], ["CurrencyEUR@1900"]);
     assert.match(error.detail, /Missing: CurrencyEUR@1900/);
   });
@@ -393,7 +487,11 @@ async function convertedBuild(request: Body): Promise<Scenario> {
   (build!.response.json as Body)["definition"] = definition;
   const resubmit: Exchange = {
     request: { method: "POST", path: "/search/resolve", json: request },
-    response: { status: 200, headers: { "content-type": "application/json" }, json: CONSTANT },
+    response: {
+      status: 200,
+      headers: { "content-type": "application/json", "x-dfo-trace-id": "search" },
+      json: CONSTANT,
+    },
   };
   return {
     ...base,
@@ -409,7 +507,7 @@ async function convertedBuild(request: Body): Promise<Scenario> {
  * warnings are dropped. A `scoped` build posts a scope, so its request body is not checked.
  */
 async function convertedRun(reply: Body, manifest?: (manifest: Body) => void, scoped = false) {
-  const record = await convertedBuild(CONSTANT_REQUEST);
+  const record = await convertedBuild(CONSTANT_POSTED);
   record.exchanges[0]!.response.json = reply;
   const build = record.exchanges[1]!;
   manifest?.(build.response.json as Body);
@@ -426,7 +524,7 @@ async function convertedRun(reply: Body, manifest?: (manifest: Body) => void, sc
 
 describe("a converted fetch", () => {
   test("of an answer builds the converted spec under its sentence", async () => {
-    const { transport, remaining } = replay(await convertedBuild(CONSTANT_REQUEST));
+    const { transport, remaining } = replay(await convertedBuild(CONSTANT_POSTED));
     const answer = answerFromBody(structuredClone(ODA), { transport }, null);
     const dataset = await answer.fetch(EUR_2022);
     assert.deepEqual(remaining(), []);
@@ -436,7 +534,7 @@ describe("a converted fetch", () => {
   });
 
   test("narrowed, issues Search's warnings about the built reading, not the held one", async () => {
-    const record = await convertedBuild(CONSTANT_REQUEST);
+    const record = await convertedBuild(CONSTANT_POSTED);
     // The held reading's reply warns; the narrowed build is another spec, whose sentence
     // resubmit warns about its own years.
     record.exchanges[0]!.response.json = withWarning(CONSTANT);
@@ -489,7 +587,7 @@ describe("a converted fetch", () => {
       run.warnings.map((warning) => [warning.constructor, warning.code]),
       [[SearchWarning, "deflator_missing_omitted"]],
     );
-    assert.equal(run.warnings[0]!.traceId, "45509ade64444e089de0ad9e04d41113");
+    assert.equal(run.warnings[0]!.traceId, "search");
     assert.match(
       run.warnings[0]!.message,
       /^Converting "bilateral ODA" to EUR at constant 2022 prices: A constant-price/,
@@ -521,6 +619,61 @@ describe("a converted fetch", () => {
       assert.equal(error.code, "deflator_missing_omitted");
     });
   }
+
+  test("two converted readings narrowed to one spec issue the built reading's warnings once", async () => {
+    // The first reading's narrowed build resubmits for its sentence, which Search answers clean.
+    // The second reading builds to the same spec, so its own conversion warning, about years the
+    // narrowing cut, is not the built spec's.
+    const record = await convertedBuild(CONSTANT_POSTED);
+    const [, build, ...download] = record.exchanges;
+    const narrowedId = `spec_${"1".repeat(32)}`;
+    const narrowed = { ...CONVERTED.definition, spec_id: narrowedId };
+    delete build!.request.json;
+    (build!.response.json as Body)["definition"] = narrowed;
+    const sentence = structuredClone(CONSTANT);
+    const part = (sentence["parts"] as Body[])[0]!;
+    part["spec"] = { ...CONVERTED, spec_id: narrowedId, definition: narrowed };
+    part["warnings"] = [];
+    const resubmit: Exchange = {
+      request: { method: "POST", path: "/search/resolve" },
+      response: { status: 200, headers: { "content-type": "application/json" }, json: sentence },
+    };
+    record.exchanges = [build!, resubmit, ...download, structuredClone(build!)];
+    const { transport, remaining } = replay(record);
+    const unit = "EUR at constant 2022 prices";
+    const other = `spec_${"2".repeat(32)}`;
+    const members: MemberRequest[] = [
+      {
+        parts: ["bilateral ODA"],
+        spec: CONVERTED,
+        sentence: CONVERTED_SENTENCE,
+        converted: { unit, warnings: [], traceId: null },
+      },
+      {
+        parts: ["ODA grants"],
+        spec: {
+          ...CONVERTED,
+          spec_id: other,
+          definition: { ...CONVERTED.definition, spec_id: other },
+        },
+        sentence: CONVERTED_SENTENCE,
+        converted: {
+          unit,
+          warnings: [
+            { code: "date_coverage_partial", severity: "warn", message: "The years stop in 2017." },
+          ],
+          traceId: null,
+        },
+      },
+    ];
+    const dataset = await fetchMembers(transport, members, {
+      strict: true,
+      narrowing: { window: [2015, 2020] },
+    });
+    assert.deepEqual(remaining(), []);
+    assert.equal(dataset.members.length, 1);
+    assert.deepEqual(dataset.members[0]!.parts, ["bilateral ODA", "ODA grants"]);
+  });
 
   test("carries the converted part's departures", async () => {
     const reply = structuredClone(CONSTANT);

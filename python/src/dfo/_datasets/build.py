@@ -27,7 +27,14 @@ from dfo._core.codes import (
 from dfo._core.errors import client_error
 from dfo._core.json_text import loads
 from dfo._core.lookup_results import Entity, Match
-from dfo._core.parse import check_manifest, check_operation, violation
+from dfo._core.parse import (
+    check_manifest,
+    check_operation,
+    read_assumption,
+    read_items,
+    read_requested_operation,
+    violation,
+)
 from dfo._core.refusals import sent_key, trace_id_of
 from dfo._core.text import cited, quoted, redacted_json
 from dfo._core.types import (
@@ -762,14 +769,26 @@ def unit_request(
     )
 
 
+def converted_parts(reading: Reading, /) -> tuple[Part | None, ...]:
+    """The parts a conversion posts one entry each for: the reading's answer
+    parts, else None alone for a spec fetched outside an answer."""
+    return reading.answer_parts or (None,)
+
+
 def conversion_body(
     readings: Sequence[Reading], request: UnitRequest
 ) -> dict[str, Any]:
     """The Search request that converts each reading to `request`: one identity
-    entry per reading, in order, its identity's unit facet set to the request.
+    entry per part `converted_parts` gives, in reading order, its identity's unit
+    facet set to the request.
 
-    Each entry names the reading's first part, else `UNNAMED_PART`, and carries
-    the spec's entity groups, as `resubmit_body` does.
+    Each entry carries the spec's entity groups, as `resubmit_body` does, and
+    names its answer part's variable text, else the reading's first part, else
+    `UNNAMED_PART`. An answer part's entry
+    also echoes its `separate` flag when true, its `operations` when any item
+    reads, and its `assumptions` when it holds a list, in the read forms a
+    choice posts, so Search states for the converted part the assumptions that
+    still hold and keeps the operations and the folding the question asked for.
 
     Raises:
         InvalidRequestError: A reading's definition holds no identity object
@@ -788,25 +807,48 @@ def conversion_body(
             )
         facets = identity.get("facets")
         unit = {"state": "value", "request": request.to_wire()}
-        entry: dict[str, Any] = {
-            "entry_kind": "identity",
-            "variable_text": reading.parts[0] if reading.parts else UNNAMED_PART,
-            "identity": {
-                **identity,
-                "facets": {
-                    **(facets if isinstance(facets, Mapping) else {}),
-                    "unit": unit,
-                },
-            },
+        converted = {
+            **identity,
+            "facets": {**(facets if isinstance(facets, Mapping) else {}), "unit": unit},
         }
-        if spec.entity_groups:
-            entry["entity_groups"] = spec.entity_groups
-        entries.append(entry)
+        for part in converted_parts(reading):
+            entry: dict[str, Any] = {
+                "entry_kind": "identity",
+                "variable_text": _variable_text(reading, part),
+                "identity": converted,
+            }
+            if spec.entity_groups:
+                entry["entity_groups"] = spec.entity_groups
+            if part is not None:
+                entry |= _echoed_reading(part)
+            entries.append(entry)
     return {
         "schema_version": 1,
         "input": {"kind": "dataset_resubmit", "entries": entries},
         "response_options": {"include_observations": False},
     }
+
+
+def _variable_text(reading: Reading, part: Part | None, /) -> str:
+    """The variable text an entry names: its answer part's, else the reading's
+    first part's, else `UNNAMED_PART`."""
+    if part is not None:
+        return part.variable_text or UNNAMED_PART
+    return reading.parts[0] if reading.parts else UNNAMED_PART
+
+
+def _echoed_reading(part: Part, /) -> dict[str, Any]:
+    """The members an identity entry echoes from the answer part it converts:
+    `separate` when true, `operations` when any item reads, and `assumptions`
+    when the part holds a list."""
+    echoed: dict[str, Any] = {}
+    if part.separate:
+        echoed["separate"] = True
+    if operations := read_items(part.raw.get("operations"), read_requested_operation):
+        echoed["operations"] = operations
+    if isinstance(assumptions := part.raw.get("assumptions"), list):
+        echoed["assumptions"] = read_items(assumptions, read_assumption)
+    return echoed
 
 
 def pick_artifact(

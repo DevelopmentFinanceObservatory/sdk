@@ -49,7 +49,7 @@ from dfo._core.errors import (
 from dfo._core.nearest import nearest
 from dfo._core.parse import parse_notices, parse_parts
 from dfo._core.refusals import describing, error_class, trace_id_of
-from dfo._core.text import capped, cited, is_token
+from dfo._core.text import capped, cited
 from dfo._core.types import (
     CUT_SPELLINGS,
     RENDERING_SELECTORS,
@@ -58,6 +58,7 @@ from dfo._core.types import (
     Layout,
     NoDataPart,
     Notice,
+    Part,
     PriceBasis,
     Rendering,
     Spec,
@@ -77,6 +78,7 @@ from dfo._datasets.build import (
     build_body,
     check_strict,
     conversion_body,
+    converted_parts,
     counted_rows,
     dcid_entities,
     listed_entities,
@@ -174,9 +176,10 @@ def fetch_members(
 ) -> Dataset:
     """Build the latest version of each spec and assemble one dataset.
 
-    With `currency`, one Search request first converts every reading to it, and
-    each converted reading, its spec, sentence and entity groups, replaces the
-    reading the caller holds before any narrowing applies.
+    With `currency`, one Search request first converts every reading to it,
+    one entry per answer part, and the converted readings, each with its spec,
+    sentence and entity groups and the converted parts it answers, replace the
+    readings the caller holds before any narrowing applies.
 
     Args:
         transport: The transport requests go through.
@@ -219,8 +222,8 @@ def fetch_members(
         NetworkError: `DFO_OFFLINE=1` is set, and the cache holds no version of
             a spec, or the fetch narrows or converts it (`offline`).
         ContractError: Search answered the conversion with another number of
-            parts than readings, a part neither definite nor refused, or a spec
-            whose unit request is not the one posted (`contract_violation`).
+            parts than entries posted, a part neither definite nor refused, or a
+            spec whose unit request is not the one posted (`contract_violation`).
         DfoTimeoutError: The deadline passed; the message says the build carries
             on on the server. A long build the poll at the deadline reads done
             still downloads, each request for one attempt of the client's
@@ -906,24 +909,31 @@ def _converted(
     narrowed: bool,
     deadline: float | None,
 ) -> tuple[list[Reading], list[Conversion]]:
-    """Each reading converted to `request` by one Search request, with what
-    Search said of it, in reading order.
+    """The readings converted to `request` by one Search request, with what
+    Search said of each, in first-seen order.
 
-    A converted reading keeps the parts it answers, and takes the converted
-    spec, its sentence and entity groups, and the reply's part, whose
-    departures, operations and assumptions the dataset reports. `narrowed` says
-    the fetch narrows the readings after converting them, which a refusal's
-    message names. The reply echoes the request when its currency, prices and
-    base year are the posted ones, an absent base year reading as null.
+    The request posts one entry per part `converted_parts` gives, so each answer
+    part keeps its own operations, assumptions and `separate` flag. The reply's
+    parts are grouped by their converted spec, as an answer groups its parts: a
+    converted reading answers the original parts whose replies name its spec,
+    and takes the spec, its sentence and entity groups, and those reply parts,
+    whose departures, operations and assumptions the dataset reports. `narrowed`
+    says the fetch narrows the readings after converting them, which a
+    refusal's message names. The reply echoes the request when its currency,
+    prices and base year are the posted ones, an absent base year reading as
+    null.
 
     Raises:
-        DfoError: Search refused the request, or a reading's part, which raises
-            the class the contract maps its code to, with that code.
+        DfoError: Search refused the request, or a part, which raises the class
+            the contract maps its code to, with that code.
         ContractError: Search answered with another number of parts than
-            readings, a part that is neither definite, `no_data` nor
+            entries, a part that is neither definite, `no_data` nor
             `unsupported`, or a spec whose unit request is not `request`
             (`contract_violation`).
     """
+    posted = [
+        (reading, held) for reading in readings for held in converted_parts(reading)
+    ]
     response = transport.request(
         "POST",
         "/search/resolve",
@@ -931,11 +941,10 @@ def _converted(
         deadline=deadline,
     )
     body = response_json(response)
-    trace_id = _diagnostics_trace_id(body) or trace_id_of(response, body)
+    trace_id = trace_id_of(response, body)
     if (problem := transport.success_problem(response, body)) is not None:
         raise problem
-    converted: list[Reading] = []
-    said: list[Conversion] = []
+    grouped: dict[str, tuple[Reading, list[Notice]]] = {}
     with describing(trace_id):
         if not isinstance(body, Mapping) or body.get("kind") != RESOLUTION_KIND:
             raise client_error(
@@ -943,48 +952,68 @@ def _converted(
                 "Search did not answer the conversion with a resolution",
             )
         parts = parse_parts(body)
-        if len(parts) != len(readings):
+        if len(parts) != len(posted):
             raise client_error(
                 CONTRACT_VIOLATION,
-                f"Search answered {len(readings)} readings to convert with "
+                f"Search answered {len(posted)} parts to convert with "
                 f"{len(parts)} parts",
             )
-        for reading, part in zip(readings, parts, strict=True):
+        for (reading, held), part in zip(posted, parts, strict=True):
+            named = (
+                reading
+                if held is None
+                else Reading(_texts(held), reading.spec, reading.sentence, (held,))
+            )
             if isinstance(part, NoDataPart | UnsupportedPart):
                 raise _conversion_refusal(
-                    reading, part, request, trace_id, narrowed=narrowed
+                    named, part, request, trace_id, narrowed=narrowed
                 )
             if not isinstance(part, DefinitePart):
                 raise client_error(
                     CONTRACT_VIOLATION,
-                    f"Search answered the conversion of {_named(reading)} with a "
+                    f"Search answered the conversion of {_named(named)} with a "
                     f"{part.status} part",
                 )
             spec = part.spec
             if not _echoes(_unit_request_of(spec), request):
                 raise client_error(
                     CONTRACT_VIOLATION,
-                    f"Search converted {_named(reading)} to a spec whose unit "
+                    f"Search converted {_named(named)} to a spec whose unit "
                     f"request is not {request.to_wire()}",
                 )
-            converted.append(Reading(reading.parts, spec, spec.sentence, (part,)))
-            label = f"Converting {_named(reading)} to {_request_text(request)}"
-            said.append(
-                Conversion(label, _search_warnings(part.warnings, label, trace_id))
+            if (seen := grouped.get(spec.spec_id)) is None:
+                grouped[spec.spec_id] = (
+                    Reading(named.parts, spec, spec.sentence, (part,)),
+                    list(part.warnings),
+                )
+                continue
+            first, notices = seen
+            grouped[spec.spec_id] = (
+                replace(
+                    first,
+                    parts=_joined(first.parts, named.parts),
+                    answer_parts=(*first.answer_parts, part),
+                ),
+                [*notices, *part.warnings],
             )
+    converted: list[Reading] = []
+    said: list[Conversion] = []
+    for reading, notices in grouped.values():
+        label = f"Converting {_named(reading)} to {_request_text(request)}"
+        converted.append(reading)
+        said.append(Conversion(label, _search_warnings(notices, label, trace_id)))
     return converted, said
+
+
+def _texts(part: Part) -> tuple[str, ...]:
+    """A part's variable text as a reading's parts name it: none when it has
+    none."""
+    return (part.variable_text,) if part.variable_text else ()
 
 
 def _named(reading: Reading) -> str:
     """A reading as a message names it: its first part, else its spec id."""
     return cited(reading.parts[0]) if reading.parts else reading.spec.spec_id
-
-
-def _diagnostics_trace_id(body: object) -> str | None:
-    """A Search response's `diagnostics.trace_id`, when it is an HTTP token."""
-    diagnostics = body.get("diagnostics") if isinstance(body, Mapping) else None
-    found = diagnostics.get("trace_id") if isinstance(diagnostics, Mapping) else None
-    return found if isinstance(found, str) and is_token(found) else None
 
 
 def _echoes(found: object, request: UnitRequest) -> bool:

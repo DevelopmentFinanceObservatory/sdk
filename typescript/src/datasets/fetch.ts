@@ -1048,10 +1048,9 @@ export async function fetchMembers(
     const builtId = specIdOf(built.manifest);
     const seen = builtAt.get(builtId);
     if (seen !== undefined) {
+      // The built spec's conversion warnings were issued when it was first built; this reading's
+      // own describe the spec it held before the narrowing, not the one built.
       fetched[seen] = joined(fetched[seen]!, parts, answerFacts);
-      if (converted !== undefined) {
-        noteConversion(transport, want, converted, undefined, built.manifest, strict);
-      }
       continue;
     }
     builtAt.set(builtId, fetched.length);
