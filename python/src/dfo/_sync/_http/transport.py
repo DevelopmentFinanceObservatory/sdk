@@ -172,8 +172,8 @@ DOWNLOAD_STALL_S = 30.0
 
 # The decoded bytes an API response's body may hold, the larger of 16 MiB and ten
 # times the largest JSON body recorded, rounded. That body is `/search/schema` in
-# tests/data/search-schema.json, 267,493 bytes, above every response body in
-# contract/scenarios (137,679 bytes at most, serialized without spaces), so the
+# tests/data/search-schema.json, 345,617 bytes, above every response body in
+# contract/scenarios (184,201 bytes at most, serialized without spaces), so the
 # 16 MiB floor applies.
 JSON_BODY_MAX_BYTES = 16 * 2**20
 

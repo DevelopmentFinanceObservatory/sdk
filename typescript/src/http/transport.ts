@@ -68,9 +68,9 @@ export const RETRY_AFTER_MAX_S = 60;
 /** The decoded bytes a downloaded file may hold when its manifest gives no size. */
 export const DEFAULT_MAX_BYTES = 2 * 2 ** 30;
 /** The decoded bytes an API response's body may hold, 16 MiB. The largest JSON body recorded
- *  is the `/search/schema` body in python/tests/data/search-schema.json, 267,493 bytes, and the
- *  largest response under contract/scenarios is 137,679 bytes as compact JSON, so the limit
- *  leaves over 60 times the largest as headroom while bounding what a faulty server can make
+ *  is the `/search/schema` body in python/tests/data/search-schema.json, 345,617 bytes, and the
+ *  largest response under contract/scenarios is 184,201 bytes as compact JSON, so the limit
+ *  leaves over 48 times the largest as headroom while bounding what a faulty server can make
  *  the client hold. The Python client uses the same value. */
 export const JSON_BODY_MAX_BYTES = 16 * 2 ** 20;
 /** The most retries a client takes. */

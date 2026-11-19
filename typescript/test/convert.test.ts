@@ -13,7 +13,7 @@ import type { Spec } from "../src/core/ref.ts";
 import { DataWarning, SearchWarning } from "../src/core/warnings.ts";
 import type { DfoWarning } from "../src/core/warnings.ts";
 import type { Dataset } from "../src/datasets/dataset.ts";
-import { fetchMembers } from "../src/datasets/fetch.ts";
+import { checkMembers, fetchMembers } from "../src/datasets/fetch.ts";
 import type { FetchMembersOptions, MemberRequest } from "../src/datasets/fetch.ts";
 import { recipe } from "../src/datasets/recipe.ts";
 import { fetchDataset } from "../src/datasets/resolve.ts";
@@ -301,14 +301,68 @@ describe("an answer fetched in another unit", () => {
     });
   }
 
-  test("refused under a narrowing hints at converting after it", async () => {
-    const { answer } = answerOver(ODA, [json(RATE_GAP)]);
+  test("refused under a narrowing, was asked for the narrowed years", async () => {
+    // Search judges the rates of the years the narrowing keeps.
+    const { answer, seen } = answerOver(ODA, [json(RATE_GAP)]);
     const error = await rejection(
       answer.fetch({ ...EUR_2022, baseYear: 1900, window: [2016, 2020] }),
     );
+    const request = echoing(RATE_GAP_REQUEST, ODA);
+    const [entry] = (request["input"] as { entries: { identity: Body }[] }).entries;
+    entry!.identity["requested_window"] = { kind: "range", start_year: 2016, end_year: 2020 };
+    assert.deepEqual(posted(seen), request);
     assert.ok(error instanceof InvalidRequestError);
-    assert.match(error.detail, /narrow first and convert ds\.members\[0\]\.spec/);
+    assert.equal(error.code, "rate_coverage_gap");
   });
+
+  const narrowings: [string, Body, Body][] = [
+    ["window", { window: "latest" }, { requested_window: { kind: "latest" } }],
+    [
+      "entities",
+      { entities: { destination: ["country/NGA"] } },
+      { entities: { destination: ["country/NGA"], origin: ["country/DEU"] } },
+    ],
+    [
+      "a dropped role",
+      { entities: { origin: null } },
+      { entities: { destination: ["country/KEN"] } },
+    ],
+    [
+      "facets, keeping the unit request",
+      { facets: { measurementMethod: null } },
+      {
+        facets: {
+          measurementMethod: { state: "value", ref: null },
+          unit: {
+            state: "value",
+            request: { currency: "EUR", prices: "constant", base_year: 2022 },
+          },
+        },
+      },
+    ],
+  ];
+  for (const [name, narrowing, identity] of narrowings) {
+    test(`posts the identity the narrowing leaves, for ${name}`, async () => {
+      const { answer, seen, built } = answerOver(ODA, [json(CONSTANT)]);
+      await answer.fetch({ ...EUR_2022, ...narrowing });
+      // The converted spec builds with no scope. A scope with facets would replace its whole
+      // facet binding and drop the unit request, building the reading in its own unit, as 0.4.0
+      // did.
+      const [{ members, options }] = built as [(typeof built)[number]];
+      assert.deepEqual(checkMembers(members, options).scopes, [undefined]);
+      const [entry] = (posted(seen) as { input: { entries: { identity: Body }[] } }).input.entries;
+      const held = partSpec(ODA).definition["identity"] as Body;
+      const unit = {
+        state: "value",
+        request: { currency: "EUR", prices: "constant", base_year: 2022 },
+      };
+      assert.deepEqual(entry!.identity, {
+        ...held,
+        facets: { ...(held["facets"] as Body), unit },
+        ...identity,
+      });
+    });
+  }
 
   test("refuses a series no recipe converts as the server does", async () => {
     const { status, headers, body } = RECIPE_REFUSED;
@@ -320,7 +374,7 @@ describe("an answer fetched in another unit", () => {
     assert.equal(built.length, 0);
   });
 
-  test("caps the server's sentence and keeps the missing rates and the hint", async () => {
+  test("caps the server's sentence and keeps the missing rates", async () => {
     const reply = structuredClone(RATE_GAP);
     const long = "No rates. " + "x".repeat(2000);
     (reply["parts"] as Body[])[0]!["rendered_sentence"] = long;
@@ -331,7 +385,6 @@ describe("an answer fetched in another unit", () => {
     assert.ok(error instanceof InvalidRequestError);
     assert.ok(!error.message.includes(long));
     assert.match(error.message, /Missing: CurrencyEUR@1900\./);
-    assert.match(error.message, /narrow first and convert ds\.members\[0\]\.spec/);
   });
 
   test("passes over an empty sentence for the refusal's message", async () => {
@@ -468,6 +521,12 @@ describe("conversion arguments", () => {
       { currency: "EUR", facets: { unit: "USDollar" } },
       /facets\.unit and currency both set the unit/,
     ],
+    [
+      "a role the reading does not take, beside currency",
+      { currency: "EUR", entities: { place: ["country/KEN"] } },
+      /entities names "place"/,
+    ],
+    ["a malformed window, beside currency", { currency: "EUR", window: [2020] }, /\[2020, 2020\]/],
   ];
   for (const [name, options, refusal] of rows) {
     test(`refuse ${name} before any request, from client.fetch and answer.fetch`, async () => {
@@ -584,7 +643,11 @@ describe("a converted fetch", () => {
   });
 
   test("narrowed, issues Search's warnings about the built reading, not the held one", async () => {
-    const record = await convertedBuild(CONSTANT_POSTED);
+    // The conversion posts the narrowed identity, and the build posts the converted spec alone.
+    const narrowedRequest = structuredClone(CONSTANT_POSTED);
+    const [held] = (narrowedRequest["input"] as { entries: { identity: Body }[] }).entries;
+    held!.identity["requested_window"] = { kind: "range", start_year: 2015, end_year: 2020 };
+    const record = await convertedBuild(narrowedRequest);
     // The held reading's reply warns; the narrowed build is another spec, whose sentence
     // resubmit warns about its own years.
     const reply = withWarning(CONSTANT);
@@ -599,7 +662,6 @@ describe("a converted fetch", () => {
     const narrowedId = `spec_${"1".repeat(32)}`;
     const narrowed = { ...CONVERTED.definition, spec_id: narrowedId };
     const build = record.exchanges[1]!;
-    delete build.request.json;
     (build.response.json as Body)["definition"] = narrowed;
     const sentence = structuredClone(CONSTANT);
     const part = (sentence["parts"] as Body[])[0]!;

@@ -38,7 +38,7 @@ from dfo._core.parse import parse_parts, parse_spec
 from dfo._core.refs import DatasetRef, RefMember
 from dfo._core.timeouts import SEARCH_TIMEOUT
 from dfo._core.types import DefinitePart, Departure, FormatError, Rendering, Spec
-from dfo._datasets.build import Reading
+from dfo._datasets.build import Reading, UnitRequest
 from dfo._datasets.bundle import load as load_saved
 from dfo._datasets.cache import Cache, file_entry, manifest_entry, sha256_digest
 from dfo._datasets.dataset import FetchedMember, build_dataset
@@ -499,7 +499,8 @@ async def test_an_empty_narrowing_takes_the_sentence_of_its_no_data_part(
 
 
 ODA = "bilateral ODA"
-CONSTANT = {"currency": "EUR", "price_basis": "constant", "base_year": 2022}
+CONSTANT = {"unit": UnitRequest("EUR", "constant", 2022)}
+CONSTANT_REQUEST = {"currency": "EUR", "prices": "constant", "base_year": 2022}
 
 
 def oda() -> Reading:
@@ -662,9 +663,7 @@ async def test_a_rate_coverage_gap_raises_its_code_with_the_missing_rates(
             await fetch_members(
                 transport,
                 [oda()],
-                currency="EUR",
-                price_basis="constant",
-                base_year=1900,
+                unit=UnitRequest("EUR", "constant", 1900),
                 **narrowing,
             )
     error = caught.value
@@ -681,10 +680,72 @@ async def test_a_rate_coverage_gap_raises_its_code_with_the_missing_rates(
         'Search cannot convert "bilateral ODA" to EUR at constant 1900 prices: '
     )
     assert "Missing: CurrencyEUR@1900." in str(error)
-    assert ("convert ds.members[0].spec" in str(error)) == bool(narrowing)
     recorded = load("probe-resubmit-unit-rate-gap.request.json")
+    if narrowing:
+        # Search judges the rates of the years the narrowing keeps.
+        (entry,) = recorded["input"]["entries"]
+        entry["identity"]["requested_window"] = {
+            "kind": "range",
+            "start_year": 2015,
+            "end_year": 2020,
+        }
     assert as_sent(server.body(0)) == as_sent(recorded)
     assert len(server.requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("narrowing", "identity"),
+    [
+        (
+            {"window": "latest"},
+            {"requested_window": {"kind": "latest"}},
+        ),
+        (
+            {"entities": {"destination": ["country/NGA"]}},
+            {"entities": {"destination": ["country/NGA"], "origin": ["country/DEU"]}},
+        ),
+        (
+            {"entities": {"origin": None}},
+            {"entities": {"destination": ["country/KEN"]}},
+        ),
+        (
+            {"facets": {"measurementMethod": None}},
+            {
+                "facets": {
+                    "measurementMethod": {"state": "value", "ref": None},
+                    "unit": {
+                        "state": "value",
+                        "request": CONSTANT_REQUEST,
+                    },
+                }
+            },
+        ),
+    ],
+    ids=["window", "entities", "dropped-role", "facets-keep-unit"],
+)
+async def test_a_conversion_posts_the_identity_the_narrowing_leaves(
+    narrowing: dict[str, Any], identity: dict[str, Any]
+) -> None:
+    # The build then posts the converted spec alone, since its identity holds
+    # the narrowing. A build `scope` with `facets` would replace the converted
+    # identity's whole facet binding and drop the unit request, building the
+    # reading in its own unit, as 0.4.0 did.
+    reply = load("probe-resubmit-unit-constant.json")
+    server = Server(
+        json_response(200, reply),
+        json_response(200, converted_manifest()),
+        redirect(),
+        parquet(),
+    )
+    async with make(server) as transport:
+        await fetch_members(transport, [oda()], **CONSTANT, **narrowing)
+    (entry,) = server.body(0)["input"]["entries"]
+    held = oda().spec.definition["identity"]
+    unit = {"state": "value", "request": CONSTANT_REQUEST}
+    expected = held | {"facets": held["facets"] | {"unit": unit}} | identity
+    assert entry["identity"] == expected
+    assert "scope" not in server.body(1)["input"]
+    assert server.body(1)["input"]["spec_id"] == converted_spec()["spec_id"]
 
 
 async def test_a_refusal_message_caps_the_servers_sentence() -> None:
@@ -697,9 +758,7 @@ async def test_a_refusal_message_caps_the_servers_sentence() -> None:
             await fetch_members(
                 transport,
                 [oda()],
-                currency="EUR",
-                price_basis="constant",
-                base_year=1900,
+                unit=UnitRequest("EUR", "constant", 1900),
             )
     assert long not in (caught.value.detail or "")
     assert long not in message_of(caught.value)
@@ -715,9 +774,7 @@ async def test_a_refusal_reads_only_a_list_of_missing_entities() -> None:
             await fetch_members(
                 transport,
                 [oda()],
-                currency="EUR",
-                price_basis="constant",
-                base_year=1900,
+                unit=UnitRequest("EUR", "constant", 1900),
             )
     assert "Missing" not in message_of(caught.value)
 
@@ -737,9 +794,7 @@ async def test_a_conversion_waits_for_search_past_the_attempt_timeout(
                 transport,
                 [oda()],
                 timeout=timeout,
-                currency="EUR",
-                price_basis="constant",
-                base_year=1900,
+                unit=UnitRequest("EUR", "constant", 1900),
             )
     assert server.requests[0].extensions["timeout"]["read"] == pytest.approx(read)
 
@@ -819,7 +874,7 @@ async def test_a_series_no_recipe_converts_raises_the_servers_refusal() -> None:
             await fetch_members(
                 transport,
                 [Reading(("external debt stocks",), held, held.sentence)],
-                currency="EUR",
+                unit=UnitRequest("EUR", "current"),
             )
     assert (caught.value.code, caught.value.status) == ("recipe_not_declared", 422)
     request = load("probe-resubmit-unit-recipe-refused.request.json")
@@ -1038,7 +1093,8 @@ async def test_a_narrowing_that_keeps_the_spec_id_issues_the_conversions_warning
     assert [getattr(item.message, "code", None) for item in caught] == [
         "deflator_missing_omitted"
     ]
-    assert server.body(1)["input"]["scope"]["window"] == {"kind": "all"}
+    (entry,) = server.body(0)["input"]["entries"]
+    assert entry["identity"]["requested_window"] == {"kind": "all"}
 
 
 async def test_strict_raises_a_conversion_warning_before_downloading() -> None:
@@ -1088,7 +1144,11 @@ async def test_a_narrowed_conversion_takes_the_warnings_of_its_built_identity() 
         "date_coverage_partial"
     ]
     assert server.body(1)["input"]["spec_id"] == converted_spec()["spec_id"]
-    assert server.body(1)["input"]["scope"]["window"]["end_year"] == 2020
+    assert server.body(0)["input"]["entries"][0]["identity"]["requested_window"] == {
+        "kind": "range",
+        "start_year": 2015,
+        "end_year": 2020,
+    }
     (entry,) = server.body(2)["input"]["entries"]
     assert (entry["operations"], entry["assumptions"], entry["separate"]) == (
         [rank],

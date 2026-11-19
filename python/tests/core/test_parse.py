@@ -647,6 +647,8 @@ def test_a_spec_reads_the_currencies_and_price_bases_it_converts_to() -> None:
     assert isinstance(part, DefinitePart)
     offer = part.spec.unit_conversion
     assert offer is not None
+    # The offer is parsed once, on the first access.
+    assert part.spec.unit_conversion is offer
     by_code = {currency.code: currency for currency in offer.currencies}
     assert by_code["EUR"] == ConversionCurrency(
         "EUR", "euros", (2015, 2022), (2015, 2022), (1973, 2025)
@@ -737,9 +739,11 @@ def test_a_malformed_offer_raises_only_when_it_is_read() -> None:
     offer["currencies"][0]["code"] = 7
     (part,) = parse_parts(answer)
     assert isinstance(part, DefinitePart)
-    with pytest.raises(ContractError) as caught:
-        _ = part.spec.unit_conversion
-    assert caught.value.pointer == "/resolved/unit_conversion/currencies/0/code"
+    # Each read of a malformed offer raises, the second as the first.
+    for _ in range(2):
+        with pytest.raises(ContractError) as caught:
+            _ = part.spec.unit_conversion
+        assert caught.value.pointer == "/resolved/unit_conversion/currencies/0/code"
 
 
 def test_a_spec_whose_definition_names_another_spec_raises() -> None:

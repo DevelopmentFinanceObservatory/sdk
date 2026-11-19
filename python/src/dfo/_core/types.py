@@ -231,6 +231,11 @@ class Spec:
     # `resolved.unit_conversion` as the server sent it, read on access so a
     # malformed offer breaks only the code that reads it.
     _unit_conversion: object = field(default=None, repr=False)
+    # The offer once read, in a tuple of one; None until a read succeeds, so
+    # each access to a malformed offer raises again.
+    _offer: tuple[UnitConversion | None] | None = field(
+        default=None, init=False, repr=False
+    )
 
     @override
     def __eq__(self, other: object) -> bool:
@@ -263,10 +268,17 @@ class Spec:
                 property reads the offer, so Search and fetch work on a spec
                 whose offer is malformed.
         """
+        if self._offer is not None:
+            return self._offer[0]
         # The parser builds this module's classes, so it is imported on use.
         from dfo._core.parse import parse_unit_conversion  # noqa: PLC0415
 
-        return parse_unit_conversion(self._unit_conversion, "/resolved/unit_conversion")
+        offer = parse_unit_conversion(
+            self._unit_conversion, "/resolved/unit_conversion"
+        )
+        # A frozen dataclass sets its own fields through `object.__setattr__`.
+        object.__setattr__(self, "_offer", (offer,))
+        return offer
 
     @property
     def roles(self) -> dict[str, tuple[str, ...] | None]:

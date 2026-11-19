@@ -4,6 +4,13 @@ All notable changes to this package are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A fetch with `currency` and `facets` returned the reading in its own unit. 0.4.0 posted `facets` as the converted build's `scope`, which replaces the converted identity's whole facet binding and so dropped the unit request: `answer.fetch({ currency: "EUR", facets: { provenance: ... } })` returned the held spec, its sentence and its rows in current US dollars, with no warning or error. The converted reading now builds with no `scope`, since its identity holds the narrowing.
+- A narrowed fetch in another currency converts the narrowed reading. The conversion request posts each reading's identity as `window`, `entities` and `facets` narrow it, so Search checks the rates for the years and places the build reads, and a narrowing to years the tables cover no longer throws `rate_coverage_gap` for years it leaves out. A refusal no longer suggests narrowing first and converting `ds.members[0].spec`.
+
 ## [0.4.0] - 2026-11-18
 
 ### Added

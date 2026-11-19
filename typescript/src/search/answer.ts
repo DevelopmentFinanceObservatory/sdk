@@ -348,7 +348,7 @@ export class Answer {
    * narrows one spec.
    *
    * `currency`, with `priceBasis` and `baseYear`, fetches every reading in that unit: one Search
-   * request converts them all, before any narrowing, and the dataset holds the converted
+   * request converts them all, each as the narrowing leaves it, and the dataset holds the converted
    * readings, their specs and sentences. `unitConversion(spec)` lists what each reading
    * converts to.
    *

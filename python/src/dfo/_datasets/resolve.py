@@ -94,6 +94,7 @@ from dfo._datasets.build import (
     lists_digest,
     pick_artifact,
     response_json,
+    unit_request,
 )
 from dfo._datasets.cache import sha256_digest
 from dfo._datasets.dataset import (
@@ -184,7 +185,7 @@ async def fetch(
             their binding, and an empty map narrows nothing.
         facets: Bind a spec's provenance, measurement method or unit.
         currency: Convert a spec's amounts to this ISO 4217 currency, as
-            `fetch_members` does, before any narrowing.
+            `fetch_members` does, on the identity the narrowing leaves.
         price_basis: `current`, the default, or `constant` prices.
         base_year: The base year of constant prices.
         layout: `long` (the default for a spec) or `frame`. A ref holds its own
@@ -373,9 +374,12 @@ async def fetch(
         window=window,
         entities=entities,
         facets=facets,
-        currency=currency,
-        price_basis=price_basis,
-        base_year=base_year,
+        unit=unit_request(
+            currency=currency,
+            price_basis=price_basis,
+            base_year=base_year,
+            facets=facets,
+        ),
     )
 
 

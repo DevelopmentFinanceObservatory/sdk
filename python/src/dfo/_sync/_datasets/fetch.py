@@ -61,7 +61,6 @@ from dfo._core.types import (
     NoDataPart,
     Notice,
     Part,
-    PriceBasis,
     Rendering,
     Spec,
     UnsupportedPart,
@@ -89,7 +88,6 @@ from dfo._datasets.build import (
     rendering_for,
     response_json,
     resubmit_body,
-    unit_request,
 )
 from dfo._datasets.cache import sha256_digest
 from dfo._datasets.dataset import (
@@ -171,17 +169,18 @@ def fetch_members(
     window: Window | None = None,
     entities: Entities | None = None,
     facets: Mapping[str, str | None] | None = None,
-    currency: str | None = None,
-    price_basis: PriceBasis | None = None,
-    base_year: int | None = None,
+    unit: UnitRequest | None = None,
     question: str | None = None,
 ) -> Dataset:
     """Build the latest version of each spec and assemble one dataset.
 
-    With `currency`, one Search request first converts every reading to it,
-    one entry per answer part, and the converted readings, each with its spec,
-    sentence and entity groups and the converted parts it answers, replace the
-    readings the caller holds before any narrowing applies.
+    With `unit`, one Search request first converts every reading to it, one
+    entry per answer part, each posting the reading's identity as the
+    narrowing leaves it, so Search judges the years and places the build
+    reads. The converted readings, each with its spec, sentence and entity
+    groups and the converted parts it answers, replace the readings the caller
+    holds, and build with no further scope, since their identities hold the
+    narrowing.
 
     Args:
         transport: The transport requests go through.
@@ -207,20 +206,20 @@ def fetch_members(
             entities and resolved matches `lookup.resolve` returns; None drops
             a role. Each reading keeps its other roles' binding.
         facets: Bind every reading's provenance, measurement method or unit.
-        currency: Convert every reading's amounts to this ISO 4217 currency.
-        price_basis: `current`, the default, or `constant` prices.
-        base_year: The base year of constant prices.
+        unit: The currency and price basis to convert every reading's amounts
+            to, as `unit_request` reads them, or None to convert nothing.
         question: The question of the answer the readings answer, which the
             dataset keeps; None for a spec or ref.
 
     Raises:
         InvalidRequestError: `layout="frame"` with several members, `strict`
             is not a bool or `progress` neither a bool nor None, the narrowing
-            or the conversion is malformed, `entities` holds a match that did
-            not resolve, or `entities` names a role a reading does not declare
+            is malformed, `entities` holds a match that did not resolve, or
+            `entities` names a role a reading does not declare
             (`invalid_argument`), all before any request; the server refused a
             build as malformed; or Search refused the conversion with a code
-            the contract maps to it, such as `rate_coverage_gap`.
+            the contract maps to it, such as `rate_coverage_gap` for a rate
+            the narrowed years lack.
         NetworkError: `DFO_OFFLINE=1` is set, and the cache holds no version of
             a spec, or the fetch narrows or converts it (`offline`).
         ContractError: Search answered the conversion with another number of
@@ -239,9 +238,6 @@ def fetch_members(
     dcids = dcid_entities(listed_entities(entities))
     scopes = narrowings(wants, window=window, entities=dcids, facets=facets)
     named = asked(entities=dcids, facets=facets)
-    unit = unit_request(
-        currency=currency, price_basis=price_basis, base_year=base_year, facets=facets
-    )
     stale = offline()
     if stale and any(narrowed is not None for narrowed in scopes):
         raise client_error(
@@ -258,17 +254,21 @@ def fetch_members(
     deadline = transport.deadline(timeout)
     converted: list[Conversion | None] = [None] * len(wants)
     if unit is not None:
-        narrowed = any(narrowing is not None for narrowing in scopes)
-        wants, conversions = _converted(
-            transport, wants, unit, narrowed=narrowed, deadline=deadline
-        )
+        try:
+            wants, conversions = _converted(
+                transport, wants, scopes, unit, deadline=deadline
+            )
+        except InvalidRequestError as error:
+            # Search refuses an entity the narrowed identity binds.
+            if (hinted := _narrowing_refusal(error, named, transport.caller)) is error:
+                raise
+            raise hinted from error
         converted = list(conversions)
         # Folded parts can convert to several specs, so a frame holds one
         # converted reading too.
         _check_frame(layout, wants)
-        # The narrowing was checked on the held readings. The build applies it
-        # to the converted ones, whose identities it rebinds.
-        scopes = narrowings(wants, window=window, entities=dcids, facets=facets)
+        # Each converted identity holds its reading's narrowing already.
+        scopes = [None] * len(wants)
     fetched: dict[str, FetchedMember] = {}
     with ProgressRenderer(enabled=progress) as renderer:
         on_progress = progress_hook(renderer)
@@ -931,24 +931,23 @@ def _built_reading(
 def _converted(
     transport: Transport,
     readings: Sequence[Reading],
+    scopes: Sequence[Mapping[str, Any] | None],
     request: UnitRequest,
     *,
-    narrowed: bool,
     deadline: float | None,
 ) -> tuple[list[Reading], list[Conversion]]:
     """The readings converted to `request` by one Search request, with what
     Search said of each, in first-seen order.
 
-    The request posts one entry per part `converted_parts` gives, so each answer
+    The request posts one entry per part `converted_parts` gives, each
+    reading's identity narrowed by its build scope in `scopes`, so each answer
     part keeps its own operations, assumptions and `separate` flag. The reply's
     parts are grouped by their converted spec, as an answer groups its parts: a
     converted reading answers the original parts whose replies name its spec,
     and takes the spec, its sentence and entity groups, and those reply parts,
-    whose departures, operations and assumptions the dataset reports. `narrowed`
-    says the fetch narrows the readings after converting them, which a
-    refusal's message names. The reply echoes the request when its currency,
-    prices and base year are the posted ones, an absent base year reading as
-    null.
+    whose departures, operations and assumptions the dataset reports. The reply
+    echoes the request when its currency, prices and base year are the posted ones,
+    an absent base year reading as null.
 
     Raises:
         DfoError: Search refused the request, or a part, which raises the class
@@ -958,7 +957,7 @@ def _converted(
             `unsupported`, or a spec whose unit request is not `request`
             (`contract_violation`).
     """
-    posted = converted_parts(readings)
+    posted = converted_parts(readings, scopes)
     # Search answers within its own time limit, so the conversion waits for it
     # as a search does: each attempt runs to the fetch's deadline, else to
     # `SEARCH_TIMEOUT` from now.
@@ -987,16 +986,15 @@ def _converted(
                 f"Search answered {len(posted)} parts to convert with "
                 f"{len(parts)} parts",
             )
-        for (reading, held), part in zip(posted, parts, strict=True):
+        for each, part in zip(posted, parts, strict=True):
+            reading, held = each.reading, each.part
             named = (
                 reading
                 if held is None
                 else Reading(_texts(held), reading.spec, reading.sentence, (held,))
             )
             if isinstance(part, NoDataPart | UnsupportedPart):
-                raise _conversion_refusal(
-                    named, part, request, trace_id, narrowed=narrowed
-                )
+                raise _conversion_refusal(named, part, request, trace_id)
             if not isinstance(part, DefinitePart):
                 raise client_error(
                     CONTRACT_VIOLATION,
@@ -1069,8 +1067,6 @@ def _conversion_refusal(
     part: NoDataPart | UnsupportedPart,
     request: UnitRequest,
     trace_id: str | None,
-    *,
-    narrowed: bool,
 ) -> DfoError:
     """The error for a part Search answered a conversion with in place of a spec.
 
@@ -1113,12 +1109,6 @@ def _conversion_refusal(
         if entities:
             more = ", and more" if cause.get("truncated") is True else ""
             pieces.append(f"Missing: {', '.join(entities)}{more}.")
-    if narrowed:
-        pieces.append(
-            "The conversion runs on the reading as held, before window, entities and "
-            "facets narrow it; fetch without them, or narrow first and convert "
-            "ds.members[0].spec."
-        )
     detail = " ".join([lead + capped(said.strip()), *pieces])
     problem: dict[str, Any] = {"code": part.reason, "detail": detail}
     if "cause" in refusal:
