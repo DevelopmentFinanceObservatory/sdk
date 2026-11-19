@@ -182,7 +182,7 @@ function countView(ref: DatasetRef, via: "pinned_ref" | "saved_file"): void {
 countView(data.ref, "pinned_ref");
 ```
 
-A page that reads a live share's data URL sends `via: "share"` with `shareId: slot.share_id`, `specIds: [slot.frame.spec_id]`, and `contentVersions: [slot.frame.content_version]`. `sendBeacon` posts the JSON as text, which needs no preflight, and the page does not wait on the answer. The body takes 1 to 10 spec ids with as many content versions, `via` (`pinned_ref`, `saved_file`, `share`, or `baked`), `shareId` for a share and only then, and `page` as a path, at most 8 KB in all, and DFO refuses any other key with 400.
+A page that reads a live share's data URL sends `via: "share"` with `shareId: slot.share_id`, `specIds: [slot.frame.spec_id]`, and `contentVersions: [slot.frame.content_version]`. Send it once per render, from the page that shows the chart, with `page` as the path alone and no query string. `sendBeacon` posts the JSON as text, which needs no preflight, and the page does not wait on the answer. The body takes 1 to 10 spec ids with as many content versions, `via` (`pinned_ref`, `saved_file`, `share`, or `baked`), `shareId` for a share and only then, and `page` as a path, at most 8 KB in all, and DFO refuses any other key with 400.
 
 ## Answer a question from a page
 
