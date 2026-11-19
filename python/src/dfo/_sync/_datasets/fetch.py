@@ -61,6 +61,7 @@ from dfo._core.types import (
     NoDataPart,
     Notice,
     Part,
+    PriceBasis,
     Rendering,
     Spec,
     UnsupportedPart,
@@ -88,6 +89,7 @@ from dfo._datasets.build import (
     rendering_for,
     response_json,
     resubmit_body,
+    unit_request,
 )
 from dfo._datasets.cache import sha256_digest
 from dfo._datasets.dataset import (
@@ -169,12 +171,14 @@ def fetch_members(
     window: Window | None = None,
     entities: Entities | None = None,
     facets: Mapping[str, str | None] | None = None,
-    unit: UnitRequest | None = None,
+    currency: str | None = None,
+    price_basis: PriceBasis | None = None,
+    base_year: int | None = None,
     question: str | None = None,
 ) -> Dataset:
     """Build the latest version of each spec and assemble one dataset.
 
-    With `unit`, one Search request first converts every reading to it, one
+    With `currency`, one Search request first converts every reading to it, one
     entry per answer part, each posting the reading's identity as the
     narrowing leaves it, so Search judges the years and places the build
     reads. The converted readings, each with its spec, sentence and entity
@@ -206,17 +210,18 @@ def fetch_members(
             entities and resolved matches `lookup.resolve` returns; None drops
             a role. Each reading keeps its other roles' binding.
         facets: Bind every reading's provenance, measurement method or unit.
-        unit: The currency and price basis to convert every reading's amounts
-            to, as `unit_request` reads them, or None to convert nothing.
+        currency: Convert every reading's amounts to this ISO 4217 currency.
+        price_basis: `current`, the default, or `constant` prices.
+        base_year: The base year of constant prices.
         question: The question of the answer the readings answer, which the
             dataset keeps; None for a spec or ref.
 
     Raises:
         InvalidRequestError: `layout="frame"` with several members, `strict`
             is not a bool or `progress` neither a bool nor None, the narrowing
-            is malformed, `entities` holds a match that did not resolve, or
-            `entities` names a role a reading does not declare
-            (`invalid_argument`), all before any request; the server refused a
+            or, after it, the conversion is malformed, `entities` holds a match
+            that did not resolve, or `entities` names a role a reading does not
+            declare (`invalid_argument`), all before any request; the server refused a
             build as malformed; or Search refused the conversion with a code
             the contract maps to it, such as `rate_coverage_gap` for a rate
             the narrowed years lack.
@@ -238,6 +243,9 @@ def fetch_members(
     dcids = dcid_entities(listed_entities(entities))
     scopes = narrowings(wants, window=window, entities=dcids, facets=facets)
     named = asked(entities=dcids, facets=facets)
+    unit = unit_request(
+        currency=currency, price_basis=price_basis, base_year=base_year, facets=facets
+    )
     stale = offline()
     if stale and any(narrowed is not None for narrowed in scopes):
         raise client_error(
@@ -947,8 +955,8 @@ def _converted(
     converted reading answers the original parts whose replies name its spec,
     and takes the spec, its sentence and entity groups, and those reply parts,
     whose departures, operations and assumptions the dataset reports. The reply
-    echoes the request when its currency, prices and base year are the posted ones,
-    an absent base year reading as null.
+    echoes the request when its currency, prices and base year are the posted
+    ones, an absent base year reading as null.
 
     Raises:
         DfoError: Search refused the request, or a part, which raises the class

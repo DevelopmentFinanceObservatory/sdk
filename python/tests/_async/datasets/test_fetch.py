@@ -38,7 +38,7 @@ from dfo._core.parse import parse_parts, parse_spec
 from dfo._core.refs import DatasetRef, RefMember
 from dfo._core.timeouts import SEARCH_TIMEOUT
 from dfo._core.types import DefinitePart, Departure, FormatError, Rendering, Spec
-from dfo._datasets.build import Reading, UnitRequest
+from dfo._datasets.build import Reading
 from dfo._datasets.bundle import load as load_saved
 from dfo._datasets.cache import Cache, file_entry, manifest_entry, sha256_digest
 from dfo._datasets.dataset import FetchedMember, build_dataset
@@ -500,7 +500,7 @@ async def test_an_empty_narrowing_takes_the_sentence_of_its_no_data_part(
 
 
 ODA = "bilateral ODA"
-CONSTANT = {"unit": UnitRequest("EUR", "constant", 2022)}
+CONSTANT = {"currency": "EUR", "price_basis": "constant", "base_year": 2022}
 CONSTANT_REQUEST = {"currency": "EUR", "prices": "constant", "base_year": 2022}
 
 
@@ -664,7 +664,9 @@ async def test_a_rate_coverage_gap_raises_its_code_with_the_missing_rates(
             await fetch_members(
                 transport,
                 [oda()],
-                unit=UnitRequest("EUR", "constant", 1900),
+                currency="EUR",
+                price_basis="constant",
+                base_year=1900,
                 **narrowing,
             )
     error = caught.value
@@ -728,9 +730,9 @@ async def test_a_conversion_posts_the_identity_the_narrowing_leaves(
     narrowing: dict[str, Any], identity: dict[str, Any]
 ) -> None:
     # The build then posts the converted spec alone, since its identity holds
-    # the narrowing. A build `scope` with `facets` would replace the converted
-    # identity's whole facet binding and drop the unit request, building the
-    # reading in its own unit, as 0.4.0 did.
+    # the narrowing and keeps the unit request under facets. A build `scope`
+    # with `facets` would replace the converted identity's whole facet binding,
+    # unit included, and the reading would build in its own unit.
     reply = load("probe-resubmit-unit-constant.json")
     server = Server(
         json_response(200, reply),
@@ -759,7 +761,9 @@ async def test_a_refusal_message_caps_the_servers_sentence() -> None:
             await fetch_members(
                 transport,
                 [oda()],
-                unit=UnitRequest("EUR", "constant", 1900),
+                currency="EUR",
+                price_basis="constant",
+                base_year=1900,
             )
     assert long not in (caught.value.detail or "")
     assert long not in message_of(caught.value)
@@ -775,7 +779,9 @@ async def test_a_refusal_reads_only_a_list_of_missing_entities() -> None:
             await fetch_members(
                 transport,
                 [oda()],
-                unit=UnitRequest("EUR", "constant", 1900),
+                currency="EUR",
+                price_basis="constant",
+                base_year=1900,
             )
     assert "Missing" not in message_of(caught.value)
 
@@ -795,7 +801,9 @@ async def test_a_conversion_waits_for_search_past_the_attempt_timeout(
                 transport,
                 [oda()],
                 timeout=timeout,
-                unit=UnitRequest("EUR", "constant", 1900),
+                currency="EUR",
+                price_basis="constant",
+                base_year=1900,
             )
     assert server.requests[0].extensions["timeout"]["read"] == pytest.approx(read)
 
@@ -875,7 +883,7 @@ async def test_a_series_no_recipe_converts_raises_the_servers_refusal() -> None:
             await fetch_members(
                 transport,
                 [Reading(("external debt stocks",), held, held.sentence)],
-                unit=UnitRequest("EUR", "current"),
+                currency="EUR",
             )
     assert (caught.value.code, caught.value.status) == ("recipe_not_declared", 422)
     request = load("probe-resubmit-unit-recipe-refused.request.json")
@@ -929,6 +937,26 @@ async def test_a_malformed_conversion_sends_nothing(
             await fetch(transport, oda().spec, **options)
     assert caught.value.code == "invalid_argument"
     assert names in str(caught.value)
+    assert server.requests == []
+
+
+@pytest.mark.parametrize(
+    ("options", "names"),
+    [
+        ({"entities": {"moon": ["country/KEN"]}}, '"moon"'),
+        ({"strict": "yes"}, "strict"),
+    ],
+    ids=["undeclared-role", "strict"],
+)
+async def test_a_malformed_fetch_names_its_narrowing_and_switches_before_its_conversion(
+    options: dict[str, Any], names: str
+) -> None:
+    server = Server()
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await fetch(transport, oda().spec, currency="eur", **options)
+    assert names in str(caught.value)
+    assert '"eur"' not in str(caught.value)
     assert server.requests == []
 
 

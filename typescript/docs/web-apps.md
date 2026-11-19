@@ -14,16 +14,18 @@ Build the data once, in a data step you run by hand or on a schedule, and commit
 
 ### The routes a page may call
 
-Browsers reach the API through `https://developmentfinance.org/api/v1`, the client's default base URL. Pages on `developmentfinance.org` and `www.developmentfinance.org`, the prototype previews on `one-org.workers.dev`, and `http://localhost:3000` and `http://localhost:8787` may read the datasets routes below. Share slot data answers any origin.
+Browsers reach the API through `https://developmentfinance.org/api/v1`, the client's default base URL, where the website's gateway answers. Pages on `developmentfinance.org`, `www.developmentfinance.org`, and `preview.developmentfinance.org`, the prototype previews on `one-org.workers.dev`, and `http://localhost:3000` and `http://localhost:8787` may read the datasets routes below. The gateway answers their preflight and labels each answer with `Access-Control-Allow-Origin`. Share slot data answers any origin.
 
-| Route                                                          | What reads it                       | Pages that may call it                                 | Cached                                                                                              |
-| -------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| `GET /api/v1/datasets/{spec_id}/{content_version}`             | `client.fetch(ref)`, the manifest   | DFO origins                                            | 1 minute in the browser, 5 minutes at the edge                                                      |
-| `GET /api/datasets/{spec_id}/{content_version}/files/{digest}` | `client.fetch(ref)`, the file       | DFO origins                                            | Pinned: 1 hour in the browser, a year at the edge. Held: 1 minute in the browser, 5 at the edge     |
-| `GET /api/v1/presentation/shares/{share_id}/slots/{slot}/data` | `share.dataUrls`, read with `fetch` | Any origin                                             | Live: revalidated on every read. Snapshot: 5 minutes                                                |
-| Search, builds, pins, cards, and shares                        | `client.search`, `answer.fetch`     | `developmentfinance.org`; other pages through a server | Not cached                                                                                          |
+For a file, the API answers with a redirect to a signed storage address. The gateway follows that redirect itself and answers 200 with the file's bytes, so a page makes one request for the file, to the gateway.
 
-The edge cache serves pages on `developmentfinance.org`, whose reads are same-origin. A cross-origin read, from a preview or `localhost`, skips the edge and reaches DFO each time. A page on any other origin calls your own server route, as in [Answer a question from a page](#answer-a-question-from-a-page), or a proxy of the API on the page's own origin.
+| Route                                                          | What reads it                       | Pages that may call it                                     | `Cache-Control`                                                                             |
+| -------------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `GET /api/v1/datasets/{spec_id}/{content_version}`             | `client.fetch(ref)`, the manifest   | DFO origins                                                | `public, max-age=60, s-maxage=300`                                                          |
+| `GET /api/datasets/{spec_id}/{content_version}/files/{digest}` | `client.fetch(ref)`, the file       | DFO origins                                                | Pinned: `public, max-age=3600, s-maxage=31536000`. Held: `public, max-age=60, s-maxage=300` |
+| `GET /api/v1/presentation/shares/{share_id}/slots/{slot}/data` | `share.dataUrls`, read with `fetch` | Any origin                                                 | Live: `no-cache`. Snapshot: `public, max-age=300`                                           |
+| Search, builds, pins, cards, and shares                        | `client.search`, `answer.fetch`     | `developmentfinance.org`, and other pages through a server | Not cached                                                                                  |
+
+`max-age` is how long the browser keeps an answer, and `s-maxage` how long the headers let a shared cache, such as the CDN in front of the site, keep it. Every other answer on the datasets routes, a refusal or a redirect the gateway did not follow, is `no-store`. A page on any other origin calls your own server route, as in [Answer a question from a page](#answer-a-question-from-a-page), or a proxy of the API on the page's own origin.
 
 ### Open on a frozen snapshot
 
@@ -66,11 +68,11 @@ console.log(data.citation.text);
 console.log(`${rows.length} rows, ${data.pinned ? "pinned" : "held"}`);
 ```
 
-`client.fetch(ref)` sends two GETs per member, for the version's manifest and for the file the ref's digest names. It makes no Search call and no build. `data.sentence`, `data.citation`, and `data.provenance` hold what the data step got, so the page's source line comes from `data.citation.text`. The file's bytes never change under its digest, which is why DFO caches a pinned file for a year at the edge.
+`client.fetch(ref)` sends two GETs per member, for the version's manifest and for the file the ref's digest names. It makes no Search call and no build. `data.sentence`, `data.citation`, and `data.provenance` hold what the data step got, so the page's source line comes from `data.citation.text`. The file's bytes never change under its digest, which is why the gateway's answer for a pinned file lets a shared cache keep it for a year.
 
-With a bundler that splits dynamic imports, such as esbuild with `--splitting`, a page that fetches a ref and calls `toRows` loads about 84 KB gzip of the client, and the Parquet writer's 16 KB gzip only when it calls `toBytes`.
+With a bundler that splits dynamic imports, a page that fetches a ref and calls `toRows` loads about 84 KB gzip of the client, and the Parquet writer's 16 KB gzip only when it calls `toBytes`. Those figures are for `esbuild --bundle --splitting --format=esm --minify --platform=browser`.
 
-To move the page to newer data, run the data step again with `client.fetch(committed, { latest: true })`, pin the result, and commit the new ref when `sameData` says the numbers moved. [Refresh](pipelines.md#refresh) covers the loop.
+To move the page to newer data, run the data step again with `client.fetch(DatasetRef.fromJSON(committed), { latest: true })`, pin the result, and commit the new ref when `sameData` says the numbers moved. [Refresh](pipelines.md#refresh) covers the loop.
 
 ### Show the latest data on view
 
@@ -113,7 +115,7 @@ console.log(slot.freshness, slot.frame.content_version, slot.rows.length);
 `slot.rows` holds one object per row, keyed by the columns of the card's data file. DFO checks a live slot for newer data on a read that comes 15 minutes or more after its last check, or sooner after a `pending` one, and `slot.freshness` says what the rows are:
 
 - `current`: the newest data DFO found at its last check.
-- `pending`: newer data is building, and the rows are the last check's, so a view never waits on a build.
+- `pending`: newer data is building, and the rows are the last check's, so a view does not wait on a build.
 - `stale`: DFO could not check, or the card cannot be drawn on the newer data, and the rows are older.
 
 A live slot answers with a strong `ETag` and `Cache-Control: no-cache`, so the browser revalidates each read, and DFO answers 304 with no body until the next check falls due. The `x-dfo-freshness` header repeats the freshness. A snapshot share's slot data caches for 5 minutes. A live share holds at most 20 data cards, and each new share counts against a daily allowance.
@@ -137,7 +139,7 @@ await mkdir("public/data", { recursive: true });
 await data.save("public/data/kenya-oda.parquet");
 ```
 
-The page reads the file from its own origin with `Dataset.fromBytes`, which loads about 37 KB gzip of the client with a splitting bundler:
+The page reads the file from its own origin with `Dataset.fromBytes`, which loads about 37 KB gzip of the client with `esbuild --bundle --splitting --format=esm --minify --platform=browser`:
 
 <!-- docs-check: skip: needs a page that serves the saved file -->
 

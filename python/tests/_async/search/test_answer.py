@@ -32,7 +32,7 @@ from dfo._core.errors import (
 from dfo._core.parse import parse_assumptions
 from dfo._core.timeouts import CLIENT_TIMEOUT, CallTimeout
 from dfo._core.types import CandidatesPart, DefinitePart
-from dfo._datasets.build import Reading, UnitRequest
+from dfo._datasets.build import Reading
 from dfo._datasets.dataset import build_dataset
 from dfo._datasets.fetch import Session
 from dfo._http.transport import AsyncTransport
@@ -879,7 +879,9 @@ async def test_fetch_builds_one_member_per_distinct_spec(
         "window": None,
         "entities": None,
         "facets": None,
-        "unit": UnitRequest("EUR", "constant", 2022),
+        "currency": "EUR",
+        "price_basis": "constant",
+        "base_year": 2022,
         "question": "Germany's ODA and GNI from 2015 to 2022",
     }
     assert isinstance(transport_used, AsyncTransport)

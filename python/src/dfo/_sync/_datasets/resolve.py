@@ -94,7 +94,6 @@ from dfo._datasets.build import (
     lists_digest,
     pick_artifact,
     response_json,
-    unit_request,
 )
 from dfo._datasets.cache import sha256_digest
 from dfo._datasets.dataset import (
@@ -375,12 +374,9 @@ def fetch(
         window=window,
         entities=entities,
         facets=facets,
-        unit=unit_request(
-            currency=currency,
-            price_basis=price_basis,
-            base_year=base_year,
-            facets=facets,
-        ),
+        currency=currency,
+        price_basis=price_basis,
+        base_year=base_year,
     )
 
 

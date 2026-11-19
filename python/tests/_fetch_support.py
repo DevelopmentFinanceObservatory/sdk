@@ -4,6 +4,7 @@ Nothing here awaits, so the async tests and the sync tests generated from them
 use the same helpers.
 """
 
+import contextlib
 import copy
 import dataclasses
 import json
@@ -466,24 +467,28 @@ def stalling_server(*, first_chunk_after: float) -> Iterator[str]:
 @contextmanager
 def trickling_server(*, chunks: int, every: float) -> Iterator[str]:
     """Serve one 200 that sends its headers at once and then `chunks` one-byte
-    chunks, each `every` seconds after the last.
+    chunks, each `every` seconds after the last, stopping when the block ends or
+    the client hangs up.
 
     Yields:
         The server's `http://127.0.0.1:<port>`.
     """
+    done = threading.Event()
     listener = socket.create_server(("127.0.0.1", 0))
 
     def serve() -> None:
         connection, _ = listener.accept()
-        with connection:
+        # A client that gave up on the body closes its end mid-send.
+        with connection, contextlib.suppress(OSError):
             connection.recv(65536)
             connection.sendall(
                 b"HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\n"
                 b"transfer-encoding: chunked\r\n\r\n"
             )
             for index in range(chunks):
-                time.sleep(every)
-                connection.sendall(b"1\r\n" + bytes([index]) + b"\r\n")
+                if done.wait(every):
+                    return
+                connection.sendall(b"1\r\n" + bytes([index % 256]) + b"\r\n")
             connection.sendall(b"0\r\n\r\n")
 
     thread = threading.Thread(target=serve, daemon=True)
@@ -491,6 +496,7 @@ def trickling_server(*, chunks: int, every: float) -> Iterator[str]:
     try:
         yield f"http://127.0.0.1:{listener.getsockname()[1]}"
     finally:
+        done.set()
         thread.join(timeout=5)
         listener.close()
 

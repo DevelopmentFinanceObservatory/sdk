@@ -1515,7 +1515,8 @@ export class Transport {
    * With `stall`, a fetch that goes that long with no byte returns a retryable `network_error`.
    * With `bodyStall`, the attempt's limit bounds the wait for a 200's headers, and its body then
    * reads until the deadline, if any, failing the same way once `bodyStall` passes with no byte:
-   * a files route that serves the file is read as a signed download is.
+   * a files route that serves the file is read as a signed download is. A call that sets its own
+   * `attemptTimeout` keeps that bound on the whole attempt, body included.
    *
    * @throws {InvalidRequestError} The `fetch` option returned something that is not a Response
    *   (`invalid_argument`).
@@ -1549,14 +1550,18 @@ export class Transport {
       const maxBytes = ok ? (options.maxBytes ?? JSON_BODY_MAX_BYTES) : JSON_BODY_MAX_BYTES;
       if (options.bodyStall !== undefined && options.stall === undefined) {
         if (status === 200) {
-          // The file's body reads until the deadline while bytes keep arriving.
-          limit = {
-            ms: (options.deadline ?? Infinity) - this.#now(),
-            byDeadline: true,
-            byOption: false,
-          };
-          if (limit.ms <= 0) return this.#deadlinePassed(url);
-          timer?.arm(limit.ms);
+          // The file's body reads until the deadline while bytes keep arriving. A wait that sets
+          // its own `attemptTimeout` keeps the limit armed at the start, which bounds the whole
+          // attempt, as it bounds a signed fetch.
+          if (options.attemptTimeout === undefined) {
+            const remaining = (options.deadline ?? Infinity) - this.#now();
+            if (remaining <= 0) {
+              await response.body?.cancel().catch(() => undefined);
+              return this.#deadlinePassed(url);
+            }
+            limit = { ms: remaining, byDeadline: true, byOption: false };
+            timer?.arm(remaining);
+          }
         } else {
           stall?.stop();
         }
@@ -1582,9 +1587,9 @@ export class Transport {
           cause: error,
         });
       }
-      if (stall?.signal.aborted) {
+      if (stallMs !== undefined && stall?.signal.aborted) {
         return clientError("network_error", {
-          detail: `The download from ${url.host} sent no byte for ${seconds(options.stall!)}.`,
+          detail: `The download from ${url.host} sent no byte for ${seconds(stallMs)}.`,
           cause: error,
         });
       }

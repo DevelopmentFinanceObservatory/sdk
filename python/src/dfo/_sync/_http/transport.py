@@ -37,8 +37,8 @@ call's deadline bounds the whole call. The client's `timeout` sets that deadline
 for a call that names none, such as a lookup. A signed download's attempt runs to
 the call's deadline, and fails retryably (`network_error`) once no byte arrives for
 `DOWNLOAD_STALL_S`. A files route that answers the file with a 200 has its body
-read the same way, the attempt's timeout bounding only the wait for its headers. The asynchronous transport can cancel platform
-name resolution at those limits. Its generated synchronous form cannot: blocking
+read the same way, the attempt's timeout bounding only the wait for its headers.
+The asynchronous transport can cancel platform name resolution at those limits. Its generated synchronous form cannot: blocking
 platform name resolution may run past a timeout or deadline. After name
 resolution, both forms clamp the connect, TLS handshake, and each read and write
 to the time left on the attempt. A header provider gets the time left on the
@@ -1284,6 +1284,7 @@ class Transport:
         stall: float | None = None,
         body_stall: float | None = None,
         body_deadline: float | None = None,
+        body_bound: str = "",
     ) -> httpx2.Response:
         """Send `request` and read its body by `deadline`, after name resolution.
 
@@ -1296,7 +1297,8 @@ class Transport:
         With `body_stall`, `deadline` bounds the wait for a 200's headers, and its
         body then reads by `body_deadline`, or without limit when that is None,
         waiting at most `body_stall` for each byte, so a files route that serves
-        the file reads as a signed download does.
+        the file reads as a signed download does. `body_bound` names the limit
+        `body_deadline` stands for, for the message.
 
         The body is read as it decodes, and reading stops at the first piece
         that takes a 2xx body past `limit` bytes, or any other body past
@@ -1334,8 +1336,7 @@ class Transport:
                     response.close()
         except httpx2.TimeoutException as exc:
             if streaming:
-                stall, deadline = body_stall, body_deadline
-                bound = "" if body_deadline is None else passed(body_deadline)
+                stall, deadline, bound = body_stall, body_deadline, body_bound
             if stall is not None and (deadline is None or self._clock() < deadline):
                 waited = (
                     "sent no byte"
@@ -1571,6 +1572,7 @@ class Transport:
                 file. The attempt's timeout then bounds the wait for a 200's
                 headers, and the body reads until the deadline, waiting at most
                 `DOWNLOAD_STALL_S` for each byte, as a signed download reads. A
+                `single_attempt` copy reads it until the attempt timeout. A
                 stall fails retryably (`network_error`).
 
         Raises:
@@ -1612,6 +1614,13 @@ class Transport:
         rekeyed = False
         while True:
             limit, attempt_end, bound = self._attempt_bounds(timeout, deadline)
+            # A files route's 200 body reads by the download's bound, as the
+            # signed download does.
+            _, body_end, body_bound = (
+                self._attempt_bounds(self._download_timeout, deadline)
+                if file
+                else (None, None, "")
+            )
             request_headers = self._headers(headers, limit)
             if content is not None:
                 request_headers["Content-Type"] = "application/json"
@@ -1631,7 +1640,8 @@ class Transport:
                     max_bytes,
                     bound=bound,
                     body_stall=DOWNLOAD_STALL_S if file else None,
-                    body_deadline=deadline,
+                    body_deadline=body_end,
+                    body_bound=body_bound,
                 )
             except DfoError as failure:
                 error = failure

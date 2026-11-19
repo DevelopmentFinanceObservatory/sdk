@@ -416,6 +416,32 @@ async def test_a_files_route_body_that_stalls_fails_retryably_at_the_stall_bound
     assert 0.45 < elapsed < 1.0
 
 
+@pytest.mark.parametrize("single_attempt", [False, True], ids=["deadline", "single"])
+async def test_a_files_route_body_that_keeps_trickling_ends_at_its_bound(
+    monkeypatch: pytest.MonkeyPatch, *, single_attempt: bool
+) -> None:
+    # Real sockets: a byte every 0.05 s for 2 s, never a stall of the 1 s bound.
+    # The call's 0.3 s deadline ends it, or, for a `single_attempt` copy with no
+    # deadline, as a build read done at its deadline downloads, the attempt timeout.
+    monkeypatch.setenv("NO_PROXY", "*")
+    monkeypatch.setattr(transport_module, "DOWNLOAD_STALL_S", 1.0)
+    with trickling_server(chunks=40, every=0.05) as origin:
+        async with AsyncTransport(
+            api_key=False,
+            base_url=origin,
+            attempt_timeout=0.3 if single_attempt else 5.0,
+            max_retries=0,
+        ) as transport:
+            client = transport.single_attempt() if single_attempt else transport
+            deadline = None if single_attempt else transport.now() + 0.3
+            start = time.monotonic()
+            with pytest.raises(DfoTimeoutError) as caught:
+                await client.request("GET", "/files/a", deadline=deadline, file=True)
+            elapsed = time.monotonic() - start
+    assert caught.value.code == "deadline_exceeded"
+    assert 0.25 < elapsed < 1.0
+
+
 async def test_a_body_that_stalls_after_its_first_chunk_raises_at_the_attempt_end(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

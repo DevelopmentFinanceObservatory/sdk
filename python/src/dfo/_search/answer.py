@@ -397,7 +397,7 @@ class AsyncAnswer:
         """
         # The conversion's arguments are the caller's to fix, so they are
         # checked before what the answer itself lacks.
-        unit = unit_request(
+        unit_request(
             currency=currency,
             price_basis=price_basis,
             base_year=base_year,
@@ -434,7 +434,9 @@ class AsyncAnswer:
             window=window,
             entities=entities,
             facets=facets,
-            unit=unit,
+            currency=currency,
+            price_basis=price_basis,
+            base_year=base_year,
             question=self.question,
         )
 

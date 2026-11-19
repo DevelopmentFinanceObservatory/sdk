@@ -13,7 +13,7 @@ import type { Spec } from "../src/core/ref.ts";
 import { DataWarning, SearchWarning } from "../src/core/warnings.ts";
 import type { DfoWarning } from "../src/core/warnings.ts";
 import type { Dataset } from "../src/datasets/dataset.ts";
-import { checkMembers, fetchMembers } from "../src/datasets/fetch.ts";
+import { checkMembers, fetchMembers, scopedIdentity } from "../src/datasets/fetch.ts";
 import type { FetchMembersOptions, MemberRequest } from "../src/datasets/fetch.ts";
 import { recipe } from "../src/datasets/recipe.ts";
 import { fetchDataset } from "../src/datasets/resolve.ts";
@@ -345,9 +345,9 @@ describe("an answer fetched in another unit", () => {
     test(`posts the identity the narrowing leaves, for ${name}`, async () => {
       const { answer, seen, built } = answerOver(ODA, [json(CONSTANT)]);
       await answer.fetch({ ...EUR_2022, ...narrowing });
-      // The converted spec builds with no scope. A scope with facets would replace its whole
-      // facet binding and drop the unit request, building the reading in its own unit, as 0.4.0
-      // did.
+      // The converted spec builds with no scope, and its identity keeps the unit request under
+      // facets. A scope with facets would replace the whole facet binding, unit included, and
+      // the reading would build in its own unit.
       const [{ members, options }] = built as [(typeof built)[number]];
       assert.deepEqual(checkMembers(members, options).scopes, [undefined]);
       const [entry] = (posted(seen) as { input: { entries: { identity: Body }[] } }).input.entries;
@@ -490,6 +490,25 @@ function unitOf(spec: Spec): Body {
   const identity = spec.definition["identity"] as { facets: Body };
   return identity.facets["unit"] as Body;
 }
+
+describe("a scoped identity", () => {
+  const rows: [string, Record<string, string[]>, string[] | undefined][] = [
+    ["one flow role", { origin: ["country/DEU"] }, ["destination"]],
+    ["a role column", { recipient: ["country/KEN"] }, ["origin"]],
+    ["both flow roles", { origin: ["country/DEU"], destination: ["country/KEN"] }, undefined],
+    ["the place", { observationAbout: ["country/KEN"] }, ["origin", "destination"]],
+  ];
+  for (const [name, entities, openRoles] of rows) {
+    test(`closes the open roles its entities bind, for ${name}`, () => {
+      const identity = { entities: {}, open_roles: ["origin", "destination"] };
+      const scoped = scopedIdentity(identity, { entities });
+      assert.deepEqual(scoped["entities"], entities);
+      assert.deepEqual(scoped["open_roles"], openRoles);
+      assert.ok(openRoles !== undefined || !Object.hasOwn(scoped, "open_roles"));
+      assert.deepEqual(identity.open_roles, ["origin", "destination"]);
+    });
+  }
+});
 
 describe("conversion arguments", () => {
   const transport = replay(NO_EXCHANGES).transport;

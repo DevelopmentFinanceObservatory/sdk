@@ -638,7 +638,7 @@ def build_body(
 def scoped_identity(
     identity: Mapping[str, Any], narrowing: Mapping[str, Any] | None
 ) -> dict[str, Any]:
-    """`identity` with a build `scope` from `narrowings` applied, as the datasets
+    """`identity` with a build `scope` from `narrowing` applied, as the datasets
     mint applies it before it puts the identity in canonical form.
 
     Each member the scope supplies replaces the identity's own whole: `window`
@@ -852,14 +852,13 @@ def conversion_body(
 ) -> dict[str, Any]:
     """The Search request that converts each reading to `request`: one identity
     entry per `Converting`, in order, its identity narrowed by its scope as
-    `scoped_identity` narrows it and its unit facet set to the request. Search
-    so judges the years and places the build reads.
+    `scoped_identity` narrows it and its unit facet set to the request, so
+    Search judges the years and places the build reads.
 
     Each entry carries the spec's entity groups that hold for the narrowed
-    identity, as `resubmit_body` does, and
-    names its answer part's variable text, else the reading's first part, else
-    `UNNAMED_PART`. An answer part's entry
-    also echoes its `separate` flag when true, its `operations` when any item
+    identity, as `resubmit_body` does, and names its answer part's variable
+    text, else the reading's first part, else `UNNAMED_PART`. An answer part's
+    entry also echoes its `separate` flag when true, its `operations` when any item
     reads, and its `assumptions` when it holds a list, in the read forms a
     choice posts, so Search states for the converted part the assumptions that
     still hold and keeps the operations and the folding the question asked for.
