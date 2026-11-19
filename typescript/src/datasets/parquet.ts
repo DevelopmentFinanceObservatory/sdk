@@ -13,7 +13,6 @@
 
 import { parquetMetadata, parquetRead } from "hyparquet";
 import type { FileMetaData, KeyValue, ParquetParsers, SchemaElement } from "hyparquet";
-import { parquetWriteBuffer } from "hyparquet-writer";
 
 import { readingOrder } from "./reading-order.ts";
 import type { ReadingOrder } from "./reading-order.ts";
@@ -753,6 +752,10 @@ export async function encodeStacked(
     ...columns.flatMap(schemaElements),
   ];
   const kvMetadata: KeyValue[] = Object.entries(metadata).map(([key, value]) => ({ key, value }));
+  // Loaded here so a page that only reads a dataset does not load the writer. hyparquet-writer is
+  // an external package, so the layer rule, which reads static imports, has nothing to check.
+  // eslint-disable-next-line no-restricted-syntax
+  const { parquetWriteBuffer } = await import("hyparquet-writer");
   const buffer = parquetWriteBuffer({
     columnData: columns.map(({ name, type, values }) => ({
       name,

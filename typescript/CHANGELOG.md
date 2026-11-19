@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- `hyparquet-writer` loads with a dynamic `import()` in `Dataset.toBytes()`, the only place the client writes Parquet. A bundler that splits dynamic imports leaves the writer out of the code a page loads to read a saved dataset: for an entry that calls `Dataset.fromBytes(bytes)` then `toRows()`, esbuild with `--splitting` loads 117 KB (37 KB gzip) up front instead of 169 KB (52 KB gzip), and fetches the writer's 54 KB (16 KB gzip) only on a `toBytes()` call. A bundler that does not split inlines the chunk as before.
+
 ### Fixed
 
 - A fetch with `currency` and `facets` returned the reading in its own unit. 0.4.0 posted `facets` as the converted build's `scope`, which replaces the converted identity's whole facet binding and so dropped the unit request: `answer.fetch({ currency: "EUR", facets: { provenance: ... } })` returned the held spec, its sentence and its rows in current US dollars, with no warning or error. The converted reading now builds with no `scope`, since its identity holds the narrowing.
