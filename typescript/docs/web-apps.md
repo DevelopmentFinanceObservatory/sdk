@@ -12,8 +12,6 @@ Build the data once, in a data step you run by hand or on a schedule, and commit
 - A page that shows the newest data on each view commits a live share's data URL and reads it with `fetch`.
 - A page that must make no DFO request at all ships the saved file in its own assets.
 
-Each of these pages reports what it draws with [Count a view](#count-a-view).
-
 ### The routes a page may call
 
 Browsers reach the API through `https://developmentfinance.org/api/v1`, the client's default base URL, where the website's gateway answers. Pages on `developmentfinance.org`, `www.developmentfinance.org`, and `preview.developmentfinance.org`, the prototype previews on `one-org.workers.dev`, and `http://localhost:3000` and `http://localhost:8787` may read the datasets routes below. The gateway answers their preflight and labels each answer with `Access-Control-Allow-Origin`. Share slot data answers any origin.
@@ -155,34 +153,6 @@ const rows = await data.toRows();
 ```
 
 Each reading is one binary file in the repository, and new data reaches the page when the data step runs again and the site redeploys.
-
-### Count a view
-
-DFO counts a dataset's use from the requests that reach it. A page that reads a saved file, or a pinned file the browser or the CDN already holds, reaches no DFO server, so it reports each chart or table it draws with one `POST /api/events/data-view`:
-
-<!-- docs-check: skip: posts a usage event to production -->
-
-```ts
-// In the page, once the chart is drawn
-import type { DatasetRef } from "@developmentfinance/client";
-
-function countView(ref: DatasetRef, via: "pinned_ref" | "saved_file"): void {
-  const members = ref.members.filter((member) => "spec" in member).slice(0, 10);
-  navigator.sendBeacon(
-    "https://developmentfinance.org/api/events/data-view",
-    JSON.stringify({
-      specIds: members.map((member) => member.spec.spec_id),
-      contentVersions: members.map((member) => member.contentVersion),
-      via,
-      page: location.pathname,
-    }),
-  );
-}
-
-countView(data.ref, "pinned_ref");
-```
-
-A page that reads a live share's data URL sends `via: "share"` with `shareId: slot.share_id`, `specIds: [slot.frame.spec_id]`, and `contentVersions: [slot.frame.content_version]`. Send it once per render, from the page that shows the chart, with `page` as the path alone and no query string. `sendBeacon` posts the JSON as text, which needs no preflight, and the page does not wait on the answer. The body takes 1 to 10 spec ids with as many content versions, `via` (`pinned_ref`, `saved_file`, `share`, or `baked`), `shareId` for a share and only then, and `page` as a path, at most 8 KB in all, and DFO refuses any other key with 400.
 
 ## Answer a question from a page
 
