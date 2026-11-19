@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-19
+
+0.4.0 was tagged and never published. 0.4.1 is the first release on the registry with the 0.4.0 changes listed below it.
+
 ### Changed
 
 - `hyparquet-writer` loads with a dynamic `import()` in `Dataset.toBytes()`, the only place the client writes Parquet. A bundler that splits dynamic imports leaves the writer out of the code a page loads to read a saved dataset. For an entry that calls `Dataset.fromBytes(bytes)` then `toRows()`, `esbuild --bundle --splitting --format=esm --minify --platform=browser` loads 117 KB (37 KB gzip) up front instead of 169 KB (52 KB gzip), and fetches the writer's 54 KB (16 KB gzip) only on a `toBytes()` call. A bundler that does not split inlines the chunk as before.

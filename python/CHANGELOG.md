@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-19
+
+0.4.0 was tagged and never published. 0.4.1 is the first release on the registry with the 0.4.0 changes listed below it.
+
 ### Fixed
 
 - A files route that answers the file with a 200 has its body read as a signed download reads one. The client's `attempt_timeout` bounds the wait for the response's headers, and the body then reads until the fetch's deadline, if any, failing with the retryable `network_error` once 30 seconds pass with no byte. Before, a 200 body had to arrive whole within the 30-second `attempt_timeout`, so a large file from a files route that answers 200 with the bytes timed out and was asked again.
