@@ -65,13 +65,11 @@ from pathlib import Path
 Path("debt-service.ref.json").write_text(ref.to_json())
 ```
 
-<!-- docs-check: skip: pin needs a key with the pin scope -->
-
 ```python
 data = dfo.pin(dfo.fetch(ref))
 ```
 
-`dfo.pin` returns the dataset with its versions pinned. It cannot be undone, sends one request per member, and each new pin counts against a daily allowance. A repeat pin of a version already pinned costs nothing. `ref.to_json()` writes a format the TypeScript client reads with `DatasetRef.fromJSON`.
+`dfo.pin` returns the dataset with its versions pinned. Any caller may pin, with or without a key. It cannot be undone, sends one request per member, and each new pin counts against a daily allowance. A repeat pin of a version already pinned costs nothing. `ref.to_json()` writes a format the TypeScript client reads with `DatasetRef.fromJSON`.
 
 ## Refresh
 
@@ -101,8 +99,6 @@ A ref keeps its window, so `latest=True` rebuilds the same years on newer versio
 
 A pipeline that reads data with its own HTTP client takes a link to each reading. `dfo.file_url(member)` gives the link to a pinned member's file, and the link reads with no key:
 
-<!-- docs-check: skip: file_url needs a pinned version, and pinning needs a key -->
-
 ```python
 data = dfo.pin(dfo.fetch(ref))
 for member in data.members:
@@ -113,7 +109,7 @@ for member in data.members:
 https://developmentfinance.org/api/v1/datasets/spec_5e5170d48b8a22e7f5d2e85919397ff3/cv_701c2cb05afe3b8947bd0c17c64d3cb3/file?format=parquet&bundle=false
 ```
 
-The link serves the member's version as Parquet, in the rendering the member was built in. It answers with a redirect to a storage address that is signed for five minutes, so read it with a client that follows redirects, and commit the API link, not the address it redirects to. `data.ref.members` holds members too, and `dfo.file_url` takes them.
+The link serves the member's version as Parquet, in the rendering the member was built in. It answers with a redirect to a storage address that is signed for five minutes, so read it with a client that follows redirects, and commit the API link, not the address it redirects to. A browser cannot read the link, since the storage address answers no page's origin. A web page reads a pinned ref with the TypeScript client's `client.fetch(ref)`, as [Put data on a page](../../typescript/docs/web-apps.md#put-data-on-a-page) shows. `data.ref.members` holds members too, and `dfo.file_url` takes them.
 
 `file_url` reads the version's manifest once. An unpinned version raises `VersionNotPinnedError`, an `InvalidRequestError` with the code `version_not_pinned`, because DFO keeps it for 30 days and a committed link to it would break after that. `error.held_until` is the date DFO stops guaranteeing it. Run `dfo.pin(data)`, then ask again. A member of a derived dataset from `dfo.analysis` raises `invalid_argument`.
 
@@ -158,3 +154,4 @@ print(table.num_rows)
 
 - [Fetch and keep a dataset](datasets.md) covers refs, retention, and the saved file.
 - [Cards and shares](shares.md) publishes what a pipeline built, and keeps the links when the data refreshes.
+- [Put data on a page](../../typescript/docs/web-apps.md#put-data-on-a-page), in the TypeScript docs, reads a ref this pipeline pinned, or a live share's data URL, on a web page. The ref JSON `ref.to_json()` writes is the one it reads.

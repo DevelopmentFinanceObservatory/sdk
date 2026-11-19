@@ -65,13 +65,11 @@ A ref names the exact versions a dataset holds. Commit it as JSON, and every lat
 await writeFile("debt-service.ref.json", JSON.stringify(ref));
 ```
 
-<!-- docs-check: skip: pin needs a key with the pin scope -->
-
 ```ts
 const pinned = await client.pin(await client.fetch(ref));
 ```
 
-`client.pin` returns the dataset with its versions pinned. It cannot be undone, sends one request per member, and each new pin counts against a daily allowance. A repeat pin of a version already pinned costs nothing. `JSON.stringify(ref)` writes a format the Python client reads with `DatasetRef.from_json`.
+`client.pin` returns the dataset with its versions pinned. Any caller may pin, with or without a key. It cannot be undone, sends one request per member, and each new pin counts against a daily allowance. A repeat pin of a version already pinned costs nothing. `JSON.stringify(ref)` writes a format the Python client reads with `DatasetRef.from_json`.
 
 ## Refresh
 
@@ -103,8 +101,6 @@ A ref keeps its window, so `latest: true` rebuilds the same years on newer versi
 
 A pipeline that reads data with its own HTTP client takes a link to each reading. `client.fileUrl(member)` gives the link to a pinned member's file, and the link reads with no key:
 
-<!-- docs-check: skip: fileUrl needs a pinned version, and pinning needs a key -->
-
 ```ts
 const held = await client.pin(await client.fetch(committed));
 for (const member of held.members) {
@@ -116,7 +112,7 @@ for (const member of held.members) {
 https://developmentfinance.org/api/v1/datasets/spec_5e5170d48b8a22e7f5d2e85919397ff3/cv_701c2cb05afe3b8947bd0c17c64d3cb3/file?format=parquet&bundle=false
 ```
 
-The link serves the member's version as Parquet, in the rendering the member was built in. It answers with a redirect to a storage address that is signed for five minutes, so read it with a client that follows redirects, and commit the API link, not the address it redirects to. `data.ref.members` holds members too, and `client.fileUrl` takes them.
+The link serves the member's version as Parquet, in the rendering the member was built in. It answers with a redirect to a storage address that is signed for five minutes, so read it with a client that follows redirects, and commit the API link, not the address it redirects to. A browser cannot read the link, since the storage address answers no page's origin. A page reads the same version with `client.fetch(ref)`, as [Open on a frozen snapshot](web-apps.md#open-on-a-frozen-snapshot) shows. `data.ref.members` holds members too, and `client.fileUrl` takes them.
 
 `fileUrl` reads the version's manifest once. An unpinned version throws `VersionNotPinnedError`, an `InvalidRequestError` with the code `version_not_pinned`, because DFO keeps it for 30 days and a committed link to it would break after that. `error.heldUntil` is the `Date` DFO stops guaranteeing it. Run `client.pin(data)`, then ask again. A member of a derived dataset from `client.analysis` throws `invalid_argument`.
 
