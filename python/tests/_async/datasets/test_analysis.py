@@ -319,8 +319,17 @@ async def test_a_ready_answer_without_one_derived_member_raises_contract_error(
         {"layout": "long"},
         {"party_totals": True},
         {"progress": False},
+        {"currency": "EUR"},
     ],
-    ids=["window", "entities", "facets", "layout", "party-totals", "progress"],
+    ids=[
+        "window",
+        "entities",
+        "facets",
+        "layout",
+        "party-totals",
+        "progress",
+        "currency",
+    ],
 )
 async def test_a_recipe_refuses_the_options_of_a_spec_unsent(
     options: dict[str, Any],

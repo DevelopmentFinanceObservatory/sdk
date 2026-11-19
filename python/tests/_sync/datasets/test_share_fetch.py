@@ -802,6 +802,7 @@ def test_as_of_takes_the_entry_the_history_lists_first_of_one_millisecond() -> N
         {"party_totals": False},
         {"layout": "long"},
         {"latest": True},
+        {"currency": "EUR", "price_basis": "constant", "base_year": 2022},
     ],
     ids=[
         "slot-0",
@@ -815,6 +816,7 @@ def test_as_of_takes_the_entry_the_history_lists_first_of_one_millisecond() -> N
         "party-totals",
         "long-layout",
         "latest",
+        "conversion",
     ],
 )
 def test_an_option_a_share_does_not_take_is_refused_unsent(

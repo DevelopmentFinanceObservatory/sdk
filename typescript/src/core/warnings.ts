@@ -41,6 +41,15 @@ export class DataWarning extends DfoWarning {
  *  `strict: true` raises it. Its code is `series_left_out`. */
 export class SeriesLeftOutWarning extends DfoWarning {}
 
+/** How the readings an answer builds differ from the question: departures, computations Search
+ *  did not run, and its `warn` and `degraded` warnings, including those Search gives a converted
+ *  reading. */
+export class SearchWarning extends DfoWarning {}
+Object.defineProperty(SearchWarning.prototype, "name", {
+  value: "SearchWarning",
+  configurable: true,
+});
+
 const WARNING_CLASSES = { DfoWarning, DfoDeprecationWarning, DataWarning, SeriesLeftOutWarning };
 
 for (const [name, warningClass] of Object.entries(WARNING_CLASSES)) {

@@ -25,6 +25,7 @@
  */
 
 import type { Gap } from "../search/answer.ts";
+import type { Conversion } from "./convert.ts";
 import { Dataset } from "./dataset.ts";
 import type { FetchedMember } from "./dataset.ts";
 import {
@@ -38,7 +39,13 @@ import {
 import type { ClientErrorCode, DfoErrorOptions } from "../core/errors.ts";
 import { build, downloadBuilt, waitFor } from "./operation.ts";
 import type { Built, Manifest, ProgressHandler, Wait } from "./operation.ts";
-import { manifestWarningsOf, partFacts } from "../core/parse.ts";
+import {
+  assumptionsReadOf,
+  manifestWarningsOf,
+  operationsOf,
+  partFacts,
+  warningsOf,
+} from "../core/parse.ts";
 import type { PartFacts } from "../core/parse.ts";
 import { mintOptions, renderingFor, renderingMatches } from "../core/ref.ts";
 import type { Layout, Rendering, Spec } from "../core/ref.ts";
@@ -47,9 +54,9 @@ import { describing } from "../core/trace.ts";
 import { trimEnd, WHITESPACE } from "../core/text.ts";
 import { DEFAULT_MAX_BYTES, passedDeadline } from "../http/transport.ts";
 import type { Target, Transport } from "../http/transport.ts";
-import type { EntityGroup } from "../wire.ts";
+import type { EntityGroup, Notice } from "../wire.ts";
 import type { Part } from "../core/parts.ts";
-import { DataWarning } from "../core/warnings.ts";
+import { DataWarning, SearchWarning } from "../core/warnings.ts";
 import { isRecord, present, text } from "../core/json.ts";
 import { nearest } from "../core/nearest.ts";
 import { declareOptions } from "../core/options.ts";
@@ -98,6 +105,27 @@ export type MemberRequest = {
   readonly entityGroups?: EntityGroups | null | undefined;
   /** The answer parts the reading answers, when it comes from an answer. */
   readonly answerParts?: readonly Part[];
+  /** For a reading Search converted to another unit: the label its warnings lead with, as
+   *  `Converting "bilateral ODA" to EUR at constant 2022 prices`, and the converted parts'
+   *  warnings, with the trace id of the reply that held them. */
+  readonly converted?:
+    | {
+        readonly label: string;
+        readonly warnings: readonly Notice[];
+        readonly traceId: string | null;
+      }
+    | undefined;
+};
+
+/** What Search said about a reading it converted. */
+type ConvertedReading = NonNullable<MemberRequest["converted"]>;
+
+/** Search's answer for a built reading: its sentence, and the part's warnings, with the trace id
+ *  of the reply that held them. */
+export type BuiltReading = {
+  readonly sentence: string;
+  readonly warnings: readonly Notice[];
+  readonly traceId: string | null;
 };
 
 /** The sentence and entity groups of a spec's `resolved`, whose members the client does not
@@ -136,8 +164,10 @@ export type CallOptions = {
   partyTotals?: boolean;
 };
 
-/** The options a spec takes: every option but `latest`, `asOf` and `slot`. */
-export type SpecFetchOptions = CallOptions & Narrowing;
+/** The options a spec takes: every option but `latest`, `asOf` and `slot`. `currency`,
+ *  `priceBasis` and `baseYear` fetch the reading in another unit, converted before `window`,
+ *  `entities` and `facets` narrow it. */
+export type SpecFetchOptions = CallOptions & Narrowing & Conversion;
 
 /** The options a ref takes. Its `layout` must be the ref's own, and a ref of a frame DFO
  *  computed takes no `onProgress`. */
@@ -185,6 +215,9 @@ export const FETCH_OPTIONS = declareOptions<FetchOptions>("client.fetch", {
   window: true,
   entities: true,
   facets: true,
+  currency: true,
+  priceBasis: true,
+  baseYear: true,
   latest: true,
   asOf: true,
   slot: true,
@@ -197,11 +230,53 @@ export type FetchMembersOptions = CallOptions & {
   narrowing?: Narrowing;
   /** The question the members answer, which the dataset keeps, when an answer fetches them. */
   question?: string | null;
+  /** The wait a caller already started, such as a conversion's, which the builds share. */
+  wait?: Wait;
 };
 
 /** The variable text an identity resubmit sends for a spec no answer part names. Search
  *  echoes it onto the part, and it does not change the sentence. */
-const UNNAMED_PART = "dataset";
+export const UNNAMED_PART = "dataset";
+
+/** One `dataset_resubmit` entry: an identity, the variable text Search echoes onto its part,
+ *  and the entity groups to keep, when there are any. */
+export function identityEntry(
+  variableText: string,
+  identity: unknown,
+  groups: EntityGroups | null,
+): Record<string, unknown> {
+  return {
+    entry_kind: "identity",
+    variable_text: variableText,
+    identity,
+    ...(groups === null || Object.keys(groups).length === 0 ? {} : { entity_groups: groups }),
+  };
+}
+
+/** The members an identity entry echoes from the answer part it stands for: `separate` when
+ *  true, `operations` when any item reads, and `assumptions` when the part holds a list, in the
+ *  read forms a choice posts. */
+export function echoedReading(part: Part): Record<string, unknown> {
+  const operations = operationsOf(part.operations);
+  const assumptions = assumptionsReadOf(part.assumptions);
+  return {
+    ...(part.separate === true ? { separate: true } : {}),
+    ...(operations.length > 0 ? { operations: [...operations] } : {}),
+    ...(assumptions === undefined ? {} : { assumptions: [...assumptions] }),
+  };
+}
+
+/** The `/search/resolve` body that resubmits `entries`, with `responseOptions` when given. */
+export function resubmitBody(
+  entries: readonly Record<string, unknown>[],
+  responseOptions?: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    schema_version: RESOLVE_SCHEMA_VERSION,
+    input: { kind: "dataset_resubmit", entries },
+    ...(responseOptions === undefined ? {} : { response_options: responseOptions }),
+  };
+}
 
 export const DIGEST_MISMATCH = "digest_mismatch" satisfies ClientErrorCode;
 
@@ -663,10 +738,11 @@ function keptEntityGroups(
 }
 
 /**
- * Search's sentence for a built identity, from resubmitting it with the held spec's groups that
- * `keptEntityGroups` keeps, which are none for a build read by its operation id. Search answers one definite
- * part of the same `spec_id`, or one `no_data` part for a build whose manifest counts no rows,
- * such as a window before the data starts; that part's sentence labels the empty dataset.
+ * Search's sentence and warnings for a built identity, from resubmitting it with the held spec's
+ * groups that `keptEntityGroups` keeps, which are none for a build read by its operation id.
+ * Search answers one definite part of the same `spec_id`, or one `no_data` part for a build whose
+ * manifest counts no rows, such as a window before the data starts; that part's sentence labels
+ * the empty dataset. The warnings are the part's, whichever its status.
  *
  * @throws {ContractError} Search did not answer with one definite part of the same `spec_id`
  *   and a sentence, or, for a build that counts no rows, one `no_data` part with a sentence.
@@ -677,31 +753,21 @@ export async function sentenceFor(
   parts: readonly string[],
   held: Held | undefined,
   wait: Wait,
-): Promise<string> {
+  echoed?: Part,
+): Promise<BuiltReading> {
   const definition = definitionOf(manifest);
   const specId = specIdOf(manifest);
   const groups = keptEntityGroups(held, definition);
+  const entry = identityEntry(parts[0] ?? UNNAMED_PART, definition["identity"], groups);
   const response = await transport.request({
     path: RESOLVE_PATH,
-    json: {
-      schema_version: RESOLVE_SCHEMA_VERSION,
-      input: {
-        kind: "dataset_resubmit",
-        entries: [
-          {
-            entry_kind: "identity",
-            variable_text: parts[0] ?? UNNAMED_PART,
-            identity: definition["identity"],
-            ...(Object.keys(groups).length === 0 ? {} : { entity_groups: groups }),
-          },
-        ],
-      },
-    },
+    json: resubmitBody([echoed === undefined ? entry : { ...entry, ...echoedReading(echoed) }]),
     ...wait,
   });
   return describing(response.traceId, () => {
     const answer = response.body;
     let sentence: unknown;
+    let warnings: readonly Notice[] = [];
     if (isRecord(answer) && answer["kind"] === "resolution") {
       checkStrict("Resolution", answer);
       // checkStrict has checked `parts` is a list and a definite part holds a spec.
@@ -711,6 +777,7 @@ export async function sentenceFor(
         const spec = part["spec"] as Record<string, unknown>;
         const meta = spec["resolved"];
         if (spec["spec_id"] === specId && isRecord(meta)) sentence = meta["rendered_sentence"];
+        warnings = warningsOf(part["warnings"]);
       } else if (
         resolved.length === 1 &&
         isRecord(part) &&
@@ -719,6 +786,7 @@ export async function sentenceFor(
       ) {
         // A build that holds no observations. Search names what it checked and found empty.
         sentence = part["rendered_sentence"];
+        warnings = warningsOf(part["warnings"]);
       }
     }
     if (!isText(sentence)) {
@@ -728,7 +796,7 @@ export async function sentenceFor(
           "part, with a sentence.",
       });
     }
-    return sentence;
+    return { sentence, warnings, traceId: response.traceId };
   });
 }
 
@@ -746,14 +814,24 @@ export type Finishing = {
   readonly rendering: Rendering;
   readonly strict: boolean;
   readonly answerFacts?: readonly PartFacts[];
+  /** What Search said about the reading when the fetch converted it. */
+  readonly converted?: ConvertedReading | undefined;
+  /** The converted answer part whose operations, assumptions and `separate` flag a resubmit for
+   *  the built reading's sentence echoes, as the conversion posted them. */
+  readonly echoed?: Part | undefined;
 };
 
-/** Downloads a built version's artifact and gives it Search's sentence, within `downloadBuilt`'s
- *  time. The manifest's warnings and its artifact's `url` are checked before any request. */
+/**
+ * Downloads a built version's artifact and gives it Search's sentence, within `downloadBuilt`'s
+ * time. The manifest's warnings and its artifact's `url` are checked before any request, and a
+ * converted reading's warnings are issued, or the first thrown under strict, before the download.
+ *
+ * @throws {SearchWarning} `strict` is true and Search warned about the converted reading.
+ */
 export async function finish(
   transport: Transport,
   built: Built,
-  { parts, posted, sentence, rendering, strict, answerFacts }: Finishing,
+  { parts, posted, sentence, rendering, strict, answerFacts, converted, echoed }: Finishing,
   wait: Wait,
 ): Promise<FetchedMember> {
   const { manifest } = built;
@@ -774,15 +852,23 @@ export async function finish(
   });
   const known = posted?.spec.spec_id === specId && isText(sentence);
   const digest = String(artifact["artifact_digest"]);
-  const { told, data } = await downloadBuilt(transport, built, wait, async (within) => ({
-    told: known ? sentence : await sentenceFor(transport, manifest, parts, posted, within),
-    data: await download(transport, { url: route.href }, digest, within, artifact["bytes"]),
-  }));
+  const { reading, data } = await downloadBuilt(transport, built, wait, async (within) => {
+    const resubmitted = known
+      ? undefined
+      : await sentenceFor(transport, manifest, parts, posted, within, echoed);
+    if (converted !== undefined) {
+      noteConversion(transport, converted, resubmitted, manifest, strict);
+    }
+    return {
+      reading: resubmitted,
+      data: await download(transport, { url: route.href }, digest, within, artifact["bytes"]),
+    };
+  });
   checkArtifact(data, manifest, digest);
   return {
     parts,
     spec: { spec_id: specId, definition },
-    sentence: told,
+    sentence: reading?.sentence ?? (sentence as string),
     contentVersion,
     manifest,
     digest,
@@ -790,6 +876,36 @@ export async function finish(
     data,
     ...(answerFacts === undefined ? {} : { answerFacts }),
   };
+}
+
+/**
+ * Issues Search's warnings about a converted reading once it is built, before its download: the warnings of the
+ * resubmit that gave the built reading its sentence when there was one, else the conversion's.
+ * Only `warn` and `degraded` warnings are issued, each code once, and a code the member's
+ * manifest already issued is skipped. Under strict the first raises.
+ *
+ * @throws {SearchWarning} `strict` is true and a warning is left to issue.
+ */
+function noteConversion(
+  transport: Transport,
+  converted: ConvertedReading,
+  reading: BuiltReading | undefined,
+  manifest: Manifest,
+  strict: boolean,
+): void {
+  const { warnings, traceId } = reading ?? converted;
+  const issued = new Set(
+    manifestWarningsOf(manifest["warnings"])
+      .filter(({ severity }) => severity !== "info")
+      .map(({ code }) => code),
+  );
+  for (const { code, severity, message } of warnings) {
+    if ((severity !== "warn" && severity !== "degraded") || issued.has(code)) continue;
+    issued.add(code);
+    const warning = new SearchWarning(code, `${converted.label}: ${message}`, traceId);
+    if (strict) throw warning;
+    transport.warn(warning);
+  }
 }
 
 /** The same refusal with hints, each a sentence, added to its detail and its message, which
@@ -860,6 +976,7 @@ function distinct(members: readonly MemberRequest[]): MemberRequest[] {
             sentence: seen.sentence ?? member.sentence,
             entityGroups: seen.entityGroups ?? member.entityGroups,
             answerParts: [...(seen.answerParts ?? []), ...(member.answerParts ?? [])],
+            converted: seen.converted ?? member.converted,
           },
     );
   }
@@ -880,6 +997,36 @@ function joined(
 }
 
 /**
+ * The distinct members a fetch builds, each one's build `scope`, and the rendering, once the
+ * layout, `partyTotals` and the narrowing pass their rules for every member.
+ *
+ * @throws {InvalidRequestError} No member, `layout: "frame"` with several members, or a
+ *   narrowing that breaks its rule for any member or names a role a member does not take
+ *   (`invalid_argument`).
+ */
+export function checkMembers(
+  members: readonly MemberRequest[],
+  options: FetchMembersOptions,
+): {
+  wants: MemberRequest[];
+  scopes: (Record<string, unknown> | undefined)[];
+  rendering: Rendering;
+} {
+  const layout = options.layout ?? "long";
+  const rendering = renderingFor(layout, !checkedPartyTotals(options.partyTotals));
+  const wants = distinct(members);
+  if (wants.length === 0) throw invalid("A fetch needs at least one spec.");
+  if (layout === "frame" && wants.length > 1) {
+    throw invalid('layout "frame" holds one reading; fetch each spec on its own for its frame.');
+  }
+  const narrowing = options.narrowing ?? {};
+  // Every reading's narrowing is checked before the first request.
+  const scopes = wants.map(({ spec }) => scopeOf(spec, narrowing));
+  checkRoles(wants, narrowing.entities);
+  return { wants, scopes, rendering };
+}
+
+/**
  * Builds the latest version of each spec and assembles one dataset. A spec listed twice builds
  * once, answering both parts. Two specs whose narrowed builds are one spec, which the build's
  * manifest names, make one member answering both, downloaded once.
@@ -896,21 +1043,15 @@ export async function fetchMembers(
   options: FetchMembersOptions = {},
 ): Promise<Dataset> {
   const layout = options.layout ?? "long";
-  const rendering = renderingFor(layout, !checkedPartyTotals(options.partyTotals));
-  const wants = distinct(members);
-  if (wants.length === 0) throw invalid("A fetch needs at least one spec.");
-  if (layout === "frame" && wants.length > 1) {
-    throw invalid('layout "frame" holds one reading; fetch each spec on its own for its frame.');
-  }
+  const { wants, scopes, rendering } = checkMembers(members, options);
   const narrowing = options.narrowing ?? {};
-  // Every reading's narrowing is checked before the first build.
-  const scopes = wants.map(({ spec }) => scopeOf(spec, narrowing));
-  checkRoles(wants, narrowing.entities);
-  const wait = waitFor(transport, options);
+  const wait = options.wait ?? waitFor(transport, options);
   const fetched: FetchedMember[] = [];
   /** Where each built spec sits in `fetched`. */
   const builtAt = new Map<string, number>();
-  for (const [at, { parts, spec, sentence, entityGroups, answerParts }] of wants.entries()) {
+  const strict = options.strict ?? false;
+  for (const [at, want] of wants.entries()) {
+    const { parts, spec, sentence, entityGroups, answerParts, converted } = want;
     const scope = scopes[at];
     let built: Built;
     try {
@@ -928,17 +1069,20 @@ export async function fetchMembers(
     const builtId = specIdOf(built.manifest);
     const seen = builtAt.get(builtId);
     if (seen !== undefined) {
+      // The built spec's conversion warnings were issued when it was first built; this reading's
+      // own describe the spec it held before the narrowing, not the one built.
       fetched[seen] = joined(fetched[seen]!, parts, answerFacts);
       continue;
     }
     builtAt.set(builtId, fetched.length);
-    const finishing = {
+    const finishing: Finishing = {
       parts,
       posted: { spec, entityGroups },
       sentence,
       rendering,
-      strict: options.strict ?? false,
+      strict,
       ...(answerFacts === undefined ? {} : { answerFacts }),
+      ...(converted === undefined ? {} : { converted, echoed: answerParts?.[0] }),
     };
     try {
       fetched.push(await finish(transport, built, finishing, wait));

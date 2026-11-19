@@ -35,12 +35,15 @@ import type { PartFacts } from "../core/parse.ts";
 import { definiteParts, isKnownPart, partSentence, partText } from "../core/parts.ts";
 import type { DefinitePart, KnownPart, Part } from "../core/parts.ts";
 import { checkOptions, declareOptions } from "../core/options.ts";
+import { checkedConversion, fetchConverted } from "../datasets/convert.ts";
+import type { Conversion } from "../datasets/convert.ts";
 import { withEntityDcids } from "./lookup-results.ts";
 import { askedCode, checkReply, codeGap } from "./structured.ts";
 import { checkStrict } from "../core/strict.ts";
 import { describing } from "../core/trace.ts";
+import { SEARCH_TIMEOUT_MS } from "../http/transport.ts";
 import type { Transport } from "../http/transport.ts";
-import { DfoWarning, emitWarning } from "../core/warnings.ts";
+import { emitWarning, SearchWarning } from "../core/warnings.ts";
 import type { WarningHandler } from "../core/warnings.ts";
 import type {
   Assumption,
@@ -54,8 +57,7 @@ import type {
 import type { Spec } from "../core/ref.ts";
 import { isRecord, list, text } from "../core/json.ts";
 
-/** Longer than Search's 45-second soft deadline, so a slow answer arrives whole. */
-const SEARCH_TIMEOUT_MS = 60_000;
+export { SearchWarning } from "../core/warnings.ts";
 
 /** What a gap needs to settle it: the contract's gap kinds, or one the client derives. */
 export type GapKind = (typeof GAP_KINDS)[number] | "unknown";
@@ -153,10 +155,12 @@ export type ChooseOptions = SearchOptions & {
 };
 
 /** A fetch's options, less the gaps the answer supplies. `window`, `entities` and `facets`
- *  narrow every reading as `client.fetch` narrows one spec. `strict` also throws the
- *  `SearchWarning` instead of issuing it. */
+ *  narrow every reading, and `currency`, `priceBasis` and `baseYear` convert every reading, as
+ *  `client.fetch` does for one spec. `strict` also throws the `SearchWarning` instead of
+ *  issuing it. */
 export type AnswerFetchOptions = CallOptions &
-  Narrowing & {
+  Narrowing &
+  Conversion & {
     /** Build the parts that have a reading when others do not; the dataset lists the gaps. */
     readonly partial?: boolean;
   };
@@ -185,15 +189,10 @@ const ANSWER_FETCH_OPTIONS = declareOptions<AnswerFetchOptions>("answer.fetch", 
   window: true,
   entities: true,
   facets: true,
+  currency: true,
+  priceBasis: true,
+  baseYear: true,
   partial: true,
-});
-
-/** How the readings an answer builds differ from the question: departures, computations Search
- *  did not run, and its `warn` and `degraded` warnings. */
-export class SearchWarning extends DfoWarning {}
-Object.defineProperty(SearchWarning.prototype, "name", {
-  value: "SearchWarning",
-  configurable: true,
 });
 
 type AnswerInit = {
@@ -348,20 +347,33 @@ export class Answer {
    * `part` column. `window`, `entities` and `facets` narrow every reading as `client.fetch`
    * narrows one spec.
    *
-   * @throws {InvalidRequestError} `options` holds a key outside `AnswerFetchOptions`, or a
+   * `currency`, with `priceBasis` and `baseYear`, fetches every reading in that unit: one Search
+   * request converts them all, before any narrowing, and the dataset holds the converted
+   * readings, their specs and sentences. `unitConversion(spec)` lists what each reading
+   * converts to.
+   *
+   * ```ts
+   * const table = await answer.fetch({ currency: "EUR", priceBasis: "constant", baseYear: 2022 });
+   * ```
+   *
+   * @throws {InvalidRequestError} `options` holds a key outside `AnswerFetchOptions`, a
    *   narrowing breaks its rule, names a role a reading does not take, which names each
-   *   reading's roles, or holds a `Match` that did not resolve, before any request
-   *   (`invalid_argument`).
+   *   reading's roles, or holds a `Match` that did not resolve, or a conversion option breaks
+   *   its rule, before any request (`invalid_argument`).
    * @throws {DeclinedError} Search declined the question or answered with the catalogue.
    * @throws {IncompleteAnswerError} A part has no reading and `partial` is false, or no part has
    *   one.
-   * @throws {SearchWarning} `strict` is true and the reading differs from the question.
+   * @throws {InvalidRequestError} A reading does not convert to the unit asked for, with the code
+   *   Search gives, such as `rate_coverage_gap` when the tables lack a rate, even with
+   *   `partial`, or the server refuses the conversion, such as `recipe_not_declared`.
+   * @throws {SearchWarning} `strict` is true and the reading differs from the question, or
+   *   Search warned about a converted reading, such as `deflator_missing_omitted`.
    * @throws {DataWarning} `strict` is true and a manifest carries a warning above `info`.
    */
   async fetch(options: AnswerFetchOptions = {}): Promise<Dataset> {
-    const { partial, window, entities, facets, ...fetchOptions } = withEntityDcids(
-      checkOptions(ANSWER_FETCH_OPTIONS, options),
-    );
+    const { partial, window, entities, facets, currency, priceBasis, baseYear, ...fetchOptions } =
+      withEntityDcids(checkOptions(ANSWER_FETCH_OPTIONS, options));
+    const request = checkedConversion({ currency, priceBasis, baseYear }, facets);
     if (this.kind !== "resolution") {
       throw clientError("answer_declined", {
         detail: declinedText(this.kind, this.reason),
@@ -388,12 +400,13 @@ export class Answer {
       (this.#context.onWarning ?? emitWarning)(warning);
     }
     const build = this.#context.fetchMembers ?? defaultFetchMembers;
-    return build(this.#context.transport, members, {
+    const fetching = {
       ...fetchOptions,
       narrowing: narrowingOf({ window, entities, facets }),
       missing: this.gaps,
       question: this.question,
-    });
+    };
+    return fetchConverted(this.#context.transport, members, fetching, request, build);
   }
 
   /** The answer as a reader sees it: the sentence and the call that fetches it, or what is

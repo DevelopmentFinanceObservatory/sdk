@@ -40,6 +40,7 @@ _SPEC: Kept = {
     "resolved": {
         "rendered_sentence": True,
         "entity_groups": True,
+        "unit_conversion": True,
         "stat_vars": {"source_codes": True},
         "sentence_plan": {"segment": True, "kind": True, "axis": True, "text": True},
         "facets": {"provenance": {"label": True}},

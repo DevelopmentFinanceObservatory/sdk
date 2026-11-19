@@ -9,6 +9,7 @@ import json
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx2
 import pyarrow.parquet as pq
@@ -27,17 +28,20 @@ from dfo._core.errors import (
     NetworkError,
     NotFoundError,
     PermissionDeniedError,
+    SearchWarning,
     ServerError,
     VersionUnavailableError,
+    message_of,
 )
 from dfo._core.lookup_results import Entity, Match
-from dfo._core.parse import parse_spec
+from dfo._core.parse import parse_parts, parse_spec
 from dfo._core.refs import DatasetRef, RefMember
+from dfo._core.timeouts import SEARCH_TIMEOUT
 from dfo._core.types import DefinitePart, Departure, FormatError, Rendering, Spec
 from dfo._datasets.build import Reading
 from dfo._datasets.bundle import load as load_saved
 from dfo._datasets.cache import Cache, file_entry, manifest_entry, sha256_digest
-from dfo._datasets.dataset import build_dataset
+from dfo._datasets.dataset import FetchedMember, build_dataset
 from dfo._datasets.fetch import fetch_members
 from dfo._datasets.resolve import fetch
 from dfo._http.transport import AsyncTransport
@@ -492,6 +496,606 @@ async def test_an_empty_narrowing_takes_the_sentence_of_its_no_data_part(
     assert built.members[0].sentence == NO_DATA
     assert built.members[0].spec.spec_id == NARROWED_ID
     assert [item.message.code for item in caught_warnings] == ["coverage_below_scope"]
+
+
+ODA = "bilateral ODA"
+CONSTANT = {"currency": "EUR", "price_basis": "constant", "base_year": 2022}
+
+
+def oda() -> Reading:
+    """The reading of Germany's bilateral ODA to Kenya, as its answer posts it."""
+    held = parse_spec(load("search-oda-deu-ken.json")["parts"][0]["spec"])
+    return Reading((ODA,), held, held.sentence)
+
+
+def converted_spec(answer: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The converted spec of a recorded conversion answer."""
+    body = load("probe-resubmit-unit-constant.json") if answer is None else answer
+    return body["parts"][0]["spec"]
+
+
+def converted_manifest(**options: Any) -> dict[str, Any]:
+    """The build of the converted spec, carrying its definition."""
+    spec = converted_spec()
+    body = manifest(spec["spec_id"], **options)
+    body["definition"] = spec["definition"]
+    return body
+
+
+def as_sent(body: object) -> str:
+    """A JSON body as the client serialises it, so key order counts."""
+    return json.dumps(body, ensure_ascii=False)
+
+
+async def test_a_conversion_posts_the_recorded_request_and_builds_the_converted_spec() -> (
+    None
+):
+    reply = load("probe-resubmit-unit-constant.json")
+    departure = {"code": "closest_match", "text": "Shows the closest year."}
+    reply["parts"][0]["departures"] = [departure]
+    body = converted_manifest()
+    server = Server(
+        json_response(200, reply), json_response(200, body), redirect(), parquet()
+    )
+    async with make(server) as transport:
+        built = await fetch_members(transport, [oda()], **CONSTANT)
+    assert server.calls() == [
+        f"POST {BASE}/search/resolve",
+        f"POST {BASE}/datasets",
+        f"GET {files_path(body)}",
+        f"GET {SIGNED.split('?')[0]}",
+    ]
+    recorded = load("probe-resubmit-unit-constant.request.json")
+    assert as_sent(server.body(0)) == as_sent(recorded)
+    converted = converted_spec(reply)
+    assert server.body(1)["input"]["spec_id"] == converted["spec_id"]
+    assert server.body(1)["input"]["definition"] == converted["definition"]
+    (member,) = built.members
+    sentence = converted["resolved"]["rendered_sentence"]
+    assert "Constant 2022 euros" in sentence
+    assert (member.parts, member.spec.spec_id, member.sentence) == (
+        (ODA,),
+        converted["spec_id"],
+        sentence,
+    )
+    # The member reports the converted reading's facts, not the held one's.
+    assert isinstance(member, FetchedMember)
+    assert [
+        (d.code, d.text) for part in member.answer_parts for d in part.departures
+    ] == [("closest_match", "Shows the closest year.")]
+
+
+async def test_folded_parts_convert_one_entry_each_and_keep_their_own_facts() -> None:
+    # Two parts folded onto one spec, asked with their own operations and
+    # assumptions, post one entry each and stay two parts of one reading.
+    answer = load("search-oda-deu-ken.json")
+    first = answer["parts"][0]
+    rank = {"verb": "rank", "phrase": "top 5 donors", "over": "origin"}
+    first["operations"] = [rank]
+    second = copy.deepcopy(first)
+    assumed = {
+        "kind": "declared_default",
+        "binding_ref": "how:dac2aAidType",
+        "text": "official development assistance",
+        "refs": ["DAC2aAidType206"],
+    }
+    second |= {"variable_text": "aid", "operations": [], "assumptions": [assumed]}
+    second["separate"] = True
+    answer["parts"].append(second)
+    parts = parse_parts(answer)
+    held = parts[0].spec
+    reply = load("probe-resubmit-unit-constant.json")
+    converted = reply["parts"][0]
+    converted["operations"] = [rank]
+    echoed = copy.deepcopy(converted) | {"variable_text": "aid", "operations": []}
+    echoed["assumptions"] = [assumed]
+    reply["parts"].append(echoed)
+    server = Server(
+        json_response(200, reply),
+        json_response(200, converted_manifest()),
+        redirect(),
+        parquet(),
+    )
+    async with make(server) as transport:
+        built = await fetch_members(
+            transport,
+            [Reading((ODA, "aid"), held, held.sentence, tuple(parts))],
+            **CONSTANT,
+        )
+    first_entry, second_entry = server.body(0)["input"]["entries"]
+    assert (first_entry["variable_text"], first_entry["operations"]) == (ODA, [rank])
+    assert first_entry["assumptions"] == []
+    assert "separate" not in first_entry
+    assert (second_entry["variable_text"], second_entry["assumptions"]) == (
+        "aid",
+        [assumed],
+    )
+    assert second_entry["separate"] is True
+    assert "operations" not in second_entry
+    (member,) = built.members
+    assert member.parts == (ODA, "aid")
+    assert [part.variable_text for part in member.answer_parts] == [ODA, "aid"]
+    assert [
+        ([op.phrase for op in part.operations], [a.text for a in part.assumptions])
+        for part in member.answer_parts
+    ] == [(["top 5 donors"], []), ([], [assumed["text"]])]
+
+
+async def test_a_spec_converts_at_current_prices_under_no_parts_name() -> None:
+    reply = load("probe-resubmit-unit-constant.json")
+    current = {"currency": "EUR", "prices": "current"}
+    # A null base year echoes a current request as an absent one does.
+    echoed = current | {"base_year": None}
+    converted_spec(reply)["definition"]["identity"]["facets"]["unit"]["request"] = (
+        echoed
+    )
+    server = Server(
+        json_response(200, reply),
+        json_response(200, converted_manifest()),
+        redirect(),
+        parquet(),
+    )
+    async with make(server) as transport:
+        built = await fetch(transport, oda().spec, currency="EUR")
+    (entry,) = server.body(0)["input"]["entries"]
+    assert entry["variable_text"] == "dataset"
+    assert entry["identity"]["facets"]["unit"] == {"state": "value", "request": current}
+    assert built.members[0].spec.spec_id == converted_spec(reply)["spec_id"]
+
+
+@pytest.mark.parametrize(
+    ("narrowing", "body_trace"),
+    [({}, None), ({"window": (2015, 2020)}, None), ({}, "body-trace")],
+    ids=["held", "narrowed", "body-trace"],
+)
+async def test_a_rate_coverage_gap_raises_its_code_with_the_missing_rates(
+    narrowing: dict[str, Any], body_trace: str | None
+) -> None:
+    reply = load("probe-resubmit-unit-rate-gap.json")
+    # The response's trace id is the body's, else the header's; the reply's
+    # `diagnostics.trace_id`, which differs from both, is not read.
+    if body_trace is not None:
+        reply["trace_id"] = body_trace
+    server = Server(json_response(200, reply, {"x-dfo-trace-id": "header-trace"}))
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await fetch_members(
+                transport,
+                [oda()],
+                currency="EUR",
+                price_basis="constant",
+                base_year=1900,
+                **narrowing,
+            )
+    error = caught.value
+    assert reply["diagnostics"]["trace_id"] not in {"header-trace", body_trace}
+    assert (error.code, error.trace_id) == (
+        "rate_coverage_gap",
+        body_trace or "header-trace",
+    )
+    assert error.problem is not None
+    assert error.problem["code"] == "rate_coverage_gap"
+    assert error.problem["cause"] == reply["parts"][0]["no_data"]["cause"]
+    assert error.problem["detail"] == error.detail == message_of(error)
+    assert message_of(error).startswith(
+        'Search cannot convert "bilateral ODA" to EUR at constant 1900 prices: '
+    )
+    assert "Missing: CurrencyEUR@1900." in str(error)
+    assert ("convert ds.members[0].spec" in str(error)) == bool(narrowing)
+    recorded = load("probe-resubmit-unit-rate-gap.request.json")
+    assert as_sent(server.body(0)) == as_sent(recorded)
+    assert len(server.requests) == 1
+
+
+async def test_a_refusal_message_caps_the_servers_sentence() -> None:
+    reply = load("probe-resubmit-unit-rate-gap.json")
+    long = "No data. " + "x" * 2000
+    reply["parts"][0]["rendered_sentence"] = long
+    server = Server(json_response(200, reply))
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await fetch_members(
+                transport,
+                [oda()],
+                currency="EUR",
+                price_basis="constant",
+                base_year=1900,
+            )
+    assert long not in (caught.value.detail or "")
+    assert long not in message_of(caught.value)
+    assert "Missing: CurrencyEUR@1900." in message_of(caught.value)
+
+
+async def test_a_refusal_reads_only_a_list_of_missing_entities() -> None:
+    reply = load("probe-resubmit-unit-rate-gap.json")
+    reply["parts"][0]["no_data"]["cause"]["entities"] = "CurrencyEUR@1900"
+    server = Server(json_response(200, reply))
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await fetch_members(
+                transport,
+                [oda()],
+                currency="EUR",
+                price_basis="constant",
+                base_year=1900,
+            )
+    assert "Missing" not in message_of(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("timeout", "read"), [(None, SEARCH_TIMEOUT), (100.0, 100.0)], ids=["none", "call"]
+)
+async def test_a_conversion_waits_for_search_past_the_attempt_timeout(
+    timeout: float | None, read: float
+) -> None:
+    # Each attempt runs to the fetch's deadline, else to SEARCH_TIMEOUT, as a
+    # search does, rather than the client's 30-second attempt_timeout.
+    server = Server(json_response(200, load("probe-resubmit-unit-rate-gap.json")))
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError):
+            await fetch_members(
+                transport,
+                [oda()],
+                timeout=timeout,
+                currency="EUR",
+                price_basis="constant",
+                base_year=1900,
+            )
+    assert server.requests[0].extensions["timeout"]["read"] == pytest.approx(read)
+
+
+async def test_a_frame_refuses_folded_parts_that_convert_to_several_specs() -> None:
+    answer = load("search-oda-deu-ken.json")
+    answer["parts"].append(copy.deepcopy(answer["parts"][0]) | {"variable_text": "aid"})
+    parts = parse_parts(answer)
+    held = parts[0].spec
+    reply = load("probe-resubmit-unit-constant.json")
+    other = copy.deepcopy(reply["parts"][0]) | {"variable_text": "aid"}
+    other_id = "spec_" + "3" * 32
+    other["spec"]["spec_id"] = other["spec"]["definition"]["spec_id"] = other_id
+    reply["parts"].append(other)
+    server = Server(json_response(200, reply))
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await fetch_members(
+                transport,
+                [Reading((ODA, "aid"), held, held.sentence, tuple(parts))],
+                layout="frame",
+                **CONSTANT,
+            )
+    assert caught.value.code == "invalid_argument"
+    assert 'layout="frame" holds one reading' in str(caught.value)
+    assert len(server.requests) == 1
+
+
+def _unsupported(part: dict[str, Any]) -> None:
+    del part["no_data"]
+    part["status"] = "unsupported"
+    part["unsupported"] = {"code": "recipe_not_declared", "detail": "No recipe."}
+
+
+def _unlisted_reason(part: dict[str, Any]) -> None:
+    part["no_data"]["reason"] = "rate_table_retired"
+
+
+def _proxy_reason(part: dict[str, Any]) -> None:
+    # A code the website proxy answers itself, which actions.json does not list.
+    part["no_data"]["reason"] = "rate_limited"
+
+
+@pytest.mark.parametrize(
+    ("edit", "raised", "code"),
+    [
+        (_unsupported, InvalidRequestError, "recipe_not_declared"),
+        (_unlisted_reason, DfoError, "rate_table_retired"),
+        (_proxy_reason, DfoError, "rate_limited"),
+    ],
+    ids=["unsupported", "unlisted-reason", "proxy-code"],
+)
+async def test_a_refused_part_raises_the_class_its_code_maps_to(
+    edit: Any, raised: type[DfoError], code: str
+) -> None:
+    reply = load("probe-resubmit-unit-rate-gap.json")
+    edit(reply["parts"][0])
+    server = Server(json_response(200, reply))
+    async with make(server) as transport:
+        with pytest.raises(DfoError) as caught:
+            await fetch_members(transport, [oda()], **CONSTANT)
+    assert type(caught.value) is raised
+    assert (caught.value.code, caught.value.status) == (code, 200)
+    assert caught.value.problem is not None
+    assert caught.value.problem["code"] == code
+
+
+async def test_a_series_no_recipe_converts_raises_the_servers_refusal() -> None:
+    held = parse_spec(load("search-debt-stock-ken.json")["parts"][0]["spec"])
+    assert held.unit_conversion is None
+    recorded = load("probe-resubmit-unit-recipe-refused.json")
+    server = Server(
+        json_response(recorded["status"], recorded["body"], recorded["headers"])
+    )
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await fetch_members(
+                transport,
+                [Reading(("external debt stocks",), held, held.sentence)],
+                currency="EUR",
+            )
+    assert (caught.value.code, caught.value.status) == ("recipe_not_declared", 422)
+    request = load("probe-resubmit-unit-recipe-refused.request.json")
+    assert as_sent(server.body(0)) == as_sent(request)
+    assert len(server.requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("options", "names"),
+    [
+        ({"price_basis": "constant", "base_year": 2022}, 'currency="EUR"'),
+        ({"base_year": 2022}, 'currency="EUR"'),
+        ({"currency": "eur"}, '"eur"'),
+        ({"currency": "EURO"}, '"EURO"'),
+        ({"currency": 978}, "978"),
+        ({"currency": "EUR", "price_basis": "real"}, '"real"'),
+        ({"currency": "EUR", "price_basis": "constant"}, "default_base_year"),
+        ({"currency": "EUR", "base_year": 2022}, 'price_basis="constant"'),
+        (
+            {"currency": "EUR", "price_basis": "current", "base_year": 2022},
+            'price_basis="constant"',
+        ),
+        ({"currency": "EUR", "price_basis": "constant", "base_year": True}, "True"),
+        ({"currency": "EUR", "price_basis": "constant", "base_year": "2022"}, '"2022"'),
+        ({"currency": "EUR", "facets": {"unit": "USD"}}, 'facets["unit"]'),
+        # The caller's value is quoted cut to MESSAGE_TEXT_MAX characters.
+        ({"currency": "X" * 2000}, '"' + "X" * 1000 + '…"'),
+    ],
+    ids=[
+        "basis-without-currency",
+        "base-year-without-currency",
+        "lower-case",
+        "four-letters",
+        "number",
+        "unknown-basis",
+        "constant-without-base-year",
+        "base-year-at-current-by-default",
+        "base-year-at-current",
+        "bool-base-year",
+        "text-base-year",
+        "unit-facet",
+        "long-currency",
+    ],
+)
+async def test_a_malformed_conversion_sends_nothing(
+    options: dict[str, Any], names: str
+) -> None:
+    server = Server()
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            await fetch(transport, oda().spec, **options)
+    assert caught.value.code == "invalid_argument"
+    assert names in str(caught.value)
+    assert server.requests == []
+
+
+async def test_offline_a_conversion_is_refused_unsent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DFO_OFFLINE", "1")
+    server = Server()
+    async with make(server) as transport:
+        with pytest.raises(NetworkError) as caught:
+            await fetch(transport, oda().spec, cache=FakeCache(), currency="EUR")
+    assert caught.value.code == "offline"
+    assert server.requests == []
+
+
+def _two_parts(reply: dict[str, Any]) -> None:
+    reply["parts"].append(copy.deepcopy(reply["parts"][0]))
+
+
+def _another_request(reply: dict[str, Any]) -> None:
+    identity = converted_spec(reply)["definition"]["identity"]
+    identity["facets"]["unit"]["request"]["base_year"] = 2021
+
+
+def _no_request(reply: dict[str, Any]) -> None:
+    del converted_spec(reply)["definition"]["identity"]["facets"]["unit"]
+
+
+def _unknown_status(reply: dict[str, Any]) -> None:
+    reply["parts"][0]["status"] = "later"
+
+
+def _no_resolution(reply: dict[str, Any]) -> None:
+    reply["kind"] = "catalogue"
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [_two_parts, _another_request, _no_request, _unknown_status, _no_resolution],
+    ids=["two-parts", "another-request", "no-request", "unknown-status", "kind"],
+)
+async def test_a_conversion_reply_that_does_not_echo_the_request_raises(
+    edit: Any,
+) -> None:
+    reply = load("probe-resubmit-unit-constant.json")
+    edit(reply)
+    server = Server(json_response(200, reply, {"x-dfo-trace-id": "search"}))
+    async with make(server) as transport:
+        with pytest.raises(ContractError) as caught:
+            await fetch_members(transport, [oda()], **CONSTANT)
+    assert (caught.value.code, caught.value.trace_id) == (
+        "contract_violation",
+        "search",
+    )
+    assert len(server.requests) == 1
+
+
+OMITTED = {
+    "code": "deflator_missing_omitted",
+    "severity": "warn",
+    "message": "A constant-price conversion left out rows of 1 entity.",
+}
+
+
+DEGRADED = {"code": "date_coverage_partial", "severity": "degraded", "message": "cut"}
+SEARCH_ONLY = [
+    (SearchWarning, "deflator_missing_omitted"),
+    (SearchWarning, "date_coverage_partial"),
+]
+
+
+@pytest.mark.parametrize(
+    ("manifest_warnings", "issued"),
+    [
+        ([], SEARCH_ONLY),
+        (
+            [OMITTED],
+            [
+                (DataWarning, "deflator_missing_omitted"),
+                (SearchWarning, "date_coverage_partial"),
+            ],
+        ),
+        # A manifest warning at info is not issued, so it hides nothing.
+        ([OMITTED | {"severity": "info"}], SEARCH_ONLY),
+    ],
+    ids=["search-only", "manifest-too", "manifest-info"],
+)
+async def test_a_conversion_warning_is_issued_once(
+    manifest_warnings: list[dict[str, str]], issued: list[tuple[type, str]]
+) -> None:
+    reply = load("probe-resubmit-unit-constant.json")
+    info = {"code": "unit_conversion_applied", "severity": "info", "message": "x"}
+    reply["parts"][0]["warnings"] = [OMITTED, info, DEGRADED, OMITTED]
+    server = Server(
+        json_response(200, reply),
+        json_response(200, converted_manifest(warnings=manifest_warnings)),
+        redirect(),
+        parquet(),
+    )
+    async with make(server) as transport:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            await fetch_members(transport, [oda()], **CONSTANT)
+    assert [
+        (type(item.message), getattr(item.message, "code", None)) for item in caught
+    ] == issued
+    searched = [item for item in caught if item.category is SearchWarning]
+    assert str(searched[0].message).startswith(
+        'Converting "bilateral ODA" to EUR at constant 2022 prices: '
+    )
+
+
+async def test_two_converted_readings_built_as_one_spec_issue_its_warnings_once() -> (
+    None
+):
+    # The second reading's conversion warns, but its build is the first one's spec,
+    # whose own conversion said nothing.
+    reply = load("probe-resubmit-unit-constant.json")
+    other = copy.deepcopy(reply["parts"][0])
+    other_id = "spec_" + "2" * 32
+    other["spec"]["spec_id"] = other["spec"]["definition"]["spec_id"] = other_id
+    other["warnings"] = [DEGRADED]
+    reply["parts"].append(other)
+    held = oda()
+    second = Reading(("ODA grants",), parse_spec(other["spec"]), held.sentence)
+    server = Server(
+        json_response(200, reply),
+        json_response(200, converted_manifest()),
+        redirect(),
+        parquet(),
+        json_response(200, converted_manifest()),
+    )
+    async with make(server) as transport:
+        built = await fetch_members(transport, [held, second], strict=True, **CONSTANT)
+    (member,) = built.members
+    assert member.parts == (ODA, "ODA grants")
+    assert len(server.requests) == 5
+
+
+@pytest.mark.parametrize("strict", [False, True])
+async def test_a_narrowing_that_keeps_the_spec_id_issues_the_conversions_warnings(
+    strict: bool,
+) -> None:
+    reply = load("probe-resubmit-unit-constant.json")
+    reply["parts"][0]["warnings"] = [OMITTED]
+    server = Server(
+        json_response(200, reply),
+        json_response(200, converted_manifest()),
+        redirect(),
+        parquet(),
+    )
+    async with make(server) as transport:
+        if strict:
+            with pytest.raises(SearchWarning) as raised:
+                await fetch_members(
+                    transport, [oda()], window="all", strict=True, **CONSTANT
+                )
+            assert raised.value.code == "deflator_missing_omitted"
+            assert len(server.requests) == 2
+            return
+        with pytest.warns(SearchWarning) as caught:
+            await fetch_members(transport, [oda()], window="all", **CONSTANT)
+    assert [getattr(item.message, "code", None) for item in caught] == [
+        "deflator_missing_omitted"
+    ]
+    assert server.body(1)["input"]["scope"]["window"] == {"kind": "all"}
+
+
+async def test_strict_raises_a_conversion_warning_before_downloading() -> None:
+    reply = load("probe-resubmit-unit-constant.json")
+    reply["parts"][0]["warnings"] = [OMITTED]
+    server = Server(
+        json_response(200, reply, {"x-dfo-trace-id": "search"}),
+        json_response(200, converted_manifest()),
+    )
+    async with make(server) as transport:
+        with pytest.raises(SearchWarning) as caught:
+            await fetch_members(transport, [oda()], strict=True, **CONSTANT)
+    assert (caught.value.code, caught.value.trace_id) == (
+        "deflator_missing_omitted",
+        "search",
+    )
+    assert len(server.requests) == 2
+
+
+async def test_a_narrowed_conversion_takes_the_warnings_of_its_built_identity() -> None:
+    reply = load("probe-resubmit-unit-constant.json")
+    reply["parts"][0]["warnings"] = [OMITTED]
+    # The resubmit for the narrowed sentence echoes the converted part's facts.
+    rank = {"verb": "rank", "phrase": "top 5 donors", "over": "origin"}
+    assumed = {"kind": "place_scope", "binding_ref": "where:", "text": "every place"}
+    reply["parts"][0] |= {
+        "operations": [rank],
+        "assumptions": [assumed],
+        "separate": True,
+    }
+    built = resubmitted()
+    clipped = {"code": "date_coverage_partial", "severity": "warn", "message": "cut"}
+    built["parts"][0]["warnings"] = [clipped]
+    server = Server(
+        json_response(200, reply),
+        json_response(200, manifest()),
+        json_response(200, built),
+        redirect(),
+        parquet(),
+    )
+    async with make(server) as transport:
+        with pytest.warns(SearchWarning) as caught:
+            fetched = await fetch_members(
+                transport, [oda()], window=(2015, 2020), **CONSTANT
+            )
+    assert [getattr(item.message, "code", None) for item in caught] == [
+        "date_coverage_partial"
+    ]
+    assert server.body(1)["input"]["spec_id"] == converted_spec()["spec_id"]
+    assert server.body(1)["input"]["scope"]["window"]["end_year"] == 2020
+    (entry,) = server.body(2)["input"]["entries"]
+    assert (entry["operations"], entry["assumptions"], entry["separate"]) == (
+        [rank],
+        [assumed],
+        True,
+    )
+    assert fetched.members[0].sentence == SENTENCE
 
 
 async def test_strict_raises_a_dataset_warning_before_downloading() -> None:
@@ -1872,6 +2476,11 @@ async def test_incomplete_metadata_artifact_stays_eligible_offline(
             "{caller}.fetch(member.spec, entities=...) for a RefMember",
         ),
         ("ref", {"facets": {"unit": "USD"}}, "{caller}.fetch(member.spec"),
+        (
+            "ref",
+            {"currency": "GBP", "price_basis": "constant", "base_year": 2022},
+            '{caller}.fetch(member.spec, currency="GBP")',
+        ),
         ("ref", {"latest": 1}, "not 1"),
         ("spec", {"latest": True}, "{caller}.fetch(spec)"),
         ("spec", {"latest": "yes"}, "not 'yes'"),
@@ -1883,6 +2492,7 @@ async def test_incomplete_metadata_artifact_stays_eligible_offline(
         "latest-ref-years",
         "ref-entities",
         "ref-facets",
+        "ref-conversion",
         "latest-not-a-bool",
         "latest-spec",
         "latest-spec-not-a-bool",

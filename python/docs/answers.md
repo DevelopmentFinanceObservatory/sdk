@@ -146,6 +146,10 @@ The file `data.save` writes keeps the gaps, and `dfo.load` reads them back. `to_
 
 Leave `partial` off in a scheduled job. A question that resolved in full this month can come back half-answered next month, and the job then stops with a message where it would have published half the data.
 
+## Fetch in another currency
+
+`answer.fetch(currency="EUR", price_basis="constant", base_year=2022)` converts every reading of the answer to constant 2022 euros in one Search request, then builds them. Each member takes the converted reading's sentence, such as "... Constant 2022 euros, donor prices · OECD DAC2a." `answer.specs[i].unit_conversion` lists the currencies each reading converts to, and `to_json` keeps it. A reading the server cannot convert raises its code, such as `rate_coverage_gap`, whatever `partial` says, since the request asks for rates or prices the tables lack. [Fetch in another currency](datasets.md#fetch-in-another-currency) has the rules.
+
 ## When the reading differs from the question
 
 Search fetches published figures and computes nothing on top. "top 5 donors to Ethiopia in 2022" returns the amounts for every donor, and the answer lists what it did not do under its sentence:

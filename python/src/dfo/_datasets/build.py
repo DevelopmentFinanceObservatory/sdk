@@ -27,14 +27,22 @@ from dfo._core.codes import (
 from dfo._core.errors import client_error
 from dfo._core.json_text import loads
 from dfo._core.lookup_results import Entity, Match
-from dfo._core.parse import check_manifest, check_operation, violation
+from dfo._core.parse import (
+    check_manifest,
+    check_operation,
+    read_assumption,
+    read_items,
+    read_requested_operation,
+    violation,
+)
 from dfo._core.refusals import sent_key, trace_id_of
-from dfo._core.text import cited, quoted, redacted_json
+from dfo._core.text import capped, cited, quoted, redacted_json
 from dfo._core.types import (
     CONTENT_VERSION,
     OPERATION_ID,
     Layout,
     Part,
+    PriceBasis,
     Rendering,
     Spec,
     Window,
@@ -61,6 +69,15 @@ WINDOW_LAST_YEAR = 2200
 
 # Each wire role a caller key renames, such as observationAbout, with that key.
 _WIRE_SPELLINGS = {wire: key for key, wire in ROLE_KEYS.items() if wire != key}
+
+# The variable text an identity resubmit sends for a spec no answer part names;
+# Search echoes it onto the part, and it does not change the sentence.
+UNNAMED_PART = "dataset"
+
+# A currency `fetch(currency=...)` takes: an ISO 4217 code, as the server reads it.
+_CURRENCY = re.compile(r"[A-Z]{3}")
+
+_PRICE_BASES: tuple[PriceBasis, ...] = ("current", "constant")
 
 
 @dataclass(frozen=True, slots=True)
@@ -638,13 +655,18 @@ def _kept_entity_groups(held: Spec | None, built: Wire) -> dict[str, Any]:
 
 
 def resubmit_body(
-    built: Wire, variable_text: str, held: Spec | None = None
+    built: Wire,
+    variable_text: str,
+    held: Spec | None = None,
+    echoed: Part | None = None,
 ) -> dict[str, Any]:
     """The Search request that re-resolves one built definition for its sentence.
 
     `held` is the spec the client built from, None for a resumed build. Its
     groups that `_kept_entity_groups` keeps go with the identity, so a group of
-    places reads the same way again.
+    places reads the same way again. `echoed` is the answer part a converted
+    reading answers, whose members `echoed_reading` gives go with the entry as
+    they went with the conversion's, or None to echo none.
     """
     entry: dict[str, Any] = {
         "entry_kind": "identity",
@@ -653,10 +675,201 @@ def resubmit_body(
     }
     if groups := _kept_entity_groups(held, built):
         entry["entity_groups"] = groups
+    if echoed is not None:
+        entry |= echoed_reading(echoed)
     return {
         "schema_version": 1,
         "input": {"kind": "dataset_resubmit", "entries": [entry]},
     }
+
+
+@dataclass(frozen=True, slots=True)
+class UnitRequest:
+    """The currency and price basis a fetch converts its readings to.
+
+    Attributes:
+        currency: The ISO 4217 code, such as `EUR`.
+        price_basis: `current` or `constant`.
+        base_year: The base year of constant prices, or None for current prices.
+    """
+
+    currency: str
+    price_basis: PriceBasis
+    base_year: int | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """The request as the unit facet of an identity holds it, with
+        `price_basis` under its wire name `prices`."""
+        wire: dict[str, Any] = {"currency": self.currency, "prices": self.price_basis}
+        if self.base_year is not None:
+            wire["base_year"] = self.base_year
+        return wire
+
+
+def unit_request(
+    *,
+    currency: object,
+    price_basis: object,
+    base_year: object,
+    facets: object = None,
+) -> UnitRequest | None:
+    """The conversion a fetch's `currency`, `price_basis` and `base_year` ask
+    for, or None when `currency` is None and so are the other two.
+
+    Raises:
+        InvalidRequestError: `price_basis` or `base_year` is given without
+            `currency`; `currency` is not three capital letters; `price_basis`
+            is neither `current` nor `constant`; `base_year` is not an int, is
+            missing for constant prices or is given for current ones; or
+            `facets` binds the unit as well (`invalid_argument`).
+    """
+    if currency is None:
+        if price_basis is not None or base_year is not None:
+            raise client_error(
+                INVALID_ARGUMENT,
+                "price_basis and base_year convert to a currency; name it as well, "
+                'such as currency="EUR"',
+            )
+        return None
+    if not isinstance(currency, str) or not _CURRENCY.fullmatch(currency):
+        raise client_error(
+            INVALID_ARGUMENT,
+            "currency is an ISO 4217 code of three capital letters, such as "
+            f'"EUR", not {_shown(currency)}',
+        )
+    if price_basis is None:
+        price_basis = "current"
+    if price_basis not in _PRICE_BASES:
+        raise client_error(
+            INVALID_ARGUMENT,
+            f'price_basis is "current" or "constant", not {_shown(price_basis)}',
+        )
+    if base_year is not None and (
+        not isinstance(base_year, int) or isinstance(base_year, bool)
+    ):
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"base_year is a year as an int, such as 2022, not {_shown(base_year)}",
+        )
+    if price_basis == "constant" and base_year is None:
+        raise client_error(
+            INVALID_ARGUMENT,
+            'price_basis="constant" takes a base_year, such as base_year=2022; '
+            "spec.unit_conversion.default_base_year names the one Search reads by "
+            "default, and each currency's base_years the range it converts at",
+        )
+    if price_basis == "current" and base_year is not None:
+        raise client_error(
+            INVALID_ARGUMENT,
+            'base_year goes with price_basis="constant"; current prices convert '
+            "each year at its own rate and take none",
+        )
+    if isinstance(facets, Mapping) and "unit" in facets:
+        raise client_error(
+            INVALID_ARGUMENT,
+            'facets["unit"] and currency both set the unit; pass one of them',
+        )
+    return UnitRequest(
+        currency,
+        "constant" if price_basis == "constant" else "current",
+        base_year,
+    )
+
+
+def _shown(value: object, /) -> str:
+    """A caller's value as a refusal quotes it, cut to `MESSAGE_TEXT_MAX`
+    characters."""
+    return cited(capped(value)) if isinstance(value, str) else capped(cited(value))
+
+
+def converted_parts(
+    readings: Sequence[Reading], /
+) -> list[tuple[Reading, Part | None]]:
+    """What a conversion posts one entry each for, in reading order: each
+    reading's answer parts, else the reading alone, paired with None, for a spec
+    fetched outside an answer."""
+    return [
+        (reading, part)
+        for reading in readings
+        for part in reading.answer_parts or (None,)
+    ]
+
+
+def conversion_body(
+    posted: Sequence[tuple[Reading, Part | None]], request: UnitRequest
+) -> dict[str, Any]:
+    """The Search request that converts each reading to `request`: one identity
+    entry per pair `converted_parts` gives, in order, its identity's unit facet
+    set to the request.
+
+    Each entry carries the spec's entity groups, as `resubmit_body` does, and
+    names its answer part's variable text, else the reading's first part, else
+    `UNNAMED_PART`. An answer part's entry
+    also echoes its `separate` flag when true, its `operations` when any item
+    reads, and its `assumptions` when it holds a list, in the read forms a
+    choice posts, so Search states for the converted part the assumptions that
+    still hold and keeps the operations and the folding the question asked for.
+
+    Raises:
+        InvalidRequestError: A reading's definition holds no identity object
+            (`invalid_argument`).
+    """
+    entries = []
+    unit = {"state": "value", "request": request.to_wire()}
+    for reading, part in posted:
+        spec = reading.spec
+        identity = spec.definition.get("identity")
+        if not isinstance(identity, Mapping):
+            raise client_error(
+                INVALID_ARGUMENT,
+                f"The definition of {spec.spec_id} holds no identity to convert; use "
+                "a spec from a search, such as answer.specs[0], or a saved "
+                "dataset's data.members[0].spec",
+            )
+        facets = identity.get("facets")
+        entry: dict[str, Any] = {
+            "entry_kind": "identity",
+            "variable_text": _variable_text(reading, part),
+            "identity": {
+                **identity,
+                "facets": {
+                    **(facets if isinstance(facets, Mapping) else {}),
+                    "unit": unit,
+                },
+            },
+        }
+        if spec.entity_groups:
+            entry["entity_groups"] = spec.entity_groups
+        if part is not None:
+            entry |= echoed_reading(part)
+        entries.append(entry)
+    return {
+        "schema_version": 1,
+        "input": {"kind": "dataset_resubmit", "entries": entries},
+        "response_options": {"include_observations": False},
+    }
+
+
+def _variable_text(reading: Reading, part: Part | None, /) -> str:
+    """The variable text an entry names: its answer part's, else the reading's
+    first part's, else `UNNAMED_PART`."""
+    if part is not None:
+        return part.variable_text or UNNAMED_PART
+    return reading.parts[0] if reading.parts else UNNAMED_PART
+
+
+def echoed_reading(part: Part, /) -> dict[str, Any]:
+    """The members an identity entry echoes from the answer part it stands for:
+    `separate` when true, `operations` when any item reads, and `assumptions`
+    when the part holds a list, in the read forms a choice posts."""
+    echoed: dict[str, Any] = {}
+    if part.separate:
+        echoed["separate"] = True
+    if operations := read_items(part.raw.get("operations"), read_requested_operation):
+        echoed["operations"] = operations
+    if isinstance(assumptions := part.raw.get("assumptions"), list):
+        echoed["assumptions"] = read_items(assumptions, read_assumption)
+    return echoed
 
 
 def pick_artifact(

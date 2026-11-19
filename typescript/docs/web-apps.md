@@ -236,6 +236,41 @@ The route keeps each answer as `JSON.stringify(answer)`, which writes `answer.to
 
 You can send the answer's JSON to the page and take it back, which needs no store. `Answer.fromJSON` checks that the JSON is well formed, and cannot tell whether it came from Search. `choose` and `fetch` post what the answer holds, so a forged answer can send any spec or parsed question to the API under your key. With a public-tier key that costs quota, as the question route already does, so rate-limit the route per visitor. With a key scoped beyond the public tier, keep the answer on the server as this route does, or sign it before it leaves.
 
+## Show a reading in another currency
+
+A page that calls the API through the website's proxy needs no key, and can re-fetch a reading in the currency a reader picks. `unitConversion(spec)` lists what a reading converts to, and `answer.fetch` takes the unit as `currency`, `priceBasis` and `baseYear`, named after the row columns they set:
+
+```ts
+import { Client, unitConversion } from "@developmentfinance/client";
+
+const client = new Client({ baseUrl: "/api/v1", apiKey: false });
+const answer = await client.search("bilateral ODA from Germany to Kenya 2015 to 2022");
+
+const offer = unitConversion(answer.specs[0]!);
+const picker = (offer?.currencies ?? [])
+  .filter((currency) => currency.constantYears !== null)
+  .map((currency) => ({ value: currency.code, label: currency.noun }));
+
+const data = await answer.fetch({ currency: "EUR", priceBasis: "constant", baseYear: 2022 });
+console.log(data.members[0]!.sentence);
+```
+
+```text
+Germany's net disbursements (bilateral flows) to Kenya for official development assistance, 2015 to 2022. Constant 2022 euros, donor prices · OECD DAC2a.
+```
+
+On dev the offer listed 140 currencies. Euros convert at current prices for 2015 to 2022 and at constant prices for any base year from 1973 to 2025, and each row holds `currency: "EUR"`, `price_basis: "constant"` and `base_year: 2022`. `{ currency: "EUR" }` alone fetches current euros. A constant-price fetch names its `baseYear`. `offer.defaultBaseYear` is the year the conversion tables default to, for a page with no other choice.
+
+The converted reading is a new spec, with its own `spec_id` and sentence, so the dataset's `ref` and `provenance` name what the reader saw. The conversion runs on the reading as Search resolved it, before `window`, `entities` and `facets` narrow it, and the offer's years are that reading's years. `unitConversion` returns null for a spec Search did not resolve, such as a ref member's, and for a series that converts to no currency, such as a debt stock. `client.fetch(spec, { currency })` still asks the server on such a spec.
+
+A base year the tables do not cover throws `InvalidRequestError` with the code `rate_coverage_gap`, under `partial: true` as well, and `error.problem.cause.entities` names the missing rates:
+
+```text
+InvalidRequestError: Search cannot convert "bilateral ODA" to EUR at constant 1900 prices: No data is available for this query. Constant prices leave out Germany, which the price deflators do not cover. Missing: CurrencyEUR@1900. [rate_coverage_gap trace=4e4f6946f119422384e7f04aa7120ff3]
+```
+
+A series no recipe converts throws `InvalidRequestError` (`recipe_not_declared`). When constant prices leave some places' rows out, Search's `deflator_missing_omitted` warning reaches `onWarning` as a `SearchWarning`, and `strict: true` throws it.
+
 ## Keep the key on the server
 
 The route's `new Client()` reads `DFO_API_KEY` from the server's environment. Set it as a server-side variable on your host. Do not put it under a prefix the framework copies into the page bundle, such as Next.js's `NEXT_PUBLIC_`, because every visitor can read the bundle.

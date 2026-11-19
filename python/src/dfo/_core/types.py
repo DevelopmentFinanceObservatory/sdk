@@ -60,6 +60,10 @@ type Layout = Literal["long", "frame"]
 # The periods a fetch asks for: every period, the latest, or (start_year, end_year).
 type Window = Literal["all", "latest"] | tuple[int, int]
 
+# The prices converted amounts hold: each year's own (`current`) or one base
+# year's (`constant`).
+type PriceBasis = Literal["current", "constant"]
+
 # The gap kind the client adds to Search's: a status this client does not know.
 type _ClientGapKind = Literal["unknown"]
 
@@ -131,6 +135,76 @@ class FormatError(DfoError, ValueError):
         self.pointer = pointer
 
 
+def _span(years: tuple[int, int] | None) -> str | None:
+    return None if years is None else f"{years[0]}-{years[1]}"
+
+
+@dataclass(frozen=True, slots=True)
+class ConversionCurrency:
+    """One currency a spec's amounts convert to, with the years each price
+    basis covers.
+
+    The years are those of the spec that carries the offer, so a fetch that
+    narrows or widens its `window` can cover other years.
+
+    Attributes:
+        code: The ISO 4217 code `fetch(currency=...)` takes, such as `EUR`.
+        noun: The currency's name in the plural, such as `euros`.
+        current_years: The first and last year the amounts convert at current
+            prices, or None when no year does.
+        constant_years: The first and last year the amounts convert at
+            constant prices, or None when no year does.
+        base_years: The earliest and latest `base_year` constant prices take,
+            or None when constant prices take none.
+    """
+
+    code: str
+    noun: str
+    current_years: tuple[int, int] | None = None
+    constant_years: tuple[int, int] | None = None
+    base_years: tuple[int, int] | None = None
+
+    @override
+    def __repr__(self) -> str:
+        spans = (
+            ("current", _span(self.current_years)),
+            ("constant", _span(self.constant_years)),
+            ("base", _span(self.base_years)),
+        )
+        return _joined(
+            "ConversionCurrency",
+            f"{self.code} {_quoted(self.noun)}",
+            *(f"{name} {span}" for name, span in spans if span is not None),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class UnitConversion:
+    """The currencies and price bases a spec's amounts convert to.
+
+    `fetch(spec, currency=..., price_basis=..., base_year=...)` asks for one.
+    The server decides whether it converts. The offer describes the years of the
+    spec that carries it.
+
+    Attributes:
+        currencies: The currencies, sorted by code as the server lists them.
+        default_base_year: The base year Search reads constant prices at when a
+            question names none. A fetch at constant prices names its own
+            `base_year`. Pass this one to match Search.
+    """
+
+    currencies: tuple[ConversionCurrency, ...]
+    default_base_year: int
+
+    @override
+    def __repr__(self) -> str:
+        return _joined(
+            "UnitConversion",
+            counted(len(self.currencies), "currency", "currencies"),
+            f"default base year {self.default_base_year}",
+        )
+
+
 @dataclass(frozen=True, slots=True, eq=False, repr=False)
 class Spec:
     """One reading of a question, the unit the server builds a dataset from.
@@ -146,12 +220,17 @@ class Spec:
         entity_groups: How Search resolved each role's group of places, keyed by
             role, when the spec came from an answer. It is posted back with its
             identity so Search reads the groups the same way.
+        unit_conversion: The currencies and price bases the amounts convert to;
+            see the property.
     """
 
     spec_id: str
     definition: Mapping[str, Any]
     sentence: str | None = None
     entity_groups: Mapping[str, Any] | None = None
+    # `resolved.unit_conversion` as the server sent it, read on access so a
+    # malformed offer breaks only the code that reads it.
+    _unit_conversion: object = field(default=None, repr=False)
 
     @override
     def __eq__(self, other: object) -> bool:
@@ -166,6 +245,28 @@ class Spec:
     @override
     def __repr__(self) -> str:
         return _joined("Spec", self.spec_id, _quoted(self.sentence))
+
+    @property
+    def unit_conversion(self) -> UnitConversion | None:
+        """The currencies and price bases the amounts convert to, which
+        `fetch(spec, currency=...)` asks for.
+
+        None when the spec did not come from a Search answer, as for a dataset
+        member's spec or one written by hand, or when its amounts convert to no
+        currency, as for a debt stock. A fetch with `currency` works on a spec
+        without an offer, and the server decides.
+
+        Raises:
+            ContractError: The server's offer is malformed
+                (`contract_violation`), its pointer under the spec, as
+                `/resolved/unit_conversion/currencies/0/code`. Only this
+                property reads the offer, so Search and fetch work on a spec
+                whose offer is malformed.
+        """
+        # The parser builds this module's classes, so it is imported on use.
+        from dfo._core.parse import parse_unit_conversion  # noqa: PLC0415
+
+        return parse_unit_conversion(self._unit_conversion, "/resolved/unit_conversion")
 
     @property
     def roles(self) -> dict[str, tuple[str, ...] | None]:

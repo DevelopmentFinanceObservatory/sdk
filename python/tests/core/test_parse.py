@@ -14,12 +14,14 @@ from dfo._core.parse import (
     parse_notices,
     parse_operations,
     parse_parts,
+    parse_unit_conversion,
     read_assumption,
     read_requested_operation,
 )
 from dfo._core.types import (
     Assumption,
     CandidatesPart,
+    ConversionCurrency,
     DefinitePart,
     NoDataPart,
     Part,
@@ -638,6 +640,106 @@ def test_a_spec_keeps_the_entity_groups_search_resolved() -> None:
     assert isinstance(part, DefinitePart)
     assert part.spec.entity_groups == groups
     assert parse_parts(load("search-1.json"))[0].spec.entity_groups is None
+
+
+def test_a_spec_reads_the_currencies_and_price_bases_it_converts_to() -> None:
+    (part,) = parse_parts(load("search-oda-deu-ken.json"))
+    assert isinstance(part, DefinitePart)
+    offer = part.spec.unit_conversion
+    assert offer is not None
+    by_code = {currency.code: currency for currency in offer.currencies}
+    assert by_code["EUR"] == ConversionCurrency(
+        "EUR", "euros", (2015, 2022), (2015, 2022), (1973, 2025)
+    )
+    assert by_code["AED"].current_years == (2015, 2021)
+    assert [currency.code for currency in offer.currencies] == sorted(by_code)
+    served = load("search-oda-deu-ken.json")["parts"][0]["spec"]["resolved"]
+    assert offer.default_base_year == served["unit_conversion"]["default_base_year"]
+    assert len(offer.currencies) == len(served["unit_conversion"]["currencies"])
+
+
+def test_a_spec_that_converts_to_no_currency_has_no_offer() -> None:
+    (part,) = parse_parts(load("search-debt-stock-ken.json"))
+    assert isinstance(part, DefinitePart)
+    assert part.spec.unit_conversion is None
+    assert parse_unit_conversion(None) is None
+
+
+def _offer(**currency: Any) -> dict[str, Any]:
+    eur = {
+        "code": "EUR",
+        "noun": "euros",
+        "current_years": {"start_year": 2015, "end_year": 2022},
+        "constant_years": None,
+        "base_year_min": None,
+        "base_year_max": None,
+    }
+    return {"currencies": [eur | currency], "default_base_year": 2024}
+
+
+@pytest.mark.parametrize(
+    ("offer", "pointer"),
+    [
+        ([], ""),
+        ({"currencies": {}, "default_base_year": 2024}, "/currencies"),
+        ({"currencies": [], "default_base_year": "2024"}, "/default_base_year"),
+        (_offer(code=None), "/currencies/0/code"),
+        (_offer(noun=7), "/currencies/0/noun"),
+        (
+            _offer(current_years={"start_year": 2015}),
+            "/currencies/0/current_years/end_year",
+        ),
+        (_offer(constant_years=[2015, 2022]), "/currencies/0/constant_years"),
+        (_offer(base_year_min=1960), "/currencies/0"),
+        (
+            _offer(base_year_min=1960, base_year_max="2025"),
+            "/currencies/0/base_year_max",
+        ),
+        (_offer(code=""), "/currencies/0/code"),
+        (
+            _offer(current_years={"start_year": 2022, "end_year": 2015}),
+            "/currencies/0/current_years/end_year",
+        ),
+        (
+            _offer(base_year_min=2025, base_year_max=1960),
+            "/currencies/0/base_year_max",
+        ),
+    ],
+    ids=[
+        "not-an-object",
+        "currencies",
+        "default-base-year",
+        "code",
+        "noun",
+        "year-span",
+        "span-not-an-object",
+        "one-base-bound",
+        "base-bound-type",
+        "empty-code",
+        "span-reversed",
+        "base-bounds-reversed",
+    ],
+)
+def test_a_malformed_conversion_offer_raises_at_its_pointer(
+    offer: object, pointer: str
+) -> None:
+    with pytest.raises(ContractError) as caught:
+        parse_unit_conversion(offer, "/offer")
+    assert (caught.value.code, caught.value.pointer) == (
+        "contract_violation",
+        f"/offer{pointer}",
+    )
+
+
+def test_a_malformed_offer_raises_only_when_it_is_read() -> None:
+    answer = load("search-oda-deu-ken.json")
+    offer = answer["parts"][0]["spec"]["resolved"]["unit_conversion"]
+    offer["currencies"][0]["code"] = 7
+    (part,) = parse_parts(answer)
+    assert isinstance(part, DefinitePart)
+    with pytest.raises(ContractError) as caught:
+        _ = part.spec.unit_conversion
+    assert caught.value.pointer == "/resolved/unit_conversion/currencies/0/code"
 
 
 def test_a_spec_whose_definition_names_another_spec_raises() -> None:

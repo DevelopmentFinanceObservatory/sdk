@@ -232,6 +232,13 @@ export class Client {
    * it. A passed timeout or an aborted `signal` stops the wait and leaves the build running on
    * the server, and the same fetch joins it.
    *
+   * `currency`, with `priceBasis` and `baseYear`, fetches a spec in another unit:
+   * `client.fetch(spec, { currency: "EUR", priceBasis: "constant", baseYear: 2022 })`. Search
+   * gives the converted reading its own spec and sentence, which the dataset holds, and the rows'
+   * `currency`, `price_basis` and `base_year` columns state the unit. The conversion runs on the
+   * spec as held, before `window`, `entities` and `facets` narrow it. `unitConversion(spec)`
+   * lists what a spec converts to.
+   *
    * A ref of a frame DFO computed reads that frame, and with `latest: true` DFO computes its
    * recipe again on the newest versions of its datasets. A recipe or a computed frame takes
    * `latest`, `strict`, `timeout` and `signal`, and refuses `onProgress`, which DFO does not
@@ -255,14 +262,20 @@ export class Client {
    *   falls outside 1000 to 2200, `entities` names a role outside `specRoles(spec)` or holds a
    *   `Match` that did not resolve, the target is neither a ref nor a spec with its `spec_id`
    *   and `definition`, a ref is narrowed or given another layout or `partyTotals`, or
-   *   `latest` is given a spec or a ref whose members differ in rendering; a share is given a
+   *   `latest` is given a spec or a ref whose members differ in rendering; a conversion option
+   *   breaks its rule, or is given a ref, recipe or share; a share is given a
    *   narrowing, `partyTotals`, `latest: true` or a layout other than `frame`, `slot` is not a
    *   number from 1, or `asOf` is malformed, all before any request; a share of several slots
    *   is given no `slot`, or one past its last; or `asOf` is before the slot first served data.
    * @throws {NotFoundError} A share is unknown, its slot is empty, or with `asOf` the slot showed no
    *   card then (`not_found`).
    * @throws {VersionUnavailableError} A ref's version can no longer be fetched.
+   * @throws {InvalidRequestError} The spec does not convert to the unit asked for, with the code
+   *   Search or the server gives, such as `rate_coverage_gap` when the tables lack a rate or
+   *   `recipe_not_declared` for a series no recipe converts.
    * @throws {DataWarning} `strict` is true and a manifest carries a warning above `info`.
+   * @throws {SearchWarning} `strict` is true and Search warned about the converted reading,
+   *   such as `deflator_missing_omitted`.
    * @throws {SeriesLeftOutWarning} `strict` is true and a recipe left series out.
    * @throws {DfoTimeoutError} The call's `timeout`, or else the client's, passed
    *   (`deadline_exceeded`). The build carries on.

@@ -44,6 +44,9 @@ export type BaseUrlSource = "argument" | typeof BASE_URL_VARIABLE | "default";
 /** The longest one request attempt waits, in milliseconds, unless the client sets
  *  `attemptTimeout`. */
 const DEFAULT_ATTEMPT_TIMEOUT_MS = 30_000;
+/** The bound on a Search request a call's `timeout` leaves open, in milliseconds: longer than
+ *  Search's 45-second soft deadline, so a slow answer arrives whole. */
+export const SEARCH_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_RETRIES = 2;
 /** The variables a client's `timeout` and `maxRetries` left out read, and the ASCII text each
  *  takes: seconds such as `300` or `2.5`, and a count such as `5`. */

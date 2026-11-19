@@ -67,7 +67,7 @@ from dfo._core.parse import (
 )
 from dfo._core.refusals import describing, trace_id_of
 from dfo._core.text import cited
-from dfo._core.timeouts import CLIENT_TIMEOUT, CallTimeout
+from dfo._core.timeouts import CLIENT_TIMEOUT, SEARCH_TIMEOUT, CallTimeout
 from dfo._core.types import (
     Candidate,
     CandidatesPart,
@@ -78,13 +78,20 @@ from dfo._core.types import (
     Notice,
     Option,
     Part,
+    PriceBasis,
     Spec,
     UnsupportedPart,
     Window,
     option_line,
     shown_text,
 )
-from dfo._datasets.build import Entities, Reading, check_strict, response_json
+from dfo._datasets.build import (
+    Entities,
+    Reading,
+    check_strict,
+    response_json,
+    unit_request,
+)
 from dfo._datasets.dataset import Dataset
 from dfo._generated import strict as _strict
 from dfo._generated.error_map import GAP_KINDS
@@ -101,8 +108,6 @@ if TYPE_CHECKING:
 RESOLVE_PATH = "/search/resolve"
 SCHEMA_VERSION = 1
 
-# Longer than Search's 45-second soft deadline, so a slow answer arrives whole.
-SEARCH_TIMEOUT = 60.0
 
 _DATA_METHODS = frozenset(
     {"to_pandas", "to_polars", "to_arrow", "to_rows", "save", "__arrow_c_stream__"}
@@ -305,6 +310,9 @@ class Answer:
         window: Window | None = None,
         entities: Entities | None = None,
         facets: Mapping[str, str | None] | None = None,
+        currency: str | None = None,
+        price_basis: PriceBasis | None = None,
+        base_year: int | None = None,
         strict: bool = False,
         layout: Layout = "long",
         party_totals: bool = False,
@@ -318,6 +326,12 @@ class Answer:
         with a `part` column. Departures, skipped computations and Search's `warn`
         and `degraded` warnings arrive as one `SearchWarning`. `window`,
         `entities` and `facets` narrow every reading as `fetch` narrows one spec.
+
+        `currency` converts every reading in one Search request before the
+        build, as `fetch` converts one spec: the dataset's members hold the
+        converted specs and Search's sentences for them, and each warning
+        Search gives a converted part arrives as a `SearchWarning`. A refused
+        conversion raises even with `partial=True`.
 
         Args:
             partial: Build the parts that have a reading when others do not. The
@@ -333,6 +347,14 @@ class Answer:
                 narrows nothing.
             facets: Bind every reading's provenance, measurement method or
                 unit. An empty map narrows nothing.
+            currency: Convert every reading's amounts to this ISO 4217
+                currency, such as `"EUR"`. Each spec's `unit_conversion` lists
+                the currencies it converts to.
+            price_basis: `"current"` (the default with `currency`) converts
+                each year at its own rate, and `"constant"` converts at the
+                prices of `base_year`.
+            base_year: The year of constant prices, which `"constant"` needs
+                and `"current"` refuses.
             strict: Raise the `SearchWarning`, and the datasets surface's
                 warnings, instead of issuing them.
             layout: `long`, or `frame` for one reading's pipeline frame.
@@ -359,14 +381,26 @@ class Answer:
                 above `info`.
             InvalidRequestError: `layout="frame"` with several readings;
                 `strict` is not a bool or `progress` neither a bool nor None;
-                `window`, `entities` or `facets` is malformed; `entities` holds
-                a match that did not resolve; or `entities` names a role a
-                reading does not declare, and the message lists each part's
-                roles (`invalid_argument`). No build is sent.
+                `window`, `entities`, `facets` or the conversion is malformed;
+                `entities` holds a match that did not resolve; or `entities`
+                names a role a reading does not declare, and the message lists
+                each part's roles (`invalid_argument`). No build is sent.
+                Search refused the conversion of a reading
+                (`rate_coverage_gap`, `recipe_not_declared`), whatever
+                `partial` says, and the error's `problem` holds the refusal's
+                `cause`.
             DfoTimeoutError: `timeout` passed (`deadline_exceeded`). The build
                 keeps running on the server, and the same fetch joins it.
             DfoError: The server refused a request.
         """
+        # The conversion's arguments are the caller's to fix, so they are
+        # checked before what the answer itself lacks.
+        unit_request(
+            currency=currency,
+            price_basis=price_basis,
+            base_year=base_year,
+            facets=facets,
+        )
         if self.kind != _strict.RESOLUTION_KIND:
             raise client_error(
                 ANSWER_DECLINED,
@@ -398,6 +432,9 @@ class Answer:
             window=window,
             entities=entities,
             facets=facets,
+            currency=currency,
+            price_basis=price_basis,
+            base_year=base_year,
             question=self.question,
         )
 

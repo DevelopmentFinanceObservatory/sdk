@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "input": {
+    "kind": "dataset_resubmit",
+    "entries": [
+      {
+        "entry_kind": "identity",
+        "variable_text": "external debt stocks",
+        "identity": {
+          "identity_version": "spec1",
+          "shape": {
+            "kind": "statvar_schema",
+            "population_type": "FinancialPosition",
+            "measured_property": "amount",
+            "stat_type": "measuredValue",
+            "measurement_qualifier": "Nominal"
+          },
+          "slots": [
+            {
+              "property": "financialPositionType",
+              "binding": {
+                "state": "value",
+                "ref": "AmountOutstanding"
+              }
+            },
+            {
+              "property": "financingResource",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "guaranteeStatus",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "idsConcessionality",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "idsCreditorType",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "idsDebtorType",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "includesIMFCredit",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "interestRateVariability",
+              "binding": {
+                "state": "unbound"
+              }
+            },
+            {
+              "property": "maturityBand",
+              "binding": {
+                "state": "unbound"
+              }
+            }
+          ],
+          "entities": {
+            "destination": [
+              "country/KEN"
+            ]
+          },
+          "requested_window": {
+            "kind": "range",
+            "start_year": 2015,
+            "end_year": 2022
+          },
+          "facets": {
+            "unit": {
+              "state": "value",
+              "request": {
+                "currency": "EUR",
+                "prices": "current"
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "response_options": {
+    "include_observations": false
+  }
+}

@@ -39,7 +39,7 @@ from dfo._http.transport import AsyncTransport
 from dfo._search.answer import AsyncAnswer, answer_from_body
 from dfo._search.answer_json import read_answer_json
 from dfo._search.search import search
-from tests._data import load
+from tests._data import CONTRACT, load
 from tests._datasets import recorded_member
 
 pytestmark = pytest.mark.anyio
@@ -844,9 +844,15 @@ async def test_fetch_builds_one_member_per_distinct_spec(
     unnamed["variable_text"] = ""
     wire["parts"].append(unnamed)
     answer, _ = await ask(TWO_PARTS, wire)
-    assert (
-        await answer.fetch(layout="long", party_totals=True, timeout=10.0) == "dataset"
+    converted = await answer.fetch(
+        layout="long",
+        party_totals=True,
+        timeout=10.0,
+        currency="EUR",
+        price_basis="constant",
+        base_year=2022,
     )
+    assert converted == "dataset"
     ((transport_used, members, options),) = fetched
     oda, gni = wire["parts"][0]["spec"], wire["parts"][1]["spec"]
     assert [(m.parts, m.spec.spec_id, m.sentence) for m in members] == [
@@ -873,6 +879,9 @@ async def test_fetch_builds_one_member_per_distinct_spec(
         "window": None,
         "entities": None,
         "facets": None,
+        "currency": "EUR",
+        "price_basis": "constant",
+        "base_year": 2022,
         "question": "Germany's ODA and GNI from 2015 to 2022",
     }
     assert isinstance(transport_used, AsyncTransport)
@@ -991,6 +1000,84 @@ async def test_a_partial_fetch_holds_no_client_in_its_dataset(
         data = await answer.fetch(partial=True)
     assert data.missing == answer.gaps
     assert client_references(data) == []
+
+
+async def test_a_refused_conversion_raises_its_code_under_partial() -> None:
+    wire = load("search-oda-deu-ken.json")
+    wire["parts"].append(load("search-two-parts-candidates.json")["parts"][1])
+    wire["status"] = "mixed"
+    refused = load("probe-resubmit-unit-rate-gap.json")
+    # The body's top-level trace id names the response; `diagnostics.trace_id`
+    # is not read.
+    refused["trace_id"] = "top-trace"
+    answer, server = await ask("ODA", wire, refused)
+    assert [gap.part_index for gap in answer.gaps] == [1]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SearchWarning)
+        with pytest.raises(InvalidRequestError) as caught:
+            await answer.fetch(
+                partial=True, currency="EUR", price_basis="constant", base_year=1900
+            )
+    assert caught.value.code == "rate_coverage_gap"
+    assert caught.value.trace_id == "top-trace"
+    assert caught.value.problem is not None
+    assert caught.value.problem["code"] == "rate_coverage_gap"
+    assert caught.value.problem["cause"] == refused["parts"][0]["no_data"]["cause"]
+    # Only the part with a reading converts.
+    posted = load("probe-resubmit-unit-rate-gap.request.json")
+    # The entry echoes the part's assumptions, which state none.
+    posted["input"]["entries"][0]["assumptions"] = []
+    assert server.posted[1] == posted
+    assert len(server.posted) == 2
+
+
+async def test_a_conversion_echoes_the_parts_operations_and_assumptions() -> None:
+    record = json.loads(
+        (CONTRACT / "scenarios" / "search-warning-top5.json").read_text()
+    )
+    wire = record["exchanges"][0]["response"]["json"]
+    (held,) = wire["parts"]
+    assert held["operations"] and held["assumptions"]
+    answer, server = await ask(
+        "top 5 donors", wire, load("probe-resubmit-unit-rate-gap.json")
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SearchWarning)
+        with pytest.raises(InvalidRequestError):
+            await answer.fetch(currency="EUR", price_basis="constant", base_year=1900)
+    # The ranking and the declared ODA default go with the converted reading.
+    (entry,) = server.posted[1]["input"]["entries"]
+    assert (entry["variable_text"], entry["operations"], entry["assumptions"]) == (
+        "aid",
+        held["operations"],
+        held["assumptions"],
+    )
+    assert "separate" not in entry
+
+
+@pytest.mark.parametrize(
+    "body", ["search-two-parts-candidates.json", "search-declined.json"]
+)
+async def test_a_malformed_conversion_raises_before_the_answers_own_refusal(
+    body: str, fetched: list[tuple[Any, Any, Any]]
+) -> None:
+    answer, server = await ask("ODA", load(body))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SearchWarning)
+        with pytest.raises(InvalidRequestError) as caught:
+            await answer.fetch(currency="eur")
+    assert caught.value.code == "invalid_argument"
+    assert len(server.posted) == 1
+    assert fetched == []
+
+
+async def test_an_answer_read_back_keeps_each_specs_conversion_offer() -> None:
+    answer, _ = await ask("ODA", load("search-oda-deu-ken.json"))
+    offer = answer.specs[0].unit_conversion
+    assert offer is not None
+    async with AsyncClient(base_url=BASE, api_key=False, cache=False) as client:
+        revived = AsyncAnswer.from_json(answer.to_json(), client=client)
+    assert revived.specs[0].unit_conversion == offer
 
 
 async def test_fetch_narrows_every_reading_and_refuses_a_role_one_lacks() -> None:

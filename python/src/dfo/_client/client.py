@@ -33,7 +33,7 @@ from dfo._core.timeouts import (
     ClientTimeoutArgument,
     MaxRetriesArgument,
 )
-from dfo._core.types import Layout, Spec, Window
+from dfo._core.types import Layout, PriceBasis, Spec, Window
 from dfo._datasets.analysis import AsyncAnalysis
 from dfo._datasets.build import Entities
 from dfo._datasets.cache import Cache
@@ -293,6 +293,9 @@ class AsyncClient:
         window: Window | None = None,
         entities: Entities | None = None,
         facets: Mapping[str, str | None] | None = None,
+        currency: str | None = None,
+        price_basis: PriceBasis | None = None,
+        base_year: int | None = None,
         layout: Layout | None = None,
         party_totals: bool | None = None,
         strict: bool = False,
@@ -357,6 +360,9 @@ class AsyncClient:
         window: Window | None = None,
         entities: Entities | None = None,
         facets: Mapping[str, str | None] | None = None,
+        currency: str | None = None,
+        price_basis: PriceBasis | None = None,
+        base_year: int | None = None,
         layout: Layout | None = None,
         party_totals: bool | None = None,
         latest: bool = False,
@@ -380,6 +386,17 @@ class AsyncClient:
         share, slot, card title and day. It takes `as_of`, `slot`, `strict`,
         `timeout` and `progress`, and refuses the options that narrow or render
         a spec and `latest=True`; `history(share)` lists what each slot showed.
+
+        `currency` converts a spec's amounts before the build: one Search
+        request reads the spec in that currency and price basis, and the Dataset
+        holds the converted spec, its sentence and rows whose `currency`,
+        `price_basis` and `base_year` columns hold the request. The conversion
+        applies to the spec as held, and `window`, `entities` and `facets` then
+        narrow the converted spec. `spec.unit_conversion` lists what a spec
+        from a search converts to. The server decides, and a refusal raises
+        with its code, such as `rate_coverage_gap`. Each warning Search gives
+        the conversion, such as `deflator_missing_omitted`, arrives as a
+        `SearchWarning`.
 
         A cancelled or interrupted fetch leaves its build running on the server,
         and the same fetch joins it. Ctrl-C in the synchronous client adds a
@@ -410,6 +427,14 @@ class AsyncClient:
                 nothing.
             facets: Bind a spec's provenance, measurement method or unit. An
                 empty map narrows nothing.
+            currency: Convert a spec's amounts to this ISO 4217 currency, such
+                as `"EUR"`.
+            price_basis: `"current"` (the default with `currency`) converts
+                each year at its own rate, and `"constant"` converts at the
+                prices of `base_year`.
+            base_year: The year of constant prices, which `"constant"` needs
+                and `"current"` refuses. `spec.unit_conversion` names Search's
+                default as `default_base_year`.
             layout: `long` or `frame`; None builds a spec in `long` and reads a
                 ref in the layout it holds.
             party_totals: Keep the rows of parties the code index declares
@@ -445,11 +470,17 @@ class AsyncClient:
                 any request; a share of several slots is given no `slot`, or
                 one past its last; `as_of` is before the slot first served
                 data; `window`, `entities`,
-                `facets` or `layout` is malformed; `entities` holds a match
-                that did not resolve, or names a role the spec does not
-                declare; or `timeout` is not None or a finite number above 0
+                `facets` or `layout` is malformed; `currency` is not three
+                capital letters, `price_basis` or `base_year` comes without
+                it, `"constant"` lacks a `base_year` or `"current"` has one,
+                or `facets` binds the unit beside it; a ref, share or recipe
+                is given a conversion; `entities` holds a match that did not
+                resolve, or names a role the spec does not declare; or
+                `timeout` is not None or a finite number above 0
                 (`invalid_argument`). A type checker rejects an option the
-                target does not take.
+                target does not take. Search refused the conversion
+                (`rate_coverage_gap`, `recipe_not_declared`), and the error's
+                `problem` holds the refusal's `cause`.
             NotFoundError: A share is unknown, its slot is empty, or with
                 `as_of` the slot showed no card then (`not_found`).
             VersionUnavailableError: A ref's version can no longer be fetched.
@@ -468,6 +499,9 @@ class AsyncClient:
             window=window,
             entities=entities,
             facets=facets,
+            currency=currency,
+            price_basis=price_basis,
+            base_year=base_year,
             layout=layout,
             party_totals=party_totals,
             latest=latest,
