@@ -74,6 +74,7 @@ from tests._fetch_support import (
     redirect,
     respelled,
     resubmitted,
+    trickling_server,
 )
 
 pytestmark = pytest.mark.anyio
@@ -1495,6 +1496,42 @@ async def test_a_files_route_answering_another_2xx_or_3xx_is_unexpected(
             await fetch(transport, spec(SENTENCE))
     assert (caught.value.code, caught.value.status) == ("unexpected_response", status)
     assert len(server.requests) == 2
+
+
+async def test_a_ref_whose_files_route_serves_the_file_reads_in_two_requests() -> None:
+    # The `fetch-ref` record with its files route answering the file, as the
+    # website's gateway serves a pinned file: the manifest and the file, and no
+    # Search, signed URL or build.
+    replay = Replay("fetch-ref", base_url=BASE)
+    route, signed = replay.exchanges[1:]
+    route["response"] = {**signed["response"], "body_file": "fetch-ref.parquet"}
+    replay.exchanges = replay.exchanges[:2]
+    ref = DatasetRef.from_json(json.dumps(replay.record["call"][0]["ref"]))
+    async with make(replay) as transport:
+        built = await fetch(transport, ref)
+    # The replay matched each request to the record's manifest and files route.
+    assert (len(replay.requests), replay.exchanges) == (2, [])
+    (member,) = built.members
+    assert (member.content_version, member.digest) == (
+        ref.members[0].content_version,
+        ref.members[0].digest,
+    )
+
+
+async def test_a_files_route_serving_the_file_reads_past_the_attempt_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real sockets: the route answers six chunks 0.1 s apart, 0.6 s in all, past
+    # the 0.3 s attempt timeout.
+    monkeypatch.setenv("NO_PROXY", "*")
+    with trickling_server(chunks=6, every=0.1) as origin:
+        async with AsyncTransport(
+            api_key=False, base_url=origin, attempt_timeout=0.3, max_retries=0
+        ) as transport:
+            data = await fetch_module.download(
+                transport, "/files/a", sha256_digest(bytes(range(6))), deadline=None
+            )
+    assert data == bytes(range(6))
 
 
 @pytest.mark.parametrize(

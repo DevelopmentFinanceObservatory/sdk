@@ -52,7 +52,12 @@ from dfo._sync._http.transport import (
     attempt_deadline,
     resolve_base_url,
 )
-from tests._fetch_support import Body, silent_server, stalling_server
+from tests._fetch_support import (
+    Body,
+    silent_server,
+    stalling_server,
+    trickling_server,
+)
 from tests.rule_vectors import ids, vectors
 
 BASE = "https://api.example.org/api/v1"
@@ -369,6 +374,39 @@ def test_a_download_whose_tls_handshake_never_answers_fails_at_the_stall_bound(
             elapsed = time.monotonic() - start
     assert (caught.value.code, caught.value.retryable) == ("network_error", True)
     assert 0.35 < elapsed < 1.0
+
+
+def test_a_files_route_body_reads_past_the_attempt_timeout_while_bytes_arrive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real sockets: six chunks 0.1 s apart, 0.6 s in all, past the 0.3 s attempt
+    # timeout and never 0.3 s without a byte.
+    monkeypatch.setenv("NO_PROXY", "*")
+    monkeypatch.setattr(transport_module, "DOWNLOAD_STALL_S", 0.3)
+    with trickling_server(chunks=6, every=0.1) as origin:
+        with Transport(
+            api_key=False, base_url=origin, attempt_timeout=0.3, max_retries=0
+        ) as transport:
+            response = transport.request("GET", "/files/a", file=True)
+    assert response.content == bytes(range(6))
+
+
+def test_a_files_route_body_that_stalls_fails_retryably_at_the_stall_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real sockets; the attempt timeout of 5 s would end the read far later.
+    monkeypatch.setenv("NO_PROXY", "*")
+    monkeypatch.setattr(transport_module, "DOWNLOAD_STALL_S", 0.4)
+    with stalling_server(first_chunk_after=0.1) as origin:
+        with Transport(
+            api_key=False, base_url=origin, attempt_timeout=5.0, max_retries=0
+        ) as transport:
+            start = time.monotonic()
+            with pytest.raises(NetworkError) as caught:
+                transport.request("GET", "/files/a", file=True)
+            elapsed = time.monotonic() - start
+    assert (caught.value.code, caught.value.retryable) == ("network_error", True)
+    assert 0.45 < elapsed < 1.0
 
 
 def test_a_body_that_stalls_after_its_first_chunk_raises_at_the_attempt_end(

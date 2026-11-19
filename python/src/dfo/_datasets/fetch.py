@@ -788,7 +788,8 @@ async def download(
     """Fetch a file through the route that redirects to it, checked on `digest`,
     or taken as served when `digest` is None.
 
-    The route answers 200, whose body is the file, or a 302, whose `Location`
+    The route answers 200, whose body is the file, read until `deadline` while a
+    byte arrives at least every `DOWNLOAD_STALL_S`, or a 302, whose `Location`
     resolves against the route's URL and is fetched once, with a bare request on
     the storage host. A signed fetch that fails retryably, or bytes that do not
     hash to `digest`, ask the route once more for a fresh URL. Reading stops
@@ -813,7 +814,7 @@ async def download(
     failure: DfoError | None = None
     for _ in range(2):
         response = await transport.request(
-            "GET", target, params=params, deadline=deadline, max_bytes=limit
+            "GET", target, params=params, deadline=deadline, max_bytes=limit, file=True
         )
         if response.status_code == 200:
             data = response.content

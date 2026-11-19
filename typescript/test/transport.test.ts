@@ -921,6 +921,44 @@ describe("timeouts", () => {
     assert.deepEqual(data, new Uint8Array([0, 1, 2, 3, 4, 5]));
   });
 
+  test("read a files route's 200 body past the attempt timeout while bytes keep arriving", async () => {
+    // Six chunks 10 ms apart: 60 ms in all, past the 30 ms attempt timeout, never 20 ms without
+    // a byte. An abort errors the body, as a real fetch's does.
+    const trickle = (_request: unknown, init: RequestInit) => {
+      let sent = 0;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init.signal?.addEventListener("abort", () => {
+            controller.error(init.signal?.reason);
+          });
+        },
+        async pull(controller) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          if (sent === 6) controller.close();
+          else controller.enqueue(new Uint8Array([sent++]));
+        },
+      });
+      return new Response(body, { status: 200 });
+    };
+    const { fetch, seen } = mockFetch(trickle);
+    const located = await transport({ fetch, attemptTimeout: 30, maxRetries: 0 }).locate({
+      path: "/datasets/s/v/files/d",
+      bodyStall: 20,
+    });
+    assert.deepEqual(located.data, new Uint8Array([0, 1, 2, 3, 4, 5]));
+    assert.equal(seen.length, 1);
+  });
+
+  test("fail a files route's 200 body that sends no byte for its stall bound as a retryable network_error", async () => {
+    const { fetch } = mockFetch(stalledBody);
+    const error = await transport({ fetch, attemptTimeout: 60_000, maxRetries: 0 })
+      .locate({ path: "/datasets/s/v/files/d", bodyStall: 20 })
+      .catch((e: unknown) => e);
+    assert.ok(error instanceof NetworkError);
+    assert.equal(error.code, "network_error");
+    assert.equal(error.retryable, true);
+  });
+
   for (const [name, options] of [
     ["without a header provider", {}],
     ["with a header provider", { headerProvider: () => ({ "x-team": "dfo" }) }],

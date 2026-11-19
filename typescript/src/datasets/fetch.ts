@@ -657,7 +657,8 @@ function artifactFault({ columns, rows }: ParquetFile, counted: number): string 
 /**
  * Downloads a file through the route that redirects to it, checked against its digest, or taken
  * as served when `digest` is undefined. The route ask is an API request, which retries as one
- * and waits the client's `attemptTimeout` per attempt. Its failure raises. The URL it names is
+ * and waits the client's `attemptTimeout` per attempt for its answer. Its failure raises. A route
+ * that answers the file with a 200 has its body read as the signed fetch below reads one. The URL it names is
  * fetched once, bare on the storage host and with the client's headers on the API's origin, reading
  * until the fetch's deadline, if any, while a byte arrives at least every `DOWNLOAD_STALL_MS`;
  * in a browser that hid the redirect, that one fetch asks the route again with the key alone
@@ -683,7 +684,7 @@ export async function download(
   const ask = { ...wait, maxBytes };
   let failure: DfoError | undefined;
   for (let round = 0; round < 2; round += 1) {
-    const located = await transport.locate({ ...target, ...ask });
+    const located = await transport.locate({ ...target, ...ask, bodyStall: DOWNLOAD_STALL_MS });
     let data: Uint8Array<ArrayBuffer>;
     if (located.data === undefined) {
       try {

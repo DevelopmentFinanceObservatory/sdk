@@ -127,6 +127,26 @@ describe("two specs whose narrowed builds are one spec", () => {
   });
 });
 
+describe("a ref fetched by its version", () => {
+  test("reads a files route that serves the file in two requests", async () => {
+    // The `fetch-ref` record with its files route answering the file, as the website's gateway
+    // serves a pinned file: the manifest and the file, and no Search, signed URL or build.
+    const record = structuredClone(await scenario("fetch-ref"));
+    const [manifest, route, signed] = record.exchanges;
+    route!.response = { ...signed!.response, body_file: "fetch-ref.parquet" };
+    const { transport, remaining, urls } = replay({
+      ...record,
+      origin: { kind: "synthetic", derived_from: record.name },
+      exchanges: [manifest!, route!],
+    });
+    const ref = DatasetRef.fromJSON(stepOf(record, 0, "fetch").ref);
+    const dataset = await fetchDataset(transport, ref);
+    assert.deepEqual(remaining(), []);
+    assert.equal(urls.length, 2);
+    assert.ok(dataset.ref.equals(ref));
+  });
+});
+
 describe("a ref fetched with latest", () => {
   test("builds its spec as a spec fetch does", async () => {
     const record = await scenario("fetch-spec-known-sentence");
@@ -1022,6 +1042,41 @@ describe("a download", async () => {
       assert.equal(seen.length, 2);
     });
   }
+
+  test("reads a file a files route serves with a 200 past the attempt timeout", async () => {
+    // The route answers the file in three chunks 20 ms apart, 60 ms in all, past the 30 ms
+    // attempt timeout. An abort errors the body, as a real fetch's does.
+    const served = (_request: unknown, init: RequestInit) => {
+      let sent = 0;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init.signal?.addEventListener("abort", () => {
+            controller.error(init.signal?.reason);
+          });
+        },
+        async pull(controller) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          if (sent === file.byteLength) controller.close();
+          else controller.enqueue(file.slice(sent, (sent += 3)));
+        },
+      });
+      return new Response(body, { status: 200 });
+    };
+    const { fetch, seen } = mockFetch(served);
+    const transport = new Transport({
+      baseUrl: "https://api.example/api",
+      apiKey: false,
+      fetch,
+      attemptTimeout: 30,
+      maxRetries: 0,
+      env: envFrom({}),
+      readCredentialsFile: () => null,
+    });
+    const digest = `sha256:${createHash("sha256").update(file).digest("hex")}`;
+    const data = await download(transport, { path: "/files/x" }, digest, { deadline: Infinity });
+    assert.deepEqual(data, file);
+    assert.equal(seen.length, 1);
+  });
 
   test("refuses an artifact URL off the API's origin before the sentence and any download", async () => {
     const record = structuredClone(await scenario("fetch-spec-known-sentence"));
