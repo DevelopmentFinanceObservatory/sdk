@@ -6,7 +6,8 @@ A `DatasetRef` fetched with `latest=True` builds the newest version of each
 member's spec, in the ref's one rendering, stacked under the members' parts as an
 answer's fetch stacks them. With `latest="stored"`, each member reads the version
 DFO stores as its spec's newest, in the member's rendering (`current_manifest`),
-and the Dataset's `freshness` is the worst its answers state. Otherwise a `DatasetRef` returns the versions it names, found in this order: the local cache
+and the Dataset's `freshness` is the worst its answers state. Otherwise a
+`DatasetRef` returns the versions it names, found in this order: the local cache
 by digest; the snapshot route and the files route at the stored digest; the file
 selector, which renders the version again from its stored frame; a fresh build,
 which must return the same version; and otherwise `VersionUnavailableError`,
@@ -172,10 +173,10 @@ async def fetch(
     progress: bool | None = None,
     cache: Cache | None = None,
 ) -> Dataset:
-    """Fetch a spec's latest version, the exact versions a ref names, or with
-    `latest=True` the newest versions of a ref's specs; with `latest="stored"`
-    read the versions DFO stores as the newest of a ref's specs; run a recipe
-    on DFO; or fetch the exact version a share's slot shows.
+    """Fetch a spec's latest version, the exact versions a ref names, the newest
+    versions of a ref's specs with `latest=True`, the versions DFO stores as
+    the newest of a ref's specs with `latest="stored"`, the result of a recipe
+    run on DFO, or the exact version a share's slot shows.
 
     A `Recipe` and a ref of a frame DFO computed take `latest`, `strict` and
     `timeout`, and refuse `progress`, which DFO does not report for them, and
@@ -827,7 +828,7 @@ async def _fetch_stored(
     sentence, so the fetch asks Search nothing. The Dataset's `freshness` is the
     worst the members' answers state, and None when any states none. Under
     `DFO_OFFLINE=1` each member reads its newest cached version, and the Dataset
-    is `stale` with `freshness` None; a member with nothing cached raises
+    is `stale` with `freshness` None. A member with nothing cached raises
     `offline`."""
     check_strict(strict)
     deadline = transport.deadline(timeout)
@@ -953,7 +954,6 @@ async def current_manifest(
         )
         error.trace_id = built.trace_id
         raise error
-    # A followed operation has just checked or built the version, so it is current.
     if response.status_code == 202:
         return built, "current"
     return built, _freshness_of(response)

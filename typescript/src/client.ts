@@ -233,12 +233,11 @@ export class Client {
    * the server, and the same fetch joins it.
    *
    * `latest: "stored"` reads, for each member of a ref, the version DFO stores as the newest of
-   * the member's spec, in the member's rendering: two GETs per member, for the spec's manifest
-   * and the file, with no Search call. DFO answers from its stored version and checks for newer
-   * data after it answers, so a page does not wait on a check or a build unless DFO stores no
-   * version it can serve, when the fetch waits for the build. `dataset.freshness` says how new
-   * the versions are: `current`, `pending` or `stale`, the worst of the members', or null when
-   * the server does not say. A page reads its committed ref this way to show the newest data on
+   * the member's spec, in the member's rendering. It sends two GETs per member, for the spec's
+   * manifest and the file, and makes no Search call. DFO answers from its stored version and
+   * checks for newer data after it answers, so the fetch waits on a build only when DFO stores
+   * no version it can serve. `dataset.freshness` says how new the versions are, as `current`,
+   * `pending` or `stale`, the worst of the members', or null when the server does not say. A page reads its committed ref this way to show the newest data on
    * each view.
    *
    * `currency`, with `priceBasis` and `baseYear`, fetches a spec in another unit:

@@ -647,7 +647,6 @@ export async function currentManifest(
       });
     }
   });
-  // A followed operation has just checked or built the version, so it is current.
   const freshness = response.status === 202 ? "current" : freshnessOf(response.headers);
   return { ...built, freshness };
 }

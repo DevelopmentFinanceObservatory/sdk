@@ -320,11 +320,10 @@ def fetch(
     timeout: CallTimeout = CLIENT_TIMEOUT,
     progress: bool | None = None,
 ) -> Dataset:
-    """Fetch a spec's latest version, the exact versions a ref names, or with
-    `latest=True` the newest versions of a ref's specs; with `latest="stored"`
-    read the versions DFO stores as the newest of a ref's specs; run a recipe on
-    DFO; or fetch the exact version a share's slot shows, with the default
-    client.
+    """Fetch a spec's latest version, the exact versions a ref names, the newest
+    versions of a ref's specs with `latest=True`, the versions DFO stores as the
+    newest of a ref's specs with `latest="stored"`, the result of a recipe run
+    on DFO, or the exact version a share's slot shows, with the default client.
 
     Takes `Client.fetch`'s arguments, including its timeout behaviour: left out,
     `timeout` is the one given to `dfo.configure`, else a non-empty

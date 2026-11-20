@@ -840,7 +840,7 @@ class Dataset:
         question: The question the data answers, when it was fetched from an
             answer to one; None otherwise.
         freshness: How new the versions are, for a dataset
-            `dfo.fetch(ref, latest="stored")` read: the worst of its members'
+            `dfo.fetch(ref, latest="stored")` read, the worst of its members'
             freshness, `stale` before `pending` before `current`. None for every
             other dataset, for one read from a server that does not state
             freshness, and for one `dfo.load` read, since freshness holds at the

@@ -176,8 +176,8 @@ export type RefFetchOptions = Omit<CallOptions, "partyTotals"> & {
   /** `true` builds the newest version of each member's spec in the ref's rendering, in place of
    *  the exact versions it names. `"stored"` reads the version DFO stores as the newest of each
    *  member's spec, in the member's rendering. DFO checks for newer data after it answers, so
-   *  the read waits on a build only when DFO stores no version it can serve, and the dataset's `freshness` says
-   *  how new the versions are. */
+   *  the read waits on a build only when DFO stores no version it can serve. The dataset's
+   *  `freshness` says how new the versions are. */
   latest?: boolean | "stored";
 };
 

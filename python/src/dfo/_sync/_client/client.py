@@ -376,13 +376,13 @@ class Client:
         in one request; or fetch the exact version a share's slot shows.
 
         `latest="stored"` reads, for each member of a ref, the version DFO
-        stores as the newest of the member's spec, in the member's rendering:
-        two GETs per member, for the spec's manifest and the file, with no
-        Search call. DFO answers from its stored version and checks for newer
-        data after it answers, so the fetch waits on a build only when DFO
-        stores no version it can serve. `dataset.freshness` says how new the
-        versions are: `current`, `pending` or `stale`, the worst of the
-        members', or None when the server does not say.
+        stores as the newest of the member's spec, in the member's rendering.
+        It sends two GETs per member, for the spec's manifest and the file, and
+        makes no Search call. DFO answers from its stored version and checks
+        for newer data after it answers, so the fetch waits on a build only
+        when DFO stores no version it can serve. `dataset.freshness` says how
+        new the versions are, as `current`, `pending` or `stale`, the worst of
+        the members', or None when the server does not say.
 
         A ref of a frame DFO computed reads that frame, and with `latest=True`
         DFO computes its recipe again on the newest versions of its datasets. A
