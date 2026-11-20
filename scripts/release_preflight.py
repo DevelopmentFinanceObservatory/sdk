@@ -30,9 +30,9 @@ of any error the client raised.
 """
 
 import sys
-from io import BytesIO
 
 import httpx2
+import pyarrow as pa
 import pyarrow.parquet as pq
 from dfo import Client
 from dfo._core.refs import Member
@@ -134,7 +134,7 @@ def check_file_route(client: Client, member: Member, rows: int) -> None:
     try:
         response = httpx2.get(url, follow_redirects=True, timeout=60)
         response.raise_for_status()
-        served = pq.read_table(BytesIO(response.content)).num_rows
+        served = pq.read_table(pa.BufferReader(response.content)).num_rows
     except (httpx2.HTTPError, OSError, ValueError) as error:
         raise PreflightError(
             f"{FILE_REFUSED}: {type(error).__name__}: {error}"
