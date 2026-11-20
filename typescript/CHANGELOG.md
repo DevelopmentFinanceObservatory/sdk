@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `client.fetch(ref, { latest: "stored" })` reads, for each member of a ref, the version DFO stores as the newest of the member's spec, in the member's rendering: `GET /datasets/{spec_id}` with the rendering as its query, then the file the manifest lists for that rendering, checked against its digest. It makes no Search call, and each member keeps the ref's sentence. A 202 is polled to the built version as a long build is, reporting to `onProgress`. `dataset.freshness` says how new the versions are, from each answer's `x-dfo-freshness` header: `"current"`, `"pending"` or `"stale"`, the worst of the members', `"current"` for a member whose read waited for a build, or null when any other answer states none, and for every dataset another fetch or a saved file returns. `dataset.ref` and the saved file leave it out. The `Freshness` type is exported from `@developmentfinance/client/types`. `latest: "stored"` on a spec, a recipe, a ref of a frame DFO computed or a share throws `InvalidRequestError` (`invalid_argument`) before any request, and `RecipeFetchOptions` and `ShareFetchOptions` refuse it at compile time. An answer for another spec throws `ContractError` (`contract_violation`).
+
 ## [0.4.1] - 2026-11-19
 
 0.4.0 was tagged and never published. 0.4.1 is the first release on the registry with the 0.4.0 changes listed below it.

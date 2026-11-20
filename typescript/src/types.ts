@@ -47,6 +47,7 @@ export type {
   Citation,
   CitationSource,
   DerivedMember,
+  Freshness,
   KeptSeries,
   LeftOutStep,
   Member,

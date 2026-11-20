@@ -172,6 +172,7 @@ test("each entry point exports these names and no others", async () => {
       "EntityRef",
       "FetchOptions",
       "FilterOptions",
+      "Freshness",
       "Gap",
       "GapKind",
       "GraphNode",

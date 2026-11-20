@@ -27,6 +27,9 @@ export async function specOptions(client: Client, spec: Spec, kenya: Match): Pro
 
 export async function refOptions(client: Client, ref: DatasetRef): Promise<void> {
   await client.fetch(ref, { latest: true, layout: "frame", onProgress: () => undefined });
+  await client.fetch(ref, { latest: "stored", strict: true });
+  // @ts-expect-error latest is true, false or "stored".
+  await client.fetch(ref, { latest: "newest" });
   // @ts-expect-error A ref takes no window.
   await client.fetch(ref, { window: "latest" });
   // @ts-expect-error A ref takes no entities.
@@ -41,6 +44,8 @@ export async function refOptions(client: Client, ref: DatasetRef): Promise<void>
 
 export async function recipeOptions(client: Client, recipe: Recipe): Promise<void> {
   await client.fetch(recipe, { latest: true, strict: true, layout: "frame" });
+  // @ts-expect-error DFO stores no newest version of a recipe; latest: true computes it again.
+  await client.fetch(recipe, { latest: "stored" });
   // @ts-expect-error DFO reports no progress while it computes a recipe.
   await client.fetch(recipe, { onProgress: () => undefined });
   // @ts-expect-error A recipe's frame is in the frame layout.
