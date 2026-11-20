@@ -360,7 +360,11 @@ describe("arguments a fetch refuses before any request", () => {
       { entities: { origin: ["country/FRA"] } },
       "client.fetch(member.spec, { entities }) for a member of ref.members where",
     ],
-    ["a ref given latest that is not a boolean", { latest: "yes" }, "latest is true or false"],
+    [
+      "a ref given latest that is neither a boolean nor stored",
+      { latest: "yes" },
+      'latest is true, false or "stored"',
+    ],
   ] as const) {
     test(name, async () => {
       await assert.rejects(fetchDataset(transport, await storedRef(), options as FetchOptions), {

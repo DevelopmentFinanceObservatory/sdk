@@ -550,6 +550,50 @@ export async function downloadBuilt<T>(
 }
 
 /**
+ * GETs a route that answers 200 with a manifest, or 202 with the operation that builds it, and
+ * waits for the manifest, polling the operation as a long build's. A failed operation raises
+ * its error, and is not resubmitted, since the read posted no build. `response` is the route's
+ * answer, which carries the headers the route sets.
+ *
+ * @throws {ContractError} The route answered another status (`unexpected_response`), or a body
+ *   that is not a manifest or an operation resource (`contract_violation`).
+ * @throws {DfoTimeoutError} The caller's deadline passed before the build was done
+ *   (`deadline_exceeded`); the message says it keeps running when the deadline passed while
+ *   waiting on the operation, and is a plain read timeout when it passed on the first GET.
+ */
+export async function readBuilt(
+  transport: Transport,
+  path: string,
+  wait: Wait & { onProgress?: ProgressHandler | undefined },
+): Promise<Built & { readonly response: JsonResponse }> {
+  const response = await transport.request({
+    path,
+    deadline: wait.deadline,
+    signal: wait.signal,
+  });
+  if (response.status === 200) {
+    const manifest = describing(response.traceId, () => readManifest(response.body));
+    return { manifest, traceId: response.traceId, response };
+  }
+  if (response.status !== 202) {
+    throw clientError("unexpected_response", {
+      status: response.status,
+      detail: `${response.url.pathname} answered HTTP ${response.status}; it answers 200 or 202.`,
+      traceId: response.traceId,
+    });
+  }
+  const poller = new Poller(transport, operationReply(response), {
+    onProgress: wait.onProgress,
+  });
+  try {
+    return { ...(await poller.wait(wait)), response };
+  } catch (error) {
+    if (error instanceof DfoError && passedDeadline(error)) throw stillRunning(wait, error);
+    throw error;
+  }
+}
+
+/**
  * Posts a build and waits for its manifest, through a long build when the server starts one.
  *
  * @throws {DfoTimeoutError} The caller's deadline passed before the build was done

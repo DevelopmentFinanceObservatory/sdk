@@ -360,6 +360,7 @@ class Built:
     missing: tuple[Any, ...]
     stale: bool
     question: str | None = None
+    freshness: str | None = None
 
 
 def fake_build_dataset(
@@ -372,8 +373,11 @@ def fake_build_dataset(
     cache: Any = None,
     caller: str = "dfo",
     question: str | None = None,
+    freshness: str | None = None,
 ) -> Built:
-    return Built(list(members), layout, complete, tuple(missing), stale, question)
+    return Built(
+        list(members), layout, complete, tuple(missing), stale, question, freshness
+    )
 
 
 type LiveResponse = tuple[int, Mapping[str, str], bytes]

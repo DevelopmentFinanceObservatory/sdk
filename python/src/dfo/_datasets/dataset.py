@@ -30,7 +30,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime
 from itertools import accumulate
 from os import PathLike
-from typing import TYPE_CHECKING, Any, Never, override
+from typing import TYPE_CHECKING, Any, Literal, Never, override
 
 from dfo._core.codes import (
     CONTRACT_VIOLATION,
@@ -128,6 +128,19 @@ SAVED_FORMAT_VERSION = 1
 SAVED_DERIVED_FORMAT_VERSION = 2
 # The format of the record `Provenance.to_json` writes.
 PROVENANCE_FORMAT_VERSION = 1
+
+# How new the versions a `latest="stored"` fetch read are, as DFO's
+# `x-dfo-freshness` header states it for each member:
+#
+# - `current`: DFO confirmed the version is the newest within its recheck window.
+# - `pending`: the window has passed and DFO is checking for newer data, so the
+#   version is the one its last check found.
+# - `stale`: the window has passed and DFO is not checking, as after a check
+#   failed, so the version may be older than the newest data.
+type Freshness = Literal["current", "pending", "stale"]
+
+# The freshness values from best to worst, so a dataset's is its worst member's.
+FRESHNESS: tuple[Freshness, ...] = ("current", "pending", "stale")
 
 # A member's retention: whether its version is pinned and the date it is held
 # until, each None when unknown.
@@ -826,6 +839,12 @@ class Dataset:
             for a file saved without one, and for a website bundle.
         question: The question the data answers, when it was fetched from an
             answer to one; None otherwise.
+        freshness: How new the versions are, for a dataset
+            `dfo.fetch(ref, latest="stored")` read, the worst of its members'
+            freshness, `stale` before `pending` before `current`. None for every
+            other dataset, for one read from a server that does not state
+            freshness, and for one `dfo.load` read, since freshness holds at the
+            moment of the read. `dataset.ref` and the saved file leave it out.
         layout_version: The column set of the table: the long layout's version,
             `frame` for the pipeline frame, or a bundle's rendition.
         left_out: Every series a step of the recipe behind a derived Dataset
@@ -872,6 +891,7 @@ class Dataset:
     from_cache: bool = False
     fetched_at: datetime | None = None
     question: str | None = None
+    freshness: Freshness | None = None
     # `held_until` and `pinned`, from the members once, when the dataset is made.
     _retention_of_members: tuple[date | None, bool] = field(
         init=False, repr=False, compare=False
@@ -1421,6 +1441,7 @@ def build_dataset(
     cache: Cache | None = None,
     caller: str = "dfo",
     question: str | None = None,
+    freshness: Freshness | None = None,
 ) -> Dataset:
     """Make one dataset from the members a fetch built and downloaded.
 
@@ -1450,6 +1471,7 @@ def build_dataset(
         caller: The fetching client's hint name, `client` or `dfo`, which the
             repr's newest-versions line names.
         question: The question of the answer the members answer, or None.
+        freshness: How new a `latest="stored"` fetch's versions are, or None.
 
     Raises:
         ValueError: No members, or several members in the frame layout.
@@ -1548,6 +1570,7 @@ def build_dataset(
         from_cache=any(fetched.from_cache for fetched in members),
         fetched_at=_earliest(fetched.fetched_at for fetched in members),
         question=question,
+        freshness=freshness,
     )
 
 

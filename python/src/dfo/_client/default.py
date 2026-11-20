@@ -23,7 +23,7 @@ import weakref
 from collections.abc import Mapping, Sequence
 from datetime import date
 from os import PathLike
-from typing import overload
+from typing import Literal, overload
 
 from typing_extensions import deprecated
 
@@ -259,7 +259,7 @@ def fetch(
     target: DatasetRef,
     /,
     *,
-    latest: bool = False,
+    latest: bool | Literal["stored"] = False,
     strict: bool = False,
     timeout: CallTimeout = CLIENT_TIMEOUT,
     progress: bool | None = None,
@@ -315,14 +315,15 @@ def fetch(
     base_year: int | None = None,
     layout: Layout | None = None,
     party_totals: bool | None = None,
-    latest: bool = False,
+    latest: bool | Literal["stored"] = False,
     strict: bool = False,
     timeout: CallTimeout = CLIENT_TIMEOUT,
     progress: bool | None = None,
 ) -> Dataset:
-    """Fetch a spec's latest version, the exact versions a ref names, or with
-    `latest=True` the newest versions of a ref's specs; run a recipe on DFO; or
-    fetch the exact version a share's slot shows, with the default client.
+    """Fetch a spec's latest version, the exact versions a ref names, the newest
+    versions of a ref's specs with `latest=True`, the versions DFO stores as the
+    newest of a ref's specs with `latest="stored"`, the result of a recipe run
+    on DFO, or the exact version a share's slot shows, with the default client.
 
     Takes `Client.fetch`'s arguments, including its timeout behaviour: left out,
     `timeout` is the one given to `dfo.configure`, else a non-empty
@@ -335,11 +336,12 @@ def fetch(
         InvalidRequestError: The target is not a `Spec`, a `DatasetRef`, a
             `Recipe`, or a `Share` or its URL, such as a spec id, and no request
             is sent; a ref is narrowed or given another layout or
-            `party_totals`; `latest` is not a bool, is given a spec, or is
-            given a ref whose members differ in rendering; a share is given a
-            narrowing, `party_totals`, `latest=True` or a layout other than
-            `frame`, `slot` is 0, or `as_of` is malformed, all before any
-            request; a share of several slots is given no `slot`, or one past
+            `party_totals`; `latest` is not True, False or `"stored"`, is
+            given a spec, `latest=True` a ref whose members differ in
+            rendering, or `latest="stored"` a recipe or a computed frame; a
+            share is given a narrowing, `party_totals`, `latest` or a layout
+            other than `frame`, `slot` is 0, or `as_of` is malformed, all
+            before any request; a share of several slots is given no `slot`, or one past
             its last; `as_of` is before the slot first served data; `window`,
             `entities`, `facets`, the conversion or `layout` is malformed, or
             a ref, share or recipe is given a conversion; `entities` holds a

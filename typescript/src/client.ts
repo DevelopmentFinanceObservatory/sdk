@@ -232,6 +232,14 @@ export class Client {
    * it. A passed timeout or an aborted `signal` stops the wait and leaves the build running on
    * the server, and the same fetch joins it.
    *
+   * `latest: "stored"` reads, for each member of a ref, the version DFO stores as the newest of
+   * the member's spec, in the member's rendering. It sends two GETs per member, for the spec's
+   * manifest and the file, and makes no Search call. DFO answers from its stored version and
+   * checks for newer data after it answers, so the fetch waits on a build only when DFO stores
+   * no version it can serve. `dataset.freshness` says how new the versions are, as `current`,
+   * `pending` or `stale`, the worst of the members', or null when the server does not say. A page reads its committed ref this way to show the newest data on
+   * each view.
+   *
    * `currency`, with `priceBasis` and `baseYear`, fetches a spec in another unit:
    * `client.fetch(spec, { currency: "EUR", priceBasis: "constant", baseYear: 2022 })`. Search
    * gives the converted reading its own spec and sentence, which the dataset holds, and the rows'
@@ -262,9 +270,10 @@ export class Client {
    *   falls outside 1000 to 2200, `entities` names a role outside `specRoles(spec)` or holds a
    *   `Match` that did not resolve, the target is neither a ref nor a spec with its `spec_id`
    *   and `definition`, a ref is narrowed or given another layout or `partyTotals`, or
-   *   `latest` is given a spec or a ref whose members differ in rendering; a conversion option
+   *   `latest` is given a spec, `latest: true` a ref whose members differ in rendering, or
+   *   `latest: "stored"` a recipe, a frame DFO computed or a share; a conversion option
    *   breaks its rule, or is given a ref, recipe or share; a share is given a
-   *   narrowing, `partyTotals`, `latest: true` or a layout other than `frame`, `slot` is not a
+   *   narrowing, `partyTotals`, `latest` or a layout other than `frame`, `slot` is not a
    *   number from 1, or `asOf` is malformed, all before any request; a share of several slots
    *   is given no `slot`, or one past its last; or `asOf` is before the slot first served data.
    * @throws {NotFoundError} A share is unknown, its slot is empty, or with `asOf` the slot showed no

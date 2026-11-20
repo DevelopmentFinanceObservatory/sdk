@@ -4,7 +4,10 @@ or the frame a share's slot shows.
 
 A `DatasetRef` fetched with `latest=True` builds the newest version of each
 member's spec, in the ref's one rendering, stacked under the members' parts as an
-answer's fetch stacks them. Otherwise a `DatasetRef` returns the versions it names, found in this order: the local cache
+answer's fetch stacks them. With `latest="stored"`, each member reads the version
+DFO stores as its spec's newest, in the member's rendering (`current_manifest`),
+and the Dataset's `freshness` is the worst its answers state. Otherwise a
+`DatasetRef` returns the versions it names, found in this order: the local cache
 by digest; the snapshot route and the files route at the stored digest; the file
 selector, which renders the version again from its stored frame; a fresh build,
 which must return the same version; and otherwise `VersionUnavailableError`,
@@ -40,6 +43,7 @@ card title and day.
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import datetime
+from typing import Literal
 
 import httpx2
 
@@ -63,6 +67,7 @@ from dfo._core.errors import (
     recast,
     warn,
 )
+from dfo._core.parse import violation
 from dfo._core.refs import OPS_ID, DatasetRef, DerivedRefMember, Member, RefMember
 from dfo._core.refusals import describing, trace_id_of
 from dfo._core.text import capped, cited
@@ -97,12 +102,15 @@ from dfo._datasets.build import (
 )
 from dfo._datasets.cache import sha256_digest
 from dfo._datasets.dataset import (
+    FRESHNESS,
     Dataset,
     FetchedMember,
+    Freshness,
     build_dataset,
     fetch_time,
 )
 from dfo._datasets.fetch import (
+    _latest_cached,
     build_version,
     built_sentence,
     download,
@@ -113,9 +121,11 @@ from dfo._datasets.fetch import (
     store,
 )
 from dfo._datasets.operation import (
+    Built,
     ProgressHook,
     finishing,
     progress_hook,
+    read_built,
 )
 from dfo._datasets.progress import ProgressRenderer
 from dfo._datasets.publication import Moment, ShareTarget, share_id_in
@@ -137,6 +147,10 @@ VERSIONS_PAGE_BUDGET = 20
 # The rendering a share fetch reads a dataset frame in: the bare Parquet frame.
 # Whether it leaves party totals out is the listed artifact's.
 _FRAME = Rendering("parquet", False, "frame")
+# The `latest` value that reads each ref member's stored newest version.
+_STORED = "stored"
+# The header that says how new the version a spec's route serves is.
+_FRESHNESS_HEADER = "x-dfo-freshness"
 
 
 async def fetch(
@@ -153,15 +167,16 @@ async def fetch(
     base_year: int | None = None,
     layout: Layout | None = None,
     party_totals: bool | None = None,
-    latest: bool = False,
+    latest: bool | Literal["stored"] = False,
     strict: bool = False,
     timeout: CallTimeout = CLIENT_TIMEOUT,
     progress: bool | None = None,
     cache: Cache | None = None,
 ) -> Dataset:
-    """Fetch a spec's latest version, the exact versions a ref names, or with
-    `latest=True` the newest versions of a ref's specs; run a recipe on DFO; or
-    fetch the exact version a share's slot shows.
+    """Fetch a spec's latest version, the exact versions a ref names, the newest
+    versions of a ref's specs with `latest=True`, the versions DFO stores as
+    the newest of a ref's specs with `latest="stored"`, the result of a recipe
+    run on DFO, or the exact version a share's slot shows.
 
     A `Recipe` and a ref of a frame DFO computed take `latest`, `strict` and
     `timeout`, and refuse `progress`, which DFO does not report for them, and
@@ -193,9 +208,12 @@ async def fetch(
             on each party role a spec leaves open; None is False for a spec,
             which leaves them out. A ref holds its own choice; naming another
             raises.
-        latest: Build the newest version of each of a ref's specs, in the
-            rendering the ref holds, in place of the exact versions it names.
-            A spec always fetches its newest version and refuses it.
+        latest: True builds the newest version of each of a ref's specs, in
+            the rendering the ref holds, in place of the exact versions it
+            names. `"stored"` reads the version DFO stores as the newest of each
+            member's spec, in the member's rendering, and refuses a recipe, a
+            frame DFO computed and a share. A spec always fetches its newest
+            version and refuses it.
         strict: Raise the first dataset warning instead of issuing it.
         timeout: The longest the fetch takes, in seconds, downloads included;
             None waits as long as the build takes, and `CLIENT_TIMEOUT` takes
@@ -206,8 +224,10 @@ async def fetch(
     Raises:
         InvalidRequestError: The target is neither a `Spec` nor a `DatasetRef`,
             such as a spec id; a ref is narrowed or given another layout or
-            `party_totals`; `latest` is not a bool, is given a spec, or
-            is given a ref whose members differ in rendering; a recipe or a
+            `party_totals`; `latest` is not True, False or `"stored"`, is
+            given a spec, `latest=True` a ref whose members differ in
+            rendering, or `latest="stored"` a recipe, a frame DFO computed or
+            a share; a recipe or a
             frame DFO computed is given `progress`; a ref, share or recipe is
             given `currency`, `price_basis` or `base_year`; `window`,
             `entities`, `facets`, the conversion, `layout`, `strict`,
@@ -225,9 +245,10 @@ async def fetch(
             (`contract_violation`); the cache drops it.
         DfoError: The server refused a request.
     """
-    if not isinstance(latest, bool):
+    if not isinstance(latest, bool) and latest != _STORED:
         raise client_error(
-            INVALID_ARGUMENT, f"latest is True or False, not {latest!r}."
+            INVALID_ARGUMENT,
+            f'latest is True, False or "stored", not {capped(repr(latest))}.',
         )
     timeout = transport.call_timeout(timeout)
     caller = transport.caller
@@ -241,7 +262,7 @@ async def fetch(
             converted=(currency, price_basis, base_year),
         )
         if latest:
-            given.append("latest=True")
+            given.append("latest=True" if latest is True else 'latest="stored"')
         if given:
             raise client_error(
                 INVALID_ARGUMENT,
@@ -289,6 +310,14 @@ async def fetch(
                 "DFO reports no progress while it computes a recipe, so a recipe "
                 "or a frame DFO computed takes no progress; drop it",
             )
+        if latest == _STORED:
+            raise client_error(
+                INVALID_ARGUMENT,
+                'latest="stored" reads the stored versions of a ref\'s readings, and '
+                "DFO stores no newest version of a recipe or a frame it computed; "
+                "use latest=True, which computes it again on the newest versions "
+                "of its readings",
+            )
         if isinstance(target, Recipe):
             return await run_recipe(
                 transport,
@@ -329,7 +358,7 @@ async def fetch(
                 "for a RefMember in ref.members.",
             )
         layout = _checked_ref_layout(members, layout=layout, party_totals=party_totals)
-        if latest:
+        if latest is True:
             return await _fetch_newest(
                 transport,
                 members,
@@ -339,7 +368,8 @@ async def fetch(
                 progress=progress,
                 cache=cache,
             )
-        return await _fetch_ref(
+        read = _fetch_stored if latest == _STORED else _fetch_ref
+        return await read(
             transport,
             members,
             layout=layout,
@@ -693,11 +723,11 @@ async def _sentence_or(
         return fallback
 
 
-def _ref_window_refusal(window: object, latest: bool, caller: str) -> str:
+def _ref_window_refusal(window: object, latest: bool | str, caller: str) -> str:
     """Why a ref fetch refuses `window`, and the call that does what it asks:
     `latest=True` for the newest version, else a dataset member's spec for a narrower
     window."""
-    if window == "latest" and not latest:
+    if window == "latest" and latest is not True:
         return "A ref fetch takes no window; for the newest version use latest=True."
     return (
         "A ref fetch takes no window; to narrow the years, fetch a dataset member's "
@@ -780,6 +810,153 @@ async def _fetch_newest(
         progress=progress,
         cache=cache,
     )
+
+
+async def _fetch_stored(
+    transport: AsyncTransport,
+    members: tuple[RefMember, ...],
+    *,
+    layout: Layout,
+    strict: bool,
+    timeout: float | None,
+    progress: bool | None,
+    cache: Cache | None,
+) -> Dataset:
+    """The version DFO stores as the newest of each member's spec, in the
+    member's rendering (`current_manifest`), each file downloaded and checked
+    against the manifest's digest. Each member keeps the ref's parts and
+    sentence, so the fetch asks Search nothing. The Dataset's `freshness` is the
+    worst the members' answers state, and None when any states none. Under
+    `DFO_OFFLINE=1` each member reads its newest cached version, and the Dataset
+    is `stale` with `freshness` None. A member with nothing cached raises
+    `offline`."""
+    check_strict(strict)
+    deadline = transport.deadline(timeout)
+    stale = offline()
+    fetched: list[FetchedMember] = []
+    stated: list[Freshness | None] = []
+    with ProgressRenderer(enabled=progress) as renderer:
+        on_progress = progress_hook(renderer)
+        for member in members:
+            cached_data = None
+            if stale:
+                manifest, cached_data = await _latest_cached(
+                    cache, member.spec.spec_id, member.rendering
+                )
+                built = Built(manifest, None)
+                freshness = None
+            else:
+                built, freshness = await current_manifest(
+                    transport,
+                    member.spec.spec_id,
+                    member.rendering,
+                    deadline=deadline,
+                    timeout=timeout,
+                    on_progress=on_progress,
+                )
+            with finishing(transport, built, deadline, timeout=timeout) as (
+                finisher,
+                bound,
+            ):
+                fetched.append(
+                    await finish_member(
+                        finisher,
+                        built.manifest,
+                        built.trace_id,
+                        want=Reading(member.parts, member.spec, member.sentence),
+                        rendering=member.rendering,
+                        strict=strict,
+                        cache=cache,
+                        deadline=bound,
+                        cached_data=cached_data,
+                    )
+                )
+            stated.append(freshness)
+    return await async_offload(
+        build_dataset,
+        fetched,
+        layout=layout,
+        complete=True,
+        missing=(),
+        stale=stale,
+        cache=cache,
+        caller=transport.caller,
+        freshness=None if stale else _worst_freshness(stated),
+    )
+
+
+def _worst_freshness(stated: list[Freshness | None]) -> Freshness | None:
+    """The worst of the members' freshness, or None when any member's is unknown."""
+    if any(freshness is None for freshness in stated):
+        return None
+    return max(
+        (freshness for freshness in stated if freshness is not None),
+        key=FRESHNESS.index,
+    )
+
+
+def _freshness_of(response: httpx2.Response) -> Freshness | None:
+    """The freshness an answer's `x-dfo-freshness` header states, or None when it
+    states none this client knows."""
+    value = response.headers.get(_FRESHNESS_HEADER, "").strip().lower()
+    return next((freshness for freshness in FRESHNESS if freshness == value), None)
+
+
+async def current_manifest(
+    transport: AsyncTransport,
+    spec_id: str,
+    rendering: Rendering,
+    *,
+    deadline: float | None,
+    timeout: float | None,
+    on_progress: ProgressHook,
+) -> tuple[Built, Freshness | None]:
+    """The version DFO stores as the newest of a spec in `rendering`, from
+    `GET /datasets/{spec_id}` with the rendering as its query, and the freshness
+    its answer states. A 202 is followed to the built manifest through the
+    operation it names, and the version is `current` whatever the 202 states,
+    since the operation has just checked or built it.
+
+    `timeout` is the caller's, in seconds, which set `deadline`.
+
+    Raises:
+        InvalidRequestError: `spec_id` is not a server id (`invalid_argument`);
+            no request is sent.
+        ContractError: The answer is another spec's (`contract_violation` at
+            `/definition/spec_id`).
+        DfoTimeoutError: The deadline passed before a build was done
+            (`deadline_exceeded`).
+    """
+    if not matches(SPEC_ID, spec_id):
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"The DatasetRef member {spec_id!r} does not name a spec_ id; load "
+            "refs with DatasetRef.from_json",
+        )
+    # The query is the rendering as a build posts it, each value as text.
+    query = {
+        key: str(value).lower() if isinstance(value, bool) else str(value)
+        for key, value in rendering.to_options().items()
+    }
+    built, response = await read_built(
+        transport,
+        f"/datasets/{spec_id}",
+        params=query,
+        deadline=deadline,
+        timeout=timeout,
+        on_progress=on_progress,
+    )
+    answered = built.manifest["definition"]["spec_id"]
+    if answered != spec_id:
+        error = violation(
+            f"The server answered {capped(str(answered))} for {spec_id}",
+            pointer="/definition/spec_id",
+        )
+        error.trace_id = built.trace_id
+        raise error
+    if response.status_code == 202:
+        return built, "current"
+    return built, _freshness_of(response)
 
 
 async def _fetch_ref(

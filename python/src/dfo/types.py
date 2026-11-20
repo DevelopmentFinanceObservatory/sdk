@@ -12,8 +12,9 @@ It also holds the argument types the public signatures name: `Start`, `Year`,
 `Source` and `StatChange` for `dfo.cards`; and `ShareTarget` and `Moment` for
 the share calls and `dfo.fetch(share, as_of=...)`; and `PriceBasis` for
 `dfo.fetch(spec, price_basis=...)`, whose choices a spec's `UnitConversion`
-and its `ConversionCurrency` entries describe. `CallTimeout` types a
-call's `timeout`, and `CLIENT_TIMEOUT`, its default, stands for the client's
+and its `ConversionCurrency` entries describe. `Freshness` is what
+`dfo.fetch(ref, latest="stored")` reports as `dataset.freshness`. `CallTimeout`
+types a call's `timeout`, and `CLIENT_TIMEOUT`, its default, stands for the client's
 `timeout`, so a wrapper can pass it through. `ClientTimeoutArgument` and
 `MaxRetriesArgument` type a client's `timeout` and `max_retries`, and
 `FROM_ENVIRONMENT`, their default, reads `DFO_TIMEOUT` and `DFO_MAX_RETRIES`.
@@ -72,6 +73,7 @@ from dfo._core.types import (
 from dfo._datasets.build import Progress
 from dfo._datasets.bundle import BundleLimits
 from dfo._datasets.dataset import (
+    Freshness,
     KeptSeries,
     LeftOutSeries,
     LeftOutStep,
@@ -134,6 +136,7 @@ __all__ = [
     "DerivedRefMember",
     "DerivedSpec",
     "Entity",
+    "Freshness",
     "Gap",
     "GapKind",
     "Groupby",

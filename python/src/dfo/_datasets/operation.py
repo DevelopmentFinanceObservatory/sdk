@@ -457,6 +457,50 @@ class Built:
     at_deadline: bool = False
 
 
+async def read_built(
+    transport: AsyncTransport,
+    path: str,
+    *,
+    params: Wire,
+    deadline: float | None,
+    timeout: float | None,
+    on_progress: ProgressHook,
+) -> tuple[Built, httpx2.Response]:
+    """GET a route that answers 200 with a manifest, or 202 with the operation
+    that builds it, and wait for the manifest, polling the operation as a long
+    build's. A failed operation raises its error and is not resubmitted, since
+    the read posted no build. Returns the build and the route's answer, which
+    carries the headers the route sets.
+
+    `timeout` is the caller's, in seconds, which set `deadline`.
+
+    Raises:
+        ContractError: The route answered another status
+            (`unexpected_response`), or a body that is not a manifest or an
+            operation resource (`contract_violation`).
+        DfoTimeoutError: The deadline passed before the build was done
+            (`deadline_exceeded`); the message says it keeps running when the
+            deadline passed while waiting on the operation, and is a plain read
+            timeout when it passed on the first GET.
+    """
+    response = await transport.request("GET", path, params=params, deadline=deadline)
+    if response.status_code == 200:
+        reply = _reply(response)
+        assert reply.manifest is not None
+        return Built(reply.manifest, reply.trace_id), response
+    if response.status_code != 202:
+        raise client_error(
+            UNEXPECTED_RESPONSE,
+            f"GET {response.request.url.path} answered HTTP "
+            f"{response.status_code}; it answers 200 or 202",
+            status=response.status_code,
+            trace_id=trace_id_of(response),
+        )
+    poller = Poller(transport, _operation_reply(response), on_progress=on_progress)
+    with still_running(transport, deadline, timeout):
+        return await poller.wait(deadline), response
+
+
 def _passed(
     transport: AsyncTransport, error: DfoTimeoutError, deadline: float | None
 ) -> bool:

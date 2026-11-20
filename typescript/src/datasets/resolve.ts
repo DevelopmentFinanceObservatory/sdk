@@ -1,8 +1,9 @@
 /**
  * Fetching a target: a spec through the build path in `fetch.ts`, the exact versions a ref
  * names, or a recipe or a ref of a frame DFO computed through the analysis runner in
- * `analysis.ts`. With `latest`, a ref's specs build through that path instead, in the ref's one
- * rendering, as their newest versions.
+ * `analysis.ts`. With `latest: true`, a ref's specs build through that path instead, in the
+ * ref's one rendering, as their newest versions. With `latest: "stored"`, each member reads the
+ * version DFO stores as its spec's newest, in the member's rendering (`currentManifest`).
  *
  * A ref returns the versions it names, found in this order: the snapshot route, then the files
  * route at the stored digest; the file selector, which renders the version again from its
@@ -34,8 +35,8 @@
  */
 
 import { fetchComputedFrame, fetchDerived, runRecipe } from "./analysis.ts";
-import { Dataset, shownDataset } from "./dataset.ts";
-import type { FetchedMember } from "./dataset.ts";
+import { Dataset, FRESHNESS, shownDataset } from "./dataset.ts";
+import type { FetchedMember, Freshness } from "./dataset.ts";
 import {
   capped,
   clientError,
@@ -68,7 +69,7 @@ import {
   specIdOf,
 } from "./fetch.ts";
 import type { CallOptions, FetchOptions, Narrowing } from "./fetch.ts";
-import { build, readManifest, waitFor } from "./operation.ts";
+import { build, readBuilt, readManifest, waitFor } from "./operation.ts";
 import { shareIdIn, shownLine } from "./publication.ts";
 import type { Share, ShownFrame } from "./publication.ts";
 import { Recipe } from "./recipe.ts";
@@ -99,6 +100,12 @@ import { clientWarning } from "../core/warnings.ts";
 
 /** The call that fetches the newest versions of a ref's specs, which a lost version names. */
 const LATEST_CALL = "client.fetch(ref, { latest: true })";
+/** The `latest` value that reads each ref member's stored newest version. */
+const STORED = "stored";
+/** The values `latest` takes. */
+const LATEST_VALUES: ReadonlySet<unknown> = new Set([true, false, STORED]);
+/** The header that says how new the version a spec's route serves is. */
+const FRESHNESS_HEADER = "x-dfo-freshness";
 
 /** Refusals after which a stored version's lookup goes on. The version exists, but its file
  *  has expired. An unknown version (`snapshot_not_found`) ends the lookup. */
@@ -145,13 +152,13 @@ export async function fetchDataset(
     checkOptions(FETCH_OPTIONS, options);
   const narrowing = narrowingOf({ window, entities, facets });
   const conversion = { currency, priceBasis, baseYear };
-  if (latest !== undefined && typeof latest !== "boolean") {
-    throw invalid(`latest is true or false, not ${JSON.stringify(latest)}.`);
+  if (latest !== undefined && !LATEST_VALUES.has(latest)) {
+    throw invalid(`latest is true, false or "stored", not ${capped(JSON.stringify(latest))}.`);
   }
   if (shareIdIn(target) !== null) {
     const given = [
       ...givenOptions(narrowing, rest, conversion),
-      ...(latest === true ? ["latest: true"] : []),
+      ...(latest === undefined || latest === false ? [] : [`latest: ${JSON.stringify(latest)}`]),
     ];
     if (given.length > 0) {
       throw invalid(
@@ -187,6 +194,13 @@ export async function fetchDataset(
           "computed takes no onProgress; drop it.",
       );
     }
+    if (latest === STORED) {
+      throw invalid(
+        'latest: "stored" reads the stored versions of a ref\'s readings, and DFO stores no ' +
+          "newest version of a recipe or a frame it computed; use latest: true, which computes " +
+          "it again on the newest versions of its readings.",
+      );
+    }
     const computed = present({
       latest,
       strict: rest.strict,
@@ -216,12 +230,13 @@ export async function fetchDataset(
           "isDatasetMember(member).",
       );
     }
-    return latest === true
-      ? fetchNewest(transport, members, rest)
+    if (latest === true) return fetchNewest(transport, members, rest);
+    return latest === STORED
+      ? fetchStored(transport, members, rest)
       : fetchRef(transport, members, rest);
   }
   const spec = checkedSpec(target);
-  if (latest === true) {
+  if (latest !== undefined && latest !== false) {
     throw invalid(
       "A spec always fetches its newest version, so latest is for a DatasetRef; drop it: " +
         "client.fetch(spec).",
@@ -243,7 +258,7 @@ const shownCurrency = (currency: unknown): string =>
 
 /** Why a ref fetch refuses `window`, and the call that does what it asks: `latest: true` for
  *  the newest version, else a dataset member's spec for a narrower window. */
-function refWindowRefusal(window: unknown, latest: boolean | undefined): string {
+function refWindowRefusal(window: unknown, latest: boolean | typeof STORED | undefined): string {
   if (window === "latest" && latest !== true) {
     return "A ref fetch takes no window; for the newest version use latest: true.";
   }
@@ -549,6 +564,91 @@ async function fetchRef(
     fetched.push(await fetchVersion(transport, member, `/members/${index}`, options, wait));
   }
   return Dataset.create(fetched, { layout });
+}
+
+/**
+ * Reads the stored newest version of each member's spec in the member's rendering
+ * (`currentManifest`), and downloads its file in that rendering, checked against the manifest's
+ * digest. The dataset's `freshness` is the worst of the members' (`currentManifest`), and null
+ * when any member's is unknown.
+ */
+async function fetchStored(
+  transport: Transport,
+  members: readonly RefMember[],
+  options: CallOptions,
+): Promise<Dataset> {
+  const layout = checkedRefLayout(members, options);
+  const wait = waitFor(transport, options);
+  const fetched: FetchedMember[] = [];
+  const stated: (Freshness | null)[] = [];
+  for (const member of members) {
+    const current = await currentManifest(transport, member.spec.spec_id, member.rendering, {
+      ...wait,
+      onProgress: options.onProgress,
+    });
+    const finishing = {
+      parts: member.parts,
+      posted: { spec: member.spec },
+      sentence: member.sentence,
+      rendering: member.rendering,
+      strict: options.strict ?? false,
+    };
+    fetched.push(await finish(transport, current, finishing, wait));
+    stated.push(current.freshness);
+  }
+  return Dataset.create(fetched, { layout, freshness: worstFreshness(stated) });
+}
+
+/** The worst of the members' freshness, or null when any member's is unknown. */
+function worstFreshness(stated: readonly (Freshness | null)[]): Freshness | null {
+  if (stated.some((freshness) => freshness === null)) return null;
+  const rank = Math.max(...stated.map((freshness) => FRESHNESS.indexOf(freshness!)));
+  return FRESHNESS[rank] ?? null;
+}
+
+/** The freshness an answer's `x-dfo-freshness` header states, or null when it states none this
+ *  client knows. */
+function freshnessOf(headers: Headers): Freshness | null {
+  const value = headers.get(FRESHNESS_HEADER)?.trim().toLowerCase();
+  return FRESHNESS.find((freshness) => freshness === value) ?? null;
+}
+
+/**
+ * The manifest of the version DFO stores as the newest of a spec in `rendering`, from
+ * `GET /datasets/{specId}` with the rendering as its query, and the freshness its answer states.
+ * A 202 is followed to the built manifest through the operation it names, and the version is
+ * `current` whatever the 202 states, since the operation has just checked or built it.
+ *
+ * @throws {ContractError} The answer is another spec's (`contract_violation`).
+ * @throws {DfoTimeoutError} The caller's deadline passed before a build was done
+ *   (`deadline_exceeded`).
+ */
+export async function currentManifest(
+  transport: Transport,
+  specId: string,
+  rendering: Rendering,
+  wait: Wait & { onProgress?: CallOptions["onProgress"] },
+): Promise<Built & { readonly freshness: Freshness | null }> {
+  if (!SPEC_ID.test(specId)) {
+    throw clientError("invalid_argument", {
+      detail: `The DatasetRef member '${specId}' does not name a spec_ id; load refs with DatasetRef.fromJSON.`,
+    });
+  }
+  const query = new URLSearchParams(
+    Object.entries(mintOptions(rendering)).map(([key, value]) => [key, String(value)]),
+  );
+  const { response, ...built } = await readBuilt(transport, `/datasets/${specId}?${query}`, wait);
+  describing(built.traceId, () => {
+    const answered = specIdOf(built.manifest);
+    if (answered !== specId) {
+      throw clientError("contract_violation", {
+        detail: `The server answered ${capped(answered)} for ${specId}.`,
+        pointer: "/definition/spec_id",
+      });
+    }
+  });
+  const freshness = response.status === 202 ? "current" : freshnessOf(response.headers);
+  return { ...built, freshness };
 }
 
 const stored = (member: RefMember, manifest: Manifest, data: Uint8Array): FetchedMember => ({

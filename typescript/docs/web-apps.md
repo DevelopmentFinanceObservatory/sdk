@@ -9,7 +9,7 @@ Every example on this page runs in Node as written, apart from the lines that ne
 Build the data once, in a data step you run by hand or on a schedule, and commit what the page reads. The choice follows what the page shows:
 
 - A page that opens on numbers frozen when the site was built commits a pinned ref and reads it with `client.fetch(ref)`.
-- A page that shows the newest data on each view commits a live share's data URL and reads it with `fetch`.
+- A page that shows the newest data on each view commits a ref and reads it with `client.fetch(ref, { latest: "stored" })`, or commits a live share's data URL and reads it with `fetch`.
 - A page that must make no DFO request at all ships the saved file in its own assets.
 
 ### The routes a page may call
@@ -18,14 +18,15 @@ Browsers reach the API through `https://developmentfinance.org/api/v1`, the clie
 
 For a file, the API answers with a redirect to a signed storage address. The gateway follows that redirect itself and answers 200 with the file's bytes, so a page makes one request for the file, to the gateway.
 
-| Route                                                          | What reads it                       | Pages that may call it                                     | `Cache-Control`                                                                             |
-| -------------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `GET /api/v1/datasets/{spec_id}/{content_version}`             | `client.fetch(ref)`, the manifest   | DFO origins                                                | `public, max-age=60, s-maxage=300`                                                          |
-| `GET /api/datasets/{spec_id}/{content_version}/files/{digest}` | `client.fetch(ref)`, the file       | DFO origins                                                | Pinned: `public, max-age=3600, s-maxage=31536000`. Held: `public, max-age=60, s-maxage=300` |
-| `GET /api/v1/presentation/shares/{share_id}/slots/{slot}/data` | `share.dataUrls`, read with `fetch` | Any origin                                                 | Live: `no-cache`. Snapshot: `public, max-age=300`                                           |
-| Search, builds, pins, cards, and shares                        | `client.search`, `answer.fetch`     | `developmentfinance.org`, and other pages through a server | Not cached                                                                                  |
+| Route                                                          | What reads it                                           | Pages that may call it                                     | `Cache-Control`                                                                             |
+| -------------------------------------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `GET /api/v1/datasets/{spec_id}/{content_version}`             | `client.fetch(ref)`, the manifest                       | DFO origins                                                | `public, max-age=60, s-maxage=300`                                                          |
+| `GET /api/datasets/{spec_id}/{content_version}/files/{digest}` | `client.fetch(ref)`, the file                           | DFO origins                                                | Pinned: `public, max-age=3600, s-maxage=31536000`. Held: `public, max-age=60, s-maxage=300` |
+| `GET /api/v1/datasets/{spec_id}`                               | `client.fetch(ref, { latest: "stored" })`, the manifest | DFO origins                                                | `public, max-age=60, s-maxage=60`                                                           |
+| `GET /api/v1/presentation/shares/{share_id}/slots/{slot}/data` | `share.dataUrls`, read with `fetch`                     | Any origin                                                 | Live: `no-cache`. Snapshot: `public, max-age=300`                                           |
+| Search, builds, pins, cards, and shares                        | `client.search`, `answer.fetch`                         | `developmentfinance.org`, and other pages through a server | Not cached                                                                                  |
 
-`max-age` is how long the browser keeps an answer, and `s-maxage` how long the headers let a shared cache, such as the CDN in front of the site, keep it. Every other answer on the datasets routes, a refusal or a redirect the gateway did not follow, is `no-store`. A page on any other origin calls your own server route, as in [Answer a question from a page](#answer-a-question-from-a-page), or a proxy of the API on the page's own origin.
+`max-age` is how long the browser keeps an answer, and `s-maxage` how long the headers let a shared cache, such as the CDN in front of the site, keep it. Every other answer on the datasets routes, a refusal, a redirect the gateway did not follow, or a 202 for a build, is `no-store`. A page on any other origin calls your own server route, as in [Answer a question from a page](#answer-a-question-from-a-page), or a proxy of the API on the page's own origin.
 
 ### Open on a frozen snapshot
 
@@ -76,7 +77,54 @@ To move the page to newer data, run the data step again with `client.fetch(Datas
 
 ### Show the latest data on view
 
-Make a live share once, in a data step, and commit its data URL:
+A page that commits a ref, as in [Open on a frozen snapshot](#open-on-a-frozen-snapshot), reads the newest version DFO stores of the same readings with `latest: "stored"`:
+
+<!-- docs-check: skip: needs the stored-version read, which the dev API does not serve yet -->
+
+```ts
+// In the page
+import { Client, DatasetRef } from "@developmentfinance/client";
+import committed from "./data/kenya-oda.ref.json" with { type: "json" };
+
+const client = new Client({ apiKey: false });
+const data = await client.fetch(DatasetRef.fromJSON(committed), { latest: "stored" });
+const rows = await data.toRows();
+
+console.log(data.freshness, rows.length);
+console.log(data.citation.text);
+```
+
+The fetch sends two GETs per member: the spec's manifest at `GET /api/v1/datasets/{spec_id}`, with the member's rendering as its query, and the file. It makes no Search call, and `data.sentence` is the ref's. DFO answers from the newest version it stores. `data.freshness` says what the data is, the worst of its members:
+
+- `current`: DFO found this version the newest at a check in the last 15 minutes.
+- `pending`: DFO is checking for newer data, and the version is the one its last check found.
+- `stale`: DFO could not start a check, or the last one failed, so newer data may exist.
+
+`data.freshness` is null when the API states no value or one this client does not know. DFO serves a stored version younger than 7 days at once and checks for newer data in the background, so a reading nobody opened in that time can be up to 7 days behind for its first reader. A version older than 7 days is rebuilt on read. The call waits, polling the build at `/api/v1/datasets/operations/{operation_id}`, and a version it waited for is `current`. The gateway and the browser cache the manifest read for up to two minutes (60 seconds at the CDN plus 60 seconds in the browser), so a page can lag by that much more. `data.ref` names the versions read, and leaves the freshness out, as a saved file does.
+
+The gateway sends no CORS headers on the operation route, so on a page served from any origin but `https://developmentfinance.org` the poll fails. Read the committed ref then:
+
+<!-- docs-check: skip: needs the stored-version read, which the dev API does not serve yet -->
+
+```ts
+// In the page
+import { Client, DatasetRef } from "@developmentfinance/client";
+import type { Dataset } from "@developmentfinance/client";
+import { isDfoError } from "@developmentfinance/client/errors";
+import committed from "./data/kenya-oda.ref.json" with { type: "json" };
+
+const client = new Client({ apiKey: false });
+const ref = DatasetRef.fromJSON(committed);
+let data: Dataset;
+try {
+  data = await client.fetch(ref, { latest: "stored" });
+} catch (error) {
+  if (!isDfoError(error)) throw error;
+  data = await client.fetch(ref);
+}
+```
+
+A live share shows the newest data of a card instead, with no client on the page. Make one once, in a data step, and commit its data URL:
 
 <!-- docs-check: skip: makes a share, which spends the daily share allowance; Cards and shares runs the same calls -->
 

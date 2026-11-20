@@ -355,6 +355,21 @@ function servedRetention(manifest: Readonly<Record<string, unknown>>): Retention
   };
 }
 
+/**
+ * How new the versions a `latest: "stored"` fetch read are, from best to worst, as DFO's
+ * `x-dfo-freshness` header states it for each member:
+ *
+ * - `current`: DFO confirmed the version is the newest within its recheck window.
+ * - `pending`: the window has passed and DFO is checking for newer data, so the version is the
+ *   one its last check found.
+ * - `stale`: the window has passed and DFO is not checking, as after a check failed, so the
+ *   version may be older than the newest data.
+ */
+export const FRESHNESS = ["current", "pending", "stale"] as const;
+
+/** How new the versions a `latest: "stored"` fetch read are; `FRESHNESS` lists the values. */
+export type Freshness = (typeof FRESHNESS)[number];
+
 /** How `Dataset.create` assembles its members: the layout, the parts a partial fetch left out,
  *  and for a derived dataset what its manifest adds. */
 type DatasetOptions = {
@@ -365,6 +380,8 @@ type DatasetOptions = {
   readonly question?: string | null;
   /** When the data left the server. Now by default. */
   readonly fetchedAt?: Date;
+  /** How new a `latest: "stored"` fetch's versions are. Null by default. */
+  readonly freshness?: Freshness | null;
 };
 
 /** A member a dataset is made from, without its bytes, which the dataset holds itself. */
@@ -399,6 +416,8 @@ export type DatasetState = {
   /** The share slot a share fetch read, as the text form's "Shown by" line names it:
    *  `share k3Qx8vTa, slot 2 "Malaria grants", on 3 October 2026`. */
   readonly shownBy?: string;
+  /** How new a `latest: "stored"` fetch's versions are. A saved file holds none. */
+  readonly freshness?: Freshness | null;
 };
 
 /** What a dataset reads from its members' manifests and the fetch's options. */
@@ -443,6 +462,7 @@ function stateOf(members: readonly MemberInput[], options: DatasetOptions): Data
     ].join("; "),
     question: options.question ?? null,
     fetchedAt: options.fetchedAt ?? new Date(),
+    freshness: options.freshness ?? null,
     leftOut: derived?.leftOut ?? [],
     leftOutComplete: derived?.leftOutComplete ?? true,
     steps: (derived?.steps ?? []).map((step) => ({
@@ -539,6 +559,12 @@ export class Dataset {
   /** When the data left the server, to the second, or null when a saved file does not say, as
    *  one Python wrote for a dataset read from a website bundle does not. */
   readonly fetchedAt: Date | null;
+  /** How new the versions are, for a dataset `client.fetch(ref, { latest: "stored" })` read:
+   *  the worst of its members' freshness, `stale` before `pending` before `current`. Null for
+   *  every other dataset, for one read from a server that does not state freshness, and for one
+   *  read from a saved file, since freshness holds at the moment of the read. `dataset.ref`
+   *  leaves it out. */
+  readonly freshness: Freshness | null;
   /** Each member's file as the server built it, in member order, or null for a dataset read
    *  from a saved file, which holds one table for every member. */
   readonly #data: readonly Uint8Array[] | null;
@@ -663,6 +689,7 @@ export class Dataset {
     this.layout = state.layout;
     this.layoutVersion = state.layoutVersion;
     this.question = state.question;
+    this.freshness = state.freshness ?? null;
     // Seconds precision, as the saved file's `dfo.fetched_at` holds it.
     this.fetchedAt =
       state.fetchedAt === null
