@@ -94,15 +94,15 @@ console.log(data.freshness, rows.length);
 console.log(data.citation.text);
 ```
 
-The fetch sends two GETs per member: the spec's manifest at `GET /api/v1/datasets/{spec_id}`, with the member's rendering as its query, and the file. It makes no Search call, and `data.sentence` is the ref's. DFO answers from the newest version it stores, and on a read 15 minutes or more after its last check it starts a check for newer data without making the read wait. `data.freshness` says what the data is, the worst of its members:
+The fetch sends two GETs per member: the spec's manifest at `GET /api/v1/datasets/{spec_id}`, with the member's rendering as its query, and the file. It makes no Search call, and `data.sentence` is the ref's. DFO answers from the newest version it stores. `data.freshness` says what the data is, the worst of its members:
 
 - `current`: DFO found this version the newest at a check in the last 15 minutes.
 - `pending`: DFO is checking for newer data, and the version is the one its last check found.
 - `stale`: DFO could not start a check, or the last one failed, so newer data may exist.
 
-`data.freshness` is null when the API does not state it. The data is as new as the check before the read: about 15 minutes behind for a reading viewed that often, and up to 7 days behind for one nobody viewed in that time, plus the gateway's 60 seconds. `data.ref` names the versions read, and leaves the freshness out, as a saved file does.
+`data.freshness` is null when the API states no value or one this client does not know. DFO serves a stored version younger than 7 days at once and checks for newer data in the background, so a reading nobody opened in that time can be up to 7 days behind for its first reader. A version older than 7 days is rebuilt on read: the call waits, polling the build at `/api/v1/datasets/operations/{operation_id}`, and a version it waited for is `current`. The gateway and the browser cache the manifest read for up to two minutes (60 seconds at the CDN plus 60 seconds in the browser), so a page can show data that much older still. `data.ref` names the versions read, and leaves the freshness out, as a saved file does.
 
-When DFO stores no version it can serve, as for a reading nobody viewed in 7 days, it answers 202 and builds one, and the fetch polls the build at `/api/v1/datasets/operations/{operation_id}`. A version the fetch waited for is `current`. The gateway sends no CORS headers on that route, so on a page served from any origin but `https://developmentfinance.org` the poll fails. Read the committed ref then:
+The gateway sends no CORS headers on the operation route, so on a page served from any origin but `https://developmentfinance.org` the poll fails. Read the committed ref then:
 
 <!-- docs-check: skip: needs the stored-version read, which the dev API does not serve yet -->
 

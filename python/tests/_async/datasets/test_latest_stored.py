@@ -13,18 +13,25 @@ from typing import Any
 import httpx2
 import pytest
 
-from dfo._core.errors import ContractError, InvalidRequestError
+from dfo._core.errors import (
+    ContractError,
+    DfoTimeoutError,
+    InvalidRequestError,
+    NetworkError,
+)
 from dfo._core.refs import DatasetRef, RefMember
 from dfo._core.types import Rendering, Spec
 from dfo._datasets.bundle import load
+from dfo._datasets.cache import sha256_digest
 from dfo._datasets.recipe import recipe
-from dfo._datasets.resolve import fetch
+from dfo._datasets.resolve import current_manifest, fetch
 from dfo._http.transport import AsyncTransport
 from tests._data import CONTRACT
 from tests._datasets import PARQUET, manifest, recorded_member
 from tests._fetch_support import (
     BASE,
     OP_ID,
+    FakeCache,
     Server,
     json_response,
     operation,
@@ -221,4 +228,81 @@ async def test_latest_stored_is_refused_before_any_request(
             await fetch(transport, target(), latest="stored")
     assert raised.value.code == "invalid_argument"
     assert named in str(raised.value)
+    assert server.requests == []
+
+
+async def test_offline_each_member_reads_its_newest_cached_version_as_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = FakeCache()
+    cache.put_bytes(sha256_digest(DATA), DATA)
+    cache.put_manifest(
+        HELD.spec.spec_id, NEWER, HELD.rendering, manifest_of(HELD.spec.spec_id)
+    )
+    monkeypatch.setenv("DFO_OFFLINE", "1")
+    server = Server()
+    async with make(server) as transport:
+        data = await fetch(transport, DatasetRef((HELD,)), latest="stored", cache=cache)
+    assert server.requests == []
+    assert data.stale is True
+    assert data.freshness is None
+    (member,) = data.members
+    assert member.content_version == NEWER
+
+
+async def test_offline_a_member_with_nothing_cached_raises_offline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DFO_OFFLINE", "1")
+    server = Server()
+    async with make(server) as transport:
+        with pytest.raises(NetworkError) as raised:
+            await fetch(
+                transport, DatasetRef((HELD,)), latest="stored", cache=FakeCache()
+            )
+    assert raised.value.code == "offline"
+    assert server.requests == []
+
+
+async def test_a_deadline_on_the_first_get_is_a_plain_read_timeout() -> None:
+    timeline = Timeline()
+    server = Server(httpx2.ReadTimeout("slow"))
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        timeline.now += 5.0
+        return server(request)
+
+    async with make(handler, timeline) as transport:
+        with pytest.raises(DfoTimeoutError) as raised:
+            await fetch(transport, DatasetRef((HELD,)), latest="stored", timeout=5.0)
+    assert raised.value.code == "deadline_exceeded"
+    assert "still running" not in str(raised.value)
+
+
+async def test_a_deadline_while_polling_says_the_build_is_still_running() -> None:
+    timeline = Timeline()
+    server = Server(
+        json_response(202, operation("running"), {"retry-after": "2"}),
+        json_response(200, operation("running")),
+    )
+    async with make(server, timeline) as transport:
+        with pytest.raises(DfoTimeoutError) as raised:
+            await fetch(transport, DatasetRef((HELD,)), latest="stored", timeout=1.0)
+    assert raised.value.code == "deadline_exceeded"
+    assert "still running" in str(raised.value)
+
+
+async def test_current_manifest_refuses_a_spec_id_that_is_not_a_server_id() -> None:
+    server = Server()
+    async with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as raised:
+            await current_manifest(
+                transport,
+                "not-a-spec",
+                HELD.rendering,
+                deadline=None,
+                timeout=None,
+                on_progress=lambda *_: None,
+            )
+    assert raised.value.code == "invalid_argument"
     assert server.requests == []

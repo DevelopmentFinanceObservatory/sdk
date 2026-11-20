@@ -114,6 +114,7 @@ from dfo._datasets.recipe import Recipe
 from dfo._http.hooks import sync_offload
 from dfo._sync._datasets.analysis import fetch_computed_frame, fetch_derived, run_recipe
 from dfo._sync._datasets.fetch import (
+    _latest_cached,
     build_version,
     built_sentence,
     download,
@@ -821,22 +822,34 @@ def _fetch_stored(
     member's rendering (`current_manifest`), each file downloaded and checked
     against the manifest's digest. Each member keeps the ref's parts and
     sentence, so the fetch asks Search nothing. The Dataset's `freshness` is the
-    worst the members' answers state, and None when any states none."""
+    worst the members' answers state, and None when any states none. Under
+    `DFO_OFFLINE=1` each member reads its newest cached version, and the Dataset
+    is `stale` with `freshness` None; a member with nothing cached raises
+    `offline`."""
     check_strict(strict)
     deadline = transport.deadline(timeout)
+    stale = offline()
     fetched: list[FetchedMember] = []
     stated: list[Freshness | None] = []
     with ProgressRenderer(enabled=progress) as renderer:
         on_progress = progress_hook(renderer)
         for member in members:
-            built, freshness = current_manifest(
-                transport,
-                member.spec.spec_id,
-                member.rendering,
-                deadline=deadline,
-                timeout=timeout,
-                on_progress=on_progress,
-            )
+            cached_data = None
+            if stale:
+                manifest, cached_data = _latest_cached(
+                    cache, member.spec.spec_id, member.rendering
+                )
+                built = Built(manifest, None)
+                freshness = None
+            else:
+                built, freshness = current_manifest(
+                    transport,
+                    member.spec.spec_id,
+                    member.rendering,
+                    deadline=deadline,
+                    timeout=timeout,
+                    on_progress=on_progress,
+                )
             with finishing(transport, built, deadline, timeout=timeout) as (
                 finisher,
                 bound,
@@ -851,6 +864,7 @@ def _fetch_stored(
                         strict=strict,
                         cache=cache,
                         deadline=bound,
+                        cached_data=cached_data,
                     )
                 )
             stated.append(freshness)
@@ -860,10 +874,10 @@ def _fetch_stored(
         layout=layout,
         complete=True,
         missing=(),
-        stale=False,
+        stale=stale,
         cache=cache,
         caller=transport.caller,
-        freshness=_worst_freshness(stated),
+        freshness=None if stale else _worst_freshness(stated),
     )
 
 

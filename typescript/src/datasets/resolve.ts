@@ -629,6 +629,11 @@ export async function currentManifest(
   rendering: Rendering,
   wait: Wait & { onProgress?: CallOptions["onProgress"] },
 ): Promise<Built & { readonly freshness: Freshness | null }> {
+  if (!SPEC_ID.test(specId)) {
+    throw clientError("invalid_argument", {
+      detail: `The DatasetRef member '${specId}' does not name a spec_ id; load refs with DatasetRef.fromJSON.`,
+    });
+  }
   const query = new URLSearchParams(
     Object.entries(mintOptions(rendering)).map(([key, value]) => [key, String(value)]),
   );

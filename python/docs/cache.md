@@ -4,7 +4,7 @@ The client keeps every file it downloads on disk, keyed by its SHA-256 digest, b
 
 ## Work offline
 
-Fetch once with the network, then set `DFO_OFFLINE=1`. A ref loads the exact versions it names, and a spec loads the newest version the cache holds. Both datasets report `stale` as True, because the client read from the cache alone, and the display gives the time the file left the server:
+Fetch once with the network, then set `DFO_OFFLINE=1`. A ref loads the exact versions it names, a spec loads the newest version the cache holds, and a ref fetched with `latest="stored"` loads the newest cached version of each member's spec, with `freshness` None. All datasets report `stale` as True, because the client read from the cache alone, and the display gives the time the file left the server:
 
 ```text
 <Dataset Germany's gross ODA disbursements to Nigeria for basic health care, 1995 to 2024. Current US dollars · OECD Creditor Reporting System (CRS).
@@ -46,7 +46,7 @@ finally:
     del os.environ["DFO_OFFLINE"]
 ```
 
-Under `DFO_OFFLINE=1` every request raises `NetworkError` with the code `offline` before it is sent, so `dfo.search`, `answer.choose`, and the lookups raise it. A fetch raises it when the cache holds no version of a spec, when a ref names a version the cache lacks, when the cache is off, and when a spec is narrowed with `window`, `entities`, or `facets`, since only the server knows which version a narrowing builds. The client reads the variable on each call, so set it before the call runs.
+Under `DFO_OFFLINE=1` every request raises `NetworkError` with the code `offline` before it is sent, so `dfo.search`, `answer.choose`, and the lookups raise it. A fetch raises it when the cache holds no version of a spec (or of a `latest="stored"` member's spec), when a ref names a version the cache lacks, when the cache is off, and when a spec is narrowed with `window`, `entities`, or `facets`, since only the server knows which version a narrowing builds. The client reads the variable on each call, so set it before the call runs.
 
 `stale` is True only under `DFO_OFFLINE=1`, and it travels into the file `save` writes. Fetch again with the network to clear it.
 

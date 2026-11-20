@@ -274,7 +274,7 @@ export class Client {
    *   `latest` is given a spec, `latest: true` a ref whose members differ in rendering, or
    *   `latest: "stored"` a recipe, a frame DFO computed or a share; a conversion option
    *   breaks its rule, or is given a ref, recipe or share; a share is given a
-   *   narrowing, `partyTotals`, `latest: true` or a layout other than `frame`, `slot` is not a
+   *   narrowing, `partyTotals`, `latest` or a layout other than `frame`, `slot` is not a
    *   number from 1, or `asOf` is malformed, all before any request; a share of several slots
    *   is given no `slot`, or one past its last; or `asOf` is before the slot first served data.
    * @throws {NotFoundError} A share is unknown, its slot is empty, or with `asOf` the slot showed no

@@ -6,7 +6,7 @@ import { DatasetRef, isDerived } from "../src/core/ref.ts";
 import type { RefMember } from "../src/core/ref.ts";
 import { Dataset } from "../src/datasets/dataset.ts";
 import { recipe } from "../src/datasets/recipe.ts";
-import { fetchDataset } from "../src/datasets/resolve.ts";
+import { currentManifest, fetchDataset } from "../src/datasets/resolve.ts";
 import { Transport } from "../src/http/transport.ts";
 import { scenario, scenarioBytes, stepOf } from "./replay.ts";
 import { contractJson, json, mockFetch, recordingSleep } from "./support.ts";
@@ -136,6 +136,69 @@ describe('a ref fetched with latest: "stored"', () => {
       code: "contract_violation",
       pointer: "/definition/spec_id",
     });
+  });
+});
+
+describe("a deadline on a stored read", () => {
+  /** A response that arrives after `ms` of real time, or rejects when the request aborts first. */
+  const answerAfter =
+    (ms: number, respond: () => Response) =>
+    (_request: unknown, init: RequestInit): Promise<Response> =>
+      new Promise((resolve, reject) => {
+        const socket = setTimeout(() => {
+          resolve(respond());
+        }, ms);
+        init.signal?.addEventListener("abort", () => {
+          clearTimeout(socket);
+          reject(init.signal?.reason);
+        });
+      });
+
+  test("on the first GET is a plain read timeout", async () => {
+    const { fetch } = mockFetch(answerAfter(2_000, () => json(manifestOf(held.spec.spec_id))()));
+    await assert.rejects(
+      fetchDataset(transportOver(fetch), storedRef, { latest: "stored", timeout: 50 }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.name, "DfoTimeoutError");
+        assert.ok(!error.message.includes("still running"), error.message);
+        return true;
+      },
+    );
+  });
+
+  test("while the operation is polled says the build is still running", async () => {
+    const operation = (await scenario("operation-resume")).exchanges;
+    const running = operation[0]!.response.json;
+    const { fetch } = mockFetch(
+      json(running, 202),
+      answerAfter(2_000, () => json(running)()),
+    );
+    await assert.rejects(
+      fetchDataset(transportOver(fetch), storedRef, { latest: "stored", timeout: 200 }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.name, "DfoTimeoutError");
+        assert.ok(error.message.includes("still running"), error.message);
+        return true;
+      },
+    );
+  });
+});
+
+describe("currentManifest", () => {
+  test("refuses a spec id that is not a server id before any request", async () => {
+    const { fetch, seen } = mockFetch();
+    await assert.rejects(
+      currentManifest(transportOver(fetch), "not-a-spec", held.rendering, {
+        deadline: Infinity,
+      }),
+      {
+        name: "InvalidRequestError",
+        code: "invalid_argument",
+      },
+    );
+    assert.equal(seen.length, 0);
   });
 });
 
