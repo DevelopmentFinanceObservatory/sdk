@@ -132,6 +132,8 @@ FETCH_TARGETS = textwrap.dedent(
         dfo.fetch(spec, entities={"recipient": ["country/KEN", nigeria[0]]})
         dfo.fetch(spec, layout="frame", party_totals=True, timeout=None)
         dfo.fetch(ref, latest=True, progress=False, timeout=30)
+        dfo.fetch(ref, latest="stored", progress=False)
+        client.fetch(ref, latest="stored")
         dfo.fetch(recipe, latest=True, strict=True)
         dfo.fetch(share, slot=1, as_of="2026-10-28")
         dfo.fetch(SHARE_URL, slot=1)
@@ -149,6 +151,8 @@ FETCH_TARGETS = textwrap.dedent(
         dfo.fetch(ref, layout="frame")  # error
         dfo.fetch(recipe, progress=False)  # error
         dfo.fetch(recipe, party_totals=True)  # error
+        dfo.fetch(recipe, latest="stored")  # error
+        dfo.fetch(ref, latest="newest")  # error
         dfo.fetch(share, latest=True)  # error
         dfo.fetch(SHARE_URL, facets={})  # error
 
@@ -221,7 +225,7 @@ def pyright_errors(source: str, directory: Path) -> list[int]:
 
 @pytest.mark.parametrize(
     ("source", "count"),
-    [(CANDIDATES, 3), (CHOICES, 9), (FETCH_TARGETS, 12), (FORWARDED_TARGETS, 0)],
+    [(CANDIDATES, 3), (CHOICES, 9), (FETCH_TARGETS, 14), (FORWARDED_TARGETS, 0)],
     ids=[
         "answer-forms",
         "closed-inputs-open-outputs",

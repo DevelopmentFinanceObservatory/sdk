@@ -2606,7 +2606,7 @@ async def test_incomplete_metadata_artifact_stays_eligible_offline(
             {"currency": "GBP", "price_basis": "constant", "base_year": 2022},
             '{caller}.fetch(member.spec, currency="GBP")',
         ),
-        ("ref", {"latest": 1}, "not 1"),
+        ("ref", {"latest": 1}, 'latest is True, False or "stored", not 1'),
         ("spec", {"latest": True}, "{caller}.fetch(spec)"),
         ("spec", {"latest": "yes"}, "not 'yes'"),
     ],

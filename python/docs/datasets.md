@@ -262,6 +262,30 @@ print(plain.members[0].content_version)
 
 `VersionUnavailableError.newest_version` names the newest plain build. A ref whose member is a cut therefore names a version that differs from `newest_version` even when no new data exists.
 
+### Read the newest stored version
+
+`dfo.fetch(ref, latest="stored")` reads the version DFO stores as the newest of each member's spec, in the member's rendering, and builds nothing when DFO holds one it can serve:
+
+<!-- docs-check: skip: needs the stored-version read, which the dev API does not serve yet -->
+
+```python
+import dfo
+
+saved = dfo.load("ethiopia.parquet")
+data = dfo.fetch(saved.ref, latest="stored")
+print(data.freshness, len(data))
+```
+
+The fetch sends two GETs per member: the spec's manifest at `GET /datasets/{spec_id}`, with the member's rendering as its query, and the file, checked against its digest. It makes no Search call, and `data.sentence` is the ref's. DFO answers from the newest version it stores, and on a read 15 minutes or more after its last check it starts a check for newer data without making the read wait. `data.freshness` says what the data is, the worst of its members:
+
+- `current`: DFO found this version the newest at a check in the last 15 minutes.
+- `pending`: DFO is checking for newer data, and the version is the one its last check found.
+- `stale`: DFO could not start a check, or the last one failed, so newer data may exist.
+
+`data.freshness` is None when the API does not state it. The data is as new as the check before the read: about 15 minutes behind for a reading read that often, and up to 7 days behind for one nobody read in that time. When DFO stores no version it can serve, it answers 202 and builds one, and the fetch waits for the build as `latest=True` does. A version the fetch waited for is `current`. `data.ref` names the versions read and leaves the freshness out, as the saved file does.
+
+`latest=True` has DFO check for newer data before it answers, so use it in a data step that must hold the newest data. `latest="stored"` suits a read that should answer at once, such as a dashboard. A recipe, a ref of a frame DFO computed, a spec, and a share each refuse `latest="stored"` with `InvalidRequestError` before any request.
+
 ### When a version is gone
 
 The server keeps a version's file for 30 days, then rebuilds it from stored data where it can. `data.held_until` gives the earliest date any member can still be fetched without being pinned, and `data.pinned` is True when every member is kept without a limit. The client's cache keeps its own copy, so a version you fetched once loads from disk. When neither can supply a version, `dfo.fetch(ref)` raises `VersionUnavailableError`. Fetch the newest version and keep that:
@@ -295,6 +319,7 @@ print(len(data))
 - `stale`: True when the rows came from the cache under `DFO_OFFLINE=1`.
 - `from_cache` and `fetched_at`: whether the fetch read any file from the cache, and when the data left the server, as a UTC `datetime` or None when the cache recorded no time. [The cache](cache.md#tell-a-cache-hit-from-a-download) shows the display line.
 - `question`: the question the data answers, when it came from `answer.fetch()`, else None.
+- `freshness`: how new the versions are, `current`, `pending` or `stale`, for a dataset `dfo.fetch(ref, latest="stored")` read, else None. The saved file leaves it out.
 - `layout_version`: the column set, or `frame` for the pipeline frame that `layout="frame"` returns for one reading.
 
 The saved file keeps the provenance in the Parquet key-value metadata, under these keys. Each value is UTF-8 text, and a key marked optional is left out when the dataset has no value for it:
@@ -313,7 +338,7 @@ The saved file keeps the provenance in the Parquet key-value metadata, under the
 - `dfo.steps`: a derived dataset only, its steps, as a JSON array.
 - `dfo.party_totals_left_out`: optional, the party totals the fetch left out, as a JSON array of entries with `spec_id`, `role`, `entities`, and `provenance` and `kept_in` where they apply. A derived dataset's entries name its readings' spec ids, in the order of its readings. Added in 0.2.0.
 
-`dfo.load` reads each key back, `question` and `fetched_at` included, and sets `from_cache` to False. A 0.1.0 client ignores the keys added in 0.2.0, and a 0.2.0 client the key added in 0.3.0.
+`dfo.load` reads each key back, `question` and `fetched_at` included, sets `from_cache` to False, and `freshness` to None. A 0.1.0 client ignores the keys added in 0.2.0, and a 0.2.0 client the key added in 0.3.0.
 
 `dfo.load` also opens a bundle downloaded from the website: the ZIP, the folder it extracts to, or its `datapackage.json`. It checks each file against its hash before it reads the data, and raises `dfo.errors.BundleError` when a file is missing or its bytes differ. `dfo.load(path, limits=dfo.types.BundleLimits(...))` changes the size bounds it enforces on a bundle.
 

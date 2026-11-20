@@ -93,6 +93,8 @@ for notice in newest.warnings:
 
 `data.warnings` holds the notices DFO attached to the data, each with a `code`, `severity`, `message`, and the `spec_id` it concerns. Read them from the dataset and log or fail on them. `strict=True` raises them as `DataWarning` instead.
 
+A step that reads the newest data without waiting on DFO's check, such as a dashboard's, fetches the ref with `latest="stored"` instead, as [Read the newest stored version](datasets.md#read-the-newest-stored-version) shows.
+
 A ref keeps its window, so `latest=True` rebuilds the same years on newer versions. To widen the window, search again with the new `window` and commit the new ref.
 
 ## Link a reading

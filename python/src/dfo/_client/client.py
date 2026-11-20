@@ -12,7 +12,7 @@ built the pool closes it.
 
 from collections.abc import Mapping, Sequence
 from os import PathLike
-from typing import Any, ClassVar, Self, overload
+from typing import Any, ClassVar, Literal, Self, overload
 
 from dfo._config.keys import ApiKeyArgument
 from dfo._core.codes import INVALID_ARGUMENT
@@ -309,7 +309,7 @@ class AsyncClient:
         target: DatasetRef,
         /,
         *,
-        latest: bool = False,
+        latest: bool | Literal["stored"] = False,
         strict: bool = False,
         timeout: CallTimeout = CLIENT_TIMEOUT,
         progress: bool | None = None,
@@ -365,7 +365,7 @@ class AsyncClient:
         base_year: int | None = None,
         layout: Layout | None = None,
         party_totals: bool | None = None,
-        latest: bool = False,
+        latest: bool | Literal["stored"] = False,
         strict: bool = False,
         timeout: CallTimeout = CLIENT_TIMEOUT,
         progress: bool | None = None,
@@ -373,6 +373,15 @@ class AsyncClient:
         """Fetch a spec's latest version, the exact versions a ref names, or with
         `latest=True` the newest versions of a ref's specs; run a recipe on DFO
         in one request; or fetch the exact version a share's slot shows.
+
+        `latest="stored"` reads, for each member of a ref, the version DFO
+        stores as the newest of the member's spec, in the member's rendering:
+        two GETs per member, for the spec's manifest and the file, with no
+        Search call. DFO answers from its stored version and checks for newer
+        data after it answers, so the fetch waits on a build only when DFO
+        stores no version it can serve. `dataset.freshness` says how new the
+        versions are: `current`, `pending` or `stale`, the worst of the
+        members', or None when the server does not say.
 
         A ref of a frame DFO computed reads that frame, and with `latest=True`
         DFO computes its recipe again on the newest versions of its datasets. A
@@ -385,7 +394,7 @@ class AsyncClient:
         showed then, in the frame layout, and the Dataset's repr names the
         share, slot, card title and day. It takes `as_of`, `slot`, `strict`,
         `timeout` and `progress`, and refuses the options that narrow or render
-        a spec and `latest=True`; `history(share)` lists what each slot showed.
+        a spec and `latest`; `history(share)` lists what each slot showed.
 
         `currency` converts a spec's amounts before the build: one Search
         request reads the spec in that currency and price basis, and the Dataset
@@ -443,10 +452,12 @@ class AsyncClient:
                 a spec, so a sum over the table counts each party once, and
                 reads a ref as it was fetched. A role the spec binds keeps what
                 it binds.
-            latest: Build the newest version of each of a ref's specs, in the
-                rendering the ref holds, in place of the exact versions it
-                names, as `fetch(old.ref, latest=True)`. A spec always fetches
-                its newest version and refuses it.
+            latest: True builds the newest version of each of a ref's specs,
+                in the rendering the ref holds, in place of the exact versions
+                it names, as `fetch(old.ref, latest=True)`. `"stored"` reads
+                the version DFO stores as the newest of each member's spec, in
+                the member's rendering, and refuses a recipe and a computed
+                frame. A spec always fetches its newest version and refuses it.
             strict: Raise the first dataset warning, or the
                 `SeriesLeftOutWarning`, instead of issuing it.
             timeout: The longest the fetch takes, in seconds, downloads
@@ -462,10 +473,11 @@ class AsyncClient:
             InvalidRequestError: The target is not a `Spec`, a `DatasetRef`, a
                 `Recipe`, or a `Share` or its URL, such as a spec id, and no
                 request is sent; a ref is narrowed or given another layout or
-                `party_totals`; `latest` is not a bool, is given a spec, or is
-                given a ref whose members differ in rendering; a recipe or a
-                computed frame is given `progress`; a share is given
-                a narrowing, `party_totals`, `latest=True` or a layout other
+                `party_totals`; `latest` is not True, False or `"stored"`, is
+                given a spec, `latest=True` a ref whose members differ in
+                rendering, or `latest="stored"` a recipe or a computed frame;
+                a recipe or a computed frame is given `progress`; a share is
+                given a narrowing, `party_totals`, `latest` or a layout other
                 than `frame`, `slot` is 0, or `as_of` is malformed, all before
                 any request; a share of several slots is given no `slot`, or
                 one past its last; `as_of` is before the slot first served
@@ -486,7 +498,9 @@ class AsyncClient:
             VersionUnavailableError: A ref's version can no longer be fetched.
             ContractError: An artifact is not Parquet (`unexpected_response`),
                 or lacks a `time_period` or numeric `value` column
-                (`contract_violation`); the cache drops it.
+                (`contract_violation`); the cache drops it. A
+                `latest="stored"` read answered for another spec
+                (`contract_violation`).
             DfoTimeoutError: `timeout` passed (`deadline_exceeded`). The build
                 keeps running on the server, and the same fetch joins it.
             DfoError: The server refused a request.
