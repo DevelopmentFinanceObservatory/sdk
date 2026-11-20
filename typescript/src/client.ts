@@ -236,8 +236,8 @@ export class Client {
    * `client.fetch(spec, { currency: "EUR", priceBasis: "constant", baseYear: 2022 })`. Search
    * gives the converted reading its own spec and sentence, which the dataset holds, and the rows'
    * `currency`, `price_basis` and `base_year` columns state the unit. The conversion runs on the
-   * spec as held, before `window`, `entities` and `facets` narrow it. `unitConversion(spec)`
-   * lists what a spec converts to.
+   * spec as `window`, `entities` and `facets` narrow it, so Search judges the years and places
+   * the build reads. `unitConversion(spec)` lists what a spec converts to.
    *
    * A ref of a frame DFO computed reads that frame, and with `latest: true` DFO computes its
    * recipe again on the newest versions of its datasets. A recipe or a computed frame takes

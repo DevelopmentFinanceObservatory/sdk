@@ -18,6 +18,7 @@ from dfo._datasets.build import (
     rebind,
     rendering_for,
     scope,
+    scoped_identity,
 )
 from dfo._datasets.dataset import PartyTotalsLeftOut
 from tests._fetch_support import OP_ID, operation
@@ -297,3 +298,23 @@ def test_an_unawaited_resolve_in_entities_is_refused(listed: bool) -> None:
         dcid_entities(listed_entities(entities))
     assert caught.value.code == "invalid_argument"
     assert pending.cr_frame is None  # closed, so Python does not warn it never ran
+
+
+@pytest.mark.parametrize(
+    ("entities", "open_roles"),
+    [
+        ({"origin": ["country/DEU"]}, ["destination"]),
+        ({"recipient": ["country/KEN"]}, ["origin"]),
+        ({"origin": ["country/DEU"], "destination": ["country/KEN"]}, None),
+        ({"observationAbout": ["country/KEN"]}, ["origin", "destination"]),
+    ],
+    ids=["one-flow-role", "role-column", "both", "place"],
+)
+def test_a_scoped_identity_closes_the_open_roles_its_entities_bind(
+    entities: dict[str, list[str]], open_roles: list[str] | None
+) -> None:
+    identity = {"entities": {}, "open_roles": ["origin", "destination"]}
+    scoped = scoped_identity(identity, {"entities": entities})
+    assert scoped["entities"] == entities
+    assert scoped.get("open_roles") == open_roles
+    assert identity["open_roles"] == ["origin", "destination"]

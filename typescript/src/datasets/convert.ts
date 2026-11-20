@@ -7,8 +7,9 @@
  * echoing its part's `separate` flag, operations and assumptions, so Search states for the
  * converted part the assumptions that still hold. It groups the definite parts of the reply by
  * spec, takes each spec, sentence and entity groups in place of the held ones, and builds those
- * as any fetch does. The conversion runs on the reading as held, before `window`, `entities` and
- * `facets` narrow it, so Search judges the held years and places.
+ * as any fetch does. Each entry posts the identity as `window`, `entities` and `facets` narrow
+ * it (`scopedIdentity`), so Search judges the years and places the build reads, and the
+ * converted readings build with no further scope.
  *
  * A part Search answers with `no_data` or `unsupported` refuses the fetch, with the class
  * `contract/actions.json` gives its reason or code, or the base `DfoError` for one it lacks,
@@ -16,9 +17,8 @@
  * rates the tables lack, stays on the error's `problem`. A converted member carries the converted
  * part's assumptions, departures and operations, and its `warn` and `degraded` warnings reach
  * the warning handler as `SearchWarning`s once the member is built (`fetchMembers`), or the first
- * raises under `strict`. A narrowed build whose sentence comes from resubmitting the built
- * reading takes that reply's warnings instead, since the held reading's speak of years and
- * places the narrowing may cut.
+ * raises under `strict`. A build whose sentence comes from resubmitting the built reading, as one
+ * the server puts in another canonical form does, takes that reply's warnings instead.
  */
 import {
   actionFor,
@@ -47,10 +47,12 @@ import {
   fetchMembers,
   identityEntry,
   invalid,
-  narrows,
+  keptEntityGroups,
+  narrowingRefusal,
   RESOLVE_PATH,
   resolvedOf,
   resubmitBody,
+  scopedIdentity,
   UNNAMED_PART,
 } from "./fetch.ts";
 import type { FetchMembersOptions, MemberRequest } from "./fetch.ts";
@@ -171,38 +173,56 @@ function textsOf(part: Part): string[] {
   return variableText === null || variableText === "" ? [] : [variableText];
 }
 
+/** A member a conversion posts one entry for, with its build `scope`, which the entry's
+ *  identity applies. */
+type Converting = {
+  readonly member: MemberRequest;
+  readonly scope: Readonly<Record<string, unknown>> | undefined;
+};
+
 /** What a conversion posts one entry each for, in member order: a member for each of its answer
- *  parts, naming that part and answering it alone, or the member itself when it has none. */
-const convertedParts = (members: readonly MemberRequest[]): MemberRequest[] =>
-  members.flatMap((member) =>
-    member.answerParts === undefined || member.answerParts.length === 0
+ *  parts, naming that part and answering it alone, or the member itself when it has none, each
+ *  with its member's scope from `scopes`. */
+const convertedParts = (
+  members: readonly MemberRequest[],
+  scopes: readonly (Readonly<Record<string, unknown>> | undefined)[],
+): Converting[] =>
+  members.flatMap((member, at) =>
+    (member.answerParts === undefined || member.answerParts.length === 0
       ? [member]
       : member.answerParts.map((part): MemberRequest => ({
           ...member,
           parts: textsOf(part),
           answerParts: [part],
-        })),
+        }))
+    ).map((each) => ({ member: each, scope: scopes[at] })),
   );
 
 /** The identity entry that asks Search for one of `convertedParts`' members in `request`'s
- *  unit. It names the member's answer part's variable text, else its first part, else
+ *  unit: its identity as its scope narrows it (`scopedIdentity`), with the entity groups that
+ *  hold for it. It names the member's answer part's variable text, else its first part, else
  *  `UNNAMED_PART`, and echoes the answer part's members `echoedReading` gives. */
-function entryOf(member: MemberRequest, request: UnitRequest): Record<string, unknown> {
-  const identity = member.spec.definition["identity"];
-  if (!isRecord(identity)) {
+function entryOf({ member, scope }: Converting, request: UnitRequest): Record<string, unknown> {
+  const held = member.spec.definition["identity"];
+  if (!isRecord(held)) {
     throw invalid(
       `The definition of ${member.spec.spec_id} holds no identity to convert; use a spec from ` +
         "a search.",
     );
   }
+  const identity = scopedIdentity(held, scope);
   const facets = isRecord(identity["facets"]) ? identity["facets"] : {};
+  identity["facets"] = { ...facets, unit: { state: "value", request } };
   const part = member.answerParts?.[0];
+  const groups = keptEntityGroups(
+    {
+      spec: member.spec,
+      entityGroups: member.entityGroups ?? resolvedOf(member.spec).entityGroups,
+    },
+    { identity },
+  );
   return {
-    ...identityEntry(
-      member.parts[0] ?? UNNAMED_PART,
-      { ...identity, facets: { ...facets, unit: { state: "value", request } } },
-      member.entityGroups ?? resolvedOf(member.spec).entityGroups,
-    ),
+    ...identityEntry(member.parts[0] ?? UNNAMED_PART, identity, groups),
     ...(part === undefined ? {} : echoedReading(part)),
   };
 }
@@ -210,11 +230,11 @@ function entryOf(member: MemberRequest, request: UnitRequest): Record<string, un
 /** The body that resubmits each of `convertedParts`' members with the unit request, so each
  *  answer part keeps its own operations, assumptions and `separate` flag. */
 export function conversionBody(
-  posted: readonly MemberRequest[],
+  posted: readonly Converting[],
   request: UnitRequest,
 ): Record<string, unknown> {
   return resubmitBody(
-    posted.map((member) => entryOf(member, request)),
+    posted.map((each) => entryOf(each, request)),
     { include_observations: false },
   );
 }
@@ -253,11 +273,11 @@ function holdsRequest(spec: Record<string, unknown>, request: UnitRequest): bool
 async function convert(
   transport: Transport,
   members: readonly MemberRequest[],
+  scopes: readonly (Readonly<Record<string, unknown>> | undefined)[],
   request: UnitRequest,
   wait: Wait,
-  narrowed: boolean,
 ): Promise<MemberRequest[]> {
-  const posted = convertedParts(members);
+  const posted = convertedParts(members, scopes);
   // Search answers within its own time limit, so the conversion waits for it as a search does:
   // each attempt runs to the fetch's deadline, else to `SEARCH_TIMEOUT_MS` from now.
   const response = await transport.request({
@@ -291,11 +311,11 @@ async function convert(
     const unit = requestText(request);
     /** Each converted spec's member and its parts' warnings, by `spec_id`. */
     const grouped = new Map<string, { member: MemberRequest; warnings: Notice[] }>();
-    for (const [index, member] of posted.entries()) {
+    for (const [index, { member }] of posted.entries()) {
       const part = parts[index];
       const status = isRecord(part) ? part["status"] : undefined;
       if (!isRecord(part) || status !== "definite") {
-        throw partRefusal(member, part, request, traceId, narrowed, index);
+        throw partRefusal(member, part, request, traceId, index);
       }
       // checkStrict has checked a definite part holds a spec.
       const spec = part["spec"] as Record<string, unknown>;
@@ -349,7 +369,6 @@ function partRefusal(
   given: unknown,
   request: UnitRequest,
   traceId: string | null,
-  narrowed: boolean,
   index: number,
 ): Error {
   const part = isRecord(given) ? given : {};
@@ -380,12 +399,6 @@ function partRefusal(
     `Search cannot convert ${readingName(member)} to ${requestText(request)}: ` +
       capped(said.trim()),
     ...(missing.length === 0 ? [] : [`Missing: ${missing.join(", ")}${more}.`]),
-    ...(narrowed
-      ? [
-          "The conversion runs on the reading as held, before window, entities and facets " +
-            "narrow it; fetch without them, or narrow first and convert ds.members[0].spec.",
-        ]
-      : []),
   ].join(" ");
   // A problem document as the server would send it, so the class is the one its code maps to
   // and `problem.cause` keeps what the tables lack. A code the contract does not list is a
@@ -407,8 +420,10 @@ function partRefusal(
 
 /**
  * Builds the members in `request`'s unit, or as they are when `request` is undefined. The
- * conversion's arguments and the narrowing are checked before any request, the conversion
- * shares the fetch's deadline, and `build` builds the converted members.
+ * conversion's arguments and the narrowing are checked once, before any request, the conversion
+ * posts each identity as the narrowing leaves it and shares the fetch's deadline, and `build`
+ * builds the converted members, which carry their narrowing in their identities. A refusal of a
+ * narrowed entity carries the hints a build's would.
  *
  * @throws {SearchWarning} `strict` is true and Search warned about a converted reading.
  */
@@ -424,9 +439,13 @@ export async function fetchConverted(
   ) => Promise<Dataset> = fetchMembers,
 ): Promise<Dataset> {
   if (request === undefined) return build(transport, members, options);
-  const { wants } = checkMembers(members, options);
+  const { wants, scopes } = checkMembers(members, options);
   const wait = options.wait ?? waitFor(transport, options);
-  const narrowed = narrows(options.narrowing ?? {});
-  const converted = await convert(transport, wants, request, wait, narrowed);
+  let converted: MemberRequest[];
+  try {
+    converted = await convert(transport, wants, scopes, request, wait);
+  } catch (error) {
+    throw narrowingRefusal(error, options.narrowing ?? {});
+  }
   return build(transport, converted, { ...options, wait });
 }

@@ -57,9 +57,11 @@ export default tseslint.config(
   },
   ...layerRules,
   {
-    // The layer rule reads static imports, so a dynamic import() would pass it unseen. No source
-    // module needs one. apache-arrow loads through a static import in src/datasets/arrow.ts,
-    // reached only from the separate arrow entry point.
+    // The layer rule reads static imports, so a dynamic import() would pass it unseen. One
+    // source module has one: encodeStacked in src/datasets/parquet.ts loads the external
+    // hyparquet-writer package when a dataset is written, so a page that only reads a dataset
+    // does not load the writer. apache-arrow loads through a static import in
+    // src/datasets/arrow.ts, reached only from the separate arrow entry point.
     files: ["src/**/*.ts"],
     rules: {
       "no-restricted-syntax": [

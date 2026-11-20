@@ -50,7 +50,7 @@ from dfo._core.types import (
     matches,
 )
 from dfo._generated.file_selector import SELECTOR_QUERY_KEYS
-from dfo._generated.role_keys import ROLE_KEYS
+from dfo._generated.role_keys import COLUMN_ROLE_KEYS, ROLE_KEYS
 from dfo._http.hooks import Hold
 
 # The longest the client reads a synchronous build. The server cuts off at 120 s.
@@ -635,6 +635,39 @@ def build_body(
     }
 
 
+def scoped_identity(
+    identity: Mapping[str, Any], narrowing: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """`identity` with a build `scope` from `narrowing` applied, as the datasets
+    mint applies it before it puts the identity in canonical form.
+
+    Each member the scope supplies replaces the identity's own whole: `window`
+    becomes `requested_window`, `entities` the whole binding, and `facets`
+    every facet binding, each ref as `{"state": "value", "ref": ref}`. A flow
+    role the scope binds, under its wire role or a frame role column such as
+    `recipient`, leaves `open_roles`, which goes when none stays.
+    """
+    scoped = dict(identity)
+    if narrowing is None:
+        return scoped
+    if (entities := narrowing.get("entities")) is not None:
+        scoped["entities"] = {role: list(dcids) for role, dcids in entities.items()}
+        bound = {COLUMN_ROLE_KEYS.get(role, role) for role in entities}
+        left = [role for role in identity.get("open_roles") or () if role not in bound]
+        if left:
+            scoped["open_roles"] = left
+        else:
+            scoped.pop("open_roles", None)
+    if (window := narrowing.get("window")) is not None:
+        scoped["requested_window"] = dict(window)
+    if (facets := narrowing.get("facets")) is not None:
+        scoped["facets"] = {
+            axis: {"state": "value", "ref": binding["ref"]}
+            for axis, binding in facets.items()
+        }
+    return scoped
+
+
 def _kept_entity_groups(held: Spec | None, built: Wire) -> dict[str, Any]:
     """The held spec's entity groups that hold for a built definition.
 
@@ -782,30 +815,50 @@ def _shown(value: object, /) -> str:
     return cited(capped(value)) if isinstance(value, str) else capped(cited(value))
 
 
+@dataclass(frozen=True, slots=True)
+class Converting:
+    """One entry a conversion posts.
+
+    Attributes:
+        reading: The reading the entry converts.
+        part: The answer part it stands for, or None for a spec fetched outside
+            an answer.
+        narrowing: The reading's build `scope`, which the entry's identity
+            applies, or None when the fetch narrows nothing.
+    """
+
+    reading: Reading
+    part: Part | None
+    narrowing: Mapping[str, Any] | None = None
+
+
 def converted_parts(
-    readings: Sequence[Reading], /
-) -> list[tuple[Reading, Part | None]]:
+    readings: Sequence[Reading],
+    scopes: Sequence[Mapping[str, Any] | None],
+    /,
+) -> list[Converting]:
     """What a conversion posts one entry each for, in reading order: each
-    reading's answer parts, else the reading alone, paired with None, for a spec
-    fetched outside an answer."""
+    reading's answer parts, else the reading alone with no part, for a spec
+    fetched outside an answer, each with its reading's scope from `scopes`."""
     return [
-        (reading, part)
-        for reading in readings
+        Converting(reading, part, narrowing)
+        for reading, narrowing in zip(readings, scopes, strict=True)
         for part in reading.answer_parts or (None,)
     ]
 
 
 def conversion_body(
-    posted: Sequence[tuple[Reading, Part | None]], request: UnitRequest
+    posted: Sequence[Converting], request: UnitRequest
 ) -> dict[str, Any]:
     """The Search request that converts each reading to `request`: one identity
-    entry per pair `converted_parts` gives, in order, its identity's unit facet
-    set to the request.
+    entry per `Converting`, in order, its identity narrowed by its scope as
+    `scoped_identity` narrows it and its unit facet set to the request, so
+    Search judges the years and places the build reads.
 
-    Each entry carries the spec's entity groups, as `resubmit_body` does, and
-    names its answer part's variable text, else the reading's first part, else
-    `UNNAMED_PART`. An answer part's entry
-    also echoes its `separate` flag when true, its `operations` when any item
+    Each entry carries the spec's entity groups that hold for the narrowed
+    identity, as `resubmit_body` does, and names its answer part's variable
+    text, else the reading's first part, else `UNNAMED_PART`. An answer part's
+    entry also echoes its `separate` flag when true, its `operations` when any item
     reads, and its `assumptions` when it holds a list, in the read forms a
     choice posts, so Search states for the converted part the assumptions that
     still hold and keeps the operations and the folding the question asked for.
@@ -816,30 +869,30 @@ def conversion_body(
     """
     entries = []
     unit = {"state": "value", "request": request.to_wire()}
-    for reading, part in posted:
+    for each in posted:
+        reading, part = each.reading, each.part
         spec = reading.spec
-        identity = spec.definition.get("identity")
-        if not isinstance(identity, Mapping):
+        held = spec.definition.get("identity")
+        if not isinstance(held, Mapping):
             raise client_error(
                 INVALID_ARGUMENT,
                 f"The definition of {spec.spec_id} holds no identity to convert; use "
                 "a spec from a search, such as answer.specs[0], or a saved "
                 "dataset's data.members[0].spec",
             )
+        identity = scoped_identity(held, each.narrowing)
         facets = identity.get("facets")
+        identity["facets"] = {
+            **(facets if isinstance(facets, Mapping) else {}),
+            "unit": unit,
+        }
         entry: dict[str, Any] = {
             "entry_kind": "identity",
             "variable_text": _variable_text(reading, part),
-            "identity": {
-                **identity,
-                "facets": {
-                    **(facets if isinstance(facets, Mapping) else {}),
-                    "unit": unit,
-                },
-            },
+            "identity": identity,
         }
-        if spec.entity_groups:
-            entry["entity_groups"] = spec.entity_groups
+        if groups := _kept_entity_groups(spec, {"identity": identity}):
+            entry["entity_groups"] = groups
         if part is not None:
             entry |= echoed_reading(part)
         entries.append(entry)

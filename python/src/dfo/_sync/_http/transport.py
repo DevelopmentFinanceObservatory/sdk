@@ -36,8 +36,9 @@ The client's `attempt_timeout` bounds one whole attempt, body included, and a
 call's deadline bounds the whole call. The client's `timeout` sets that deadline
 for a call that names none, such as a lookup. A signed download's attempt runs to
 the call's deadline, and fails retryably (`network_error`) once no byte arrives for
-`DOWNLOAD_STALL_S`. The asynchronous transport can cancel platform
-name resolution at those limits. Its generated synchronous form cannot: blocking
+`DOWNLOAD_STALL_S`. A files route that answers the file with a 200 has its body
+read the same way, the attempt's timeout bounding only the wait for its headers.
+The asynchronous transport can cancel platform name resolution at those limits. Its generated synchronous form cannot: blocking
 platform name resolution may run past a timeout or deadline. After name
 resolution, both forms clamp the connect, TLS handshake, and each read and write
 to the time left on the attempt. A header provider gets the time left on the
@@ -172,8 +173,8 @@ DOWNLOAD_STALL_S = 30.0
 
 # The decoded bytes an API response's body may hold, the larger of 16 MiB and ten
 # times the largest JSON body recorded, rounded. That body is `/search/schema` in
-# tests/data/search-schema.json, 267,493 bytes, above every response body in
-# contract/scenarios (137,679 bytes at most, serialized without spaces), so the
+# tests/data/search-schema.json, 345,617 bytes, above every response body in
+# contract/scenarios (184,201 bytes at most, serialized without spaces), so the
 # 16 MiB floor applies.
 JSON_BODY_MAX_BYTES = 16 * 2**20
 
@@ -606,6 +607,24 @@ def attempt_deadline(clock: Clock, deadline: float | None) -> Generator[None]:
         _ATTEMPT.reset(token)
 
 
+# The wait for each byte that a body read inside `stalling_reads` takes, in place of
+# the request's own read timeout, or None outside one.
+_READ_STALL: ContextVar[float | None] = ContextVar("dfo_read_stall", default=None)
+
+
+@contextmanager
+def stalling_reads(
+    clock: Clock, deadline: float | None, stall: float
+) -> Generator[None]:
+    """Bound reads inside the block to `deadline`, each waiting at most `stall`."""
+    token = _READ_STALL.set(stall)
+    try:
+        with attempt_deadline(clock, deadline):
+            yield
+    finally:
+        _READ_STALL.reset(token)
+
+
 def _time_left(timeout: float | None, expired: type[Exception]) -> float | None:
     """Return `timeout` clamped to the time left on the attempt in flight.
 
@@ -650,7 +669,11 @@ class _DeadlineStream(httpcore2.NetworkStream):
         self._stream = stream
 
     def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
-        return self._stream.read(max_bytes, _time_left(timeout, httpcore2.ReadTimeout))
+        stall = _READ_STALL.get()
+        return self._stream.read(
+            max_bytes,
+            _time_left(timeout if stall is None else stall, httpcore2.ReadTimeout),
+        )
 
     def write(self, buffer: bytes, timeout: float | None = None) -> None:
         self._stream.write(buffer, _time_left(timeout, httpcore2.WriteTimeout))
@@ -1259,6 +1282,9 @@ class Transport:
         *,
         bound: str = "",
         stall: float | None = None,
+        body_stall: float | None = None,
+        body_deadline: float | None = None,
+        body_bound: str = "",
     ) -> httpx2.Response:
         """Send `request` and read its body by `deadline`, after name resolution.
 
@@ -1267,6 +1293,12 @@ class Transport:
         and the wait for each byte read. It is None when the request carries
         the attempt's own timeout. A phase that waits that long before
         `deadline` is a stall, which fails retryably as a network fault.
+
+        With `body_stall`, `deadline` bounds the wait for a 200's headers, and its
+        body then reads by `body_deadline`, or without limit when that is None,
+        waiting at most `body_stall` for each byte, so a files route that serves
+        the file reads as a signed download does. `body_bound` names the limit
+        `body_deadline` stands for, for the message.
 
         The body is read as it decodes, and reading stops at the first piece
         that takes a 2xx body past `limit` bytes, or any other body past
@@ -1287,16 +1319,24 @@ class Transport:
                 says, or a redirect's `Location` is not a URL
                 (`unexpected_response`).
         """
+        streaming = False
         try:
             with attempt_deadline(self._clock, deadline):
                 response = self._pool.client.send(request, stream=True)
                 try:
                     if not response.is_success:
                         limit = JSON_BODY_MAX_BYTES
-                    fits = _read_within(response, limit)
+                    if body_stall is not None and response.status_code == 200:
+                        streaming = True
+                        with stalling_reads(self._clock, body_deadline, body_stall):
+                            fits = _read_within(response, limit)
+                    else:
+                        fits = _read_within(response, limit)
                 finally:
                     response.close()
         except httpx2.TimeoutException as exc:
+            if streaming:
+                stall, deadline, bound = body_stall, body_deadline, body_bound
             if stall is not None and (deadline is None or self._clock() < deadline):
                 waited = (
                     "sent no byte"
@@ -1489,6 +1529,7 @@ class Transport:
         deadline: float | ClientTimeout | None = CLIENT_TIMEOUT,
         max_retries: int | None = None,
         max_bytes: int = JSON_BODY_MAX_BYTES,
+        file: bool = False,
     ) -> httpx2.Response:
         """Send one API request, retrying what can succeed later.
 
@@ -1527,6 +1568,12 @@ class Transport:
             max_bytes: The most decoded bytes a 2xx response's body may hold.
                 A redirect's or a refusal's is read under `JSON_BODY_MAX_BYTES`
                 whatever this says.
+            file: Whether the target is a files route, whose 200 body is the
+                file. The attempt's timeout then bounds the wait for a 200's
+                headers, and the body reads until the deadline, waiting at most
+                `DOWNLOAD_STALL_S` for each byte, as a signed download reads. A
+                `single_attempt` copy reads it until the attempt timeout. A
+                stall fails retryably (`network_error`).
 
         Raises:
             DfoError: The class the refusal maps to, once retries are spent.
@@ -1567,6 +1614,13 @@ class Transport:
         rekeyed = False
         while True:
             limit, attempt_end, bound = self._attempt_bounds(timeout, deadline)
+            # A files route's 200 body reads by the download's bound, as the
+            # signed download does.
+            _, body_end, body_bound = (
+                self._attempt_bounds(self._download_timeout, deadline)
+                if file
+                else (None, None, "")
+            )
             request_headers = self._headers(headers, limit)
             if content is not None:
                 request_headers["Content-Type"] = "application/json"
@@ -1580,7 +1634,14 @@ class Transport:
             )
             try:
                 response = self._send(
-                    request, attempt_end, f"{method} {url}", max_bytes, bound=bound
+                    request,
+                    attempt_end,
+                    f"{method} {url}",
+                    max_bytes,
+                    bound=bound,
+                    body_stall=DOWNLOAD_STALL_S if file else None,
+                    body_deadline=body_end,
+                    body_bound=body_bound,
                 )
             except DfoError as failure:
                 error = failure

@@ -75,6 +75,7 @@ from tests._fetch_support import (
     redirect,
     respelled,
     resubmitted,
+    trickling_server,
 )
 
 KEY = "dfo_k_4f8Kq2ZtR7mWx1NcB9vLp3YhD6sGa0Ue2wanxe"
@@ -497,6 +498,7 @@ def test_an_empty_narrowing_takes_the_sentence_of_its_no_data_part(
 
 ODA = "bilateral ODA"
 CONSTANT = {"currency": "EUR", "price_basis": "constant", "base_year": 2022}
+CONSTANT_REQUEST = {"currency": "EUR", "prices": "constant", "base_year": 2022}
 
 
 def oda() -> Reading:
@@ -678,10 +680,72 @@ def test_a_rate_coverage_gap_raises_its_code_with_the_missing_rates(
         'Search cannot convert "bilateral ODA" to EUR at constant 1900 prices: '
     )
     assert "Missing: CurrencyEUR@1900." in str(error)
-    assert ("convert ds.members[0].spec" in str(error)) == bool(narrowing)
     recorded = load("probe-resubmit-unit-rate-gap.request.json")
+    if narrowing:
+        # Search judges the rates of the years the narrowing keeps.
+        (entry,) = recorded["input"]["entries"]
+        entry["identity"]["requested_window"] = {
+            "kind": "range",
+            "start_year": 2015,
+            "end_year": 2020,
+        }
     assert as_sent(server.body(0)) == as_sent(recorded)
     assert len(server.requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("narrowing", "identity"),
+    [
+        (
+            {"window": "latest"},
+            {"requested_window": {"kind": "latest"}},
+        ),
+        (
+            {"entities": {"destination": ["country/NGA"]}},
+            {"entities": {"destination": ["country/NGA"], "origin": ["country/DEU"]}},
+        ),
+        (
+            {"entities": {"origin": None}},
+            {"entities": {"destination": ["country/KEN"]}},
+        ),
+        (
+            {"facets": {"measurementMethod": None}},
+            {
+                "facets": {
+                    "measurementMethod": {"state": "value", "ref": None},
+                    "unit": {
+                        "state": "value",
+                        "request": CONSTANT_REQUEST,
+                    },
+                }
+            },
+        ),
+    ],
+    ids=["window", "entities", "dropped-role", "facets-keep-unit"],
+)
+def test_a_conversion_posts_the_identity_the_narrowing_leaves(
+    narrowing: dict[str, Any], identity: dict[str, Any]
+) -> None:
+    # The build then posts the converted spec alone, since its identity holds
+    # the narrowing and keeps the unit request under facets. A build `scope`
+    # with `facets` would replace the converted identity's whole facet binding,
+    # unit included, and the reading would build in its own unit.
+    reply = load("probe-resubmit-unit-constant.json")
+    server = Server(
+        json_response(200, reply),
+        json_response(200, converted_manifest()),
+        redirect(),
+        parquet(),
+    )
+    with make(server) as transport:
+        fetch_members(transport, [oda()], **CONSTANT, **narrowing)
+    (entry,) = server.body(0)["input"]["entries"]
+    held = oda().spec.definition["identity"]
+    unit = {"state": "value", "request": CONSTANT_REQUEST}
+    expected = held | {"facets": held["facets"] | {"unit": unit}} | identity
+    assert entry["identity"] == expected
+    assert "scope" not in server.body(1)["input"]
+    assert server.body(1)["input"]["spec_id"] == converted_spec()["spec_id"]
 
 
 def test_a_refusal_message_caps_the_servers_sentence() -> None:
@@ -873,6 +937,26 @@ def test_a_malformed_conversion_sends_nothing(
     assert server.requests == []
 
 
+@pytest.mark.parametrize(
+    ("options", "names"),
+    [
+        ({"entities": {"moon": ["country/KEN"]}}, '"moon"'),
+        ({"strict": "yes"}, "strict"),
+    ],
+    ids=["undeclared-role", "strict"],
+)
+def test_a_malformed_fetch_names_its_narrowing_and_switches_before_its_conversion(
+    options: dict[str, Any], names: str
+) -> None:
+    server = Server()
+    with make(server) as transport:
+        with pytest.raises(InvalidRequestError) as caught:
+            fetch(transport, oda().spec, currency="eur", **options)
+    assert names in str(caught.value)
+    assert '"eur"' not in str(caught.value)
+    assert server.requests == []
+
+
 def test_offline_a_conversion_is_refused_unsent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1031,7 +1115,8 @@ def test_a_narrowing_that_keeps_the_spec_id_issues_the_conversions_warnings(
     assert [getattr(item.message, "code", None) for item in caught] == [
         "deflator_missing_omitted"
     ]
-    assert server.body(1)["input"]["scope"]["window"] == {"kind": "all"}
+    (entry,) = server.body(0)["input"]["entries"]
+    assert entry["identity"]["requested_window"] == {"kind": "all"}
 
 
 def test_strict_raises_a_conversion_warning_before_downloading() -> None:
@@ -1079,7 +1164,11 @@ def test_a_narrowed_conversion_takes_the_warnings_of_its_built_identity() -> Non
         "date_coverage_partial"
     ]
     assert server.body(1)["input"]["spec_id"] == converted_spec()["spec_id"]
-    assert server.body(1)["input"]["scope"]["window"]["end_year"] == 2020
+    assert server.body(0)["input"]["entries"][0]["identity"]["requested_window"] == {
+        "kind": "range",
+        "start_year": 2015,
+        "end_year": 2020,
+    }
     (entry,) = server.body(2)["input"]["entries"]
     assert (entry["operations"], entry["assumptions"], entry["separate"]) == (
         [rank],
@@ -1424,6 +1513,42 @@ def test_a_files_route_answering_another_2xx_or_3xx_is_unexpected(
             fetch(transport, spec(SENTENCE))
     assert (caught.value.code, caught.value.status) == ("unexpected_response", status)
     assert len(server.requests) == 2
+
+
+def test_a_ref_whose_files_route_serves_the_file_reads_in_two_requests() -> None:
+    # The `fetch-ref` record with its files route answering the file, as the
+    # website's gateway serves a pinned file: the manifest and the file, and no
+    # Search, signed URL or build.
+    replay = Replay("fetch-ref", base_url=BASE)
+    route, signed = replay.exchanges[1:]
+    route["response"] = {**signed["response"], "body_file": "fetch-ref.parquet"}
+    replay.exchanges = replay.exchanges[:2]
+    ref = DatasetRef.from_json(json.dumps(replay.record["call"][0]["ref"]))
+    with make(replay) as transport:
+        built = fetch(transport, ref)
+    # The replay matched each request to the record's manifest and files route.
+    assert (len(replay.requests), replay.exchanges) == (2, [])
+    (member,) = built.members
+    assert (member.content_version, member.digest) == (
+        ref.members[0].content_version,
+        ref.members[0].digest,
+    )
+
+
+def test_a_files_route_serving_the_file_reads_past_the_attempt_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real sockets: the route answers six chunks 0.1 s apart, 0.6 s in all, past
+    # the 0.3 s attempt timeout.
+    monkeypatch.setenv("NO_PROXY", "*")
+    with trickling_server(chunks=6, every=0.1) as origin:
+        with Transport(
+            api_key=False, base_url=origin, attempt_timeout=0.3, max_retries=0
+        ) as transport:
+            data = fetch_module.download(
+                transport, "/files/a", sha256_digest(bytes(range(6))), deadline=None
+            )
+    assert data == bytes(range(6))
 
 
 @pytest.mark.parametrize(

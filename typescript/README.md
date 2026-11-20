@@ -411,7 +411,9 @@ Some faults raise other errors. An aborted call rejects with its signal's `reaso
 
 ## Use it in a web app
 
-Run the client on your server and keep the key there. [Use it in a web app](docs/web-apps.md) builds a route that answers a question from a page, streams build progress as NDJSON, stops under the platform's time limit, and joins the build when the page posts again.
+A page shows data a data step built, with no server code, by reading a pinned ref with `client.fetch(ref)` or a live share's data URL with `fetch`. [Put data on a page](docs/web-apps.md#put-data-on-a-page) gives the calls, the routes a browser may call, and what each caches.
+
+For questions a reader asks, run the client on your server and keep the key there. [Answer a question from a page](docs/web-apps.md#answer-a-question-from-a-page) builds a route that streams build progress as NDJSON, stops under the platform's time limit, and joins the build when the page posts again.
 
 A page on an origin the API's CORS lists can call the API itself with a publishable `dfo_p_` key. A page on any other origin calls your server route, or a proxy of the API on its own origin with `new Client({ baseUrl: "/api/v1" })`. In a browser page or worker the client refuses a secret `dfo_k_` key, which every visitor could read, with an `InvalidRequestError` (`invalid_argument`).
 

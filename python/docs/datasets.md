@@ -91,7 +91,7 @@ A conversion is another reading of the same question, with its own `spec_id` and
 
 `spec.unit_conversion` lists the currencies a spec converts to, as a `dfo.types.UnitConversion`. Each `dfo.types.ConversionCurrency` holds the years the amounts convert at current prices (`current_years`) and at constant prices (`constant_years`), and the range of base years (`base_years`). Those years are the spec's own window, so a fetch with another `window` can convert other years. The offer is None for a spec that did not come from a search, such as a dataset member's spec, and for a series that converts to no currency, such as a debt stock. A fetch with `currency` still goes to the server, which decides.
 
-The conversion applies to the reading as you hold it, then `window`, `entities` and `facets` narrow the converted reading. `facets={"unit": ...}` beside `currency` raises `InvalidRequestError` before any request, since both set the unit. A ref, a share and a recipe hold their units already and refuse all three arguments.
+The conversion applies to the reading as `window`, `entities` and `facets` narrow it, so Search checks the rates for the years and places the build reads. `facets={"unit": ...}` beside `currency` raises `InvalidRequestError` before any request, since both set the unit. A ref, a share and a recipe hold their units already and refuse all three arguments.
 
 When the server cannot convert, the fetch raises with its code, even under `partial=True`:
 

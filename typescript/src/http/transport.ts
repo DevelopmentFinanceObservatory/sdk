@@ -68,9 +68,9 @@ export const RETRY_AFTER_MAX_S = 60;
 /** The decoded bytes a downloaded file may hold when its manifest gives no size. */
 export const DEFAULT_MAX_BYTES = 2 * 2 ** 30;
 /** The decoded bytes an API response's body may hold, 16 MiB. The largest JSON body recorded
- *  is the `/search/schema` body in python/tests/data/search-schema.json, 267,493 bytes, and the
- *  largest response under contract/scenarios is 137,679 bytes as compact JSON, so the limit
- *  leaves over 60 times the largest as headroom while bounding what a faulty server can make
+ *  is the `/search/schema` body in python/tests/data/search-schema.json, 345,617 bytes, and the
+ *  largest response under contract/scenarios is 184,201 bytes as compact JSON, so the limit
+ *  leaves over 48 times the largest as headroom while bounding what a faulty server can make
  *  the client hold. The Python client uses the same value. */
 export const JSON_BODY_MAX_BYTES = 16 * 2 ** 20;
 /** The most retries a client takes. */
@@ -742,15 +742,39 @@ async function readWithin(
   return body;
 }
 
-/** A timer that aborts its signal once `ms` pass with no `touch`, bounding a stalled read. */
+/** A timer that aborts its signal once `ms` pass, which `arm` can start again with another
+ *  wait. An infinite wait arms nothing. */
+class Countdown {
+  readonly #controller = new AbortController();
+  #timer: ReturnType<typeof setTimeout> | undefined;
+
+  get signal(): AbortSignal {
+    return this.#controller.signal;
+  }
+
+  arm(ms: number): void {
+    clearTimeout(this.#timer);
+    if (!Number.isFinite(ms)) return;
+    this.#timer = setTimeout(() => {
+      this.#controller.abort();
+    }, timerMs(ms));
+  }
+
+  stop(): void {
+    clearTimeout(this.#timer);
+  }
+}
+
+/** A timer that aborts its signal once `ms` pass with no `touch`, bounding a stalled read. One
+ *  built with `armed` false waits for its first `touch`. */
 class StallTimer {
   readonly #controller = new AbortController();
   readonly #ms: number;
   #timer: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(ms: number) {
+  constructor(ms: number, armed = true) {
     this.#ms = ms;
-    this.touch();
+    if (armed) this.touch();
   }
 
   get signal(): AbortSignal {
@@ -1109,7 +1133,10 @@ export class Transport {
    * origin. It answers the bytes with a 200, or a 302 to a signed storage URL, which resolves
    * against the response's URL; `fetchSigned` fetches it. A browser hides a redirect's
    * `Location`, so there `locate` returns the route with `follow`, and `fetchSigned` asks it
-   * again and lets the browser follow the redirect, as the round's one signed fetch.
+   * again and lets the browser follow the redirect, as the round's one signed fetch. With
+   * `bodyStall`, a 200's body, the file, reads until the deadline while a byte arrives at least
+   * every `bodyStall` milliseconds, as a signed fetch reads, and the attempt's timeout bounds only
+   * the wait for its headers.
    *
    * @throws {ContractError} The route is off the API's origin, or its redirect names a host
    *   other than the API's or the storage host (`contract_violation`); a redirect has no
@@ -1118,7 +1145,7 @@ export class Transport {
    *   IPv6 host or port (`unexpected_response`).
    * @throws {DfoError} The route refused the request.
    */
-  async locate(options: Target & CallOptions): Promise<Located> {
+  async locate(options: Target & CallOptions & { bodyStall?: number }): Promise<Located> {
     const target = options.url === undefined ? this.url(options) : this.originUrl(options.url);
     const { response, body, key } = await this.#send({ ...options, method: "GET" });
     if (response.type === "opaqueredirect") return { signed: target, follow: true };
@@ -1231,7 +1258,9 @@ export class Transport {
    *   (`invalid_argument`).
    * @throws {ServerError} A decoded body passed its limit (`response_too_large`).
    */
-  async #send(request: RequestOptions): Promise<Received & { key: string | undefined; url: URL }> {
+  async #send(
+    request: RequestOptions & { bodyStall?: number },
+  ): Promise<Received & { key: string | undefined; url: URL }> {
     request.signal?.throwIfAborted();
     const options = { ...request, deadline: request.deadline ?? this.callDeadline() };
     const method = options.method ?? (options.json === undefined ? "GET" : "POST");
@@ -1484,19 +1513,30 @@ export class Transport {
    * `response_too_large`, which no retry follows either. A refusal whose body passes
    * `JSON_BODY_MAX_BYTES` returns with a null body, so a 401 still resolves the key again.
    * With `stall`, a fetch that goes that long with no byte returns a retryable `network_error`.
+   * With `bodyStall`, the attempt's limit bounds the wait for a 200's headers, and its body then
+   * reads until the deadline, if any, failing the same way once `bodyStall` passes with no byte:
+   * a files route that serves the file is read as a signed download is. A call that sets its own
+   * `attemptTimeout` keeps that bound on the whole attempt, body included.
    *
    * @throws {InvalidRequestError} The `fetch` option returned something that is not a Response
    *   (`invalid_argument`).
    */
   async #attempt(
     url: URL,
-    options: CallOptions & { stall?: number },
+    options: CallOptions & { stall?: number; bodyStall?: number },
     init: RequestInit,
   ): Promise<Attempted | DfoError> {
-    const limit = this.#limit(url, options);
-    const timer = Number.isFinite(limit.ms) ? AbortSignal.timeout(timerMs(limit.ms)) : undefined;
-    const stall = options.stall === undefined ? undefined : new StallTimer(options.stall);
-    const signals = [options.signal, timer, stall?.signal].filter((signal) => signal !== undefined);
+    let limit = this.#limit(url, options);
+    // A 200 under `bodyStall` arms the timer again for the deadline, so it needs one.
+    const timer =
+      Number.isFinite(limit.ms) || options.bodyStall !== undefined ? new Countdown() : undefined;
+    timer?.arm(limit.ms);
+    const stallMs = options.stall ?? options.bodyStall;
+    const stall =
+      stallMs === undefined ? undefined : new StallTimer(stallMs, options.stall !== undefined);
+    const signals = [options.signal, timer?.signal, stall?.signal].filter(
+      (signal) => signal !== undefined,
+    );
     const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
     try {
       const response: unknown = await this.#fetch(url, { ...init, ...(signal ? { signal } : {}) });
@@ -1508,8 +1548,27 @@ export class Transport {
       const { status } = response;
       const ok = status >= 200 && status < 300;
       const maxBytes = ok ? (options.maxBytes ?? JSON_BODY_MAX_BYTES) : JSON_BODY_MAX_BYTES;
-      stall?.touch();
-      const body = await readWithin(response, maxBytes, stall?.touch);
+      if (options.bodyStall !== undefined && options.stall === undefined) {
+        if (status === 200) {
+          // The file's body reads until the deadline while bytes keep arriving. A wait that sets
+          // its own `attemptTimeout` keeps the limit armed at the start, which bounds the whole
+          // attempt, as it bounds a signed fetch.
+          if (options.attemptTimeout === undefined) {
+            const remaining = (options.deadline ?? Infinity) - this.#now();
+            if (remaining <= 0) {
+              await response.body?.cancel().catch(() => undefined);
+              return this.#deadlinePassed(url);
+            }
+            limit = { ms: remaining, byDeadline: true, byOption: false };
+            timer?.arm(remaining);
+          }
+        } else {
+          stall?.stop();
+        }
+      }
+      const touch = options.stall !== undefined || status === 200 ? stall?.touch : undefined;
+      touch?.();
+      const body = await readWithin(response, maxBytes, touch);
       // A refusal too large to read is still a refusal, which `#refusal` raises by its status.
       if (body !== null || status >= 400) return { response, body };
       return clientError("response_too_large", {
@@ -1519,7 +1578,7 @@ export class Transport {
     } catch (error) {
       if (error instanceof InvalidRequestError) throw error;
       if (options.signal?.aborted) throw options.signal.reason;
-      if (timer?.aborted) {
+      if (timer?.signal.aborted) {
         if (limit.byDeadline) return this.#deadlinePassed(url, error);
         return clientError("deadline_exceeded", {
           detail:
@@ -1528,9 +1587,9 @@ export class Transport {
           cause: error,
         });
       }
-      if (stall?.signal.aborted) {
+      if (stallMs !== undefined && stall?.signal.aborted) {
         return clientError("network_error", {
-          detail: `The download from ${url.host} sent no byte for ${seconds(options.stall!)}.`,
+          detail: `The download from ${url.host} sent no byte for ${seconds(stallMs)}.`,
           cause: error,
         });
       }
@@ -1541,6 +1600,7 @@ export class Transport {
         cause: error,
       });
     } finally {
+      timer?.stop();
       stall?.stop();
     }
   }

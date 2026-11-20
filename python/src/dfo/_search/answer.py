@@ -329,7 +329,8 @@ class AsyncAnswer:
         `entities` and `facets` narrow every reading as `fetch` narrows one spec.
 
         `currency` converts every reading in one Search request before the
-        build, as `fetch` converts one spec: the dataset's members hold the
+        build, as `fetch` converts one spec, on the identities the narrowing
+        leaves: the dataset's members hold the
         converted specs and Search's sentences for them, and each warning
         Search gives a converted part arrives as a `SearchWarning`. A refused
         conversion raises even with `partial=True`.

@@ -184,7 +184,7 @@ async def fetch(
             their binding, and an empty map narrows nothing.
         facets: Bind a spec's provenance, measurement method or unit.
         currency: Convert a spec's amounts to this ISO 4217 currency, as
-            `fetch_members` does, before any narrowing.
+            `fetch_members` does, on the identity the narrowing leaves.
         price_basis: `current`, the default, or `constant` prices.
         base_year: The base year of constant prices.
         layout: `long` (the default for a spec) or `frame`. A ref holds its own

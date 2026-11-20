@@ -762,6 +762,27 @@ const stalledBody = (_request: unknown, init: RequestInit): Response => {
   return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
 };
 
+/** A 200 whose body sends `chunks` one-byte chunks 10 ms apart and then ends. An abort errors
+ *  the body, as a real fetch's does. */
+const trickle =
+  (chunks: number) =>
+  (_request: unknown, init: RequestInit): Response => {
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        init.signal?.addEventListener("abort", () => {
+          controller.error(init.signal?.reason);
+        });
+      },
+      async pull(controller) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        if (sent >= chunks) controller.close();
+        else controller.enqueue(new Uint8Array([sent++ % 256]));
+      },
+    });
+    return new Response(body, { status: 200 });
+  };
+
 describe("timeouts", () => {
   test("bounds a stalled header provider by the whole-call deadline", async () => {
     const { fetch, seen } = mockFetch(json({ ok: true }));
@@ -919,6 +940,86 @@ describe("timeouts", () => {
       },
     );
     assert.deepEqual(data, new Uint8Array([0, 1, 2, 3, 4, 5]));
+  });
+
+  test("read a files route's 200 body past the attempt timeout while bytes keep arriving", async () => {
+    // Six chunks 10 ms apart: 60 ms in all, past the 30 ms attempt timeout, never 20 ms without
+    // a byte.
+    const { fetch, seen } = mockFetch(trickle(6));
+    const located = await transport({ fetch, attemptTimeout: 30, maxRetries: 0 }).locate({
+      path: "/datasets/s/v/files/d",
+      bodyStall: 20,
+    });
+    assert.deepEqual(located.data, new Uint8Array([0, 1, 2, 3, 4, 5]));
+    assert.equal(seen.length, 1);
+  });
+
+  test("fail a files route's 200 body that sends no byte for its stall bound as a retryable network_error", async () => {
+    const { fetch } = mockFetch(stalledBody);
+    const error = await transport({ fetch, attemptTimeout: 60_000, maxRetries: 0 })
+      .locate({ path: "/datasets/s/v/files/d", bodyStall: 20 })
+      .catch((e: unknown) => e);
+    assert.ok(error instanceof NetworkError);
+    assert.equal(error.code, "network_error");
+    assert.equal(error.retryable, true);
+    assert.match(error.message, /sent no byte for 0\.02 s/);
+  });
+
+  // A hundred chunks take a second, so an unbounded read ends and fails the assertion.
+  test("end a files route's 200 body that keeps trickling at the call's deadline", async () => {
+    const { fetch } = mockFetch(trickle(100));
+    const client = transport({ fetch, attemptTimeout: 60_000, maxRetries: 0 });
+    const error = await client
+      .locate({
+        path: "/datasets/s/v/files/d",
+        bodyStall: 1_000,
+        deadline: client.deadlineAfter(30),
+      })
+      .catch((e: unknown) => e);
+    assert.ok(error instanceof DfoTimeoutError);
+    assert.equal(error.code, "deadline_exceeded");
+  });
+
+  test("end a files route's 200 body that keeps trickling at a call's own attemptTimeout", async () => {
+    // A build read done at its deadline downloads with no deadline, one attempt of this bound.
+    const { fetch } = mockFetch(trickle(100));
+    const error = await transport({ fetch, attemptTimeout: 60_000, maxRetries: 0 })
+      .locate({
+        path: "/datasets/s/v/files/d",
+        bodyStall: 1_000,
+        deadline: Infinity,
+        attemptTimeout: 30,
+        maxRetries: 0,
+      })
+      .catch((e: unknown) => e);
+    assert.ok(error instanceof DfoTimeoutError);
+    assert.equal(error.code, "deadline_exceeded");
+  });
+
+  test("cancel a files route's 200 body that arrives after the call's deadline", async () => {
+    let cancelled = false;
+    // The fetch ignores its signal and answers once the deadline has passed.
+    const late = async (): Promise<Response> => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      const body = new ReadableStream<Uint8Array>({
+        cancel() {
+          cancelled = true;
+        },
+      });
+      return new Response(body, { status: 200 });
+    };
+    const { fetch } = mockFetch(late);
+    const client = transport({ fetch, attemptTimeout: 60_000, maxRetries: 0 });
+    const error = await client
+      .locate({
+        path: "/datasets/s/v/files/d",
+        bodyStall: 1_000,
+        deadline: client.deadlineAfter(20),
+      })
+      .catch((e: unknown) => e);
+    assert.ok(error instanceof DfoTimeoutError);
+    assert.equal(error.code, "deadline_exceeded");
+    assert.equal(cancelled, true);
   });
 
   for (const [name, options] of [

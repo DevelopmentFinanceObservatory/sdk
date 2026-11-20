@@ -57,7 +57,8 @@ import type { Target, Transport } from "../http/transport.ts";
 import type { EntityGroup, Notice } from "../wire.ts";
 import type { Part } from "../core/parts.ts";
 import { DataWarning, SearchWarning } from "../core/warnings.ts";
-import { isRecord, present, text } from "../core/json.ts";
+import { isRecord, list, present, text } from "../core/json.ts";
+import { COLUMN_ROLE_KEYS } from "../generated/role-keys.ts";
 import { nearest } from "../core/nearest.ts";
 import { declareOptions } from "../core/options.ts";
 import { callerKey, specRoles, wireRole } from "../core/roles.ts";
@@ -165,7 +166,7 @@ export type CallOptions = {
 };
 
 /** The options a spec takes: every option but `latest`, `asOf` and `slot`. `currency`,
- *  `priceBasis` and `baseYear` fetch the reading in another unit, converted before `window`,
+ *  `priceBasis` and `baseYear` fetch the reading in another unit, converted as `window`,
  *  `entities` and `facets` narrow it. */
 export type SpecFetchOptions = CallOptions & Narrowing & Conversion;
 
@@ -443,6 +444,46 @@ function scopeOf(spec: Spec, narrowing: Narrowing): Record<string, unknown> | un
   return Object.keys(scope).length === 0 ? undefined : scope;
 }
 
+/**
+ * `identity` with a build `scope` from `scopeOf` applied, as the datasets mint applies it before
+ * it puts the identity in canonical form. Each member the scope supplies replaces the identity's
+ * own whole: `window` becomes `requested_window`, `entities` the whole binding, and `facets`
+ * every facet binding, each ref as `{ state: "value", ref }`. A flow role the scope binds, under
+ * its wire role or a frame role column such as `recipient`, leaves `open_roles`, which goes when
+ * none stays.
+ */
+export function scopedIdentity(
+  identity: Readonly<Record<string, unknown>>,
+  scope: Readonly<Record<string, unknown>> | undefined,
+): Record<string, unknown> {
+  const scoped: Record<string, unknown> = { ...identity };
+  if (scope === undefined) return scoped;
+  const { window, entities, facets } = scope;
+  if (isRecord(entities)) {
+    scoped["entities"] = Object.fromEntries(
+      Object.entries(entities).map(([role, dcids]) => [role, list(dcids)]),
+    );
+    const bound = new Set(
+      Object.keys(entities).map((role) =>
+        Object.hasOwn(COLUMN_ROLE_KEYS, role) ? COLUMN_ROLE_KEYS[role]! : role,
+      ),
+    );
+    const left = list(identity["open_roles"]).filter((role) => !bound.has(String(role)));
+    if (left.length > 0) scoped["open_roles"] = left;
+    else delete scoped["open_roles"];
+  }
+  if (isRecord(window)) scoped["requested_window"] = { ...window };
+  if (isRecord(facets)) {
+    scoped["facets"] = Object.fromEntries(
+      Object.entries(facets).map(([axis, binding]) => [
+        axis,
+        { state: "value", ref: isRecord(binding) ? binding["ref"] : null },
+      ]),
+    );
+  }
+  return scoped;
+}
+
 /** Whether an `entities` or `facets` argument narrows: any value but undefined and `{}`, which
  *  names no role or axis and posts nothing. */
 const namesAny = (map: unknown): boolean =>
@@ -616,8 +657,9 @@ function artifactFault({ columns, rows }: ParquetFile, counted: number): string 
 /**
  * Downloads a file through the route that redirects to it, checked against its digest, or taken
  * as served when `digest` is undefined. The route ask is an API request, which retries as one
- * and waits the client's `attemptTimeout` per attempt. Its failure raises. The URL it names is
- * fetched once, bare on the storage host and with the client's headers on the API's origin, reading
+ * and waits the client's `attemptTimeout` per attempt for its answer. Its failure raises. A route
+ * that answers the file with a 200 has its body read as the signed fetch below reads one. The URL
+ * it names is fetched once, bare on the storage host and with the client's headers on the API's origin, reading
  * until the fetch's deadline, if any, while a byte arrives at least every `DOWNLOAD_STALL_MS`;
  * in a browser that hid the redirect, that one fetch asks the route again with the key alone
  * and the browser follows the redirect. A retryable failure of that fetch, or bytes that do not
@@ -642,7 +684,7 @@ export async function download(
   const ask = { ...wait, maxBytes };
   let failure: DfoError | undefined;
   for (let round = 0; round < 2; round += 1) {
-    const located = await transport.locate({ ...target, ...ask });
+    const located = await transport.locate({ ...target, ...ask, bodyStall: DOWNLOAD_STALL_MS });
     let data: Uint8Array<ArrayBuffer>;
     if (located.data === undefined) {
       try {
@@ -722,7 +764,7 @@ const sameEntities = (a: readonly string[], b: readonly string[]): boolean => {
 /** The held entity groups a built definition keeps: the group of each role the built identity
  *  binds to the same entities as the held definition. A role the build rebound or dropped loses
  *  its group, since the server drops a posted group whose members differ from the role's entities. */
-function keptEntityGroups(
+export function keptEntityGroups(
   held: Held | undefined,
   built: Readonly<Record<string, unknown>>,
 ): Record<string, EntityGroup> {
@@ -801,7 +843,7 @@ export async function sentenceFor(
 }
 
 /** The spec a build posted, with the entity groups the caller holds for it. */
-type Held = {
+export type Held = {
   readonly spec: Spec;
   readonly entityGroups?: EntityGroups | null | undefined;
 };
@@ -930,7 +972,7 @@ const INVALID_ROLE_REF = "invalid_role_ref";
  * since a place's dcid names its namespace, as `country/DEU` does. Any other error stays as it
  * is.
  */
-function narrowingRefusal(error: unknown, narrowing: Narrowing): unknown {
+export function narrowingRefusal(error: unknown, narrowing: Narrowing): unknown {
   if (!(error instanceof InvalidRequestError)) return error;
   const posted = Object.values(narrowing.entities ?? {}).flatMap((dcids) =>
     Array.isArray(dcids) ? dcids.filter(isText).map((dcid) => dcid.trim()) : [],
@@ -998,7 +1040,8 @@ function joined(
 
 /**
  * The distinct members a fetch builds, each one's build `scope`, and the rendering, once the
- * layout, `partyTotals` and the narrowing pass their rules for every member.
+ * layout, `partyTotals` and the narrowing pass their rules for every member. A converted member
+ * builds with no scope.
  *
  * @throws {InvalidRequestError} No member, `layout: "frame"` with several members, or a
  *   narrowing that breaks its rule for any member or names a role a member does not take
@@ -1020,9 +1063,13 @@ export function checkMembers(
     throw invalid('layout "frame" holds one reading; fetch each spec on its own for its frame.');
   }
   const narrowing = options.narrowing ?? {};
-  // Every reading's narrowing is checked before the first request.
-  const scopes = wants.map(({ spec }) => scopeOf(spec, narrowing));
-  checkRoles(wants, narrowing.entities);
+  // Every reading's narrowing is checked before the first request. A converted reading's
+  // identity holds the narrowing already, since the conversion posted it narrowed.
+  const held = wants.filter(({ converted }) => converted === undefined);
+  const scopes = wants.map(({ spec, converted }) =>
+    converted === undefined ? scopeOf(spec, narrowing) : undefined,
+  );
+  checkRoles(held, narrowing.entities);
   return { wants, scopes, rendering };
 }
 

@@ -1,10 +1,166 @@
 # Use it in a web app
 
+A page gets DFO data in one of two ways. It reads data a data step built earlier, frozen at a pinned version or following a live share, with no key and no server code of its own. Or it asks a question through your server, which searches and builds for the reader and keeps the key there. This page covers both, reading built data first.
+
+Every example on this page runs in Node as written, apart from the lines that need a page.
+
+## Put data on a page
+
+Build the data once, in a data step you run by hand or on a schedule, and commit what the page reads. The choice follows what the page shows:
+
+- A page that opens on numbers frozen when the site was built commits a pinned ref and reads it with `client.fetch(ref)`.
+- A page that shows the newest data on each view commits a live share's data URL and reads it with `fetch`.
+- A page that must make no DFO request at all ships the saved file in its own assets.
+
+### The routes a page may call
+
+Browsers reach the API through `https://developmentfinance.org/api/v1`, the client's default base URL, where the website's gateway answers. Pages on `developmentfinance.org`, `www.developmentfinance.org`, and `preview.developmentfinance.org`, the prototype previews on `one-org.workers.dev`, and `http://localhost:3000` and `http://localhost:8787` may read the datasets routes below. The gateway answers their preflight and labels each answer with `Access-Control-Allow-Origin`. Share slot data answers any origin.
+
+For a file, the API answers with a redirect to a signed storage address. The gateway follows that redirect itself and answers 200 with the file's bytes, so a page makes one request for the file, to the gateway.
+
+| Route                                                          | What reads it                       | Pages that may call it                                     | `Cache-Control`                                                                             |
+| -------------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `GET /api/v1/datasets/{spec_id}/{content_version}`             | `client.fetch(ref)`, the manifest   | DFO origins                                                | `public, max-age=60, s-maxage=300`                                                          |
+| `GET /api/datasets/{spec_id}/{content_version}/files/{digest}` | `client.fetch(ref)`, the file       | DFO origins                                                | Pinned: `public, max-age=3600, s-maxage=31536000`. Held: `public, max-age=60, s-maxage=300` |
+| `GET /api/v1/presentation/shares/{share_id}/slots/{slot}/data` | `share.dataUrls`, read with `fetch` | Any origin                                                 | Live: `no-cache`. Snapshot: `public, max-age=300`                                           |
+| Search, builds, pins, cards, and shares                        | `client.search`, `answer.fetch`     | `developmentfinance.org`, and other pages through a server | Not cached                                                                                  |
+
+`max-age` is how long the browser keeps an answer, and `s-maxage` how long the headers let a shared cache, such as the CDN in front of the site, keep it. Every other answer on the datasets routes, a refusal or a redirect the gateway did not follow, is `no-store`. A page on any other origin calls your own server route, as in [Answer a question from a page](#answer-a-question-from-a-page), or a proxy of the API on the page's own origin.
+
+### Open on a frozen snapshot
+
+The data step searches, builds, pins the versions, and writes the ref as JSON beside the page's code:
+
+```ts
+// fetch-data.mts, run with node
+import { Client } from "@developmentfinance/client";
+import { mkdir, writeFile } from "node:fs/promises";
+
+const client = new Client();
+const answer = await client.search("ODA from Germany to Kenya, 2015 to 2024");
+const data = await client.pin(await answer.fetch());
+
+await mkdir("data", { recursive: true });
+await writeFile("data/kenya-oda.ref.json", JSON.stringify(data.ref));
+```
+
+`client.pin` keeps the versions fetchable with no time limit, and any caller may pin, with or without a key. DFO holds an unpinned version for about 30 days, and a ref to it stops reading after that, so a page commits a pinned ref. The ref is about 1.3 KB of JSON: each member's spec, content version, and file digest.
+
+The page reads the ref and gets the dataset with its provenance:
+
+```text
+Germany's net disbursements (bilateral flows) to Kenya for official development assistance, 2015 to 2024. Current US dollars · OECD DAC2a.
+OECD DAC2A (2026), via the Development Finance Observatory
+10 rows, pinned
+```
+
+```ts
+// In the page
+import { Client, DatasetRef } from "@developmentfinance/client";
+import committed from "./data/kenya-oda.ref.json" with { type: "json" };
+
+const client = new Client({ apiKey: false });
+const data = await client.fetch(DatasetRef.fromJSON(committed));
+const rows = await data.toRows();
+
+console.log(data.sentence);
+console.log(data.citation.text);
+console.log(`${rows.length} rows, ${data.pinned ? "pinned" : "held"}`);
+```
+
+`client.fetch(ref)` sends two GETs per member, for the version's manifest and for the file the ref's digest names. It makes no Search call and no build. `data.sentence`, `data.citation`, and `data.provenance` hold what the data step got, so the page's source line comes from `data.citation.text`. The file's bytes never change under its digest, which is why the gateway's answer for a pinned file lets a shared cache keep it for a year.
+
+With a bundler that splits dynamic imports, a page that fetches a ref and calls `toRows` loads about 84 KB gzip of the client, and the Parquet writer's 16 KB gzip only when it calls `toBytes`. Those figures are for `esbuild --bundle --splitting --format=esm --minify --platform=browser`.
+
+To move the page to newer data, run the data step again with `client.fetch(DatasetRef.fromJSON(committed), { latest: true })`, pin the result, and commit the new ref when `sameData` says the numbers moved. [Refresh](pipelines.md#refresh) covers the loop.
+
+### Show the latest data on view
+
+Make a live share once, in a data step, and commit its data URL:
+
+<!-- docs-check: skip: makes a share, which spends the daily share allowance; Cards and shares runs the same calls -->
+
+```ts
+// make-share.mts, run once with node
+import { Client } from "@developmentfinance/client";
+
+const client = new Client();
+const answer = await client.search("ODA from Germany to Kenya, 2015 to 2024");
+const card = await client.cards.table(await answer.fetch(), { title: "German aid to Kenya" });
+const share = await client.share(card, { latest: true });
+
+console.log(share.dataUrls[0]);
+console.log(share.writeToken);
+```
+
+Commit the data URL in the page's code. Keep the write token on a server or as a CI secret, since anyone with it can change the share or take it down ([Keep the write token](shares.md#keep-the-write-token)).
+
+The page reads the URL with a plain `fetch`, and types the body with `ShareSlotDataResponse` from `@developmentfinance/client/wire`:
+
+<!-- docs-check: skip: needs a live share's data URL -->
+
+```ts
+// In the page
+import type { ShareSlotDataResponse } from "@developmentfinance/client/wire";
+
+const KENYA_ODA = "https://developmentfinance.org/api/v1/presentation/shares/7NHGA70g/slots/1/data";
+
+const response = await fetch(KENYA_ODA);
+if (!response.ok) throw new Error(`DFO answered ${response.status} for ${KENYA_ODA}`);
+const slot = (await response.json()) as ShareSlotDataResponse;
+
+console.log(slot.freshness, slot.frame.content_version, slot.rows.length);
+```
+
+`slot.rows` holds one object per row, keyed by the columns of the card's data file. DFO checks a live slot for newer data on a read that comes 15 minutes or more after its last check, or sooner after a `pending` one, and `slot.freshness` says what the rows are:
+
+- `current`: the newest data DFO found at its last check.
+- `pending`: newer data is building, and the rows are the last check's, so a view does not wait on a build.
+- `stale`: DFO could not check, or the card cannot be drawn on the newer data, and the rows are older.
+
+A live slot answers with a strong `ETag` and `Cache-Control: no-cache`, so the browser revalidates each read, and DFO answers 304 with no body until the next check falls due. The `x-dfo-freshness` header repeats the freshness. A snapshot share's slot data caches for 5 minutes. A live share holds at most 20 data cards, and each new share counts against a daily allowance.
+
+`client.fetch(share)` returns a slot as a `Dataset`, through the manifest, the file, and a Search call for its sentence. That suits a data step, and is slower on a page than the data URL.
+
+### Ship the file with the site
+
+A page that must load with no DFO request saves the dataset into the site's assets. The saved file holds the rows and the provenance:
+
+```ts
+// fetch-data.mts
+import { Client, DatasetRef } from "@developmentfinance/client";
+import { mkdir, readFile } from "node:fs/promises";
+
+const client = new Client();
+const ref = DatasetRef.fromJSON(await readFile("data/kenya-oda.ref.json", "utf8"));
+const data = await client.fetch(ref);
+
+await mkdir("public/data", { recursive: true });
+await data.save("public/data/kenya-oda.parquet");
+```
+
+The page reads the file from its own origin with `Dataset.fromBytes`, which loads about 37 KB gzip of the client with `esbuild --bundle --splitting --format=esm --minify --platform=browser`:
+
+<!-- docs-check: skip: needs a page that serves the saved file -->
+
+```ts
+// In the page
+import { Dataset } from "@developmentfinance/client";
+
+const response = await fetch("/data/kenya-oda.parquet");
+const data = await Dataset.fromBytes(await response.arrayBuffer());
+const rows = await data.toRows();
+```
+
+Each reading is one binary file in the repository, and new data reaches the page when the data step runs again and the site redeploys.
+
+## Answer a question from a page
+
 A page asks a question, your server asks the API, and the page draws the table. The server route searches, lets the reader choose a reading, streams build progress as NDJSON, stops before the platform's time limit, and joins the same build when the page posts again. The key stays on the server.
 
-The route is one function from a web `Request` to a `Response`. Next.js App Router runs it as `app/api/data/route.ts`, and `Bun.serve` and `Deno.serve` take the same function. Every example on this page runs in Node as written, apart from the one line that needs a page.
+The route is one function from a web `Request` to a `Response`. Next.js App Router runs it as `app/api/data/route.ts`, and `Bun.serve` and `Deno.serve` take the same function.
 
-## The route
+### The route
 
 The page posts `{ question }`, `{ answerId, option }` to settle a choice, or `{ answerId }` to fetch an answer again after a `retry`. The route answers with one JSON object per line:
 
@@ -133,7 +289,7 @@ In that route:
 - `AbortSignal.any` stops the search and the fetch when the request aborts or when `BUDGET_MS` passes. Keep the budget about ten seconds under the platform's limit, so the route still has time to send `retry` and close the stream. A budget that passes during the search sends `retry` with no answer id, and the page posts the question again.
 - An error the client raises goes to the page as its `code` and `message`. The message ends with the code, and with the trace id when there is one, `[code trace=id]`, which is what the reader quotes to you. The client replaces its own key in any server text with `[redacted]`.
 
-## Read the stream in the page
+### Read the stream in the page
 
 `readLines` turns the response into one object per line, and `ask` posts again after each `retry`, with the answer id the line carries. They use only web APIs, so the same file runs in the page and in Node. In your app, import `Line` from the route file:
 
@@ -183,7 +339,7 @@ const toRoute = (body: object) =>
 await ask(toRoute, { question: "GDP of Kenya" }, (line) => console.log(line));
 ```
 
-## Try it from Node
+### Try it from Node
 
 The same calls run in Node, with `post` handing a `Request` to the route function. This prints the output shown under [The route](#the-route):
 
@@ -211,7 +367,7 @@ await ask(callRoute, { question: "Is aid good for Africa? Argue both sides." }, 
 
 The route sends `choose` for a part that awaits a pick among readings or places, and the page shows `options` as buttons. A question Search declines or answers with the catalogue, and a part with no reading to pick, make `fetch` raise, so the page gets an `error` line with the client's message.
 
-## Join a build that outlived the request
+### Join a build that outlived the request
 
 A large build can run longer than one request. When `BUDGET_MS` passes, the fetch stops waiting and the build keeps running on the server. The route sends `retry` with the id it stored the answer under, and the page posts `{ answerId }`. The route revives the answer with `Answer.fromJSON` and calls `fetch` on it, which joins the running build without a second Search call. `ask` handles the retry.
 
@@ -230,7 +386,7 @@ data: 57287 rows · Commitments to 171 recipients from 126 providers for agricul
 
 The first post searched once and started the build, `op_ab6a4c80…`. The second posted the answer id and polled the same operation until it returned the table.
 
-## Share an answer between requests
+### Share an answer between requests
 
 The route keeps each answer as `JSON.stringify(answer)`, which writes `answer.toJSON()`, under a random id, and revives it with `Answer.fromJSON(saved, client)` when the page posts the id back, to settle a choice or to fetch again after `retry`. A `Map` holds them in one process and keeps every one, so give each entry a lifetime, such as 15 minutes, or use a store with a TTL. A deployment with several instances, which serverless platforms run, needs a store they share, such as Redis or Workers KV, since each instance has its own memory.
 
@@ -238,12 +394,12 @@ You can send the answer's JSON to the page and take it back, which needs no stor
 
 ## Show a reading in another currency
 
-A page that calls the API through the website's proxy needs no key, and can re-fetch a reading in the currency a reader picks. `unitConversion(spec)` lists what a reading converts to, and `answer.fetch` takes the unit as `currency`, `priceBasis` and `baseYear`, named after the row columns they set:
+A page on `developmentfinance.org` calls the API with no key, and can re-fetch a reading in the currency a reader picks. `unitConversion(spec)` lists what a reading converts to, and `answer.fetch` takes the unit as `currency`, `priceBasis` and `baseYear`, named after the row columns they set:
 
 ```ts
 import { Client, unitConversion } from "@developmentfinance/client";
 
-const client = new Client({ baseUrl: "/api/v1", apiKey: false });
+const client = new Client({ apiKey: false });
 const answer = await client.search("bilateral ODA from Germany to Kenya 2015 to 2022");
 
 const offer = unitConversion(answer.specs[0]!);
@@ -261,7 +417,7 @@ Germany's net disbursements (bilateral flows) to Kenya for official development 
 
 On dev the offer listed 140 currencies. Euros convert at current prices for 2015 to 2022 and at constant prices for any base year from 1973 to 2025, and each row holds `currency: "EUR"`, `price_basis: "constant"` and `base_year: 2022`. `{ currency: "EUR" }` alone fetches current euros. A constant-price fetch names its `baseYear`. `offer.defaultBaseYear` is the year the conversion tables default to, for a page with no other choice.
 
-The converted reading is a new spec, with its own `spec_id` and sentence, so the dataset's `ref` and `provenance` name what the reader saw. The conversion runs on the reading as Search resolved it, before `window`, `entities` and `facets` narrow it, and the offer's years are that reading's years. `unitConversion` returns null for a spec Search did not resolve, such as a ref member's, and for a series that converts to no currency, such as a debt stock. `client.fetch(spec, { currency })` still asks the server on such a spec.
+The converted reading is a new spec, with its own `spec_id` and sentence, so the dataset's `ref` and `provenance` name what the reader saw. The conversion runs on the reading as `window`, `entities` and `facets` narrow it, so Search checks the rates for the years and places the build reads. The offer's years are those of the reading Search resolved. `unitConversion` returns null for a spec Search did not resolve, such as a ref member's, and for a series that converts to no currency, such as a debt stock. `client.fetch(spec, { currency })` still asks the server on such a spec.
 
 A base year the tables do not cover throws `InvalidRequestError` with the code `rate_coverage_gap`, under `partial: true` as well, and `error.problem.cause.entities` names the missing rates:
 
@@ -275,10 +431,12 @@ A series no recipe converts throws `InvalidRequestError` (`recipe_not_declared`)
 
 The route's `new Client()` reads `DFO_API_KEY` from the server's environment. Set it as a server-side variable on your host. Do not put it under a prefix the framework copies into the page bundle, such as Next.js's `NEXT_PUBLIC_`, because every visitor can read the bundle.
 
-The API's CORS admits only the origins it lists. A page on another origin calls your own server route, such as the one above, or a proxy of the API on the page's origin with `new Client({ baseUrl: "/api/v1" })`.
+Search, builds, and the other routes that spend a key answer browsers on `developmentfinance.org` alone. A page on another origin calls your own server route, such as the one above, or a proxy of the API on the page's origin with `new Client({ baseUrl: "/api/v1" })`. [The routes a page may call](#the-routes-a-page-may-call) lists the reads a page makes directly.
 
 A page that calls the API itself uses a publishable `dfo_p_` key. In a browser page or worker, `new Client()` throws an `InvalidRequestError` (`invalid_argument`) for a secret `dfo_k_` key from `apiKey`, and the first request rejects with it for one in `headers` or from `headerProvider`. No request leaves. `dangerouslyAllowBrowser: true` turns that check off, for a page only you can open.
 
 ## Next
 
-- [The README](../README.md) covers the calls this route builds on: choosing readings, narrowing a fetch, refs, and errors.
+- [Use DFO in a data pipeline](pipelines.md) builds the data step: search by series code, pin, refresh, and record provenance.
+- [Cards and shares](shares.md) covers the live share a page reads, its write token, and replacing its cards.
+- [The README](../README.md) covers the calls the server route builds on: choosing readings, narrowing a fetch, refs, and errors.

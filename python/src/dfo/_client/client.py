@@ -391,8 +391,8 @@ class AsyncClient:
         request reads the spec in that currency and price basis, and the Dataset
         holds the converted spec, its sentence and rows whose `currency`,
         `price_basis` and `base_year` columns hold the request. The conversion
-        applies to the spec as held, and `window`, `entities` and `facets` then
-        narrow the converted spec. `spec.unit_conversion` lists what a spec
+        applies to the spec as `window`, `entities` and `facets` narrow it, so
+        Search judges the years and places the build reads. `spec.unit_conversion` lists what a spec
         from a search converts to. The server decides, and a refusal raises
         with its code, such as `rate_coverage_gap`. Each warning Search gives
         the conversion, such as `deflator_missing_omitted`, arrives as a
