@@ -6,9 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-20
+
+0.4.0 and 0.4.1 were tagged and never published. 0.4.2 is the first release on the registry with the 0.4.0 and 0.4.1 changes listed below it, and its package is the 0.4.1 package under a new version number.
+
 ## [0.4.1] - 2026-11-19
 
-0.4.0 was tagged and never published. 0.4.1 is the first release on the registry with the 0.4.0 changes listed below it.
+0.4.0 was tagged and never published.
 
 ### Fixed
 
