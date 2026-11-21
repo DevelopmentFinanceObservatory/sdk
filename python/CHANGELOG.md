@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-21
+
 ### Added
 
 - `rank` takes `per`, the roles that split a ranking. `dfo.analysis.rank(data, by="origin", per="destination", limit=6)` ranks each recipient's donors among themselves, each recipient with its own ranks and its own `limit`. `Recipe.rank` and `client.analysis.rank` take it too, and the tree sends it as `partition_by`. `per` takes roles as `by` does; an empty `per`, or one naming a role `by` names, raises `InvalidRequestError` (`invalid_argument`) before any request. A Dataset a recipe made names a partition column by the role word the call used, as it names `by`'s.

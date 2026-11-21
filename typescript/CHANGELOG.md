@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-21
+
 ### Added
 
 - `rank` takes `per`, a role or roles that split the ranking. `client.analysis.rank(aid, { by: "origin", per: "destination", limit: 6 })` keeps the six largest origins of each destination, each destination with its own ranks, ties and `limit`. It sends `partition_by`, and a recipe that made the dataset names the partition's column by the role word the call used. A `per` that is empty, not text, or names a role `by` names throws `InvalidRequestError` (`invalid_argument`) before any request.
