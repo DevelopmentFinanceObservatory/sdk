@@ -219,6 +219,7 @@ def derived_ref() -> DatasetRef:
             lambda: recipe(HELD.spec).compare(derived_ref(), on="destination"),
             "or use latest=True",
         ),
+        (lambda: recipe(DatasetRef((HELD,))), "A recipe with no step"),
     ],
     ids=[
         "spec",
@@ -226,6 +227,7 @@ def derived_ref() -> DatasetRef:
         "derived-ref",
         "recipe-of-a-computed-frame",
         "recipe-whose-other-reading-is-computed",
+        "recipe-with-no-step",
     ],
 )
 def test_latest_stored_is_refused_before_any_request(target: Any, named: str) -> None:

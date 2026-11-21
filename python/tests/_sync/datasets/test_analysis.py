@@ -290,13 +290,32 @@ def test_a_run_that_summed_nothing_prints_no_summed_line() -> None:
     ("summed", "pointer"),
     [
         ({"spec_id": AID.spec_id}, "/stat_vars_summed"),
-        ([{"spec_id": AID.spec_id, "content_version": "cv_1"}], "/stat_vars_summed/0"),
+        (["spec_a"], "/stat_vars_summed/0"),
+        (
+            [{"content_version": "cv_1", "count": 3}],
+            "/stat_vars_summed/0/spec_id",
+        ),
+        (
+            [{"spec_id": AID.spec_id, "content_version": "cv_1"}],
+            "/stat_vars_summed/0/count",
+        ),
         (
             [{"spec_id": AID.spec_id, "content_version": "cv_1", "count": True}],
-            "/stat_vars_summed/0",
+            "/stat_vars_summed/0/count",
+        ),
+        (
+            [{"spec_id": AID.spec_id, "content_version": "cv_1", "count": 1}],
+            "/stat_vars_summed/0/count",
         ),
     ],
-    ids=["not-a-list", "no-count", "count-not-a-number"],
+    ids=[
+        "not-a-list",
+        "entry-not-an-object",
+        "no-spec-id",
+        "no-count",
+        "count-a-boolean",
+        "count-below-two",
+    ],
 )
 def test_a_stat_vars_summed_this_client_cannot_read_raises_contract_error(
     summed: object, pointer: str

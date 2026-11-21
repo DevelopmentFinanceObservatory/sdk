@@ -274,7 +274,7 @@ Each method returns a `Promise<Dataset>`, and takes `strict`, `timeout` in milli
 
 - `data`, `other`, and `total` take a `Spec`, a `DatasetRef`, a `Dataset`, or a `Recipe` holding one reading. DFO refuses a dataset or ref of several members with `several_members`.
 - `keep` maps each role or column to a value or an array of values.
-- `by` takes a role or column name, or an array of them, and so does `per`.
+- `by` takes a role or column name, or an array of them, and so does `per`, which names no role `by` names.
 - `allowSparseBreakdowns` takes a boolean, `false` by default, and is sent only when `true`.
 - `window` takes `[start, end]`, each a year from 1000 to 9999 or a `latestYear(offset)`.
 - `on` takes an object mapping a role of `data` to the role of `other` that holds the same places, such as `{ destination: "place" }`, or a role or array of roles both name alike. Left out, DFO pairs the roles both readings name alike.
@@ -292,7 +292,7 @@ The client checks these before any request and raises `InvalidRequestError` with
 
 ### Derived datasets
 
-A dataset an operation returns has one `DerivedMember` in `members`, and its ref one `DerivedRefMember`, whose `spec.spec_id` starts `ops_` and `contentVersion` `ocv_`. Its text form adds a `Derived` line with the steps in run order and the number of readings, a `Period` line with the years `latestYear` settled on, a `Summed` line with the readings DFO summed over their variables, and a `Missing data` line with the count of series left out. `data.leftOut` is an array of `LeftOutSeries`, empty when no step dropped a series. `data.statVarsSummed` is an array of `SummedReading`, empty when DFO summed no reading, for a derived ref read at its exact version, and for a saved file. A ref of several derived members raises `InvalidRequestError` before any request.
+A dataset an operation returns has one `DerivedMember` in `members`, and its ref one `DerivedRefMember`, whose `spec.spec_id` starts `ops_` and `contentVersion` `ocv_`. Its text form adds a `Derived` line with the steps in run order and the number of readings, a `Summed` line with the readings DFO summed over their variables, a `Period` line with the years `latestYear` settled on, and a `Missing data` line with the count of series left out. `data.leftOut` is an array of `LeftOutSeries`, empty when no step dropped a series. `data.statVarsSummed` is an array of `SummedReading`, empty when DFO summed no reading, for a derived ref read at its exact version, and for a saved file. A ref of several derived members raises `InvalidRequestError` before any request.
 
 ### `client.pin`
 

@@ -320,14 +320,25 @@ export class Recipe {
    * each member of `per`, as `{ by: "origin", per: "destination", limit: 6 }` keeps the six
    * largest origins of each destination.
    *
-   * @throws {InvalidRequestError} `by` or a given `per` names no role, `limit` is not an integer
-   *   from 1 to 1000, or `allowSparseBreakdowns` is not a boolean (`invalid_argument`).
+   * @throws {InvalidRequestError} `by` or a given `per` names no role, `per` names a role `by`
+   *   names, `limit` is not an integer from 1 to 1000, or `allowSparseBreakdowns` is not a boolean
+   *   (`invalid_argument`).
    */
   rank(options: RankOptions): Recipe {
     const { by, window, how, limit, per, allowSparseBreakdowns } = checkOptions(RANK, options);
     const rankBy = columns("by", by, false);
     const args: Record<string, unknown> = { rank_by: rankBy };
-    if (per != null) args["partition_by"] = columns("per", per, false);
+    if (per != null) {
+      const partitionBy = columns("per", per, false);
+      const both = partitionBy.filter((role) => rankBy.includes(role));
+      if (both.length > 0) {
+        throw invalid(
+          "per names the groups each ranking runs in and by the members ranked, so one role " +
+            `cannot be both: ${both.join(", ")}`,
+        );
+      }
+      args["partition_by"] = partitionBy;
+    }
     if (window != null) Object.assign(args, windowOf(window));
     if (how != null) args["aggregation"] = word("how", how);
     if (limit != null) {
@@ -439,8 +450,8 @@ export class Recipe {
  * A recipe that starts from `start`: a spec, whose rows are never downloaded, a `DatasetRef`,
  * or a `Dataset`. A `Recipe` returns as it is.
  *
- * @throws {InvalidRequestError} `start` is none of those, such as a spec id on its own
- *   (`invalid_argument`).
+ * @throws {InvalidRequestError} `start` is none of those, such as a spec id on its own, or a
+ *   `DatasetRef` of no members (`invalid_argument`).
  */
 export function recipe(start: Start): Recipe {
   if (start instanceof Recipe) return start;
@@ -459,7 +470,15 @@ export const isStart = (value: unknown): value is Start =>
 function nodeOf(start: unknown, role: string): TreeNode {
   if (start instanceof Recipe) return treeOf(start);
   const ref = start instanceof Dataset ? start.ref : start;
-  if (ref instanceof DatasetRef) return refRoot(ref);
+  if (ref instanceof DatasetRef) {
+    if (ref.members.length === 0) {
+      throw invalid(
+        `A recipe's ${role} is a DatasetRef of no members, so it reads nothing; start from a ` +
+          "ref that names the readings to read.",
+      );
+    }
+    return refRoot(ref);
+  }
   if (isRecord(start) && typeof start["spec_id"] === "string" && start["spec_id"] !== "") {
     const specId = start["spec_id"];
     return root({ spec_id: specId, rendering: { without_party_totals: true } }, specId);

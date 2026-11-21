@@ -862,18 +862,18 @@ export class Dataset {
     return `, time_period as ${column.type.kind}`;
   }
 
-  /** The lines of a derived dataset: its steps, the period its latest years settled on, and
-   *  the series it left out. Empty for dataset versions. */
+  /** The lines of a derived dataset: its steps, the StatVars it summed, the period its latest
+   *  years settled on, and the series it left out. Empty for dataset versions. */
   #derivedSummary(): string[] {
     const derived = this.members.filter((member): member is DerivedMember => isDerived(member));
     if (derived.length === 0) return [];
     const roots = unique(derived.flatMap((member) => member.roots));
     const readings = `${roots.length} reading${roots.length === 1 ? "" : "s"}`;
     const lines = [`Derived: ${stepsText(this.#state.steps, readings)}`];
-    const period = periodLine(derived[0]!.resolvedPeriods);
-    if (period !== undefined) lines.push(period);
     const summed = summedLine(this.statVarsSummed);
     if (summed !== undefined) lines.push(summed);
+    const period = periodLine(derived[0]!.resolvedPeriods);
+    if (period !== undefined) lines.push(period);
     if (this.leftOut.length > 0) {
       const least = this.#state.leftOutComplete ? "" : "at least ";
       const count = this.leftOut.length.toLocaleString("en-GB");

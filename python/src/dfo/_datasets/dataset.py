@@ -1169,8 +1169,9 @@ class Dataset:
         return f", time_period as {kind}"
 
     def _derived_summary(self) -> list[str]:
-        """The lines of a derived dataset: its steps, the period its latest years
-        settled on, and the series it left out. Empty for dataset versions."""
+        """The lines of a derived dataset: its steps, the StatVars it summed, the
+        period its latest years settled on, and the series it left out. Empty for
+        dataset versions."""
         derived = [m for m in self.members if isinstance(m, DerivedMember)]
         if not derived:
             return []

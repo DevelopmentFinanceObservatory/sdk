@@ -421,9 +421,9 @@ def recipe(start: Start, /) -> Recipe:
     downloaded, a `DatasetRef`, or a `Dataset`. A `Recipe` returns as it is.
 
     Raises:
-        InvalidRequestError: `start` is none of those, or a Dataset that names no
-            version, such as a website bundle opened from a folder
-            (`invalid_argument`).
+        InvalidRequestError: `start` is none of those, a DatasetRef of no
+            members, or a Dataset that names no version, such as a website
+            bundle opened from a folder (`invalid_argument`).
     """
     if isinstance(start, Recipe):
         return start
@@ -453,6 +453,12 @@ def _node(start: object, name: str) -> _Node:
             INVALID_ARGUMENT,
             f"A recipe's {name} is a Spec, a DatasetRef, a Dataset or a Recipe, not "
             f"{type(start).__name__}",
+        )
+    if not start.members:
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"A recipe's {name} is a DatasetRef of no members, so it reads nothing; "
+            "start from a ref that names the readings to read",
         )
     match start.members:
         case [RefMember() as member]:

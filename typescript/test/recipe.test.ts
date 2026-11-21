@@ -324,6 +324,7 @@ describe("a malformed step is refused when it is added", () => {
   for (const [name, build] of [
     ["no step", () => recipe(AID).tree()],
     ["spec id alone", () => recipe(loose(`spec_${"a".repeat(32)}`))],
+    ["a ref of no members", () => recipe(new DatasetRef([]))],
     ["keep empty", () => recipe(AID).filter({ keep: {} })],
     ["keep no values", () => recipe(AID).filter({ keep: { origin: [] } })],
     ["keep value not text", () => recipe(AID).filter({ keep: loose({ origin: [1] }) })],
@@ -333,6 +334,10 @@ describe("a malformed step is refused when it is added", () => {
     ["limit not an integer", () => recipe(AID).rank({ by: "origin", limit: 2.5 })],
     ["per empty", () => recipe(AID).rank({ by: "origin", per: [] })],
     ["per not text", () => recipe(AID).rank({ by: "origin", per: loose([1]) })],
+    [
+      "per names a ranked role",
+      () => recipe(AID).rank({ by: ["origin", "destination"], per: "destination" }),
+    ],
     [
       "allowSparseBreakdowns not a boolean",
       () => recipe(AID).aggregate({ allowSparseBreakdowns: loose("yes") }),

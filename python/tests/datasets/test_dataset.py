@@ -47,6 +47,7 @@ from dfo._datasets.dataset import (
     LeftOutSeries,
     LeftOutStep,
     PartyTotalsLeftOut,
+    SummedReading,
     build_dataset,
     derived_dataset,
     in_reading_order,
@@ -1044,6 +1045,19 @@ def test_a_derived_dataset_prints_its_steps_period_and_left_out_series() -> None
     ]
     assert repr(ranked).splitlines()[1:3] == [
         "  Derived: rank by financingRecipient, limit 2, from 1 reading",
+        "  Period: 2022, the newest year at least half the series hold",
+    ]
+
+
+def test_a_derived_dataset_prints_the_statvars_it_summed_before_its_period() -> None:
+    summed = replace(
+        _derived("rank"), stat_vars_summed=(SummedReading("spec_a", "cv_a", 1598),)
+    )
+    lines = repr(summed).splitlines()
+    end = next(i for i, line in enumerate(lines) if line.startswith("  Version:"))
+    assert lines[1:end] == [
+        "  Derived: rank by financingRecipient, limit 2, from 1 reading",
+        "  Summed: 1,598 StatVars",
         "  Period: 2022, the newest year at least half the series hold",
     ]
 

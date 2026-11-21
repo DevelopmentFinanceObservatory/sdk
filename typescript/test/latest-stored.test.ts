@@ -211,8 +211,6 @@ describe("currentManifest", () => {
 });
 
 describe('a fetch refuses latest: "stored" before any request', () => {
-  const { fetch } = mockFetch();
-  const transport = transportOver(fetch);
   const spec = { spec_id: "spec_1", definition: { spec_id: "spec_1" } };
 
   for (const [name, target, named] of [
@@ -236,13 +234,15 @@ describe('a fetch refuses latest: "stored" before any request', () => {
         ),
       /use latest: true/,
     ],
+    ["a recipe with no step", () => recipe(storedRef), /A recipe with no step/],
   ] as const) {
     test(name, async () => {
-      await assert.rejects(fetchDataset(transport, await target(), { latest: "stored" }), {
-        name: "InvalidRequestError",
-        code: "invalid_argument",
-        message: named,
-      });
+      const { fetch, seen } = mockFetch();
+      await assert.rejects(
+        fetchDataset(transportOver(fetch), await target(), { latest: "stored" }),
+        { name: "InvalidRequestError", code: "invalid_argument", message: named },
+      );
+      assert.deepEqual(seen, []);
     });
   }
 });
@@ -336,6 +336,28 @@ describe('a recipe fetched with latest: "stored"', () => {
       ids.map(() => held.digest),
     );
     assert.equal(data.freshness, "stale");
+  });
+
+  test("aborts the other manifest reads when one fails", async () => {
+    const ids = ["0", "1"].map((digit) => `spec_${digit.repeat(32)}`);
+    let aborted = false;
+    const { fetch, seen } = mockFetch(
+      json(manifestOf(`spec_${"9".repeat(32)}`)),
+      (_request, { signal }) =>
+        new Promise<Response>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            reject(signal.reason);
+          });
+        }),
+    );
+    const chain = recipe(new DatasetRef(ids.map(memberOf))).aggregate({ by: "destination" });
+    await assert.rejects(fetchDataset(transportOver(fetch), chain, { latest: "stored" }), {
+      name: "ContractError",
+      code: "contract_violation",
+    });
+    assert.equal(seen.length, 2);
+    assert.ok(aborted);
   });
 
   test("reads a spec's manifest once for a spec root read twice, as its frame without totals", async () => {

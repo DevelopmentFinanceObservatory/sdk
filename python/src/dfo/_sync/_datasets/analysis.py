@@ -420,7 +420,8 @@ def _summed(answer: object) -> tuple[SummedReading, ...]:
 
     Raises:
         ContractError: `stat_vars_summed` is not a list of `{spec_id,
-            content_version, count}` (`contract_violation`).
+            content_version, count}` with `count` at least 2
+            (`contract_violation`), at the pointer of the field it breaks.
     """
     listed = answer.get("stat_vars_summed") if isinstance(answer, Mapping) else None
     if listed is None:
@@ -430,16 +431,17 @@ def _summed(answer: object) -> tuple[SummedReading, ...]:
     summed = []
     for index, entry in enumerate(listed):
         pointer = f"/stat_vars_summed/{index}"
-        fields = entry if isinstance(entry, Mapping) else {}
-        spec_id, version = fields.get("spec_id"), fields.get("content_version")
-        count = fields.get("count")
-        if not (
-            isinstance(spec_id, str)
-            and isinstance(version, str)
-            and type(count) is int
-            and count >= 0
-        ):
+        if not isinstance(entry, Mapping):
             raise _violation(pointer, what="a body")
+        spec_id, version = entry.get("spec_id"), entry.get("content_version")
+        count = entry.get("count")
+        if not isinstance(spec_id, str):
+            raise _violation(f"{pointer}/spec_id", what="a body")
+        if not isinstance(version, str):
+            raise _violation(f"{pointer}/content_version", what="a body")
+        # DFO sums a reading of two StatVars or more; a bool is no count.
+        if isinstance(count, bool) or not isinstance(count, int) or count < 2:
+            raise _violation(f"{pointer}/count", what="a body")
         summed.append(SummedReading(spec_id, version, count))
     return tuple(summed)
 

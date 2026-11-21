@@ -280,6 +280,7 @@ def test_a_recipe_returns_a_recipe_given_as_it_is() -> None:
     [
         lambda: recipe(AID).tree(),
         lambda: recipe("spec_" + "a" * 32),
+        lambda: recipe(DatasetRef(())),
         lambda: recipe(AID).filter(keep={}),
         lambda: recipe(AID).filter(keep={"origin": []}),
         lambda: recipe(AID).filter(keep={"origin": [1]}),
@@ -308,6 +309,7 @@ def test_a_recipe_returns_a_recipe_given_as_it_is() -> None:
     ids=[
         "no-step",
         "spec-id-alone",
+        "ref-of-no-members",
         "keep-empty",
         "keep-no-values",
         "keep-value-not-text",

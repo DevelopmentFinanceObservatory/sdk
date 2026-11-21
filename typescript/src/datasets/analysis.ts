@@ -328,7 +328,7 @@ function readyMember(answer: unknown): DerivedRefMember {
     ref = DatasetRef.fromJSON(isRecord(answer) ? answer["ref"] : undefined);
   } catch (error) {
     if (!(error instanceof FormatError)) throw error;
-    throw violation(`/ref${error.pointer}`, error);
+    throw violation(`/ref${error.pointer}`, { cause: error });
   }
   const [member, ...others] = ref.members;
   if (member === undefined || others.length > 0 || !isDerived(member)) {
@@ -341,26 +341,36 @@ function readyMember(answer: unknown): DerivedRefMember {
  * The roots a ready answer's `stat_vars_summed` lists, each `{spec_id, content_version, count}`;
  * none when the answer leaves it out. A key an entry holds beyond those is ignored.
  *
- * @throws {ContractError} The list or an entry breaks that shape (`contract_violation`).
+ * @throws {ContractError} The list or an entry breaks that shape, or a `count` is below 2
+ *   (`contract_violation`), at the pointer of the field it breaks.
  */
 function summedRoots(answer: unknown): SummedReading[] {
   const listed = isRecord(answer) ? answer["stat_vars_summed"] : undefined;
   if (listed === undefined || listed === null) return [];
-  if (!Array.isArray(listed)) throw violation("/stat_vars_summed");
+  const body = { what: "a body" };
+  if (!Array.isArray(listed)) throw violation("/stat_vars_summed", body);
   return listed.map((entry: unknown, index) => {
     const pointer = `/stat_vars_summed/${index}`;
-    if (!isRecord(entry)) throw violation(pointer);
+    if (!isRecord(entry)) throw violation(pointer, body);
     const { spec_id: specId, content_version: contentVersion, count } = entry;
-    if (typeof specId !== "string") throw violation(`${pointer}/spec_id`);
-    if (typeof contentVersion !== "string") throw violation(`${pointer}/content_version`);
-    if (!Number.isSafeInteger(count) || (count as number) < 0) throw violation(`${pointer}/count`);
+    if (typeof specId !== "string") throw violation(`${pointer}/spec_id`, body);
+    if (typeof contentVersion !== "string") throw violation(`${pointer}/content_version`, body);
+    // DFO sums a reading of two StatVars or more.
+    if (!Number.isSafeInteger(count) || (count as number) < 2) {
+      throw violation(`${pointer}/count`, body);
+    }
     return { specId, contentVersion, count: count as number };
   });
 }
 
-const violation = (pointer: string, cause?: unknown): ContractError =>
+/** A ready answer this client cannot read: `what` is the part that broke, `a ref` or the whole
+ *  `a body`, and `pointer` the field. */
+const violation = (
+  pointer: string,
+  { what = "a ref", cause }: { what?: string; cause?: unknown } = {},
+): ContractError =>
   clientError("contract_violation", {
-    detail: `POST ${ANALYSIS_PATH} answered a body whose ${pointer} this client cannot read.`,
+    detail: `POST ${ANALYSIS_PATH} answered ${what} whose ${pointer} this client cannot read.`,
     pointer,
     cause,
   });

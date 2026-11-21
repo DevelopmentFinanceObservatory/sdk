@@ -908,12 +908,14 @@ def _run_recipe(
     manifest (`current_manifest`) without its file, once for each spec and
     rendering, one after another as every fetch reads its members. A root of
     one reading sends that version, and a root of several sends its ref with
-    each member's stored version and digest, which DFO judges. The Dataset's
+    each member's stored version and digest, which DFO refuses with
+    `several_members` until it reads such a ref as one reading. The Dataset's
     `freshness` is the worst the manifests' answers state.
 
     Raises:
-        InvalidRequestError: Under `latest="stored"`, a root reads a frame DFO
-            computed (`invalid_argument`); no request is sent.
+        InvalidRequestError: Under `latest="stored"`, the recipe has no step or
+            a root reads a frame DFO computed (`invalid_argument`); no request
+            is sent.
         ContractError: A manifest answers another spec, or lists no artifact
             in the rendering of a member of a several-member root
             (`contract_violation`).
@@ -927,6 +929,7 @@ def _run_recipe(
             timeout=timeout,
             cache=cache,
         )
+    target.tree()  # A recipe with no step refuses before any manifest is read.
     readings = stored_readings(target)
     check_strict(strict)
     deadline = transport.deadline(timeout)

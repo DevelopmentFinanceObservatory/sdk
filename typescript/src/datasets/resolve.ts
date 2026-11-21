@@ -213,6 +213,7 @@ export async function fetchDataset(
     });
     if (!(target instanceof Recipe)) return fetchDerived(transport, target, computed);
     if (latest !== STORED) return runRecipe(transport, target, computed);
+    target.tree(); // A recipe with no step throws before any manifest is read.
     const roots = storedRoots(target);
     return runRecipe(transport, target, computed, (wait) =>
       storedRecipeTree(transport, target, roots, wait),
@@ -667,10 +668,19 @@ async function storedRecipeTree(
   readings: ReadonlyMap<string, StoredReading>,
   wait: Wait,
 ): Promise<StoredTree> {
+  // One failed read aborts the others, so a refusal leaves no request running.
+  const failed = new AbortController();
+  const signal =
+    wait.signal === undefined ? failed.signal : AbortSignal.any([wait.signal, failed.signal]);
   const read = await Promise.all(
     [...readings].map(async ([key, { specId, rendering }]) => {
-      const current = await currentManifest(transport, specId, rendering, wait);
-      return [key, current] as const;
+      try {
+        const current = await currentManifest(transport, specId, rendering, { ...wait, signal });
+        return [key, current] as const;
+      } catch (error) {
+        failed.abort();
+        throw error;
+      }
     }),
   );
   const manifests = new Map(read);

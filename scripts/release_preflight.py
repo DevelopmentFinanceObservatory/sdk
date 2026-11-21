@@ -36,7 +36,8 @@ with no key:
 website's `/api/v1` proxy, in place of production. A non-empty
 `DFO_E2E_ID_TOKEN`, a Google ID token, goes out as `X-Serverless-Authorization`,
 as the e2e journeys send it to a private Cloud Run URL, on the client's requests
-and on the file read.
+and on the file read while it stays on the API's origin. A redirect to another
+origin, such as a signed storage URL, goes without it.
 
 It exits 0 when every check passes, and 1 otherwise, with the reason and the class
 of any error the client raised.
@@ -45,6 +46,7 @@ of any error the client raised.
 import argparse
 import os
 import sys
+from collections.abc import Callable, Mapping
 
 import httpx2
 import pyarrow as pa
@@ -159,14 +161,20 @@ def check_file_route(
             params=file_params(member.rendering),
         )
         state = "not pinned, file_url raised version_not_pinned"
-    try:
-        response = httpx2.get(url, headers=headers, follow_redirects=True, timeout=60)
-        response.raise_for_status()
-        served = pq.read_table(pa.BufferReader(response.content)).num_rows
-    except (httpx2.HTTPError, OSError, ValueError) as error:
-        raise PreflightError(
-            f"{FILE_REFUSED}: {type(error).__name__}: {error}"
-        ) from error
+    with httpx2.Client(
+        headers=headers,
+        follow_redirects=True,
+        timeout=60,
+        event_hooks={"request": [on_origin(httpx2.URL(client.base_url), headers)]},
+    ) as http:
+        try:
+            response = http.get(url)
+            response.raise_for_status()
+            served = pq.read_table(pa.BufferReader(response.content)).num_rows
+        except (httpx2.HTTPError, OSError, ValueError) as error:
+            raise PreflightError(
+                f"{FILE_REFUSED}: {type(error).__name__}: {error}"
+            ) from error
     if served != rows:
         raise PreflightError(
             f"{FILE_REFUSED}: the file holds {served} rows, not {rows}"
@@ -175,6 +183,25 @@ def check_file_route(
         f"production serves the file route anonymously: {state}; GET {url} gave"
         f" {served} rows"
     )
+
+
+def on_origin(
+    origin: httpx2.URL, headers: Mapping[str, str]
+) -> Callable[[httpx2.Request], None]:
+    """A request hook that drops `headers` from any request off `origin`'s
+    scheme, host and port, so a redirect carries no ID token to storage."""
+
+    def drop_off_origin(request: httpx2.Request) -> None:
+        url = request.url
+        if (url.scheme, url.host, url.port) != (
+            origin.scheme,
+            origin.host,
+            origin.port,
+        ):
+            for name in headers:
+                request.headers.pop(name, None)
+
+    return drop_off_origin
 
 
 def check_rank_per(client: Client) -> None:

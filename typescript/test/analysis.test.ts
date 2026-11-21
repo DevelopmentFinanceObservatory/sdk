@@ -173,10 +173,26 @@ describe("a recipe", () => {
   });
 
   for (const [name, listed, pointer] of [
-    ["not a list", { count: 3 }, "/stat_vars_summed"],
+    ["not a list", { spec_id: AID.spec_id }, "/stat_vars_summed"],
+    ["an entry not an object", ["spec_a"], "/stat_vars_summed/0"],
+    [
+      "an entry with no spec_id",
+      [{ content_version: "cv_1", count: 3 }],
+      "/stat_vars_summed/0/spec_id",
+    ],
     [
       "an entry with no count",
       [{ spec_id: AID.spec_id, content_version: "cv_1" }],
+      "/stat_vars_summed/0/count",
+    ],
+    [
+      "a count that is a boolean",
+      [{ spec_id: AID.spec_id, content_version: "cv_1", count: true }],
+      "/stat_vars_summed/0/count",
+    ],
+    [
+      "a count below two",
+      [{ spec_id: AID.spec_id, content_version: "cv_1", count: 1 }],
       "/stat_vars_summed/0/count",
     ],
   ] as const) {

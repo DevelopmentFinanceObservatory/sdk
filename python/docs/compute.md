@@ -211,7 +211,7 @@ if again.ref != per_person.ref:
 
 A changed ref can still hold the same numbers, after an engine release or a rebuild of a reading that moved no value. `again.ref.same_data(per_person.ref)` compares what the two refs hold: two derived results with the same rows under the same variables compare as the same data, whichever recipe made them.
 
-`dfo.fetch(chain, latest="stored")` runs a recipe on the version DFO stores as the newest of each dataset it starts from, as `dfo.fetch(ref, latest="stored")` reads a ref. It asks for each dataset's manifest, downloads none of their files, and builds nothing DFO has already stored, so a web page or a scheduled job gets a quick answer on current data. The result's `freshness` is the worst its readings' answers state, and its ref names the versions it ran on. A recipe that reads a frame DFO computed raises `InvalidRequestError` before any request.
+`dfo.fetch(chain, latest="stored")` runs a recipe on the version DFO stores as the newest of each dataset it starts from, as `dfo.fetch(ref, latest="stored")` reads a ref. It asks for each dataset's manifest, downloads none of their files, and builds nothing DFO has already stored, so a web page or a scheduled job gets a quick answer on current data. The result's `freshness` is the worst its readings' answers state, and its ref names the versions it ran on. A recipe with no step, or one that reads a frame DFO computed, raises `InvalidRequestError` before any request. A root of several members sends its ref with each member's stored version and digest, which DFO refuses with `several_members` until it reads such a ref as one reading.
 
 `dfo.fetch(per_person.ref)`, without `latest`, reads the exact version again. DFO holds a derived version until the `held until` date in its repr. After that, the fetch asks DFO to compute it again from the same versions of its readings, and returns it when the result is the same version. When it is not, the fetch raises `VersionUnavailableError`, and `latest=True` computes it on the newest data.
 
@@ -283,7 +283,7 @@ except SeriesLeftOutWarning as error:
 Each function takes its readings as positional arguments and the rest by keyword. Each also takes `strict=False` and `timeout`, which defaults to the client's `timeout`, and returns a `Dataset`. `client.analysis` on a `Client` or `AsyncClient` has the same methods, less `recipe`.
 
 | Name          | Signature                                                                                          |
-| ------------- | ------------------------------------------------------------------------------------------------- -|
+| ------------- | ---------------------------------------------------------------------------------------------------|
 | `filter`      | `filter(data, /, *, keep)`                                                                         |
 | `aggregate`   | `aggregate(data, /, *, by=(), how="sum", allow_sparse_breakdowns=False)`                           |
 | `growth`      | `growth(data, /, *, by=(), window, change="relative")`                                             |
