@@ -162,8 +162,24 @@ def emptied_history(*, shuffled: bool = False) -> httpx2.Response:
 
 
 def stored_manifest() -> dict[str, Any]:
-    scenario = json.loads((CONTRACT / "scenarios" / "fetch-ref.json").read_text())
-    return scenario["exchanges"][0]["response"]["json"]
+    """The `fetch-ref` manifest, its frame file the one `FRAME_FILE` holds.
+
+    `fetch-ref` lists a frame file whose bytes the contract does not record, so
+    the frame artifact of `fetch-spec-frame-layout`, whose file it does, stands
+    in for it."""
+    scenarios = CONTRACT / "scenarios"
+    manifest = json.loads((scenarios / "fetch-ref.json").read_text())["exchanges"][0][
+        "response"
+    ]["json"]
+    frame = json.loads((scenarios / "fetch-spec-frame-layout.json").read_text())[
+        "exchanges"
+    ][0]["response"]["json"]["artifacts"][0]
+    assert frame["rendering"]["layout"] == "frame"
+    manifest["artifacts"] = [
+        frame if artifact["rendering"].get("layout") == "frame" else artifact
+        for artifact in manifest["artifacts"]
+    ]
+    return manifest
 
 
 def stored_version(
