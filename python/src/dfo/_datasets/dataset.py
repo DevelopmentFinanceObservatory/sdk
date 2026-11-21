@@ -124,8 +124,11 @@ REQUIRED_COLUMNS = ("time_period", "value")
 # dataset of dataset versions saves format 1. A derived dataset saves format 2,
 # whose `dfo.ref` is a format 2 ref and which adds `dfo.left_out` and
 # `dfo.steps`, so a client that reads format 1 alone refuses it as a later format.
+# A derived dataset with a partitioned ranking saves format 3, which lets a step
+# carry `per`; format 2 steps are the closed `{verb, by, limit}`.
 SAVED_FORMAT_VERSION = 1
 SAVED_DERIVED_FORMAT_VERSION = 2
+SAVED_PER_FORMAT_VERSION = 3
 # The format of the record `Provenance.to_json` writes.
 PROVENANCE_FORMAT_VERSION = 1
 
@@ -419,15 +422,20 @@ class DerivedStep:
         verb: The operation.
         by: The columns or roles it keeps apart.
         limit: The most members it keeps, for a ranking.
+        per: The columns or roles that split a ranking, each part ranked on
+            its own.
     """
 
     verb: str
     by: tuple[str, ...] = ()
     limit: int | None = None
+    per: tuple[str, ...] = ()
 
     def text(self) -> str:
-        """The step as `rank by origin, limit 10`."""
+        """The step as `rank by origin per destination, limit 10`."""
         text = self.verb + (f" by {', '.join(self.by)}" if self.by else "")
+        if self.per:
+            text += f" per {', '.join(self.per)}"
         return text + (f", limit {self.limit}" if self.limit is not None else "")
 
 
@@ -1218,7 +1226,12 @@ class Dataset:
         and the record agree."""
         record = provenance_object(self.provenance)
         derived = any(isinstance(member, DerivedMember) for member in self.members)
-        version = SAVED_DERIVED_FORMAT_VERSION if derived else SAVED_FORMAT_VERSION
+        if not derived:
+            version = SAVED_FORMAT_VERSION
+        elif any(step.per for step in self._steps):
+            version = SAVED_PER_FORMAT_VERSION
+        else:
+            version = SAVED_DERIVED_FORMAT_VERSION
         metadata = {
             "dfo.format_version": str(version),
             "dfo.sentence": record["sentence"],
@@ -1263,7 +1276,7 @@ class Dataset:
                     "complete": self._left_out_complete,
                 }
             )
-            metadata["dfo.steps"] = _dumps([asdict(step) for step in self._steps])
+            metadata["dfo.steps"] = _dumps([_step_object(step) for step in self._steps])
         if self.party_totals_left_out:
             # A key of its own, since the 0.1.0 loader refuses any key in
             # `dfo.dataset` it does not know, and reads only the `dfo.*` keys it names.
@@ -1271,6 +1284,15 @@ class Dataset:
                 [_party_totals_object(entry) for entry in self.party_totals_left_out]
             )
         return {key.encode(): value.encode() for key, value in metadata.items()}
+
+
+def _step_object(step: DerivedStep) -> dict[str, Any]:
+    """A step as a saved file keeps it: `per` only where the step has one, since
+    format 2 steps are the closed `{verb, by, limit}`."""
+    obj = asdict(step)
+    if not step.per:
+        del obj["per"]
+    return obj
 
 
 def _party_totals_line(
@@ -1713,7 +1735,11 @@ def derived_dataset(
         party_totals_left_out=_root_party_totals(manifest, member.roots),
         _left_out_complete=complete,
         _steps=tuple(
-            replace(step, by=tuple(roles.get(column, column) for column in step.by))
+            replace(
+                step,
+                by=tuple(roles.get(column, column) for column in step.by),
+                per=tuple(roles.get(column, column) for column in step.per),
+            )
             for step in (_tree_steps(tree) if isinstance(tree, Mapping) else ())
         ),
         from_cache=from_cache,
@@ -2024,10 +2050,14 @@ def _tree_steps(node: Mapping[str, Any]) -> Iterator[DerivedStep]:
         [],
     )
     limit = parameters.get("limit")
+    per = parameters.get("partition_by") if verb == "rank" else None
     yield DerivedStep(
         verb=verb,
         by=tuple(column for column in by if isinstance(column, str)),
         limit=limit if type(limit) is int else None,
+        per=tuple(column for column in per if isinstance(column, str))
+        if isinstance(per, list)
+        else (),
     )
 
 
@@ -2138,14 +2168,21 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
             `/dfo.dataset/missing`.
     """
     values = _saved_values(metadata)
-    versions = (str(SAVED_FORMAT_VERSION), str(SAVED_DERIVED_FORMAT_VERSION))
+    versions = tuple(
+        str(version)
+        for version in (
+            SAVED_FORMAT_VERSION,
+            SAVED_DERIVED_FORMAT_VERSION,
+            SAVED_PER_FORMAT_VERSION,
+        )
+    )
     if values.get("dfo.format_version") not in versions:
         raise FormatError(
             "format_invalid",
             "/dfo.format_version",
             "the file carries no dataset saved by this client's format versions "
-            f"{SAVED_FORMAT_VERSION} and {SAVED_DERIVED_FORMAT_VERSION}; a later "
-            "client reads it",
+            f"{SAVED_FORMAT_VERSION}, {SAVED_DERIVED_FORMAT_VERSION} and "
+            f"{SAVED_PER_FORMAT_VERSION}; a later client reads it",
         )
     rest = decode(_saved_value(values, "dfo.dataset"), "/dfo.dataset")
     check_keys(rest, "/dfo.dataset", required=_SAVED_DATASET_KEYS)
@@ -2183,13 +2220,19 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
     )
     # Only a derived dataset carries left-out series and steps.
     derived = any(isinstance(member, DerivedMember) for member in members)
-    expected = SAVED_DERIVED_FORMAT_VERSION if derived else SAVED_FORMAT_VERSION
-    if values["dfo.format_version"] != str(expected):
+    version = values["dfo.format_version"]
+    allowed = (
+        (str(SAVED_DERIVED_FORMAT_VERSION), str(SAVED_PER_FORMAT_VERSION))
+        if derived
+        else (str(SAVED_FORMAT_VERSION),)
+    )
+    if version not in allowed:
         raise FormatError(
             "format_invalid",
             "/dfo.format_version",
-            f"is {values['dfo.format_version']} for a file whose dfo.ref "
-            f"{'holds' if derived else 'holds no'} derived member; it is {expected}",
+            f"is {version} for a file whose dfo.ref "
+            f"{'holds' if derived else 'holds no'} derived member; it is "
+            f"{' or '.join(allowed)}",
         )
     complete = _flag(rest, "complete")
     missing = tuple(
@@ -2247,7 +2290,11 @@ def saved_dataset(table: pa.Table, metadata: Mapping[bytes, bytes]) -> Dataset:
             if (text := values.get("dfo.question")) is not None
             else None
         ),
-        **(_load_derived(values) if derived else {}),
+        **(
+            _load_derived(values, per=version == str(SAVED_PER_FORMAT_VERSION))
+            if derived
+            else {}
+        ),
     )
 
 
@@ -2331,9 +2378,10 @@ def _left_out_object(series: LeftOutSeries) -> dict[str, Any]:
     }
 
 
-def _load_derived(values: Mapping[str, str]) -> dict[str, Any]:
+def _load_derived(values: Mapping[str, str], *, per: bool) -> dict[str, Any]:
     """A saved file's `dfo.left_out` and `dfo.steps`, as the `Dataset` fields
-    they fill; none when the file holds dataset versions."""
+    they fill; none when the file holds dataset versions. `per` says whether the
+    file's format lets a step carry `per`."""
     loaded: dict[str, Any] = {}
     if (text := values.get("dfo.left_out")) is not None:
         series, complete = _load_left_out(decode(text, "/dfo.left_out"))
@@ -2342,7 +2390,7 @@ def _load_derived(values: Mapping[str, str]) -> dict[str, Any]:
     if (text := values.get("dfo.steps")) is not None:
         pointer = "/dfo.steps"
         loaded["_steps"] = tuple(
-            _load_step(item, f"{pointer}/{index}")
+            _load_step(item, f"{pointer}/{index}", per=per)
             for index, item in enumerate(_array(decode_value(text, pointer), pointer))
         )
     return loaded
@@ -2405,20 +2453,49 @@ def _require(obj: Mapping[str, Any], pointer: str, keys: Sequence[str]) -> None:
             raise FormatError("format_invalid", f"{pointer}/{key}", "missing")
 
 
-def _load_step(value: object, pointer: str) -> DerivedStep:
+def _load_step(value: object, pointer: str, *, per: bool) -> DerivedStep:
     obj = object_at(value, pointer)
-    check_keys(obj, pointer, required=("verb", "by", "limit"))
+    check_keys(
+        obj,
+        pointer,
+        required=("verb", "by", "limit"),
+        allowed=("per",) if per else (),
+    )
     by = _array(obj["by"], f"{pointer}/by")
+    columns = _load_per(obj["per"], f"{pointer}/per") if "per" in obj else ()
     limit = obj["limit"]
     if limit is not None and not is_integer(limit):
         raise FormatError("format_invalid", f"{pointer}/limit", "not an integer")
-    return DerivedStep(
+    step = DerivedStep(
         verb=_string(obj["verb"], f"{pointer}/verb"),
         by=tuple(
             _string(item, f"{pointer}/by/{index}") for index, item in enumerate(by)
         ),
         limit=None if limit is None else int(limit),
+        per=columns,
     )
+    if step.per and step.verb != "rank":
+        raise FormatError(
+            "format_invalid", f"{pointer}/per", "only a rank step has per"
+        )
+    if shared := [column for column in step.per if column in step.by]:
+        raise FormatError(
+            "format_invalid", f"{pointer}/per", f"names {shared[0]}, which by names"
+        )
+    return step
+
+
+def _load_per(value: object, pointer: str) -> tuple[str, ...]:
+    """A step's `per`: a non-empty array of distinct strings."""
+    items = _array(value, pointer)
+    columns = tuple(
+        _string(item, f"{pointer}/{index}") for index, item in enumerate(items)
+    )
+    if not columns:
+        raise FormatError("format_invalid", pointer, "is empty")
+    if len(set(columns)) != len(columns):
+        raise FormatError("format_invalid", pointer, "repeats a column")
+    return columns
 
 
 # The keys a saved file's `dfo.dataset` object holds.

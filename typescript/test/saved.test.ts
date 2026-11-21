@@ -138,6 +138,22 @@ describe("the contract's saved-file examples", async () => {
 const digestOf = (data: Uint8Array): string =>
   `sha256:${createHash("sha256").update(data).digest("hex")}`;
 
+/** The recorded rank, its tree's step split per destination. */
+async function partitionedRank(): Promise<Dataset> {
+  const { ref } = await recordedJson<{ ref: unknown }>("analysis-rank-ready.json");
+  const [member] = DatasetRef.fromJSON(ref).members;
+  assert.ok(member && isDerived(member));
+  const manifest = await recordedJson<{ recipe: { tree: { op_spec: { parameters: object } } } }>(
+    "analysis-rank-manifest.json",
+  );
+  manifest.recipe.tree.op_spec.parameters = {
+    ...manifest.recipe.tree.op_spec.parameters,
+    partition_by: ["destination"],
+  };
+  const data = await recordedBytes("analysis-rank-frame.parquet");
+  return (await derivedDataset(member, manifest, data)).dataset;
+}
+
 /** The datasets a round trip starts from: two members stacked from an answer, a partial answer
  *  with a part left out, a derived frame, and pyarrow's types in one member. */
 const sources: Record<string, () => Promise<Dataset>> = {
@@ -163,6 +179,7 @@ const sources: Record<string, () => Promise<Dataset>> = {
     const data = await recordedBytes("analysis-chain-frame.parquet");
     return (await derivedDataset(member, manifest, data)).dataset;
   },
+  "a rank split per destination": partitionedRank,
   "every Parquet type": async () => {
     // Written by pyarrow: int64, uint8, float64, bool, string, timestamp, date32, decimal,
     // binary and null columns, each with a null.
@@ -241,6 +258,64 @@ describe("Dataset.fromBytes reads back the file toBytes() writes", () => {
     );
     assert.equal(String(loaded), "<Dataset Bundle.\n  Rows: 0\n  Keep: await data.toBytes()>");
   });
+});
+
+describe("the format a step's per needs", () => {
+  /** `bytes` with its `dfo.steps` and format version set. */
+  const rewritten = (bytes: Uint8Array, version: string, steps: unknown): Uint8Array =>
+    withFooter(bytes, (metadata) => ({
+      ...metadata,
+      key_value_metadata: (metadata.key_value_metadata ?? []).map((entry) =>
+        entry.key === "dfo.steps"
+          ? { key: entry.key, value: JSON.stringify(steps) }
+          : entry.key === "dfo.format_version"
+            ? { key: entry.key, value: version }
+            : entry,
+      ),
+    }));
+  const step = { verb: "rank", by: ["financingRecipient"], limit: 2 };
+
+  test("a partitioned rank writes format 3 and a rank without per writes format 2", async () => {
+    const written = metadataOf(await (await partitionedRank()).toBytes());
+    assert.equal(written["dfo.format_version"], "3");
+    assert.deepEqual(JSON.parse(written["dfo.steps"]!), [{ ...step, per: ["destination"] }]);
+    const plain = metadataOf(await (await sources["a derived frame"]!()).toBytes());
+    assert.equal(plain["dfo.format_version"], "2");
+  });
+
+  test("a loaded partitioned rank prints its per", async () => {
+    const loaded = await Dataset.fromBytes(await (await partitionedRank()).toBytes());
+    assert.match(
+      String(loaded),
+      /Derived: rank by financingRecipient per destination, limit 2, from 1 reading/,
+    );
+  });
+
+  const cases: [string, string, unknown, RegExp][] = [
+    ["a format 2 file with per", "2", [{ ...step, per: ["destination"] }], /dfo\.steps\/0\/per/],
+    ["an empty per", "3", [{ ...step, per: [] }], /dfo\.steps\/0\/per/],
+    ["a repeated column", "3", [{ ...step, per: ["a", "a"] }], /dfo\.steps\/0\/per/],
+    ["a column by names", "3", [{ ...step, per: ["financingRecipient"] }], /dfo\.steps\/0\/per/],
+    [
+      "per on another verb",
+      "3",
+      [{ ...step, verb: "growth", per: ["destination"] }],
+      /dfo\.steps\/0\/per/,
+    ],
+  ];
+  for (const [name, version, steps, pointer] of cases) {
+    test(`refuses ${name}`, async () => {
+      const bytes = await (await partitionedRank()).toBytes();
+      await assert.rejects(
+        Dataset.fromBytes(rewritten(bytes, version, steps)),
+        (error: unknown) => {
+          assert.ok(error instanceof FormatError, String(error));
+          assert.match(error.message, pointer);
+          return true;
+        },
+      );
+    });
+  }
 });
 
 describe("Dataset.fromBytes refuses what holds no saved dataset", () => {

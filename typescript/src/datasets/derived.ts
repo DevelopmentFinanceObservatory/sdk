@@ -155,10 +155,14 @@ function* treeSteps(node: Readonly<Record<string, unknown>>): Generator<DerivedS
   const parameters = isRecord(opSpec["parameters"]) ? opSpec["parameters"] : {};
   const by = BY_PARAMETERS.map((name) => parameters[name]).find(Array.isArray) ?? [];
   const limit = parameters["limit"];
+  const per = verb === "rank" ? parameters["partition_by"] : undefined;
+  const strings = (columns: unknown[]): string[] =>
+    columns.filter((column): column is string => typeof column === "string");
   yield {
     verb,
-    by: (by as unknown[]).filter((column): column is string => typeof column === "string"),
+    by: strings(by as unknown[]),
     limit: Number.isSafeInteger(limit) ? (limit as number) : null,
+    per: Array.isArray(per) ? strings(per) : [],
   };
 }
 

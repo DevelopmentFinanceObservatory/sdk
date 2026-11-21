@@ -324,7 +324,7 @@ print(len(data))
 
 The saved file keeps the provenance in the Parquet key-value metadata, under these keys. Each value is UTF-8 text, and a key marked optional is left out when the dataset has no value for it:
 
-- `dfo.format_version`: the saved format, `1` for a dataset of dataset versions and `2` for a derived dataset, as plain text.
+- `dfo.format_version`: the saved format, `1` for a dataset of dataset versions, `2` for a derived dataset, and `3` for a derived dataset with a partitioned ranking, as plain text.
 - `dfo.sentence`: the dataset's sentence, as plain text.
 - `dfo.citation`: the citation, as a JSON object.
 - `dfo.sources`: the sources, as a JSON array of strings.
@@ -335,7 +335,7 @@ The saved file keeps the provenance in the Parquet key-value metadata, under the
 - `dfo.fetched_at`: optional, when the data left the server, as a JSON string `YYYY-MM-DDTHH:MM:SSZ`. Added in 0.2.0.
 - `dfo.retention`: written with `dfo.ref`, each member's retention, as a JSON array of `{"pinned", "held_until"}`, one per member in order. A file without it reads every member as pinned when `pinned` is true, and with both None otherwise. Added in 0.3.0.
 - `dfo.left_out`: a derived dataset only, the series its steps left out, as a JSON object of `series` and `complete`.
-- `dfo.steps`: a derived dataset only, its steps, as a JSON array.
+- `dfo.steps`: a derived dataset only, its steps, as a JSON array of `verb`, `by` and `limit`. A step of a ranking split by `per` also holds `per`, a list of columns, and only a format 3 file may hold it.
 - `dfo.party_totals_left_out`: optional, the party totals the fetch left out, as a JSON array of entries with `spec_id`, `role`, `entities`, and `provenance` and `kept_in` where they apply. A derived dataset's entries name its readings' spec ids, in the order of its readings. Added in 0.2.0.
 
 `dfo.load` reads each key back, `question` and `fetched_at` included, sets `from_cache` to False, and `freshness` to None. A 0.1.0 client ignores the keys added in 0.2.0, and a 0.2.0 client the key added in 0.3.0.

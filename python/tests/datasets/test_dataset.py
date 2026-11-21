@@ -976,7 +976,7 @@ def test_a_dataset_of_versions_loads_no_left_out_series_or_steps(
     assert (loaded.left_out, loaded._steps) == ((), ())
 
 
-@pytest.mark.parametrize("version", [b"0", b"3", b"two"])
+@pytest.mark.parametrize("version", [b"0", b"4", b"two"])
 def test_a_saved_file_of_another_format_version_is_refused(
     tmp_path: Path, version: bytes
 ) -> None:
@@ -1047,6 +1047,30 @@ def test_a_derived_dataset_prints_its_steps_period_and_left_out_series() -> None
         "  Derived: rank by financingRecipient, limit 2, from 1 reading",
         "  Period: 2022, the newest year at least half the series hold",
     ]
+
+
+def _partitioned() -> Dataset:
+    """The rank dataset with its step split per destination."""
+    data = _derived("rank")
+    (step,) = data._steps
+    return replace(data, _steps=(replace(step, per=("destination",)),))
+
+
+def test_a_ranking_split_per_column_prints_its_per() -> None:
+    assert (
+        "  Derived: rank by financingRecipient per destination, limit 2, from 1 reading"
+        in repr(_partitioned()).splitlines()
+    )
+
+
+def test_a_served_rank_reads_its_partition_by_into_per() -> None:
+    manifest = copy.deepcopy(load("analysis-rank-manifest.json"))
+    parameters = manifest["recipe"]["tree"]["op_spec"]["parameters"]
+    parameters["partition_by"] = ["destination", "time_period"]
+    member = _derived_member("rank")
+    data = (DATA / "analysis-rank-frame.parquet").read_bytes()
+    (step,) = derived_dataset(member, manifest, data)._steps
+    assert step.per == ("destination", "time_period")
 
 
 def test_a_derived_dataset_prints_the_statvars_it_summed_before_its_period() -> None:
@@ -1125,6 +1149,61 @@ def test_a_derived_dataset_saves_its_ref_left_out_series_and_steps(
     loaded = load_saved(path)
     _assert_same(loaded, data)
     assert repr(loaded) == repr(data)
+
+
+def test_a_partitioned_ranking_saves_format_3_and_loads_back(tmp_path: Path) -> None:
+    data = _partitioned()
+    path = tmp_path / "derived.parquet"
+    data.save(path)
+    stored = pq.read_metadata(path).metadata
+    assert stored[b"dfo.format_version"] == b"3"
+    assert json.loads(stored[b"dfo.steps"]) == [
+        {
+            "verb": "rank",
+            "by": ["financingRecipient"],
+            "limit": 2,
+            "per": ["destination"],
+        }
+    ]
+    loaded = load_saved(path)
+    assert loaded._steps == data._steps
+    _assert_same(loaded, data)
+
+
+def test_a_derived_dataset_without_per_saves_format_2_steps(tmp_path: Path) -> None:
+    path = tmp_path / "derived.parquet"
+    _derived("rank").save(path)
+    stored = pq.read_metadata(path).metadata
+    assert stored[b"dfo.format_version"] == b"2"
+    assert json.loads(stored[b"dfo.steps"]) == [
+        {"verb": "rank", "by": ["financingRecipient"], "limit": 2}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("per", "pointer"),
+    [
+        (["destination"], "/dfo.steps/0/per"),
+        ([], "/dfo.steps/0/per"),
+        (["a", "a"], "/dfo.steps/0/per"),
+        (["financingRecipient"], "/dfo.steps/0/per"),
+        ("destination", "/dfo.steps/0/per"),
+    ],
+    ids=["in-format-2", "empty", "repeated", "names-by", "not-an-array"],
+)
+def test_a_per_the_format_does_not_allow_is_refused(
+    tmp_path: Path, per: object, pointer: str
+) -> None:
+    path = tmp_path / "derived.parquet"
+    # Format 2 refuses any per; format 3 refuses a per that breaks its rule.
+    (_derived("rank") if per == ["destination"] else _partitioned()).save(path)
+    table = pq.read_table(path)
+    steps = [{"verb": "rank", "by": ["financingRecipient"], "limit": 2, "per": per}]
+    metadata = {**table.schema.metadata, b"dfo.steps": json.dumps(steps).encode()}
+    pq.write_table(table.replace_schema_metadata(metadata), path)
+    with pytest.raises(FormatError) as caught:
+        load_saved(path)
+    assert (caught.value.reason, caught.value.pointer) == ("format_invalid", pointer)
 
 
 def test_a_saved_derived_dataset_keeps_its_roots_groupby(tmp_path: Path) -> None:

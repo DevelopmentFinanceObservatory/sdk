@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- A Dataset a recipe made names the split of a partitioned ranking in its `Derived:` line, as `rank by origin per destination, limit 10`, and `dfo.types.DerivedStep` holds it as `per`, empty for a step with none. A Dataset that holds a partitioned ranking saves format 3, which lets a step in `dfo.steps` carry `per`; any other derived Dataset still saves format 2. `dfo.load` reads formats 1, 2 and 3, and raises `FormatError` (`format_invalid`) at `/dfo.steps/0/per` for a `per` in a format 2 file, one that is empty or repeats a column, one on a step that is not a `rank`, or one that names a column the step's `by` names.
+
 ## [0.6.0] - 2026-11-21
 
 ### Added

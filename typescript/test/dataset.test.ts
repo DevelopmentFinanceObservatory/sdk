@@ -921,6 +921,21 @@ describe("a derived dataset", () => {
     });
   }
 
+  test("names the columns a ranking is split per in its Derived line", async () => {
+    const manifest = await recordedJson<{ recipe: { tree: { op_spec: { parameters: object } } } }>(
+      "analysis-rank-manifest.json",
+    );
+    const { parameters } = manifest.recipe.tree.op_spec;
+    manifest.recipe.tree.op_spec.parameters = { ...parameters, partition_by: ["destination"] };
+    const lines = String(await derived("rank", manifest)).split("\n");
+    assert.ok(
+      lines.includes(
+        "  Derived: rank by financingRecipient per destination, limit 2, from 1 reading",
+      ),
+      lines.join("\n"),
+    );
+  });
+
   test("prints at least when its manifest lists only some of what it left out", async () => {
     const lines = String(await derived("chain", { left_out_complete: false })).split("\n");
     assert.ok(lines.includes("  Missing data: at least 3 series left out · data.leftOut"));

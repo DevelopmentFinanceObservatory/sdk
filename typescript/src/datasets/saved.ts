@@ -38,9 +38,12 @@ type Retention = Pick<Member, "pinned" | "heldUntil">;
 /** The version of the provenance a file from `toBytes()` carries under `dfo.*` keys, the one
  *  Python's `Dataset.save` writes: 1 for a dataset of dataset versions, and 2 for a derived
  *  dataset, whose `dfo.ref` is a format 2 ref and which adds `dfo.left_out` and `dfo.steps`, so
- *  a client that reads format 1 alone refuses it as a later format. */
+ *  a client that reads format 1 alone refuses it as a later format. A derived dataset with a
+ *  partitioned ranking saves 3, which lets a step carry `per`; format 2 steps are the closed
+ *  `{verb, by, limit}`. */
 export const SAVED_FORMAT_VERSION = 1;
 export const SAVED_DERIVED_FORMAT_VERSION = 2;
+export const SAVED_PER_FORMAT_VERSION = 3;
 
 /** The keys a saved file's `dfo.dataset` object holds, each required and no other allowed. */
 const SAVED_DATASET_KEYS = [
@@ -221,12 +224,14 @@ function savedState(file: ParquetFile): Omit<SavedDataset, "table"> {
   const version = values.get("dfo.format_version");
   if (
     version !== String(SAVED_FORMAT_VERSION) &&
-    version !== String(SAVED_DERIVED_FORMAT_VERSION)
+    version !== String(SAVED_DERIVED_FORMAT_VERSION) &&
+    version !== String(SAVED_PER_FORMAT_VERSION)
   ) {
     throw invalid(
       "/dfo.format_version",
       "the file carries no dataset saved by this client's format versions " +
-        `${SAVED_FORMAT_VERSION} and ${SAVED_DERIVED_FORMAT_VERSION}; a later client reads it`,
+        `${SAVED_FORMAT_VERSION}, ${SAVED_DERIVED_FORMAT_VERSION} and ${SAVED_PER_FORMAT_VERSION}; ` +
+        "a later client reads it",
     );
   }
   const rest = decodeObject(required(values, "dfo.dataset"), "/dfo.dataset");
@@ -258,12 +263,14 @@ function savedState(file: ParquetFile): Omit<SavedDataset, "table"> {
   const memberRows = loadMemberRows(rest["member_rows"], members.length, file.rows);
   // Only a derived dataset carries left-out series and steps.
   const derived = stored.some(isDerived);
-  const expected = derived ? SAVED_DERIVED_FORMAT_VERSION : SAVED_FORMAT_VERSION;
-  if (version !== String(expected)) {
+  const expected = derived
+    ? [SAVED_DERIVED_FORMAT_VERSION, SAVED_PER_FORMAT_VERSION]
+    : [SAVED_FORMAT_VERSION];
+  if (!expected.some((allowed) => version === String(allowed))) {
     throw invalid(
       "/dfo.format_version",
       `is ${version} for a file whose dfo.ref ${derived ? "holds" : "holds no"} derived ` +
-        `member; it is ${expected}`,
+        `member; it is ${expected.join(" or ")}`,
     );
   }
   const partyTotals = values.get("dfo.party_totals_left_out");
@@ -299,7 +306,9 @@ function savedState(file: ParquetFile): Omit<SavedDataset, "table"> {
         : loadTime(decodeValue(fetchedAt, "/dfo.fetched_at"), "/dfo.fetched_at"),
     partyTotalsLeftOut: partyTotals === undefined ? [] : loadPartyTotals(partyTotals, stored),
     roles: {},
-    ...(derived ? loadDerived(values) : { leftOut: [], leftOutComplete: true, steps: [] }),
+    ...(derived
+      ? loadDerived(values, version === String(SAVED_PER_FORMAT_VERSION))
+      : { leftOut: [], leftOutComplete: true, steps: [] }),
   };
   // Python reads `stale` too. This client keeps no cache, so a saved dataset is never stale.
   flag(rest, "stale");
@@ -564,6 +573,7 @@ function loadPartyTotals(
 /** A saved file's `dfo.left_out` and `dfo.steps`, either absent for none. */
 function loadDerived(
   values: ReadonlyMap<string, string>,
+  allowPer: boolean,
 ): Pick<DatasetState, "leftOut" | "leftOutComplete" | "steps"> {
   let leftOut: LeftOutFields[] = [];
   let leftOutComplete = true;
@@ -584,7 +594,7 @@ function loadDerived(
     stepsText === undefined
       ? []
       : arrayAt(decodeValue(stepsText, "/dfo.steps"), "/dfo.steps").map((item, index) =>
-          loadStep(item, `/dfo.steps/${index}`),
+          loadStep(item, `/dfo.steps/${index}`, allowPer),
         );
   return { leftOut, leftOutComplete, steps };
 }
@@ -622,20 +632,33 @@ function loadLeftOutSeries(value: unknown, pointer: string): LeftOutFields {
   };
 }
 
-function loadStep(value: unknown, pointer: string): DerivedStep {
+function loadStep(value: unknown, pointer: string, allowPer: boolean): DerivedStep {
   const step = objectAt(value, pointer);
-  checkKeys(step, pointer, ["verb", "by", "limit"]);
+  checkKeys(step, pointer, ["verb", "by", "limit"], allowPer ? ["per"] : []);
   const limit = step["limit"];
   if (limit !== null && !Number.isSafeInteger(limit)) {
     throw invalid(`${pointer}/limit`, "not an integer");
   }
-  return {
-    verb: stringAt(step["verb"], `${pointer}/verb`),
-    by: arrayAt(step["by"], `${pointer}/by`).map((column, index) =>
-      stringAt(column, `${pointer}/by/${index}`),
-    ),
-    limit: limit as number | null,
-  };
+  const verb = stringAt(step["verb"], `${pointer}/verb`);
+  const by = arrayAt(step["by"], `${pointer}/by`).map((column, index) =>
+    stringAt(column, `${pointer}/by/${index}`),
+  );
+  const per = Object.hasOwn(step, "per") ? loadPer(step["per"], `${pointer}/per`) : [];
+  if (per.length > 0 && verb !== "rank")
+    throw invalid(`${pointer}/per`, "only a rank step has per");
+  const shared = per.find((column) => by.includes(column));
+  if (shared !== undefined) throw invalid(`${pointer}/per`, `names ${shared}, which by names`);
+  return { verb, by, limit: limit as number | null, per };
+}
+
+/** A step's `per`: a non-empty array of distinct strings. */
+function loadPer(value: unknown, pointer: string): string[] {
+  const per = arrayAt(value, pointer).map((column, index) =>
+    stringAt(column, `${pointer}/${index}`),
+  );
+  if (per.length === 0) throw invalid(pointer, "is empty");
+  if (new Set(per).size !== per.length) throw invalid(pointer, "repeats a column");
+  return per;
 }
 
 /** The forms a stored record writes a time and a day in, as the contract's schemas give them. */

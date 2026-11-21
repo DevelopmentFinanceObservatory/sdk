@@ -42,6 +42,7 @@ import {
   requireKeys,
   SAVED_DERIVED_FORMAT_VERSION,
   SAVED_FORMAT_VERSION,
+  SAVED_PER_FORMAT_VERSION,
   stringAt,
 } from "./saved.ts";
 
@@ -198,16 +199,21 @@ export class LeftOutSeries {
 }
 
 /** One step of a recipe, as a derived dataset's text names it: the operation, the columns or
- *  roles it keeps apart, and for a ranking the most members it keeps. */
+ *  roles it keeps apart, for a ranking the columns or roles that split it (`per`, empty for
+ *  none), and the most members it keeps. */
 export type DerivedStep = {
   readonly verb: string;
   readonly by: readonly string[];
   readonly limit: number | null;
+  readonly per: readonly string[];
 };
 
-/** A step as `rank by origin, limit 10`. */
-const stepText = ({ verb, by, limit }: DerivedStep): string =>
-  verb + (by.length > 0 ? ` by ${by.join(", ")}` : "") + (limit === null ? "" : `, limit ${limit}`);
+/** A step as `rank by origin per destination, limit 10`. */
+const stepText = ({ verb, by, limit, per }: DerivedStep): string =>
+  verb +
+  (by.length > 0 ? ` by ${by.join(", ")}` : "") +
+  (per.length > 0 ? ` per ${per.join(", ")}` : "") +
+  (limit === null ? "" : `, limit ${limit}`);
 
 /** Steps in the order they run and what they start from, as
  *  `growth by origin, then rank by origin, limit 10, from 1 reading`. */
@@ -493,6 +499,7 @@ function stateOf(members: readonly MemberInput[], options: DatasetOptions): Data
     steps: (derived?.steps ?? []).map((step) => ({
       ...step,
       by: step.by.map((column) => roles[column] ?? column),
+      per: step.per.map((column) => roles[column] ?? column),
     })),
     roles,
     statVarsSummed: derived?.statVarsSummed ?? [],
@@ -937,12 +944,19 @@ export class Dataset {
             complete: this.#state.leftOutComplete,
           }),
           "dfo.steps": JSON.stringify(
-            this.#state.steps.map(({ verb, by, limit }) => ({ verb, by, limit })),
+            // `per` only where a step has one: format 2 steps are the closed `{verb, by, limit}`.
+            this.#state.steps.map(({ verb, by, limit, per }) =>
+              per.length > 0 ? { verb, by, limit, per } : { verb, by, limit },
+            ),
           ),
         };
     return {
       "dfo.format_version": String(
-        isDerivedDataset ? SAVED_DERIVED_FORMAT_VERSION : SAVED_FORMAT_VERSION,
+        !isDerivedDataset
+          ? SAVED_FORMAT_VERSION
+          : this.#state.steps.some(({ per }) => per.length > 0)
+            ? SAVED_PER_FORMAT_VERSION
+            : SAVED_DERIVED_FORMAT_VERSION,
       ),
       "dfo.sentence": record.sentence,
       "dfo.citation": JSON.stringify(record.citation),
