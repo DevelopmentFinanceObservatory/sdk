@@ -11,7 +11,13 @@
  */
 
 import { Dataset } from "./dataset.ts";
-import type { DerivedFacts, DerivedStep, LeftOutFields } from "./dataset.ts";
+import type {
+  DerivedFacts,
+  DerivedStep,
+  Freshness,
+  LeftOutFields,
+  SummedReading,
+} from "./dataset.ts";
 import { checkTable } from "./fetch.ts";
 import { clientError } from "../core/errors.ts";
 import type { ContractError } from "../core/errors.ts";
@@ -25,12 +31,23 @@ const BY_PARAMETERS = ["group_by", "entity_by", "rank_by", "numerator_by", "join
 /** The keys a served series holds. */
 const SERIES_KEYS = ["coordinates", "step", "side", "reason", "rows"] as const;
 
+/** What the analysis answer and the call add to a derived frame's dataset. */
+type DerivedContext = {
+  /** The trace id of the manifest's response. */
+  readonly traceId?: string | null;
+  /** Each column's role word, as the call named it, which the text form prints in its place. */
+  readonly roles?: Readonly<Record<string, string>>;
+  /** The roots the analysis answer summed over their StatVars. */
+  readonly statVarsSummed?: readonly SummedReading[];
+  /** How new the root versions a `latest: "stored"` recipe read are. */
+  readonly freshness?: Freshness | null;
+};
+
 /**
- * The dataset of a derived frame: its ref member, the derived manifest DFO serves for it, whose
- * response's trace id is `traceId`, and its rows as a bare Parquet file in the frame layout. The
- * member keeps every field of the ref; the manifest gives the citation, the retention, the
- * series the recipe left out and the steps the text form names. `roles` maps a column to the
- * role word the call named it by, which the text form prints in its place.
+ * The dataset of a derived frame: its ref member, the derived manifest DFO serves for it, and
+ * its rows as a bare Parquet file in the frame layout. The member keeps every field of the ref;
+ * the manifest gives the citation, the retention, the series the recipe left out and the steps
+ * the text form names.
  *
  * @throws {ContractError} As `derivedFacts` raises.
  */
@@ -38,13 +55,17 @@ export async function derivedDataset(
   member: DerivedRefMember,
   manifest: Readonly<Record<string, unknown>>,
   data: Uint8Array,
-  traceId: string | null = null,
-  roles: Readonly<Record<string, string>> = {},
+  { traceId = null, roles = {}, statVarsSummed = [], freshness = null }: DerivedContext = {},
 ): Promise<{ dataset: Dataset; facts: DerivedFacts }> {
-  const facts = { ...describing(traceId, () => derivedFacts(member, manifest, data)), roles };
+  const facts = {
+    ...describing(traceId, () => derivedFacts(member, manifest, data)),
+    roles,
+    statVarsSummed,
+  };
   const dataset = await Dataset.create([{ ...member, manifest, data }], {
     layout: "frame",
     derived: facts,
+    freshness,
   });
   return { dataset, facts };
 }

@@ -183,8 +183,11 @@ export type RefFetchOptions = Omit<CallOptions, "partyTotals"> & {
 
 /** The options a recipe takes. */
 export type RecipeFetchOptions = Pick<CallOptions, "signal" | "timeout" | "strict"> & {
-  /** Run the recipe on the newest versions of the datasets it starts from. */
-  latest?: boolean;
+  /** `true` runs the recipe on the newest versions of the datasets it starts from. `"stored"`
+   *  runs it on the version DFO stores as the newest of each, read from each spec's manifest
+   *  with no file downloaded, so it waits on a build only when DFO stores no version it can
+   *  serve. The dataset's `freshness` says how new those versions are. */
+  latest?: boolean | "stored";
   /** A recipe's frame is in the frame layout. */
   layout?: "frame";
 };

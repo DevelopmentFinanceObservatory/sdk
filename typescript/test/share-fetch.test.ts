@@ -167,8 +167,25 @@ async function emptiedHistory(shuffled = false): Promise<Handler> {
   return answered(recorded);
 }
 
-const storedManifest = async (): Promise<unknown> =>
-  (await scenario("fetch-ref")).exchanges[0]!.response.json;
+/** The `fetch-ref` manifest, its frame file the one `fetch-spec-frame-layout.parquet` holds.
+ *  `fetch-ref` lists a frame file whose bytes the contract does not record, so the frame artifact
+ *  of `fetch-spec-frame-layout`, whose file it does, stands in for it. */
+const storedManifest = async (): Promise<unknown> => {
+  const manifest = (await scenario("fetch-ref")).exchanges[0]!.response.json as Record<
+    string,
+    unknown
+  >;
+  const layout = (await scenario("fetch-spec-frame-layout")).exchanges[0]!.response.json as Record<
+    string,
+    unknown
+  >;
+  const frame = (layout["artifacts"] as Record<string, unknown>[])[0]!;
+  assert.equal((frame["rendering"] as Record<string, unknown>)["layout"], "frame");
+  const artifacts = (manifest["artifacts"] as Record<string, unknown>[]).map((artifact) =>
+    (artifact["rendering"] as Record<string, unknown>)["layout"] === "frame" ? frame : artifact,
+  );
+  return { ...manifest, artifacts };
+};
 
 /** How a served rendering spells the party-totals cut: the old key, the request key, or both. */
 type Spelling = "without_party_totals" | "party_totals" | "both";

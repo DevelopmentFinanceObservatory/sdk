@@ -52,7 +52,7 @@ Each operation states its result on its own scale:
 | `filter(data, { keep })`            | The rows whose role or column holds one of the values, as `{ keep: { destination: "country/KEN" } }`                                                                                                         |
 | `aggregate(data, { by, how })`      | One value per year for each member of `by`, by `sum` (the default), `mean`, `max`, or `min`, in the data's unit                                                                                              |
 | `growth(data, { by, window })`      | The change from the first year to the last. `change: "relative"`, the default, is a fraction with no unit: 0.25 is a 25% rise. `change: "difference"` is the last value minus the first, in the data's unit  |
-| `rank(data, { by, window, limit })` | The members of `by`, largest first, the top `limit` kept (1 to 1000). A tie at the last place keeps every member that shares it                                                                              |
+| `rank(data, { by, window, limit })` | The members of `by`, largest first, the top `limit` kept (1 to 1000). A tie at the last place keeps every member that shares it. `per` ranks within each of its members                                      |
 | `quotientOf(data, other, { on })`   | `data` divided by `other`, in a composed unit                                                                                                                                                                |
 | `shareOf(data, total, { by, on })`  | Each value as a percentage of its total, 0 to 100 when each value is part of the total: 25 is a quarter. With no total, `shareOf(data, { by })` divides by the sum over the members of `by` in the same year |
 | `sumOf(data, other, { on })`        | The matching rows of both readings added, over the years both hold                                                                                                                                           |
@@ -83,6 +83,61 @@ console.log(
 Aid to Kenya rose by 71% over the window. `change: "difference"` gives the rise in US dollars.
 
 `by` and `on` name roles, such as `origin`, `destination`, and `place`, as `specRoles(spec)` lists them. The result's columns carry DFO's names for them, such as `financingRecipient`.
+
+## Rank within each group
+
+`per` splits a ranking. The members that share a value of `per` are ranked among themselves, each group with its own ranks, ties, and `limit`. The largest donor to each recipient in 2023:
+
+```text
+[
+  [ 'country/GHA', 'country/DEU', 138142785 ],
+  [ 'country/KEN', 'country/DEU', 80502926 ],
+  [ 'country/NGA', 'country/DEU', 118463280 ]
+]
+```
+
+```ts
+const donors = await (
+  await client.search(
+    "ODA from Germany, France and Japan to Kenya, Ghana and Nigeria, 2018 to 2023",
+  )
+).fetch();
+const largest = await client.analysis.rank(donors, {
+  by: "origin",
+  per: "destination",
+  window: [2023, 2023],
+  how: "sum",
+  limit: 1,
+});
+console.log(
+  (await largest.toRows()).map((row) => [
+    row["financingRecipient"],
+    row["financingProvider"],
+    row["value"],
+  ]),
+);
+```
+
+Each row keeps the group's column beside the ranked one. Without `per`, the same call keeps the one largest donor across all three recipients.
+
+## Readings of several variables
+
+Some readings hold several variables, such as aid by each CRS purpose. When a step names no `stat_var`, DFO sums the variables of such a reading into one series before the steps run, keeping each summable breakdown a step names, such as `crsPurpose`, as a column of its own. `data.statVarsSummed` lists each reading DFO summed, as `{ specId, contentVersion, count }`, with `count` the variables that held rows, and the text form adds a line:
+
+```text
+  Summed: 1,598 StatVars
+```
+
+A breakdown column holds a member only in the years it has rows, so an `aggregate` or `rank` that keeps one can find too few rows and refuse `coverage_insufficient`. `allowSparseBreakdowns: true` counts a year of a group as covered when any of its breakdown members holds a row. For `crs`, a dataset of CRS aid by purpose:
+
+<!-- docs-check: skip: needs crs, a CRS dataset of aid by purpose, which this program does not fetch -->
+
+```ts
+const purposes = await client.analysis.aggregate(crs, {
+  by: ["destination", "crsPurpose"],
+  allowSparseBreakdowns: true,
+});
+```
 
 ## Chain steps into a recipe
 
@@ -144,6 +199,8 @@ if (!again.ref.equals(perPerson.ref)) {
 
 A changed ref can still hold the same numbers, after an engine release or a rebuild of a reading that moved no value. `again.ref.sameData(perPerson.ref)` compares what the two refs hold: two derived results with the same rows under the same variables compare as the same data, whichever recipe made them.
 
+A page that shows a figure computed on the newest data runs its recipe with `latest: "stored"`, which reads the version DFO stores as the newest of each reading and builds nothing. It reads each reading's manifest and no file, then posts the recipe: four requests for a recipe of one reading, and one more for each further reading. `data.freshness` says how new those versions are. [Use it in a web app](web-apps.md#compute-on-the-latest-data-on-view) shows it on a page.
+
 `client.fetch(ref)`, without `latest`, reads the exact version again. DFO holds a derived version until the `held until` date in its text form. After that, the fetch asks DFO to compute it again from the same versions of its readings, and returns it when the result is the same version. When it is not, the fetch raises `VersionUnavailableError`, and `{ latest: true }` computes it on the newest data.
 
 `await data.toBytes()` returns the rows as one Parquet file with the ref, the steps, and the left-out series, which the Python client's `dfo.load` reads, and on Node `await data.save(path)` writes that file. `client.pin(data)` keeps a dataset version fetchable for good, and refuses a derived dataset before any request.
@@ -203,21 +260,22 @@ try {
 
 Each method returns a `Promise<Dataset>`, and takes `strict`, `timeout` in milliseconds, and `signal` beside its own options.
 
-| Method       | Signature                                                            |
-| ------------ | -------------------------------------------------------------------- |
-| `filter`     | `filter(data, { keep })`                                             |
-| `aggregate`  | `aggregate(data, { by?, how? })`                                     |
-| `growth`     | `growth(data, { by?, window, change? })`                             |
-| `rank`       | `rank(data, { by, window?, how?, limit? })`                          |
-| `quotientOf` | `quotientOf(data, other, { on? })`                                   |
-| `shareOf`    | `shareOf(data, { by, on? })` or `shareOf(data, total, { by?, on? })` |
-| `sumOf`      | `sumOf(data, other, { on? })`                                        |
-| `compare`    | `compare(data, other, { on? })`                                      |
-| `join`       | `join(data, other, { on? })`                                         |
+| Method       | Signature                                                                 |
+| ------------ | ------------------------------------------------------------------------- |
+| `filter`     | `filter(data, { keep })`                                                  |
+| `aggregate`  | `aggregate(data, { by?, how?, allowSparseBreakdowns? })`                  |
+| `growth`     | `growth(data, { by?, window, change? })`                                  |
+| `rank`       | `rank(data, { by, per?, window?, how?, limit?, allowSparseBreakdowns? })` |
+| `quotientOf` | `quotientOf(data, other, { on? })`                                        |
+| `shareOf`    | `shareOf(data, { by, on? })` or `shareOf(data, total, { by?, on? })`      |
+| `sumOf`      | `sumOf(data, other, { on? })`                                             |
+| `compare`    | `compare(data, other, { on? })`                                           |
+| `join`       | `join(data, other, { on? })`                                              |
 
 - `data`, `other`, and `total` take a `Spec`, a `DatasetRef`, a `Dataset`, or a `Recipe` holding one reading. DFO refuses a dataset or ref of several members with `several_members`.
 - `keep` maps each role or column to a value or an array of values.
-- `by` takes a role or column name, or an array of them.
+- `by` takes a role or column name, or an array of them, and so does `per`, which cannot name a role `by` names.
+- `allowSparseBreakdowns` takes a boolean, `false` by default, and is sent only when `true`.
 - `window` takes `[start, end]`, each a year from 1000 to 9999 or a `latestYear(offset)`.
 - `on` takes an object mapping a role of `data` to the role of `other` that holds the same places, such as `{ destination: "place" }`, or a role or array of roles both name alike. Left out, DFO pairs the roles both readings name alike.
 - `how` takes `"sum"`, `"mean"`, `"max"`, or `"min"`. `change` takes `"relative"` or `"difference"`.
@@ -234,7 +292,7 @@ The client checks these before any request and raises `InvalidRequestError` with
 
 ### Derived datasets
 
-A dataset an operation returns has one `DerivedMember` in `members`, and its ref one `DerivedRefMember`, whose `spec.spec_id` starts `ops_` and `contentVersion` `ocv_`. Its text form adds a `Derived` line with the steps in run order and the number of readings, a `Period` line with the years `latestYear` settled on, and a `Missing data` line with the count of series left out. `data.leftOut` is an array of `LeftOutSeries`, empty when no step dropped a series. A ref of several derived members raises `InvalidRequestError` before any request.
+A dataset an operation returns has one `DerivedMember` in `members`, and its ref one `DerivedRefMember`, whose `spec.spec_id` starts `ops_` and `contentVersion` `ocv_`. Its text form adds a `Derived` line with the steps in run order and the number of readings, a `Summed` line with the readings DFO summed over their variables, a `Period` line with the years `latestYear` settled on, and a `Missing data` line with the count of series left out. `data.leftOut` is an array of `LeftOutSeries`, empty when no step dropped a series. `data.statVarsSummed` is an array of `SummedReading`, empty when DFO summed no reading, for a derived ref read at its exact version, and for a saved file. A ref of several derived members raises `InvalidRequestError` before any request.
 
 ### `client.pin`
 

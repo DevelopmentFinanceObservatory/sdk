@@ -264,10 +264,12 @@ def test_the_analysis_functions_run_on_the_default_client(
         f"/api/datasets/derived/{member['spec']['spec_id']}/{member['content_version']}"
     )
     seen: list[str] = []
+    posted: list[dict[str, Any]] = []
 
     def serve(request: httpx2.Request) -> httpx2.Response:
         seen.append(f"{request.method} {request.url.path}")
         if request.method == "POST":
+            posted.append(json.loads(request.content)["tree"]["arguments"])
             return httpx2.Response(200, json=ready)
         if request.url.path == frame:
             return httpx2.Response(200, json=load("analysis-rank-manifest.json"))
@@ -276,8 +278,17 @@ def test_the_analysis_functions_run_on_the_default_client(
         )
 
     mock_clients(monkeypatch, {DEFAULT_URL: serve})
-    data = dfo.analysis.rank(dfo.Spec("spec_" + "a" * 32, {}), by="destination")
+    aid = dfo.Spec("spec_" + "a" * 32, {})
+    data = dfo.analysis.rank(
+        aid, by="origin", per="destination", allow_sparse_breakdowns=True
+    )
     assert seen == ["POST /api/datasets/analysis", f"GET {frame}", f"GET {frame}/file"]
+    dfo.analysis.aggregate(aid, by="crsPurpose", allow_sparse_breakdowns=True)
+    assert [arguments.get("allow_sparse_breakdowns") for arguments in posted] == [
+        True,
+        True,
+    ]
+    assert posted[0]["partition_by"] == ["destination"]
     assert "newest later: dfo.fetch(data.ref, latest=True)" in repr(data)
     with pytest.raises(InvalidRequestError, match=r"dfo\.fetch\(data\.ref"):
         dfo.pin(data)

@@ -9,9 +9,10 @@ step is added, so a malformed chain is refused before any Dataset exists.
 A recipe sends a tree of nodes. A step is `{verb, arguments, inputs: {data,
 other?}}`, whose arguments carry the engine's names: `filter`'s `keep` becomes
 `predicates` of `category_match`, `by` becomes `group_by`, `entity_by`,
-`rank_by` or `numerator_by`, `how` becomes `aggregation`, a `window` becomes
-`window_start` and `window_end`, and `on` passes through. A root is the start or
-a second reading:
+`rank_by` or `numerator_by`, rank's `per` becomes `partition_by`, `how` becomes
+`aggregation`, a `window` becomes `window_start` and `window_end`, and `on` and
+`allow_sparse_breakdowns` pass through, the flag only when true. A root is the
+start or a second reading:
 
 - a `Spec`, `{spec_id, rendering: {without_party_totals: true}}`, read at its
   newest version without party totals, as `fetch(spec)` reads it;
@@ -22,13 +23,16 @@ a second reading:
 - a Dataset or ref of several members, sent as `{ref}`, which DFO refuses with
   `several_members`, since an operation takes one reading per side.
 
+`stored_readings` and `at_versions` let `fetch(recipe, latest="stored")` read
+each dataset root at the version DFO stores as its newest.
+
 This module is sync and shared by both clients.
 """
 
 import copy
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, override
 
 from dfo._core.codes import INVALID_ARGUMENT
@@ -36,7 +40,7 @@ from dfo._core.errors import InvalidRequestError, client_error
 from dfo._core.periods import LatestYear, period_object
 from dfo._core.refs import DatasetRef, DerivedRefMember, RefMember
 from dfo._core.text import single_line
-from dfo._core.types import Spec
+from dfo._core.types import Rendering, Spec
 from dfo._datasets.dataset import Dataset
 
 type Year = int | LatestYear
@@ -69,7 +73,10 @@ _GROWTH_CHANGES: Mapping[str, str] = {"relative": "relative", "difference": "abs
 
 _TIME_PERIOD = "time_period"
 # The parameters whose lists name the columns of a step's `by`.
-_ORDERED_BY = ("group_by", "entity_by", "rank_by")
+_ORDERED_BY = ("group_by", "entity_by", "rank_by", "partition_by")
+# A Spec root's stored version is looked up in the frame without party totals,
+# as the root's own rendering states.
+_SPEC_RENDERING = Rendering("parquet", False, "frame", without_party_totals=True)
 # The stored parameter that holds each two-reading step's `on`, its keys the
 # columns of `data` and its values those of `other`.
 _STORED_PAIRS: Mapping[str, str] = {
@@ -100,6 +107,9 @@ class _Root:
 
     node: Mapping[str, Any]
     name: str
+    # What the root reads: the Spec, or the ref of a ref or Dataset root, from
+    # which `latest="stored"` finds the readings to look up.
+    source: Spec | DatasetRef | None = None
 
 
 type _Node = _Step | _Root
@@ -179,7 +189,13 @@ class Recipe:
             "filter", {"predicates": predicates}, _arguments_text(keep=dict(keep))
         )
 
-    def aggregate(self, *, by: Columns = (), how: Aggregation = "sum") -> "Recipe":
+    def aggregate(
+        self,
+        *,
+        by: Columns = (),
+        how: Aggregation = "sum",
+        allow_sparse_breakdowns: bool = False,
+    ) -> "Recipe":
         """Total or average the rows of each year, keeping the members of `by`
         apart.
 
@@ -187,6 +203,13 @@ class Recipe:
             by: The roles whose members stay apart; none totals every row of
                 each year.
             how: `sum`, `mean`, `max` or `min`.
+            allow_sparse_breakdowns: Count a group as present when any of its
+                breakdown cells, such as `crsPurpose`, holds a row, so a sparse
+                breakdown does not refuse `coverage_insufficient`.
+
+        Raises:
+            InvalidRequestError: `allow_sparse_breakdowns` is not True or False
+                (`invalid_argument`).
         """
         # The engine groups by exactly these columns and collapses every year into
         # one span without time_period, so the period always leads.
@@ -194,10 +217,19 @@ class Recipe:
             _TIME_PERIOD,
             *(c for c in _columns("by", by, empty=True) if c != _TIME_PERIOD),
         ]
+        arguments: dict[str, Any] = {
+            "group_by": group_by,
+            "aggregation": _word("how", how),
+        }
+        sparse = _sparse(allow_sparse_breakdowns, arguments)
         return self._step(
             "aggregate",
-            {"group_by": group_by, "aggregation": _word("how", how)},
-            _arguments_text(by=by or None, how=None if how == "sum" else how),
+            arguments,
+            _arguments_text(
+                by=by or None,
+                how=None if how == "sum" else how,
+                allow_sparse_breakdowns=sparse,
+            ),
         )
 
     def growth(
@@ -242,23 +274,48 @@ class Recipe:
         self,
         *,
         by: Columns,
+        per: Columns | None = None,
         window: tuple[Year, Year] | None = None,
         how: Aggregation | None = None,
         limit: int | None = None,
+        allow_sparse_breakdowns: bool = False,
     ) -> "Recipe":
         """Order the members of `by`, largest first, and keep the top `limit`.
 
         Args:
             by: The roles whose members are ranked.
+            per: The roles that split the ranking, such as `"destination"`.
+                The members sharing a value of `per` are ranked among
+                themselves, each group with its own ranks and `limit`. None
+                ranks every member together.
             window: The years ranked over; None ranks every year the data
                 holds.
             how: How each member's rows in the window reduce to one value
                 first; None ranks each member's one value.
-            limit: The most members kept, from 1 to 1000; a tie at the last
-                place keeps every member that shares it. None keeps them all.
+            limit: The most members kept, from 1 to 1000, in each group of
+                `per`. A tie at the last place keeps every member that shares
+                it. None keeps them all.
+            allow_sparse_breakdowns: Count a member as present in a year when
+                any of its breakdown cells, such as `crsPurpose`, holds a row,
+                so a sparse breakdown does not refuse `coverage_insufficient`.
+
+        Raises:
+            InvalidRequestError: `by` or `per` names no role, `per` names a
+                role `by` names, `limit` is out of range, or
+                `allow_sparse_breakdowns` is not True or False
+                (`invalid_argument`).
         """
         rank_by = _columns("by", by, empty=False)
         arguments: dict[str, Any] = {"rank_by": rank_by}
+        if per is not None:
+            partition_by = _columns("per", per, empty=False)
+            if both := [word for word in partition_by if word in rank_by]:
+                raise client_error(
+                    INVALID_ARGUMENT,
+                    "per names the groups each ranking runs in and by the members "
+                    f"ranked, so one role cannot be both: {', '.join(both)}",
+                )
+            arguments["partition_by"] = partition_by
         if window is not None:
             arguments.update(_window(window))
         if how is not None:
@@ -269,10 +326,18 @@ class Recipe:
             if not 1 <= limit <= MAX_LIMIT:
                 raise _refusal("limit", f"is from 1 to {MAX_LIMIT}", limit)
             arguments["limit"] = limit
+        sparse = _sparse(allow_sparse_breakdowns, arguments)
         return self._step(
             "rank",
             arguments,
-            _arguments_text(by=by, window=window, how=how, limit=limit),
+            _arguments_text(
+                by=by,
+                per=per,
+                window=window,
+                how=how,
+                limit=limit,
+                allow_sparse_breakdowns=sparse,
+            ),
         )
 
     def quotient_of(self, other: Start, *, on: Pairing | None = None) -> "Recipe":
@@ -356,9 +421,9 @@ def recipe(start: Start, /) -> Recipe:
     downloaded, a `DatasetRef`, or a `Dataset`. A `Recipe` returns as it is.
 
     Raises:
-        InvalidRequestError: `start` is none of those, or a Dataset that names no
-            version, such as a website bundle opened from a folder
-            (`invalid_argument`).
+        InvalidRequestError: `start` is none of those, a DatasetRef of no
+            members, or a Dataset that names no version, such as a website
+            bundle opened from a folder (`invalid_argument`).
     """
     if isinstance(start, Recipe):
         return start
@@ -373,6 +438,7 @@ def _node(start: object, name: str) -> _Node:
         return _Root(
             {"spec_id": start.spec_id, "rendering": {"without_party_totals": True}},
             start.spec_id,
+            start,
         )
     if isinstance(start, Dataset):
         if not start.members:
@@ -388,6 +454,12 @@ def _node(start: object, name: str) -> _Node:
             f"A recipe's {name} is a Spec, a DatasetRef, a Dataset or a Recipe, not "
             f"{type(start).__name__}",
         )
+    if not start.members:
+        raise client_error(
+            INVALID_ARGUMENT,
+            f"A recipe's {name} is a DatasetRef of no members, so it reads nothing; "
+            "start from a ref that names the readings to read",
+        )
     match start.members:
         case [RefMember() as member]:
             return _Root(
@@ -399,6 +471,7 @@ def _node(start: object, name: str) -> _Node:
                     },
                 },
                 member.spec.spec_id,
+                start,
             )
         case [DerivedRefMember() as member]:
             return _Root(
@@ -407,13 +480,90 @@ def _node(start: object, name: str) -> _Node:
                     "content_version": member.content_version,
                 },
                 member.spec.spec_id,
+                start,
             )
         case members:
             # DFO refuses several readings with `several_members`, naming them.
             return _Root(
                 {"ref": _ref_object(start)},
                 f"{len(members)} readings",
+                start,
             )
+
+
+type StoredReading = tuple[str, Rendering]
+"""A spec in one rendering, whose stored newest version a lookup reads."""
+
+
+def stored_readings(chain: Recipe) -> dict[StoredReading, bool]:
+    """Each reading `chain`'s roots name, once each, in the order the roots come:
+    a Spec root's spec in the frame without party totals, and each dataset
+    member of a ref or Dataset root in its rendering. Each maps to whether a
+    root of several members holds it, whose ref names the digest too.
+
+    Raises:
+        InvalidRequestError: A root reads a frame DFO computed, which has no
+            stored newest version (`invalid_argument`).
+    """
+    readings: dict[StoredReading, bool] = {}
+    for root in _roots(chain._tree):
+        if isinstance(root.source, Spec):
+            readings.setdefault((root.source.spec_id, _SPEC_RENDERING), False)
+            continue
+        members = () if root.source is None else root.source.members
+        for member in members:
+            if not isinstance(member, RefMember):
+                raise client_error(
+                    INVALID_ARGUMENT,
+                    'latest="stored" reads each reading a recipe starts from at its '
+                    f"stored newest version, and {member.spec.spec_id} is a frame DFO "
+                    "computed, which has none; start the recipe from the readings that "
+                    "frame read, or use latest=True",
+                )
+            key = (member.spec.spec_id, member.rendering)
+            readings[key] = readings.get(key, False) or len(members) > 1
+    return readings
+
+
+def at_versions(
+    chain: Recipe, versions: Mapping[StoredReading, tuple[str, str | None]]
+) -> Recipe:
+    """`chain` with each root read at the versions `versions` gives its readings,
+    each a content version and the digest of its artifact in the reading's
+    rendering. A root of one reading sends the version, and a root of several
+    sends its ref with each member's version and digest."""
+
+    def pinned(node: _Node) -> _Node:
+        if isinstance(node, _Step):
+            other = None if node.other is None else pinned(node.other)
+            return _Step(node.verb, node.arguments, pinned(node.data), node.call, other)
+        source = node.source
+        if isinstance(source, Spec):
+            version, _ = versions[(source.spec_id, _SPEC_RENDERING)]
+            return replace(node, node={**node.node, "content_version": version})
+        if source is None:
+            return node
+        members = [member for member in source.members if isinstance(member, RefMember)]
+        if len(members) == 1:
+            (member,) = members
+            version, _ = versions[(member.spec.spec_id, member.rendering)]
+            return replace(node, node={**node.node, "content_version": version})
+        stored = []
+        for member in members:
+            version, digest = versions[(member.spec.spec_id, member.rendering)]
+            assert digest is not None
+            stored.append(replace(member, content_version=version, digest=digest))
+        ref = DatasetRef(tuple(stored))
+        return replace(node, node={"ref": _ref_object(ref)}, source=ref)
+
+    return Recipe(pinned(chain._tree))
+
+
+def _roots(node: _Node) -> list[_Root]:
+    """The roots under `node`, the data side first."""
+    if isinstance(node, _Root):
+        return [node]
+    return [*_roots(node.data), *([] if node.other is None else _roots(node.other))]
 
 
 def _ref_object(ref: DatasetRef) -> dict[str, Any]:
@@ -586,6 +736,17 @@ def _window(window: object) -> dict[str, Any]:
         "window_start": period_object(start, "window"),
         "window_end": period_object(end, "window"),
     }
+
+
+def _sparse(allow: object, arguments: dict[str, Any]) -> bool | None:
+    """Add `allow_sparse_breakdowns` to `arguments` when true, and return it as
+    the call text names it: True, or None when left out."""
+    if not isinstance(allow, bool):
+        raise _refusal("allow_sparse_breakdowns", "is True or False", allow)
+    if not allow:
+        return None
+    arguments["allow_sparse_breakdowns"] = True
+    return True
 
 
 def _word(argument: str, value: object) -> str:

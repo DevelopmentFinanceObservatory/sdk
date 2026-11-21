@@ -44,8 +44,9 @@ export async function refOptions(client: Client, ref: DatasetRef): Promise<void>
 
 export async function recipeOptions(client: Client, recipe: Recipe): Promise<void> {
   await client.fetch(recipe, { latest: true, strict: true, layout: "frame" });
-  // @ts-expect-error DFO stores no newest version of a recipe; latest: true computes it again.
-  await client.fetch(recipe, { latest: "stored" });
+  await client.fetch(recipe, { latest: "stored", signal: AbortSignal.timeout(10_000) });
+  // @ts-expect-error latest is true, false or "stored".
+  await client.fetch(recipe, { latest: "newest" });
   // @ts-expect-error DFO reports no progress while it computes a recipe.
   await client.fetch(recipe, { onProgress: () => undefined });
   // @ts-expect-error A recipe's frame is in the frame layout.

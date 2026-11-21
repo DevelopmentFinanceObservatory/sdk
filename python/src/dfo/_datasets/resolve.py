@@ -129,7 +129,12 @@ from dfo._datasets.operation import (
 )
 from dfo._datasets.progress import ProgressRenderer
 from dfo._datasets.publication import Moment, ShareTarget, share_id_in
-from dfo._datasets.recipe import Recipe
+from dfo._datasets.recipe import (
+    Recipe,
+    StoredReading,
+    at_versions,
+    stored_readings,
+)
 from dfo._datasets.shares import shown_frame
 from dfo._http.hooks import async_offload
 from dfo._http.transport import AsyncTransport, offline
@@ -178,6 +183,11 @@ async def fetch(
     the newest of a ref's specs with `latest="stored"`, the result of a recipe
     run on DFO, or the exact version a share's slot shows.
 
+    A recipe with `latest="stored"` reads the manifest of each dataset it starts
+    from, as a ref's member does, downloads no file, and runs on those
+    versions, so `dataset.ref` names the frame computed from them. The
+    Dataset's `freshness` is the worst its readings' answers state.
+
     A `Recipe` and a ref of a frame DFO computed take `latest`, `strict` and
     `timeout`, and refuse `progress`, which DFO does not report for them, and
     the options that narrow or render a spec. A share
@@ -211,9 +221,10 @@ async def fetch(
         latest: True builds the newest version of each of a ref's specs, in
             the rendering the ref holds, in place of the exact versions it
             names. `"stored"` reads the version DFO stores as the newest of each
-            member's spec, in the member's rendering, and refuses a recipe, a
-            frame DFO computed and a share. A spec always fetches its newest
-            version and refuses it.
+            member's spec, in the member's rendering, or runs a recipe on the
+            versions DFO stores as the newest of the datasets it starts from,
+            and refuses a frame DFO computed, a recipe that reads one, and a
+            share. A spec always fetches its newest version and refuses it.
         strict: Raise the first dataset warning instead of issuing it.
         timeout: The longest the fetch takes, in seconds, downloads included;
             None waits as long as the build takes, and `CLIENT_TIMEOUT` takes
@@ -226,8 +237,8 @@ async def fetch(
             such as a spec id; a ref is narrowed or given another layout or
             `party_totals`; `latest` is not True, False or `"stored"`, is
             given a spec, `latest=True` a ref whose members differ in
-            rendering, or `latest="stored"` a recipe, a frame DFO computed or
-            a share; a recipe or a
+            rendering, or `latest="stored"` a frame DFO computed, a recipe
+            that reads one, or a share; a recipe or a
             frame DFO computed is given `progress`; a ref, share or recipe is
             given `currency`, `price_basis` or `base_year`; `window`,
             `entities`, `facets`, the conversion, `layout`, `strict`,
@@ -310,16 +321,8 @@ async def fetch(
                 "DFO reports no progress while it computes a recipe, so a recipe "
                 "or a frame DFO computed takes no progress; drop it",
             )
-        if latest == _STORED:
-            raise client_error(
-                INVALID_ARGUMENT,
-                'latest="stored" reads the stored versions of a ref\'s readings, and '
-                "DFO stores no newest version of a recipe or a frame it computed; "
-                "use latest=True, which computes it again on the newest versions "
-                "of its readings",
-            )
         if isinstance(target, Recipe):
-            return await run_recipe(
+            return await _run_recipe(
                 transport,
                 target,
                 latest=latest,
@@ -327,11 +330,20 @@ async def fetch(
                 timeout=timeout,
                 cache=cache,
             )
+        if latest == _STORED:
+            raise client_error(
+                INVALID_ARGUMENT,
+                'latest="stored" reads the stored versions of a ref\'s readings, and '
+                "DFO stores no newest version of a frame it computed; use "
+                "latest=True, which computes it again on the newest versions of "
+                "its readings, or fetch the recipe that made it with "
+                'latest="stored"',
+            )
         assert isinstance(target, DatasetRef)
         return await fetch_derived(
             transport,
             target,
-            latest=latest,
+            latest=latest is True,
             strict=strict,
             timeout=timeout,
             cache=cache,
@@ -883,6 +895,82 @@ async def _fetch_stored(
         caller=transport.caller,
         freshness=None if stale else _worst_freshness(stated),
     )
+
+
+async def _run_recipe(
+    transport: AsyncTransport,
+    target: Recipe,
+    *,
+    latest: bool | Literal["stored"],
+    strict: bool,
+    timeout: float | None,
+    cache: Cache | None,
+) -> Dataset:
+    """Run `target` on DFO. With `latest="stored"` it runs on the version DFO
+    stores as the newest of each reading it starts from, read from the spec's
+    manifest (`current_manifest`) without its file, once for each spec and
+    rendering, one after another as every fetch reads its members. A root of
+    one reading sends that version, and a root of several sends its ref with
+    each member's stored version and digest, which DFO refuses with
+    `several_members` until it reads such a ref as one reading. The Dataset's
+    `freshness` is the worst the manifests' answers state.
+
+    Raises:
+        InvalidRequestError: Under `latest="stored"`, the recipe has no step or
+            a root reads a frame DFO computed (`invalid_argument`); no request
+            is sent.
+        ContractError: A manifest answers another spec, or lists no artifact
+            in the rendering of a member of a several-member root
+            (`contract_violation`).
+    """
+    if latest != _STORED:
+        return await run_recipe(
+            transport,
+            target,
+            latest=latest is True,
+            strict=strict,
+            timeout=timeout,
+            cache=cache,
+        )
+    target.tree()  # A recipe with no step refuses before any manifest is read.
+    readings = stored_readings(target)
+    check_strict(strict)
+    deadline = transport.deadline(timeout)
+    versions: dict[StoredReading, tuple[str, str | None]] = {}
+    stated: list[Freshness | None] = []
+    with ProgressRenderer(enabled=False) as renderer:
+        on_progress = progress_hook(renderer)
+        for (spec_id, rendering), in_several in readings.items():
+            built, freshness = await current_manifest(
+                transport,
+                spec_id,
+                rendering,
+                deadline=deadline,
+                timeout=timeout,
+                on_progress=on_progress,
+            )
+            version = built.manifest["content_version"]
+            artifact = pick_artifact(built.manifest, rendering)
+            if artifact is None and in_several:
+                error = violation(
+                    f"The manifest of {spec_id} at {version} lists no "
+                    f"{rendering.to_object()} artifact",
+                    pointer="/artifacts",
+                )
+                error.trace_id = built.trace_id
+                raise error
+            digest = None if artifact is None else artifact["artifact_digest"]
+            versions[(spec_id, rendering)] = (version, digest)
+            stated.append(freshness)
+    dataset = await run_recipe(
+        transport,
+        at_versions(target, versions),
+        strict=strict,
+        timeout=timeout,
+        cache=cache,
+        deadline=deadline,
+    )
+    return replace(dataset, freshness=_worst_freshness(stated))
 
 
 def _worst_freshness(stated: list[Freshness | None]) -> Freshness | None:

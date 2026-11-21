@@ -131,6 +131,11 @@ class CapabilityKind(TypedDict):
     live: bool
 
 
+class CappedListing(TypedDict):
+    ref: str
+    property: str
+
+
 class CatalogueExampleSentence(TypedDict):
     text: str
     template: str
@@ -881,6 +886,12 @@ class OptionsFor(TypedDict):
     scope: NotRequired[Literal["peers", "children"] | None]
 
 
+class OriginSplit(TypedDict):
+    indicators: int
+    datasets: int
+    publishers: int
+
+
 class OtherNode(TypedDict):
     ref: str
     label: str | None
@@ -1183,6 +1194,12 @@ class RootRendering(TypedDict):
     groupby: NotRequired[GroupbyOptions | None]
 
 
+class RootVersion(TypedDict):
+    spec_id: str
+    content_version: str
+    base_content_version: NotRequired[str | None]
+
+
 class Roots(TypedDict):
     code_systems: list[RootEntry]
     groups: list[RootEntry]
@@ -1253,6 +1270,7 @@ class SchemaPattern(TypedDict):
     stat_type: str | None
     measurement_qualifier: str | None
     measurement_denominator: str | None
+    measurement_denominator_unresolved: NotRequired[bool | None]
     constraint_properties: list[str]
     observation_properties: list[str]
     stat_var_count: int
@@ -1286,6 +1304,15 @@ class ScopeAndUnits(TypedDict):
     years_covered: str | None
     granularity: str | None
     currencies: list[str]
+
+
+type SearchQuery = str
+
+
+type SearchSource = Literal["dcid", "names", "dfo", "base", "un_system", "labels"]
+
+
+type SearchVia = Literal["dcid", "name", "indicator"]
 
 
 class SentenceToken(TypedDict):
@@ -1366,6 +1393,18 @@ class ShareImportResponse(TypedDict):
 class ShareRetentionModel(TypedDict):
     pinned: bool
     held_until: NotRequired[str | None]
+
+
+class ShareSampleModel(TypedDict):
+    share_id: str
+    kind: Literal["card", "canvas", "search", "conversation"]
+    mode: Literal["live", "snapshot"]
+    created_at: str
+    slots: int
+
+
+class ShareSampleResponse(TypedDict):
+    shares: list[ShareSampleModel]
 
 
 class ShareServedModel(TypedDict):
@@ -1481,6 +1520,12 @@ class SpecRoot(TypedDict):
 type Statvar = str
 
 
+class StatVarsSummed(TypedDict):
+    spec_id: str
+    content_version: str
+    count: int
+
+
 class StepRef(TypedDict):
     ref: str
     label: NotRequired[str]
@@ -1538,6 +1583,13 @@ class UnavailableFormatModel(TypedDict):
     reason: str
 
 
+class UnavailableRootBody(TypedDict):
+    spec_id: str
+    content_version: str
+    code: str
+    reason: str
+
+
 class UnitAlternative(TypedDict):
     currency: str | IdentityCurrencyRole
     label: str
@@ -1579,6 +1631,12 @@ class Unsupported(TypedDict):
 class UsageEntry(TypedDict):
     documentation_url: str | None
     code: str | None
+
+
+class UsageTerm(TypedDict):
+    ref: str
+    label: str | None
+    types: list[str]
 
 
 class VariableSide(TypedDict):
@@ -1715,6 +1773,7 @@ class GraphApiCapabilitiesCapabilityCaps(TypedDict):
     max_check_rows: int
     max_check_constraint_properties: int
     max_check_observation_properties: int
+    max_search_query_chars: int
 
 
 class GraphApiCapabilitiesCapabilityDoor(TypedDict):
@@ -1761,6 +1820,8 @@ class SearchEngineCapabilitiesCapabilityCaps(TypedDict):
     role_bulk_rank_max_rows: int
     max_options: int
     max_parts: int
+    max_code_parts: int
+    max_entities: int
     max_part_entities: int
     max_variable_text_chars: int
     max_entity_text_chars: int
@@ -1848,13 +1909,31 @@ class AnalysisReady(TypedDict):
     time: dict[str, JsonValue]
     execution_identity: dict[str, str]
     resolved_periods: list[dict[str, JsonValue]]
+    derived_roots: NotRequired[list[RootVersion]]
+    stat_vars_summed: NotRequired[list[StatVarsSummed]]
+
+
+class AnalysisVerified(TypedDict):
+    status: NotRequired[Literal["verified"]]
+    outcome: Literal["same", "different", "not_stored", "roots_unavailable"]
+    frame: dict[str, str] | None
+    frame_content_version: str | None
+    output_digest: str | None
+    stored: dict[str, str] | None
+    stored_frame_content_version: str | None
+    stored_output_digest: str | None
+    stored_execution_identity: str | None
+    execution_identity: dict[str, str]
+    refusal_code: str | None
+    refusal_reason: str | None
+    unavailable_roots: list[UnavailableRootBody]
 
 
 class AnchorAnswer(TypedDict):
     period: str
     rule: str
     left_out: list[LeftOutSeriesBody]
-    roots: list[dict[str, str]]
+    roots: list[RootVersion]
 
 
 class AvailabilityDefault(TypedDict):
@@ -1990,14 +2069,6 @@ class ConversionCurrency(TypedDict):
 class CountedEntityYearsModel(TypedDict):
     count: int
     entities: list[EntityYearsModel]
-
-
-class Counts(TypedDict):
-    indicators: int
-    datasets: int
-    publishers: int
-    countries: int
-    aid: AidCounts
 
 
 class CoverageBare(TypedDict):
@@ -2309,6 +2380,11 @@ class OrganisationNode(TypedDict):
     organisation: PartyBlock
 
 
+class OriginCounts(TypedDict):
+    dfo: OriginSplit
+    data_commons: OriginSplit
+
+
 class ParsedPart(TypedDict):
     variable_text: str
     entities: NotRequired[list[ParsedEntity] | None]
@@ -2487,6 +2563,22 @@ class SchemaNode(TypedDict):
     provenances: list[str]
     declared_by: DeclaredBy | None
     instances: SchemaInstances | None
+
+
+class SchemaNodeView(TypedDict):
+    generation: str | None
+    centre: SchemaNode
+    nodes: list[SchemaNode]
+    capped: list[CappedListing]
+
+
+class SchemaSearchHit(TypedDict):
+    ref: str
+    label: str | None
+    types: list[str]
+    declared_by: DeclaredBy | None
+    via: SearchVia
+    score: float | None
 
 
 class ScopeChoice(TypedDict):
@@ -2993,12 +3085,6 @@ class CatalogueAnswer(TypedDict):
     scope: ScopeOutput
 
 
-class CatalogueResponse(TypedDict):
-    catalogue_version: str
-    counts: Counts | PlaceCounts
-    examples: list[CatalogueExampleSentence]
-
-
 class CitationSource(TypedDict):
     ref: str
     label: str
@@ -3109,6 +3195,15 @@ class CountryNode(TypedDict):
     ]
     kind: Literal["country"]
     country: PlaceBlock
+
+
+class Counts(TypedDict):
+    indicators: int
+    datasets: int
+    publishers: int
+    countries: int
+    aid: AidCounts
+    by_origin: OriginCounts
 
 
 class CreateReplyResponse(TypedDict):
@@ -3342,6 +3437,12 @@ class SchemaDocument(TypedDict):
     nodes: list[SchemaNode]
 
 
+class SchemaSearch(TypedDict):
+    query: str
+    hits: list[SchemaSearchHit]
+    unavailable: list[SearchSource]
+
+
 class ScopeInput(TypedDict):
     window: NotRequired[WindowAll | WindowLatest | WindowRange | None]
     entities: NotRequired[dict[str, list[str]] | None]
@@ -3482,6 +3583,12 @@ class FieldRef(TypedDict):
     members: list[FieldRefMember]
 
 
+class CatalogueResponse(TypedDict):
+    catalogue_version: str
+    counts: Counts | PlaceCounts
+    examples: list[CatalogueExampleSentence]
+
+
 class CitationModel(TypedDict):
     text: str
     sources: list[CitationSource]
@@ -3509,6 +3616,7 @@ class DatasetResubmitInput(TypedDict):
 
 class DatasetUsage(TypedDict):
     provenances: list[ProvenanceUsage]
+    terms: NotRequired[list[UsageTerm] | None]
 
 
 class DerivedManifest(TypedDict):
@@ -3702,6 +3810,7 @@ class AnalysisRequest(TypedDict):
     latest: NotRequired[bool]
     rolling: NotRequired[Literal["tree"] | None]
     anchor_roots: NotRequired[list[SpecRoot | DatasetRoot] | None]
+    verify: NotRequired[bool]
 
 
 class CandidateSet(TypedDict):
