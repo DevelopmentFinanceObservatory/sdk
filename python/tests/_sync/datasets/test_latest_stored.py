@@ -28,6 +28,8 @@ from dfo._datasets.recipe import recipe
 from dfo._sync._datasets.resolve import current_manifest, fetch
 from dfo._sync._http.transport import Transport
 from tests._data import CONTRACT
+from tests._data import DATA as RECORDED
+from tests._data import load as load_recorded
 from tests._datasets import PARQUET, manifest, recorded_member
 from tests._fetch_support import (
     BASE,
@@ -211,10 +213,20 @@ def derived_ref() -> DatasetRef:
     [
         (lambda: HELD.spec, "fetch(spec)"),
         (lambda: "https://site.example/s/CJmD6XzG", 'takes no latest="stored"'),
-        (lambda: recipe(DatasetRef((HELD,))), "use latest=True"),
         (derived_ref, "use latest=True"),
+        (lambda: recipe(derived_ref()).rank(by="origin"), "or use latest=True"),
+        (
+            lambda: recipe(HELD.spec).compare(derived_ref(), on="destination"),
+            "or use latest=True",
+        ),
     ],
-    ids=["spec", "share", "recipe", "derived-ref"],
+    ids=[
+        "spec",
+        "share",
+        "derived-ref",
+        "recipe-of-a-computed-frame",
+        "recipe-whose-other-reading-is-computed",
+    ],
 )
 def test_latest_stored_is_refused_before_any_request(target: Any, named: str) -> None:
     server = Server()
@@ -224,6 +236,105 @@ def test_latest_stored_is_refused_before_any_request(target: Any, named: str) ->
     assert raised.value.code == "invalid_argument"
     assert named in str(raised.value)
     assert server.requests == []
+
+
+def analysed() -> list[httpx2.Response]:
+    """The recorded analysis's ready answer, derived manifest and frame."""
+    return [
+        json_response(200, load_recorded("analysis-rank-ready.json")),
+        json_response(200, load_recorded("analysis-rank-manifest.json")),
+        parquet((RECORDED / "analysis-rank-frame.parquet").read_bytes()),
+    ]
+
+
+def test_a_recipe_runs_on_each_readings_stored_version_without_its_file() -> None:
+    other = Spec(OTHER, {})
+    server = Server(
+        json_response(200, manifest_of(HELD.spec.spec_id), stated("current")),
+        json_response(200, manifest_of(OTHER), stated("stale")),
+        *analysed(),
+    )
+    chain = (
+        recipe(DatasetRef((HELD,)))
+        .quotient_of(other, on={"destination": "place"})
+        .rank(by="destination", per="origin", limit=2)
+    )
+    with make(server) as transport:
+        data = fetch(transport, chain, latest="stored")
+
+    held, spec = server.requests[0].url, server.requests[1].url
+    assert held.path == f"/api/v1/datasets/{HELD.spec.spec_id}"
+    assert dict(held.params) == {
+        "format": "parquet",
+        "bundle": "false",
+        "party_totals": "false",
+    }
+    # A Spec root is read in the frame without party totals, as its rendering
+    # states.
+    assert spec.path == f"/api/v1/datasets/{OTHER}"
+    assert dict(spec.params) == {**dict(held.params), "layout": "frame"}
+    assert [request.method for request in server.requests] == [
+        "GET",
+        "GET",
+        "POST",
+        "GET",
+        "GET",
+    ]
+    tree = chain.tree()
+    tree["inputs"]["data"]["inputs"]["data"]["content_version"] = NEWER
+    tree["inputs"]["data"]["inputs"]["other"]["content_version"] = NEWER
+    assert server.body(2) == {"tree": tree, "latest": False}
+    assert data.freshness == "stale"
+
+
+def test_a_spec_two_roots_read_is_looked_up_once() -> None:
+    server = Server(json_response(200, manifest_of(HELD.spec.spec_id)), *analysed())
+    chain = recipe(DatasetRef((HELD,))).share_of(DatasetRef((HELD,)))
+    with make(server) as transport:
+        data = fetch(transport, chain, latest="stored")
+    assert [request.method for request in server.requests] == [
+        "GET",
+        "POST",
+        "GET",
+        "GET",
+    ]
+    inputs = server.body(1)["tree"]["inputs"]
+    assert inputs["data"]["content_version"] == NEWER
+    assert inputs["other"]["content_version"] == NEWER
+    assert data.freshness is None
+
+
+def test_a_root_of_several_members_sends_its_ref_at_the_stored_versions() -> None:
+    stored = manifest_of(OTHER)
+    server = Server(
+        json_response(200, manifest_of(HELD.spec.spec_id)),
+        json_response(200, stored),
+        *analysed(),
+    )
+    chain = recipe(DatasetRef((HELD, member_of(OTHER)))).rank(by="origin")
+    with make(server) as transport:
+        fetch(transport, chain, latest="stored")
+    sent = DatasetRef.from_json(
+        json.dumps(server.body(2)["tree"]["inputs"]["data"]["ref"])
+    )
+    assert [member.content_version for member in sent.members] == [NEWER, NEWER]
+    assert [member.digest for member in sent.members] == [
+        stored["artifacts"][0]["artifact_digest"]
+    ] * 2
+
+
+def test_a_several_member_root_whose_manifest_lacks_its_rendering_raises() -> None:
+    bare = manifest_of(OTHER)
+    bare["artifacts"] = []
+    server = Server(
+        json_response(200, manifest_of(HELD.spec.spec_id)), json_response(200, bare)
+    )
+    chain = recipe(DatasetRef((HELD, member_of(OTHER)))).rank(by="origin")
+    with make(server) as transport:
+        with pytest.raises(ContractError) as raised:
+            fetch(transport, chain, latest="stored")
+    assert raised.value.code == "contract_violation"
+    assert len(server.requests) == 2
 
 
 def test_offline_each_member_reads_its_newest_cached_version_as_stale(

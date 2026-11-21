@@ -321,7 +321,7 @@ class AsyncClient:
         target: Recipe,
         /,
         *,
-        latest: bool = False,
+        latest: bool | Literal["stored"] = False,
         strict: bool = False,
         timeout: CallTimeout = CLIENT_TIMEOUT,
     ) -> Dataset: ...
@@ -381,7 +381,10 @@ class AsyncClient:
         for newer data after it answers, so the fetch waits on a build only
         when DFO stores no version it can serve. `dataset.freshness` says how
         new the versions are, as `current`, `pending` or `stale`, the worst of
-        the members', or None when the server does not say.
+        the members', or None when the server does not say. A recipe with
+        `latest="stored"` reads the manifest of each dataset it starts from,
+        downloads no file of them, and runs on those versions, so
+        `dataset.ref` names the frame computed from them.
 
         A ref of a frame DFO computed reads that frame, and with `latest=True`
         DFO computes its recipe again on the newest versions of its datasets. A
@@ -456,7 +459,8 @@ class AsyncClient:
                 in the rendering the ref holds, in place of the exact versions
                 it names, as `fetch(old.ref, latest=True)`. `"stored"` reads
                 the version DFO stores as the newest of each member's spec, in
-                the member's rendering, and refuses a recipe and a computed
+                the member's rendering, runs a recipe on the stored newest
+                versions of the datasets it starts from, and refuses a computed
                 frame. A spec always fetches its newest version and refuses it.
             strict: Raise the first dataset warning, or the
                 `SeriesLeftOutWarning`, instead of issuing it.
@@ -475,7 +479,8 @@ class AsyncClient:
                 request is sent; a ref is narrowed or given another layout or
                 `party_totals`; `latest` is not True, False or `"stored"`, is
                 given a spec, `latest=True` a ref whose members differ in
-                rendering, or `latest="stored"` a recipe or a computed frame;
+                rendering, or `latest="stored"` a computed frame or a recipe
+                that reads one;
                 a recipe or a computed frame is given `progress`; a share is
                 given a narrowing, `party_totals`, `latest` or a layout other
                 than `frame`, `slot` is 0, or `as_of` is malformed, all before

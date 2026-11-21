@@ -10,8 +10,9 @@
  * A recipe sends a tree of nodes. A step is `{verb, arguments, inputs: {data, other?}}`, whose
  * arguments carry the engine's names: `filter`'s `keep` becomes `predicates` of
  * `category_match`, `by` becomes `group_by`, `entity_by`, `rank_by` or `numerator_by`, `how`
- * becomes `aggregation`, a `window` becomes `window_start` and `window_end`, and `on` passes
- * through, a single role as a list of one. A root is the start or a second reading:
+ * becomes `aggregation`, a `window` becomes `window_start` and `window_end`, `per` becomes
+ * `partition_by`, `allowSparseBreakdowns` becomes `allow_sparse_breakdowns`, sent only when true,
+ * and `on` passes through, a single role as a list of one. A root is the start or a second reading:
  *
  * - a spec, `{spec_id, rendering: {without_party_totals: true}}`, read at its newest version
  *   without party totals, as `client.fetch(spec)` reads it;
@@ -66,6 +67,11 @@ export type AggregateOptions = {
   by?: Columns;
   /** `sum` by default. */
   how?: Aggregation;
+  /** Whether a breakdown column, such as the `crsPurpose` a summed reading keeps, may hold
+   *  members with no row in some years: DFO then counts a year of each group as covered when any
+   *  of its breakdown members holds a row, where it would refuse `coverage_insufficient`. False
+   *  by default. */
+  allowSparseBreakdowns?: boolean;
 };
 
 export type GrowthOptions = {
@@ -90,6 +96,13 @@ export type RankOptions = {
   /** The most members kept, from 1 to 1000; a tie at the last place keeps every member that
    *  shares it. None keeps them all. */
   limit?: number | null;
+  /** The roles that split the ranking, such as `"destination"` for the top origins of each
+   *  destination: the members sharing a value of `per` are ranked among themselves, each group
+   *  with its own ranks, ties and `limit`. None ranks every member together. */
+  per?: Columns | null;
+  /** Whether a breakdown column among `by` or `per` may hold members with no row in some years,
+   *  as on `aggregate`. False by default. */
+  allowSparseBreakdowns?: boolean;
 };
 
 export type PairOptions = {
@@ -105,7 +118,11 @@ export type ShareOfOptions = PairOptions & {
 };
 
 const FILTER = declareOptions<FilterOptions>("filter", { keep: true });
-const AGGREGATE = declareOptions<AggregateOptions>("aggregate", { by: true, how: true });
+const AGGREGATE = declareOptions<AggregateOptions>("aggregate", {
+  by: true,
+  how: true,
+  allowSparseBreakdowns: true,
+});
 /** Growth's `change` words, in the engine's names. */
 const GROWTH_CHANGES: Readonly<Record<GrowthChange, string>> = {
   relative: "relative",
@@ -114,7 +131,7 @@ const GROWTH_CHANGES: Readonly<Record<GrowthChange, string>> = {
 
 const TIME_PERIOD = "time_period";
 /** The parameters whose lists name the columns of a step's `by`. */
-const ORDERED_BY = ["group_by", "entity_by", "rank_by"] as const;
+const ORDERED_BY = ["group_by", "entity_by", "rank_by", "partition_by"] as const;
 /** The stored parameter that holds each two-reading step's `on`, its keys the columns of `data`
  *  and its values those of `other`. */
 const STORED_PAIRS: Readonly<Record<string, string>> = {
@@ -131,6 +148,8 @@ const RANK = declareOptions<RankOptions>("rank", {
   window: true,
   how: true,
   limit: true,
+  per: true,
+  allowSparseBreakdowns: true,
 });
 const PAIR = declareOptions<PairOptions>("a two-reading step", { on: true });
 const SHARE_OF = declareOptions<ShareOfOptions>("shareOf", { by: true, on: true });
@@ -146,7 +165,13 @@ type RootNode = {
   readonly kind: "root";
   readonly node: Readonly<Record<string, unknown>>;
   readonly name: string;
+  /** The ref the root reads, for a root made from a `DatasetRef` or a `Dataset`. */
+  readonly ref?: DatasetRef;
 };
+
+/** A reading a recipe starts from or takes as another reading: the node the request sends, and
+ *  the ref it was made from, if any. */
+export type RecipeRoot = Pick<RootNode, "node" | "ref">;
 
 /** One operation over its inputs, with its arguments in the engine's names. */
 type StepNode = {
@@ -244,19 +269,25 @@ export class Recipe {
     return this.#step("filter", { predicates }, optionsText({ keep }));
   }
 
-  /** Totals or averages the rows of each year, keeping the members of `by` apart. */
+  /**
+   * Totals or averages the rows of each year, keeping the members of `by` apart.
+   *
+   * @throws {InvalidRequestError} `allowSparseBreakdowns` is not a boolean (`invalid_argument`).
+   */
   aggregate(options: AggregateOptions = {}): Recipe {
-    const { by = [], how = "sum" } = checkOptions(AGGREGATE, options);
+    const { by = [], how = "sum", allowSparseBreakdowns } = checkOptions(AGGREGATE, options);
     const members = columns("by", by, true);
     // The engine groups by exactly these columns and collapses every year into one span
     // without time_period, so the period always leads.
     const groupBy = [TIME_PERIOD, ...members.filter((column) => column !== TIME_PERIOD)];
+    const sparse = sparseFlag(allowSparseBreakdowns);
     return this.#step(
       "aggregate",
-      { group_by: groupBy, aggregation: word("how", how) },
+      { group_by: groupBy, aggregation: word("how", how), ...sparse },
       optionsText({
         by: members.length > 0 ? by : undefined,
         how: how === "sum" ? undefined : how,
+        allowSparseBreakdowns: sparse.allow_sparse_breakdowns,
       }),
     );
   }
@@ -285,15 +316,18 @@ export class Recipe {
   }
 
   /**
-   * Orders the members of `by`, largest first, and keeps the top `limit`.
+   * Orders the members of `by`, largest first, and keeps the top `limit`; with `per`, within
+   * each member of `per`, as `{ by: "origin", per: "destination", limit: 6 }` keeps the six
+   * largest origins of each destination.
    *
-   * @throws {InvalidRequestError} `by` names no role, or `limit` is not an integer from 1 to
-   *   1000 (`invalid_argument`).
+   * @throws {InvalidRequestError} `by` or a given `per` names no role, `limit` is not an integer
+   *   from 1 to 1000, or `allowSparseBreakdowns` is not a boolean (`invalid_argument`).
    */
   rank(options: RankOptions): Recipe {
-    const { by, window, how, limit } = checkOptions(RANK, options);
+    const { by, window, how, limit, per, allowSparseBreakdowns } = checkOptions(RANK, options);
     const rankBy = columns("by", by, false);
     const args: Record<string, unknown> = { rank_by: rankBy };
+    if (per != null) args["partition_by"] = columns("per", per, false);
     if (window != null) Object.assign(args, windowOf(window));
     if (how != null) args["aggregation"] = word("how", how);
     if (limit != null) {
@@ -303,7 +337,20 @@ export class Recipe {
       }
       args["limit"] = limit;
     }
-    return this.#step("rank", args, optionsText({ by, window, how, limit }));
+    const sparse = sparseFlag(allowSparseBreakdowns);
+    Object.assign(args, sparse);
+    return this.#step(
+      "rank",
+      args,
+      optionsText({
+        by,
+        per,
+        window,
+        how,
+        limit,
+        allowSparseBreakdowns: sparse.allow_sparse_breakdowns,
+      }),
+    );
   }
 
   /** Divides by another reading, pairing members through `on`, such as aid per person with
@@ -422,11 +469,13 @@ function nodeOf(start: unknown, role: string): TreeNode {
   );
 }
 
-function refRoot(ref: DatasetRef): RootNode {
+/** The root node that reads `ref`: one dataset or derived member by its spec and version, or
+ *  several members as the ref itself. */
+export function refRoot(ref: DatasetRef): RootNode {
   const [member, ...others] = ref.members;
   if (member === undefined || others.length > 0) {
     // DFO refuses several readings with `several_members`, naming them.
-    return root({ ref: structuredClone(ref.toJSON()) }, `${ref.members.length} readings`);
+    return root({ ref: structuredClone(ref.toJSON()) }, `${ref.members.length} readings`, ref);
   }
   const specId = member.spec.spec_id;
   if (isDatasetMember(member)) {
@@ -437,19 +486,52 @@ function refRoot(ref: DatasetRef): RootNode {
         rendering: { without_party_totals: member.rendering.without_party_totals === true },
       },
       specId,
+      ref,
     );
   }
-  return root({ spec_id: specId, content_version: member.contentVersion }, specId);
+  return root({ spec_id: specId, content_version: member.contentVersion }, specId, ref);
 }
 
-const root = (node: Record<string, unknown>, name: string): RootNode =>
-  Object.freeze({ kind: "root", node: Object.freeze(node), name });
+const root = (node: Record<string, unknown>, name: string, ref?: DatasetRef): RootNode =>
+  Object.freeze({
+    kind: "root",
+    node: Object.freeze(node),
+    name,
+    ...(ref === undefined ? {} : { ref }),
+  });
 
-function wire(node: TreeNode): Record<string, unknown> {
-  if (node.kind === "root") return structuredClone(node.node);
-  const inputs: Record<string, unknown> = { data: wire(node.data) };
-  if (node.other !== undefined) inputs["other"] = wire(node.other);
+/** The tree `node` sends, each root as `replace` gives it. */
+function wire(
+  node: TreeNode,
+  replace: (root: RecipeRoot) => Record<string, unknown> = (found) => structuredClone(found.node),
+): Record<string, unknown> {
+  if (node.kind === "root") return replace(node);
+  const inputs: Record<string, unknown> = { data: wire(node.data, replace) };
+  if (node.other !== undefined) inputs["other"] = wire(node.other, replace);
   return { verb: node.verb, arguments: structuredClone(node.arguments), inputs };
+}
+
+/** Every root a recipe reads, in the order its tree sends them, a root read twice twice. */
+export function recipeRoots(chain: Recipe): RecipeRoot[] {
+  const found: RecipeRoot[] = [];
+  wire(treeOf(chain), (node) => {
+    found.push(node);
+    return {};
+  });
+  return found;
+}
+
+/**
+ * The tree `chain.tree()` sends with each root as `replace` gives it.
+ *
+ * @throws {InvalidRequestError} As `chain.tree()` throws.
+ */
+export function treeWithRoots(
+  chain: Recipe,
+  replace: (root: RecipeRoot) => Record<string, unknown>,
+): Record<string, unknown> {
+  chain.tree();
+  return wire(treeOf(chain), replace);
 }
 
 /** The chain that makes `node`, as it was called: `recipe(spec_…).rank({ … })`. */
@@ -634,6 +716,14 @@ function windowOf(window: unknown): Record<string, unknown> {
     window_start: periodObject(start, "window"),
     window_end: periodObject(end, "window"),
   };
+}
+
+/** The sparse-breakdowns flag as a step sends it: `allow_sparse_breakdowns: true` when the
+ *  caller set it, nothing otherwise, so a step without it keeps its ids. */
+function sparseFlag(value: unknown): { allow_sparse_breakdowns?: true } {
+  if (value === undefined || value === false) return {};
+  if (value !== true) throw refusal("allowSparseBreakdowns", "is true or false", value);
+  return { allow_sparse_breakdowns: true };
 }
 
 /** An option's word; DFO refuses one it does not know, listing the others. */

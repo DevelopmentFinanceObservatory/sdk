@@ -243,6 +243,33 @@ class LeftOutStep:
 
 
 @dataclass(frozen=True, slots=True)
+class SummedReading:
+    """A reading DFO summed over its StatVars before a recipe's steps ran.
+
+    A reading whose rows hold several StatVars, such as aid by purpose, flow and
+    finance type, is read as their sum when no step names `stat_var`, keeping
+    the breakdowns a step names, such as `crsPurpose`. The repr reads
+    `SummedReading(spec_… at cv_…, 1,598 StatVars)`.
+
+    Attributes:
+        spec_id: The reading's spec.
+        content_version: The dataset version DFO read.
+        count: The StatVars with rows DFO added together, more than one.
+    """
+
+    spec_id: str
+    content_version: str
+    count: int
+
+    @override
+    def __repr__(self) -> str:
+        return single_line(
+            f"SummedReading({self.spec_id} at {self.content_version}, "
+            f"{self.count:,} StatVars)"
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class LeftOutSeries:
     """A series a step of the recipe behind a Dataset dropped for missing data.
 
@@ -841,7 +868,8 @@ class Dataset:
             answer to one; None otherwise.
         freshness: How new the versions are, for a dataset
             `dfo.fetch(ref, latest="stored")` read, the worst of its members'
-            freshness, `stale` before `pending` before `current`. None for every
+            freshness, and for one `dfo.fetch(recipe, latest="stored")` ran, the
+            worst of its readings', `stale` before `pending` before `current`. None for every
             other dataset, for one read from a server that does not state
             freshness, and for one `dfo.load` read, since freshness holds at the
             moment of the read. `dataset.ref` and the saved file leave it out.
@@ -851,6 +879,11 @@ class Dataset:
             dropped for missing data, at any step, each naming its step. Empty
             for a Dataset of dataset versions. DFO lists at most 2,000; the repr
             says "at least" when it dropped more.
+        stat_vars_summed: Each reading of a recipe DFO read as the sum of its
+            StatVars, with how many it added, from the analysis DFO answered.
+            Empty for a Dataset of dataset versions, for a derived ref read
+            without running its recipe, and for one `dfo.load` read; the saved
+            file leaves it out.
         party_totals_left_out: The group totals a fetch left out of each
             member's rows, one entry per member, party role, provenance and set
             of kept series and periods. For a derived Dataset, the totals each
@@ -892,6 +925,7 @@ class Dataset:
     fetched_at: datetime | None = None
     question: str | None = None
     freshness: Freshness | None = None
+    stat_vars_summed: tuple[SummedReading, ...] = ()
     # `held_until` and `pinned`, from the members once, when the dataset is made.
     _retention_of_members: tuple[date | None, bool] = field(
         init=False, repr=False, compare=False
@@ -1143,6 +1177,8 @@ class Dataset:
         roots = _unique(root for member in derived for root in member.roots)
         readings = f"{len(roots)} reading" + ("" if len(roots) == 1 else "s")
         lines = [f"Derived: {steps_text(self._steps, readings)}"]
+        if summed := _summed_line(self.stat_vars_summed):
+            lines.append(summed)
         if period := _period_line(derived[0].resolved_periods):
             lines.append(period)
         if self.left_out:
@@ -1257,6 +1293,19 @@ def _party_totals_line(
         "Party totals left out of the readings" if derived else "Party totals left out"
     )
     return f"{label}: {counts} · data.party_totals_left_out"
+
+
+def _summed_line(summed: Sequence[SummedReading]) -> str | None:
+    """How many StatVars DFO summed each reading over, as `Summed: 1,598
+    StatVars`, or `Summed: 1,598 and 40 StatVars in 2 readings`; None when it
+    summed none."""
+    counts = [f"{reading.count:,}" for reading in summed]
+    if not counts:
+        return None
+    if len(counts) == 1:
+        return f"Summed: {counts[0]} StatVars"
+    listed = ", ".join(counts[:-1]) + f" and {counts[-1]}"
+    return f"Summed: {listed} StatVars in {len(counts)} readings"
 
 
 def _period_line(periods: Sequence[ResolvedPeriod]) -> str | None:
@@ -1592,6 +1641,7 @@ def derived_dataset(
     roles: Mapping[str, str] | None = None,
     fetched_at: datetime | None = None,
     from_cache: bool = False,
+    stat_vars_summed: tuple[SummedReading, ...] = (),
 ) -> Dataset:
     """Make a dataset from a derived frame: its ref member, the derived manifest
     DFO serves for it and its stored frame, the bare Parquet file whose digest
@@ -1604,7 +1654,8 @@ def derived_dataset(
     series print in its place. The file reads through `read_artifact`, as a
     dataset version's does, and leaves `cache` when it does not read.
     `fetched_at` is when the file left the server, None when unknown, and
-    `from_cache` whether it was read from the cache.
+    `from_cache` whether it was read from the cache. `stat_vars_summed` is
+    what the analysis that answered the member summed.
 
     Raises:
         ContractError: The manifest names another frame, or its `left_out` or
@@ -1665,6 +1716,7 @@ def derived_dataset(
         ),
         from_cache=from_cache,
         fetched_at=fetched_at,
+        stat_vars_summed=stat_vars_summed,
     )
 
 

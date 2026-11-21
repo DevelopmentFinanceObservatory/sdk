@@ -216,14 +216,36 @@ export function stepsText(steps: readonly DerivedStep[], source: string): string
   return done === "" ? `from ${source}` : `${done}, from ${source}`;
 }
 
+/** A reading a recipe read summed over its StatVars, with how many StatVars with rows DFO
+ *  summed into its one series. */
+export type SummedReading = {
+  /** The reading's spec, `spec_…`. */
+  readonly specId: string;
+  /** The version of the reading DFO summed. */
+  readonly contentVersion: string;
+  /** How many StatVars with rows the sum added together, more than one. */
+  readonly count: number;
+};
+
+/** How many StatVars DFO summed each reading over, as `Summed: 1,598 StatVars`, or
+ *  `Summed: 1,598 and 40 StatVars in 2 readings`; undefined when it summed none. */
+function summedLine(summed: readonly SummedReading[]): string | undefined {
+  const counts = summed.map(({ count }) => count.toLocaleString("en-GB"));
+  const last = counts.at(-1);
+  if (last === undefined) return undefined;
+  if (counts.length === 1) return `Summed: ${last} StatVars`;
+  return `Summed: ${counts.slice(0, -1).join(", ")} and ${last} StatVars in ${counts.length} readings`;
+}
+
 /** What a derived dataset adds to its member: every series its recipe left out, whether that
- *  list is whole, its steps in the order they ran, and the role word the call named each
- *  column by. */
+ *  list is whole, its steps in the order they ran, the role word the call named each column
+ *  by, and the readings DFO summed over their StatVars. */
 export type DerivedFacts = {
   readonly leftOut: readonly LeftOutFields[];
   readonly leftOutComplete: boolean;
   readonly steps: readonly DerivedStep[];
   readonly roles?: Readonly<Record<string, string>>;
+  readonly statVarsSummed?: readonly SummedReading[];
 };
 
 /** A built version, downloaded and checked against its digest, ready to join a dataset. */
@@ -418,6 +440,9 @@ export type DatasetState = {
   readonly shownBy?: string;
   /** How new a `latest: "stored"` fetch's versions are. A saved file holds none. */
   readonly freshness?: Freshness | null;
+  /** The readings DFO summed over their StatVars, from the analysis answer. A saved file holds
+   *  none. */
+  readonly statVarsSummed?: readonly SummedReading[];
 };
 
 /** What a dataset reads from its members' manifests and the fetch's options. */
@@ -470,6 +495,7 @@ function stateOf(members: readonly MemberInput[], options: DatasetOptions): Data
       by: step.by.map((column) => roles[column] ?? column),
     })),
     roles,
+    statVarsSummed: derived?.statVarsSummed ?? [],
     partyTotalsLeftOut: members.flatMap((member) =>
       isDerived(member)
         ? rootPartyTotalsOf(member)
@@ -586,6 +612,12 @@ export class Dataset {
    *  the server could not read a reading, so an empty list there leaves open whether every total
    *  stayed. */
   readonly partyTotalsLeftOut: readonly PartyTotalsLeftOut[];
+  /** Each reading the recipe behind a derived dataset read summed over its StatVars, as DFO
+   *  answered the analysis: the reading's spec and version and how many StatVars with rows it
+   *  summed into one series. DFO sums a reading of several StatVars by itself when no step names
+   *  `stat_var`. Empty for a dataset of dataset versions, for a recipe that summed nothing, for
+   *  a derived ref read at its exact version, which posts no analysis, and for a saved file. */
+  readonly statVarsSummed: readonly SummedReading[];
   /** What the dataset holds beside its rows, for a copy. */
   readonly #state: DatasetState;
 
@@ -699,6 +731,9 @@ export class Dataset {
       state.leftOut.map((series) => new LeftOutSeries(series, state.roles)),
     );
     this.partyTotalsLeftOut = Object.freeze([...state.partyTotalsLeftOut]);
+    this.statVarsSummed = Object.freeze(
+      (state.statVarsSummed ?? []).map((summed) => Object.freeze({ ...summed })),
+    );
   }
 
   /**
@@ -837,6 +872,8 @@ export class Dataset {
     const lines = [`Derived: ${stepsText(this.#state.steps, readings)}`];
     const period = periodLine(derived[0]!.resolvedPeriods);
     if (period !== undefined) lines.push(period);
+    const summed = summedLine(this.statVarsSummed);
+    if (summed !== undefined) lines.push(summed);
     if (this.leftOut.length > 0) {
       const least = this.#state.leftOutComplete ? "" : "at least ";
       const count = this.leftOut.length.toLocaleString("en-GB");

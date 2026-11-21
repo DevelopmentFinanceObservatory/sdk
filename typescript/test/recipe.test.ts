@@ -117,6 +117,35 @@ describe("a one-reading step", () => {
       },
     ],
     [
+      "rank-per",
+      (r: Recipe) =>
+        r.rank({ by: "origin", per: "destination", limit: 6, allowSparseBreakdowns: true }),
+      "rank",
+      {
+        rank_by: ["origin"],
+        partition_by: ["destination"],
+        limit: 6,
+        allow_sparse_breakdowns: true,
+      },
+    ],
+    [
+      "aggregate-sparse",
+      (r: Recipe) => r.aggregate({ by: "crsPurpose", allowSparseBreakdowns: true }),
+      "aggregate",
+      {
+        group_by: ["time_period", "crsPurpose"],
+        aggregation: "sum",
+        allow_sparse_breakdowns: true,
+      },
+    ],
+    [
+      // Left false the flag stays off the wire, so the step keeps its ids.
+      "aggregate-sparse-false",
+      (r: Recipe) => r.aggregate({ by: "origin", allowSparseBreakdowns: false }),
+      "aggregate",
+      { group_by: ["time_period", "origin"], aggregation: "sum" },
+    ],
+    [
       "share-of-by",
       (r: Recipe) => r.shareOf({ by: "origin" }),
       "share_of",
@@ -185,6 +214,14 @@ test("a recipe prints the chain as it was called", () => {
     `recipe(${AID.spec_id}).quotientOf(${POPULATION.spec_id}, { on: { destination: "place" } })` +
       '.growth({ by: "destination", window: [latestYear(-1), latestYear()], change: ' +
       '"difference" })',
+  );
+  const sparse = recipe(AID)
+    .aggregate({ by: ["origin", "crsPurpose"], allowSparseBreakdowns: false })
+    .rank({ limit: 6, allowSparseBreakdowns: true, per: "destination", by: "origin" });
+  assert.equal(
+    String(sparse),
+    `recipe(${AID.spec_id}).aggregate({ by: ["origin", "crsPurpose"] })` +
+      '.rank({ by: "origin", per: "destination", limit: 6, allowSparseBreakdowns: true })',
   );
 });
 
@@ -257,6 +294,16 @@ describe("columnRoles maps DFO's columns back to the call's words", () => {
       { financingSource: "origin" },
     ],
     [
+      "rank-per-names-its-partition",
+      recipe(AID).rank({ by: "origin", per: "destination" }),
+      stored(
+        "rank",
+        { rank_by: ["financingSource"], partition_by: ["financingRecipient"] },
+        { frame_ref: root },
+      ),
+      { financingSource: "origin", financingRecipient: "destination" },
+    ],
+    [
       // DFO may store a list in another order than the call's, so two words left over name no
       // column rather than the wrong one.
       "several-words-left",
@@ -284,6 +331,16 @@ describe("a malformed step is refused when it is added", () => {
     ["limit zero", () => recipe(AID).rank({ by: "origin", limit: 0 })],
     ["limit past 1000", () => recipe(AID).rank({ by: "origin", limit: 1001 })],
     ["limit not an integer", () => recipe(AID).rank({ by: "origin", limit: 2.5 })],
+    ["per empty", () => recipe(AID).rank({ by: "origin", per: [] })],
+    ["per not text", () => recipe(AID).rank({ by: "origin", per: loose([1]) })],
+    [
+      "allowSparseBreakdowns not a boolean",
+      () => recipe(AID).aggregate({ allowSparseBreakdowns: loose("yes") }),
+    ],
+    [
+      "allowSparseBreakdowns in the wire spelling",
+      () => recipe(AID).rank(loose({ by: "origin", allow_sparse_breakdowns: true })),
+    ],
     ["window one year", () => recipe(AID).growth({ window: loose([2020]) })],
     ["window not an integer", () => recipe(AID).growth({ window: [2020.5, 2024] })],
     ["window text", () => recipe(AID).growth({ window: loose(["2020", 2024]) })],

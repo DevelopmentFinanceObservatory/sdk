@@ -53,7 +53,7 @@ Each operation states its result on its own scale:
 | `filter(data, keep=...)`                    | The rows whose role or column holds one of the values, as `keep={"destination": "country/KEN"}`                                                                                                           |
 | `aggregate(data, by=..., how="sum")`        | One value per year for each member of `by`, by `sum`, `mean`, `max`, or `min`, in the data's unit                                                                                                         |
 | `growth(data, by=..., window=(start, end))` | The change from the first year to the last. `change="relative"`, the default, is a fraction with no unit: 0.25 is a 25% rise. `change="difference"` is the last value minus the first, in the data's unit |
-| `rank(data, by=..., window=..., limit=...)` | The members of `by`, largest first, the top `limit` kept (1 to 1000). A tie at the last place keeps every member that shares it                                                                           |
+| `rank(data, by=..., window=..., limit=...)` | The members of `by`, largest first, the top `limit` kept (1 to 1000). A tie at the last place keeps every member that shares it. With `per=...`, each group of `per` is ranked on its own                 |
 | `quotient_of(data, other, on=...)`          | `data` divided by `other`, in a composed unit                                                                                                                                                             |
 | `share_of(data, total, by=..., on=...)`     | Each value as a percentage of its total, 0 to 100 when each value is part of the total: 25.0 is a quarter. With no `total`, the total is the sum over the members of `by` in the same year                |
 | `sum_of(data, other, on=...)`               | The matching rows of both readings added, over the years both hold                                                                                                                                        |
@@ -102,6 +102,56 @@ print(shares.to_pandas()[["time_period", "financingProvider", "value", "unit"]].
 ```
 
 `by` and `on` name roles, such as `origin`, `destination`, and `place`, as `spec.roles` lists them. The result's columns carry DFO's names for them, such as `financingProvider`.
+
+## Rank within groups
+
+`per` splits a ranking into groups: the members that share a value of `per` are ranked among themselves, each group with its own ranks and its own `limit`. The top two donors to each of three recipients in 2023:
+
+```text
+  financingRecipient financingProvider        value
+0        country/GHA       country/DEU  138142785.0
+1        country/KEN       country/DEU   80502926.0
+2        country/NGA       country/DEU  118463280.0
+3        country/GHA       country/GBR   15329339.0
+4        country/KEN       country/GBR   60105898.0
+5        country/NGA       country/GBR  123983654.0
+```
+
+```python
+donors = dfo.search(
+    "ODA from Germany, France and the United Kingdom to Kenya, Ghana and Nigeria, "
+    "2018 to 2023"
+).fetch()
+
+top = dfo.analysis.rank(
+    donors, by="origin", per="destination", window=(2023, 2023), how="sum", limit=2
+)
+print(top.to_pandas()[["financingRecipient", "financingProvider", "value"]])
+```
+
+`per` takes roles as `by` does, and a role cannot be in both. Each row carries its group's column beside the ranked one.
+
+## Sum readings that hold many variables
+
+Some readings hold many statistical variables, one for each breakdown the source publishes. A CRS reading of aid by purpose, flow, and finance type holds over a thousand. When no step of a recipe names `stat_var`, DFO reads such a reading as the sum of its variables, keeping the breakdowns a step names, such as `crsPurpose`, so `aggregate(aid, by="destination")` totals all aid to each recipient. The repr counts the variables DFO added together:
+
+```text
+  Derived: aggregate by destination, time_period, from 1 reading
+  Summed: 1,598 StatVars
+```
+
+`data.stat_vars_summed` lists each summed reading as a `dfo.types.SummedReading`, with its `spec_id`, the `content_version` DFO read, and the `count` of variables it added. It is empty when DFO summed nothing.
+
+A breakdown kept this way is often sparse: few recipients receive aid for every purpose in every year. DFO counts each missing breakdown cell against the coverage an `aggregate` or `rank` needs, and refuses with `coverage_insufficient`. `allow_sparse_breakdowns=True` counts a group as present when any of its breakdown cells holds a row:
+
+<!-- docs-check: skip: needs a CRS reading by purpose -->
+```python
+by_purpose = dfo.analysis.aggregate(
+    aid_by_purpose, by=["destination", "crsPurpose"], allow_sparse_breakdowns=True
+)
+```
+
+The refusal's `error.problem["fix"]` names the flag when it applies.
 
 ## Chain steps into a recipe
 
@@ -160,6 +210,8 @@ if again.ref != per_person.ref:
 ```
 
 A changed ref can still hold the same numbers, after an engine release or a rebuild of a reading that moved no value. `again.ref.same_data(per_person.ref)` compares what the two refs hold: two derived results with the same rows under the same variables compare as the same data, whichever recipe made them.
+
+`dfo.fetch(chain, latest="stored")` runs a recipe on the version DFO stores as the newest of each dataset it starts from, as `dfo.fetch(ref, latest="stored")` reads a ref. It asks for each dataset's manifest, downloads none of their files, and builds nothing DFO has already stored, so a web page or a scheduled job gets a quick answer on current data. The result's `freshness` is the worst its readings' answers state, and its ref names the versions it ran on. A recipe that reads a frame DFO computed raises `InvalidRequestError` before any request.
 
 `dfo.fetch(per_person.ref)`, without `latest`, reads the exact version again. DFO holds a derived version until the `held until` date in its repr. After that, the fetch asks DFO to compute it again from the same versions of its readings, and returns it when the result is the same version. When it is not, the fetch raises `VersionUnavailableError`, and `latest=True` computes it on the newest data.
 
@@ -230,22 +282,23 @@ except SeriesLeftOutWarning as error:
 
 Each function takes its readings as positional arguments and the rest by keyword. Each also takes `strict=False` and `timeout`, which defaults to the client's `timeout`, and returns a `Dataset`. `client.analysis` on a `Client` or `AsyncClient` has the same methods, less `recipe`.
 
-| Name          | Signature                                                 |
-| ------------- | --------------------------------------------------------- |
-| `filter`      | `filter(data, /, *, keep)`                                |
-| `aggregate`   | `aggregate(data, /, *, by=(), how="sum")`                 |
-| `growth`      | `growth(data, /, *, by=(), window, change="relative")`    |
-| `rank`        | `rank(data, /, *, by, window=None, how=None, limit=None)` |
-| `quotient_of` | `quotient_of(data, other, /, *, on=None)`                 |
-| `share_of`    | `share_of(data, total=None, /, *, by=None, on=None)`      |
-| `sum_of`      | `sum_of(data, other, /, *, on=None)`                      |
-| `compare`     | `compare(data, other, /, *, on=None)`                     |
-| `join`        | `join(data, other, /, *, on=None)`                        |
-| `recipe`      | `recipe(start, /) -> Recipe`                              |
+| Name          | Signature                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------- -|
+| `filter`      | `filter(data, /, *, keep)`                                                                         |
+| `aggregate`   | `aggregate(data, /, *, by=(), how="sum", allow_sparse_breakdowns=False)`                           |
+| `growth`      | `growth(data, /, *, by=(), window, change="relative")`                                             |
+| `rank`        | `rank(data, /, *, by, per=None, window=None, how=None, limit=None, allow_sparse_breakdowns=False)` |
+| `quotient_of` | `quotient_of(data, other, /, *, on=None)`                                                          |
+| `share_of`    | `share_of(data, total=None, /, *, by=None, on=None)`                                               |
+| `sum_of`      | `sum_of(data, other, /, *, on=None)`                                                               |
+| `compare`     | `compare(data, other, /, *, on=None)`                                                              |
+| `join`        | `join(data, other, /, *, on=None)`                                                                 |
+| `recipe`      | `recipe(start, /) -> Recipe`                                                                       |
 
 - `data`, `other`, and `total` take a `Spec`, a `DatasetRef`, a `Dataset`, or a `Recipe` holding one reading. DFO refuses a Dataset or ref of several members with `several_members`.
 - `keep` maps each role or column to a value or a list of values.
-- `by` takes a role or column name, or a list of them.
+- `by` takes a role or column name, or a list of them. `per` takes the same, and names no role `by` names.
+- `allow_sparse_breakdowns` takes True or False; the request carries it only when True.
 - `window` takes `(start, end)`, each a year from 1000 to 9999 or a `dfo.latest_year(offset)`.
 - `on` takes a mapping of a role of `data` to the role of `other` that holds the same places, such as `{"destination": "place"}`, or a role or list of roles both name alike. Left out, DFO pairs the roles both readings name alike.
 - `share_of` needs `total` or `by`, and `by` with `on` needs `total`.
@@ -255,7 +308,7 @@ The client checks these before any request and raises `InvalidRequestError` with
 
 ### `Recipe`
 
-`dfo.types.Recipe`, from `dfo.analysis.recipe(start)`. It has the nine step methods, each taking the function's arguments without the first reading and returning a recipe one step longer, and `tree()`, the JSON tree `dfo.fetch` sends. Its repr prints the chain as called, each reading by its spec id. Two recipes that send the same tree compare equal and hash alike. A recipe with no step is refused unless it starts from a derived ref.
+`dfo.types.Recipe`, from `dfo.analysis.recipe(start)`. It has the nine step methods, each taking the function's arguments without the first reading and returning a recipe one step longer, and `tree()`, the JSON tree `dfo.fetch` sends. `per` goes out as `partition_by`. Its repr prints the chain as called, each reading by its spec id. Two recipes that send the same tree compare equal and hash alike. A recipe with no step is refused unless it starts from a derived ref.
 
 ### `dfo.latest_year`
 
@@ -263,13 +316,15 @@ The client checks these before any request and raises `InvalidRequestError` with
 
 ### Derived datasets
 
-A `Dataset` an operation returns has one `DerivedMember` in `members`, and its ref one `DerivedRefMember`, whose `spec_id` starts `ops_` and `content_version` `ocv_`. Its repr adds a `Derived` line with the steps in run order and the number of readings, a `Period` line with the years `latest_year` settled on, and a `Missing data` line with the count of series left out.
+A `Dataset` an operation returns has one `DerivedMember` in `members`, and its ref one `DerivedRefMember`, whose `spec_id` starts `ops_` and `content_version` `ocv_`. Its repr adds a `Derived` line with the steps in run order and the number of readings, a `Summed` line with the count of variables DFO added in each summed reading, a `Period` line with the years `latest_year` settled on, and a `Missing data` line with the count of series left out.
+
+`data.stat_vars_summed` is a tuple of `dfo.types.SummedReading`, from the answer of the analysis that made the Dataset. It is empty for a derived ref read without computing it again and for a Dataset `dfo.load` read, since neither the ref nor the saved file holds it.
 
 `data.left_out` is a tuple of `dfo.types.LeftOutSeries`, empty when no step dropped a series.
 
 `data.party_totals_left_out` holds the group totals each reading's read left out, as [Sum a column](datasets.md#sum-a-column) describes, each entry named by the reading's spec id, in the order of the recipe's readings. The repr counts them on a `Party totals left out of the readings` line. The tuple is empty when the readings left nothing out, against a server older than this report, and when DFO could not read a reading.
 
-`dfo.fetch(ref)` reads a derived ref's exact version, and `dfo.fetch(ref, latest=True)` computes its recipe again on the newest data. A ref of several derived members raises `InvalidRequestError` before any request.
+`dfo.fetch(ref)` reads a derived ref's exact version, and `dfo.fetch(ref, latest=True)` computes its recipe again on the newest data. A ref of several derived members raises `InvalidRequestError` before any request, and so does `latest="stored"` on a derived ref: fetch the recipe with `latest="stored"` instead.
 
 ### `dfo.pin`
 

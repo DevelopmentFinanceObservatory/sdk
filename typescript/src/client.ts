@@ -238,7 +238,10 @@ export class Client {
    * checks for newer data after it answers, so the fetch waits on a build only when DFO stores
    * no version it can serve. `dataset.freshness` says how new the versions are, as `current`,
    * `pending` or `stale`, the worst of the members', or null when the server does not say. A page reads its committed ref this way to show the newest data on
-   * each view.
+   * each view. On a recipe, `latest: "stored"` reads only the manifest of each reading the
+   * recipe starts from, all at once, and posts the recipe on those versions: one GET per
+   * reading, one POST, and the two GETs of the computed frame. A recipe that starts from a frame
+   * DFO computed is refused, since DFO stores no newest version of it.
    *
    * `currency`, with `priceBasis` and `baseYear`, fetches a spec in another unit:
    * `client.fetch(spec, { currency: "EUR", priceBasis: "constant", baseYear: 2022 })`. Search
@@ -271,7 +274,7 @@ export class Client {
    *   `Match` that did not resolve, the target is neither a ref nor a spec with its `spec_id`
    *   and `definition`, a ref is narrowed or given another layout or `partyTotals`, or
    *   `latest` is given a spec, `latest: true` a ref whose members differ in rendering, or
-   *   `latest: "stored"` a recipe, a frame DFO computed or a share; a conversion option
+   *   `latest: "stored"` a frame DFO computed, a recipe reading one, or a share; a conversion option
    *   breaks its rule, or is given a ref, recipe or share; a share is given a
    *   narrowing, `partyTotals`, `latest` or a layout other than `frame`, `slot` is not a
    *   number from 1, or `asOf` is malformed, all before any request; a share of several slots

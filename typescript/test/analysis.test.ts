@@ -144,6 +144,53 @@ describe("a recipe", () => {
     assert.equal(data.leftOut[0]?.coordinates["financingRecipient"], "country/NGA");
   });
 
+  test("carries the readings DFO summed and prints them", async () => {
+    const answer = await recordedJson("analysis-chain-ready.json");
+    const summed = [
+      { spec_id: AID.spec_id, content_version: `cv_${"c".repeat(32)}`, count: 14 },
+      { spec_id: `spec_${"b".repeat(32)}`, content_version: `cv_${"d".repeat(32)}`, count: 40 },
+    ];
+    const { transport } = make(
+      json({ ...answer, stat_vars_summed: summed }),
+      await manifest(),
+      await frame(),
+    );
+    const data = await fetchDataset(transport, CHAIN);
+    assert.deepEqual(
+      data.statVarsSummed,
+      summed.map(({ spec_id, content_version, count }) => ({
+        specId: spec_id,
+        contentVersion: content_version,
+        count,
+      })),
+    );
+    assert.ok(String(data).split("\n").includes("  Summed: 14 and 40 StatVars in 2 readings"));
+    // An answer that sums nothing prints no line.
+    const plain = make(await ready(), await manifest(), await frame());
+    const unsummed = await fetchDataset(plain.transport, CHAIN);
+    assert.deepEqual(unsummed.statVarsSummed, []);
+    assert.ok(!String(unsummed).includes("Summed:"));
+  });
+
+  for (const [name, listed, pointer] of [
+    ["not a list", { count: 3 }, "/stat_vars_summed"],
+    [
+      "an entry with no count",
+      [{ spec_id: AID.spec_id, content_version: "cv_1" }],
+      "/stat_vars_summed/0/count",
+    ],
+  ] as const) {
+    test(`refuses stat_vars_summed ${name}`, async () => {
+      const answer = await recordedJson("analysis-chain-ready.json");
+      const { transport } = make(json({ ...answer, stat_vars_summed: listed }));
+      await assert.rejects(fetchDataset(transport, CHAIN), {
+        name: "ContractError",
+        code: "contract_violation",
+        pointer,
+      });
+    });
+  }
+
   test("run as one operation takes strict, timeout and signal as fetch does", async () => {
     const strict = make(await ready(), await manifest(), await frame());
     await assert.rejects(

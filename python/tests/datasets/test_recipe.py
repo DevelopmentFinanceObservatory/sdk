@@ -113,6 +113,35 @@ def _step(chain: Recipe) -> dict[str, Any]:
             },
         ),
         (
+            lambda r: r.rank(
+                by="origin",
+                per=["destination"],
+                limit=6,
+                allow_sparse_breakdowns=True,
+            ),
+            "rank",
+            {
+                "rank_by": ["origin"],
+                "partition_by": ["destination"],
+                "limit": 6,
+                "allow_sparse_breakdowns": True,
+            },
+        ),
+        (
+            lambda r: r.aggregate(by="crsPurpose", allow_sparse_breakdowns=True),
+            "aggregate",
+            {
+                "group_by": ["time_period", "crsPurpose"],
+                "aggregation": "sum",
+                "allow_sparse_breakdowns": True,
+            },
+        ),
+        (
+            lambda r: r.rank(by="origin", allow_sparse_breakdowns=False),
+            "rank",
+            {"rank_by": ["origin"]},
+        ),
+        (
             lambda r: r.share_of(by="origin"),
             "share_of",
             {"numerator_by": ["origin"]},
@@ -128,6 +157,9 @@ def _step(chain: Recipe) -> dict[str, Any]:
         "growth-fixed",
         "rank",
         "rank-window",
+        "rank-per-sparse",
+        "aggregate-sparse",
+        "sparse-false-sends-nothing",
         "share-of-by",
     ],
 )
@@ -255,6 +287,11 @@ def test_a_recipe_returns_a_recipe_given_as_it_is() -> None:
         lambda: recipe(AID).rank(by="origin", limit=0),
         lambda: recipe(AID).rank(by="origin", limit=1001),
         lambda: recipe(AID).rank(by="origin", limit=True),
+        lambda: recipe(AID).rank(by="origin", per=[]),
+        lambda: recipe(AID).rank(by="origin", per=""),
+        lambda: recipe(AID).rank(by=["origin", "destination"], per="destination"),
+        lambda: recipe(AID).rank(by="origin", allow_sparse_breakdowns=1),
+        lambda: recipe(AID).aggregate(allow_sparse_breakdowns="yes"),
         lambda: recipe(AID).growth(window=(2020,)),
         lambda: recipe(AID).growth(window=(2020.0, 2024)),
         lambda: recipe(AID).growth(window=("2020", 2024)),
@@ -278,6 +315,11 @@ def test_a_recipe_returns_a_recipe_given_as_it_is() -> None:
         "limit-zero",
         "limit-past-1000",
         "limit-bool",
+        "per-empty",
+        "per-empty-text",
+        "per-names-a-ranked-role",
+        "sparse-not-a-bool",
+        "aggregate-sparse-not-a-bool",
         "window-one-year",
         "window-float",
         "window-text",
@@ -317,6 +359,15 @@ def test_a_recipe_prints_the_chain_as_it_was_called() -> None:
         f"recipe({AID.spec_id}).quotient_of({POPULATION.spec_id}, "
         "on={'destination': 'place'}).growth(by='destination', "
         "window=(latest_year(-1), latest_year())).rank(by='destination', limit=5)"
+    )
+    assert repr(
+        recipe(AID)
+        .aggregate(by="crsPurpose", allow_sparse_breakdowns=True)
+        .rank(by="origin", per="destination", limit=6, allow_sparse_breakdowns=True)
+    ) == (
+        f"recipe({AID.spec_id}).aggregate(by='crsPurpose', "
+        "allow_sparse_breakdowns=True).rank(by='origin', per='destination', "
+        "limit=6, allow_sparse_breakdowns=True)"
     )
     other = recipe(POPULATION).aggregate(by="place", how="mean")
     assert repr(recipe(AID).share_of(other, by="origin")) == (
@@ -404,6 +455,18 @@ ROOT = {"frame": {"spec_id": AID.spec_id}, "root": 0}
             ),
             {},
         ),
+        (
+            recipe(AID).rank(by="origin", per="destination"),
+            _stored(
+                "rank",
+                {
+                    "rank_by": ["financingSource"],
+                    "partition_by": ["financingRecipient"],
+                },
+                frame_ref=ROOT,
+            ),
+            {"financingSource": "origin", "financingRecipient": "destination"},
+        ),
     ],
     ids=[
         "compare-on-pairs",
@@ -411,6 +474,7 @@ ROOT = {"frame": {"spec_id": AID.spec_id}, "root": 0}
         "a-column-itself",
         "the-word-left-names-the-column-left",
         "several-words-left",
+        "rank-per-names-its-partition",
     ],
 )
 def test_column_roles_maps_dfos_columns_back_to_the_calls_words(

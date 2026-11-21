@@ -10,6 +10,7 @@ Build the data once, in a data step you run by hand or on a schedule, and commit
 
 - A page that opens on numbers frozen when the site was built commits a pinned ref and reads it with `client.fetch(ref)`.
 - A page that shows the newest data on each view commits a ref and reads it with `client.fetch(ref, { latest: "stored" })`, or commits a live share's data URL and reads it with `fetch`.
+- A page on `developmentfinance.org` that shows a figure computed on the newest data commits a recipe's readings and runs it with `client.fetch(recipe, { latest: "stored" })`.
 - A page that must make no DFO request at all ships the saved file in its own assets.
 
 ### The routes a page may call
@@ -23,6 +24,7 @@ For a file, the API answers with a redirect to a signed storage address. The gat
 | `GET /api/v1/datasets/{spec_id}/{content_version}`             | `client.fetch(ref)`, the manifest                       | DFO origins                                                | `public, max-age=60, s-maxage=300`                                                          |
 | `GET /api/datasets/{spec_id}/{content_version}/files/{digest}` | `client.fetch(ref)`, the file                           | DFO origins                                                | Pinned: `public, max-age=3600, s-maxage=31536000`. Held: `public, max-age=60, s-maxage=300` |
 | `GET /api/v1/datasets/{spec_id}`                               | `client.fetch(ref, { latest: "stored" })`, the manifest | DFO origins                                                | `public, max-age=60, s-maxage=60`                                                           |
+| `POST /api/v1/datasets/analysis`                               | `client.fetch(recipe)`, the computation                 | `developmentfinance.org`                                   | `no-store`                                                                                  |
 | `GET /api/v1/presentation/shares/{share_id}/slots/{slot}/data` | `share.dataUrls`, read with `fetch`                     | Any origin                                                 | Live: `no-cache`. Snapshot: `public, max-age=300`                                           |
 | Search, builds, pins, cards, and shares                        | `client.search`, `answer.fetch`                         | `developmentfinance.org`, and other pages through a server | Not cached                                                                                  |
 
@@ -123,6 +125,37 @@ try {
   data = await client.fetch(ref);
 }
 ```
+
+### Compute on the latest data on view
+
+A page on `developmentfinance.org` runs a recipe on the newest version DFO stores of each reading it starts from:
+
+<!-- docs-check: skip: reads a committed ref file, and the analysis route answers pages on developmentfinance.org alone -->
+
+```ts
+// In the page
+import { Client, DatasetRef, recipe } from "@developmentfinance/client";
+import committed from "./data/donors.ref.json" with { type: "json" };
+
+const client = new Client({ apiKey: false });
+const largest = recipe(DatasetRef.fromJSON(committed)).rank({
+  by: "origin",
+  per: "destination",
+  window: [2023, 2023],
+  how: "sum",
+  limit: 1,
+});
+const data = await client.fetch(largest, {
+  latest: "stored",
+  signal: AbortSignal.timeout(10_000),
+});
+
+console.log(data.freshness, (await data.toRows()).length);
+```
+
+The fetch reads each reading's manifest at `GET /api/v1/datasets/{spec_id}`, all at once, and downloads no reading's file. It then posts the recipe on those versions and reads the computed frame's manifest and file: four requests for a recipe of one reading, and one more for each further reading. `data.freshness` is the worst freshness the readings' manifests state. A recipe that starts from a frame DFO computed has no stored newest version, and the fetch throws `InvalidRequestError` before any request.
+
+The gateway answers no preflight on the analysis route, so a page on another origin, a preview on `one-org.workers.dev` included, cannot run a recipe. Such a page shows the figures its data step committed, and calls the recipe from your own server route when it needs newer ones.
 
 A live share shows the newest data of a card instead, with no client on the page. Make one once, in a data step, and commit its data URL:
 

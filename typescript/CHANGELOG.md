@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `rank` takes `per`, a role or roles that split the ranking: `client.analysis.rank(aid, { by: "origin", per: "destination", limit: 6 })` keeps the six largest origins of each destination, each destination with its own ranks, ties and `limit`. It sends `partition_by`, and a recipe that made the dataset names the partition's column by the role word the call used. `per` that is empty or not text throws `InvalidRequestError` (`invalid_argument`) before any request.
+- `aggregate` and `rank` take `allowSparseBreakdowns`. With `true`, DFO counts a year of a group as covered when any of its breakdown members, such as the purposes a summed CRS reading keeps, holds a row, where it would refuse `coverage_insufficient`. It sends `allow_sparse_breakdowns: true`, and nothing when left out or `false`, so a step without it keeps its ids. A value other than a boolean throws `InvalidRequestError` (`invalid_argument`) before any request.
+- `dataset.statVarsSummed` lists each reading a recipe read summed over its StatVars, as the analysis answer's `stat_vars_summed` states it: `{ specId, contentVersion, count }`, where `count` is how many StatVars with rows DFO added into one series. DFO sums a reading of several StatVars by itself when no step names `stat_var`. The text form prints it as `Summed: 1,598 StatVars`, or `Summed: 1,598 and 40 StatVars in 2 readings` for two readings. It is empty for a recipe that summed nothing, for a derived ref read at its exact version, which posts no analysis, and for a saved file. The `SummedReading` type is exported from `@developmentfinance/client/types`. An answer whose list breaks that shape throws `ContractError` (`contract_violation`).
+- `client.fetch(recipe, { latest: "stored" })` runs a recipe on the version DFO stores as the newest of each reading it starts from. It reads each reading's manifest once, from `GET /datasets/{spec_id}` in the reading's rendering, all at once, downloads no root's file, and posts the recipe with those versions: a recipe of one reading makes four requests (the manifest, the analysis, and the computed frame's manifest and file), and each further reading adds one. A spec root reads its frame without party totals. A root of several members sends their ref with each member's stored version and digest, which DFO refuses with `several_members` until it reads such a ref as one reading. `dataset.freshness` is the worst freshness those manifests state. A recipe that starts from a frame DFO computed throws `InvalidRequestError` (`invalid_argument`) before any request. `RecipeFetchOptions` types `latest` as `boolean | "stored"`.
+
 ## [0.5.0] - 2026-11-20
 
 ### Added

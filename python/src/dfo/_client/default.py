@@ -271,7 +271,7 @@ def fetch(
     target: Recipe,
     /,
     *,
-    latest: bool = False,
+    latest: bool | Literal["stored"] = False,
     strict: bool = False,
     timeout: CallTimeout = CLIENT_TIMEOUT,
 ) -> Dataset: ...
@@ -323,7 +323,9 @@ def fetch(
     """Fetch a spec's latest version, the exact versions a ref names, the newest
     versions of a ref's specs with `latest=True`, the versions DFO stores as the
     newest of a ref's specs with `latest="stored"`, the result of a recipe run
-    on DFO, or the exact version a share's slot shows, with the default client.
+    on DFO, on the stored newest versions of its datasets with
+    `latest="stored"`, or the exact version a share's slot shows, with the
+    default client.
 
     Takes `Client.fetch`'s arguments, including its timeout behaviour: left out,
     `timeout` is the one given to `dfo.configure`, else a non-empty
@@ -338,8 +340,8 @@ def fetch(
             is sent; a ref is narrowed or given another layout or
             `party_totals`; `latest` is not True, False or `"stored"`, is
             given a spec, `latest=True` a ref whose members differ in
-            rendering, or `latest="stored"` a recipe or a computed frame; a
-            share is given a narrowing, `party_totals`, `latest` or a layout
+            rendering, or `latest="stored"` a computed frame or a recipe
+            that reads one; a share is given a narrowing, `party_totals`, `latest` or a layout
             other than `frame`, `slot` is 0, or `as_of` is malformed, all
             before any request; a share of several slots is given no `slot`, or one past
             its last; `as_of` is before the slot first served data; `window`,

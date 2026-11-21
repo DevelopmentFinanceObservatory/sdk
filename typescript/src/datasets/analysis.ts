@@ -28,7 +28,7 @@
  * `strict`.
  */
 
-import type { Dataset, DerivedFacts } from "./dataset.ts";
+import type { Dataset, DerivedFacts, Freshness, SummedReading } from "./dataset.ts";
 import { derivedDataset } from "./derived.ts";
 import { download, invalid } from "./fetch.ts";
 import { after, BUILD_READ_TIMEOUT_MS, pollInterval, waitFor } from "./operation.ts";
@@ -72,6 +72,20 @@ const ROOTS_UNREADABLE: ReadonlySet<string | null> = new Set([
 /** The call that recomputes a derived ref on its datasets' newest versions. */
 const LATEST_CALL = "client.fetch(ref, { latest: true })";
 
+/** A ready analysis answer: its stored frame's ref member, and each root it read summed over
+ *  its StatVars. */
+type Analysed = {
+  readonly member: DerivedRefMember;
+  readonly summed: readonly SummedReading[];
+};
+
+/** A recipe's tree with each dataset root at the version DFO stores as its newest, and how new
+ *  those versions are, as `latest: "stored"` resolves it. */
+export type StoredTree = {
+  readonly tree: Record<string, unknown>;
+  readonly freshness: Freshness | null;
+};
+
 /** How a recipe or a derived ref is fetched. */
 export type AnalysisFetchOptions = {
   readonly latest?: boolean | undefined;
@@ -101,7 +115,8 @@ function split<T>(options: T & RunOptions): [T, AnalysisFetchOptions] {
 }
 
 /**
- * Runs `target` on DFO and reads the frame it stores.
+ * Runs `target` on DFO and reads the frame it stores. `stored`, for `latest: "stored"`, gives
+ * the tree with each root at its stored newest version, within the call's deadline.
  *
  * @throws {InvalidRequestError} The recipe has no step and starts from a dataset version or a
  *   spec (`invalid_argument`), or DFO refused the tree.
@@ -115,11 +130,17 @@ export async function runRecipe(
   transport: Transport,
   target: Recipe,
   options: AnalysisFetchOptions = {},
+  stored?: (wait: Wait) => Promise<StoredTree>,
 ): Promise<Dataset> {
-  const tree = target.tree();
   const wait = waitFor(transport, options);
-  const member = await analyse(transport, { tree, latest: options.latest ?? false }, wait);
-  return read(transport, member, options.strict ?? false, wait, target);
+  const resolved =
+    stored === undefined ? { tree: target.tree(), freshness: null } : await stored(wait);
+  const answer = await analyse(
+    transport,
+    { tree: resolved.tree, latest: options.latest ?? false },
+    wait,
+  );
+  return read(transport, answer, options.strict ?? false, wait, target, resolved.freshness);
 }
 
 /**
@@ -147,20 +168,20 @@ export async function fetchDerived(
   }
   let expired: DfoError;
   try {
-    return await read(transport, member, strict, wait);
+    return await read(transport, { member, summed: [] }, strict, wait);
   } catch (error) {
     if (!(error instanceof DfoError) || error.code !== EXPIRED) throw error;
     expired = error;
   }
-  let again: DerivedRefMember;
+  let again: Analysed;
   try {
     again = await analyse(transport, { tree: root, latest: false }, wait);
   } catch (error) {
     if (!(error instanceof DfoError) || !ROOTS_UNREADABLE.has(error.code)) throw error;
     throw unavailable(member, error);
   }
-  if (again.contentVersion !== member.contentVersion) throw unavailable(member, expired);
-  if (again.digest !== member.digest) noteNewDigest(transport, member, again.digest);
+  if (again.member.contentVersion !== member.contentVersion) throw unavailable(member, expired);
+  if (again.member.digest !== member.digest) noteNewDigest(transport, member, again.member.digest);
   return read(transport, again, strict, wait);
 }
 
@@ -196,15 +217,15 @@ export async function fetchComputedFrame(
   wait: Wait,
 ): Promise<Dataset> {
   const tree = { spec_id: specId, content_version: contentVersion };
-  const member = await analyse(transport, { tree, latest: false }, wait);
-  if (member.contentVersion !== contentVersion) {
+  const answer = await analyse(transport, { tree, latest: false }, wait);
+  if (answer.member.contentVersion !== contentVersion) {
     throw clientError("version_unavailable", {
       detail:
         `${specId} at ${contentVersion} can no longer be fetched, and DFO computed ` +
-        `${member.contentVersion} on the versions it read.`,
+        `${answer.member.contentVersion} on the versions it read.`,
     });
   }
-  return read(transport, member, strict, wait);
+  return read(transport, answer, strict, wait);
 }
 
 function oneMember(ref: DatasetRef): DerivedRefMember {
@@ -231,7 +252,7 @@ function unavailable(member: DerivedRefMember, refusal: DfoError): VersionUnavai
 }
 
 /**
- * Posts a recipe tree until DFO answers its stored frame's ref member.
+ * Posts a recipe tree until DFO answers its stored frame's ref member and the roots it summed.
  *
  * @throws {DfoTimeoutError} The deadline passed while a root was building
  *   (`deadline_exceeded`).
@@ -242,7 +263,7 @@ async function analyse(
   transport: Transport,
   body: Readonly<Record<string, unknown>>,
   wait: Wait,
-): Promise<DerivedRefMember> {
+): Promise<Analysed> {
   for (;;) {
     let response;
     try {
@@ -258,7 +279,13 @@ async function analyse(
       throw error;
     }
     const { status, traceId } = response;
-    if (status === 200) return describing(traceId, () => readyMember(response.body));
+    if (status === 200) {
+      const answer = response.body;
+      return describing(traceId, () => ({
+        member: readyMember(answer),
+        summed: summedRoots(answer),
+      }));
+    }
     if (status !== 202) {
       throw clientError("unexpected_response", {
         status,
@@ -310,21 +337,44 @@ function readyMember(answer: unknown): DerivedRefMember {
   return member;
 }
 
+/**
+ * The roots a ready answer's `stat_vars_summed` lists, each `{spec_id, content_version, count}`;
+ * none when the answer leaves it out. A key an entry holds beyond those is ignored.
+ *
+ * @throws {ContractError} The list or an entry breaks that shape (`contract_violation`).
+ */
+function summedRoots(answer: unknown): SummedReading[] {
+  const listed = isRecord(answer) ? answer["stat_vars_summed"] : undefined;
+  if (listed === undefined || listed === null) return [];
+  if (!Array.isArray(listed)) throw violation("/stat_vars_summed");
+  return listed.map((entry: unknown, index) => {
+    const pointer = `/stat_vars_summed/${index}`;
+    if (!isRecord(entry)) throw violation(pointer);
+    const { spec_id: specId, content_version: contentVersion, count } = entry;
+    if (typeof specId !== "string") throw violation(`${pointer}/spec_id`);
+    if (typeof contentVersion !== "string") throw violation(`${pointer}/content_version`);
+    if (!Number.isSafeInteger(count) || (count as number) < 0) throw violation(`${pointer}/count`);
+    return { specId, contentVersion, count: count as number };
+  });
+}
+
 const violation = (pointer: string, cause?: unknown): ContractError =>
   clientError("contract_violation", {
-    detail: `POST ${ANALYSIS_PATH} answered a ref whose ${pointer} this client cannot read.`,
+    detail: `POST ${ANALYSIS_PATH} answered a body whose ${pointer} this client cannot read.`,
     pointer,
     cause,
   });
 
-/** The derived frame `member` names, from its manifest and its file. The dataset names each
- *  column by the role word `chain`, the recipe that made it, named it by. */
+/** The derived frame an answer's `member` names, from its manifest and its file. The dataset
+ *  names each column by the role word `chain`, the recipe that made it, named it by, and carries
+ *  the roots the answer summed and the freshness of a stored read's roots. */
 async function read(
   transport: Transport,
-  member: DerivedRefMember,
+  { member, summed }: Analysed,
   strict: boolean,
   wait: Wait,
   chain?: Recipe,
+  freshness: Freshness | null = null,
 ): Promise<Dataset> {
   const path = `/datasets/derived/${member.spec.spec_id}/${member.contentVersion}`;
   const { deadline, signal } = wait;
@@ -341,7 +391,12 @@ async function read(
   const recipeObject = manifest["recipe"];
   const tree = isRecord(recipeObject) ? recipeObject["tree"] : undefined;
   const roles = chain === undefined ? {} : columnRoles(chain, tree);
-  const { dataset, facts } = await derivedDataset(member, manifest, data, response.traceId, roles);
+  const { dataset, facts } = await derivedDataset(member, manifest, data, {
+    traceId: response.traceId,
+    roles,
+    statVarsSummed: summed,
+    freshness,
+  });
   if (facts.leftOut.length > 0 || !facts.leftOutComplete) noteLeftOut(transport, facts, strict);
   return dataset;
 }
@@ -409,7 +464,9 @@ export class Analysis {
   }
 
   /** Totals or averages the rows of each year, keeping the members of `by` apart: `how` is `sum`
-   *  by default, or `mean`, `max` or `min`. Each year stays its own row. */
+   *  by default, or `mean`, `max` or `min`. Each year stays its own row. `allowSparseBreakdowns:
+   *  true` counts a year of a group as covered when any of its breakdown members, such as the
+   *  purposes a summed reading keeps, holds a row. */
   async aggregate(data: Start, options: AggregateOptions & RunOptions = {}): Promise<Dataset> {
     const [step, run] = split(options);
     return this.#run(recipe(data).aggregate(step), run);
@@ -425,7 +482,9 @@ export class Analysis {
   }
 
   /** Orders the members of `by`, largest first, and keeps the top `limit`, from 1 to 1000. A
-   *  `window` such as `[latestYear(), latestYear()]` ranks those years; none ranks every year. */
+   *  `window` such as `[latestYear(), latestYear()]` ranks those years; none ranks every year.
+   *  `per` ranks within each of its members, as `{ by: "origin", per: "destination", limit: 6 }`
+   *  keeps the six largest origins of each destination. */
   async rank(data: Start, options: RankOptions & RunOptions): Promise<Dataset> {
     const [step, run] = split(options);
     return this.#run(recipe(data).rank(step), run);
