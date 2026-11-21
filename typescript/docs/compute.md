@@ -52,7 +52,7 @@ Each operation states its result on its own scale:
 | `filter(data, { keep })`            | The rows whose role or column holds one of the values, as `{ keep: { destination: "country/KEN" } }`                                                                                                         |
 | `aggregate(data, { by, how })`      | One value per year for each member of `by`, by `sum` (the default), `mean`, `max`, or `min`, in the data's unit                                                                                              |
 | `growth(data, { by, window })`      | The change from the first year to the last. `change: "relative"`, the default, is a fraction with no unit: 0.25 is a 25% rise. `change: "difference"` is the last value minus the first, in the data's unit  |
-| `rank(data, { by, window, limit })` | The members of `by`, largest first, the top `limit` kept (1 to 1000). A tie at the last place keeps every member that shares it. `per` ranks within each of its members                                       |
+| `rank(data, { by, window, limit })` | The members of `by`, largest first, the top `limit` kept (1 to 1000). A tie at the last place keeps every member that shares it. `per` ranks within each of its members                                      |
 | `quotientOf(data, other, { on })`   | `data` divided by `other`, in a composed unit                                                                                                                                                                |
 | `shareOf(data, total, { by, on })`  | Each value as a percentage of its total, 0 to 100 when each value is part of the total: 25 is a quarter. With no total, `shareOf(data, { by })` divides by the sum over the members of `by` in the same year |
 | `sumOf(data, other, { on })`        | The matching rows of both readings added, over the years both hold                                                                                                                                           |
@@ -86,7 +86,7 @@ Aid to Kenya rose by 71% over the window. `change: "difference"` gives the rise 
 
 ## Rank within each group
 
-`per` splits a ranking: the members that share a value of `per` are ranked among themselves, each group with its own ranks, ties, and `limit`. The largest donor to each recipient in 2023:
+`per` splits a ranking. The members that share a value of `per` are ranked among themselves, each group with its own ranks, ties, and `limit`. The largest donor to each recipient in 2023:
 
 ```text
 [
@@ -260,21 +260,21 @@ try {
 
 Each method returns a `Promise<Dataset>`, and takes `strict`, `timeout` in milliseconds, and `signal` beside its own options.
 
-| Method       | Signature                                                            |
-| ------------ | -------------------------------------------------------------------- |
-| `filter`     | `filter(data, { keep })`                                             |
-| `aggregate`  | `aggregate(data, { by?, how?, allowSparseBreakdowns? })`                    |
-| `growth`     | `growth(data, { by?, window, change? })`                                    |
-| `rank`       | `rank(data, { by, per?, window?, how?, limit?, allowSparseBreakdowns? })`   |
-| `quotientOf` | `quotientOf(data, other, { on? })`                                   |
-| `shareOf`    | `shareOf(data, { by, on? })` or `shareOf(data, total, { by?, on? })` |
-| `sumOf`      | `sumOf(data, other, { on? })`                                        |
-| `compare`    | `compare(data, other, { on? })`                                      |
-| `join`       | `join(data, other, { on? })`                                         |
+| Method       | Signature                                                                 |
+| ------------ | ------------------------------------------------------------------------- |
+| `filter`     | `filter(data, { keep })`                                                  |
+| `aggregate`  | `aggregate(data, { by?, how?, allowSparseBreakdowns? })`                  |
+| `growth`     | `growth(data, { by?, window, change? })`                                  |
+| `rank`       | `rank(data, { by, per?, window?, how?, limit?, allowSparseBreakdowns? })` |
+| `quotientOf` | `quotientOf(data, other, { on? })`                                        |
+| `shareOf`    | `shareOf(data, { by, on? })` or `shareOf(data, total, { by?, on? })`      |
+| `sumOf`      | `sumOf(data, other, { on? })`                                             |
+| `compare`    | `compare(data, other, { on? })`                                           |
+| `join`       | `join(data, other, { on? })`                                              |
 
 - `data`, `other`, and `total` take a `Spec`, a `DatasetRef`, a `Dataset`, or a `Recipe` holding one reading. DFO refuses a dataset or ref of several members with `several_members`.
 - `keep` maps each role or column to a value or an array of values.
-- `by` takes a role or column name, or an array of them, and so does `per`, which names no role `by` names.
+- `by` takes a role or column name, or an array of them, and so does `per`, which cannot name a role `by` names.
 - `allowSparseBreakdowns` takes a boolean, `false` by default, and is sent only when `true`.
 - `window` takes `[start, end]`, each a year from 1000 to 9999 or a `latestYear(offset)`.
 - `on` takes an object mapping a role of `data` to the role of `other` that holds the same places, such as `{ destination: "place" }`, or a role or array of roles both name alike. Left out, DFO pairs the roles both readings name alike.

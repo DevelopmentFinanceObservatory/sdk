@@ -105,7 +105,7 @@ print(shares.to_pandas()[["time_period", "financingProvider", "value", "unit"]].
 
 ## Rank within groups
 
-`per` splits a ranking into groups: the members that share a value of `per` are ranked among themselves, each group with its own ranks and its own `limit`. The top two donors to each of three recipients in 2023:
+`per` splits a ranking into groups. The members that share a value of `per` are ranked among themselves, each group with its own ranks and its own `limit`. The top two donors to each of three recipients in 2023:
 
 ```text
   financingRecipient financingProvider        value
@@ -142,9 +142,10 @@ Some readings hold many statistical variables, one for each breakdown the source
 
 `data.stat_vars_summed` lists each summed reading as a `dfo.types.SummedReading`, with its `spec_id`, the `content_version` DFO read, and the `count` of variables it added. It is empty when DFO summed nothing.
 
-A breakdown kept this way is often sparse: few recipients receive aid for every purpose in every year. DFO counts each missing breakdown cell against the coverage an `aggregate` or `rank` needs, and refuses with `coverage_insufficient`. `allow_sparse_breakdowns=True` counts a group as present when any of its breakdown cells holds a row:
+A breakdown kept this way is often sparse. Few recipients receive aid for every purpose in every year. DFO counts each missing breakdown cell against the coverage an `aggregate` or `rank` needs, and refuses with `coverage_insufficient`. `allow_sparse_breakdowns=True` counts a group as present when any of its breakdown cells holds a row:
 
 <!-- docs-check: skip: needs a CRS reading by purpose -->
+
 ```python
 by_purpose = dfo.analysis.aggregate(
     aid_by_purpose, by=["destination", "crsPurpose"], allow_sparse_breakdowns=True
@@ -283,7 +284,7 @@ except SeriesLeftOutWarning as error:
 Each function takes its readings as positional arguments and the rest by keyword. Each also takes `strict=False` and `timeout`, which defaults to the client's `timeout`, and returns a `Dataset`. `client.analysis` on a `Client` or `AsyncClient` has the same methods, less `recipe`.
 
 | Name          | Signature                                                                                          |
-| ------------- | ---------------------------------------------------------------------------------------------------|
+| ------------- | -------------------------------------------------------------------------------------------------- |
 | `filter`      | `filter(data, /, *, keep)`                                                                         |
 | `aggregate`   | `aggregate(data, /, *, by=(), how="sum", allow_sparse_breakdowns=False)`                           |
 | `growth`      | `growth(data, /, *, by=(), window, change="relative")`                                             |
@@ -297,8 +298,8 @@ Each function takes its readings as positional arguments and the rest by keyword
 
 - `data`, `other`, and `total` take a `Spec`, a `DatasetRef`, a `Dataset`, or a `Recipe` holding one reading. DFO refuses a Dataset or ref of several members with `several_members`.
 - `keep` maps each role or column to a value or a list of values.
-- `by` takes a role or column name, or a list of them. `per` takes the same, and names no role `by` names.
-- `allow_sparse_breakdowns` takes True or False; the request carries it only when True.
+- `by` takes a role or column name, or a list of them. `per` takes the same, and cannot name a role `by` names.
+- `allow_sparse_breakdowns` takes True or False, and the request carries it only when True.
 - `window` takes `(start, end)`, each a year from 1000 to 9999 or a `dfo.latest_year(offset)`.
 - `on` takes a mapping of a role of `data` to the role of `other` that holds the same places, such as `{"destination": "place"}`, or a role or list of roles both name alike. Left out, DFO pairs the roles both readings name alike.
 - `share_of` needs `total` or `by`, and `by` with `on` needs `total`.
@@ -324,7 +325,7 @@ A `Dataset` an operation returns has one `DerivedMember` in `members`, and its r
 
 `data.party_totals_left_out` holds the group totals each reading's read left out, as [Sum a column](datasets.md#sum-a-column) describes, each entry named by the reading's spec id, in the order of the recipe's readings. The repr counts them on a `Party totals left out of the readings` line. The tuple is empty when the readings left nothing out, against a server older than this report, and when DFO could not read a reading.
 
-`dfo.fetch(ref)` reads a derived ref's exact version, and `dfo.fetch(ref, latest=True)` computes its recipe again on the newest data. A ref of several derived members raises `InvalidRequestError` before any request, and so does `latest="stored"` on a derived ref: fetch the recipe with `latest="stored"` instead.
+`dfo.fetch(ref)` reads a derived ref's exact version, and `dfo.fetch(ref, latest=True)` computes its recipe again on the newest data. A ref of several derived members raises `InvalidRequestError` before any request, and so does `latest="stored"` on a derived ref. To run its recipe on the stored versions, fetch the recipe with `latest="stored"`.
 
 ### `dfo.pin`
 

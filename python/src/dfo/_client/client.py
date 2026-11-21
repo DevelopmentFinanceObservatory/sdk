@@ -383,7 +383,7 @@ class AsyncClient:
         new the versions are, as `current`, `pending` or `stale`, the worst of
         the members', or None when the server does not say. A recipe with
         `latest="stored"` reads the manifest of each dataset it starts from,
-        downloads no file of them, and runs on those versions, so
+        downloads none of their files, and runs on those versions, so
         `dataset.ref` names the frame computed from them.
 
         A ref of a frame DFO computed reads that frame, and with `latest=True`

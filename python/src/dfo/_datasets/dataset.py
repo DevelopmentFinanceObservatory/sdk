@@ -869,10 +869,11 @@ class Dataset:
         freshness: How new the versions are, for a dataset
             `dfo.fetch(ref, latest="stored")` read, the worst of its members'
             freshness, and for one `dfo.fetch(recipe, latest="stored")` ran, the
-            worst of its readings', `stale` before `pending` before `current`. None for every
-            other dataset, for one read from a server that does not state
-            freshness, and for one `dfo.load` read, since freshness holds at the
-            moment of the read. `dataset.ref` and the saved file leave it out.
+            worst of its readings', `stale` before `pending` before `current`.
+            None for every other dataset, for one read from a server that does
+            not state freshness, and for one `dfo.load` read, since freshness
+            holds at the moment of the read. `dataset.ref` and the saved file
+            leave it out.
         layout_version: The column set of the table: the long layout's version,
             `frame` for the pipeline frame, or a bundle's rendition.
         left_out: Every series a step of the recipe behind a derived Dataset
@@ -882,7 +883,7 @@ class Dataset:
         stat_vars_summed: Each reading of a recipe DFO read as the sum of its
             StatVars, with how many it added, from the analysis DFO answered.
             Empty for a Dataset of dataset versions, for a derived ref read
-            without running its recipe, and for one `dfo.load` read; the saved
+            without running its recipe, and for one `dfo.load` read. The saved
             file leaves it out.
         party_totals_left_out: The group totals a fetch left out of each
             member's rows, one entry per member, party role, provenance and set

@@ -654,7 +654,7 @@ function rootReadings({ node, ref }: RecipeRoot): StoredReading[] {
  * A recipe's tree with each root at the version DFO stores as its spec's newest, and the worst
  * freshness those versions state. Each reading's manifest is read once, all at the same time,
  * from `GET /datasets/{specId}` in its rendering, and no file is downloaded. A one-member root
- * sends the stored version; a root of several members sends their ref with each member's stored
+ * sends the stored version. A root of several members sends their ref with each member's stored
  * version and that version's digest in the member's rendering.
  *
  * @throws {ContractError} A manifest answers another spec, or lists no artifact in a ref

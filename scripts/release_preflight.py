@@ -22,9 +22,9 @@ with no key:
    client, with no key, following redirects; the response must be a Parquet file
    with the member's row count. A failure means production does not serve the
    file route anonymously.
-5. A ranking of three donors' aid to three recipients in 2023: a control rank of
-   the top two donors overall, then the top two donors per recipient with
-   `per="destination"` and `allow_sparse_breakdowns=True`, which post
+5. A ranking of three donors' aid to three recipients in 2023. A control rank of
+   the top two donors overall runs first, then the top two donors per recipient
+   with `per="destination"` and `allow_sparse_breakdowns=True`, which post
    `partition_by` and `allow_sparse_breakdowns`. The control must return rows.
    The partitioned rank must return rows for more than one recipient and more
    rows than the control. A refusal, or a server that ignores `partition_by` and

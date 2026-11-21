@@ -74,8 +74,8 @@ _GROWTH_CHANGES: Mapping[str, str] = {"relative": "relative", "difference": "abs
 _TIME_PERIOD = "time_period"
 # The parameters whose lists name the columns of a step's `by`.
 _ORDERED_BY = ("group_by", "entity_by", "rank_by", "partition_by")
-# The rendering a Spec root's stored version is looked up in: the frame, without
-# party totals, as the root's own rendering states.
+# A Spec root's stored version is looked up in the frame without party totals,
+# as the root's own rendering states.
 _SPEC_RENDERING = Rendering("parquet", False, "frame", without_party_totals=True)
 # The stored parameter that holds each two-reading step's `on`, its keys the
 # columns of `data` and its values those of `other`.
@@ -284,8 +284,8 @@ class Recipe:
 
         Args:
             by: The roles whose members are ranked.
-            per: The roles that split the ranking, such as `"destination"`:
-                the members sharing a value of `per` are ranked among
+            per: The roles that split the ranking, such as `"destination"`.
+                The members sharing a value of `per` are ranked among
                 themselves, each group with its own ranks and `limit`. None
                 ranks every member together.
             window: The years ranked over; None ranks every year the data
@@ -293,7 +293,7 @@ class Recipe:
             how: How each member's rows in the window reduce to one value
                 first; None ranks each member's one value.
             limit: The most members kept, from 1 to 1000, in each group of
-                `per`; a tie at the last place keeps every member that shares
+                `per`. A tie at the last place keeps every member that shares
                 it. None keeps them all.
             allow_sparse_breakdowns: Count a member as present in a year when
                 any of its breakdown cells, such as `crsPurpose`, holds a row,

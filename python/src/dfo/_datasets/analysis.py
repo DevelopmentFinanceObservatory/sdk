@@ -5,9 +5,10 @@ answers 200 with the format 2 ref of the frame it stored, or 202 `pending` while
 a root's dataset is still building, which the client posts again after the
 answer's `Retry-After`, else its `retry_after_s`, held between 1 and 60 seconds,
 until the call's deadline. The 200 body's `stat_vars_summed` lists each root DFO
-read as the sum of its StatVars, which the Dataset keeps as `stat_vars_summed`. The post is idempotent: the same tree on the same
-roots stores nothing new. A refusal raises as the class its code maps to, with
-the problem document's `fix` on `error.problem`.
+read as the sum of its StatVars, which the Dataset keeps as `stat_vars_summed`.
+The post is idempotent: the same tree on the same roots stores nothing new. A
+refusal raises as the class its code maps to, with the problem document's `fix`
+on `error.problem`.
 
 A derived frame reads in two requests, both derived from the ref member: the
 manifest at `GET /datasets/derived/{ops_id}/{ocv}`, which carries the
@@ -133,7 +134,7 @@ async def run_recipe(
             waits as long as the roots take to build.
         cache: The local cache, or None to fetch without one.
         deadline: The clock reading the run ends by, when an earlier step of the
-            same call set it from `timeout`; None sets it from `timeout` here.
+            same call set it from `timeout`. None sets it from `timeout` here.
 
     Raises:
         InvalidRequestError: The recipe has no step and starts from a dataset
@@ -416,8 +417,7 @@ def _ready_member(answer: object) -> DerivedRefMember:
 
 def _summed(answer: object) -> tuple[SummedReading, ...]:
     """The roots a ready answer read as the sum of their StatVars, from its
-    `stat_vars_summed`; none when the answer leaves it out, as DFO before the
-    summed reads did.
+    `stat_vars_summed`, or none when the answer leaves it out.
 
     Raises:
         ContractError: `stat_vars_summed` is not a list of `{spec_id,
@@ -440,7 +440,7 @@ def _summed(answer: object) -> tuple[SummedReading, ...]:
             raise _violation(f"{pointer}/spec_id", what="a body")
         if not isinstance(version, str):
             raise _violation(f"{pointer}/content_version", what="a body")
-        # DFO sums a reading of two StatVars or more; a bool is no count.
+        # DFO sums a reading of two StatVars or more. A bool is no count.
         if isinstance(count, bool) or not isinstance(count, int) or count < 2:
             raise _violation(f"{pointer}/count", what="a body")
         summed.append(SummedReading(spec_id, version, count))

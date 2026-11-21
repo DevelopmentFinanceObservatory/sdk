@@ -135,7 +135,7 @@ def rank(
     Args:
         data: The reading.
         by: The roles whose members are ranked, such as `"origin"`.
-        per: The roles that split the ranking, such as `"destination"`: the
+        per: The roles that split the ranking, such as `"destination"`. The
             members sharing a value of `per` are ranked among themselves, each
             group with its own ranks and `limit`. None ranks every member
             together.
@@ -143,8 +143,8 @@ def rank(
             None ranks every year the data holds.
         how: How each member's rows in the window reduce to one value first;
             None ranks each member's one value.
-        limit: The most members kept, from 1 to 1000, in each group of `per`;
-            a tie at the last place keeps every member that shares it.
+        limit: The most members kept, from 1 to 1000, in each group of `per`.
+            A tie at the last place keeps every member that shares it.
         allow_sparse_breakdowns: Count a member as present in a year when any of
             its breakdown cells holds a row, so a sparse breakdown does not
             refuse `coverage_insufficient`.

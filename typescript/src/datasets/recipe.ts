@@ -68,7 +68,7 @@ export type AggregateOptions = {
   /** `sum` by default. */
   how?: Aggregation;
   /** Whether a breakdown column, such as the `crsPurpose` a summed reading keeps, may hold
-   *  members with no row in some years: DFO then counts a year of each group as covered when any
+   *  members with no row in some years. DFO then counts a year of each group as covered when any
    *  of its breakdown members holds a row, where it would refuse `coverage_insufficient`. False
    *  by default. */
   allowSparseBreakdowns?: boolean;
@@ -97,7 +97,7 @@ export type RankOptions = {
    *  shares it. None keeps them all. */
   limit?: number | null;
   /** The roles that split the ranking, such as `"destination"` for the top origins of each
-   *  destination: the members sharing a value of `per` are ranked among themselves, each group
+   *  destination. The members sharing a value of `per` are ranked among themselves, each group
    *  with its own ranks, ties and `limit`. None ranks every member together. */
   per?: Columns | null;
   /** Whether a breakdown column among `by` or `per` may hold members with no row in some years,
@@ -316,9 +316,9 @@ export class Recipe {
   }
 
   /**
-   * Orders the members of `by`, largest first, and keeps the top `limit`; with `per`, within
-   * each member of `per`, as `{ by: "origin", per: "destination", limit: 6 }` keeps the six
-   * largest origins of each destination.
+   * Orders the members of `by`, largest first, and keeps the top `limit`. With `per`, it does
+   * so within each member of `per`, as `{ by: "origin", per: "destination", limit: 6 }` keeps
+   * the six largest origins of each destination.
    *
    * @throws {InvalidRequestError} `by` or a given `per` names no role, `per` names a role `by`
    *   names, `limit` is not an integer from 1 to 1000, or `allowSparseBreakdowns` is not a boolean

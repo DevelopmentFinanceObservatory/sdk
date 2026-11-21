@@ -72,8 +72,8 @@ const ROOTS_UNREADABLE: ReadonlySet<string | null> = new Set([
 /** The call that recomputes a derived ref on its datasets' newest versions. */
 const LATEST_CALL = "client.fetch(ref, { latest: true })";
 
-/** A ready analysis answer: its stored frame's ref member, and each root it read summed over
- *  its StatVars. */
+/** A ready analysis answer, holding its stored frame's ref member and each root it read summed
+ *  over its StatVars. */
 type Analysed = {
   readonly member: DerivedRefMember;
   readonly summed: readonly SummedReading[];
@@ -363,8 +363,8 @@ function summedRoots(answer: unknown): SummedReading[] {
   });
 }
 
-/** A ready answer this client cannot read: `what` is the part that broke, `a ref` or the whole
- *  `a body`, and `pointer` the field. */
+/** The error for a ready answer this client cannot read. `what` is the part that broke, `a ref`
+ *  or the whole `a body`, and `pointer` the field. */
 const violation = (
   pointer: string,
   { what = "a ref", cause }: { what?: string; cause?: unknown } = {},

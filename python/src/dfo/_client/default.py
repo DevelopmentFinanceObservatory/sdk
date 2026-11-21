@@ -341,8 +341,8 @@ def fetch(
             `party_totals`; `latest` is not True, False or `"stored"`, is
             given a spec, `latest=True` a ref whose members differ in
             rendering, or `latest="stored"` a computed frame or a recipe
-            that reads one; a share is given a narrowing, `party_totals`, `latest` or a layout
-            other than `frame`, `slot` is 0, or `as_of` is malformed, all
+            that reads one; a share is given a narrowing, `party_totals`,
+            `latest` or a layout other than `frame`, `slot` is 0, or `as_of` is malformed, all
             before any request; a share of several slots is given no `slot`, or one past
             its last; `as_of` is before the slot first served data; `window`,
             `entities`, `facets`, the conversion or `layout` is malformed, or
