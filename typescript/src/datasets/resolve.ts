@@ -47,6 +47,7 @@ import {
   InvalidRequestError,
   NotFoundError,
   optionsOf,
+  serverCode,
   VersionUnavailableError,
 } from "../core/errors.ts";
 import {
@@ -624,12 +625,23 @@ const readingKey = ({ specId, rendering }: StoredReading): string =>
  * each dataset member of a ref or dataset root in its rendering.
  *
  * @throws {InvalidRequestError} A root is a frame DFO computed, whose stored newest version DFO
- *   does not keep (`invalid_argument`); no request is sent.
+ *   does not keep (`invalid_argument`), or a root holds several readings, which DFO refuses
+ *   with `several_members`; no request is sent.
  */
 function storedRoots(chain: Recipe): Map<string, StoredReading> {
   const readings = new Map<string, StoredReading>();
   for (const root of recipeRoots(chain)) {
-    for (const reading of rootReadings(root)) readings.set(readingKey(reading), reading);
+    const found = rootReadings(root);
+    if (found.length > 1) {
+      throw new InvalidRequestError({
+        code: serverCode("several_members"),
+        detail:
+          `A recipe root of ${found.length} readings cannot run: an operation takes one reading ` +
+          'per side, and DFO refuses a root of several with `several_members`. latest: "stored" ' +
+          "sends no request; start the recipe from a root of one reading.",
+      });
+    }
+    for (const reading of found) readings.set(readingKey(reading), reading);
   }
   return readings;
 }
@@ -654,11 +666,9 @@ function rootReadings({ node, ref }: RecipeRoot): StoredReading[] {
  * A recipe's tree with each root at the version DFO stores as its spec's newest, and the worst
  * freshness those versions state. Each reading's manifest is read once, all at the same time,
  * from `GET /datasets/{specId}` in its rendering, and no file is downloaded. A one-member root
- * sends the stored version. A root of several members sends their ref with each member's stored
- * version and that version's digest in the member's rendering.
+ * sends the stored version.
  *
- * @throws {ContractError} A manifest answers another spec, or lists no artifact in a ref
- *   member's rendering (`contract_violation`).
+ * @throws {ContractError} A manifest answers another spec (`contract_violation`).
  * @throws {DfoTimeoutError} The deadline passed before a manifest was read
  *   (`deadline_exceeded`).
  */
@@ -687,28 +697,8 @@ async function storedRecipeTree(
   const storedOf = (reading: StoredReading) => manifests.get(readingKey(reading))!;
   const tree = treeWithRoots(chain, (root) => {
     const node = structuredClone(root.node) as Record<string, unknown>;
-    const [first, ...others] = rootReadings(root);
-    if (root.ref === undefined || others.length === 0) {
-      return { ...node, content_version: contentVersionOf(storedOf(first!).manifest) };
-    }
-    const members = root.ref.members.filter(isDatasetMember).map((member) => {
-      const { manifest, traceId } = storedOf({
-        specId: member.spec.spec_id,
-        rendering: member.rendering,
-      });
-      const contentVersion = contentVersionOf(manifest);
-      const artifact = pickArtifact(manifest, member.rendering);
-      if (artifact === undefined) {
-        throw clientError("contract_violation", {
-          detail:
-            `The manifest of ${member.spec.spec_id} at ${contentVersion} lists no ` +
-            `${JSON.stringify(mintOptions(member.rendering))} artifact.`,
-          traceId,
-        });
-      }
-      return { ...member, contentVersion, digest: String(artifact["artifact_digest"]) };
-    });
-    return { ref: new DatasetRef(members).toJSON() };
+    const [first] = rootReadings(root);
+    return { ...node, content_version: contentVersionOf(storedOf(first!).manifest) };
   });
   return {
     tree,

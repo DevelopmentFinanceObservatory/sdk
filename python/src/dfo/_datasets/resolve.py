@@ -909,19 +909,16 @@ async def _run_recipe(
     """Run `target` on DFO. With `latest="stored"` it runs on the version DFO
     stores as the newest of each reading it starts from, read from the spec's
     manifest (`current_manifest`) without its file, once for each spec and
-    rendering, one after another as every fetch reads its members. A root of
-    one reading sends that version, and a root of several sends its ref with
-    each member's stored version and digest, which DFO refuses with
-    `several_members` until it reads such a ref as one reading. The Dataset's
-    `freshness` is the worst the manifests' answers state.
+    rendering, one after another as every fetch reads its members. Each root
+    sends that version. The Dataset's `freshness` is the worst the manifests'
+    answers state.
 
     Raises:
         InvalidRequestError: Under `latest="stored"`, the recipe has no step or
-            a root reads a frame DFO computed (`invalid_argument`); no request
-            is sent.
-        ContractError: A manifest answers another spec, or lists no artifact
-            in the rendering of a member of a several-member root
-            (`contract_violation`).
+            a root reads a frame DFO computed (`invalid_argument`), or a root
+            holds several readings, which DFO refuses (`several_members`); no
+            request is sent.
+        ContractError: A manifest answers another spec (`contract_violation`).
     """
     if latest != _STORED:
         return await run_recipe(
@@ -934,13 +931,21 @@ async def _run_recipe(
         )
     target.tree()  # A recipe with no step refuses before any manifest is read.
     readings = stored_readings(target)
+    if any(readings.values()):
+        raise InvalidRequestError(
+            "A recipe root of several readings cannot run: an operation takes one "
+            "reading per side, and DFO refuses a root of several with "
+            '`several_members`. latest="stored" sends no request; start the recipe '
+            "from a root of one reading.",
+            code="several_members",
+        )
     check_strict(strict)
     deadline = transport.deadline(timeout)
     versions: dict[StoredReading, tuple[str, str | None]] = {}
     stated: list[Freshness | None] = []
     with ProgressRenderer(enabled=False) as renderer:
         on_progress = progress_hook(renderer)
-        for (spec_id, rendering), in_several in readings.items():
+        for spec_id, rendering in readings:
             built, freshness = await current_manifest(
                 transport,
                 spec_id,
@@ -951,14 +956,6 @@ async def _run_recipe(
             )
             version = built.manifest["content_version"]
             artifact = pick_artifact(built.manifest, rendering)
-            if artifact is None and in_several:
-                error = violation(
-                    f"The manifest of {spec_id} at {version} lists no "
-                    f"{rendering.to_object()} artifact",
-                    pointer="/artifacts",
-                )
-                error.trace_id = built.trace_id
-                raise error
             digest = None if artifact is None else artifact["artifact_digest"]
             versions[(spec_id, rendering)] = (version, digest)
             stated.append(freshness)
