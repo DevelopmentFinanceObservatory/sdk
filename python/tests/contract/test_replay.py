@@ -17,14 +17,22 @@ A step's `long_builds` are read from the pollers the client made: each poller
 whose build ran on as an operation, not yet reported by an earlier step, gives
 its last `operation_id`, its `poll_waits` and its `resubmissions`. Every other
 wait the client asks the clock for is a retry's, so the step's `retry_waits` are
-the waits it took that no poller counted. A step's `warnings` are the codes of
-the warnings of the client's own it issued. Both are compared on every outcome,
-as an empty list when the outcome leaves them out.
+the waits it took that no poller counted and no pending analysis asked for. A
+step's `warnings` are the codes of the warnings of the client's own it issued.
+Both are compared on every outcome, as an empty list when the outcome leaves them
+out.
+
+An `analysis` step posts its tree through the analysis post `run_recipe` makes,
+which holds the 202 loop, and stops before the frame read, which the scenario
+does not record. Its outcome's `rows` and `derived_roots` come from the 200
+body the client read, and its `pending_waits` are the waits that followed a 202
+from the analysis route.
 
 Each scenario starts as a fresh process would: no warning has been issued.
 """
 
 import asyncio
+import copy
 import inspect
 import json
 import warnings
@@ -48,11 +56,12 @@ from dfo._core.errors import (
 )
 from dfo._core.refs import DatasetRef, RefMember
 from dfo._core.types import Gap, Rendering, Spec
+from dfo._datasets import analysis as _analysis
 from dfo._datasets import fetch as _fetch
 from dfo._datasets import operation as _operation
 from dfo._datasets import resolve as _resolve
 from dfo._datasets.build import Reading, build_body, layout_of, rendering_for
-from dfo._datasets.dataset import Dataset, build_dataset
+from dfo._datasets.dataset import Dataset, SummedReading, build_dataset
 from dfo._datasets.fetch import Session as AsyncSession
 from dfo._http.transport import (
     CLIENT_HEADER,
@@ -62,6 +71,7 @@ from dfo._http.transport import (
 )
 from dfo._search.answer import AsyncAnswer
 from dfo._sync._client.client import Client
+from dfo._sync._datasets import analysis as _sync_analysis
 from dfo._sync._datasets import fetch as _sync_fetch
 from dfo._sync._datasets import operation as _sync_operation
 from dfo._sync._datasets import resolve as _sync_resolve
@@ -103,6 +113,7 @@ STEP_KEYS = {
     "mint": {"op", "spec", "layout", "party_totals"},
     "operation": {"op", "operation_id", "layout"},
     "result": {"op"},
+    "analysis": {"op", "tree", "latest"},
 }
 
 
@@ -121,17 +132,21 @@ SCENARIOS = _load_scenarios()
 
 @dataclass
 class Clock:
-    """A monotonic clock that a sleep advances at once, recording retry waits.
+    """A monotonic clock that a sleep advances at once, recording retry waits and
+    pending waits.
 
     A poller counts each poll wait before it sleeps, so a sleep while
-    `poll_waits()` exceeds the poll waits seen is a poll's, and any other is a
-    retry's.
+    `poll_waits()` exceeds the poll waits seen is a poll's. A sleep while
+    `pending()` holds follows a 202 from the analysis route and is a pending
+    wait. Any other is a retry's.
     """
 
     poll_waits: Callable[[], int]
+    pending: Callable[[], bool] = lambda: False
     now: float = 1000.0
     polls_seen: int = 0
     retry_waits: list[float] = field(default_factory=list)
+    pending_waits: list[float] = field(default_factory=list)
 
     def read(self) -> float:
         return self.now
@@ -139,6 +154,8 @@ class Clock:
     def sleep(self, seconds: float) -> None:
         if self.poll_waits() > self.polls_seen:
             self.polls_seen += 1
+        elif self.pending():
+            self.pending_waits.append(seconds)
         else:
             self.retry_waits.append(seconds)
         self.now += seconds
@@ -177,12 +194,14 @@ class Exchanges:
         self.sent: list[tuple[str, bytes]] = []
         # A recorded scenario lists every body member the client sent.
         self.whole_bodies = record["origin"]["kind"] == "recorded"
+        # The last exchange served, whose response the client read last.
+        self.served: Mapping[str, Any] | None = None
 
     def __call__(self, request: httpx2.Request) -> httpx2.Response:
         seen = f"{request.method} {request.url}"
         assert self.pending, f"no exchange left for {seen}"
         self.sent.append((seen, request.content))
-        exchange = self.pending.pop(0)
+        exchange = self.served = self.pending.pop(0)
         expected = exchange["request"]
         assert seen == f"{expected['method']} {self._target(expected)}"
         if "url" in expected:
@@ -201,6 +220,19 @@ class Exchanges:
             if self.whole_bodies:
                 assert set(body) == set(expected["json"]), seen
         return _response(exchange["response"], self._on_replay_origin)
+
+    def last_pending(self) -> bool:
+        """Whether the last response served was a 202 from the analysis route."""
+        return (
+            self.served is not None
+            and self.served["request"].get("path") == _analysis.ANALYSIS_PATH
+            and self.served["response"]["status"] == 202
+        )
+
+    def last_json(self) -> Any:
+        """The JSON body of the last response served."""
+        assert self.served is not None, "no exchange served"
+        return self.served["response"].get("json")
 
     def _on_replay_origin(self, text: str) -> str:
         return text.replace(f"{self.recorded_origin}/", f"{self.origin}/")
@@ -358,6 +390,8 @@ def _run(
             )
         case "operation":
             started = _resume(client, step["operation_id"], step.get("layout", "long"))
+        case "analysis":
+            started = _analyse(client, step["tree"], latest=step.get("latest", False))
         case _:
             started = _result(client, operation)
     return started
@@ -421,6 +455,22 @@ async def _resume(
         operation.resume(client._session.transport, operation_id, on_progress=_quiet)
     )
     return LongBuild(poller, None, rendering_for(layout, party_totals=True))
+
+
+async def _analyse(
+    client: AsyncClient | Client, tree: Mapping[str, Any], *, latest: bool
+) -> tuple[Any, tuple[SummedReading, ...]]:
+    """Post a tree as `run_recipe` posts a recipe's, following its 202s, and
+    return the derived member and the summed roots the 200 answered."""
+    analysis = _analysis if isinstance(client, AsyncClient) else _sync_analysis
+    return await _settle(
+        analysis._analyse(
+            client._session.transport,
+            {"tree": tree, "latest": latest},
+            deadline=None,
+            timeout=None,
+        )
+    )
 
 
 async def _result(client: AsyncClient | Client, build: LongBuild) -> Dataset:
@@ -497,14 +547,26 @@ class NewestVersion:
     content_version: str | None
 
 
+@dataclass(frozen=True)
+class Analysis:
+    """The result of an `analysis` step: the derived member and summed roots the
+    client read from the 200, and that 200's body."""
+
+    member: Any
+    summed: tuple[SummedReading, ...]
+    body: Mapping[str, Any]
+
+
 @dataclass
 class Step:
     """What one step left besides its result: its warnings, the pollers of the
-    builds it saw run on, and the waits before its retries."""
+    builds it saw run on, the waits before its retries, and the waits after an
+    analysis's 202s."""
 
     issued: list[warnings.WarningMessage]
     pollers: list[AnyPoller]
     retry_waits: list[float]
+    pending_waits: list[float] = field(default_factory=list)
 
 
 # The classes of the warnings the client issues itself, which carry a code from
@@ -571,7 +633,10 @@ COMMON: dict[str, Reader] = {
 
 # The members an outcome of a kind leaves out when they hold nothing, read on
 # every step of that kind and compared as None when the outcome leaves them out.
-ABSENT: dict[str, tuple[str, ...]] = {"dataset": ("party_totals_left_out",)}
+ABSENT: dict[str, tuple[str, ...]] = {
+    "dataset": ("party_totals_left_out",),
+    "analysis": ("pending_waits",),
+}
 
 READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
     "answer": (
@@ -618,6 +683,25 @@ READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
             "long_builds": lambda _, step: _long_builds(step),
         },
     ),
+    "analysis": (
+        (Analysis,),
+        {
+            "spec_id": lambda found, _: found.member.spec.spec_id,
+            "content_version": lambda found, _: found.member.content_version,
+            "rows": lambda found, _: found.body.get("rows"),
+            "stat_vars_summed": lambda found, _: [
+                {
+                    "spec_id": summed.spec_id,
+                    "content_version": summed.content_version,
+                    "count": summed.count,
+                }
+                for summed in found.summed
+            ],
+            # The clients keep no `derived_roots`; the replay reads the body.
+            "derived_roots": lambda found, _: found.body.get("derived_roots", []),
+            "pending_waits": lambda _, step: step.pending_waits or None,
+        },
+    ),
     "newest_version": (
         (NewestVersion,),
         {"content_version": lambda found, _: found.content_version},
@@ -658,11 +742,14 @@ def _check(where: str, outcome: Mapping[str, Any], result: object, step: Step) -
         pytest.fail(f"{where}: expected {kind} {expected}, got {result!r}")
     actual = {member: readers[member](result, step) for member in expected}
     assert actual == expected, where
+    if kind == "error":
+        assert step.pending_waits == [], where
 
 
 async def _replay(
     record: Mapping[str, Any],
     client: AsyncClient | Client,
+    exchanges: Exchanges,
     pollers: Pollers,
     clock: Clock,
     *,
@@ -681,7 +768,7 @@ async def _replay(
         where = f"step {index} ({step['op']})"
         if revive and _form(step) in ("choose", "fetch-answer"):
             answer = type(answer).from_json(answer.to_json(), client=client)
-        retried = len(clock.retry_waits)
+        retried, pended = len(clock.retry_waits), len(clock.pending_waits)
         with warnings.catch_warnings(record=True) as issued:
             warnings.simplefilter("always")
             try:
@@ -696,7 +783,15 @@ async def _replay(
         taken = [] if "operation" in outcome else pollers.take()
         if step["op"] == "newest_version" and not isinstance(result, DfoError):
             result = NewestVersion(result)
-        _check(where, outcome, result, Step(issued, taken, clock.retry_waits[retried:]))
+        if step["op"] == "analysis" and isinstance(result, tuple):
+            result = Analysis(*result, exchanges.last_json())
+        waited = Step(
+            issued,
+            taken,
+            clock.retry_waits[retried:],
+            clock.pending_waits[pended:],
+        )
+        _check(where, outcome, result, waited)
         if isinstance(result, AsyncAnswer | Answer):
             answer = result
         elif isinstance(result, LongBuild):
@@ -733,9 +828,9 @@ def test_scenario_replays(
     base_url = BASE_URLS[form]
     exchanges = Exchanges(record, base_url)
     pollers = Pollers(monkeypatch)
-    clock = Clock(pollers.poll_waits)
+    clock = Clock(pollers.poll_waits, exchanges.last_pending)
     client = _client(flavour, base_url, exchanges, clock)
-    asyncio.run(_replay(record, client, pollers, clock))
+    asyncio.run(_replay(record, client, exchanges, pollers, clock))
     assert exchanges.pending == [], "the call left exchanges unmade"
 
 
@@ -752,9 +847,9 @@ def test_a_revived_answer_sends_the_requests_the_original_sends(
         monkeypatch.setattr(_errors, "_warned", set())
         exchanges = Exchanges(record, BASE_URLS["api-path"])
         pollers = Pollers(monkeypatch)
-        clock = Clock(pollers.poll_waits)
+        clock = Clock(pollers.poll_waits, exchanges.last_pending)
         client = _client(flavour, BASE_URLS["api-path"], exchanges, clock)
-        asyncio.run(_replay(record, client, pollers, clock, revive=revive))
+        asyncio.run(_replay(record, client, exchanges, pollers, clock, revive=revive))
         assert exchanges.pending == [], "the call left exchanges unmade"
         sent.append(exchanges.sent)
     assert sent[0] == sent[1]
@@ -783,9 +878,9 @@ def test_a_latest_ref_fetch_replays_the_spec_fetch(
     record = SCENARIOS[name]
     exchanges = Exchanges(record, BASE_URLS["api-path"])
     pollers = Pollers(monkeypatch)
-    clock = Clock(pollers.poll_waits)
+    clock = Clock(pollers.poll_waits, exchanges.last_pending)
     client = _client(flavour, BASE_URLS["api-path"], exchanges, clock)
-    asyncio.run(_replay(record, client, pollers, clock, latest=True))
+    asyncio.run(_replay(record, client, exchanges, pollers, clock, latest=True))
     assert exchanges.pending == [], "the call left exchanges unmade"
 
 
@@ -806,3 +901,29 @@ def test_the_revived_replay_covers_choose_steps() -> None:
         for name in ANSWER_STEPS
         for step in SCENARIOS[name]["call"]
     )
+
+
+@pytest.mark.parametrize("flavour", ["async", "sync"])
+def test_an_analysis_counts_its_pending_waits_apart_from_retries(
+    flavour: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 202 before the 200 is waited as its `Retry-After` and given as the
+    outcome's `pending_waits`, with no retry wait."""
+    record = copy.deepcopy(SCENARIOS["analysis-rank-partitioned"])
+    ready = record["exchanges"][0]
+    pending = {
+        "request": ready["request"],
+        "response": {
+            "status": 202,
+            "headers": {"content-type": "application/json", "retry-after": "7"},
+            "json": {"status": "pending", "retry_after_s": 30},
+        },
+    }
+    record["exchanges"].insert(0, pending)
+    record["expect"][0]["analysis"]["pending_waits"] = [7.0]
+    exchanges = Exchanges(record, BASE_URLS["api-path"])
+    pollers = Pollers(monkeypatch)
+    clock = Clock(pollers.poll_waits, exchanges.last_pending)
+    client = _client(flavour, BASE_URLS["api-path"], exchanges, clock)
+    asyncio.run(_replay(record, client, exchanges, pollers, clock))
+    assert exchanges.pending == [], "the call left exchanges unmade"

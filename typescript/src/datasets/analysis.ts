@@ -74,7 +74,7 @@ const LATEST_CALL = "client.fetch(ref, { latest: true })";
 
 /** A ready analysis answer, holding its stored frame's ref member and each root it read summed
  *  over its StatVars. */
-type Analysed = {
+export type Analysed = {
   readonly member: DerivedRefMember;
   readonly summed: readonly SummedReading[];
 };
@@ -259,7 +259,7 @@ function unavailable(member: DerivedRefMember, refusal: DfoError): VersionUnavai
  * @throws {ContractError} DFO answered another status than 200 or 202 (`unexpected_response`),
  *   or a ref this client cannot read (`contract_violation`).
  */
-async function analyse(
+export async function analyse(
   transport: Transport,
   body: Readonly<Record<string, unknown>>,
   wait: Wait,

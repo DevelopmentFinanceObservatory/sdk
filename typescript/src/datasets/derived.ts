@@ -11,6 +11,7 @@
  */
 
 import { Dataset } from "./dataset.ts";
+import { checkPer } from "./saved.ts";
 import type {
   DerivedFacts,
   DerivedStep,
@@ -49,7 +50,8 @@ type DerivedContext = {
  * the manifest gives the citation, the retention, the series the recipe left out and the steps
  * the text form names.
  *
- * @throws {ContractError} As `derivedFacts` raises.
+ * @throws {ContractError} As `derivedFacts` raises, and when a step of the recipe has a `per` a
+ *   saved file could not hold (`contract_violation`).
  */
 export async function derivedDataset(
   member: DerivedRefMember,
@@ -62,6 +64,15 @@ export async function derivedDataset(
     roles,
     statVarsSummed,
   };
+  for (const step of facts.steps) {
+    if (step.per.length === 0) continue;
+    const named = (columns: readonly string[]) => columns.map((column) => roles[column] ?? column);
+    try {
+      checkPer(named(step.per), step.verb, named(step.by), "/recipe/tree");
+    } catch (error) {
+      throw Object.assign(violation("/recipe/tree"), { cause: error });
+    }
+  }
   const dataset = await Dataset.create([{ ...member, manifest, data }], {
     layout: "frame",
     derived: facts,
@@ -155,10 +166,26 @@ function* treeSteps(node: Readonly<Record<string, unknown>>): Generator<DerivedS
   const parameters = isRecord(opSpec["parameters"]) ? opSpec["parameters"] : {};
   const by = BY_PARAMETERS.map((name) => parameters[name]).find(Array.isArray) ?? [];
   const limit = parameters["limit"];
+  let per: string[] = [];
+  if (verb === "rank" && Object.hasOwn(parameters, "partition_by")) {
+    const raw = parameters["partition_by"];
+    if (
+      !Array.isArray(raw) ||
+      raw.length === 0 ||
+      !raw.every((column) => typeof column === "string") ||
+      new Set(raw).size !== raw.length
+    ) {
+      throw violation("/recipe/tree");
+    }
+    per = raw;
+  }
+  const strings = (columns: unknown[]): string[] =>
+    columns.filter((column): column is string => typeof column === "string");
   yield {
     verb,
-    by: (by as unknown[]).filter((column): column is string => typeof column === "string"),
+    by: strings(by as unknown[]),
     limit: Number.isSafeInteger(limit) ? (limit as number) : null,
+    per,
   };
 }
 

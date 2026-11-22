@@ -9,6 +9,7 @@ rolling `rank` that settles on 2022. `scripts/gen_sync.py` derives
 passes the same tests.
 """
 
+import copy
 import json
 import warnings
 from datetime import date
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx2
+import pyarrow.parquet as pq
 import pytest
 
 from dfo._core import errors as _errors
@@ -179,6 +181,26 @@ async def test_a_recipes_dataset_names_columns_by_the_roles_the_call_used() -> N
     ]
     # The coordinates keep DFO's columns, which the frame's columns match.
     assert data.left_out[0].coordinates["financingRecipient"] == "country/NGA"
+
+
+async def test_a_rank_names_its_per_by_the_role_the_call_used(tmp_path: Path) -> None:
+    manifest = copy.deepcopy(load("analysis-rank-manifest.json"))
+    manifest["recipe"]["tree"]["op_spec"]["parameters"]["partition_by"] = [
+        "financingProvider"
+    ]
+    data = derived_dataset(
+        member("rank"),
+        manifest,
+        (DATA / "analysis-rank-frame.parquet").read_bytes(),
+        roles={"financingProvider": "origin", "financingRecipient": "destination"},
+    )
+    assert "  Derived: rank by destination per origin, limit 2, from " in repr(data)
+    path = tmp_path / "ranked.parquet"
+    data.save(path)
+    stored = pq.read_metadata(path).metadata
+    assert json.loads(stored[b"dfo.steps"]) == [
+        {"verb": "rank", "by": ["destination"], "limit": 2, "per": ["origin"]}
+    ]
 
 
 async def test_an_operation_takes_strict_and_timeout_as_fetch_does() -> None:

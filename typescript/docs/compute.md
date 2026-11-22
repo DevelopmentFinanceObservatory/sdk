@@ -292,7 +292,7 @@ The client checks these before any request and raises `InvalidRequestError` with
 
 ### Derived datasets
 
-A dataset an operation returns has one `DerivedMember` in `members`, and its ref one `DerivedRefMember`, whose `spec.spec_id` starts `ops_` and `contentVersion` `ocv_`. Its text form adds a `Derived` line with the steps in run order and the number of readings, a `Summed` line with the readings DFO summed over their variables, a `Period` line with the years `latestYear` settled on, and a `Missing data` line with the count of series left out. `data.leftOut` is an array of `LeftOutSeries`, empty when no step dropped a series. `data.statVarsSummed` is an array of `SummedReading`, empty when DFO summed no reading, for a derived ref read at its exact version, and for a saved file. A ref of several derived members raises `InvalidRequestError` before any request.
+A dataset an operation returns has one `DerivedMember` in `members`, and its ref one `DerivedRefMember`, whose `spec.spec_id` starts `ops_` and `contentVersion` `ocv_`. Its text form adds a `Derived` line with the steps in run order, a ranking split by `per` printed as `rank by origin per destination, limit 10`, and the number of readings, a `Summed` line with the readings DFO summed over their variables, a `Period` line with the years `latestYear` settled on, and a `Missing data` line with the count of series left out. `data.leftOut` is an array of `LeftOutSeries`, empty when no step dropped a series. `data.statVarsSummed` is an array of `SummedReading`, empty when DFO summed no reading, for a derived ref read at its exact version, and for a saved file. A ref of several derived members raises `InvalidRequestError` before any request.
 
 ### `client.pin`
 
