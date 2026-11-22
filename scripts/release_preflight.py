@@ -26,9 +26,11 @@ with no key:
    the top two donors overall runs first, then the top two donors per recipient
    with `per="destination"` and `allow_sparse_breakdowns=True`, which post
    `partition_by` and `allow_sparse_breakdowns`. The control must return rows.
-   The partitioned rank must return rows for more than one recipient and more
-   rows than the control. A refusal, or a server that ignores `partition_by` and
-   answers the control's ranking, means production does not rank per partition.
+   The partitioned rank must keep, for each recipient, the donors an independent
+   rank of the unranked rows of the same read keeps: the two donors with the
+   largest total in 2023, and every donor tied with the second. A refusal, or a
+   server that ignores `partition_by` or `limit`, means production does not rank
+   per partition.
 
     cd python && uv run python ../scripts/release_preflight.py [--base-url URL]
 
@@ -44,6 +46,7 @@ of any error the client raised.
 """
 
 import argparse
+import math
 import os
 import sys
 from collections.abc import Callable, Mapping
@@ -65,6 +68,8 @@ RANKED = (
 )
 # The frame column the `destination` role reads in the ranked data.
 RECIPIENT = "financingRecipient"
+# The frame column the `origin` role reads.
+DONOR = "financingProvider"
 CONTROL_FAILED = (
     "preflight stopped: production could not be reached or the control question"
     " did not answer definitely"
@@ -234,19 +239,70 @@ def check_rank_per(client: Client) -> None:
             f"{PER_REFUSED}: {type(error).__name__}: {error}"
         ) from error
     table = per.to_arrow()
-    recipients = (
-        set(table.column(RECIPIENT).to_pylist())
-        if RECIPIENT in table.column_names
-        else set()
-    )
-    if len(recipients) < 2 or table.num_rows <= control_rows:
+    data_table = data.to_arrow()
+    try:
+        expected = expected_donors(data_table, window=window, limit=2)
+    except KeyError as error:
         raise PreflightError(
-            f"{PER_REFUSED}: the partitioned rank returned {table.num_rows} rows for"
-            f" {len(recipients)} recipients, the control {control_rows} rows"
+            f"{RANK_FAILED}: the ranked data has no {error.args[0]} column"
+        ) from error
+    if len(expected) < 2:
+        raise PreflightError(
+            f"{RANK_FAILED}: the ranked data holds {len(expected)} recipients"
+        )
+    kept = kept_donors(table)
+    if kept != expected:
+        raise PreflightError(
+            f"{PER_REFUSED}: the partitioned rank kept {describe(kept)}, where the"
+            f" top two donors of each recipient are {describe(expected)}"
         )
     print(
         f"production ranks per partition: control {control_rows} rows,"
-        f" per destination {table.num_rows} rows for {len(recipients)} recipients"
+        f" per destination {table.num_rows} rows for {len(kept)} recipients"
+    )
+
+
+def expected_donors(
+    table: pa.Table, *, window: tuple[int, int], limit: int
+) -> dict[str, set[str]]:
+    """The donors each recipient's top `limit` holds, from the unranked rows
+    `table`: each donor's total over the years in `window`, largest first, with
+    every donor tied with the last place kept, as the engine keeps them.
+
+    Raises:
+        KeyError: `table` lacks a column the rank reads, named in the error.
+    """
+    totals: dict[str, dict[str, float]] = {}
+    for row in table.select([RECIPIENT, DONOR, "time_period", "value"]).to_pylist():
+        year = int(str(row["time_period"])[:4])
+        if row["value"] is None or not window[0] <= year <= window[1]:
+            continue
+        donors = totals.setdefault(row[RECIPIENT], {})
+        donors[row[DONOR]] = donors.get(row[DONOR], 0.0) + row["value"]
+    kept: dict[str, set[str]] = {}
+    for recipient, donors in totals.items():
+        cutoff = sorted(donors.values(), reverse=True)[:limit][-1]
+        kept[recipient] = {
+            donor
+            for donor, total in donors.items()
+            if total > cutoff or math.isclose(total, cutoff)
+        }
+    return kept
+
+
+def kept_donors(table: pa.Table) -> dict[str, set[str]]:
+    """The donors a server's partitioned rank returned for each recipient."""
+    if RECIPIENT not in table.column_names or DONOR not in table.column_names:
+        return {}
+    kept: dict[str, set[str]] = {}
+    for row in table.select([RECIPIENT, DONOR]).to_pylist():
+        kept.setdefault(row[RECIPIENT], set()).add(row[DONOR])
+    return kept
+
+
+def describe(kept: Mapping[str, set[str]]) -> str:
+    return "; ".join(
+        f"{recipient}: {sorted(kept[recipient])}" for recipient in sorted(kept)
     )
 
 

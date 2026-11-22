@@ -306,37 +306,14 @@ def test_a_spec_two_roots_read_is_looked_up_once() -> None:
     assert data.freshness is None
 
 
-def test_a_root_of_several_members_sends_its_ref_at_the_stored_versions() -> None:
-    stored = manifest_of(OTHER)
-    server = Server(
-        json_response(200, manifest_of(HELD.spec.spec_id)),
-        json_response(200, stored),
-        *analysed(),
-    )
+def test_a_root_of_several_members_is_refused_before_any_request() -> None:
+    server = Server()
     chain = recipe(DatasetRef((HELD, member_of(OTHER)))).rank(by="origin")
     with make(server) as transport:
-        fetch(transport, chain, latest="stored")
-    sent = DatasetRef.from_json(
-        json.dumps(server.body(2)["tree"]["inputs"]["data"]["ref"])
-    )
-    assert [member.content_version for member in sent.members] == [NEWER, NEWER]
-    assert [member.digest for member in sent.members] == [
-        stored["artifacts"][0]["artifact_digest"]
-    ] * 2
-
-
-def test_a_several_member_root_whose_manifest_lacks_its_rendering_raises() -> None:
-    bare = manifest_of(OTHER)
-    bare["artifacts"] = []
-    server = Server(
-        json_response(200, manifest_of(HELD.spec.spec_id)), json_response(200, bare)
-    )
-    chain = recipe(DatasetRef((HELD, member_of(OTHER)))).rank(by="origin")
-    with make(server) as transport:
-        with pytest.raises(ContractError) as raised:
+        with pytest.raises(InvalidRequestError) as raised:
             fetch(transport, chain, latest="stored")
-    assert raised.value.code == "contract_violation"
-    assert len(server.requests) == 2
+    assert raised.value.code == "several_members"
+    assert server.requests == []
 
 
 def test_offline_each_member_reads_its_newest_cached_version_as_stale(
