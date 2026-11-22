@@ -11,6 +11,8 @@ import { Answer, SearchWarning } from "../src/search/answer.ts";
 import { clientOver } from "../src/client.ts";
 import type { Client } from "../src/client.ts";
 import { Dataset } from "../src/datasets/dataset.ts";
+import { analyse } from "../src/datasets/analysis.ts";
+import type { Analysed } from "../src/datasets/analysis.ts";
 import { newestVersion } from "../src/datasets/resolve.ts";
 import type { FetchOptions, Narrowing } from "../src/datasets/fetch.ts";
 import type { LongBuild } from "../src/datasets/operation.ts";
@@ -29,7 +31,10 @@ const all = await scenarios();
 /** A `newest_version` step's version. */
 type NewestVersion = { readonly newestVersion: string | null };
 
-type Reached = Answer | Dataset | StartedBuild | NewestVersion;
+/** An `analysis` step's ready answer, as the client read it. */
+type AnalysisReached = { readonly analysed: Analysed };
+
+type Reached = Answer | Dataset | StartedBuild | NewestVersion | AnalysisReached;
 
 const isStartedBuild = (reached: Reached | undefined): reached is StartedBuild =>
   reached !== undefined && "poller" in reached;
@@ -57,9 +62,16 @@ function callOptions(step: Narrowing & { layout?: unknown; strict?: unknown }) {
   return options;
 }
 
-/** What a step issued beside its outcome: its warnings, the long builds it polled, and its
- *  waits before retries other than polls, in seconds. */
-type Observed = { warnings: unknown[]; longBuilds: LongBuild[]; retryWaits: number[] };
+/** What a step issued beside its outcome: its warnings, the long builds it polled, its waits
+ *  before retries other than polls and its waits after an analysis's 202s, in seconds, and the
+ *  JSON body of the last response it read. */
+type Observed = {
+  warnings: unknown[];
+  longBuilds: LongBuild[];
+  retryWaits: number[];
+  pendingWaits: number[];
+  body?: unknown;
+};
 
 /** A long build as the contract states it, its waits in seconds. */
 const longBuildSummary = (build: LongBuild): LongBuildSummary => ({
@@ -102,6 +114,16 @@ async function run(
     case "result":
       assert.ok(isStartedBuild(previous), "a result follows a mint");
       return previous.result();
+    // `client.analysis` and `runRecipe` read the frame after the post, which the scenario does
+    // not record, so the step drives the post and its 202 loop alone.
+    case "analysis":
+      return {
+        analysed: await analyse(
+          transport,
+          { tree: step.tree, latest: step.latest ?? false },
+          { deadline: Infinity },
+        ),
+      };
     default:
       assert.fail(`the replay does not know the step ${JSON.stringify(step)}`);
   }
@@ -297,6 +319,36 @@ async function checkOutcome(
     );
     return;
   }
+  if ("analysis" in expected) {
+    assert.ok("analysed" in reached, `${name}: gave an analysis`);
+    const { member, summed } = reached.analysed;
+    const body = (observed.body ?? {}) as Record<string, unknown>;
+    const pendingWaits = observed.pendingWaits;
+    assert.deepEqual(
+      pendingWaits.length === 0 ? undefined : pendingWaits,
+      expected.analysis.pending_waits,
+      `${name}: pending_waits`,
+    );
+    checkMembers(
+      name,
+      expected.analysis,
+      {
+        spec_id: member.spec.spec_id,
+        content_version: member.contentVersion,
+        rows: body["rows"],
+        stat_vars_summed: summed.map(({ specId, contentVersion, count }) => ({
+          spec_id: specId,
+          content_version: contentVersion,
+          count,
+        })),
+        // The client keeps no `derived_roots`; the replay reads the body.
+        derived_roots: body["derived_roots"] ?? [],
+        pending_waits: pendingWaits,
+      },
+      observed,
+    );
+    return;
+  }
   if ("newest_version" in expected) {
     assert.ok("newestVersion" in reached, `${name}: gave a newest version`);
     checkMembers(
@@ -317,8 +369,8 @@ async function checkOutcome(
 async function replayScenario(record: Scenario, baseUrl?: string, revive = false): Promise<void> {
   assert.equal(record.expect.length, record.call.length, `${record.name}: one outcome per step`);
   forgetEmittedWarnings();
-  const observed: Observed = { warnings: [], longBuilds: [], retryWaits: [] };
-  const { transport, retryWaits, remaining } = replay(record, {
+  const observed: Observed = { warnings: [], longBuilds: [], retryWaits: [], pendingWaits: [] };
+  const { transport, retryWaits, pendingWaits, lastJson, remaining } = replay(record, {
     ...(baseUrl === undefined ? {} : { baseUrl }),
     onWarning: (warning) => observed.warnings.push(warning),
     onLongBuild: (build) => observed.longBuilds.push(build),
@@ -331,6 +383,7 @@ async function replayScenario(record: Scenario, baseUrl?: string, revive = false
     observed.warnings.length = 0;
     observed.longBuilds.length = 0;
     const retriesBefore = retryWaits.length;
+    const pendingBefore = pendingWaits.length;
     if (revive && previous instanceof Answer) {
       previous = Answer.fromJSON(JSON.stringify(previous), client);
     }
@@ -339,11 +392,14 @@ async function replayScenario(record: Scenario, baseUrl?: string, revive = false
       reached = await run(client, transport, step, previous);
     } catch (error) {
       observed.retryWaits = retryWaits.slice(retriesBefore).map((ms) => ms / 1000);
+      observed.pendingWaits = pendingWaits.slice(pendingBefore).map((ms) => ms / 1000);
       if (!("error" in expected)) throw error;
       checkError(error, expected.error, name, observed);
       continue;
     }
     observed.retryWaits = retryWaits.slice(retriesBefore).map((ms) => ms / 1000);
+    observed.pendingWaits = pendingWaits.slice(pendingBefore).map((ms) => ms / 1000);
+    observed.body = lastJson();
     assert.ok(!("error" in expected), `${name}: expected ${JSON.stringify(expected)}`);
     await checkOutcome(reached, expected, name, observed);
     previous = reached;
@@ -522,5 +578,22 @@ describe("the replay refuses what it cannot check", () => {
       copy.call[0] = { op: "explain" } as unknown as Step;
     });
     await assert.rejects(replayScenario(record), /does not know the step/);
+  });
+});
+
+describe("an analysis counts its pending waits apart from its retries", () => {
+  test("a 202 before the 200 is waited as its Retry-After and given as pending_waits", async () => {
+    const record = structuredClone(all.find((each) => each.name === "analysis-rank-partitioned")!);
+    const ready = record.exchanges[0]!;
+    record.exchanges.unshift({
+      request: ready.request,
+      response: {
+        status: 202,
+        headers: { "content-type": "application/json", "retry-after": "7" },
+        json: { status: "pending", retry_after_s: 30 },
+      },
+    });
+    (record.expect[0] as { analysis: { pending_waits?: number[] } }).analysis.pending_waits = [7];
+    await replayScenario(record);
   });
 });
