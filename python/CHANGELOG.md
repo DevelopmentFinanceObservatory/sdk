@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-22
+
 ### Changed
 
 - `dfo.fetch(recipe, latest="stored")` costs two requests in all: `POST /datasets/analysis` with `latest: "stored"` and `include: ["manifest"]`, and each root that names a dataset version sent as a Spec root, `{spec_id, rendering}`, so a ref whose version this deployment never stored still reads the stored head, then the result's file at `GET /datasets/derived/{spec_id}/{content_version}/files/{digest}`, checked against the ref's digest. DFO resolves each root to the version its dataset's stored head names. Before, the fetch sent `GET /datasets/{spec_id}` once per dataset it starts from, then the analysis, the derived manifest and the file. The citation, retention, recipe and left-out series come from the manifest the answer embeds, and `dataset.freshness` is the worst the answer's `resolved_roots` states, or None when any entry states none of `current`, `pending` and `stale` or the member is absent. An answer whose `manifest` is absent or not an object, names another frame than its ref, or holds a `left_out` that is neither a list nor null raises `ContractError` (`contract_violation`) at `/manifest`, `/manifest/spec_id`, `/manifest/content_version` or `/manifest/left_out`, before the file is read. A 202 is posted again after its `Retry-After`, as for any analysis.

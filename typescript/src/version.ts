@@ -1,2 +1,2 @@
 /** This package's version, sent in `User-Agent`. A test keeps it equal to package.json's. */
-export const VERSION = "0.6.0";
+export const VERSION = "0.7.0";
