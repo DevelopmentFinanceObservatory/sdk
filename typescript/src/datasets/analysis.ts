@@ -14,13 +14,13 @@
  * That file is the frame in the layout a dataset version's file has, and its bytes hash to the
  * ref's artifact digest, which `download` checks as it does for a dataset file.
  *
- * A recipe run with `latest: false` or `latest: "stored"` posts its tree as built with
+ * A recipe run with `latest: false` or `latest: "stored"` posts its tree with
  * `include: ["manifest"]`, so DFO embeds the derived manifest in the 200, and the client reads
  * no manifest and downloads the rows from the digest route,
  * `GET /datasets/derived/{ops_id}/{ocv}/files/{digest}`: two requests per recipe. Under
- * `"stored"` DFO resolves each root to the version its dataset's stored head names and states
- * each dataset's freshness in `resolved_roots`. `latest: true` reads the manifest and the frame
- * file as above.
+ * `"stored"` each dataset version goes as its spec in its rendering (`storedTree`), DFO resolves
+ * each root to the version its dataset's stored head names, and states each dataset's freshness
+ * in `resolved_roots`. `latest: true` reads the manifest and the frame file as above.
  *
  * `fetchDerived` reads a derived ref. An exact read takes the frame the ref names; when its
  * stored frame has aged out (`artifact_expired`), DFO computes the recipe again on the root
@@ -43,7 +43,7 @@ import { derivedDataset } from "./derived.ts";
 import { download, invalid } from "./fetch.ts";
 import { after, BUILD_READ_TIMEOUT_MS, pollInterval, waitFor } from "./operation.ts";
 import type { Wait } from "./operation.ts";
-import { columnRoles, isStart, recipe } from "./recipe.ts";
+import { columnRoles, isStart, recipe, storedTree } from "./recipe.ts";
 import type {
   AggregateOptions,
   FilterOptions,
@@ -143,7 +143,8 @@ export async function runRecipe(
   target: Recipe,
   options: AnalysisFetchOptions = {},
 ): Promise<Dataset> {
-  const body = analysisBody(target.tree(), options.latest ?? false);
+  const latest = options.latest ?? false;
+  const body = analysisBody(latest === STORED ? storedTree(target) : target.tree(), latest);
   const wait = waitFor(transport, options);
   const answer = await analyse(transport, body, wait);
   return read(transport, answer, options.strict ?? false, wait, target);

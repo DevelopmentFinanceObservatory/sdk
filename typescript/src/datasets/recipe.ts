@@ -165,6 +165,10 @@ type RootNode = {
   readonly kind: "root";
   readonly node: Readonly<Record<string, unknown>>;
   readonly name: string;
+  /** The node a `latest: "stored"` post sends in its place, for a dataset version: its spec in
+   *  its rendering, with no version, since DFO resolves the stored head and refuses a version
+   *  it does not store before it looks for the head. */
+  readonly stored?: Readonly<Record<string, unknown>>;
 };
 
 /** One operation over its inputs, with its arguments in the engine's names. */
@@ -492,27 +496,47 @@ function refRoot(ref: DatasetRef): RootNode {
   }
   const specId = member.spec.spec_id;
   if (isDatasetMember(member)) {
-    return root(
-      {
-        spec_id: specId,
-        content_version: member.contentVersion,
-        rendering: { without_party_totals: member.rendering.without_party_totals === true },
-      },
-      specId,
-    );
+    const rendering = { without_party_totals: member.rendering.without_party_totals === true };
+    return root({ spec_id: specId, content_version: member.contentVersion, rendering }, specId, {
+      spec_id: specId,
+      rendering,
+    });
   }
   return root({ spec_id: specId, content_version: member.contentVersion }, specId);
 }
 
-const root = (node: Record<string, unknown>, name: string): RootNode =>
-  Object.freeze({ kind: "root", node: Object.freeze(node), name });
+const root = (
+  node: Record<string, unknown>,
+  name: string,
+  stored?: Record<string, unknown>,
+): RootNode =>
+  Object.freeze({
+    kind: "root",
+    node: Object.freeze(node),
+    name,
+    ...(stored === undefined ? {} : { stored: Object.freeze(stored) }),
+  });
 
-/** The tree `node` sends. */
-function wire(node: TreeNode): Record<string, unknown> {
-  if (node.kind === "root") return structuredClone(node.node);
-  const inputs: Record<string, unknown> = { data: wire(node.data) };
-  if (node.other !== undefined) inputs["other"] = wire(node.other);
+/** The tree `node` sends, with each dataset version as its stored node when `stored`. */
+function wire(node: TreeNode, stored = false): Record<string, unknown> {
+  if (node.kind === "root") return structuredClone((stored ? node.stored : undefined) ?? node.node);
+  const inputs: Record<string, unknown> = { data: wire(node.data, stored) };
+  if (node.other !== undefined) inputs["other"] = wire(node.other, stored);
   return { verb: node.verb, arguments: structuredClone(node.arguments), inputs };
+}
+
+/**
+ * The tree a `latest: "stored"` post of `chain` sends: each root that reads a dataset version
+ * goes as its spec in the same rendering, with no version, so DFO reads the version its stored
+ * head names in that rendering, as it would for the version, and a version DFO no longer
+ * stores, or never stored on this deployment, is no refusal. A frame DFO computed keeps its
+ * version, and DFO resolves the readings its recipe read.
+ *
+ * @throws {InvalidRequestError} As `chain.tree()` throws.
+ */
+export function storedTree(chain: Recipe): Record<string, unknown> {
+  chain.tree();
+  return wire(treeOf(chain), true);
 }
 
 /** The chain that makes `node`, as it was called: `recipe(spec_…).rank({ … })`. */

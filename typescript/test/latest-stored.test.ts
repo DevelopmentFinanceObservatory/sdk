@@ -274,12 +274,20 @@ describe('a recipe fetched with latest: "stored"', () => {
     const { fetch, seen } = mockFetch(storedAnswer(["pending"]), frameFile);
     const data = await fetchDataset(transportOver(fetch), chain, { latest: "stored" });
     assert.deepEqual(calls(seen), [POST, DIGEST_FILE]);
-    // The roots go as the recipe built them, the ref's pinned version included.
+    // The ref's dataset version goes as its spec in its rendering, with no version, so DFO
+    // reads its stored head and refuses no version it does not store.
+    const tree = chain.tree() as { inputs: { data: unknown } };
     assert.deepEqual(JSON.parse(seen[0]!.body!), {
-      tree: chain.tree(),
+      tree: {
+        ...tree,
+        inputs: {
+          data: { spec_id: held.spec.spec_id, rendering: { without_party_totals: true } },
+        },
+      },
       latest: "stored",
       include: ["manifest"],
     });
+    assert.equal(held.rendering.without_party_totals, true);
     assert.equal(data.freshness, "pending");
     assert.ok(data.ref.equals(new DatasetRef([derived])));
   });
@@ -380,19 +388,40 @@ describe('a recipe fetched with latest: "stored"', () => {
     assert.equal(data.freshness, "current");
   });
 
-  test("posts a root of a frame DFO computed as it stands", async () => {
+  test("keeps the version of a frame DFO computed beside a dataset's spec root", async () => {
     const computed = DatasetRef.fromJSON(
       (await contractJson<{ ref: unknown }>("refs/ref-derived-member.json")).ref,
     );
+    const [frame] = computed.members;
     const { fetch, seen } = mockFetch(storedAnswer(), frameFile);
-    const fromComputed = recipe(computed).rank({ by: "origin" });
-    await fetchDataset(transportOver(fetch), fromComputed, { latest: "stored" });
-    assert.deepEqual(JSON.parse(seen[0]!.body!), {
-      tree: fromComputed.tree(),
-      latest: "stored",
-      include: ["manifest"],
+    const mixed = recipe(computed).quotientOf(storedRef, { on: ["destination"] });
+    await fetchDataset(transportOver(fetch), mixed, { latest: "stored" });
+    const { inputs } = (JSON.parse(seen[0]!.body!) as { tree: { inputs: unknown } }).tree;
+    assert.deepEqual(inputs, {
+      data: { spec_id: frame!.spec.spec_id, content_version: frame!.contentVersion },
+      other: { spec_id: held.spec.spec_id, rendering: { without_party_totals: true } },
     });
   });
+
+  for (const latest of [false, true]) {
+    test(`with latest: ${latest} posts the dataset version as the recipe built it`, async () => {
+      const { fetch, seen } = mockFetch(
+        // latest: false asks for the manifest in the answer, latest: true reads its route.
+        ...(latest
+          ? [json(ready), json(derivedManifest)]
+          : [json({ ...ready, manifest: derivedManifest })]),
+        frameFile,
+      );
+      await fetchDataset(transportOver(fetch), chain, { latest });
+      const { tree } = JSON.parse(seen[0]!.body!) as { tree: { inputs: { data: unknown } } };
+      assert.deepEqual(tree, chain.tree());
+      assert.deepEqual(tree.inputs.data, {
+        spec_id: held.spec.spec_id,
+        content_version: held.contentVersion,
+        rendering: { without_party_totals: true },
+      });
+    });
+  }
 
   test("of a derived ref posts its bare root and reads the digest file", async () => {
     const { fetch, seen } = mockFetch(storedAnswer(["stale"]), frameFile);

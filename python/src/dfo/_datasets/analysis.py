@@ -102,6 +102,7 @@ from dfo._datasets.recipe import (
     Year,
     column_roles,
     recipe,
+    stored_tree,
 )
 from dfo._http.hooks import async_offload
 from dfo._http.transport import AsyncTransport, retry_after
@@ -163,7 +164,7 @@ async def run_recipe(
             attempt (`digest_mismatch`).
     """
     check_strict(strict)
-    tree = target.tree()
+    tree = stored_tree(target) if latest == "stored" else target.tree()
     if deadline is None:
         deadline = transport.deadline(timeout)
     answer = await _analyse(

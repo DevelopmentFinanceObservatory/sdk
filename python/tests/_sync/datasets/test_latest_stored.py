@@ -275,12 +275,23 @@ def test_a_stored_recipe_costs_the_post_and_the_file() -> None:
     server = Server(json_response(200, stored_answer("current")), parquet(RANK_FRAME))
     with make(server) as transport:
         data = fetch(transport, CHAIN, latest="stored")
-    # The tree goes as it is built, each root as it stands, and DFO resolves
-    # the roots to their stored heads.
+    # The ref's root goes as a Spec root in its rendering, with no version, so
+    # DFO reads the stored head even of a version it never stored; the Spec
+    # root goes as it stands.
+    tree = CHAIN.tree()
+    quotient = tree["inputs"]["data"]["inputs"]
+    quotient["data"] = {
+        "spec_id": HELD.spec.spec_id,
+        "rendering": {"without_party_totals": True},
+    }
     assert server.body(0) == {
-        "tree": CHAIN.tree(),
+        "tree": tree,
         "latest": "stored",
         "include": ["manifest"],
+    }
+    assert quotient["other"] == {
+        "spec_id": OTHER,
+        "rendering": {"without_party_totals": True},
     }
     assert server.calls() == [f"POST {BASE}/datasets/analysis", f"GET {file_route()}"]
     assert server.requests[1].url.query == b""
@@ -434,12 +445,41 @@ def test_a_computed_frame_under_stored_posts_its_bare_root() -> None:
     assert data.freshness == "stale"
 
 
-def test_a_recipe_of_a_computed_frame_is_posted_under_stored() -> None:
+def test_a_computed_root_keeps_its_version_under_stored() -> None:
     server = Server(json_response(200, stored_answer("current")), parquet(RANK_FRAME))
-    chain = recipe(derived_ref()).rank(by="origin")
+    (computed,) = derived_ref().members
+    chain = recipe(DatasetRef((HELD,))).compare(derived_ref(), on="destination")
     with make(server) as transport:
         fetch(transport, chain, latest="stored")
-    assert server.body(0)["tree"] == chain.tree()
+    inputs = server.body(0)["tree"]["inputs"]
+    assert inputs["data"] == {
+        "spec_id": HELD.spec.spec_id,
+        "rendering": {"without_party_totals": True},
+    }
+    assert inputs["other"] == {
+        "spec_id": computed.spec.spec_id,
+        "content_version": computed.content_version,
+    }
+
+
+@pytest.mark.parametrize("latest", [False, True])
+def test_other_latest_values_post_the_roots_versions(latest: bool) -> None:
+    answers = (
+        [json_response(200, stored_answer())]
+        if latest is False
+        else [
+            json_response(200, load_recorded("analysis-rank-ready.json")),
+            json_response(200, load_recorded("analysis-rank-manifest.json")),
+        ]
+    )
+    server = Server(*answers, parquet(RANK_FRAME))
+    with make(server) as transport:
+        fetch(transport, CHAIN, latest=latest)
+    tree = server.body(0)["tree"]
+    assert tree == CHAIN.tree()
+    assert tree["inputs"]["data"]["inputs"]["data"]["content_version"] == (
+        HELD.content_version
+    )
 
 
 def test_offline_each_member_reads_its_newest_cached_version_as_stale(

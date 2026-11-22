@@ -17,7 +17,8 @@ start or a second reading:
 - a `Spec`, `{spec_id, rendering: {without_party_totals: true}}`, read at its
   newest version without party totals, as `fetch(spec)` reads it;
 - a Dataset or ref of one dataset member, `{spec_id, content_version,
-  rendering}`, read at that version in the member's party-totals cut;
+  rendering}`, read at that version in the member's party-totals cut, and sent
+  without its `content_version` under `latest="stored"` (`stored_tree`);
 - a Dataset or ref of one derived member, `{spec_id, content_version}`, which
   DFO expands into the recipe that made it;
 - a Dataset or ref of several members, sent as `{ref}`, which DFO refuses with
@@ -101,6 +102,9 @@ class _Root:
 
     node: Mapping[str, Any]
     name: str
+    # Whether the root names a dataset version, `{spec_id, content_version,
+    # rendering}`, which `stored_tree` sends as a Spec root.
+    dataset_version: bool = False
 
 
 type _Node = _Step | _Root
@@ -461,6 +465,7 @@ def _node(start: object, name: str) -> _Node:
                     },
                 },
                 member.spec.spec_id,
+                dataset_version=True,
             )
         case [DerivedRefMember() as member]:
             return _Root(
@@ -482,14 +487,31 @@ def _ref_object(ref: DatasetRef) -> dict[str, Any]:
     return json.loads(ref.to_json())
 
 
-def _wire(node: _Node) -> dict[str, Any]:
+def stored_tree(chain: Recipe) -> dict[str, Any]:
+    """The tree a `latest="stored"` run of `chain` sends: each root that names a
+    dataset version sent as a Spec root of its spec and rendering, `{spec_id,
+    rendering}`, so DFO reads the version the dataset's stored head names
+    whether or not it stores the version the root names. A Spec root, a root
+    of a frame DFO computed and a root of several readings go as they stand.
+
+    Raises:
+        InvalidRequestError: As `Recipe.tree` raises.
+    """
+    chain.tree()
+    return _wire(chain._tree, stored=True)
+
+
+def _wire(node: _Node, *, stored: bool = False) -> dict[str, Any]:
     """The tree `node` sends, a deep copy, so a change to it leaves the recipe as
-    it was."""
+    it was; with `stored`, each dataset-version root as a Spec root."""
     if isinstance(node, _Root):
-        return copy.deepcopy(dict(node.node))
-    inputs = {"data": _wire(node.data)}
+        wired = copy.deepcopy(dict(node.node))
+        if stored and node.dataset_version:
+            del wired["content_version"]
+        return wired
+    inputs = {"data": _wire(node.data, stored=stored)}
     if node.other is not None:
-        inputs["other"] = _wire(node.other)
+        inputs["other"] = _wire(node.other, stored=stored)
     arguments = copy.deepcopy(dict(node.arguments))
     return {"verb": node.verb, "arguments": arguments, "inputs": inputs}
 
