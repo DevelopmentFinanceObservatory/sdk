@@ -643,21 +643,35 @@ function loadStep(value: unknown, pointer: string, allowPer: boolean): DerivedSt
   const by = arrayAt(step["by"], `${pointer}/by`).map((column, index) =>
     stringAt(column, `${pointer}/by/${index}`),
   );
-  const per = Object.hasOwn(step, "per") ? loadPer(step["per"], `${pointer}/per`) : [];
-  if (per.length > 0 && verb !== "rank")
-    throw invalid(`${pointer}/per`, "only a rank step has per");
-  const shared = per.find((column) => by.includes(column));
-  if (shared !== undefined) throw invalid(`${pointer}/per`, `names ${shared}, which by names`);
+  const per = Object.hasOwn(step, "per")
+    ? checkPer(arrayAt(step["per"], `${pointer}/per`), verb, by, `${pointer}/per`)
+    : [];
   return { verb, by, limit: limit as number | null, per };
 }
 
-/** A step's `per`: a non-empty array of distinct strings. */
-function loadPer(value: unknown, pointer: string): string[] {
-  const per = arrayAt(value, pointer).map((column, index) =>
-    stringAt(column, `${pointer}/${index}`),
-  );
+/**
+ * A step's `per`: a non-empty array of distinct, non-empty strings that names no column `by`
+ * names, on a rank step. The loader and the steps built from a recipe's tree share it, so a file
+ * this client writes loads.
+ *
+ * @throws {FormatError} `per` breaks one of those rules; `pointer` locates it.
+ */
+export function checkPer(
+  items: readonly unknown[],
+  verb: string,
+  by: readonly string[],
+  pointer: string,
+): string[] {
+  const per = items.map((column, index) => {
+    const text = stringAt(column, `${pointer}/${index}`);
+    if (text === "") throw invalid(`${pointer}/${index}`, "an empty string");
+    return text;
+  });
   if (per.length === 0) throw invalid(pointer, "is empty");
   if (new Set(per).size !== per.length) throw invalid(pointer, "repeats a column");
+  if (verb !== "rank") throw invalid(pointer, "only a rank step has per");
+  const shared = per.find((column) => by.includes(column));
+  if (shared !== undefined) throw invalid(pointer, `names ${shared}, which by names`);
   return per;
 }
 

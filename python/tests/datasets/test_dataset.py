@@ -1188,8 +1188,16 @@ def test_a_derived_dataset_without_per_saves_format_2_steps(tmp_path: Path) -> N
         (["a", "a"], "/dfo.steps/0/per"),
         (["financingRecipient"], "/dfo.steps/0/per"),
         ("destination", "/dfo.steps/0/per"),
+        ([""], "/dfo.steps/0/per/0"),
     ],
-    ids=["in-format-2", "empty", "repeated", "names-by", "not-an-array"],
+    ids=[
+        "in-format-2",
+        "empty",
+        "repeated",
+        "names-by",
+        "not-an-array",
+        "empty-column",
+    ],
 )
 def test_a_per_the_format_does_not_allow_is_refused(
     tmp_path: Path, per: object, pointer: str
@@ -1204,6 +1212,91 @@ def test_a_per_the_format_does_not_allow_is_refused(
     with pytest.raises(FormatError) as caught:
         load_saved(path)
     assert (caught.value.reason, caught.value.pointer) == ("format_invalid", pointer)
+
+
+def test_a_step_is_checked_in_key_order_so_both_clients_give_one_pointer(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "derived.parquet"
+    _partitioned().save(path)
+    table = pq.read_table(path)
+    # A bad limit, verb and per: the limit is the first the loaders refuse.
+    steps = [{"verb": 1, "by": ["a"], "limit": "x", "per": []}]
+    metadata = {**table.schema.metadata, b"dfo.steps": json.dumps(steps).encode()}
+    pq.write_table(table.replace_schema_metadata(metadata), path)
+    with pytest.raises(FormatError) as caught:
+        load_saved(path)
+    assert caught.value.pointer == "/dfo.steps/0/limit"
+    steps = [{"verb": 1, "by": ["a"], "limit": 2, "per": []}]
+    metadata[b"dfo.steps"] = json.dumps(steps).encode()
+    pq.write_table(table.replace_schema_metadata(metadata), path)
+    with pytest.raises(FormatError) as caught:
+        load_saved(path)
+    assert caught.value.pointer == "/dfo.steps/0/verb"
+
+
+_ROLES = {"financingProvider": "origin", "financingRecipient": "destination"}
+
+
+@pytest.mark.parametrize(
+    ("partition_by", "roles"),
+    [
+        (["financingProvider"], {"financingProvider": "origin"}),
+        (["financingProvider", "time_period"], {"financingProvider": "origin"}),
+    ],
+    ids=["one-column", "two-columns"],
+)
+def test_a_written_format_3_file_always_loads_back(
+    tmp_path: Path, partition_by: list[str], roles: dict[str, str]
+) -> None:
+    manifest = copy.deepcopy(load("analysis-rank-manifest.json"))
+    manifest["recipe"]["tree"]["op_spec"]["parameters"]["partition_by"] = partition_by
+    data = derived_dataset(
+        _derived_member("rank"),
+        manifest,
+        (DATA / "analysis-rank-frame.parquet").read_bytes(),
+        roles=roles,
+    )
+    path = tmp_path / "derived.parquet"
+    data.save(path)
+    assert load_saved(path)._steps == data._steps
+
+
+@pytest.mark.parametrize(
+    "partition_by",
+    [["financingRecipient"], ["financingProvider", "financingProvider"], [""]],
+    ids=["names-by", "repeated", "empty-column"],
+)
+def test_a_tree_whose_per_a_saved_file_could_not_hold_is_refused_at_build(
+    partition_by: list[str],
+) -> None:
+    manifest = copy.deepcopy(load("analysis-rank-manifest.json"))
+    manifest["recipe"]["tree"]["op_spec"]["parameters"]["partition_by"] = partition_by
+    with pytest.raises(ContractError) as caught:
+        derived_dataset(
+            _derived_member("rank"),
+            manifest,
+            (DATA / "analysis-rank-frame.parquet").read_bytes(),
+        )
+    assert caught.value.code == "contract_violation"
+
+
+def test_two_columns_called_by_one_role_give_a_per_that_names_by() -> None:
+    manifest = copy.deepcopy(load("analysis-rank-manifest.json"))
+    manifest["recipe"]["tree"]["op_spec"]["parameters"]["partition_by"] = [
+        "financingProvider"
+    ]
+    with pytest.raises(ContractError) as caught:
+        derived_dataset(
+            _derived_member("rank"),
+            manifest,
+            (DATA / "analysis-rank-frame.parquet").read_bytes(),
+            roles={
+                "financingProvider": "destination",
+                "financingRecipient": "destination",
+            },
+        )
+    assert caught.value.code == "contract_violation"
 
 
 def test_a_saved_derived_dataset_keeps_its_roots_groupby(tmp_path: Path) -> None:

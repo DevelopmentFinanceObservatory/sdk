@@ -742,6 +742,8 @@ def _check(where: str, outcome: Mapping[str, Any], result: object, step: Step) -
         pytest.fail(f"{where}: expected {kind} {expected}, got {result!r}")
     actual = {member: readers[member](result, step) for member in expected}
     assert actual == expected, where
+    if kind == "error":
+        assert step.pending_waits == [], where
 
 
 async def _replay(

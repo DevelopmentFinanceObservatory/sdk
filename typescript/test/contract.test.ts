@@ -395,6 +395,7 @@ async function replayScenario(record: Scenario, baseUrl?: string, revive = false
       observed.pendingWaits = pendingWaits.slice(pendingBefore).map((ms) => ms / 1000);
       if (!("error" in expected)) throw error;
       checkError(error, expected.error, name, observed);
+      assert.deepEqual(observed.pendingWaits, [], `${name}: pending_waits on an error`);
       continue;
     }
     observed.retryWaits = retryWaits.slice(retriesBefore).map((ms) => ms / 1000);

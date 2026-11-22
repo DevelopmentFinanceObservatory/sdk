@@ -1683,8 +1683,9 @@ def derived_dataset(
 
     Raises:
         ContractError: The manifest names another frame, or its `left_out` or
-            `left_out_complete` breaks the served shape (`contract_violation`);
-            the file is not Parquet (`unexpected_response`) or holds no
+            `left_out_complete` breaks the served shape, or a step of its
+            recipe has a `per` a saved file could not hold
+            (`contract_violation`); the file is not Parquet (`unexpected_response`) or holds no
             `time_period` or numeric `value` column (`contract_violation`).
     """
     frame = f"{member.spec.spec_id} at {member.content_version}"
@@ -1717,6 +1718,20 @@ def derived_dataset(
     )
     recipe = manifest.get("recipe")
     tree = recipe.get("tree") if isinstance(recipe, Mapping) else None
+    steps = tuple(
+        replace(
+            step,
+            by=tuple(roles.get(column, column) for column in step.by),
+            per=tuple(roles.get(column, column) for column in step.per),
+        )
+        for step in (_tree_steps(tree) if isinstance(tree, Mapping) else ())
+    )
+    for step in steps:
+        if step.per:
+            try:
+                _check_per(step.per, verb=step.verb, by=step.by, pointer="/recipe/tree")
+            except FormatError as error:
+                raise _manifest_violation("/recipe/tree") from error
     return Dataset(
         sentence=member.sentence,
         members=(built,),
@@ -1734,14 +1749,7 @@ def derived_dataset(
         left_out=left_out,
         party_totals_left_out=_root_party_totals(manifest, member.roots),
         _left_out_complete=complete,
-        _steps=tuple(
-            replace(
-                step,
-                by=tuple(roles.get(column, column) for column in step.by),
-                per=tuple(roles.get(column, column) for column in step.per),
-            )
-            for step in (_tree_steps(tree) if isinstance(tree, Mapping) else ())
-        ),
+        _steps=steps,
         from_cache=from_cache,
         fetched_at=fetched_at,
         stat_vars_summed=stat_vars_summed,
@@ -2461,40 +2469,50 @@ def _load_step(value: object, pointer: str, *, per: bool) -> DerivedStep:
         required=("verb", "by", "limit"),
         allowed=("per",) if per else (),
     )
-    by = _array(obj["by"], f"{pointer}/by")
-    columns = _load_per(obj["per"], f"{pointer}/per") if "per" in obj else ()
     limit = obj["limit"]
     if limit is not None and not is_integer(limit):
         raise FormatError("format_invalid", f"{pointer}/limit", "not an integer")
-    step = DerivedStep(
-        verb=_string(obj["verb"], f"{pointer}/verb"),
-        by=tuple(
-            _string(item, f"{pointer}/by/{index}") for index, item in enumerate(by)
-        ),
+    verb = _string(obj["verb"], f"{pointer}/verb")
+    by = tuple(
+        _string(item, f"{pointer}/by/{index}")
+        for index, item in enumerate(_array(obj["by"], f"{pointer}/by"))
+    )
+    columns = ()
+    if "per" in obj:
+        items = _array(obj["per"], f"{pointer}/per")
+        columns = _check_per(items, verb=verb, by=by, pointer=f"{pointer}/per")
+    return DerivedStep(
+        verb=verb,
+        by=by,
         limit=None if limit is None else int(limit),
         per=columns,
     )
-    if step.per and step.verb != "rank":
-        raise FormatError(
-            "format_invalid", f"{pointer}/per", "only a rank step has per"
-        )
-    if shared := [column for column in step.per if column in step.by]:
-        raise FormatError(
-            "format_invalid", f"{pointer}/per", f"names {shared[0]}, which by names"
-        )
-    return step
 
 
-def _load_per(value: object, pointer: str) -> tuple[str, ...]:
-    """A step's `per`: a non-empty array of distinct strings."""
-    items = _array(value, pointer)
+def _check_per(
+    items: Sequence[object], *, verb: str, by: Sequence[str], pointer: str
+) -> tuple[str, ...]:
+    """A step's `per`: a non-empty array of distinct, non-empty strings that
+    names no column `by` names, on a rank step. The saved-file loader and the
+    steps built from a recipe's tree share it, so a file this client writes
+    loads.
+
+    Raises:
+        FormatError: `per` breaks one of those rules; `pointer` locates it.
+    """
     columns = tuple(
-        _string(item, f"{pointer}/{index}") for index, item in enumerate(items)
+        _filled(item, f"{pointer}/{index}") for index, item in enumerate(items)
     )
     if not columns:
         raise FormatError("format_invalid", pointer, "is empty")
     if len(set(columns)) != len(columns):
         raise FormatError("format_invalid", pointer, "repeats a column")
+    if verb != "rank":
+        raise FormatError("format_invalid", pointer, "only a rank step has per")
+    if shared := [column for column in columns if column in by]:
+        raise FormatError(
+            "format_invalid", pointer, f"names {shared[0]}, which by names"
+        )
     return columns
 
 

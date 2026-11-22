@@ -8,7 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- A dataset a recipe made names the split of a partitioned ranking in its text form's `Derived` line, as `rank by origin per destination, limit 10`, and `DerivedStep` holds it as `per`, empty for a step with none. A dataset that holds a partitioned ranking writes format 3 from `toBytes()`, which lets a step in `dfo.steps` carry `per`; any other derived dataset still writes format 2. `Dataset.fromBytes` reads formats 1, 2 and 3, and throws `FormatError` (`format_invalid`) at `/dfo.steps/0/per` for a `per` in a format 2 file, one that is empty or repeats a column, one on a step that is not a `rank`, or one that names a column the step's `by` names.
+- A dataset a recipe made names the split of a partitioned ranking in its text form's `Derived` line, as `rank by origin per destination, limit 10`, with each column named by the role word the call used. A dataset that holds a partitioned ranking writes format 3 from `toBytes()`, which lets a step in `dfo.steps` carry `per`; any other derived dataset still writes format 2. `Dataset.fromBytes` reads formats 1, 2 and 3. It throws `FormatError` (`format_invalid`) at `/dfo.steps/0/per` for a `per` in a format 2 file, one that is not an array, is empty or repeats a column, one on a step that is not a `rank`, or one that names a column the step's `by` names, and at `/dfo.steps/0/per/0` for an empty column name. A recipe whose `partition_by`, once named by roles, would break one of those rules throws `ContractError` (`contract_violation`) when the dataset is built, so a file the client writes loads.
+
+### Changed
+
+- The contract follows spec-kit `a47d08d`, which adds the analysis scenarios and format 3 of the saved-file schema.
 
 ## [0.6.0] - 2026-11-21
 

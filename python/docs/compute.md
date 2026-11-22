@@ -317,7 +317,7 @@ The client checks these before any request and raises `InvalidRequestError` with
 
 ### Derived datasets
 
-A `Dataset` an operation returns has one `DerivedMember` in `members`, and its ref one `DerivedRefMember`, whose `spec_id` starts `ops_` and `content_version` `ocv_`. Its repr adds a `Derived` line with the steps in run order and the number of readings, a `Summed` line with the count of variables DFO added in each summed reading, a `Period` line with the years `latest_year` settled on, and a `Missing data` line with the count of series left out.
+A `Dataset` an operation returns has one `DerivedMember` in `members`, and its ref one `DerivedRefMember`, whose `spec_id` starts `ops_` and `content_version` `ocv_`. Its repr adds a `Derived` line with the steps in run order, a ranking split by `per` printed as `rank by origin per destination, limit 10`, and the number of readings, a `Summed` line with the count of variables DFO added in each summed reading, a `Period` line with the years `latest_year` settled on, and a `Missing data` line with the count of series left out.
 
 `data.stat_vars_summed` is a tuple of `dfo.types.SummedReading`, from the answer of the analysis that made the Dataset. It is empty for a derived ref read without computing it again and for a Dataset `dfo.load` read, since neither the ref nor the saved file holds it.
 
