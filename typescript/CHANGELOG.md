@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-22
+
 ### Changed
 
 - `client.fetch(recipe, { latest: "stored" })` costs two requests per recipe, down from four for a recipe of one reading and one more for each further reading. It posts the tree to `POST /datasets/analysis` with `latest: "stored"` and `include: ["manifest"]`, each root that reads a dataset version sent as its spec in the same rendering, `{spec_id, rendering}` with no `content_version`, and a frame DFO computed sent with its version. DFO resolves each root to the version its dataset's stored head names and embeds the computed frame's manifest in the 200, then downloads the frame from `GET /datasets/derived/{spec_id}/{content_version}/files/{digest}`, checked against the ref's digest. It sends no `GET /datasets/{spec_id}` per reading and no derived manifest GET. `dataset.freshness` is the worst freshness the answer's `resolved_roots` states, and null when the member is absent or any entry states none of `current`, `pending` and `stale`. A 200 whose `manifest` is absent or not an object, names another frame than the ref, or holds a `left_out` that is neither a list nor null throws `ContractError` (`contract_violation`) at `/manifest`, `/manifest/spec_id`, `/manifest/content_version` or `/manifest/left_out`, before the file is read. A 202 posts again after its `Retry-After`, as before. A ref minted on another deployment, or naming a version DFO no longer stores, reads the stored head as 0.6.0's head GET did, where posting the version would answer `snapshot_not_found`.
