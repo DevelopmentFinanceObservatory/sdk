@@ -944,7 +944,7 @@ export class Dataset {
             complete: this.#state.leftOutComplete,
           }),
           "dfo.steps": JSON.stringify(
-            // `per` only where a step has one: format 2 steps are the closed `{verb, by, limit}`.
+            // Write `per` only where a step has one, since format 2 steps are the closed `{verb, by, limit}`.
             this.#state.steps.map(({ verb, by, limit, per }) =>
               per.length > 0 ? { verb, by, limit, per } : { verb, by, limit },
             ),

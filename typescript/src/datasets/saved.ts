@@ -39,7 +39,7 @@ type Retention = Pick<Member, "pinned" | "heldUntil">;
  *  Python's `Dataset.save` writes: 1 for a dataset of dataset versions, and 2 for a derived
  *  dataset, whose `dfo.ref` is a format 2 ref and which adds `dfo.left_out` and `dfo.steps`, so
  *  a client that reads format 1 alone refuses it as a later format. A derived dataset with a
- *  partitioned ranking saves 3, which lets a step carry `per`; format 2 steps are the closed
+ *  partitioned ranking saves 3, which lets a step carry `per`. Format 2 steps are the closed
  *  `{verb, by, limit}`. */
 export const SAVED_FORMAT_VERSION = 1;
 export const SAVED_DERIVED_FORMAT_VERSION = 2;
@@ -650,11 +650,11 @@ function loadStep(value: unknown, pointer: string, allowPer: boolean): DerivedSt
 }
 
 /**
- * A step's `per`: a non-empty array of distinct, non-empty strings that names no column `by`
- * names, on a rank step. The loader and the steps built from a recipe's tree share it, so a file
- * this client writes loads.
+ * Check a step's `per` and return it. It must be a non-empty array of distinct, non-empty
+ * strings that names no column `by` names, on a rank step. The loader and the steps built from a
+ * recipe's tree share this check, so a file this client writes loads.
  *
- * @throws {FormatError} `per` breaks one of those rules; `pointer` locates it.
+ * @throws {FormatError} `per` breaks one of those rules, at `pointer`.
  */
 export function checkPer(
   items: readonly unknown[],

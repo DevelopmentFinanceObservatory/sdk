@@ -125,7 +125,7 @@ REQUIRED_COLUMNS = ("time_period", "value")
 # whose `dfo.ref` is a format 2 ref and which adds `dfo.left_out` and
 # `dfo.steps`, so a client that reads format 1 alone refuses it as a later format.
 # A derived dataset with a partitioned ranking saves format 3, which lets a step
-# carry `per`; format 2 steps are the closed `{verb, by, limit}`.
+# carry `per`. Format 2 steps are the closed `{verb, by, limit}`.
 SAVED_FORMAT_VERSION = 1
 SAVED_DERIVED_FORMAT_VERSION = 2
 SAVED_PER_FORMAT_VERSION = 3
@@ -1287,8 +1287,8 @@ class Dataset:
 
 
 def _step_object(step: DerivedStep) -> dict[str, Any]:
-    """A step as a saved file keeps it: `per` only where the step has one, since
-    format 2 steps are the closed `{verb, by, limit}`."""
+    """A step as a saved file keeps it, with `per` only where the step has one,
+    since format 2 steps are the closed `{verb, by, limit}`."""
     obj = asdict(step)
     if not step.per:
         del obj["per"]
@@ -1685,8 +1685,9 @@ def derived_dataset(
         ContractError: The manifest names another frame, or its `left_out` or
             `left_out_complete` breaks the served shape, or a step of its
             recipe has a `per` a saved file could not hold
-            (`contract_violation`); the file is not Parquet (`unexpected_response`) or holds no
-            `time_period` or numeric `value` column (`contract_violation`).
+            (`contract_violation`); the file is not Parquet
+            (`unexpected_response`) or holds no `time_period` or numeric
+            `value` column (`contract_violation`).
     """
     frame = f"{member.spec.spec_id} at {member.content_version}"
     if (manifest.get("spec_id"), manifest.get("content_version")) != (
@@ -2492,13 +2493,13 @@ def _load_step(value: object, pointer: str, *, per: bool) -> DerivedStep:
 def _check_per(
     items: Sequence[object], *, verb: str, by: Sequence[str], pointer: str
 ) -> tuple[str, ...]:
-    """A step's `per`: a non-empty array of distinct, non-empty strings that
-    names no column `by` names, on a rank step. The saved-file loader and the
-    steps built from a recipe's tree share it, so a file this client writes
-    loads.
+    """Check a step's `per` and return it as a tuple. It must be a non-empty
+    array of distinct, non-empty strings that names no column `by` names, on a
+    rank step. The saved-file loader and the steps built from a recipe's tree
+    share this check, so a file this client writes loads.
 
     Raises:
-        FormatError: `per` breaks one of those rules; `pointer` locates it.
+        FormatError: `per` breaks one of those rules, at `pointer`.
     """
     columns = tuple(
         _filled(item, f"{pointer}/{index}") for index, item in enumerate(items)
