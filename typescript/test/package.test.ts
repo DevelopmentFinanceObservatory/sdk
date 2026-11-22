@@ -229,6 +229,7 @@ test("each entry point exports these names and no others", async () => {
       "Start",
       "StatChange",
       "StatOptions",
+      "SummedReading",
       "UnitConversion",
       "UnknownPart",
       "UnsupportedPart",

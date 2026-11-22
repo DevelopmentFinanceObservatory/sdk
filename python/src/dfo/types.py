@@ -13,7 +13,9 @@ It also holds the argument types the public signatures name: `Start`, `Year`,
 the share calls and `dfo.fetch(share, as_of=...)`; and `PriceBasis` for
 `dfo.fetch(spec, price_basis=...)`, whose choices a spec's `UnitConversion`
 and its `ConversionCurrency` entries describe. `Freshness` is what
-`dfo.fetch(ref, latest="stored")` reports as `dataset.freshness`. `CallTimeout`
+`dfo.fetch(ref, latest="stored")` reports as `dataset.freshness`, and
+`SummedReading` each reading a recipe summed over its StatVars, as
+`dataset.stat_vars_summed` lists them. `CallTimeout`
 types a call's `timeout`, and `CLIENT_TIMEOUT`, its default, stands for the client's
 `timeout`, so a wrapper can pass it through. `ClientTimeoutArgument` and
 `MaxRetriesArgument` type a client's `timeout` and `max_retries`, and
@@ -78,6 +80,7 @@ from dfo._datasets.dataset import (
     LeftOutSeries,
     LeftOutStep,
     PartyTotalsLeftOut,
+    SummedReading,
 )
 from dfo._datasets.publication import (
     Card,
@@ -175,6 +178,7 @@ __all__ = [
     "Source",
     "Start",
     "StatChange",
+    "SummedReading",
     "UnitConversion",
     "UnknownPart",
     "UnsupportedPart",

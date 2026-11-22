@@ -873,6 +873,25 @@ describe("a derived dataset", () => {
     );
   });
 
+  test("prints the StatVars it summed between its steps and its period", async () => {
+    const { dataset } = await derivedDataset(
+      await derivedMember("rank"),
+      await recordedJson("analysis-rank-manifest.json"),
+      await recordedBytes("analysis-rank-frame.parquet"),
+      { statVarsSummed: [{ specId: "spec_a", contentVersion: "cv_a", count: 1598 }] },
+    );
+    const lines = String(dataset).split("\n");
+    const block = lines.slice(
+      1,
+      lines.findIndex((line) => line.startsWith("  Version:")),
+    );
+    assert.deepEqual(block, [
+      "  Derived: rank by financingRecipient, limit 2, from 1 reading",
+      "  Summed: 1,598 StatVars",
+      "  Period: 2022, the newest year at least half the series hold",
+    ]);
+  });
+
   for (const [name, periods, line] of [
     ["latest", [[0, "2024"]], "Period: 2024, the newest year at least half the series hold"],
     [

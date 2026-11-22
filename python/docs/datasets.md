@@ -284,7 +284,7 @@ The fetch sends two GETs per member: the spec's manifest at `GET /datasets/{spec
 
 `data.freshness` is None when the API states no value or one this client does not know. DFO serves a stored version younger than 7 days at once and checks for newer data in the background, so a reading nobody opened in that time can be up to 7 days behind for its first reader. A version older than 7 days is rebuilt on read. The call waits for the build, as `latest=True` does, and a version it waited for is `current`. `data.ref` names the versions read and leaves the freshness out, as the saved file does.
 
-`latest=True` has DFO check for newer data before it answers, so use it in a data step that must hold the newest data. `latest="stored"` suits a read that should answer at once, such as a dashboard. A recipe, a ref of a frame DFO computed, a spec, and a share each refuse `latest="stored"` with `InvalidRequestError` before any request.
+`latest=True` has DFO check for newer data before it answers, so use it in a data step that must hold the newest data. `latest="stored"` suits a read that should answer at once, such as a dashboard. A recipe takes it too, and runs on the stored newest version of each dataset it starts from, as [Follow new data and recompute](compute.md#follow-new-data-and-recompute) describes. A ref of a frame DFO computed, a spec, and a share each refuse `latest="stored"` with `InvalidRequestError` before any request.
 
 ### When a version is gone
 
@@ -319,7 +319,7 @@ print(len(data))
 - `stale`: True when the rows came from the cache under `DFO_OFFLINE=1`.
 - `from_cache` and `fetched_at`: whether the fetch read any file from the cache, and when the data left the server, as a UTC `datetime` or None when the cache recorded no time. [The cache](cache.md#tell-a-cache-hit-from-a-download) shows the display line.
 - `question`: the question the data answers, when it came from `answer.fetch()`, else None.
-- `freshness`: how new the versions are, `current`, `pending` or `stale`, for a dataset `dfo.fetch(ref, latest="stored")` read, else None. The saved file leaves it out.
+- `freshness`: how new the versions are, `current`, `pending` or `stale`, for a dataset `dfo.fetch(ref, latest="stored")` or `dfo.fetch(recipe, latest="stored")` read, else None. The saved file leaves it out.
 - `layout_version`: the column set, or `frame` for the pipeline frame that `layout="frame"` returns for one reading.
 
 The saved file keeps the provenance in the Parquet key-value metadata, under these keys. Each value is UTF-8 text, and a key marked optional is left out when the dataset has no value for it:

@@ -247,6 +247,93 @@ async def test_a_recipe_that_leaves_nothing_out_warns_nothing() -> None:
     assert [period.period for period in built.resolved_periods] == ["2022"]
 
 
+async def test_the_readings_dfo_summed_are_listed_and_counted_in_the_repr() -> None:
+    summed = [
+        {"spec_id": AID.spec_id, "content_version": "cv_" + "1" * 32, "count": 1598},
+        {
+            "spec_id": "spec_" + "b" * 32,
+            "content_version": "cv_" + "2" * 32,
+            "count": 40,
+        },
+    ]
+    answer = {**load("analysis-rank-ready.json"), "stat_vars_summed": summed[:1]}
+    server = Server(json_response(200, answer), manifest("rank"), frame("rank"))
+    async with make(server) as transport:
+        data = await AsyncAnalysis(transport).rank(
+            AID, by="origin", per="destination", allow_sparse_breakdowns=True
+        )
+    assert server.body(0)["tree"]["arguments"] == {
+        "rank_by": ["origin"],
+        "partition_by": ["destination"],
+        "allow_sparse_breakdowns": True,
+    }
+    (reading,) = data.stat_vars_summed
+    assert (reading.spec_id, reading.count) == (AID.spec_id, 1598)
+    assert "\n  Summed: 1,598 StatVars\n" in repr(data)
+
+    answer["stat_vars_summed"] = summed
+    server = Server(json_response(200, answer), manifest("rank"), frame("rank"))
+    async with make(server) as transport:
+        data = await AsyncAnalysis(transport).aggregate(
+            AID, by="crsPurpose", allow_sparse_breakdowns=True
+        )
+    assert server.body(0)["tree"]["arguments"]["allow_sparse_breakdowns"] is True
+    assert [reading.count for reading in data.stat_vars_summed] == [1598, 40]
+    assert "\n  Summed: 1,598 and 40 StatVars in 2 readings\n" in repr(data)
+
+
+async def test_a_run_that_summed_nothing_prints_no_summed_line() -> None:
+    answer = {**load("analysis-rank-ready.json"), "stat_vars_summed": []}
+    server = Server(json_response(200, answer), manifest("rank"), frame("rank"))
+    async with make(server) as transport:
+        data = await fetch(transport, recipe(AID).rank(by="destination"))
+    assert data.stat_vars_summed == ()
+    assert "Summed:" not in repr(data)
+
+
+@pytest.mark.parametrize(
+    ("summed", "pointer"),
+    [
+        ({"spec_id": AID.spec_id}, "/stat_vars_summed"),
+        (["spec_a"], "/stat_vars_summed/0"),
+        (
+            [{"content_version": "cv_1", "count": 3}],
+            "/stat_vars_summed/0/spec_id",
+        ),
+        (
+            [{"spec_id": AID.spec_id, "content_version": "cv_1"}],
+            "/stat_vars_summed/0/count",
+        ),
+        (
+            [{"spec_id": AID.spec_id, "content_version": "cv_1", "count": True}],
+            "/stat_vars_summed/0/count",
+        ),
+        (
+            [{"spec_id": AID.spec_id, "content_version": "cv_1", "count": 1}],
+            "/stat_vars_summed/0/count",
+        ),
+    ],
+    ids=[
+        "not-a-list",
+        "entry-not-an-object",
+        "no-spec-id",
+        "no-count",
+        "count-a-boolean",
+        "count-below-two",
+    ],
+)
+async def test_a_stat_vars_summed_this_client_cannot_read_raises_contract_error(
+    summed: object, pointer: str
+) -> None:
+    answer = {**load("analysis-rank-ready.json"), "stat_vars_summed": summed}
+    server = Server(json_response(200, answer))
+    async with make(server) as transport:
+        with pytest.raises(ContractError) as caught:
+            await fetch(transport, recipe(AID).rank(by="destination"))
+    assert caught.value.code == "contract_violation"
+    assert caught.value.pointer == pointer
+
+
 async def test_a_pending_run_posts_again_after_its_retry_after() -> None:
     timeline = Timeline()
     server = Server(pending(), ready("rank"), manifest("rank"), frame("rank"))

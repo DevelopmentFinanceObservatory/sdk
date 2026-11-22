@@ -3,7 +3,9 @@
  * names, or a recipe or a ref of a frame DFO computed through the analysis runner in
  * `analysis.ts`. With `latest: true`, a ref's specs build through that path instead, in the
  * ref's one rendering, as their newest versions. With `latest: "stored"`, each member reads the
- * version DFO stores as its spec's newest, in the member's rendering (`currentManifest`).
+ * version DFO stores as its spec's newest, in the member's rendering (`currentManifest`), and a
+ * recipe posts its tree with each root at that version (`storedRecipeTree`), downloading no
+ * root's file.
  *
  * A ref returns the versions it names, found in this order: the snapshot route, then the files
  * route at the stored digest; the file selector, which renders the version again from its
@@ -35,6 +37,7 @@
  */
 
 import { fetchComputedFrame, fetchDerived, runRecipe } from "./analysis.ts";
+import type { StoredTree } from "./analysis.ts";
 import { Dataset, FRESHNESS, shownDataset } from "./dataset.ts";
 import type { FetchedMember, Freshness } from "./dataset.ts";
 import {
@@ -44,6 +47,7 @@ import {
   InvalidRequestError,
   NotFoundError,
   optionsOf,
+  serverCode,
   VersionUnavailableError,
 } from "../core/errors.ts";
 import {
@@ -72,7 +76,8 @@ import type { CallOptions, FetchOptions, Narrowing } from "./fetch.ts";
 import { build, readBuilt, readManifest, waitFor } from "./operation.ts";
 import { shareIdIn, shownLine } from "./publication.ts";
 import type { Share, ShownFrame } from "./publication.ts";
-import { Recipe } from "./recipe.ts";
+import { Recipe, recipeRoots, treeWithRoots } from "./recipe.ts";
+import type { RecipeRoot } from "./recipe.ts";
 import { shownFrame } from "./shares.ts";
 import type { Built, Manifest, Wait } from "./operation.ts";
 import {
@@ -194,22 +199,26 @@ export async function fetchDataset(
           "computed takes no onProgress; drop it.",
       );
     }
-    if (latest === STORED) {
+    if (latest === STORED && !(target instanceof Recipe)) {
       throw invalid(
         'latest: "stored" reads the stored versions of a ref\'s readings, and DFO stores no ' +
-          "newest version of a recipe or a frame it computed; use latest: true, which computes " +
-          "it again on the newest versions of its readings.",
+          "newest version of a frame it computed; use latest: true, which computes it again " +
+          "on the newest versions of its readings.",
       );
     }
     const computed = present({
-      latest,
+      latest: latest === STORED ? false : latest,
       strict: rest.strict,
       timeout: rest.timeout,
       signal: rest.signal,
     });
-    return target instanceof Recipe
-      ? runRecipe(transport, target, computed)
-      : fetchDerived(transport, target, computed);
+    if (!(target instanceof Recipe)) return fetchDerived(transport, target, computed);
+    if (latest !== STORED) return runRecipe(transport, target, computed);
+    target.tree(); // A recipe with no step throws before any manifest is read.
+    const roots = storedRoots(target);
+    return runRecipe(transport, target, computed, (wait) =>
+      storedRecipeTree(transport, target, roots, wait),
+    );
   }
   if (target instanceof DatasetRef) {
     const members = datasetMembers(target);
@@ -597,6 +606,104 @@ async function fetchStored(
     stated.push(current.freshness);
   }
   return Dataset.create(fetched, { layout, freshness: worstFreshness(stated) });
+}
+
+/** One reading a stored recipe resolves: its spec in one rendering. */
+type StoredReading = { readonly specId: string; readonly rendering: Rendering };
+
+/** The rendering a recipe's spec root reads at its stored version: the frame, without party
+ *  totals, as the root's own rendering states. */
+const SPEC_ROOT_RENDERING: Rendering = { ...FRAME, without_party_totals: true };
+
+/** The key two roots of one spec in one rendering share, so a stored recipe reads its manifest
+ *  once. */
+const readingKey = ({ specId, rendering }: StoredReading): string =>
+  `${specId} ${JSON.stringify(mintOptions(rendering))}`;
+
+/**
+ * Each reading a recipe's roots name, once each: a spec root's spec without party totals, and
+ * each dataset member of a ref or dataset root in its rendering.
+ *
+ * @throws {InvalidRequestError} A root is a frame DFO computed, whose stored newest version DFO
+ *   does not keep (`invalid_argument`), or a root holds several readings, which DFO refuses
+ *   with `several_members`; no request is sent.
+ */
+function storedRoots(chain: Recipe): Map<string, StoredReading> {
+  const readings = new Map<string, StoredReading>();
+  for (const root of recipeRoots(chain)) {
+    const found = rootReadings(root);
+    if (found.length > 1) {
+      throw new InvalidRequestError({
+        code: serverCode("several_members"),
+        detail:
+          `A recipe root of ${found.length} readings cannot run: an operation takes one reading ` +
+          'per side, and DFO refuses a root of several with `several_members`. latest: "stored" ' +
+          "sends no request; start the recipe from a root of one reading.",
+      });
+    }
+    for (const reading of found) readings.set(readingKey(reading), reading);
+  }
+  return readings;
+}
+
+function rootReadings({ node, ref }: RecipeRoot): StoredReading[] {
+  if (ref === undefined) {
+    return [{ specId: String(node["spec_id"]), rendering: SPEC_ROOT_RENDERING }];
+  }
+  return ref.members.map((member) => {
+    if (!isDatasetMember(member)) {
+      throw invalid(
+        `latest: "stored" reads each reading's stored newest version, and the recipe reads ` +
+          `${member.spec.spec_id}, a frame DFO computed, which has none; start the recipe from ` +
+          "the readings that frame read, or fetch the recipe with latest: true.",
+      );
+    }
+    return { specId: member.spec.spec_id, rendering: member.rendering };
+  });
+}
+
+/**
+ * A recipe's tree with each root at the version DFO stores as its spec's newest, and the worst
+ * freshness those versions state. Each reading's manifest is read once, all at the same time,
+ * from `GET /datasets/{specId}` in its rendering, and no file is downloaded. A one-member root
+ * sends the stored version.
+ *
+ * @throws {ContractError} A manifest answers another spec (`contract_violation`).
+ * @throws {DfoTimeoutError} The deadline passed before a manifest was read
+ *   (`deadline_exceeded`).
+ */
+async function storedRecipeTree(
+  transport: Transport,
+  chain: Recipe,
+  readings: ReadonlyMap<string, StoredReading>,
+  wait: Wait,
+): Promise<StoredTree> {
+  // One failed read aborts the others, so a refusal leaves no request running.
+  const failed = new AbortController();
+  const signal =
+    wait.signal === undefined ? failed.signal : AbortSignal.any([wait.signal, failed.signal]);
+  const read = await Promise.all(
+    [...readings].map(async ([key, { specId, rendering }]) => {
+      try {
+        const current = await currentManifest(transport, specId, rendering, { ...wait, signal });
+        return [key, current] as const;
+      } catch (error) {
+        failed.abort();
+        throw error;
+      }
+    }),
+  );
+  const manifests = new Map(read);
+  const storedOf = (reading: StoredReading) => manifests.get(readingKey(reading))!;
+  const tree = treeWithRoots(chain, (root) => {
+    const node = structuredClone(root.node) as Record<string, unknown>;
+    const [first] = rootReadings(root);
+    return { ...node, content_version: contentVersionOf(storedOf(first!).manifest) };
+  });
+  return {
+    tree,
+    freshness: worstFreshness([...manifests.values()].map((current) => current.freshness)),
+  };
 }
 
 /** The worst of the members' freshness, or null when any member's is unknown. */

@@ -9,7 +9,15 @@ import { recipe } from "../src/datasets/recipe.ts";
 import { currentManifest, fetchDataset } from "../src/datasets/resolve.ts";
 import { Transport } from "../src/http/transport.ts";
 import { scenario, scenarioBytes, stepOf } from "./replay.ts";
-import { contractJson, json, mockFetch, recordingSleep } from "./support.ts";
+import {
+  contractJson,
+  json,
+  mockFetch,
+  recordedBytes,
+  recordedJson,
+  recordingSleep,
+} from "./support.ts";
+import type { Seen } from "./support.ts";
 
 // A `latest: "stored"` fetch on a stub transport: the fetch-ref record's manifest answers
 // `GET /datasets/{spec_id}` for each member, and the files route answers the file's bytes, as
@@ -203,14 +211,21 @@ describe("currentManifest", () => {
 });
 
 describe('a fetch refuses latest: "stored" before any request', () => {
-  const { fetch } = mockFetch();
-  const transport = transportOver(fetch);
   const spec = { spec_id: "spec_1", definition: { spec_id: "spec_1" } };
 
   for (const [name, target, named] of [
     ["a spec", () => spec, /client\.fetch\(spec\)/],
     ["a share", () => "https://developmentfinance.org/s/k3Qx8vTa", /takes no latest: "stored"/],
-    ["a recipe", () => recipe(storedRef), /use latest: true/],
+    [
+      "a recipe that starts from a frame DFO computed",
+      async () =>
+        recipe(
+          DatasetRef.fromJSON(
+            (await contractJson<{ ref: unknown }>("refs/ref-derived-member.json")).ref,
+          ),
+        ).rank({ by: "origin" }),
+      /fetch the recipe with latest: true/,
+    ],
     [
       "a derived ref",
       async () =>
@@ -219,13 +234,127 @@ describe('a fetch refuses latest: "stored" before any request', () => {
         ),
       /use latest: true/,
     ],
+    ["a recipe with no step", () => recipe(storedRef), /A recipe with no step/],
   ] as const) {
     test(name, async () => {
-      await assert.rejects(fetchDataset(transport, await target(), { latest: "stored" }), {
-        name: "InvalidRequestError",
-        code: "invalid_argument",
-        message: named,
-      });
+      const { fetch, seen } = mockFetch();
+      await assert.rejects(
+        fetchDataset(transportOver(fetch), await target(), { latest: "stored" }),
+        { name: "InvalidRequestError", code: "invalid_argument", message: named },
+      );
+      assert.deepEqual(seen, []);
     });
   }
+});
+
+const ready = await recordedJson<{ ref: unknown }>("analysis-rank-ready.json");
+const derivedManifest = await recordedJson("analysis-rank-manifest.json");
+const frameBytes = await recordedBytes("analysis-rank-frame.parquet");
+
+describe('a recipe fetched with latest: "stored"', () => {
+  const derived = DatasetRef.fromJSON(ready.ref).members[0]!;
+  const framePath = `/api/datasets/derived/${derived.spec.spec_id}/${derived.contentVersion}`;
+
+  /** Answers each request by its route: a spec's manifest at `NEWER` with the freshness
+   *  `stated` gives it, the analysis, and the computed frame's manifest and file. */
+  const routed =
+    (stated: Readonly<Record<string, string>> = {}) =>
+    (request: Seen): Response => {
+      const { pathname } = new URL(request.url);
+      if (request.method === "POST") return json(ready)();
+      if (pathname === framePath) return json(derivedManifest)();
+      if (pathname === `${framePath}/file`)
+        return new Response(frameBytes.slice(), { status: 200 });
+      const specId = pathname.split("/").at(-1)!;
+      return json(manifestOf(specId), 200, freshnessHeaders(stated[specId]))();
+    };
+
+  const calls = (seen: readonly Seen[]): string[] =>
+    seen.map(({ method, url }) => {
+      const { pathname, search } = new URL(url);
+      return `${method} ${pathname}${search}`;
+    });
+  const posted = (seen: readonly Seen[]): Record<string, unknown> =>
+    JSON.parse(seen.find(({ method }) => method === "POST")!.body!) as Record<string, unknown>;
+  const STORED_QUERY = "?format=parquet&bundle=false&party_totals=false";
+  const FRAME_CALLS = [
+    `GET ${framePath}`,
+    `GET ${framePath}/file?format=parquet&bundle=false&layout=frame`,
+  ];
+
+  test("of one reading reads its manifest, posts the stored version and downloads no root", async () => {
+    const { fetch, seen } = mockFetch(
+      ...Array.from({ length: 4 }, () => routed({ [held.spec.spec_id]: "pending" })),
+    );
+    const chain = recipe(storedRef).rank({ by: "origin", limit: 6 });
+    const data = await fetchDataset(transportOver(fetch), chain, { latest: "stored" });
+    assert.deepEqual(calls(seen), [
+      `GET /api/datasets/${held.spec.spec_id}${STORED_QUERY}`,
+      "POST /api/datasets/analysis",
+      ...FRAME_CALLS,
+    ]);
+    const tree = chain.tree() as { inputs: { data: Record<string, unknown> } };
+    assert.deepEqual(posted(seen), {
+      tree: { ...tree, inputs: { data: { ...tree.inputs.data, content_version: NEWER } } },
+      latest: false,
+    });
+    assert.notEqual(held.contentVersion, NEWER);
+    assert.equal(data.freshness, "pending");
+    assert.ok(data.ref.equals(new DatasetRef([derived])));
+  });
+
+  test("of several members is refused before any request, as DFO refuses it", async () => {
+    const ids = ["0", "1", "2", "3"].map((digit) => `spec_${digit.repeat(32)}`);
+    const { fetch, seen } = mockFetch();
+    const chain = recipe(new DatasetRef(ids.map(memberOf))).aggregate({ by: "destination" });
+    await assert.rejects(fetchDataset(transportOver(fetch), chain, { latest: "stored" }), {
+      name: "InvalidRequestError",
+      code: "several_members",
+    });
+    assert.equal(seen.length, 0);
+  });
+
+  test("aborts the other manifest reads when one fails", async () => {
+    const [first, second] = ["0", "1"].map((digit) => ({
+      spec_id: `spec_${digit.repeat(32)}`,
+      definition: held.spec.definition,
+    }));
+    let aborted = false;
+    const { fetch, seen } = mockFetch(
+      json(manifestOf(`spec_${"9".repeat(32)}`)),
+      (_request, { signal }) =>
+        new Promise<Response>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            reject(signal.reason);
+          });
+        }),
+    );
+    const chain = recipe(first!).shareOf(second!, { on: ["destination"] });
+    await assert.rejects(fetchDataset(transportOver(fetch), chain, { latest: "stored" }), {
+      name: "ContractError",
+      code: "contract_violation",
+    });
+    assert.equal(seen.length, 2);
+    assert.ok(aborted);
+  });
+
+  test("reads a spec's manifest once for a spec root read twice, as its frame without totals", async () => {
+    const spec = { spec_id: held.spec.spec_id, definition: held.spec.definition };
+    const { fetch, seen } = mockFetch(...Array.from({ length: 4 }, () => routed()));
+    const chain = recipe(spec).shareOf(spec, { on: ["destination"] });
+    await fetchDataset(transportOver(fetch), chain, { latest: "stored" });
+    assert.deepEqual(calls(seen), [
+      `GET /api/datasets/${spec.spec_id}?format=parquet&bundle=false&layout=frame&party_totals=false`,
+      "POST /api/datasets/analysis",
+      ...FRAME_CALLS,
+    ]);
+    const { inputs } = posted(seen)["tree"] as { inputs: Record<string, unknown> };
+    const root = {
+      spec_id: spec.spec_id,
+      rendering: { without_party_totals: true },
+      content_version: NEWER,
+    };
+    assert.deepEqual(inputs, { data: root, other: root });
+  });
 });

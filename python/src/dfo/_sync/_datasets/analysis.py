@@ -5,9 +5,11 @@
 answers 200 with the format 2 ref of the frame it stored, or 202 `pending` while
 a root's dataset is still building, which the client posts again after the
 answer's `Retry-After`, else its `retry_after_s`, held between 1 and 60 seconds,
-until the call's deadline. The post is idempotent: the same tree on the same
-roots stores nothing new. A refusal raises as the class its code maps to, with
-the problem document's `fix` on `error.problem`.
+until the call's deadline. The 200 body's `stat_vars_summed` lists each root DFO
+read as the sum of its StatVars, which the Dataset keeps as `stat_vars_summed`.
+The post is idempotent: the same tree on the same roots stores nothing new. A
+refusal raises as the class its code maps to, with the problem document's `fix`
+on `error.problem`.
 
 A derived frame reads in two requests, both derived from the ref member: the
 manifest at `GET /datasets/derived/{ops_id}/{ocv}`, which carries the
@@ -71,7 +73,12 @@ from dfo._datasets.build import (
     check_strict,
     response_json,
 )
-from dfo._datasets.dataset import Dataset, derived_dataset, fetch_time
+from dfo._datasets.dataset import (
+    Dataset,
+    SummedReading,
+    derived_dataset,
+    fetch_time,
+)
 from dfo._datasets.recipe import (
     Aggregation,
     Columns,
@@ -114,6 +121,7 @@ def run_recipe(
     strict: bool = False,
     timeout: float | None = None,
     cache: Cache | None = None,
+    deadline: float | None = None,
 ) -> Dataset:
     """Run `target` on DFO and read the frame it stores.
 
@@ -126,6 +134,8 @@ def run_recipe(
         timeout: The longest the run takes, in seconds, the read included; None
             waits as long as the roots take to build.
         cache: The local cache, or None to fetch without one.
+        deadline: The clock reading the run ends by, when an earlier step of the
+            same call set it from `timeout`. None sets it from `timeout` here.
 
     Raises:
         InvalidRequestError: The recipe has no step and starts from a dataset
@@ -140,8 +150,9 @@ def run_recipe(
     """
     check_strict(strict)
     tree = target.tree()
-    deadline = transport.deadline(timeout)
-    member = _analyse(
+    if deadline is None:
+        deadline = transport.deadline(timeout)
+    member, summed = _analyse(
         transport, {"tree": tree, "latest": latest}, deadline=deadline, timeout=timeout
     )
     return _read(
@@ -151,6 +162,7 @@ def run_recipe(
         deadline=deadline,
         cache=cache,
         chain=target,
+        summed=summed,
     )
 
 
@@ -179,13 +191,20 @@ def fetch_derived(
     deadline = transport.deadline(timeout)
     root = {"spec_id": member.spec.spec_id, "content_version": member.content_version}
     if latest:
-        member = _analyse(
+        member, summed = _analyse(
             transport,
             {"tree": root, "latest": True},
             deadline=deadline,
             timeout=timeout,
         )
-        return _read(transport, member, strict=strict, deadline=deadline, cache=cache)
+        return _read(
+            transport,
+            member,
+            strict=strict,
+            deadline=deadline,
+            cache=cache,
+            summed=summed,
+        )
     try:
         return _read(transport, member, strict=strict, deadline=deadline, cache=cache)
     except DfoError as error:
@@ -193,7 +212,7 @@ def fetch_derived(
             raise
         expired = error
     try:
-        again = _analyse(
+        again, summed = _analyse(
             transport,
             {"tree": root, "latest": False},
             deadline=deadline,
@@ -207,7 +226,14 @@ def fetch_derived(
         raise _unavailable(member, expired, transport.caller)
     if again.digest != member.digest:
         warn(_digest_changed(member, again.digest))
-    return _read(transport, again, strict=strict, deadline=deadline, cache=cache)
+    return _read(
+        transport,
+        again,
+        strict=strict,
+        deadline=deadline,
+        cache=cache,
+        summed=summed,
+    )
 
 
 def fetch_computed_frame(
@@ -236,7 +262,7 @@ def fetch_computed_frame(
             (`contract_violation`).
     """
     check_strict(strict)
-    member = _analyse(
+    member, summed = _analyse(
         transport,
         {
             "tree": {"spec_id": spec_id, "content_version": content_version},
@@ -251,7 +277,14 @@ def fetch_computed_frame(
             f"{spec_id} at {content_version} can no longer be fetched, and DFO "
             f"computed {member.content_version} on the versions it read",
         )
-    return _read(transport, member, strict=strict, deadline=deadline, cache=cache)
+    return _read(
+        transport,
+        member,
+        strict=strict,
+        deadline=deadline,
+        cache=cache,
+        summed=summed,
+    )
 
 
 def _one_member(ref: DatasetRef, caller: str) -> DerivedRefMember:
@@ -304,15 +337,16 @@ def _analyse(
     *,
     deadline: float | None,
     timeout: float | None,
-) -> DerivedRefMember:
-    """Post a recipe tree until DFO answers its stored frame's ref member.
+) -> tuple[DerivedRefMember, tuple[SummedReading, ...]]:
+    """Post a recipe tree until DFO answers its stored frame's ref member, and
+    the roots it read as the sum of their StatVars.
 
     Raises:
         DfoTimeoutError: The deadline passed while a root was building
             (`deadline_exceeded`).
         ContractError: DFO answered another status than 200 or 202
-            (`unexpected_response`), or a ref this client cannot read
-            (`contract_violation`).
+            (`unexpected_response`), or a ref or `stat_vars_summed` this client
+            cannot read (`contract_violation`).
     """
     with still_running(transport, deadline, timeout):
         while True:
@@ -327,7 +361,7 @@ def _analyse(
             trace_id = trace_id_of(response, answer)
             if response.status_code == 200:
                 with describing(trace_id):
-                    return _ready_member(answer)
+                    return _ready_member(answer), _summed(answer)
             if response.status_code != 202:
                 raise client_error(
                     UNEXPECTED_RESPONSE,
@@ -380,10 +414,42 @@ def _ready_member(answer: object) -> DerivedRefMember:
             raise _violation("/ref/members")
 
 
-def _violation(pointer: str) -> ContractError:
+def _summed(answer: object) -> tuple[SummedReading, ...]:
+    """The roots a ready answer read as the sum of their StatVars, from its
+    `stat_vars_summed`, or none when the answer leaves it out.
+
+    Raises:
+        ContractError: `stat_vars_summed` is not a list of `{spec_id,
+            content_version, count}` with `count` at least 2
+            (`contract_violation`), at the pointer of the field it breaks.
+    """
+    listed = answer.get("stat_vars_summed") if isinstance(answer, Mapping) else None
+    if listed is None:
+        return ()
+    if not isinstance(listed, list):
+        raise _violation("/stat_vars_summed", what="a body")
+    summed = []
+    for index, entry in enumerate(listed):
+        pointer = f"/stat_vars_summed/{index}"
+        if not isinstance(entry, Mapping):
+            raise _violation(pointer, what="a body")
+        spec_id, version = entry.get("spec_id"), entry.get("content_version")
+        count = entry.get("count")
+        if not isinstance(spec_id, str):
+            raise _violation(f"{pointer}/spec_id", what="a body")
+        if not isinstance(version, str):
+            raise _violation(f"{pointer}/content_version", what="a body")
+        # DFO sums a reading of two StatVars or more. A bool is no count.
+        if isinstance(count, bool) or not isinstance(count, int) or count < 2:
+            raise _violation(f"{pointer}/count", what="a body")
+        summed.append(SummedReading(spec_id, version, count))
+    return tuple(summed)
+
+
+def _violation(pointer: str, *, what: str = "a ref") -> ContractError:
     error = client_error(
         CONTRACT_VIOLATION,
-        f"POST {ANALYSIS_PATH} answered a ref whose {pointer} this client cannot read",
+        f"POST {ANALYSIS_PATH} answered {what} whose {pointer} this client cannot read",
     )
     error.pointer = pointer
     return error
@@ -397,10 +463,12 @@ def _read(
     deadline: float | None,
     cache: Cache | None,
     chain: Recipe | None = None,
+    summed: tuple[SummedReading, ...] = (),
 ) -> Dataset:
     """The derived frame `member` names, from its manifest and its file, which
     `cache` holds under its digest once read. The Dataset names each column by
-    the role word `chain`, the recipe that made it, named it by."""
+    the role word `chain`, the recipe that made it, named it by, and keeps
+    `summed`, the roots the analysis that answered `member` summed."""
     path = f"/datasets/derived/{member.spec.spec_id}/{member.content_version}"
     response = transport.request("GET", path, deadline=deadline)
     manifest = response_json(response)
@@ -442,6 +510,7 @@ def _read(
             roles=roles,
             fetched_at=fetched_at,
             from_cache=from_cache,
+            stat_vars_summed=summed,
         )
     if dataset.left_out or not dataset._left_out_complete:
         _left_out(dataset, strict=strict)
@@ -527,6 +596,7 @@ class Analysis:
         *,
         by: Columns = (),
         how: Aggregation = "sum",
+        allow_sparse_breakdowns: bool = False,
         strict: bool = False,
         timeout: CallTimeout = CLIENT_TIMEOUT,
     ) -> Dataset:
@@ -538,11 +608,15 @@ class Analysis:
             by: The roles whose members stay apart, such as `"origin"`; none
                 totals every row of each year.
             how: `sum`, `mean`, `max` or `min`.
+            allow_sparse_breakdowns: Count a group as present when any of its
+                breakdown cells, such as `crsPurpose`, holds a row.
             strict: Raise the `SeriesLeftOutWarning` instead of issuing it.
             timeout: The longest the call takes, in seconds. None waits. Left
                 out, the client's `timeout` applies.
         """
-        chain = recipe(data).aggregate(by=by, how=how)
+        chain = recipe(data).aggregate(
+            by=by, how=how, allow_sparse_breakdowns=allow_sparse_breakdowns
+        )
         return self._run(chain, strict=strict, timeout=timeout)
 
     def growth(
@@ -569,9 +643,11 @@ class Analysis:
         /,
         *,
         by: Columns,
+        per: Columns | None = None,
         window: tuple[Year, Year] | None = None,
         how: Aggregation | None = None,
         limit: int | None = None,
+        allow_sparse_breakdowns: bool = False,
         strict: bool = False,
         timeout: CallTimeout = CLIENT_TIMEOUT,
     ) -> Dataset:
@@ -580,15 +656,26 @@ class Analysis:
         Args:
             data: The reading.
             by: The roles whose members are ranked.
+            per: The roles that split the ranking, such as `"destination"`,
+                each group ranked on its own with its own `limit`.
             window: The years ranked over, such as
                 `(latest_year(), latest_year())`; None ranks every year.
             how: How each member's rows reduce to one value first.
-            limit: The most members kept, from 1 to 1000.
+            limit: The most members kept, from 1 to 1000, in each group.
+            allow_sparse_breakdowns: Count a member as present in a year when
+                any of its breakdown cells holds a row.
             strict: Raise the `SeriesLeftOutWarning` instead of issuing it.
             timeout: The longest the call takes, in seconds. None waits. Left
                 out, the client's `timeout` applies.
         """
-        chain = recipe(data).rank(by=by, window=window, how=how, limit=limit)
+        chain = recipe(data).rank(
+            by=by,
+            per=per,
+            window=window,
+            how=how,
+            limit=limit,
+            allow_sparse_breakdowns=allow_sparse_breakdowns,
+        )
         return self._run(chain, strict=strict, timeout=timeout)
 
     def quotient_of(

@@ -344,7 +344,8 @@ export interface paths {
     /**
      * Post Analysis
      * @description Compute a recipe tree and store its frame. Answers the stored frame's format 2 ref,
-     *     `pending` while a root builds, or the refusal with its fix.
+     *     `pending` while a root builds, or the refusal with its fix. With `verify`, compute it
+     *     again at its pinned versions, storing nothing, for the `verify` grant's holder.
      */
     post: operations["datasets_post_analysis"];
     delete?: never;
@@ -794,6 +795,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/graph/schema/terms/un_system": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Un Schema Terms */
+    get: operations["graph_get_un_schema_terms"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/graph/schema/usage": {
     parameters: {
       query?: never;
@@ -803,6 +821,57 @@ export interface paths {
     };
     /** Get Schema Usage */
     get: operations["graph_get_schema_usage"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/graph/schema/usage/base": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Schema Usage Base */
+    get: operations["graph_get_schema_usage_base"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/graph/schema/usage/un_system": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Schema Usage Un System */
+    get: operations["graph_get_schema_usage_un_system"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/graph/schema/node/{dcid}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Schema Node */
+    get: operations["graph_get_schema_node"];
     put?: never;
     post?: never;
     delete?: never;
@@ -822,6 +891,23 @@ export interface paths {
     put?: never;
     /** Post Schema Check */
     post: operations["graph_post_schema_check"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/graph/schema/search": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Schema Search */
+    get: operations["graph_get_schema_search"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -1161,6 +1247,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/presentation/share-sample": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read Share Sample
+     * @description Draw up to limit shares at random from those not taken down, optionally made within [created_after, created_before), each with its kind, mode, created_at and the number of slots showing a card. It states no owner, title, token or payload. Admits the verify principal alone.
+     */
+    get: operations["presentation_read_share_sample"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/presentation/shares/{share_id}/history": {
     parameters: {
       query?: never;
@@ -1461,6 +1567,16 @@ export interface components {
       resolved_periods: {
         [key: string]: components["schemas"]["JsonValue"];
       }[];
+      /**
+       * Derived Roots
+       * @description each root the tree read whose rendering is a version of its own, a groupby sum or a party-totals cut, with the dataset version it derives from, so a caller matches it to the dataset version an anchor records
+       */
+      derived_roots?: components["schemas"]["RootVersion"][];
+      /**
+       * Stat Vars Summed
+       * @description each root read summed over its StatVars, with how many it summed; a root that states no groupby, holds several StatVars and is read under steps that name no stat_var is summed by the service itself, keeping the summable axes the steps name
+       */
+      stat_vars_summed?: components["schemas"]["StatVarsSummed"][];
     };
     /**
      * AnalysisRequest
@@ -1470,7 +1586,9 @@ export interface components {
      *     recipe's own ids. `rolling` `"tree"` takes the populations and the latest period of every
      *     rolling overlay a derived root's recipe holds from the whole tree, so derived rolling inputs
      *     are computed again under one latest period. Left out, each keeps its stored populations and
-     *     periods.
+     *     periods. `verify` computes the tree again at the versions it names, past any stored answer,
+     *     and stores nothing (`verify_analysis`). It reads pinned versions only, so it refuses
+     *     `latest` and a Spec root, which reads its dataset's newest version.
      */
     AnalysisRequest: {
       /** Tree */
@@ -1485,6 +1603,70 @@ export interface components {
       /** Anchor Roots */
       anchor_roots?:
         (components["schemas"]["SpecRoot"] | components["schemas"]["DatasetRoot"])[] | null;
+      /**
+       * Verify
+       * @description compute the tree again at the versions it names and compare its frame with the one stored under its pair, storing nothing; first-party callers only
+       * @default false
+       */
+      verify?: boolean;
+    };
+    /**
+     * AnalysisVerified
+     * @description A tree computed again at the versions it names, beside the frame stored under its pair
+     *     (`analysis.Verification`).
+     */
+    AnalysisVerified: {
+      /**
+       * Status
+       * @default verified
+       * @constant
+       */
+      status?: "verified";
+      /** Outcome */
+      outcome: ("same" | "different" | "not_stored" | "roots_unavailable") | (string & {});
+      /**
+       * Frame
+       * @description the pair the computation names
+       */
+      frame: {
+        [key: string]: string;
+      } | null;
+      /** Frame Content Version */
+      frame_content_version: string | null;
+      /** Output Digest */
+      output_digest: string | null;
+      /**
+       * Stored
+       * @description the pair compared with
+       */
+      stored: {
+        [key: string]: string;
+      } | null;
+      /** Stored Frame Content Version */
+      stored_frame_content_version: string | null;
+      /**
+       * Stored Output Digest
+       * @description the stored frame's output digest, read when the two cv_s differ
+       */
+      stored_output_digest: string | null;
+      /**
+       * Stored Execution Identity
+       * @description the execution identity the stored frame's recipe records
+       */
+      stored_execution_identity: string | null;
+      /** Execution Identity */
+      execution_identity: {
+        [key: string]: string;
+      };
+      /**
+       * Refusal Code
+       * @description the engine's refusal code, or over_ceiling, the computation met
+       */
+      refusal_code: string | null;
+      /** Refusal Reason */
+      refusal_reason: string | null;
+      /** Unavailable Roots */
+      unavailable_roots: components["schemas"]["UnavailableRootBody"][];
     };
     /** AnchorAnswer */
     AnchorAnswer: {
@@ -1496,11 +1678,9 @@ export interface components {
       left_out: components["schemas"]["LeftOutSeriesBody"][];
       /**
        * Roots
-       * @description the dataset versions the period was taken over
+       * @description the dataset versions the period was taken over, each with the dataset version its rendering derives from
        */
-      roots: {
-        [key: string]: string;
-      }[];
+      roots: components["schemas"]["RootVersion"][];
     };
     /**
      * AnchorRequest
@@ -2082,6 +2262,28 @@ export interface components {
        * @description whether this deployment's mint door dispatches this kind
        */
       live: boolean;
+    };
+    /**
+     * CappedListing
+     * @description One listing a view cut: an in-arc listing at its cap of 1,000 subjects or past the 2 MiB
+     *     byte cap, a literal property of the centre whose values total past 32 KiB, left out of the
+     *     centre, a property of the centre past 100 values or with a literal past 2,000 characters,
+     *     the classes below a Class centre (`subClassOf+`) at 1,000 classes or 12 levels with a class
+     *     below them unread, a Property centre's range classes past the third
+     *     (`rangeIncludes/subClassOf+`), or a value centre's type classes past the third
+     *     (`typeOf/rangeIncludes`).
+     */
+    CappedListing: {
+      /**
+       * Ref
+       * @description the node whose listing was cut
+       */
+      ref: string;
+      /**
+       * Property
+       * @description the property listed: an in-arc's subjects point through it, the centre's own values sit under it, subClassOf+ for the classes below the centre, rangeIncludes/subClassOf+ for a property's range classes read for a value list, or typeOf/rangeIncludes for a value's type classes read for their rangeIncludes subjects and value list
+       */
+      property: string;
     };
     /**
      * CatalogueAnswer
@@ -3117,6 +3319,8 @@ export interface components {
        */
       countries: number;
       aid: components["schemas"]["AidCounts"];
+      /** @description indicators, datasets and publishers counted for the Development Finance Observatory origin and for the Data Commons origins. Something both hold counts in each, so the split can exceed the global figures */
+      by_origin: components["schemas"]["OriginCounts"];
     };
     /**
      * CoverageBare
@@ -3504,7 +3708,7 @@ export interface components {
       kind: "dataset_resubmit";
       /**
        * Entries
-       * @description one entry per response part, in response part order; a single-entry request whose entry is an identity re-resolves exactly that one part
+       * @description one entry per response part, in response part order; a single-entry request whose entry is an identity re-resolves exactly that one part. At most 6 entries (caps.max_parts), or 32 (caps.max_code_parts) when no entry is a candidates entry and every parsed entry's part names a source_code, so an answer of that many code parts posts back whole as identity, placeholder and parsed entries; a longer list refuses request_invalid
        */
       entries: (
         | components["schemas"]["ResubmitIdentityEntry"]
@@ -3531,7 +3735,9 @@ export interface components {
     };
     /**
      * DatasetUsage
-     * @description How each Provenance of the code index uses the model.
+     * @description How each Provenance a usage route serves uses the model: those of the code index on
+     *     `/schema/usage`, the base or UN System ones of the origin catalogue on
+     *     `/schema/usage/base` and `/schema/usage/un_system`.
      */
     DatasetUsage: {
       /**
@@ -3539,6 +3745,11 @@ export interface components {
        * @description sorted by ref
        */
       provenances: components["schemas"]["ProvenanceUsage"][];
+      /**
+       * Terms
+       * @description on `/schema/usage/base` and `/schema/usage/un_system`: every node the patterns and constraint values name, sorted by ref; absent on `/schema/usage`
+       */
+      terms?: components["schemas"]["UsageTerm"][] | null;
     };
     /** DatasetVersion */
     DatasetVersion: {
@@ -6971,6 +7182,40 @@ export interface components {
       organisation: components["schemas"]["PartyBlock"];
     };
     /**
+     * OriginCounts
+     * @description `Counts` split by origin. An indicator, dataset or publisher held by
+     *     both groups counts in each, so the two groups can sum to more than the
+     *     global figure. The global `indicators` is the union of the two indicator
+     *     figures.
+     */
+    OriginCounts: {
+      /** @description the Development Finance Observatory origin (`dfo`): DFO variables, the coverage variables search serves on a facet of a DFO provenance, and the provenances of that origin */
+      dfo: components["schemas"]["OriginSplit"];
+      /** @description the `base` and `un_system` origins: base variables, the coverage variables search serves under a base provenance, UN variables, and the provenances of those origins. A StatVar both groups hold counts in both */
+      data_commons: components["schemas"]["OriginSplit"];
+    };
+    /**
+     * OriginSplit
+     * @description The indicators, datasets and publishers one group of origins holds.
+     */
+    OriginSplit: {
+      /**
+       * Indicators
+       * @description distinct StatVars the origins hold
+       */
+      indicators: number;
+      /**
+       * Datasets
+       * @description distinct source-index entries of the origins' provenances
+       */
+      datasets: number;
+      /**
+       * Publishers
+       * @description distinct sources of the origins' provenances
+       */
+      publishers: number;
+    };
+    /**
      * OtherNode
      * @description A node no other kind fits. `types` and `description` carry what the graph holds.
      */
@@ -7094,7 +7339,7 @@ export interface components {
       kind: "parsed";
       /**
        * Parts
-       * @description one entry per variable ask; conjunctions pre-split by the caller. Parts that are byte-identical across every field collapse to one before resolution, so the response's own parts list can hold fewer entries than this list.
+       * @description one entry per variable ask; conjunctions pre-split by the caller. At most 6 parts (caps.max_parts), or 32 (caps.max_code_parts) when every part names a source_code; a longer list refuses request_invalid. Parts that are byte-identical across every field collapse to one before resolution, so the response's own parts list can hold fewer entries than this list.
        */
       parts: components["schemas"]["ParsedPart"][];
       /**
@@ -7581,12 +7826,12 @@ export interface components {
       ref: string;
       /**
        * Label
-       * @description the Provenance node's name in the graph; null when it has none
+       * @description the Provenance's name: its graph node's on `/schema/usage`, the origin catalogue's on `/schema/usage/base` and `/schema/usage/un_system`; null when it has none
        */
       label: string | null;
       /**
        * Description
-       * @description the Provenance node's description in the graph; null when it has none
+       * @description the Provenance's description: its graph node's on `/schema/usage`, its source's in the origin catalogue on `/schema/usage/base` and `/schema/usage/un_system`; null when it has none, as for every UN System Provenance
        */
       description: string | null;
       /** Stat Var Count */
@@ -7601,7 +7846,7 @@ export interface components {
        * @description one entry per constraint property the StatVars set, sorted by property
        */
       constraint_values: components["schemas"]["SchemaConstraintValues"][];
-      /** @description facts of the coverage facets; empty lists when coverage holds none */
+      /** @description facts of the coverage facets; empty lists when coverage holds none, as for every Provenance on `/schema/usage/base` and `/schema/usage/un_system` */
       facets: components["schemas"]["SchemaFacets"];
     };
     /**
@@ -9129,6 +9374,21 @@ export interface components {
       columns?: string[] | null;
       groupby?: components["schemas"]["GroupbyOptions"] | null;
     };
+    /** RootVersion */
+    RootVersion: {
+      /** Spec Id */
+      spec_id: string;
+      /**
+       * Content Version
+       * @description the version the root reads
+       */
+      content_version: string;
+      /**
+       * Base Content Version
+       * @description the dataset version `content_version` renders, for a groupby sum or a party-totals cut; absent when the root reads the dataset version itself
+       */
+      base_content_version?: string | null;
+    };
     /**
      * GraphRoots
      * @description `GET /api/graph/roots`: where to start listing. Each list is ordered by dcid.
@@ -9413,6 +9673,29 @@ export interface components {
       ref: string;
     };
     /**
+     * SchemaNodeView
+     * @description One node of the graph and its schema neighbours.
+     */
+    SchemaNodeView: {
+      /**
+       * Generation
+       * @description the graph generation the view was read from; null when unknown
+       */
+      generation: string | null;
+      /** @description the node, with every outgoing arc the graph holds */
+      centre: components["schemas"]["SchemaNode"];
+      /**
+       * Nodes
+       * @description the centre's neighbours, sorted by ref. Each carries its label and types and only the arcs the graph answered that tie it to the centre, to the centre's subClassOf chain or, for a Class centre, to the classes below it, so a walk down sub_class_of from the centre reaches every class the view lists below it. provenances are those of the arcs read from the neighbour (a member's typeOf, an in-arc subject's arc, a chain class's subClassOf edges) and declared_by follows from them; both are empty and null for a neighbour no arc was read from, such as a target of the centre's arcs
+       */
+      nodes: components["schemas"]["SchemaNode"][];
+      /**
+       * Capped
+       * @description the listings the view cut, sorted by ref and property: an in-arc listing at 1,000 subjects or past 2 MiB (the centre's typeOf for a value list's members, any schema arc of the centre, and a value's type class under rangeIncludes), a property of the centre whose values are all literals and total past 32 KiB, such as a country's geoJsonCoordinates, which the centre leaves out, a property of the centre's other_properties past 100 values or with a literal past 2,000 characters, subClassOf+ on a Class centre whose classes below it stopped at 1,000 or at 12 levels with a class below them unread, rangeIncludes/subClassOf+ on a Property centre with more than three range classes, and typeOf/rangeIncludes on a value centre with more than three type classes
+       */
+      capped: components["schemas"]["CappedListing"][];
+    };
+    /**
      * SchemaPattern
      * @description One distinct way a Provenance's StatVars use the model.
      */
@@ -9428,8 +9711,13 @@ export interface components {
       /** Measurement Denominator */
       measurement_denominator: string | null;
       /**
+       * Measurement Denominator Unresolved
+       * @description on `/schema/usage/base` and `/schema/usage/un_system`: true when the StatVars' measurementDenominator arc names no value or only ProvisionalNode targets, which keeps their pattern apart from one with no denominator; absent on `/schema/usage`, whose StatVars all carry resolved denominators
+       */
+      measurement_denominator_unresolved?: boolean | null;
+      /**
        * Constraint Properties
-       * @description the names of the constraint properties the StatVars set, sorted
+       * @description the names of the constraint properties the StatVars declare, sorted; on `/schema/usage/base` and `/schema/usage/un_system` a declared property with no value arc is listed here and adds nothing to `constraint_values`
        */
       constraint_properties: string[];
       /**
@@ -9447,6 +9735,57 @@ export interface components {
        * @description the first three of those StatVars' dcids in sorted order
        */
       examples: string[];
+    };
+    /**
+     * SchemaSearch
+     * @description The nodes a search box query reaches in the graph.
+     */
+    SchemaSearch: {
+      /**
+       * Query
+       * @description the query, stripped of surrounding whitespace
+       */
+      query: string;
+      /**
+       * Hits
+       * @description the dcid hit first, then the entity resolver's, then the indicator resolves' merged by descending score, ties in source order (dfo, base, un_system), each ref once; empty when nothing matched
+       */
+      hits: components["schemas"]["SchemaSearchHit"][];
+      /**
+       * Unavailable
+       * @description the parts that failed or ran out of time: a leg, so its hits are missing, or labels, so some hits lack their label, types and declared_by
+       */
+      unavailable: components["schemas"]["SearchSource"][];
+    };
+    /**
+     * SchemaSearchHit
+     * @description One node a search found.
+     */
+    SchemaSearchHit: {
+      /**
+       * Ref
+       * @description the node's dcid
+       */
+      ref: string;
+      /**
+       * Label
+       * @description the node's name; null when the graph gives none, or for an indicator hit when the label read failed (labels in unavailable)
+       */
+      label: string | null;
+      /**
+       * Types
+       * @description the node's typeOf values, sorted; when the label read failed, none for a name hit and StatisticalVariable for an indicator hit the resolver typed so
+       */
+      types: string[];
+      /** @description the origin declaring the node, by the schema node's rule; null when the graph names no declaring Provenance for it or the label read failed */
+      declared_by: components["schemas"]["DeclaredBy"] | null;
+      /** @description dcid when the query is the node's whole dcid, name when the entity resolver named it, indicator when an indicator resolve returned it */
+      via: components["schemas"]["SearchVia"];
+      /**
+       * Score
+       * @description the indicator resolver's score for an indicator hit, at least 0.30; null for a dcid or name hit
+       */
+      score: number | null;
     };
     /**
      * SchemaTerm
@@ -9473,13 +9812,14 @@ export interface components {
        * @description the Provenances declaring the term's typeOf arc, verbatim, empty when declared_by is null
        */
       provenances: string[];
-      /** @description the origin declaring the term, by the node's rule; null when the graph names no declaring Provenance for the term: its listing entries carry none */
+      /** @description the origin declaring the term, by the node's rule on /schema/terms and always un_system on /schema/terms/un_system; null when the graph names no declaring Provenance for the term: its listing entries carry none */
       declared_by: components["schemas"]["DeclaredBy"] | null;
     };
     /**
      * SchemaTerms
-     * @description Every Class and Property the DFO graph lists by `typeOf`, base Data Commons terms
-     *     included. The UN origin's terms are not listed, even where the deployment serves it.
+     * @description Every Class and Property one graph lists by `typeOf`. `GET /schema/terms` lists the DFO
+     *     graph's, base Data Commons terms included and the UN origin's left out.
+     *     `GET /schema/terms/un_system` lists those the UN System Data Commons declares.
      */
     SchemaTerms: {
       /**
@@ -9610,6 +9950,9 @@ export interface components {
        */
       options: components["schemas"]["Option"][];
     };
+    SearchQuery: string;
+    SearchSource: ("dcid" | "names" | "dfo" | "base" | "un_system" | "labels") | (string & {});
+    SearchVia: ("dcid" | "name" | "indicator") | (string & {});
     /**
      * SentenceToken
      * @description One token in the ordered sentence plan: a "text" token (invariant
@@ -10133,6 +10476,48 @@ export interface components {
        * @description when a working-tier frame stops being guaranteed, 30 days after DFO stored it, and absent when pinned
        */
       held_until?: string | null;
+    };
+    /**
+     * ShareSampleModel
+     * @description One share a sample drew.
+     */
+    ShareSampleModel: {
+      /**
+       * Share Id
+       * @description the share's id, 8 letters and digits
+       */
+      share_id: string;
+      /**
+       * Kind
+       * @description what the share publishes
+       */
+      kind: ("card" | "canvas" | "search" | "conversation") | (string & {});
+      /**
+       * Mode
+       * @description the share's mode
+       */
+      mode: ("live" | "snapshot") | (string & {});
+      /**
+       * Created At
+       * @description when the share was made, as an ISO 8601 timestamp
+       */
+      created_at: string;
+      /**
+       * Slots
+       * @description how many slots of the share's latest revision show a card
+       */
+      slots: number;
+    };
+    /**
+     * ShareSampleResponse
+     * @description `GET /api/presentation/share-sample`'s 200 body.
+     */
+    ShareSampleResponse: {
+      /**
+       * Shares
+       * @description up to limit shares drawn at random from those not taken down, in no order
+       */
+      shares: components["schemas"]["ShareSampleModel"][];
     };
     /**
      * ShareServedModel
@@ -11203,6 +11588,19 @@ export interface components {
       scope?: components["schemas"]["Scope-Input"] | null;
     };
     /**
+     * StatVarsSummed
+     * @description A root whose groupby summed its StatVars into one series, the version it summed into
+     *     and how many StatVars with data it summed (its `sum_variables` step's `summed.count`).
+     */
+    StatVarsSummed: {
+      /** Spec Id */
+      spec_id: string;
+      /** Content Version */
+      content_version: string;
+      /** Count */
+      count: number;
+    };
+    /**
      * Step
      * @description One operation: its inputs by role, its one fixed policy, the caller's own choices,
      *     what it kept, what data gaps it left out, the unit it produces, and, for an operation
@@ -11540,6 +11938,20 @@ export interface components {
       /** Reason */
       reason: string;
     };
+    /** UnavailableRootBody */
+    UnavailableRootBody: {
+      /** Spec Id */
+      spec_id: string;
+      /** Content Version */
+      content_version: string;
+      /**
+       * Code
+       * @description the Datasets code a run refuses the root with
+       */
+      code: string;
+      /** Reason */
+      reason: string;
+    };
     /**
      * UnitAlternative
      * @description One currency a unit_not_resolved refusal offers in place of the unit
@@ -11858,6 +12270,28 @@ export interface components {
       documentation_url: string | null;
       /** Code */
       code: string | null;
+    };
+    /**
+     * UsageTerm
+     * @description One node a usage document's patterns or constraint values name, with the label
+     *     `/node/{dcid}` gives it and the types the StatVars' arcs to it carry.
+     */
+    UsageTerm: {
+      /**
+       * Ref
+       * @description the node's dcid
+       */
+      ref: string;
+      /**
+       * Label
+       * @description the node's display name, as `/node/{dcid}` gives it; null when it has none, and when its only name equals its dcid
+       */
+      label: string | null;
+      /**
+       * Types
+       * @description the node's types on the arcs naming it, sorted; empty when they give none
+       */
+      types: string[];
     };
     /**
      * GraphVariableDefinition
@@ -12540,7 +12974,7 @@ export interface components {
     graph_api__capabilities__CapabilityCaps: {
       /**
        * Node Pool Size
-       * @description the bounded DCP-read executor's own worker count, shared by resolve confirmation reads and every node read
+       * @description the bounded DCP-read executor's own worker count, shared by resolve confirmation reads, every node read, and the entity resolver reads of GET /api/graph/schema/search, of which one search runs at a time
        */
       node_pool_size: number;
       /**
@@ -12555,7 +12989,7 @@ export interface components {
       node_timeout_seconds: number;
       /**
        * Max Dcid Chars
-       * @description ceiling on the length of the dcid path parameter of GET /api/graph/node/{dcid} and GET /api/graph/documentation/{dcid}, and of each dcid POST /api/graph/nodes takes; a longer value is refused 400 request_invalid
+       * @description ceiling on the length of the dcid path parameter of GET /api/graph/node/{dcid}, GET /api/graph/documentation/{dcid} and GET /api/graph/schema/node/{dcid}, and of each dcid POST /api/graph/nodes takes; a longer value is refused 400 request_invalid
        */
       max_dcid_chars: number;
       /**
@@ -12578,6 +13012,11 @@ export interface components {
        * @description the most entries in one POST /api/graph/schema/check row's observation_properties; a row with more is refused 400 request_invalid
        */
       max_check_observation_properties: number;
+      /**
+       * Max Search Query Chars
+       * @description the most characters the q parameter of GET /api/graph/schema/search holds once stripped of surrounding whitespace; a longer or blank value is refused 400 request_invalid
+       */
+      max_search_query_chars: number;
     };
     /**
      * CapabilityDoor
@@ -12586,7 +13025,7 @@ export interface components {
     graph_api__capabilities__CapabilityDoor: {
       /**
        * Name
-       * @description resolve, node, members, roots, sources, json_schema, or schema
+       * @description resolve, node, members, roots, sources, json_schema, schema, or schema_search
        */
       name: string;
       /**
@@ -12728,9 +13167,19 @@ export interface components {
       max_options: number;
       /**
        * Max Parts
-       * @description parsed.parts list length ceiling; a request over this refuses request_invalid. Distinct from max_variables: raw_text clamps an over-limit extraction with a variables_clamped warning and keeps resolving, while parsed enforces this as a hard schema cap
+       * @description parsed.parts list length ceiling for a request with any part that names no source_code; a request over this refuses request_invalid. Distinct from max_variables: raw_text clamps an over-limit extraction with a variables_clamped warning and keeps resolving, while parsed refuses
        */
       max_parts: number;
+      /**
+       * Max Code Parts
+       * @description parsed.parts list length ceiling when every part names a source_code, and dataset_resubmit.entries ceiling when no entry is a candidates entry and every parsed entry's part names one; a request over this refuses request_invalid
+       */
+      max_code_parts: number;
+      /**
+       * Max Entities
+       * @description distinct entities one request resolves; over this refuses request_invalid. A raw_text query counts its distinct entity names. A parsed request counts across its parts, and a dataset_resubmit across its parsed entries, each pinned dcid once and each entity posted without a dcid once per identity and the text it resolves through
+       */
+      max_entities: number;
       /**
        * Max Part Entities
        * @description parsed part entities list length ceiling; over this refuses request_invalid
@@ -13595,6 +14044,14 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          /** @description Strong, over the body and `x-dfo-freshness`. A gzip-encoded body carries it weak. */
+          ETag?: string;
+          /** @description `current`: the head was confirmed inside the recheck window. `pending`: past it, and its check is pending or running. `stale`: past it, and no check is running. */
+          "x-dfo-freshness"?: ("current" | "pending" | "stale") | (string & {});
+          /** @description The served content version. */
+          "x-dfo-content-version"?: string;
+          /** @description `no-cache`. */
+          "Cache-Control"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -13613,6 +14070,21 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["OperationResource"];
         };
+      };
+      /** @description `If-None-Match` names the current answer's ETag. */
+      304: {
+        headers: {
+          /** @description Strong, over the body and `x-dfo-freshness`. A gzip-encoded body carries it weak. */
+          ETag?: string;
+          /** @description `current`: the head was confirmed inside the recheck window. `pending`: past it, and its check is pending or running. `stale`: past it, and no check is running. */
+          "x-dfo-freshness"?: ("current" | "pending" | "stale") | (string & {});
+          /** @description The served content version. */
+          "x-dfo-content-version"?: string;
+          /** @description `no-cache`. */
+          "Cache-Control"?: string;
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description the request body or parameters failed validation (request_invalid) */
       400: {
@@ -13826,7 +14298,8 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["AnalysisReady"];
+          "application/json":
+            components["schemas"]["AnalysisReady"] | components["schemas"]["AnalysisVerified"];
         };
       };
       /** @description Accepted */
@@ -14852,6 +15325,35 @@ export interface operations {
       };
     };
   };
+  graph_get_un_schema_terms: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SchemaTerms"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
   graph_get_schema_usage: {
     parameters: {
       query?: never;
@@ -14868,6 +15370,104 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["DatasetUsage"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  graph_get_schema_usage_base: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DatasetUsage"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  graph_get_schema_usage_un_system: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DatasetUsage"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  graph_get_schema_node: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        dcid: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SchemaNodeView"];
+        };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
         };
       };
       /** @description any non-2xx response uses this envelope */
@@ -14901,6 +15501,48 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["SchemaCheckResponse"];
+        };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  graph_get_schema_search: {
+    parameters: {
+      query: {
+        q: components["schemas"]["SearchQuery"];
+        base?: boolean;
+        un?: boolean;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SchemaSearch"];
         };
       };
       /** @description the request body or parameters failed validation (request_invalid) */
@@ -15819,6 +16461,51 @@ export interface operations {
       };
     };
   };
+  presentation_read_share_sample: {
+    parameters: {
+      query?: {
+        /** @description the most shares the sample draws, 1 to 500 */
+        limit?: number;
+        /** @description draw only shares made at or after this ISO 8601 timestamp */
+        created_after?: string | null;
+        /** @description draw only shares made before this ISO 8601 timestamp */
+        created_before?: string | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ShareSampleResponse"];
+        };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
   presentation_read_share_history: {
     parameters: {
       query?: {
@@ -16022,6 +16709,7 @@ export type AmbiguousSourceGroup = components["schemas"]["AmbiguousSourceGroup"]
 export type AnalysisPendingBody = components["schemas"]["AnalysisPendingBody"];
 export type AnalysisReady = components["schemas"]["AnalysisReady"];
 export type AnalysisRequest = components["schemas"]["AnalysisRequest"];
+export type AnalysisVerified = components["schemas"]["AnalysisVerified"];
 export type AnchorAnswer = components["schemas"]["AnchorAnswer"];
 export type AnchorRequest = components["schemas"]["AnchorRequest"];
 export type AppliedDefaultModel = components["schemas"]["AppliedDefaultModel"];
@@ -16047,6 +16735,7 @@ export type CapabilitiesResponse = components["schemas"]["CapabilitiesResponse"]
 export type CapabilityDefaultPolicy = components["schemas"]["CapabilityDefaultPolicy"];
 export type CapabilityFormat = components["schemas"]["CapabilityFormat"];
 export type CapabilityKind = components["schemas"]["CapabilityKind"];
+export type CappedListing = components["schemas"]["CappedListing"];
 export type CatalogueAnswer = components["schemas"]["CatalogueAnswer"];
 export type CatalogueExampleSentence = components["schemas"]["CatalogueExampleSentence"];
 export type CatalogueResponse = components["schemas"]["CatalogueResponse"];
@@ -16240,6 +16929,8 @@ export type OptionsRequest = components["schemas"]["OptionsRequest"];
 export type OptionsResponse = components["schemas"]["OptionsResponse"];
 export type OptionsSet = components["schemas"]["OptionsSet"];
 export type OrganisationNode = components["schemas"]["OrganisationNode"];
+export type OriginCounts = components["schemas"]["OriginCounts"];
+export type OriginSplit = components["schemas"]["OriginSplit"];
 export type OtherNode = components["schemas"]["OtherNode"];
 export type OutputOptionsModel = components["schemas"]["OutputOptionsModel"];
 export type ParsedEntity = components["schemas"]["ParsedEntity"];
@@ -16310,6 +17001,7 @@ export type RoleAxis = components["schemas"]["RoleAxis"];
 export type RoleAxisFact = components["schemas"]["RoleAxisFact"];
 export type RootEntry = components["schemas"]["RootEntry"];
 export type RootRendering = components["schemas"]["RootRendering"];
+export type RootVersion = components["schemas"]["RootVersion"];
 export type Roots = components["schemas"]["Roots"];
 export type SchemaCheckRequest = components["schemas"]["SchemaCheckRequest"];
 export type SchemaCheckResponse = components["schemas"]["SchemaCheckResponse"];
@@ -16322,7 +17014,10 @@ export type SchemaInstances = components["schemas"]["SchemaInstances"];
 export type SchemaLiteral = components["schemas"]["SchemaLiteral"];
 export type SchemaNode = components["schemas"]["SchemaNode"];
 export type SchemaNodeReference = components["schemas"]["SchemaNodeReference"];
+export type SchemaNodeView = components["schemas"]["SchemaNodeView"];
 export type SchemaPattern = components["schemas"]["SchemaPattern"];
+export type SchemaSearch = components["schemas"]["SchemaSearch"];
+export type SchemaSearchHit = components["schemas"]["SchemaSearchHit"];
 export type SchemaTerm = components["schemas"]["SchemaTerm"];
 export type SchemaTerms = components["schemas"]["SchemaTerms"];
 export type SchemaValueCount = components["schemas"]["SchemaValueCount"];
@@ -16330,6 +17025,9 @@ export type ScopeInput = components["schemas"]["Scope-Input"];
 export type ScopeOutput = components["schemas"]["Scope-Output"];
 export type ScopeAndUnits = components["schemas"]["ScopeAndUnits"];
 export type ScopeChoice = components["schemas"]["ScopeChoice"];
+export type SearchQuery = components["schemas"]["SearchQuery"];
+export type SearchSource = components["schemas"]["SearchSource"];
+export type SearchVia = components["schemas"]["SearchVia"];
 export type SentenceToken = components["schemas"]["SentenceToken"];
 export type Series = components["schemas"]["Series"];
 export type SeriesAxisRef = components["schemas"]["SeriesAxisRef"];
@@ -16351,6 +17049,8 @@ export type ShareImport = components["schemas"]["ShareImport"];
 export type ShareImportResponse = components["schemas"]["ShareImportResponse"];
 export type ShareReadResponse = components["schemas"]["ShareReadResponse"];
 export type ShareRetentionModel = components["schemas"]["ShareRetentionModel"];
+export type ShareSampleModel = components["schemas"]["ShareSampleModel"];
+export type ShareSampleResponse = components["schemas"]["ShareSampleResponse"];
 export type ShareServedModel = components["schemas"]["ShareServedModel"];
 export type ShareSlotCardResponse = components["schemas"]["ShareSlotCardResponse"];
 export type ShareSlotDataResponse = components["schemas"]["ShareSlotDataResponse"];
@@ -16387,6 +17087,7 @@ export type SpecRoot = components["schemas"]["SpecRoot"];
 export type StatVarBlock = components["schemas"]["StatVarBlock"];
 export type StatVarNode = components["schemas"]["StatVarNode"];
 export type StatVarSetInput = components["schemas"]["StatVarSetInput"];
+export type StatVarsSummed = components["schemas"]["StatVarsSummed"];
 export type Step = components["schemas"]["Step"];
 export type StepInputs = components["schemas"]["StepInputs"];
 export type StepNode = components["schemas"]["StepNode"];
@@ -16402,6 +17103,7 @@ export type TraceModel = components["schemas"]["TraceModel"];
 export type TransformationLogEntry = components["schemas"]["TransformationLogEntry"];
 export type TransformationStepModel = components["schemas"]["TransformationStepModel"];
 export type UnavailableFormatModel = components["schemas"]["UnavailableFormatModel"];
+export type UnavailableRootBody = components["schemas"]["UnavailableRootBody"];
 export type UnitAlternative = components["schemas"]["UnitAlternative"];
 export type UnitBlock = components["schemas"]["UnitBlock"];
 export type UnitConstantPricesRequestBinding =
@@ -16418,6 +17120,7 @@ export type Unsupported = components["schemas"]["Unsupported"];
 export type UnsupportedPart = components["schemas"]["UnsupportedPart"];
 export type Usage = components["schemas"]["Usage"];
 export type UsageEntry = components["schemas"]["UsageEntry"];
+export type UsageTerm = components["schemas"]["UsageTerm"];
 export type VariableDefinition = components["schemas"]["VariableDefinition"];
 export type VariableSide = components["schemas"]["VariableSide"];
 export type VaryingColumnModel = components["schemas"]["VaryingColumnModel"];

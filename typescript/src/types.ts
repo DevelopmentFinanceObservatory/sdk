@@ -53,6 +53,7 @@ export type {
   Member,
   PartyTotalsLeftOut,
   ProvenanceJson,
+  SummedReading,
 } from "./datasets/dataset.ts";
 export { Analysis } from "./datasets/analysis.ts";
 export type { RunOptions } from "./datasets/analysis.ts";

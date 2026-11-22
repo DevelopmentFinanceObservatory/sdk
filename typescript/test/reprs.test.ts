@@ -92,6 +92,10 @@ const catalogueOf = (version: string, example: string): CatalogueResponse => ({
     publishers: 42,
     countries: 246,
     aid: { donors: 172, recipients: 235, years: { first: 1960, last: 2025 } },
+    by_origin: {
+      dfo: { indicators: 1200, datasets: 30, publishers: 12 },
+      data_commons: { indicators: 107717, datasets: 62, publishers: 30 },
+    },
   },
   examples: [{ text: example, template: "", stat_var: "", place: "country/KEN" }],
 });

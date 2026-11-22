@@ -22,14 +22,34 @@ with no key:
    client, with no key, following redirects; the response must be a Parquet file
    with the member's row count. A failure means production does not serve the
    file route anonymously.
+5. A ranking of three donors' aid to three recipients in 2023. A control rank of
+   the top two donors overall runs first, then the top two donors per recipient
+   with `per="destination"` and `allow_sparse_breakdowns=True`, which post
+   `partition_by` and `allow_sparse_breakdowns`. The control must return rows.
+   The partitioned rank must keep, for each recipient, the donors an independent
+   rank of the unranked rows of the same read keeps: the two donors with the
+   largest total in 2023, and every donor tied with the second. A refusal, or a
+   server that ignores `partition_by` or `limit`, means production does not rank
+   per partition.
 
-    cd python && uv run python ../scripts/release_preflight.py
+    cd python && uv run python ../scripts/release_preflight.py [--base-url URL]
+
+`--base-url` runs the checks against another deployment, such as the dev
+website's `/api/v1` proxy, in place of production. A non-empty
+`DFO_E2E_ID_TOKEN`, a Google ID token, goes out as `X-Serverless-Authorization`,
+as the e2e journeys send it to a private Cloud Run URL, on the client's requests
+and on the file read while it stays on the API's origin. A redirect to another
+origin, such as a signed storage URL, goes without it.
 
 It exits 0 when every check passes, and 1 otherwise, with the reason and the class
 of any error the client raised.
 """
 
+import argparse
+import math
+import os
 import sys
+from collections.abc import Callable, Mapping
 
 import httpx2
 import pyarrow as pa
@@ -42,6 +62,14 @@ from dfo.errors import DfoError
 
 QUESTION = "Kenya population, 2015 to 2024"
 CODES = ["DT.TDS.MLAT.CD", "DT.TDS.BLAT.CD"]
+RANKED = (
+    "ODA from Germany, France and the United Kingdom to Kenya, Ghana and Nigeria, "
+    "2018 to 2023"
+)
+# The frame column the `destination` role reads in the ranked data.
+RECIPIENT = "financingRecipient"
+# The frame column the `origin` role reads.
+DONOR = "financingProvider"
 CONTROL_FAILED = (
     "preflight stopped: production could not be reached or the control question"
     " did not answer definitely"
@@ -49,6 +77,10 @@ CONTROL_FAILED = (
 KEY_REFUSED = "production does not accept party_totals"
 SEARCH_REFUSED = "production does not accept structured search"
 FILE_REFUSED = "production does not serve the file route anonymously"
+RANK_FAILED = (
+    "preflight stopped: the control rank failed, so the partitioned rank has no verdict"
+)
+PER_REFUSED = "production does not rank per partition"
 
 
 class PreflightError(Exception):
@@ -115,8 +147,11 @@ def check_structured_search(client: Client) -> None:
     print(f"production accepts structured search: {rows} rows")
 
 
-def check_file_route(client: Client, member: Member, rows: int) -> None:
-    """Read the member's file with no key and compare its row count."""
+def check_file_route(
+    client: Client, member: Member, rows: int, headers: dict[str, str]
+) -> None:
+    """Read the member's file with no key and compare its row count. `headers`
+    carries the ID token a private Cloud Run URL needs, and is empty otherwise."""
     try:
         url = httpx2.URL(client.file_url(member))
         state = "pinned, file_url returned the link"
@@ -131,14 +166,20 @@ def check_file_route(client: Client, member: Member, rows: int) -> None:
             params=file_params(member.rendering),
         )
         state = "not pinned, file_url raised version_not_pinned"
-    try:
-        response = httpx2.get(url, follow_redirects=True, timeout=60)
-        response.raise_for_status()
-        served = pq.read_table(pa.BufferReader(response.content)).num_rows
-    except (httpx2.HTTPError, OSError, ValueError) as error:
-        raise PreflightError(
-            f"{FILE_REFUSED}: {type(error).__name__}: {error}"
-        ) from error
+    with httpx2.Client(
+        headers=headers,
+        follow_redirects=True,
+        timeout=60,
+        event_hooks={"request": [on_origin(httpx2.URL(client.base_url), headers)]},
+    ) as http:
+        try:
+            response = http.get(url)
+            response.raise_for_status()
+            served = pq.read_table(pa.BufferReader(response.content)).num_rows
+        except (httpx2.HTTPError, OSError, ValueError) as error:
+            raise PreflightError(
+                f"{FILE_REFUSED}: {type(error).__name__}: {error}"
+            ) from error
     if served != rows:
         raise PreflightError(
             f"{FILE_REFUSED}: the file holds {served} rows, not {rows}"
@@ -149,14 +190,141 @@ def check_file_route(client: Client, member: Member, rows: int) -> None:
     )
 
 
+def on_origin(
+    origin: httpx2.URL, headers: Mapping[str, str]
+) -> Callable[[httpx2.Request], None]:
+    """A request hook that drops `headers` from any request off `origin`'s
+    scheme, host and port, so a redirect carries no ID token to storage."""
+
+    def drop_off_origin(request: httpx2.Request) -> None:
+        url = request.url
+        if (url.scheme, url.host, url.port) != (
+            origin.scheme,
+            origin.host,
+            origin.port,
+        ):
+            for name in headers:
+                request.headers.pop(name, None)
+
+    return drop_off_origin
+
+
+def check_rank_per(client: Client) -> None:
+    """Rank donors overall, then per recipient, and compare the two."""
+    window = (2023, 2023)
+    try:
+        data = client.search(RANKED).fetch()
+        control = client.analysis.rank(
+            data, by="origin", window=window, how="sum", limit=2
+        )
+    except DfoError as error:
+        raise PreflightError(
+            f"{RANK_FAILED}: {type(error).__name__}: {error}"
+        ) from error
+    control_rows = control.to_arrow().num_rows
+    if control_rows == 0:
+        raise PreflightError(f"{RANK_FAILED}: the control rank returned no rows")
+    try:
+        per = client.analysis.rank(
+            data,
+            by="origin",
+            per="destination",
+            window=window,
+            how="sum",
+            limit=2,
+            allow_sparse_breakdowns=True,
+        )
+    except DfoError as error:
+        raise PreflightError(
+            f"{PER_REFUSED}: {type(error).__name__}: {error}"
+        ) from error
+    table = per.to_arrow()
+    data_table = data.to_arrow()
+    try:
+        expected = expected_donors(data_table, window=window, limit=2)
+    except KeyError as error:
+        raise PreflightError(
+            f"{RANK_FAILED}: the ranked data has no {error.args[0]} column"
+        ) from error
+    if len(expected) < 2:
+        raise PreflightError(
+            f"{RANK_FAILED}: the ranked data holds {len(expected)} recipients"
+        )
+    kept = kept_donors(table)
+    if kept != expected:
+        raise PreflightError(
+            f"{PER_REFUSED}: the partitioned rank kept {describe(kept)}, where the"
+            f" top two donors of each recipient are {describe(expected)}"
+        )
+    print(
+        f"production ranks per partition: control {control_rows} rows,"
+        f" per destination {table.num_rows} rows for {len(kept)} recipients"
+    )
+
+
+def expected_donors(
+    table: pa.Table, *, window: tuple[int, int], limit: int
+) -> dict[str, set[str]]:
+    """The donors each recipient's top `limit` holds, from the unranked rows
+    `table`: each donor's total over the years in `window`, largest first, with
+    every donor tied with the last place kept, as the engine keeps them.
+
+    Raises:
+        KeyError: `table` lacks a column the rank reads, named in the error.
+    """
+    totals: dict[str, dict[str, float]] = {}
+    for row in table.select([RECIPIENT, DONOR, "time_period", "value"]).to_pylist():
+        year = int(str(row["time_period"])[:4])
+        if row["value"] is None or not window[0] <= year <= window[1]:
+            continue
+        donors = totals.setdefault(row[RECIPIENT], {})
+        donors[row[DONOR]] = donors.get(row[DONOR], 0.0) + row["value"]
+    kept: dict[str, set[str]] = {}
+    for recipient, donors in totals.items():
+        cutoff = sorted(donors.values(), reverse=True)[:limit][-1]
+        kept[recipient] = {
+            donor
+            for donor, total in donors.items()
+            if total > cutoff or math.isclose(total, cutoff)
+        }
+    return kept
+
+
+def kept_donors(table: pa.Table) -> dict[str, set[str]]:
+    """The donors a server's partitioned rank returned for each recipient."""
+    if RECIPIENT not in table.column_names or DONOR not in table.column_names:
+        return {}
+    kept: dict[str, set[str]] = {}
+    for row in table.select([RECIPIENT, DONOR]).to_pylist():
+        kept.setdefault(row[RECIPIENT], set()).add(row[DONOR])
+    return kept
+
+
+def describe(kept: Mapping[str, set[str]]) -> str:
+    return "; ".join(
+        f"{recipient}: {sorted(kept[recipient])}" for recipient in sorted(kept)
+    )
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--base-url",
+        help="the API to check, such as a dev URL; the client's default otherwise",
+    )
+    arguments = parser.parse_args()
+    token = os.environ.get("DFO_E2E_ID_TOKEN")
+    headers = {"X-Serverless-Authorization": f"Bearer {token}"} if token else {}
     # api_key=False skips DFO_API_KEY and the credentials file, so the run is
     # anonymous on every machine.
-    with Client(api_key=False, cache=False) as client:
+    with Client(
+        api_key=False, cache=False, base_url=arguments.base_url, headers=headers
+    ) as client:
         try:
             member, rows = check_party_totals(client)
             check_structured_search(client)
-            check_file_route(client, member, rows)
+            check_file_route(client, member, rows, headers)
+            check_rank_per(client)
         except PreflightError as error:
             print(error, file=sys.stderr)
             return 1
