@@ -141,7 +141,7 @@ const purposes = await client.analysis.aggregate(crs, {
 
 ## Chain steps into a recipe
 
-`recipe(start)` describes a chain of the same operations without running it, and `client.fetch(recipe)` runs the whole chain on DFO in one request. Each step method takes the method's options without the first reading:
+`recipe(start)` describes a chain of the same operations without running it, and `client.fetch(recipe)` runs the whole chain on DFO in one request, whose answer carries the computed frame's manifest, then downloads the frame's file. Each step method takes the method's options without the first reading:
 
 ```text
 recipe(spec_7f535e528a2a527aa54b316d4eccbb6e).filter({ keep: { destination: "country/KEN" } }).quotientOf(spec_429926a07022f78c65e0379e8004ae6d, { on: { destination: "place" } })
@@ -199,7 +199,7 @@ if (!again.ref.equals(perPerson.ref)) {
 
 A changed ref can still hold the same numbers, after an engine release or a rebuild of a reading that moved no value. `again.ref.sameData(perPerson.ref)` compares what the two refs hold: two derived results with the same rows under the same variables compare as the same data, whichever recipe made them.
 
-A page that shows a figure computed on the newest data runs its recipe with `latest: "stored"`, which reads the version DFO stores as the newest of each reading and builds nothing. It reads each reading's manifest and no file, then posts the recipe: four requests for a recipe of one reading, and one more for each further reading. `data.freshness` says how new those versions are. [Use it in a web app](web-apps.md#compute-on-the-latest-data-on-view) shows it on a page.
+A page that shows a figure computed on the newest data runs its recipe with `latest: "stored"`, which reads the version DFO stores as the newest of each reading and builds nothing. DFO finds those versions itself and answers with the computed frame's manifest, so the fetch makes two requests whatever the number of readings: the analysis and the frame's file. `data.freshness` says how new those versions are. A recipe that starts from a frame DFO computed runs on the stored versions of the readings that frame read, and so does `client.fetch(ref, { latest: "stored" })` for a ref of a computed frame. [Use it in a web app](web-apps.md#compute-on-the-latest-data-on-view) shows it on a page.
 
 `client.fetch(ref)`, without `latest`, reads the exact version again. DFO holds a derived version until the `held until` date in its text form. After that, the fetch asks DFO to compute it again from the same versions of its readings, and returns it when the result is the same version. When it is not, the fetch raises `VersionUnavailableError`, and `{ latest: true }` computes it on the newest data.
 

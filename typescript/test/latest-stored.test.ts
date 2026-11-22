@@ -216,32 +216,15 @@ describe('a fetch refuses latest: "stored" before any request', () => {
   for (const [name, target, named] of [
     ["a spec", () => spec, /client\.fetch\(spec\)/],
     ["a share", () => "https://developmentfinance.org/s/k3Qx8vTa", /takes no latest: "stored"/],
-    [
-      "a recipe that starts from a frame DFO computed",
-      async () =>
-        recipe(
-          DatasetRef.fromJSON(
-            (await contractJson<{ ref: unknown }>("refs/ref-derived-member.json")).ref,
-          ),
-        ).rank({ by: "origin" }),
-      /fetch the recipe with latest: true/,
-    ],
-    [
-      "a derived ref",
-      async () =>
-        DatasetRef.fromJSON(
-          (await contractJson<{ ref: unknown }>("refs/ref-derived-member.json")).ref,
-        ),
-      /use latest: true/,
-    ],
     ["a recipe with no step", () => recipe(storedRef), /A recipe with no step/],
   ] as const) {
     test(name, async () => {
       const { fetch, seen } = mockFetch();
-      await assert.rejects(
-        fetchDataset(transportOver(fetch), await target(), { latest: "stored" }),
-        { name: "InvalidRequestError", code: "invalid_argument", message: named },
-      );
+      await assert.rejects(fetchDataset(transportOver(fetch), target(), { latest: "stored" }), {
+        name: "InvalidRequestError",
+        code: "invalid_argument",
+        message: named,
+      });
       assert.deepEqual(seen, []);
     });
   }
@@ -250,111 +233,178 @@ describe('a fetch refuses latest: "stored" before any request', () => {
 const ready = await recordedJson<{ ref: unknown }>("analysis-rank-ready.json");
 const derivedManifest = await recordedJson("analysis-rank-manifest.json");
 const frameBytes = await recordedBytes("analysis-rank-frame.parquet");
+const pendingAnswer = await recordedJson<{ body: unknown; headers: Record<string, string> }>(
+  "analysis-pending.json",
+);
 
 describe('a recipe fetched with latest: "stored"', () => {
   const derived = DatasetRef.fromJSON(ready.ref).members[0]!;
   const framePath = `/api/datasets/derived/${derived.spec.spec_id}/${derived.contentVersion}`;
+  const chain = recipe(storedRef).rank({ by: "origin", limit: 6 });
 
-  /** Answers each request by its route: a spec's manifest at `NEWER` with the freshness
-   *  `stated` gives it, the analysis, and the computed frame's manifest and file. */
-  const routed =
-    (stated: Readonly<Record<string, string>> = {}) =>
-    (request: Seen): Response => {
-      const { pathname } = new URL(request.url);
-      if (request.method === "POST") return json(ready)();
-      if (pathname === framePath) return json(derivedManifest)();
-      if (pathname === `${framePath}/file`)
-        return new Response(frameBytes.slice(), { status: 200 });
-      const specId = pathname.split("/").at(-1)!;
-      return json(manifestOf(specId), 200, freshnessHeaders(stated[specId]))();
+  /** The stored 200: the recorded answer with `resolved_roots` stating `stated`, one entry per
+   *  value, and the derived manifest embedded, as `edit` changes the body. */
+  const storedAnswer = (
+    stated: readonly (string | undefined)[] = ["current"],
+    edit: (body: Record<string, unknown>) => void = () => undefined,
+  ) => {
+    const body: Record<string, unknown> = {
+      ...structuredClone(ready),
+      resolved_roots: stated.map((freshness, index) => ({
+        spec_id: `spec_${String(index).repeat(32)}`,
+        content_version: NEWER,
+        ...(freshness === undefined ? {} : { freshness }),
+      })),
+      manifest: structuredClone(derivedManifest),
     };
+    edit(body);
+    return json(body);
+  };
+  const frameFile = () => new Response(frameBytes.slice(), { status: 200 });
 
   const calls = (seen: readonly Seen[]): string[] =>
     seen.map(({ method, url }) => {
       const { pathname, search } = new URL(url);
       return `${method} ${pathname}${search}`;
     });
-  const posted = (seen: readonly Seen[]): Record<string, unknown> =>
-    JSON.parse(seen.find(({ method }) => method === "POST")!.body!) as Record<string, unknown>;
-  const STORED_QUERY = "?format=parquet&bundle=false&party_totals=false";
-  const FRAME_CALLS = [
-    `GET ${framePath}`,
-    `GET ${framePath}/file?format=parquet&bundle=false&layout=frame`,
-  ];
+  const POST = "POST /api/datasets/analysis";
+  const DIGEST_FILE = `GET ${framePath}/files/${derived.digest}`;
 
-  test("of one reading reads its manifest, posts the stored version and downloads no root", async () => {
-    const { fetch, seen } = mockFetch(
-      ...Array.from({ length: 4 }, () => routed({ [held.spec.spec_id]: "pending" })),
-    );
-    const chain = recipe(storedRef).rank({ by: "origin", limit: 6 });
+  test("costs the post and the digest file, resolved by DFO", async () => {
+    const { fetch, seen } = mockFetch(storedAnswer(["pending"]), frameFile);
     const data = await fetchDataset(transportOver(fetch), chain, { latest: "stored" });
-    assert.deepEqual(calls(seen), [
-      `GET /api/datasets/${held.spec.spec_id}${STORED_QUERY}`,
-      "POST /api/datasets/analysis",
-      ...FRAME_CALLS,
-    ]);
-    const tree = chain.tree() as { inputs: { data: Record<string, unknown> } };
-    assert.deepEqual(posted(seen), {
-      tree: { ...tree, inputs: { data: { ...tree.inputs.data, content_version: NEWER } } },
-      latest: false,
+    assert.deepEqual(calls(seen), [POST, DIGEST_FILE]);
+    // The roots go as the recipe built them, the ref's pinned version included.
+    assert.deepEqual(JSON.parse(seen[0]!.body!), {
+      tree: chain.tree(),
+      latest: "stored",
+      include: ["manifest"],
     });
-    assert.notEqual(held.contentVersion, NEWER);
     assert.equal(data.freshness, "pending");
     assert.ok(data.ref.equals(new DatasetRef([derived])));
   });
 
-  test("of several members is refused before any request, as DFO refuses it", async () => {
-    const ids = ["0", "1", "2", "3"].map((digit) => `spec_${digit.repeat(32)}`);
-    const { fetch, seen } = mockFetch();
-    const chain = recipe(new DatasetRef(ids.map(memberOf))).aggregate({ by: "destination" });
-    await assert.rejects(fetchDataset(transportOver(fetch), chain, { latest: "stored" }), {
-      name: "InvalidRequestError",
-      code: "several_members",
+  // Each row gives the `resolved_roots` entries' freshness, undefined for none, and the
+  // dataset's freshness.
+  for (const [stated, freshness] of [
+    [["current", "stale"], "stale"],
+    [["pending", "current"], "pending"],
+    [["current", "current"], "current"],
+    [["stale", undefined], null],
+    [["current", "fresh"], null],
+  ] as const) {
+    test(`is ${String(freshness)} for roots stating ${stated.map((value) => value ?? "none").join(" and ")}`, async () => {
+      const { fetch } = mockFetch(storedAnswer(stated), frameFile);
+      const data = await fetchDataset(transportOver(fetch), chain, { latest: "stored" });
+      assert.equal(data.freshness, freshness);
     });
-    assert.equal(seen.length, 0);
-  });
+  }
 
-  test("aborts the other manifest reads when one fails", async () => {
-    const [first, second] = ["0", "1"].map((digit) => ({
-      spec_id: `spec_${digit.repeat(32)}`,
-      definition: held.spec.definition,
-    }));
-    let aborted = false;
-    const { fetch, seen } = mockFetch(
-      json(manifestOf(`spec_${"9".repeat(32)}`)),
-      (_request, { signal }) =>
-        new Promise<Response>((_resolve, reject) => {
-          signal?.addEventListener("abort", () => {
-            aborted = true;
-            reject(signal.reason);
-          });
-        }),
+  test("is null when the answer states no resolved_roots", async () => {
+    const { fetch } = mockFetch(
+      storedAnswer(undefined, (body) => delete body["resolved_roots"]),
+      frameFile,
     );
-    const chain = recipe(first!).shareOf(second!, { on: ["destination"] });
-    await assert.rejects(fetchDataset(transportOver(fetch), chain, { latest: "stored" }), {
-      name: "ContractError",
-      code: "contract_violation",
-    });
-    assert.equal(seen.length, 2);
-    assert.ok(aborted);
+    const data = await fetchDataset(transportOver(fetch), chain, { latest: "stored" });
+    assert.equal(data.freshness, null);
   });
 
-  test("reads a spec's manifest once for a spec root read twice, as its frame without totals", async () => {
-    const spec = { spec_id: held.spec.spec_id, definition: held.spec.definition };
-    const { fetch, seen } = mockFetch(...Array.from({ length: 4 }, () => routed()));
-    const chain = recipe(spec).shareOf(spec, { on: ["destination"] });
-    await fetchDataset(transportOver(fetch), chain, { latest: "stored" });
-    assert.deepEqual(calls(seen), [
-      `GET /api/datasets/${spec.spec_id}?format=parquet&bundle=false&layout=frame&party_totals=false`,
-      "POST /api/datasets/analysis",
-      ...FRAME_CALLS,
-    ]);
-    const { inputs } = posted(seen)["tree"] as { inputs: Record<string, unknown> };
-    const root = {
-      spec_id: spec.spec_id,
-      rendering: { without_party_totals: true },
-      content_version: NEWER,
-    };
-    assert.deepEqual(inputs, { data: root, other: root });
+  /** Sets `key` of the stored 200's embedded manifest to `value`. */
+  const setManifest = (key: string, value: unknown) => (body: Record<string, unknown>) => {
+    (body["manifest"] as Record<string, unknown>)[key] = value;
+  };
+
+  // Each row edits the stored 200 and gives the pointer the refusal names.
+  const refused: [string, (body: Record<string, unknown>) => void, string][] = [
+    ["no manifest", (body) => delete body["manifest"], "/manifest"],
+    ["a manifest that is not an object", (body) => (body["manifest"] = []), "/manifest"],
+    [
+      "another spec's manifest",
+      setManifest("spec_id", `ops_${"0".repeat(32)}`),
+      "/manifest/spec_id",
+    ],
+    [
+      "another version's manifest",
+      setManifest("content_version", `ocv_${"0".repeat(32)}`),
+      "/manifest/content_version",
+    ],
+    ["a left_out that is no list", setManifest("left_out", {}), "/manifest/left_out"],
+  ];
+  for (const [name, edit, pointer] of refused) {
+    test(`refuses ${name} before the file`, async () => {
+      const { fetch, seen } = mockFetch(storedAnswer(["current"], edit));
+      await assert.rejects(fetchDataset(transportOver(fetch), chain, { latest: "stored" }), {
+        name: "ContractError",
+        code: "contract_violation",
+        pointer,
+      });
+      assert.deepEqual(calls(seen), [POST]);
+    });
+  }
+
+  test("reads the series left out from the embedded manifest", async () => {
+    const chainAnswer = await recordedJson<{ ref: unknown }>("analysis-chain-ready.json");
+    const chainManifest = await recordedJson("analysis-chain-manifest.json");
+    const chainFrame = await recordedBytes("analysis-chain-frame.parquet");
+    const { fetch, seen } = mockFetch(
+      json({ ...chainAnswer, resolved_roots: [], manifest: chainManifest }),
+      () => new Response(chainFrame.slice(), { status: 200 }),
+    );
+    const warnings: unknown[] = [];
+    const transport = new Transport({
+      baseUrl: "https://api.example/api",
+      apiKey: false,
+      env: envFrom({}),
+      readCredentialsFile: () => null,
+      fetch,
+      onWarning: (warning) => warnings.push(warning),
+    });
+    const data = await fetchDataset(transport, chain, { latest: "stored" });
+    assert.equal(seen.length, 2);
+    assert.equal(data.leftOut.length, (chainManifest["left_out"] as unknown[]).length);
+    assert.equal(warnings.length, 1);
+    assert.equal((warnings[0] as { code: string }).code, "series_left_out");
+  });
+
+  test("posts again after a 202 and then reads the file", async () => {
+    const { sleep, waits } = recordingSleep();
+    const { fetch, seen } = mockFetch(
+      json(pendingAnswer.body, 202, { "retry-after": pendingAnswer.headers["retry-after"]! }),
+      storedAnswer(),
+      frameFile,
+    );
+    const data = await fetchDataset(transportOver(fetch, sleep), chain, { latest: "stored" });
+    assert.deepEqual(calls(seen), [POST, POST, DIGEST_FILE]);
+    assert.equal(seen[0]!.body, seen[1]!.body);
+    assert.deepEqual(waits, [2000]);
+    assert.equal(data.freshness, "current");
+  });
+
+  test("posts a root of a frame DFO computed as it stands", async () => {
+    const computed = DatasetRef.fromJSON(
+      (await contractJson<{ ref: unknown }>("refs/ref-derived-member.json")).ref,
+    );
+    const { fetch, seen } = mockFetch(storedAnswer(), frameFile);
+    const fromComputed = recipe(computed).rank({ by: "origin" });
+    await fetchDataset(transportOver(fetch), fromComputed, { latest: "stored" });
+    assert.deepEqual(JSON.parse(seen[0]!.body!), {
+      tree: fromComputed.tree(),
+      latest: "stored",
+      include: ["manifest"],
+    });
+  });
+
+  test("of a derived ref posts its bare root and reads the digest file", async () => {
+    const { fetch, seen } = mockFetch(storedAnswer(["stale"]), frameFile);
+    const data = await fetchDataset(transportOver(fetch), new DatasetRef([derived]), {
+      latest: "stored",
+    });
+    assert.deepEqual(calls(seen), [POST, DIGEST_FILE]);
+    assert.deepEqual(JSON.parse(seen[0]!.body!), {
+      tree: { spec_id: derived.spec.spec_id, content_version: derived.contentVersion },
+      latest: "stored",
+      include: ["manifest"],
+    });
+    assert.equal(data.freshness, "stale");
   });
 });

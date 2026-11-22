@@ -398,6 +398,14 @@ export const FRESHNESS = ["current", "pending", "stale"] as const;
 /** How new the versions a `latest: "stored"` fetch read are; `FRESHNESS` lists the values. */
 export type Freshness = (typeof FRESHNESS)[number];
 
+/** The worst of the freshness each version states, or null when any states none or none is
+ *  given. */
+export function worstFreshness(stated: readonly (Freshness | null)[]): Freshness | null {
+  if (stated.some((freshness) => freshness === null)) return null;
+  const rank = Math.max(...stated.map((freshness) => FRESHNESS.indexOf(freshness!)));
+  return FRESHNESS[rank] ?? null;
+}
+
 /** How `Dataset.create` assembles its members: the layout, the parts a partial fetch left out,
  *  and for a derived dataset what its manifest adds. */
 type DatasetOptions = {
@@ -592,8 +600,9 @@ export class Dataset {
   /** When the data left the server, to the second, or null when a saved file does not say, as
    *  one Python wrote for a dataset read from a website bundle does not. */
   readonly fetchedAt: Date | null;
-  /** How new the versions are, for a dataset `client.fetch(ref, { latest: "stored" })` read:
-   *  the worst of its members' freshness, `stale` before `pending` before `current`. Null for
+  /** How new the versions are, for a dataset a `latest: "stored"` fetch read: the worst of a
+   *  ref's members' freshness, or of the datasets a recipe read, `stale` before `pending` before
+   *  `current`. Null for
    *  every other dataset, for one read from a server that does not state freshness, and for one
    *  read from a saved file, since freshness holds at the moment of the read. `dataset.ref`
    *  leaves it out. */

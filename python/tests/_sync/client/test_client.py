@@ -83,9 +83,9 @@ def test_a_clients_hints_name_client_and_so_do_its_copies() -> None:
 
 def test_client_analysis_runs_through_the_clients_transport() -> None:
     ready = load("analysis-rank-ready.json")
+    ready["manifest"] = load("analysis-rank-manifest.json")
     server = Server(
         json_response(200, ready),
-        json_response(200, load("analysis-rank-manifest.json")),
         httpx2.Response(
             200, content=(DATA / "analysis-rank-frame.parquet").read_bytes()
         ),
@@ -102,7 +102,7 @@ def test_client_analysis_runs_through_the_clients_transport() -> None:
     }
     assert "newest later: client.fetch(data.ref, latest=True)" in repr(data)
     assert "client.fetch(data.ref, latest=True) computes it again" in str(caught.value)
-    assert len(server.requests) == 3
+    assert len(server.requests) == 2
 
 
 def test_client_cards_and_shares_run_through_the_clients_transport() -> None:

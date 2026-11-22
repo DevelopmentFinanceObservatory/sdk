@@ -809,10 +809,16 @@ def test_scenario_bodies_parse(
         path == "/datasets" and status == 202
     ):
         check_operation(json_body)
+    elif path == _analysis.ANALYSIS_PATH and status == 202:
+        # A pending analysis, which the client posts again after its wait.
+        assert json_body["status"] == "pending"
     elif path == _analysis.ANALYSIS_PATH:
         # A ready analysis, read as the client reads it.
-        assert _analysis._ready_member(json_body).spec.spec_id.startswith("ops_")
+        member = _analysis._ready_member(json_body)
+        assert member.spec.spec_id.startswith("ops_")
         _analysis._summed(json_body)
+        if "manifest" in json_body:
+            _analysis._embedded_manifest(json_body, member)
     elif path.split("?", maxsplit=1)[0].endswith("/versions"):
         # The versions page the newest-version lookup reads.
         assert all(isinstance(v["content_version"], str) for v in json_body["versions"])

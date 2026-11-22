@@ -153,7 +153,7 @@ const data = await client.fetch(largest, {
 console.log(data.freshness, (await data.toRows()).length);
 ```
 
-The fetch reads each reading's manifest at `GET /api/v1/datasets/{spec_id}`, all at once, and downloads no reading's file. It then posts the recipe on those versions and reads the computed frame's manifest and file: four requests for a recipe of one reading, and one more for each further reading. `data.freshness` is the worst freshness the readings' manifests state. A recipe that starts from a frame DFO computed has no stored newest version, and the fetch throws `InvalidRequestError` before any request.
+The fetch posts the recipe with `latest: "stored"` and `include: ["manifest"]`. DFO reads each reading at the version it stores as the newest, with no build while it stores one, and answers with the computed frame's manifest. The fetch then downloads the frame from `GET /api/v1/datasets/derived/{spec_id}/{content_version}/files/{digest}` and checks it against the digest: two requests per recipe, whatever the number of readings. `data.freshness` is the worst freshness the answer's `resolved_roots` states for the datasets the recipe read. A reading DFO stores no version of answers 202, and the fetch posts again after the wait the answer asks for. A recipe that starts from a frame DFO computed runs on the stored versions of the readings that frame read.
 
 The gateway answers no preflight on the analysis route, so a page on another origin, a preview on `one-org.workers.dev` included, cannot run a recipe. Such a page shows the figures its data step committed, and calls the recipe from your own server route when it needs newer ones.
 

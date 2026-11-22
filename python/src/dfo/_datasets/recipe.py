@@ -23,16 +23,13 @@ start or a second reading:
 - a Dataset or ref of several members, sent as `{ref}`, which DFO refuses with
   `several_members`, since an operation takes one reading per side.
 
-`stored_readings` and `at_versions` let `fetch(recipe, latest="stored")` read
-each dataset root at the version DFO stores as its newest.
-
 This module is sync and shared by both clients.
 """
 
 import copy
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Literal, override
 
 from dfo._core.codes import INVALID_ARGUMENT
@@ -40,7 +37,7 @@ from dfo._core.errors import InvalidRequestError, client_error
 from dfo._core.periods import LatestYear, period_object
 from dfo._core.refs import DatasetRef, DerivedRefMember, RefMember
 from dfo._core.text import single_line
-from dfo._core.types import Rendering, Spec
+from dfo._core.types import Spec
 from dfo._datasets.dataset import Dataset
 
 type Year = int | LatestYear
@@ -74,9 +71,6 @@ _GROWTH_CHANGES: Mapping[str, str] = {"relative": "relative", "difference": "abs
 _TIME_PERIOD = "time_period"
 # The parameters whose lists name the columns of a step's `by`.
 _ORDERED_BY = ("group_by", "entity_by", "rank_by", "partition_by")
-# A Spec root's stored version is looked up in the frame without party totals,
-# as the root's own rendering states.
-_SPEC_RENDERING = Rendering("parquet", False, "frame", without_party_totals=True)
 # The stored parameter that holds each two-reading step's `on`, its keys the
 # columns of `data` and its values those of `other`.
 _STORED_PAIRS: Mapping[str, str] = {
@@ -107,9 +101,6 @@ class _Root:
 
     node: Mapping[str, Any]
     name: str
-    # What the root reads: the Spec, or the ref of a ref or Dataset root, from
-    # which `latest="stored"` finds the readings to look up.
-    source: Spec | DatasetRef | None = None
 
 
 type _Node = _Step | _Root
@@ -438,7 +429,6 @@ def _node(start: object, name: str) -> _Node:
         return _Root(
             {"spec_id": start.spec_id, "rendering": {"without_party_totals": True}},
             start.spec_id,
-            start,
         )
     if isinstance(start, Dataset):
         if not start.members:
@@ -471,7 +461,6 @@ def _node(start: object, name: str) -> _Node:
                     },
                 },
                 member.spec.spec_id,
-                start,
             )
         case [DerivedRefMember() as member]:
             return _Root(
@@ -480,90 +469,13 @@ def _node(start: object, name: str) -> _Node:
                     "content_version": member.content_version,
                 },
                 member.spec.spec_id,
-                start,
             )
         case members:
             # DFO refuses several readings with `several_members`, naming them.
             return _Root(
                 {"ref": _ref_object(start)},
                 f"{len(members)} readings",
-                start,
             )
-
-
-type StoredReading = tuple[str, Rendering]
-"""A spec in one rendering, whose stored newest version a lookup reads."""
-
-
-def stored_readings(chain: Recipe) -> dict[StoredReading, bool]:
-    """Each reading `chain`'s roots name, once each, in the order the roots come:
-    a Spec root's spec in the frame without party totals, and each dataset
-    member of a ref or Dataset root in its rendering. Each maps to whether a
-    root of several members holds it, whose ref names the digest too.
-
-    Raises:
-        InvalidRequestError: A root reads a frame DFO computed, which has no
-            stored newest version (`invalid_argument`).
-    """
-    readings: dict[StoredReading, bool] = {}
-    for root in _roots(chain._tree):
-        if isinstance(root.source, Spec):
-            readings.setdefault((root.source.spec_id, _SPEC_RENDERING), False)
-            continue
-        members = () if root.source is None else root.source.members
-        for member in members:
-            if not isinstance(member, RefMember):
-                raise client_error(
-                    INVALID_ARGUMENT,
-                    'latest="stored" reads each reading a recipe starts from at its '
-                    f"stored newest version, and {member.spec.spec_id} is a frame DFO "
-                    "computed, which has none; start the recipe from the readings that "
-                    "frame read, or use latest=True",
-                )
-            key = (member.spec.spec_id, member.rendering)
-            readings[key] = readings.get(key, False) or len(members) > 1
-    return readings
-
-
-def at_versions(
-    chain: Recipe, versions: Mapping[StoredReading, tuple[str, str | None]]
-) -> Recipe:
-    """`chain` with each root read at the versions `versions` gives its readings,
-    each a content version and the digest of its artifact in the reading's
-    rendering. A root of one reading sends the version, and a root of several
-    sends its ref with each member's version and digest."""
-
-    def pinned(node: _Node) -> _Node:
-        if isinstance(node, _Step):
-            other = None if node.other is None else pinned(node.other)
-            return _Step(node.verb, node.arguments, pinned(node.data), node.call, other)
-        source = node.source
-        if isinstance(source, Spec):
-            version, _ = versions[(source.spec_id, _SPEC_RENDERING)]
-            return replace(node, node={**node.node, "content_version": version})
-        if source is None:
-            return node
-        members = [member for member in source.members if isinstance(member, RefMember)]
-        if len(members) == 1:
-            (member,) = members
-            version, _ = versions[(member.spec.spec_id, member.rendering)]
-            return replace(node, node={**node.node, "content_version": version})
-        stored = []
-        for member in members:
-            version, digest = versions[(member.spec.spec_id, member.rendering)]
-            assert digest is not None
-            stored.append(replace(member, content_version=version, digest=digest))
-        ref = DatasetRef(tuple(stored))
-        return replace(node, node={"ref": _ref_object(ref)}, source=ref)
-
-    return Recipe(pinned(chain._tree))
-
-
-def _roots(node: _Node) -> list[_Root]:
-    """The roots under `node`, the data side first."""
-    if isinstance(node, _Root):
-        return [node]
-    return [*_roots(node.data), *([] if node.other is None else _roots(node.other))]
 
 
 def _ref_object(ref: DatasetRef) -> dict[str, Any]:

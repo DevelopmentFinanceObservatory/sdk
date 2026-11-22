@@ -22,11 +22,13 @@ step's `warnings` are the codes of the warnings of the client's own it issued.
 Both are compared on every outcome, as an empty list when the outcome leaves them
 out.
 
-An `analysis` step posts its tree through the analysis post `run_recipe` makes,
-which holds the 202 loop, and stops before the frame read, which the scenario
-does not record. Its outcome's `rows` and `derived_roots` come from the 200
-body the client read, and its `pending_waits` are the waits that followed a 202
-from the analysis route.
+An `analysis` step posts its tree, with the step's `latest` and `include`,
+through the analysis post `run_recipe` makes, which holds the 202 loop, and
+stops before the frame read, which the scenario does not record. Its outcome's
+`rows` and `derived_roots` come from the 200 body the client read, its
+`freshness` from the client's reading of `resolved_roots`, its
+`left_out_series` from the manifest the client read from the 200, and its
+`pending_waits` are the waits that followed a 202 from the analysis route.
 
 Each scenario starts as a fresh process would: no warning has been issued.
 """
@@ -61,7 +63,7 @@ from dfo._datasets import fetch as _fetch
 from dfo._datasets import operation as _operation
 from dfo._datasets import resolve as _resolve
 from dfo._datasets.build import Reading, build_body, layout_of, rendering_for
-from dfo._datasets.dataset import Dataset, SummedReading, build_dataset
+from dfo._datasets.dataset import Dataset, build_dataset
 from dfo._datasets.fetch import Session as AsyncSession
 from dfo._http.transport import (
     CLIENT_HEADER,
@@ -113,7 +115,7 @@ STEP_KEYS = {
     "mint": {"op", "spec", "layout", "party_totals"},
     "operation": {"op", "operation_id", "layout"},
     "result": {"op"},
-    "analysis": {"op", "tree", "latest"},
+    "analysis": {"op", "tree", "latest", "include"},
 }
 
 
@@ -391,7 +393,12 @@ def _run(
         case "operation":
             started = _resume(client, step["operation_id"], step.get("layout", "long"))
         case "analysis":
-            started = _analyse(client, step["tree"], latest=step.get("latest", False))
+            started = _analyse(
+                client,
+                step["tree"],
+                latest=step.get("latest", False),
+                include=step.get("include"),
+            )
         case _:
             started = _result(client, operation)
     return started
@@ -458,18 +465,20 @@ async def _resume(
 
 
 async def _analyse(
-    client: AsyncClient | Client, tree: Mapping[str, Any], *, latest: bool
-) -> tuple[Any, tuple[SummedReading, ...]]:
+    client: AsyncClient | Client,
+    tree: Mapping[str, Any],
+    *,
+    latest: bool | str,
+    include: list[str] | None,
+) -> Any:
     """Post a tree as `run_recipe` posts a recipe's, following its 202s, and
-    return the derived member and the summed roots the 200 answered."""
+    return what the client read from the 200."""
     analysis = _analysis if isinstance(client, AsyncClient) else _sync_analysis
+    body = {"tree": tree, "latest": latest}
+    if include is not None:
+        body["include"] = include
     return await _settle(
-        analysis._analyse(
-            client._session.transport,
-            {"tree": tree, "latest": latest},
-            deadline=None,
-            timeout=None,
-        )
+        analysis._analyse(client._session.transport, body, deadline=None, timeout=None)
     )
 
 
@@ -549,12 +558,18 @@ class NewestVersion:
 
 @dataclass(frozen=True)
 class Analysis:
-    """The result of an `analysis` step: the derived member and summed roots the
-    client read from the 200, and that 200's body."""
+    """The result of an `analysis` step: what the client read from the 200, its
+    derived member, summed roots, freshness and embedded manifest, and that
+    200's body."""
 
-    member: Any
-    summed: tuple[SummedReading, ...]
+    read: Any
     body: Mapping[str, Any]
+
+
+def _left_out_series(found: Analysis) -> int | None:
+    manifest = found.read.manifest
+    left_out = None if manifest is None else manifest.get("left_out")
+    return None if left_out is None else len(left_out)
 
 
 @dataclass
@@ -635,7 +650,7 @@ COMMON: dict[str, Reader] = {
 # every step of that kind and compared as None when the outcome leaves them out.
 ABSENT: dict[str, tuple[str, ...]] = {
     "dataset": ("party_totals_left_out",),
-    "analysis": ("pending_waits",),
+    "analysis": ("pending_waits", "freshness", "left_out_series"),
 }
 
 READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
@@ -686,8 +701,8 @@ READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
     "analysis": (
         (Analysis,),
         {
-            "spec_id": lambda found, _: found.member.spec.spec_id,
-            "content_version": lambda found, _: found.member.content_version,
+            "spec_id": lambda found, _: found.read.member.spec.spec_id,
+            "content_version": lambda found, _: found.read.member.content_version,
             "rows": lambda found, _: found.body.get("rows"),
             "stat_vars_summed": lambda found, _: [
                 {
@@ -695,8 +710,10 @@ READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
                     "content_version": summed.content_version,
                     "count": summed.count,
                 }
-                for summed in found.summed
+                for summed in found.read.summed
             ],
+            "freshness": lambda found, _: found.read.freshness,
+            "left_out_series": lambda found, _: _left_out_series(found),
             # The clients keep no `derived_roots`; the replay reads the body.
             "derived_roots": lambda found, _: found.body.get("derived_roots", []),
             "pending_waits": lambda _, step: step.pending_waits or None,
@@ -783,8 +800,8 @@ async def _replay(
         taken = [] if "operation" in outcome else pollers.take()
         if step["op"] == "newest_version" and not isinstance(result, DfoError):
             result = NewestVersion(result)
-        if step["op"] == "analysis" and isinstance(result, tuple):
-            result = Analysis(*result, exchanges.last_json())
+        if step["op"] == "analysis" and not isinstance(result, DfoError | DfoWarning):
+            result = Analysis(result, exchanges.last_json())
         waited = Step(
             issued,
             taken,

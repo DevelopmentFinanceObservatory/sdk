@@ -165,13 +165,7 @@ type RootNode = {
   readonly kind: "root";
   readonly node: Readonly<Record<string, unknown>>;
   readonly name: string;
-  /** The ref the root reads, for a root made from a `DatasetRef` or a `Dataset`. */
-  readonly ref?: DatasetRef;
 };
-
-/** A reading a recipe starts from or takes as another reading: the node the request sends, and
- *  the ref it was made from, if any. */
-export type RecipeRoot = Pick<RootNode, "node" | "ref">;
 
 /** One operation over its inputs, with its arguments in the engine's names. */
 type StepNode = {
@@ -490,11 +484,11 @@ function nodeOf(start: unknown, role: string): TreeNode {
 
 /** The root node that reads `ref`: one dataset or derived member by its spec and version, or
  *  several members as the ref itself. */
-export function refRoot(ref: DatasetRef): RootNode {
+function refRoot(ref: DatasetRef): RootNode {
   const [member, ...others] = ref.members;
   if (member === undefined || others.length > 0) {
     // DFO refuses several readings with `several_members`, naming them.
-    return root({ ref: structuredClone(ref.toJSON()) }, `${ref.members.length} readings`, ref);
+    return root({ ref: structuredClone(ref.toJSON()) }, `${ref.members.length} readings`);
   }
   const specId = member.spec.spec_id;
   if (isDatasetMember(member)) {
@@ -505,52 +499,20 @@ export function refRoot(ref: DatasetRef): RootNode {
         rendering: { without_party_totals: member.rendering.without_party_totals === true },
       },
       specId,
-      ref,
     );
   }
-  return root({ spec_id: specId, content_version: member.contentVersion }, specId, ref);
+  return root({ spec_id: specId, content_version: member.contentVersion }, specId);
 }
 
-const root = (node: Record<string, unknown>, name: string, ref?: DatasetRef): RootNode =>
-  Object.freeze({
-    kind: "root",
-    node: Object.freeze(node),
-    name,
-    ...(ref === undefined ? {} : { ref }),
-  });
+const root = (node: Record<string, unknown>, name: string): RootNode =>
+  Object.freeze({ kind: "root", node: Object.freeze(node), name });
 
-/** The tree `node` sends, each root as `replace` gives it. */
-function wire(
-  node: TreeNode,
-  replace: (root: RecipeRoot) => Record<string, unknown> = (found) => structuredClone(found.node),
-): Record<string, unknown> {
-  if (node.kind === "root") return replace(node);
-  const inputs: Record<string, unknown> = { data: wire(node.data, replace) };
-  if (node.other !== undefined) inputs["other"] = wire(node.other, replace);
+/** The tree `node` sends. */
+function wire(node: TreeNode): Record<string, unknown> {
+  if (node.kind === "root") return structuredClone(node.node);
+  const inputs: Record<string, unknown> = { data: wire(node.data) };
+  if (node.other !== undefined) inputs["other"] = wire(node.other);
   return { verb: node.verb, arguments: structuredClone(node.arguments), inputs };
-}
-
-/** Every root a recipe reads, in the order its tree sends them, a root read twice twice. */
-export function recipeRoots(chain: Recipe): RecipeRoot[] {
-  const found: RecipeRoot[] = [];
-  wire(treeOf(chain), (node) => {
-    found.push(node);
-    return {};
-  });
-  return found;
-}
-
-/**
- * The tree `chain.tree()` sends with each root as `replace` gives it.
- *
- * @throws {InvalidRequestError} As `chain.tree()` throws.
- */
-export function treeWithRoots(
-  chain: Recipe,
-  replace: (root: RecipeRoot) => Record<string, unknown>,
-): Record<string, unknown> {
-  chain.tree();
-  return wire(treeOf(chain), replace);
 }
 
 /** The chain that makes `node`, as it was called: `recipe(spec_…).rank({ … })`. */

@@ -382,12 +382,15 @@ class AsyncClient:
         when DFO stores no version it can serve. `dataset.freshness` says how
         new the versions are, as `current`, `pending` or `stale`, the worst of
         the members', or None when the server does not say. A recipe with
-        `latest="stored"` reads the manifest of each dataset it starts from,
-        downloads none of their files, and runs on those versions, so
-        `dataset.ref` names the frame computed from them.
+        `latest="stored"` costs two requests: the post, which DFO runs on the
+        versions the stored heads of its datasets name and answers with the
+        computed frame's manifest, and the file. `dataset.ref` names the frame
+        computed from those versions, and `dataset.freshness` is the worst DFO
+        states for those datasets.
 
-        A ref of a frame DFO computed reads that frame, and with `latest=True`
-        DFO computes its recipe again on the newest versions of its datasets. A
+        A ref of a frame DFO computed reads that frame. With `latest=True` DFO
+        computes its recipe again on the newest versions of its datasets, and
+        with `latest="stored"` on the versions their stored heads name. A
         recipe or a computed frame takes `latest`, `strict` and `timeout`, and
         refuses `progress`, which DFO does not report while it computes, and the
         options that narrow or render a spec. A fetch that left
@@ -459,9 +462,10 @@ class AsyncClient:
                 in the rendering the ref holds, in place of the exact versions
                 it names, as `fetch(old.ref, latest=True)`. `"stored"` reads
                 the version DFO stores as the newest of each member's spec, in
-                the member's rendering, runs a recipe on the stored newest
-                versions of the datasets it starts from, and refuses a computed
-                frame. A spec always fetches its newest version and refuses it.
+                the member's rendering, and runs a recipe, or the recipe behind
+                a computed frame, on the stored newest versions of the datasets
+                it reads. A spec always fetches its newest version and refuses
+                it.
             strict: Raise the first dataset warning, or the
                 `SeriesLeftOutWarning`, instead of issuing it.
             timeout: The longest the fetch takes, in seconds, downloads
@@ -478,9 +482,8 @@ class AsyncClient:
                 `Recipe`, or a `Share` or its URL, such as a spec id, and no
                 request is sent; a ref is narrowed or given another layout or
                 `party_totals`; `latest` is not True, False or `"stored"`, is
-                given a spec, `latest=True` a ref whose members differ in
-                rendering, or `latest="stored"` a computed frame or a recipe
-                that reads one;
+                given a spec, or `latest=True` a ref whose members differ in
+                rendering;
                 a recipe or a computed frame is given `progress`; a share is
                 given a narrowing, `party_totals`, `latest` or a layout other
                 than `frame`, `slot` is 0, or `as_of` is malformed, all before
@@ -504,7 +507,8 @@ class AsyncClient:
             ContractError: An artifact is not Parquet (`unexpected_response`),
                 or lacks a `time_period` or numeric `value` column
                 (`contract_violation`); the cache drops it. A
-                `latest="stored"` read answered for another spec
+                `latest="stored"` read answered for another spec, or a recipe's
+                answer under it carries no manifest of its frame
                 (`contract_violation`).
             DfoTimeoutError: `timeout` passed (`deadline_exceeded`). The build
                 keeps running on the server, and the same fetch joins it.

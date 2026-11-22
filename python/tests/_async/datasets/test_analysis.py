@@ -53,7 +53,6 @@ from tests.rule_vectors import vectors
 pytestmark = pytest.mark.anyio
 
 AID = Spec("spec_" + "a" * 32, {})
-FILE_QUERY = "format=parquet&bundle=false&layout=frame"
 
 
 class Timeline:
@@ -92,6 +91,15 @@ def ready(name: str = "chain") -> httpx2.Response:
     return json_response(200, load(f"analysis-{name}-ready.json"))
 
 
+def answered(name: str = "chain", **members: object) -> httpx2.Response:
+    """The ready answer to a post that asks for the manifest: the recorded
+    answer with the derived manifest embedded. `members` replaces or adds
+    top-level members."""
+    body = load(f"analysis-{name}-ready.json")
+    body["manifest"] = load(f"analysis-{name}-manifest.json")
+    return json_response(200, body | members)
+
+
 def manifest(name: str = "chain") -> httpx2.Response:
     return json_response(200, load(f"analysis-{name}-manifest.json"))
 
@@ -126,6 +134,14 @@ def member(name: str = "chain") -> DerivedRefMember:
     return found
 
 
+def digest_path(name: str = "chain") -> str:
+    found = member(name)
+    return (
+        f"{BASE}/datasets/derived/{found.spec.spec_id}/{found.content_version}"
+        f"/files/{found.digest}"
+    )
+
+
 def frame_paths(name: str = "chain") -> list[str]:
     found = member(name)
     path = f"{BASE}/datasets/derived/{found.spec.spec_id}/{found.content_version}"
@@ -140,14 +156,19 @@ CHAIN = (
 
 
 async def test_a_recipe_runs_in_one_request_and_reads_its_frame() -> None:
-    server = Server(ready(), manifest(), frame())
+    server = Server(answered(), frame())
     async with make(server) as transport:
         with pytest.warns(SeriesLeftOutWarning) as caught:
             data = await fetch(transport, CHAIN)
 
-    assert server.calls() == [f"POST {BASE}/datasets/analysis", *frame_paths()]
-    assert server.body(0) == {"tree": CHAIN.tree(), "latest": False}
-    assert server.requests[2].url.query.decode() == FILE_QUERY
+    # The answer embeds the manifest, so the file is the only other request.
+    assert server.calls() == [f"POST {BASE}/datasets/analysis", f"GET {digest_path()}"]
+    assert server.body(0) == {
+        "tree": CHAIN.tree(),
+        "latest": False,
+        "include": ["manifest"],
+    }
+    assert server.requests[1].url.query == b""
     assert data.ref == DatasetRef((member(),))
     (built,) = data.members
     assert isinstance(built, DerivedMember)
@@ -163,7 +184,7 @@ async def test_a_recipe_runs_in_one_request_and_reads_its_frame() -> None:
 
 
 async def test_a_recipes_dataset_names_columns_by_the_roles_the_call_used() -> None:
-    server = Server(ready(), manifest(), frame())
+    server = Server(answered(), frame())
     async with make(server) as transport:
         with pytest.warns(SeriesLeftOutWarning):
             data = await fetch(transport, CHAIN)
@@ -204,7 +225,7 @@ async def test_a_rank_names_its_per_by_the_role_the_call_used(tmp_path: Path) ->
 
 
 async def test_an_operation_takes_strict_and_timeout_as_fetch_does() -> None:
-    server = Server(ready(), manifest(), frame())
+    server = Server(answered(), frame())
     async with make(server) as transport:
         operations = AsyncAnalysis(transport)
         with pytest.raises(SeriesLeftOutWarning):
@@ -219,7 +240,7 @@ async def test_an_operation_takes_strict_and_timeout_as_fetch_does() -> None:
 
 
 async def test_strict_raises_the_left_out_warning() -> None:
-    server = Server(ready(), manifest(), frame())
+    server = Server(answered(), frame())
     async with make(server) as transport:
         with pytest.raises(SeriesLeftOutWarning):
             await fetch(transport, CHAIN, strict=True)
@@ -278,8 +299,12 @@ async def test_the_readings_dfo_summed_are_listed_and_counted_in_the_repr() -> N
             "count": 40,
         },
     ]
-    answer = {**load("analysis-rank-ready.json"), "stat_vars_summed": summed[:1]}
-    server = Server(json_response(200, answer), manifest("rank"), frame("rank"))
+    answer = {
+        **load("analysis-rank-ready.json"),
+        "manifest": load("analysis-rank-manifest.json"),
+        "stat_vars_summed": summed[:1],
+    }
+    server = Server(json_response(200, answer), frame("rank"))
     async with make(server) as transport:
         data = await AsyncAnalysis(transport).rank(
             AID, by="origin", per="destination", allow_sparse_breakdowns=True
@@ -294,7 +319,7 @@ async def test_the_readings_dfo_summed_are_listed_and_counted_in_the_repr() -> N
     assert "\n  Summed: 1,598 StatVars\n" in repr(data)
 
     answer["stat_vars_summed"] = summed
-    server = Server(json_response(200, answer), manifest("rank"), frame("rank"))
+    server = Server(json_response(200, answer), frame("rank"))
     async with make(server) as transport:
         data = await AsyncAnalysis(transport).aggregate(
             AID, by="crsPurpose", allow_sparse_breakdowns=True
@@ -305,8 +330,7 @@ async def test_the_readings_dfo_summed_are_listed_and_counted_in_the_repr() -> N
 
 
 async def test_a_run_that_summed_nothing_prints_no_summed_line() -> None:
-    answer = {**load("analysis-rank-ready.json"), "stat_vars_summed": []}
-    server = Server(json_response(200, answer), manifest("rank"), frame("rank"))
+    server = Server(answered("rank", stat_vars_summed=[]), frame("rank"))
     async with make(server) as transport:
         data = await fetch(transport, recipe(AID).rank(by="destination"))
     assert data.stat_vars_summed == ()
@@ -358,7 +382,7 @@ async def test_a_stat_vars_summed_this_client_cannot_read_raises_contract_error(
 
 async def test_a_pending_run_posts_again_after_its_retry_after() -> None:
     timeline = Timeline()
-    server = Server(pending(), ready("rank"), manifest("rank"), frame("rank"))
+    server = Server(pending(), answered("rank"), frame("rank"))
     async with make(server, timeline) as transport:
         await fetch(transport, recipe(AID).rank(by="destination"))
     assert server.calls()[:2] == [f"POST {BASE}/datasets/analysis"] * 2

@@ -284,7 +284,7 @@ The fetch sends two GETs per member: the spec's manifest at `GET /datasets/{spec
 
 `data.freshness` is None when the API states no value or one this client does not know. DFO serves a stored version younger than 7 days at once and checks for newer data in the background, so a reading nobody opened in that time can be up to 7 days behind for its first reader. A version older than 7 days is rebuilt on read. The call waits for the build, as `latest=True` does, and a version it waited for is `current`. `data.ref` names the versions read and leaves the freshness out, as the saved file does.
 
-`latest=True` has DFO check for newer data before it answers, so use it in a data step that must hold the newest data. `latest="stored"` suits a read that should answer at once, such as a dashboard. A recipe takes it too, and runs on the stored newest version of each dataset it starts from, as [Follow new data and recompute](compute.md#follow-new-data-and-recompute) describes. A ref of a frame DFO computed, a spec, and a share each refuse `latest="stored"` with `InvalidRequestError` before any request.
+`latest=True` has DFO check for newer data before it answers, so use it in a data step that must hold the newest data. `latest="stored"` suits a read that should answer at once, such as a dashboard. A recipe and a ref of a frame DFO computed take it too, and run on the stored newest version of each dataset they read, as [Follow new data and recompute](compute.md#follow-new-data-and-recompute) describes. A spec and a share each refuse `latest="stored"` with `InvalidRequestError` before any request.
 
 ### When a version is gone
 

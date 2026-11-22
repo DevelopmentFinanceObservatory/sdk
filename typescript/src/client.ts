@@ -237,11 +237,13 @@ export class Client {
    * manifest and the file, and makes no Search call. DFO answers from its stored version and
    * checks for newer data after it answers, so the fetch waits on a build only when DFO stores
    * no version it can serve. `dataset.freshness` says how new the versions are, as `current`,
-   * `pending` or `stale`, the worst of the members', or null when the server does not say. A page reads its committed ref this way to show the newest data on
-   * each view. On a recipe, `latest: "stored"` reads only the manifest of each reading the
-   * recipe starts from, all at once, and posts the recipe on those versions: one GET per
-   * reading, one POST, and the two GETs of the computed frame. A recipe that starts from a frame
-   * DFO computed is refused, since DFO stores no newest version of it.
+   * `pending` or `stale`, the worst of the members', or null when the server does not say. A
+   * page reads its committed ref this way to show the newest data on each view. On a recipe,
+   * `latest: "stored"` posts the recipe once, and DFO runs it on the version its stored head
+   * names for each dataset the recipe reads, those behind a frame DFO computed included, and
+   * answers with the computed frame's manifest; the fetch then downloads the frame's file. The
+   * recipe costs those two requests, and `dataset.freshness` is the worst DFO states for those
+   * datasets. A ref of a frame DFO computed reads so too, as a recipe of no step.
    *
    * `currency`, with `priceBasis` and `baseYear`, fetches a spec in another unit:
    * `client.fetch(spec, { currency: "EUR", priceBasis: "constant", baseYear: 2022 })`. Search
@@ -250,8 +252,9 @@ export class Client {
    * spec as `window`, `entities` and `facets` narrow it, so Search judges the years and places
    * the build reads. `unitConversion(spec)` lists what a spec converts to.
    *
-   * A ref of a frame DFO computed reads that frame, and with `latest: true` DFO computes its
-   * recipe again on the newest versions of its datasets. A recipe or a computed frame takes
+   * A ref of a frame DFO computed reads that frame, with `latest: true` DFO computes its
+   * recipe again on the newest versions of its datasets, and with `latest: "stored"` on their
+   * stored versions. A recipe or a computed frame takes
    * `latest`, `strict`, `timeout` and `signal`, and refuses `onProgress`, which DFO does not
    * report while it computes, and the options that narrow or render a spec. A fetch that left
    * series out for missing data issues one `SeriesLeftOutWarning`, which
@@ -274,7 +277,7 @@ export class Client {
    *   `Match` that did not resolve, the target is neither a ref nor a spec with its `spec_id`
    *   and `definition`, a ref is narrowed or given another layout or `partyTotals`, or
    *   `latest` is given a spec, `latest: true` a ref whose members differ in rendering, or
-   *   `latest: "stored"` a frame DFO computed, a recipe reading one, or a share; a conversion option
+   *   `latest: "stored"` a share; a conversion option
    *   breaks its rule, or is given a ref, recipe or share; a share is given a
    *   narrowing, `partyTotals`, `latest` or a layout other than `frame`, `slot` is not a
    *   number from 1, or `asOf` is malformed, all before any request; a share of several slots

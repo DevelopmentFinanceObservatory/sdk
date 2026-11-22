@@ -61,7 +61,7 @@ export type Step =
   | { op: "mint"; spec: Spec; layout?: Layout; party_totals?: boolean }
   | { op: "operation"; operation_id: string; layout?: Layout }
   | { op: "result" }
-  | { op: "analysis"; tree: Json; latest?: boolean };
+  | { op: "analysis"; tree: Json; latest?: boolean | "stored"; include?: string[] };
 
 export type Exchange = {
   request: { method: string; path?: string; origin_path?: string; url?: string; json?: Json };
@@ -107,7 +107,9 @@ export type DatasetSummary = StepSummary & {
 };
 
 /** A ready analysis answer: its derived member, its rows, the roots it summed and the roots it
- *  rendered as versions of their own, as served, and the seconds waited after each 202. */
+ *  rendered as versions of their own, as served, and the seconds waited after each 202; for a
+ *  stored post the worst freshness its roots resolved to, and for a post that asks for the
+ *  manifest the number of series the manifest's `left_out` lists, null when it is null. */
 export type AnalysisSummary = StepSummary & {
   spec_id: string;
   content_version: string;
@@ -119,6 +121,8 @@ export type AnalysisSummary = StepSummary & {
     base_content_version?: string | null;
   }[];
   pending_waits?: number[];
+  freshness?: string | null;
+  left_out_series?: number | null;
 };
 
 export type ErrorSummary = StepSummary & {

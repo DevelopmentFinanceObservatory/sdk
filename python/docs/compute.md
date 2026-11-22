@@ -156,7 +156,7 @@ The refusal's `error.problem["fix"]` names the flag when it applies.
 
 ## Chain steps into a recipe
 
-`dfo.analysis.recipe(start)` describes a chain of the same operations without running it, and `dfo.fetch(recipe)` runs the whole chain on DFO in one request. Each step method takes the function's arguments without the first reading:
+`dfo.analysis.recipe(start)` describes a chain of the same operations without running it, and `dfo.fetch(recipe)` runs the whole chain on DFO in one request, whose answer carries the result's manifest, and downloads the result's file in a second. Each step method takes the function's arguments without the first reading:
 
 ```text
 recipe(spec_7f535e528a2a527aa54b316d4eccbb6e).filter(keep={'destination': 'country/KEN'}).quotient_of(spec_429926a07022f78c65e0379e8004ae6d, on={'destination': 'place'})
@@ -212,7 +212,7 @@ if again.ref != per_person.ref:
 
 A changed ref can still hold the same numbers, after an engine release or a rebuild of a reading that moved no value. `again.ref.same_data(per_person.ref)` compares what the two refs hold: two derived results with the same rows under the same variables compare as the same data, whichever recipe made them.
 
-`dfo.fetch(chain, latest="stored")` runs a recipe on the version DFO stores as the newest of each dataset it starts from, as `dfo.fetch(ref, latest="stored")` reads a ref. It asks for each dataset's manifest, downloads none of their files, and builds nothing DFO has already stored, so a web page or a scheduled job gets a quick answer on current data. The result's `freshness` is the worst its readings' answers state, and its ref names the versions it ran on. A recipe with no step, or one that reads a frame DFO computed, raises `InvalidRequestError` before any request. A root of several members sends its ref with each member's stored version and digest, which DFO refuses with `several_members` until it reads such a ref as one reading.
+`dfo.fetch(chain, latest="stored")` runs a recipe on the version DFO stores as the newest of each dataset it reads, as `dfo.fetch(ref, latest="stored")` reads a ref, the datasets behind a computed frame in the recipe included. It costs two requests: the analysis, which DFO answers from the stored heads of those datasets with the result's manifest, and the result's file. It builds nothing DFO has already stored, so a web page or a scheduled job gets a quick answer on current data. The result's `freshness` is the worst DFO states for those datasets, and its ref names the versions it ran on. A recipe with no step raises `InvalidRequestError` before any request. A root of several members is sent as it stands, and DFO refuses it with `several_members`.
 
 `dfo.fetch(per_person.ref)`, without `latest`, reads the exact version again. DFO holds a derived version until the `held until` date in its repr. After that, the fetch asks DFO to compute it again from the same versions of its readings, and returns it when the result is the same version. When it is not, the fetch raises `VersionUnavailableError`, and `latest=True` computes it on the newest data.
 
@@ -325,7 +325,7 @@ A `Dataset` an operation returns has one `DerivedMember` in `members`, and its r
 
 `data.party_totals_left_out` holds the group totals each reading's read left out, as [Sum a column](datasets.md#sum-a-column) describes, each entry named by the reading's spec id, in the order of the recipe's readings. The repr counts them on a `Party totals left out of the readings` line. The tuple is empty when the readings left nothing out, against a server older than this report, and when DFO could not read a reading.
 
-`dfo.fetch(ref)` reads a derived ref's exact version, and `dfo.fetch(ref, latest=True)` computes its recipe again on the newest data. A ref of several derived members raises `InvalidRequestError` before any request, and so does `latest="stored"` on a derived ref. To run its recipe on the stored versions, fetch the recipe with `latest="stored"`.
+`dfo.fetch(ref)` reads a derived ref's exact version, `dfo.fetch(ref, latest=True)` computes its recipe again on the newest data, and `dfo.fetch(ref, latest="stored")` on the versions DFO stores as the newest, in two requests as a recipe does. A ref of several derived members raises `InvalidRequestError` before any request.
 
 ### `dfo.pin`
 

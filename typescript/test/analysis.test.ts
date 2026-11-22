@@ -56,7 +56,13 @@ function make(...handlers: Handler[]) {
   return { transport, seen, warnings, sleeps };
 }
 
-const ready = async (name = "chain") => json(await recordedJson(`analysis-${name}-ready.json`));
+/** The recorded ready answer with its derived manifest embedded, as DFO answers a post that asks
+ *  for it. A post that does not ask ignores the member. */
+const readyJson = async (name = "chain") => ({
+  ...(await recordedJson(`analysis-${name}-ready.json`)),
+  manifest: await recordedJson(`analysis-${name}-manifest.json`),
+});
+const ready = async (name = "chain") => json(await readyJson(name));
 const manifest = async (name = "chain") =>
   json(await recordedJson(`analysis-${name}-manifest.json`));
 const frame = async (name = "chain") => {
@@ -87,6 +93,14 @@ async function member(name = "chain"): Promise<DerivedRefMember> {
   return found;
 }
 
+/** A recipe's requests other than `latest: true`'s: the post with the manifest embedded in its
+ *  answer, and the frame's file by its digest. */
+async function recipePaths(name = "chain"): Promise<string[]> {
+  const found = await member(name);
+  const path = `${BASE}/datasets/derived/${found.spec.spec_id}/${found.contentVersion}`;
+  return [`POST ${BASE}/datasets/analysis`, `GET ${path}/files/${found.digest}`];
+}
+
 async function framePaths(name = "chain"): Promise<string[]> {
   const found = await member(name);
   const path = `${BASE}/datasets/derived/${found.spec.spec_id}/${found.contentVersion}`;
@@ -106,10 +120,10 @@ const CHAIN = recipe(AID)
 
 describe("a recipe", () => {
   test("runs in one request and reads its frame, warning once of what it left out", async () => {
-    const { transport, seen, warnings } = make(await ready(), await manifest(), await frame());
+    const { transport, seen, warnings } = make(await ready(), await frame());
     const data = await fetchDataset(transport, CHAIN);
-    assert.deepEqual(calls(seen), [`POST ${BASE}/datasets/analysis`, ...(await framePaths())]);
-    assert.deepEqual(body(seen, 0), { tree: CHAIN.tree(), latest: false });
+    assert.deepEqual(calls(seen), await recipePaths());
+    assert.deepEqual(body(seen, 0), { tree: CHAIN.tree(), latest: false, include: ["manifest"] });
     assert.ok(data.ref.equals(new DatasetRef([await member()])));
     const [built] = data.members;
     assert.ok(built && isDerived(built));
@@ -129,7 +143,7 @@ describe("a recipe", () => {
   });
 
   test("names each column of its left-out series and steps by the role the call used", async () => {
-    const { transport } = make(await ready(), await manifest(), await frame());
+    const { transport } = make(await ready(), await frame());
     const data = await fetchDataset(transport, CHAIN);
     assert.ok(
       String(data).includes("  Derived: quotient_of by destination, then growth by destination, "),
@@ -145,16 +159,12 @@ describe("a recipe", () => {
   });
 
   test("carries the readings DFO summed and prints them", async () => {
-    const answer = await recordedJson("analysis-chain-ready.json");
+    const answer = await readyJson();
     const summed = [
       { spec_id: AID.spec_id, content_version: `cv_${"c".repeat(32)}`, count: 14 },
       { spec_id: `spec_${"b".repeat(32)}`, content_version: `cv_${"d".repeat(32)}`, count: 40 },
     ];
-    const { transport } = make(
-      json({ ...answer, stat_vars_summed: summed }),
-      await manifest(),
-      await frame(),
-    );
+    const { transport } = make(json({ ...answer, stat_vars_summed: summed }), await frame());
     const data = await fetchDataset(transport, CHAIN);
     assert.deepEqual(
       data.statVarsSummed,
@@ -166,7 +176,7 @@ describe("a recipe", () => {
     );
     assert.ok(String(data).split("\n").includes("  Summed: 14 and 40 StatVars in 2 readings"));
     // An answer that sums nothing prints no line.
-    const plain = make(await ready(), await manifest(), await frame());
+    const plain = make(await ready(), await frame());
     const unsummed = await fetchDataset(plain.transport, CHAIN);
     assert.deepEqual(unsummed.statVarsSummed, []);
     assert.ok(!String(unsummed).includes("Summed:"));
@@ -197,7 +207,7 @@ describe("a recipe", () => {
     ],
   ] as const) {
     test(`refuses stat_vars_summed ${name}`, async () => {
-      const answer = await recordedJson("analysis-chain-ready.json");
+      const answer = await readyJson();
       const { transport } = make(json({ ...answer, stat_vars_summed: listed }));
       await assert.rejects(fetchDataset(transport, CHAIN), {
         name: "ContractError",
@@ -208,7 +218,7 @@ describe("a recipe", () => {
   }
 
   test("run as one operation takes strict, timeout and signal as fetch does", async () => {
-    const strict = make(await ready(), await manifest(), await frame());
+    const strict = make(await ready(), await frame());
     await assert.rejects(
       clientOver(strict.transport).analysis.growth(CHAIN, {
         by: "destination",
@@ -234,7 +244,7 @@ describe("a recipe", () => {
   });
 
   test("raises the left-out warning under strict", async () => {
-    const { transport } = make(await ready(), await manifest(), await frame());
+    const { transport } = make(await ready(), await frame());
     await assert.rejects(fetchDataset(transport, CHAIN, { strict: true }), SeriesLeftOutWarning);
   });
 
@@ -247,7 +257,15 @@ describe("a recipe", () => {
     const data = await fetchDataset(transport, recipe(AID).rank({ by: "destination", limit: 2 }), {
       latest: true,
     });
-    assert.equal((body(seen, 0) as { latest: boolean }).latest, true);
+    // latest: true asks for no manifest and reads it from its route.
+    assert.deepEqual(body(seen, 0), {
+      tree: recipe(AID).rank({ by: "destination", limit: 2 }).tree(),
+      latest: true,
+    });
+    assert.deepEqual(calls(seen), [
+      `POST ${BASE}/datasets/analysis`,
+      ...(await framePaths("rank")),
+    ]);
     assert.deepEqual(data.leftOut, []);
     assert.deepEqual(warnings, []);
     const [built] = data.members;
@@ -262,11 +280,11 @@ describe("a recipe", () => {
     const { transport, seen, sleeps } = make(
       await pending(),
       await ready("rank"),
-      await manifest("rank"),
       await frame("rank"),
     );
     await fetchDataset(transport, recipe(AID).rank({ by: "destination" }));
-    assert.deepEqual(calls(seen).slice(0, 2), Array(2).fill(`POST ${BASE}/datasets/analysis`));
+    const [post, file] = await recipePaths("rank");
+    assert.deepEqual(calls(seen), [post, post, file]);
     assert.deepEqual(body(seen, 0), body(seen, 1));
     assert.deepEqual(sleeps, [2000]);
   });
@@ -695,16 +713,13 @@ describe("fileUrl", () => {
 });
 
 test("client.analysis runs one step as a recipe of one step", async () => {
-  const { transport, seen } = make(
-    await ready("rank"),
-    await manifest("rank"),
-    await frame("rank"),
-  );
+  const { transport, seen } = make(await ready("rank"), await frame("rank"));
   const client = clientOver(transport);
   await client.analysis.rank(AID, { by: "destination", limit: 2 });
   assert.deepEqual(body(seen, 0), {
     tree: recipe(AID).rank({ by: "destination", limit: 2 }).tree(),
     latest: false,
+    include: ["manifest"],
   });
   assert.equal(
     String(client.analysis),
