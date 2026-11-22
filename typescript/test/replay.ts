@@ -10,6 +10,9 @@ import { CLIENT_HEADER, ownIdentity } from "../src/http/client-identity.ts";
 import { Transport } from "../src/http/transport.ts";
 import type { TransportOptions } from "../src/http/transport.ts";
 
+/** The route an analysis step posts to, whose 202s ask for a pending wait. */
+const ANALYSIS_PATH = "/datasets/analysis";
+
 /** The base URL a replay serves its scenario at when its options name none. */
 export const REPLAY_BASE_URL = "https://api.replay.test/api";
 
@@ -57,7 +60,8 @@ export type Step =
   | { op: "newest_version"; spec: Spec }
   | { op: "mint"; spec: Spec; layout?: Layout; party_totals?: boolean }
   | { op: "operation"; operation_id: string; layout?: Layout }
-  | { op: "result" };
+  | { op: "result" }
+  | { op: "analysis"; tree: Json; latest?: boolean };
 
 export type Exchange = {
   request: { method: string; path?: string; origin_path?: string; url?: string; json?: Json };
@@ -102,6 +106,21 @@ export type DatasetSummary = StepSummary & {
   long_builds?: LongBuildSummary[];
 };
 
+/** A ready analysis answer: its derived member, its rows, the roots it summed and the roots it
+ *  rendered as versions of their own, as served, and the seconds waited after each 202. */
+export type AnalysisSummary = StepSummary & {
+  spec_id: string;
+  content_version: string;
+  rows: number;
+  stat_vars_summed: { spec_id: string; content_version: string; count: number }[];
+  derived_roots: {
+    spec_id: string;
+    content_version: string;
+    base_content_version?: string | null;
+  }[];
+  pending_waits?: number[];
+};
+
 export type ErrorSummary = StepSummary & {
   class: string;
   code: string | null;
@@ -115,6 +134,7 @@ export type Outcome =
   | { dataset: DatasetSummary }
   | { operation: StepSummary & Json }
   | { newest_version: StepSummary & { content_version: string | null } }
+  | { analysis: AnalysisSummary }
   | { error: ErrorSummary };
 
 const scenarioUrl = (file: string): URL =>
@@ -210,10 +230,11 @@ function expectedUrl(base: URL, request: Exchange["request"]): string {
  * `origin_path`, carries `X-DFO-Client` and the replay's key, and a `url` request on the storage
  * host carries no header at all, `X-DFO-Client` included; a replay whose `options` name another
  * key skips the key check. Sleeps advance a fake clock and are
- * recorded, not waited: `waits` holds every sleep, and `retryWaits` the sleeps that are no
- * long build's poll wait. A poller records each poll wait just before it sleeps it, so a sleep
- * is a poll wait when the long builds' poll waits grew since the last sleep. `remaining` lists
- * the exchanges no request reached. A recorded scenario's request posts exactly the body members
+ * recorded, not waited: `waits` holds every sleep, `pendingWaits` the sleeps that follow a 202
+ * from the analysis route, and `retryWaits` the sleeps that are neither those nor a long build's
+ * poll wait. A poller records each poll wait just before it sleeps it, so a sleep is a poll wait
+ * when the long builds' poll waits grew since the last sleep. `lastJson` gives the JSON body of
+ * the last response served. `remaining` lists the exchanges no request reached. A recorded scenario's request posts exactly the body members
  * the record lists. The replay serves the scenario at `options.baseUrl`, `REPLAY_BASE_URL` when
  * it names none, and a response body or header that names the recorded API origin names the
  * replay's origin instead, as the server under the replay's base URL would. `options` override
@@ -226,6 +247,8 @@ export function replay(
   transport: Transport;
   waits: number[];
   retryWaits: number[];
+  pendingWaits: number[];
+  lastJson: () => unknown;
   remaining: () => Exchange[];
   urls: string[];
 } {
@@ -237,7 +260,9 @@ export function replay(
   const queue = [...record.exchanges];
   const waits: number[] = [];
   const retryWaits: number[] = [];
+  const pendingWaits: number[] = [];
   const urls: string[] = [];
+  let served: Exchange | undefined;
   const longBuilds: LongBuild[] = [];
   let pollWaitsSeen = 0;
   let clock = 0;
@@ -246,6 +271,7 @@ export function replay(
     urls.push(url);
     const exchange = queue.shift();
     assert.ok(exchange, `${record.name}: unexpected request ${init.method ?? "GET"} ${url}`);
+    served = exchange;
     const { request, response } = exchange;
     assert.equal(init.method ?? "GET", request.method, `${record.name}: method of ${url}`);
     assert.equal(url, expectedUrl(base, request), `${record.name}: request URL`);
@@ -306,7 +332,8 @@ export function replay(
     sleep: (ms) => {
       waits.push(ms);
       const pollWaits = longBuilds.reduce((sum, build) => sum + build.pollWaits.length, 0);
-      if (pollWaits === pollWaitsSeen) retryWaits.push(ms);
+      const pending = served?.request.path === ANALYSIS_PATH && served.response.status === 202;
+      if (pollWaits === pollWaitsSeen) (pending ? pendingWaits : retryWaits).push(ms);
       pollWaitsSeen = pollWaits;
       clock += ms;
       return Promise.resolve();
@@ -318,5 +345,13 @@ export function replay(
       options.onLongBuild?.(build);
     },
   });
-  return { transport, waits, retryWaits, remaining: () => [...queue], urls };
+  return {
+    transport,
+    waits,
+    retryWaits,
+    pendingWaits,
+    lastJson: () => served?.response.json,
+    remaining: () => [...queue],
+    urls,
+  };
 }

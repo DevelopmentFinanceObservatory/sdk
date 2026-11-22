@@ -11,7 +11,7 @@ import { ByteWriter, parquetWriteBuffer } from "hyparquet-writer";
 import { writeMetadata } from "hyparquet-writer/src/metadata.js";
 
 import { clientOver } from "../src/client.ts";
-import { InvalidRequestError } from "../src/core/errors.ts";
+import { ContractError, InvalidRequestError } from "../src/core/errors.ts";
 import { FormatError, isDerived } from "../src/core/ref.ts";
 import { toArrow } from "../src/datasets/arrow.ts";
 import { Dataset, datasetTable } from "../src/datasets/dataset.ts";
@@ -138,6 +138,29 @@ describe("the contract's saved-file examples", async () => {
 const digestOf = (data: Uint8Array): string =>
   `sha256:${createHash("sha256").update(data).digest("hex")}`;
 
+/** The recorded rank, its tree's step split per `partitionBy`, its columns named by `roles`. */
+async function rankSplit(
+  partitionBy: string[],
+  roles: Record<string, string> = {},
+): Promise<Dataset> {
+  const { ref } = await recordedJson<{ ref: unknown }>("analysis-rank-ready.json");
+  const [member] = DatasetRef.fromJSON(ref).members;
+  assert.ok(member && isDerived(member));
+  const manifest = await recordedJson<{ recipe: { tree: { op_spec: { parameters: object } } } }>(
+    "analysis-rank-manifest.json",
+  );
+  manifest.recipe.tree.op_spec.parameters = {
+    ...manifest.recipe.tree.op_spec.parameters,
+    // An empty split is a global rank, whose manifest has no partition_by.
+    ...(partitionBy.length > 0 && { partition_by: partitionBy }),
+  };
+  const data = await recordedBytes("analysis-rank-frame.parquet");
+  return (await derivedDataset(member, manifest, data, { roles })).dataset;
+}
+
+/** The recorded rank, its tree's step split per destination. */
+const partitionedRank = (): Promise<Dataset> => rankSplit(["destination"]);
+
 /** The datasets a round trip starts from: two members stacked from an answer, a partial answer
  *  with a part left out, a derived frame, and pyarrow's types in one member. */
 const sources: Record<string, () => Promise<Dataset>> = {
@@ -163,6 +186,7 @@ const sources: Record<string, () => Promise<Dataset>> = {
     const data = await recordedBytes("analysis-chain-frame.parquet");
     return (await derivedDataset(member, manifest, data)).dataset;
   },
+  "a rank split per destination": partitionedRank,
   "every Parquet type": async () => {
     // Written by pyarrow: int64, uint8, float64, bool, string, timestamp, date32, decimal,
     // binary and null columns, each with a null.
@@ -241,6 +265,126 @@ describe("Dataset.fromBytes reads back the file toBytes() writes", () => {
     );
     assert.equal(String(loaded), "<Dataset Bundle.\n  Rows: 0\n  Keep: await data.toBytes()>");
   });
+});
+
+const PLAIN_STEPS = [
+  { verb: "quotient_of", by: ["financingRecipient"], limit: null },
+  { verb: "growth", by: ["financingRecipient"], limit: null },
+];
+
+describe("the format a step's per needs", () => {
+  /** `bytes` with its `dfo.steps` and format version set. */
+  const rewritten = (bytes: Uint8Array, version: string, steps: unknown): Uint8Array =>
+    withFooter(bytes, (metadata) => ({
+      ...metadata,
+      key_value_metadata: (metadata.key_value_metadata ?? []).map((entry) =>
+        entry.key === "dfo.steps"
+          ? { key: entry.key, value: JSON.stringify(steps) }
+          : entry.key === "dfo.format_version"
+            ? { key: entry.key, value: version }
+            : entry,
+      ),
+    }));
+  const step = { verb: "rank", by: ["financingRecipient"], limit: 2 };
+
+  test("a partitioned rank writes format 3 and a rank without per writes format 2", async () => {
+    const written = metadataOf(await (await partitionedRank()).toBytes());
+    assert.equal(written["dfo.format_version"], "3");
+    assert.deepEqual(JSON.parse(written["dfo.steps"]!), [{ ...step, per: ["destination"] }]);
+    const plain = metadataOf(await (await sources["a derived frame"]!()).toBytes());
+    assert.equal(plain["dfo.format_version"], "2");
+    assert.deepEqual(JSON.parse(plain["dfo.steps"]!), PLAIN_STEPS);
+    const ranked = metadataOf(await (await rankSplit([])).toBytes());
+    assert.equal(ranked["dfo.format_version"], "2");
+    assert.deepEqual(JSON.parse(ranked["dfo.steps"]!), [step]);
+  });
+
+  test("a per named by the roles the call used is saved and printed under them", async () => {
+    const data = await rankSplit(["financingProvider"], {
+      financingProvider: "origin",
+      financingRecipient: "destination",
+    });
+    assert.match(String(data), /Derived: rank by destination per origin, limit 2, from 1 reading/);
+    const written = metadataOf(await data.toBytes());
+    assert.deepEqual(JSON.parse(written["dfo.steps"]!), [
+      { verb: "rank", by: ["destination"], limit: 2, per: ["origin"] },
+    ]);
+    assert.equal(String(await Dataset.fromBytes(await data.toBytes())), String(data));
+  });
+
+  const unwritable: [string, string[], Record<string, string>][] = [
+    ["names by", ["financingRecipient"], {}],
+    ["repeats a column", ["financingProvider", "financingProvider"], {}],
+    ["holds an empty column", [""], {}],
+    [
+      "names by once two columns share a role",
+      ["financingProvider"],
+      { financingProvider: "destination", financingRecipient: "destination" },
+    ],
+  ];
+  for (const [name, partitionBy, roles] of unwritable) {
+    test(`refuses at build a recipe whose per ${name}`, async () => {
+      await assert.rejects(rankSplit(partitionBy, roles), (error: unknown) => {
+        assert.ok(error instanceof ContractError, String(error));
+        assert.equal(error.code, "contract_violation");
+        return true;
+      });
+    });
+  }
+
+  test("checks a step's limit, verb and by before its per", async () => {
+    const bytes = await (await partitionedRank()).toBytes();
+    const pointerOf = async (steps: unknown): Promise<string> => {
+      try {
+        await Dataset.fromBytes(rewritten(bytes, "3", steps));
+      } catch (error) {
+        assert.ok(error instanceof FormatError, String(error));
+        return error.pointer;
+      }
+      return assert.fail("loaded");
+    };
+    assert.equal(
+      await pointerOf([{ verb: 1, by: ["a"], limit: "x", per: [] }]),
+      "/dfo.steps/0/limit",
+    );
+    assert.equal(await pointerOf([{ verb: 1, by: ["a"], limit: 2, per: [] }]), "/dfo.steps/0/verb");
+  });
+
+  test("a loaded partitioned rank prints its per", async () => {
+    const loaded = await Dataset.fromBytes(await (await partitionedRank()).toBytes());
+    assert.match(
+      String(loaded),
+      /Derived: rank by financingRecipient per destination, limit 2, from 1 reading/,
+    );
+  });
+
+  const cases: [string, string, unknown, RegExp][] = [
+    ["a format 2 file with per", "2", [{ ...step, per: ["destination"] }], /dfo\.steps\/0\/per/],
+    ["an empty per", "3", [{ ...step, per: [] }], /dfo\.steps\/0\/per/],
+    ["an empty column", "3", [{ ...step, per: [""] }], /dfo\.steps\/0\/per\/0/],
+    ["a per that is no array", "3", [{ ...step, per: "destination" }], /dfo\.steps\/0\/per/],
+    ["a repeated column", "3", [{ ...step, per: ["a", "a"] }], /dfo\.steps\/0\/per/],
+    ["a column by names", "3", [{ ...step, per: ["financingRecipient"] }], /dfo\.steps\/0\/per/],
+    [
+      "per on another verb",
+      "3",
+      [{ ...step, verb: "growth", per: ["destination"] }],
+      /dfo\.steps\/0\/per/,
+    ],
+  ];
+  for (const [name, version, steps, pointer] of cases) {
+    test(`refuses ${name}`, async () => {
+      const bytes = await (await partitionedRank()).toBytes();
+      await assert.rejects(
+        Dataset.fromBytes(rewritten(bytes, version, steps)),
+        (error: unknown) => {
+          assert.ok(error instanceof FormatError, String(error));
+          assert.match(error.message, pointer);
+          return true;
+        },
+      );
+    });
+  }
 });
 
 describe("Dataset.fromBytes refuses what holds no saved dataset", () => {

@@ -28,6 +28,7 @@ from dfo._core.types import (
     UnknownPart,
     UnsupportedPart,
 )
+from dfo._datasets import analysis as _analysis
 from dfo._generated import strict as _strict
 from tests._data import CONTRACT, load
 
@@ -808,6 +809,10 @@ def test_scenario_bodies_parse(
         path == "/datasets" and status == 202
     ):
         check_operation(json_body)
+    elif path == _analysis.ANALYSIS_PATH:
+        # A ready analysis, read as the client reads it.
+        assert _analysis._ready_member(json_body).spec.spec_id.startswith("ops_")
+        _analysis._summed(json_body)
     elif path.split("?", maxsplit=1)[0].endswith("/versions"):
         # The versions page the newest-version lookup reads.
         assert all(isinstance(v["content_version"], str) for v in json_body["versions"])
