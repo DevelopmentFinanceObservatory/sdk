@@ -175,17 +175,18 @@ export type SpecFetchOptions = CallOptions & Narrowing & Conversion;
 export type RefFetchOptions = Omit<CallOptions, "partyTotals"> & {
   /** `true` builds the newest version of each member's spec in the ref's rendering, in place of
    *  the exact versions it names. `"stored"` reads the version DFO stores as the newest of each
-   *  member's spec, in the member's rendering. DFO checks for newer data after it answers, so
-   *  the read waits on a build only when DFO stores no version it can serve. The dataset's
-   *  `freshness` says how new the versions are. */
+   *  member's spec, in the member's rendering, or for a frame DFO computed, runs its recipe on
+   *  the versions DFO stores as the newest of the datasets it read. DFO checks for newer data
+   *  after it answers, so the read waits on a build only when DFO stores no version it can
+   *  serve. The dataset's `freshness` says how new the versions are. */
   latest?: boolean | "stored";
 };
 
 /** The options a recipe takes. */
 export type RecipeFetchOptions = Pick<CallOptions, "signal" | "timeout" | "strict"> & {
   /** `true` runs the recipe on the newest versions of the datasets it starts from. `"stored"`
-   *  runs it on the version DFO stores as the newest of each, read from each spec's manifest
-   *  with no file downloaded, so it waits on a build only when DFO stores no version it can
+   *  runs it on the version DFO stores as the newest of each, which DFO resolves in the one
+   *  request that runs the recipe, so it waits on a build only when DFO stores no version it can
    *  serve. The dataset's `freshness` says how new those versions are. */
   latest?: boolean | "stored";
   /** A recipe's frame is in the frame layout. */

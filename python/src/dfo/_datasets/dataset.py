@@ -133,7 +133,8 @@ SAVED_PER_FORMAT_VERSION = 3
 PROVENANCE_FORMAT_VERSION = 1
 
 # How new the versions a `latest="stored"` fetch read are, as DFO's
-# `x-dfo-freshness` header states it for each member:
+# `x-dfo-freshness` header states it for each member of a ref, and the
+# `resolved_roots` of an analysis answer for each dataset a recipe read:
 #
 # - `current`: DFO confirmed the version is the newest within its recheck window.
 # - `pending`: the window has passed and DFO is checking for newer data, so the
@@ -144,6 +145,18 @@ type Freshness = Literal["current", "pending", "stale"]
 
 # The freshness values from best to worst, so a dataset's is its worst member's.
 FRESHNESS: tuple[Freshness, ...] = ("current", "pending", "stale")
+
+
+def worst_freshness(stated: Sequence[Freshness | None]) -> Freshness | None:
+    """The worst of the stated freshness, or None when any is unknown or none
+    is stated."""
+    if not stated or any(freshness is None for freshness in stated):
+        return None
+    return max(
+        (freshness for freshness in stated if freshness is not None),
+        key=FRESHNESS.index,
+    )
+
 
 # A member's retention: whether its version is pinned and the date it is held
 # until, each None when unknown.
@@ -877,7 +890,8 @@ class Dataset:
         freshness: How new the versions are, for a dataset
             `dfo.fetch(ref, latest="stored")` read, the worst of its members'
             freshness, and for one `dfo.fetch(recipe, latest="stored")` ran, the
-            worst of its readings', `stale` before `pending` before `current`.
+            worst DFO states for the datasets its roots read, `stale` before
+            `pending` before `current`.
             None for every other dataset, for one read from a server that does
             not state freshness, and for one `dfo.load` read, since freshness
             holds at the moment of the read. `dataset.ref` and the saved file

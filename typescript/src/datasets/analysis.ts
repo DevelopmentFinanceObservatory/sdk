@@ -14,6 +14,14 @@
  * That file is the frame in the layout a dataset version's file has, and its bytes hash to the
  * ref's artifact digest, which `download` checks as it does for a dataset file.
  *
+ * A recipe run with `latest: false` or `latest: "stored"` posts its tree with
+ * `include: ["manifest"]`, so DFO embeds the derived manifest in the 200, and the client reads
+ * no manifest and downloads the rows from the digest route,
+ * `GET /datasets/derived/{ops_id}/{ocv}/files/{digest}`: two requests per recipe. Under
+ * `"stored"` each dataset version goes as its spec in its rendering (`storedTree`), DFO resolves
+ * each root to the version its dataset's stored head names, and states each dataset's freshness
+ * in `resolved_roots`. `latest: true` reads the manifest and the frame file as above.
+ *
  * `fetchDerived` reads a derived ref. An exact read takes the frame the ref names; when its
  * stored frame has aged out (`artifact_expired`), DFO computes the recipe again on the root
  * versions the ref names, which must answer the same version, and the client reads the frame
@@ -21,19 +29,21 @@
  * (`ref_digest_changed`). A refusal that says the roots cannot be read again raises
  * `VersionUnavailableError`; any other error raises as it came. `latest: true` posts the bare
  * derived root with `latest: true`, so DFO computes the stored recipe again on its datasets'
- * newest versions. `fetchComputedFrame` reads a frame from its ids alone, as a share's slot
- * names it, through the bare root with `latest: false`.
+ * newest versions, and `latest: "stored"` posts it as a recipe's stored read does, so DFO
+ * computes it on the versions their stored heads name. `fetchComputedFrame` reads a frame from
+ * its ids alone, as a share's slot names it, through the bare root with `latest: false`.
  *
  * Each read that left series out issues one `SeriesLeftOutWarning`, or raises it under
  * `strict`.
  */
 
+import { FRESHNESS, worstFreshness } from "./dataset.ts";
 import type { Dataset, DerivedFacts, Freshness, SummedReading } from "./dataset.ts";
 import { derivedDataset } from "./derived.ts";
 import { download, invalid } from "./fetch.ts";
 import { after, BUILD_READ_TIMEOUT_MS, pollInterval, waitFor } from "./operation.ts";
 import type { Wait } from "./operation.ts";
-import { columnRoles, isStart, recipe } from "./recipe.ts";
+import { columnRoles, isStart, recipe, storedTree } from "./recipe.ts";
 import type {
   AggregateOptions,
   FilterOptions,
@@ -59,6 +69,10 @@ const ANALYSIS_PATH = "/datasets/analysis";
  *  the frame layout, the only layout a derived frame has. */
 const FRAME_FILE = "format=parquet&bundle=false&layout=frame";
 const EXPIRED = "artifact_expired";
+/** The `latest` value that resolves each root to its dataset's stored head. */
+const STORED = "stored";
+/** The optional member of the 200 that embeds the derived manifest. */
+const MANIFEST = "manifest";
 /** The refusals of a recomputation that mean DFO cannot read the expired frame's roots again,
  *  so the frame can no longer be fetched. Any other refusal, a transient one included, raises as
  *  it came. */
@@ -73,22 +87,20 @@ const ROOTS_UNREADABLE: ReadonlySet<string | null> = new Set([
 const LATEST_CALL = "client.fetch(ref, { latest: true })";
 
 /** A ready analysis answer, holding its stored frame's ref member and each root it read summed
- *  over its StatVars. */
+ *  over its StatVars; for a `latest: "stored"` post, how new the versions its roots resolved to
+ *  are; and for a post with `include: ["manifest"]`, the derived manifest it embeds and the
+ *  trace id of the answer that carried it. */
 export type Analysed = {
   readonly member: DerivedRefMember;
   readonly summed: readonly SummedReading[];
+  readonly freshness?: Freshness | null;
+  readonly manifest?: Readonly<Record<string, unknown>>;
+  readonly traceId?: string | null;
 };
 
-/** A recipe's tree with each dataset root at the version DFO stores as its newest, and how new
- *  those versions are, as `latest: "stored"` resolves it. */
-export type StoredTree = {
-  readonly tree: Record<string, unknown>;
-  readonly freshness: Freshness | null;
-};
-
-/** How a recipe or a derived ref is fetched. */
+/** How a recipe or a derived ref is fetched. `"stored"` is for a recipe alone. */
 export type AnalysisFetchOptions = {
-  readonly latest?: boolean | undefined;
+  readonly latest?: boolean | typeof STORED | undefined;
   readonly strict?: boolean | undefined;
   readonly timeout?: number | undefined;
   readonly signal?: AbortSignal | undefined;
@@ -115,8 +127,8 @@ function split<T>(options: T & RunOptions): [T, AnalysisFetchOptions] {
 }
 
 /**
- * Runs `target` on DFO and reads the frame it stores. `stored`, for `latest: "stored"`, gives
- * the tree with each root at its stored newest version, within the call's deadline.
+ * Runs `target` on DFO and reads the frame it stores. Except under `latest: true`, the post asks
+ * for the embedded manifest, and the read sends no other request than the file's.
  *
  * @throws {InvalidRequestError} The recipe has no step and starts from a dataset version or a
  *   spec (`invalid_argument`), or DFO refused the tree.
@@ -130,22 +142,25 @@ export async function runRecipe(
   transport: Transport,
   target: Recipe,
   options: AnalysisFetchOptions = {},
-  stored?: (wait: Wait) => Promise<StoredTree>,
 ): Promise<Dataset> {
+  const latest = options.latest ?? false;
+  const body = analysisBody(latest === STORED ? storedTree(target) : target.tree(), latest);
   const wait = waitFor(transport, options);
-  const resolved =
-    stored === undefined ? { tree: target.tree(), freshness: null } : await stored(wait);
-  const answer = await analyse(
-    transport,
-    { tree: resolved.tree, latest: options.latest ?? false },
-    wait,
-  );
-  return read(transport, answer, options.strict ?? false, wait, target, resolved.freshness);
+  const answer = await analyse(transport, body, wait);
+  return read(transport, answer, options.strict ?? false, wait, target);
 }
+
+/** The analysis post of `tree`: with the manifest asked for, since the read then takes the
+ *  derived facts from the answer, except under `latest: true`, which reads them as before. */
+const analysisBody = (
+  tree: Record<string, unknown>,
+  latest: boolean | typeof STORED,
+): Record<string, unknown> =>
+  latest === true ? { tree, latest } : { tree, latest, include: [MANIFEST] };
 
 /**
  * The derived frame a ref names, or with `latest: true` its recipe computed again on its
- * datasets' newest versions.
+ * datasets' newest versions, or with `latest: "stored"` on the versions their stored heads name.
  *
  * @throws {InvalidRequestError} The ref holds several members, which one read cannot stack
  *   (`invalid_argument`); no request is sent.
@@ -162,8 +177,8 @@ export async function fetchDerived(
   const strict = options.strict ?? false;
   const wait = waitFor(transport, options);
   const root = { spec_id: member.spec.spec_id, content_version: member.contentVersion };
-  if (options.latest === true) {
-    const newest = await analyse(transport, { tree: root, latest: true }, wait);
+  if (options.latest === true || options.latest === STORED) {
+    const newest = await analyse(transport, analysisBody(root, options.latest), wait);
     return read(transport, newest, strict, wait);
   }
   let expired: DfoError;
@@ -252,12 +267,14 @@ function unavailable(member: DerivedRefMember, refusal: DfoError): VersionUnavai
 }
 
 /**
- * Posts a recipe tree until DFO answers its stored frame's ref member and the roots it summed.
+ * Posts a recipe tree until DFO answers its stored frame's ref member and the roots it summed,
+ * and for a body that asks for them, its roots' freshness and its embedded derived manifest.
  *
  * @throws {DfoTimeoutError} The deadline passed while a root was building
  *   (`deadline_exceeded`).
  * @throws {ContractError} DFO answered another status than 200 or 202 (`unexpected_response`),
- *   or a ref this client cannot read (`contract_violation`).
+ *   or a ref this client cannot read, or no embedded manifest of the ref's frame when the body
+ *   asked for one (`contract_violation`).
  */
 export async function analyse(
   transport: Transport,
@@ -281,10 +298,15 @@ export async function analyse(
     const { status, traceId } = response;
     if (status === 200) {
       const answer = response.body;
-      return describing(traceId, () => ({
-        member: readyMember(answer),
-        summed: summedRoots(answer),
-      }));
+      return describing(traceId, () => {
+        const member = readyMember(answer);
+        return {
+          member,
+          summed: summedRoots(answer),
+          ...(body["latest"] === STORED ? { freshness: resolvedFreshness(answer) } : {}),
+          ...(asksManifest(body) ? { manifest: embeddedManifest(answer, member), traceId } : {}),
+        };
+      });
     }
     if (status !== 202) {
       throw clientError("unexpected_response", {
@@ -337,6 +359,50 @@ function readyMember(answer: unknown): DerivedRefMember {
   return member;
 }
 
+/** The worst freshness a stored answer's `resolved_roots` states, or null when the member is
+ *  absent or not a list, or an entry states none of `FRESHNESS`. */
+function resolvedFreshness(answer: unknown): Freshness | null {
+  const listed = isRecord(answer) ? answer["resolved_roots"] : undefined;
+  if (!Array.isArray(listed)) return null;
+  return worstFreshness(
+    listed.map((entry: unknown) => {
+      const stated = isRecord(entry) ? entry["freshness"] : undefined;
+      return FRESHNESS.find((freshness) => freshness === stated) ?? null;
+    }),
+  );
+}
+
+const asksManifest = (body: Readonly<Record<string, unknown>>): boolean => {
+  const include = body["include"];
+  return Array.isArray(include) && include.includes(MANIFEST);
+};
+
+/**
+ * The derived manifest a ready answer embeds for a post that asked for it, checked as the
+ * derived manifest route's answer is.
+ *
+ * @throws {ContractError} The member is absent or not an object, names another frame than
+ *   `member`, or holds a `left_out` that is neither a list nor null (`contract_violation`), at
+ *   the pointer it breaks. The read checks the rest as it checks the route's manifest.
+ */
+function embeddedManifest(
+  answer: unknown,
+  member: DerivedRefMember,
+): Readonly<Record<string, unknown>> {
+  const body = { what: "a body" };
+  const manifest = isRecord(answer) ? answer[MANIFEST] : undefined;
+  if (!isRecord(manifest)) throw violation(`/${MANIFEST}`, body);
+  const pair = { spec_id: member.spec.spec_id, content_version: member.contentVersion };
+  for (const [key, expected] of Object.entries(pair)) {
+    if (manifest[key] !== expected) throw violation(`/${MANIFEST}/${key}`, body);
+  }
+  const leftOut = manifest["left_out"];
+  if (leftOut !== null && leftOut !== undefined && !Array.isArray(leftOut)) {
+    throw violation(`/${MANIFEST}/left_out`, body);
+  }
+  return manifest;
+}
+
 /**
  * The roots a ready answer's `stat_vars_summed` lists, each `{spec_id, content_version, count}`;
  * none when the answer leaves it out. A key an entry holds beyond those is ignored.
@@ -375,34 +441,49 @@ const violation = (
     cause,
   });
 
-/** The derived frame an answer's `member` names, from its manifest and its file. The dataset
- *  names each column by the role word `chain`, the recipe that made it, named it by, and carries
- *  the roots the answer summed and the freshness of a stored read's roots. */
+/** The derived frame an answer's `member` names, from its manifest and its file. An answer that
+ *  embeds the manifest is read from the digest route, else the manifest is read from its route
+ *  and the rows from the frame file route. The dataset names each column by the role word
+ *  `chain`, the recipe that made it, named it by, and carries the roots the answer summed and
+ *  the freshness of a stored read's roots. */
 async function read(
   transport: Transport,
-  { member, summed }: Analysed,
+  { member, summed, freshness = null, ...embedded }: Analysed,
   strict: boolean,
   wait: Wait,
   chain?: Recipe,
-  freshness: Freshness | null = null,
 ): Promise<Dataset> {
   const path = `/datasets/derived/${member.spec.spec_id}/${member.contentVersion}`;
-  const { deadline, signal } = wait;
-  const response = await transport.request({ path, deadline, signal });
-  const manifest = response.body;
-  if (!isRecord(manifest)) {
-    throw clientError("contract_violation", {
-      detail: `GET ${path} answered a manifest that is not an object.`,
-      traceId: response.traceId,
-    });
+  let manifest: Readonly<Record<string, unknown>>;
+  let traceId: string | null;
+  let data: Uint8Array;
+  if (embedded.manifest === undefined) {
+    const { deadline, signal } = wait;
+    const response = await transport.request({ path, deadline, signal });
+    if (!isRecord(response.body)) {
+      throw clientError("contract_violation", {
+        detail: `GET ${path} answered a manifest that is not an object.`,
+        traceId: response.traceId,
+      });
+    }
+    manifest = response.body;
+    traceId = response.traceId;
+    data = await download(transport, { path: `${path}/file?${FRAME_FILE}` }, member.digest, wait);
+  } else {
+    manifest = embedded.manifest;
+    traceId = embedded.traceId ?? null;
+    data = await download(
+      transport,
+      { path: `${path}/files/${member.digest}` },
+      member.digest,
+      wait,
+    );
   }
-  const target = { path: `${path}/file?${FRAME_FILE}` };
-  const data = await download(transport, target, member.digest, wait);
   const recipeObject = manifest["recipe"];
   const tree = isRecord(recipeObject) ? recipeObject["tree"] : undefined;
   const roles = chain === undefined ? {} : columnRoles(chain, tree);
   const { dataset, facts } = await derivedDataset(member, manifest, data, {
-    traceId: response.traceId,
+    traceId,
     roles,
     statVarsSummed: summed,
     freshness,

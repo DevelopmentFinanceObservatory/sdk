@@ -29,6 +29,7 @@ export const CODE_ACTIONS = {
   artifact_not_found: "check_id",
   binding_invalid: "fix_request",
   binding_mismatch: "ask_data_question",
+  breakdown_label_ambiguous: "fix_request",
   capability_unavailable: "fix_request",
   children_anchor_ambiguous: "fix_request",
   children_anchor_required: "fix_request",

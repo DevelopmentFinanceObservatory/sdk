@@ -20,6 +20,14 @@ file is: bytes that hash to another digest are asked for once more, then raise
 `digest_mismatch`. The cache keeps the file under its digest, so a second read
 of the frame asks for the manifest alone, and concurrent reads download it once.
 
+A recipe run with `latest=False` or `latest="stored"` posts `include:
+["manifest"]`, so the 200 carries the derived manifest, and the frame reads in
+two requests in all: the post, and the file at `.../files/{digest}` with the
+ref member's artifact digest. `latest: "stored"` has DFO read each root at the
+version its dataset's stored head names. The Dataset's `freshness` is the worst the 200's
+`resolved_roots` states, and None when any entry states none this client knows
+or the member is absent.
+
 `fetch_derived` reads a derived ref. An exact read takes the frame the ref names;
 when its stored frame has aged out (`artifact_expired`), DFO computes the recipe
 again on the root versions the ref names, which must answer the same version,
@@ -40,7 +48,8 @@ run at once.
 
 import json
 from collections.abc import Mapping, Sequence
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import Any, Literal
 
 import httpx2
 
@@ -74,10 +83,13 @@ from dfo._datasets.build import (
     response_json,
 )
 from dfo._datasets.dataset import (
+    FRESHNESS,
     Dataset,
+    Freshness,
     SummedReading,
     derived_dataset,
     fetch_time,
+    worst_freshness,
 )
 from dfo._datasets.recipe import (
     Aggregation,
@@ -89,6 +101,7 @@ from dfo._datasets.recipe import (
     Year,
     column_roles,
     recipe,
+    stored_tree,
 )
 from dfo._http.hooks import sync_offload
 from dfo._sync._datasets.fetch import download, holding
@@ -117,7 +130,7 @@ def run_recipe(
     transport: Transport,
     target: Recipe,
     *,
-    latest: bool = False,
+    latest: bool | Literal["stored"] = False,
     strict: bool = False,
     timeout: float | None = None,
     cache: Cache | None = None,
@@ -128,8 +141,11 @@ def run_recipe(
     Args:
         transport: The transport requests go through.
         target: The recipe.
-        latest: Read every root at its dataset's newest version, in place of
-            the versions a ref or Dataset root names.
+        latest: True reads every root at its dataset's newest version, in
+            place of the versions a ref or Dataset root names. `"stored"`
+            reads every root at the version its dataset's stored head names,
+            with the manifest in the answer, so the run costs the post and the
+            file.
         strict: Raise `SeriesLeftOutWarning` instead of issuing it.
         timeout: The longest the run takes, in seconds, the read included; None
             waits as long as the roots take to build.
@@ -149,34 +165,27 @@ def run_recipe(
             attempt (`digest_mismatch`).
     """
     check_strict(strict)
-    tree = target.tree()
+    tree = stored_tree(target) if latest == "stored" else target.tree()
     if deadline is None:
         deadline = transport.deadline(timeout)
-    member, summed = _analyse(
-        transport, {"tree": tree, "latest": latest}, deadline=deadline, timeout=timeout
+    answer = _analyse(
+        transport, _body(tree, latest), deadline=deadline, timeout=timeout
     )
-    return _read(
-        transport,
-        member,
-        strict=strict,
-        deadline=deadline,
-        cache=cache,
-        chain=target,
-        summed=summed,
-    )
+    return _read(transport, answer, strict=strict, cache=cache, chain=target)
 
 
 def fetch_derived(
     transport: Transport,
     ref: DatasetRef,
     *,
-    latest: bool = False,
+    latest: bool | Literal["stored"] = False,
     strict: bool = False,
     timeout: float | None = None,
     cache: Cache | None = None,
 ) -> Dataset:
     """The derived frame a ref names, or with `latest=True` its recipe computed
-    again on its datasets' newest versions.
+    again on its datasets' newest versions, or with `latest="stored"` on the
+    versions their stored heads name.
 
     Raises:
         InvalidRequestError: The ref holds several derived members, which one
@@ -191,28 +200,23 @@ def fetch_derived(
     deadline = transport.deadline(timeout)
     root = {"spec_id": member.spec.spec_id, "content_version": member.content_version}
     if latest:
-        member, summed = _analyse(
-            transport,
-            {"tree": root, "latest": True},
-            deadline=deadline,
-            timeout=timeout,
+        answer = _analyse(
+            transport, _body(root, latest), deadline=deadline, timeout=timeout
         )
+        return _read(transport, answer, strict=strict, cache=cache)
+    try:
         return _read(
             transport,
-            member,
+            _Answer(member, deadline=deadline),
             strict=strict,
-            deadline=deadline,
             cache=cache,
-            summed=summed,
         )
-    try:
-        return _read(transport, member, strict=strict, deadline=deadline, cache=cache)
     except DfoError as error:
         if error.code != _EXPIRED:
             raise
         expired = error
     try:
-        again, summed = _analyse(
+        answer = _analyse(
             transport,
             {"tree": root, "latest": False},
             deadline=deadline,
@@ -222,18 +226,12 @@ def fetch_derived(
         if error.code not in _ROOTS_UNREADABLE:
             raise
         raise _unavailable(member, error, transport.caller) from error
+    again = answer.member
     if again.content_version != member.content_version:
         raise _unavailable(member, expired, transport.caller)
     if again.digest != member.digest:
         warn(_digest_changed(member, again.digest))
-    return _read(
-        transport,
-        again,
-        strict=strict,
-        deadline=deadline,
-        cache=cache,
-        summed=summed,
-    )
+    return _read(transport, answer, strict=strict, cache=cache)
 
 
 def fetch_computed_frame(
@@ -262,7 +260,7 @@ def fetch_computed_frame(
             (`contract_violation`).
     """
     check_strict(strict)
-    member, summed = _analyse(
+    answer = _analyse(
         transport,
         {
             "tree": {"spec_id": spec_id, "content_version": content_version},
@@ -271,20 +269,14 @@ def fetch_computed_frame(
         deadline=deadline,
         timeout=timeout,
     )
+    member = answer.member
     if member.content_version != content_version:
         raise client_error(
             VERSION_UNAVAILABLE,
             f"{spec_id} at {content_version} can no longer be fetched, and DFO "
             f"computed {member.content_version} on the versions it read",
         )
-    return _read(
-        transport,
-        member,
-        strict=strict,
-        deadline=deadline,
-        cache=cache,
-        summed=summed,
-    )
+    return _read(transport, answer, strict=strict, cache=cache)
 
 
 def _one_member(ref: DatasetRef, caller: str) -> DerivedRefMember:
@@ -331,23 +323,49 @@ def _digest_changed(member: DerivedRefMember, digest: str) -> DfoWarning:
     )
 
 
+@dataclass(frozen=True)
+class _Answer:
+    """What a ready analysis answer gives the frame read: the ref's derived
+    member, the roots DFO summed, the freshness `resolved_roots` states, the
+    embedded manifest when the post asked for it, the trace id of the response
+    that carried them, and the clock reading the read ends by."""
+
+    member: DerivedRefMember
+    summed: tuple[SummedReading, ...] = ()
+    freshness: Freshness | None = None
+    manifest: Mapping[str, Any] | None = None
+    trace_id: str | None = None
+    deadline: float | None = None
+
+
+def _body(tree: Mapping[str, Any], latest: bool | Literal["stored"]) -> dict[str, Any]:
+    """The analysis post of `tree`. Under `latest=False` and `latest="stored"`
+    it asks for the manifest, so the read takes the derived facts from the
+    answer and the file from the digest route; `latest=True` posts as before."""
+    if latest is True:
+        return {"tree": tree, "latest": True}
+    return {"tree": tree, "latest": latest, "include": ["manifest"]}
+
+
 def _analyse(
     transport: Transport,
     body: Mapping[str, Any],
     *,
     deadline: float | None,
     timeout: float | None,
-) -> tuple[DerivedRefMember, tuple[SummedReading, ...]]:
-    """Post a recipe tree until DFO answers its stored frame's ref member, and
-    the roots it read as the sum of their StatVars.
+) -> _Answer:
+    """Post a recipe tree until DFO answers its stored frame's ref member, the
+    roots it read as the sum of their StatVars, and, when `body` asks for them,
+    the freshness of the stored heads it read and the derived manifest.
 
     Raises:
         DfoTimeoutError: The deadline passed while a root was building
             (`deadline_exceeded`).
         ContractError: DFO answered another status than 200 or 202
-            (`unexpected_response`), or a ref or `stat_vars_summed` this client
-            cannot read (`contract_violation`).
+            (`unexpected_response`), or a ref, `stat_vars_summed` or embedded
+            `manifest` this client cannot read (`contract_violation`).
     """
+    included = body.get("include") or ()
     with still_running(transport, deadline, timeout):
         while True:
             response = transport.request(
@@ -361,7 +379,19 @@ def _analyse(
             trace_id = trace_id_of(response, answer)
             if response.status_code == 200:
                 with describing(trace_id):
-                    return _ready_member(answer), _summed(answer)
+                    member = _ready_member(answer)
+                    return _Answer(
+                        member,
+                        _summed(answer),
+                        freshness=_resolved_freshness(answer),
+                        manifest=(
+                            _embedded_manifest(answer, member)
+                            if "manifest" in included
+                            else None
+                        ),
+                        trace_id=trace_id,
+                        deadline=deadline,
+                    )
             if response.status_code != 202:
                 raise client_error(
                     UNEXPECTED_RESPONSE,
@@ -446,6 +476,43 @@ def _summed(answer: object) -> tuple[SummedReading, ...]:
     return tuple(summed)
 
 
+def _resolved_freshness(answer: object) -> Freshness | None:
+    """The worst freshness a stored answer's `resolved_roots` states, or None
+    when the member is absent or not a list, or any entry states none this
+    client knows."""
+    listed = answer.get("resolved_roots") if isinstance(answer, Mapping) else None
+    if not isinstance(listed, list) or not listed:
+        return None
+    stated: list[Freshness | None] = []
+    for entry in listed:
+        value = entry.get("freshness") if isinstance(entry, Mapping) else None
+        stated.append(next((known for known in FRESHNESS if known == value), None))
+    return worst_freshness(stated)
+
+
+def _embedded_manifest(answer: object, member: DerivedRefMember) -> Mapping[str, Any]:
+    """The derived manifest a 200 embeds for `member`'s pair.
+
+    Raises:
+        ContractError: The member is absent or not an object, names another
+            pair than `member`, or holds a `left_out` that is neither a list
+            nor null (`contract_violation`), at the pointer it breaks.
+    """
+    manifest = answer.get("manifest") if isinstance(answer, Mapping) else None
+    if not isinstance(manifest, Mapping):
+        raise _violation("/manifest", what="a body")
+    for key, expected in (
+        ("spec_id", member.spec.spec_id),
+        ("content_version", member.content_version),
+    ):
+        if manifest.get(key) != expected:
+            raise _violation(f"/manifest/{key}", what="a body")
+    left_out = manifest.get("left_out")
+    if left_out is not None and not isinstance(left_out, list):
+        raise _violation("/manifest/left_out", what="a body")
+    return manifest
+
+
 def _violation(pointer: str, *, what: str = "a ref") -> ContractError:
     error = client_error(
         CONTRACT_VIOLATION,
@@ -457,29 +524,35 @@ def _violation(pointer: str, *, what: str = "a ref") -> ContractError:
 
 def _read(
     transport: Transport,
-    member: DerivedRefMember,
+    answer: _Answer,
     *,
     strict: bool,
-    deadline: float | None,
     cache: Cache | None,
     chain: Recipe | None = None,
-    summed: tuple[SummedReading, ...] = (),
 ) -> Dataset:
-    """The derived frame `member` names, from its manifest and its file, which
-    `cache` holds under its digest once read. The Dataset names each column by
-    the role word `chain`, the recipe that made it, named it by, and keeps
-    `summed`, the roots the analysis that answered `member` summed."""
+    """The derived frame `answer.member` names, from its manifest and its file,
+    which `cache` holds under its digest once read. The manifest is the one the
+    answer embeds, else the derived manifest route's, and the file comes from
+    the digest route with the one, else from the frame file route. The Dataset
+    names each column by the role word `chain`, the recipe that made it, named
+    it by, and keeps the roots the analysis summed and the freshness it
+    stated."""
+    member, deadline = answer.member, answer.deadline
     path = f"/datasets/derived/{member.spec.spec_id}/{member.content_version}"
-    response = transport.request("GET", path, deadline=deadline)
-    manifest = response_json(response)
-    trace_id = trace_id_of(response, manifest)
-    if not isinstance(manifest, Mapping):
-        raise client_error(
-            CONTRACT_VIOLATION,
-            f"GET {path} answered a manifest that is not an object",
-            trace_id=trace_id,
-        )
     digest = member.digest
+    manifest, trace_id = answer.manifest, answer.trace_id
+    file_route, file_query = f"{path}/files/{digest}", None
+    if manifest is None:
+        response = transport.request("GET", path, deadline=deadline)
+        manifest = response_json(response)
+        trace_id = trace_id_of(response, manifest)
+        if not isinstance(manifest, Mapping):
+            raise client_error(
+                CONTRACT_VIOLATION,
+                f"GET {path} answered a manifest that is not an object",
+                trace_id=trace_id,
+            )
+        file_route, file_query = f"{path}/file", FRAME_FILE
     with holding(transport, cache, digest, deadline=deadline):
         data = None if cache is None else sync_offload(cache.get_bytes, digest)
         from_cache = cache is not None and data is not None
@@ -487,7 +560,7 @@ def _read(
             fetched_at = sync_offload(cache.fetched_at, digest)
         else:
             data = download(
-                transport, f"{path}/file", digest, params=FRAME_FILE, deadline=deadline
+                transport, file_route, digest, params=file_query, deadline=deadline
             )
             fetched_at = fetch_time()
             if cache is not None:
@@ -510,8 +583,10 @@ def _read(
             roles=roles,
             fetched_at=fetched_at,
             from_cache=from_cache,
-            stat_vars_summed=summed,
+            stat_vars_summed=answer.summed,
         )
+    if answer.freshness is not None:
+        dataset = replace(dataset, freshness=answer.freshness)
     if dataset.left_out or not dataset._left_out_complete:
         _left_out(dataset, strict=strict)
     return dataset

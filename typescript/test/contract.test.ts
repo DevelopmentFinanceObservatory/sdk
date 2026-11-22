@@ -116,17 +116,23 @@ async function run(
       return previous.result();
     // `client.analysis` and `runRecipe` read the frame after the post, which the scenario does
     // not record, so the step drives the post and its 202 loop alone.
-    case "analysis":
-      return {
-        analysed: await analyse(
-          transport,
-          { tree: step.tree, latest: step.latest ?? false },
-          { deadline: Infinity },
-        ),
+    case "analysis": {
+      const body = {
+        tree: step.tree,
+        latest: step.latest ?? false,
+        ...(step.include === undefined ? {} : { include: step.include }),
       };
+      return { analysed: await analyse(transport, body, { deadline: Infinity }) };
+    }
     default:
       assert.fail(`the replay does not know the step ${JSON.stringify(step)}`);
   }
+}
+
+/** The number of series an embedded manifest's `left_out` lists, or null when it is null. */
+function leftOutSeries(manifest: Readonly<Record<string, unknown>>): number | null {
+  const leftOut = manifest["left_out"];
+  return Array.isArray(leftOut) ? leftOut.length : null;
 }
 
 /** The members every outcome may give, with the value a step that gives none has. */
@@ -321,7 +327,7 @@ async function checkOutcome(
   }
   if ("analysis" in expected) {
     assert.ok("analysed" in reached, `${name}: gave an analysis`);
-    const { member, summed } = reached.analysed;
+    const { member, summed, freshness, manifest } = reached.analysed;
     const body = (observed.body ?? {}) as Record<string, unknown>;
     const pendingWaits = observed.pendingWaits;
     assert.deepEqual(
@@ -344,6 +350,8 @@ async function checkOutcome(
         // The client keeps no `derived_roots`; the replay reads the body.
         derived_roots: body["derived_roots"] ?? [],
         pending_waits: pendingWaits,
+        ...(freshness === undefined ? {} : { freshness }),
+        ...(manifest === undefined ? {} : { left_out_series: leftOutSeries(manifest) }),
       },
       observed,
     );

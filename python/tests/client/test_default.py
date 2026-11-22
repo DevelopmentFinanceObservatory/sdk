@@ -259,6 +259,7 @@ def test_the_analysis_functions_run_on_the_default_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ready = load("analysis-rank-ready.json")
+    ready["manifest"] = load("analysis-rank-manifest.json")
     (member,) = ready["ref"]["members"]
     frame = (
         f"/api/datasets/derived/{member['spec']['spec_id']}/{member['content_version']}"
@@ -271,8 +272,6 @@ def test_the_analysis_functions_run_on_the_default_client(
         if request.method == "POST":
             posted.append(json.loads(request.content)["tree"]["arguments"])
             return httpx2.Response(200, json=ready)
-        if request.url.path == frame:
-            return httpx2.Response(200, json=load("analysis-rank-manifest.json"))
         return httpx2.Response(
             200, content=(DATA / "analysis-rank-frame.parquet").read_bytes()
         )
@@ -282,7 +281,10 @@ def test_the_analysis_functions_run_on_the_default_client(
     data = dfo.analysis.rank(
         aid, by="origin", per="destination", allow_sparse_breakdowns=True
     )
-    assert seen == ["POST /api/datasets/analysis", f"GET {frame}", f"GET {frame}/file"]
+    assert seen == [
+        "POST /api/datasets/analysis",
+        f"GET {frame}/files/{member['artifact']['digest']}",
+    ]
     dfo.analysis.aggregate(aid, by="crsPurpose", allow_sparse_breakdowns=True)
     assert [arguments.get("allow_sparse_breakdowns") for arguments in posted] == [
         True,
