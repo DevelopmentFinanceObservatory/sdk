@@ -303,43 +303,22 @@ describe('a recipe fetched with latest: "stored"', () => {
     assert.ok(data.ref.equals(new DatasetRef([derived])));
   });
 
-  test("of four chunk members reads each manifest once and posts their ref at the stored versions", async () => {
+  test("of several members is refused before any request, as DFO refuses it", async () => {
     const ids = ["0", "1", "2", "3"].map((digit) => `spec_${digit.repeat(32)}`);
-    const ref = new DatasetRef(ids.map(memberOf));
-    const { fetch, seen } = mockFetch(
-      ...Array.from({ length: 7 }, () =>
-        routed(Object.fromEntries(ids.map((id, index) => [id, index === 2 ? "stale" : "current"]))),
-      ),
-    );
-    const data = await fetchDataset(
-      transportOver(fetch),
-      recipe(ref).aggregate({ by: "destination" }),
-      {
-        latest: "stored",
-      },
-    );
-    assert.deepEqual(calls(seen), [
-      ...ids.map((id) => `GET /api/datasets/${id}${STORED_QUERY}`),
-      "POST /api/datasets/analysis",
-      ...FRAME_CALLS,
-    ]);
-    const sent = DatasetRef.fromJSON(
-      (posted(seen)["tree"] as { inputs: { data: { ref: unknown } } }).inputs.data.ref,
-    );
-    assert.deepEqual(
-      sent.members.map((member) => [member.spec.spec_id, member.contentVersion]),
-      ids.map((id) => [id, NEWER]),
-    );
-    // The digest is the stored version's artifact in the member's rendering.
-    assert.deepEqual(
-      sent.members.map((member) => member.digest),
-      ids.map(() => held.digest),
-    );
-    assert.equal(data.freshness, "stale");
+    const { fetch, seen } = mockFetch();
+    const chain = recipe(new DatasetRef(ids.map(memberOf))).aggregate({ by: "destination" });
+    await assert.rejects(fetchDataset(transportOver(fetch), chain, { latest: "stored" }), {
+      name: "InvalidRequestError",
+      code: "several_members",
+    });
+    assert.equal(seen.length, 0);
   });
 
   test("aborts the other manifest reads when one fails", async () => {
-    const ids = ["0", "1"].map((digit) => `spec_${digit.repeat(32)}`);
+    const [first, second] = ["0", "1"].map((digit) => ({
+      spec_id: `spec_${digit.repeat(32)}`,
+      definition: held.spec.definition,
+    }));
     let aborted = false;
     const { fetch, seen } = mockFetch(
       json(manifestOf(`spec_${"9".repeat(32)}`)),
@@ -351,7 +330,7 @@ describe('a recipe fetched with latest: "stored"', () => {
           });
         }),
     );
-    const chain = recipe(new DatasetRef(ids.map(memberOf))).aggregate({ by: "destination" });
+    const chain = recipe(first!).shareOf(second!, { on: ["destination"] });
     await assert.rejects(fetchDataset(transportOver(fetch), chain, { latest: "stored" }), {
       name: "ContractError",
       code: "contract_violation",
