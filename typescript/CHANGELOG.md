@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `client.fetch(recipe)` and `client.analysis` calls, with `latest` false or left out, cost two requests, down from three. The post sends `include: ["manifest"]`, the read takes the derived facts from the embedded manifest, checked as a stored recipe's is, and downloads the frame from the digest route. `latest: true` and a derived ref read at its exact version send the requests they sent before.
 - A recipe that starts from a frame DFO computed, or a root of several members, runs with `latest: "stored"` as DFO answers it. Before, the client threw `InvalidRequestError` (`invalid_argument` or `several_members`) before any request. DFO resolves the readings a computed frame's recipe read to their stored versions, and still refuses a root of several members with `several_members`.
 - `client.fetch(ref, { latest: "stored" })` on a ref of a frame DFO computed posts its bare root as a stored recipe does, so DFO computes the frame's recipe on the stored versions of its readings, in the same two requests. Before, it threw `InvalidRequestError` (`invalid_argument`).
-- The contract follows spec-kit `97ec298`, which adds `latest: "stored"`, `include` and `resolved_roots` to the analysis route, the derived digest file route, the `analysis-stored-roots` and `analysis-stored-manifest` scenarios, and `breakdown_label_ambiguous` to `actions.json`.
+- The contract follows spec-kit `c65c7e1`, which adds `latest: "stored"`, `include` and `resolved_roots` to the analysis route, the derived digest file route, the `analysis-stored-roots` and `analysis-stored-manifest` scenarios, and `breakdown_label_ambiguous` to `actions.json`.
 
 ## [0.6.0] - 2026-11-22
 
