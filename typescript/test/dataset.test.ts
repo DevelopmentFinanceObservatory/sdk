@@ -936,6 +936,33 @@ describe("a derived dataset", () => {
     );
   });
 
+  for (const [name, partitionBy] of [
+    ["a string", "financingProvider"],
+    ["a mixed array", ["financingProvider", 7]],
+    ["an empty array", []],
+    ["a repeated column", ["financingProvider", "financingProvider"]],
+  ] as const) {
+    test(`raises ContractError for a rank's partition_by that is ${name}`, async () => {
+      const manifest = await recordedJson<{
+        recipe: { tree: { op_spec: { parameters: object } } };
+      }>("analysis-rank-manifest.json");
+      const { parameters } = manifest.recipe.tree.op_spec;
+      manifest.recipe.tree.op_spec.parameters = { ...parameters, partition_by: partitionBy };
+      await assert.rejects(derived("rank", manifest), {
+        name: "ContractError",
+        code: "contract_violation",
+      });
+    });
+  }
+
+  test("prints a global rank when its manifest has no partition_by", async () => {
+    const lines = String(await derived("rank")).split("\n");
+    assert.ok(
+      lines.includes("  Derived: rank by financingRecipient, limit 2, from 1 reading"),
+      lines.join("\n"),
+    );
+  });
+
   test("prints at least when its manifest lists only some of what it left out", async () => {
     const lines = String(await derived("chain", { left_out_complete: false })).split("\n");
     assert.ok(lines.includes("  Missing data: at least 3 series left out · data.leftOut"));

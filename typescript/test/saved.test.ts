@@ -151,7 +151,8 @@ async function rankSplit(
   );
   manifest.recipe.tree.op_spec.parameters = {
     ...manifest.recipe.tree.op_spec.parameters,
-    partition_by: partitionBy,
+    // An empty split is a global rank, whose manifest has no partition_by.
+    ...(partitionBy.length > 0 && { partition_by: partitionBy }),
   };
   const data = await recordedBytes("analysis-rank-frame.parquet");
   return (await derivedDataset(member, manifest, data, { roles })).dataset;

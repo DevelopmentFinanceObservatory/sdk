@@ -166,14 +166,26 @@ function* treeSteps(node: Readonly<Record<string, unknown>>): Generator<DerivedS
   const parameters = isRecord(opSpec["parameters"]) ? opSpec["parameters"] : {};
   const by = BY_PARAMETERS.map((name) => parameters[name]).find(Array.isArray) ?? [];
   const limit = parameters["limit"];
-  const per = verb === "rank" ? parameters["partition_by"] : undefined;
+  let per: string[] = [];
+  if (verb === "rank" && Object.hasOwn(parameters, "partition_by")) {
+    const raw = parameters["partition_by"];
+    if (
+      !Array.isArray(raw) ||
+      raw.length === 0 ||
+      !raw.every((column) => typeof column === "string") ||
+      new Set(raw).size !== raw.length
+    ) {
+      throw violation("/recipe/tree");
+    }
+    per = raw;
+  }
   const strings = (columns: unknown[]): string[] =>
     columns.filter((column): column is string => typeof column === "string");
   yield {
     verb,
     by: strings(by as unknown[]),
     limit: Number.isSafeInteger(limit) ? (limit as number) : null,
-    per: Array.isArray(per) ? strings(per) : [],
+    per,
   };
 }
 

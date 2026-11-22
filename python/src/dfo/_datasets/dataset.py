@@ -2035,7 +2035,12 @@ _BY_PARAMETERS = ("group_by", "entity_by", "rank_by", "numerator_by", "join_keys
 def _tree_steps(node: Mapping[str, Any]) -> Iterator[DerivedStep]:
     """The steps of a stored recipe's tree in the order they ran: each step
     after its inputs, the primary input first. A part of the tree this client
-    cannot read names no step, since only the repr reads them."""
+    cannot read names no step, since only the repr reads them.
+
+    Raises:
+        ContractError: A rank's `partition_by` is present and is not a non-empty
+            array of distinct strings (`contract_violation`).
+    """
     op_spec = node.get("op_spec")
     verb = op_spec.get("verb") if isinstance(op_spec, Mapping) else None
     inputs = node.get("inputs")
@@ -2059,14 +2064,22 @@ def _tree_steps(node: Mapping[str, Any]) -> Iterator[DerivedStep]:
         [],
     )
     limit = parameters.get("limit")
-    per = parameters.get("partition_by") if verb == "rank" else None
+    per: tuple[str, ...] = ()
+    if verb == "rank" and "partition_by" in parameters:
+        raw = parameters["partition_by"]
+        if (
+            not isinstance(raw, list)
+            or not raw
+            or not all(isinstance(column, str) for column in raw)
+            or len(set(raw)) != len(raw)
+        ):
+            raise _manifest_violation("/recipe/tree")
+        per = tuple(raw)
     yield DerivedStep(
         verb=verb,
         by=tuple(column for column in by if isinstance(column, str)),
         limit=limit if type(limit) is int else None,
-        per=tuple(column for column in per if isinstance(column, str))
-        if isinstance(per, list)
-        else (),
+        per=per,
     )
 
 

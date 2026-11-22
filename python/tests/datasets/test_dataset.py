@@ -1073,6 +1073,39 @@ def test_a_served_rank_reads_its_partition_by_into_per() -> None:
     assert step.per == ("destination", "time_period")
 
 
+@pytest.mark.parametrize(
+    "partition_by",
+    ["financingProvider", ["financingProvider", 7], [], ["a", "a"]],
+    ids=["string", "mixed-array", "empty-array", "repeated"],
+)
+def test_a_served_rank_with_a_malformed_partition_by_is_refused(
+    partition_by: object,
+) -> None:
+    manifest = copy.deepcopy(load("analysis-rank-manifest.json"))
+    manifest["recipe"]["tree"]["op_spec"]["parameters"]["partition_by"] = partition_by
+    with pytest.raises(ContractError) as caught:
+        derived_dataset(
+            _derived_member("rank"),
+            manifest,
+            (DATA / "analysis-rank-frame.parquet").read_bytes(),
+        )
+    assert caught.value.code == "contract_violation"
+
+
+def test_a_served_rank_without_partition_by_prints_a_global_rank() -> None:
+    manifest = copy.deepcopy(load("analysis-rank-manifest.json"))
+    manifest["recipe"]["tree"]["op_spec"]["parameters"].pop("partition_by", None)
+    data = derived_dataset(
+        _derived_member("rank"),
+        manifest,
+        (DATA / "analysis-rank-frame.parquet").read_bytes(),
+    )
+    assert (
+        "  Derived: rank by financingRecipient, limit 2, from 1 reading"
+        in repr(data).splitlines()
+    )
+
+
 def test_a_derived_dataset_prints_the_statvars_it_summed_before_its_period() -> None:
     summed = replace(
         _derived("rank"), stat_vars_summed=(SummedReading("spec_a", "cv_a", 1598),)
