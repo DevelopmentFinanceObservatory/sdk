@@ -1,5 +1,6 @@
 """The module functions `dfo.search`, `dfo.fetch`, `dfo.pin`, `dfo.file_url`,
-`dfo.share`, `dfo.snapshot`, `dfo.unshare`, `dfo.history` and `dfo.configure`,
+`dfo.share`, `dfo.snapshot`, `dfo.unshare`, `dfo.history`,
+`dfo.stored_versions` and `dfo.configure`,
 and the lookups of `dfo.lookup`, over a default client.
 
 The default client is built on first use, under a lock, so importing `dfo` reads
@@ -50,6 +51,7 @@ from dfo._datasets.build import Entities
 from dfo._datasets.dataset import Dataset
 from dfo._datasets.publication import Card, Moment, Served, Share, ShareTarget
 from dfo._datasets.recipe import Recipe
+from dfo._datasets.stored_versions import StoredTarget, StoredVersions
 from dfo._generated.wire import ResolveKind
 from dfo._http.hooks import HeaderProvider
 from dfo._sync._client.client import Client
@@ -480,6 +482,29 @@ def history(share: ShareTarget, /) -> tuple[Served, ...]:
         NotFoundError: No share has that id, or it was taken down (`not_found`).
     """
     return default_client().history(share)
+
+
+def stored_versions(
+    targets: Sequence[StoredTarget],
+    /,
+    *,
+    timeout: CallTimeout = CLIENT_TIMEOUT,
+) -> StoredVersions:
+    """Ask DFO, in one request, which version a `latest="stored"` read of each
+    spec would serve now, with the default client.
+
+    Takes `Client.stored_versions`'s arguments: Specs, DatasetRefs, Datasets and
+    Recipes, at most 64 specs between them. `changed_since` on the result names the
+    specs whose stored version moved since an earlier check.
+
+    Raises:
+        InvalidRequestError: `targets` names no spec or more than 64, or a
+            recipe root reads a frame DFO computed (`invalid_argument`); no
+            request is sent.
+        ContractError: The answer leaves out a spec or holds a version this
+            client cannot read (`contract_violation`).
+    """
+    return default_client().stored_versions(targets, timeout=timeout)
 
 
 def resolve(

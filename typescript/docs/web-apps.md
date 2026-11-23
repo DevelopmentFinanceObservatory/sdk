@@ -235,6 +235,51 @@ const rows = await data.toRows();
 
 Each reading is one binary file in the repository, and new data reaches the page when the data step runs again and the site redeploys.
 
+### Check for newer data than the build
+
+A page built from saved data can ask, in one request, whether DFO holds newer versions than the build read, and read again only then. The build records `client.storedVersions` for the readings it saved:
+
+<!-- docs-check: skip: needs GET /datasets/heads, which the dev API does not serve yet -->
+
+```ts
+// fetch-data.mts
+import { Client, DatasetRef } from "@developmentfinance/client";
+import { readFile, writeFile } from "node:fs/promises";
+
+const client = new Client();
+const ref = DatasetRef.fromJSON(await readFile("data/kenya-oda.ref.json", "utf8"));
+const check = await client.storedVersions([ref]);
+const data = await client.fetch(ref, { latest: "stored" });
+
+await data.save("public/data/kenya-oda.parquet");
+await writeFile("public/data/kenya-oda.heads.json", JSON.stringify(check));
+```
+
+The page checks the same readings and fetches only the ones that moved:
+
+<!-- docs-check: skip: needs GET /datasets/heads, which the dev API does not serve yet -->
+
+```ts
+// In the page
+import { Client, DatasetRef, StoredVersions } from "@developmentfinance/client";
+import committed from "./data/kenya-oda.ref.json" with { type: "json" };
+import heads from "./data/kenya-oda.heads.json" with { type: "json" };
+
+const client = new Client({ apiKey: false });
+const ref = DatasetRef.fromJSON(committed);
+const now = await client.storedVersions([ref], { signal: AbortSignal.timeout(5_000) });
+if (now.changedSince(StoredVersions.fromJSON(heads)).length > 0) {
+  const data = await client.fetch(ref, { latest: "stored" });
+  console.log(data.freshness, (await data.toRows()).length);
+}
+```
+
+`client.storedVersions(targets)` takes specs, DatasetRefs, Datasets and Recipes. A spec names its own spec, a ref or a Dataset each dataset member's spec and the datasets behind each frame DFO computed, and a recipe each dataset it starts from. It sends one `GET /api/v1/datasets/heads` naming each spec once, sorted, at most 64, so every page that checks the same readings shares one cache entry. A recipe that starts from a frame DFO computed throws `InvalidRequestError` before any request, since such a frame has no stored head.
+
+`now.heads` maps each spec id to its stored version, or null when a stored read would not serve one: no version stored, a version too old to serve, a revoked version, or a spec DFO has not registered. `now.changedSince(built)` lists the spec ids whose version differs from the one `built` records, a null on either side included. A build that takes the check before its reads and again after them, and reads again when the two differ, saves a check that names the versions it read.
+
+The check is read-only. DFO learns of newer source data from stored reads and imports, so the page's check notices what other readers and imports moved. Shared caches may answer a repeated check for up to five minutes.
+
 ## Answer a question from a page
 
 A page asks a question, your server asks the API, and the page draws the table. The server route searches, lets the reader choose a reading, streams build progress as NDJSON, stops before the platform's time limit, and joins the same build when the page posts again. The key stays on the server.

@@ -15,6 +15,13 @@ import type { ShareOptions, WriteTokenOptions } from "./datasets/shares.ts";
 import { fileUrl, pin } from "./datasets/pin.ts";
 import type { Recipe } from "./datasets/recipe.ts";
 import { fetchDataset } from "./datasets/resolve.ts";
+import { waitFor } from "./datasets/operation.ts";
+import { storedVersions } from "./datasets/stored-versions.ts";
+import type {
+  StoredTarget,
+  StoredVersions,
+  StoredVersionsOptions,
+} from "./datasets/stored-versions.ts";
 import type {
   CallOptions,
   FetchOptions,
@@ -102,6 +109,11 @@ const LIMITS = declareOptions<Parameters<Client["withOptions"]>[0]>("client.with
   timeout: true,
   attemptTimeout: true,
   maxRetries: true,
+});
+
+const STORED_VERSIONS_OPTIONS = declareOptions<StoredVersionsOptions>("client.storedVersions", {
+  signal: true,
+  timeout: true,
 });
 
 const REQUEST_OPTIONS = declareOptions<RawRequestOptions>("client.request", {
@@ -402,6 +414,33 @@ export class Client {
    */
   history(target: Share | ShareUrl): Promise<readonly Served[]> {
     return history(this.#transport, target, { deadline: this.#transport.callDeadline() });
+  }
+
+  /**
+   * Asks DFO, in one request, which version a `latest: "stored"` read of each spec would serve
+   * now, to learn whether it holds newer data than a build recorded. A spec names its own spec;
+   * a ref, or a Dataset by its ref, each dataset member's spec and each derived member's roots;
+   * a recipe each root's. Each spec is asked once, at most 64.
+   *
+   * Save `JSON.stringify(check)` with what you built. Later, check the same targets again and
+   * read again only the specs `check.changedSince(StoredVersions.fromJSON(saved))` names. The
+   * check is read-only, and DFO learns of newer source data from stored reads and imports, never
+   * from the check. Edge caches may answer a repeated check for up to five minutes.
+   *
+   * @throws {InvalidRequestError} `targets` is not an array of specs, DatasetRefs, Datasets and
+   *   Recipes, names no spec or more than 64, or a recipe root reads a frame DFO computed, which
+   *   holds no stored head, or `options` holds a key outside `StoredVersionsOptions`
+   *   (`invalid_argument`); a Dataset names no version, as a website bundle opened from a
+   *   folder does not (`ref_unavailable`). No request is sent.
+   * @throws {ContractError} The answer leaves out a spec, names one the request did not, or
+   *   holds a version this client cannot read (`contract_violation`).
+   */
+  storedVersions(
+    targets: readonly StoredTarget[],
+    options: StoredVersionsOptions = {},
+  ): Promise<StoredVersions> {
+    const call = checkOptions(STORED_VERSIONS_OPTIONS, options);
+    return storedVersions(this.#transport, targets, waitFor(this.#transport, call));
   }
 
   /**

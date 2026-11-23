@@ -30,6 +30,11 @@ stops before the frame read, which the scenario does not record. Its outcome's
 `left_out_series` from the manifest the client read from the 200, and its
 `pending_waits` are the waits that followed a 202 from the analysis route.
 
+A `stored_versions` step checks its targets through `stored_versions`, each
+`tree` target a recipe over that tree, and its outcome's `changed` is the
+result's `changed_since` of the step's `built`, read with
+`StoredVersions.from_json`.
+
 Each scenario starts as a fresh process would: no warning has been issued.
 """
 
@@ -65,6 +70,8 @@ from dfo._datasets import resolve as _resolve
 from dfo._datasets.build import Reading, build_body, layout_of, rendering_for
 from dfo._datasets.dataset import Dataset, build_dataset
 from dfo._datasets.fetch import Session as AsyncSession
+from dfo._datasets.recipe import Recipe, _Node, _Root, _Step
+from dfo._datasets.stored_versions import StoredVersions
 from dfo._http.transport import (
     CLIENT_HEADER,
     CLIENT_IDENTITY,
@@ -116,6 +123,7 @@ STEP_KEYS = {
     "operation": {"op", "operation_id", "layout"},
     "result": {"op"},
     "analysis": {"op", "tree", "latest", "include"},
+    "stored_versions": {"op", "targets", "built"},
 }
 
 
@@ -399,6 +407,8 @@ def _run(
                 latest=step.get("latest", False),
                 include=step.get("include"),
             )
+        case "stored_versions":
+            started = _check_stored(client, step["targets"], step.get("built"))
         case _:
             started = _result(client, operation)
     return started
@@ -480,6 +490,54 @@ async def _analyse(
     return await _settle(
         analysis._analyse(client._session.transport, body, deadline=None, timeout=None)
     )
+
+
+@dataclass(frozen=True)
+class StoredCheck:
+    """The result of a `stored_versions` step, and the specs changed since the
+    step's `built`, or None without one."""
+
+    found: StoredVersions
+    changed: list[str] | None
+
+
+def _tree_node(tree: Mapping[str, Any]) -> _Node:
+    """The recipe node that sends `tree`, as a scenario holds it."""
+    if "verb" not in tree:
+        return _Root(tree, str(tree.get("spec_id", "readings")))
+    inputs = tree["inputs"]
+    other = inputs.get("other")
+    return _Step(
+        tree["verb"],
+        tree["arguments"],
+        _tree_node(inputs["data"]),
+        "",
+        None if other is None else _tree_node(other),
+    )
+
+
+def _stored_target(target: Mapping[str, Any]) -> Spec | DatasetRef | Recipe:
+    if "spec" in target:
+        return _spec(target["spec"])
+    if "ref" in target:
+        return DatasetRef.from_json(json.dumps(target["ref"]))
+    return Recipe(_tree_node(target["tree"]))
+
+
+async def _check_stored(
+    client: AsyncClient | Client,
+    targets: list[Mapping[str, Any]],
+    built: Mapping[str, Any] | None,
+) -> StoredCheck:
+    found = await _settle(
+        client.stored_versions([_stored_target(target) for target in targets])
+    )
+    changed = (
+        None
+        if built is None
+        else found.changed_since(StoredVersions.from_json(dict(built)))
+    )
+    return StoredCheck(found, changed)
 
 
 async def _result(client: AsyncClient | Client, build: LongBuild) -> Dataset:
@@ -651,6 +709,7 @@ COMMON: dict[str, Reader] = {
 ABSENT: dict[str, tuple[str, ...]] = {
     "dataset": ("party_totals_left_out",),
     "analysis": ("pending_waits", "freshness", "left_out_series"),
+    "stored_versions": ("changed",),
 }
 
 READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
@@ -717,6 +776,16 @@ READERS: dict[str, tuple[tuple[type, ...], dict[str, Reader]]] = {
             # The clients keep no `derived_roots`; the replay reads the body.
             "derived_roots": lambda found, _: found.body.get("derived_roots", []),
             "pending_waits": lambda _, step: step.pending_waits or None,
+        },
+    ),
+    "stored_versions": (
+        (StoredCheck,),
+        {
+            "heads": lambda check, _: [
+                {"spec_id": spec_id, "content_version": version}
+                for spec_id, version in check.found.heads.items()
+            ],
+            "changed": lambda check, _: check.changed,
         },
     ),
     "newest_version": (

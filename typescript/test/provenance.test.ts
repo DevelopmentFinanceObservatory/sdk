@@ -37,6 +37,7 @@ async function validator(): Promise<(value: unknown) => boolean> {
     "dataset-ref.schema.json",
     "saved-file.schema.json",
     "scenario.schema.json",
+    "stored-versions.schema.json",
   ]) {
     ajv.addSchema(await contractJson<object>(name));
   }

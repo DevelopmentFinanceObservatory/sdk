@@ -286,6 +286,33 @@ The fetch sends two GETs per member: the spec's manifest at `GET /datasets/{spec
 
 `latest=True` has DFO check for newer data before it answers, so use it in a data step that must hold the newest data. `latest="stored"` suits a read that should answer at once, such as a dashboard. A recipe and a ref of a frame DFO computed take it too, and run on the stored newest version of each dataset they read, as [Follow new data and recompute](compute.md#follow-new-data-and-recompute) describes. A spec and a share each refuse `latest="stored"` with `InvalidRequestError` before any request.
 
+### Check whether DFO holds newer data
+
+`dfo.stored_versions(targets)` asks, in one request, which version a `latest="stored"` read of each spec would serve now. A build saves the answer beside what it built, and a later run reads again only when DFO holds something newer:
+
+<!-- docs-check: skip: needs GET /datasets/heads, which the dev API does not serve yet -->
+
+```python
+from pathlib import Path
+
+import dfo
+
+saved = dfo.load("ethiopia.parquet")
+built = dfo.StoredVersions.from_json(Path("ethiopia.heads.json").read_text())
+
+now = dfo.stored_versions([saved.ref])
+if now.changed_since(built):
+    data = dfo.fetch(saved.ref, latest="stored")
+    data.save("ethiopia.parquet")
+    Path("ethiopia.heads.json").write_text(now.to_json())
+```
+
+The check takes Specs, DatasetRefs, Datasets and Recipes. A Spec names its own spec, a ref or a Dataset each dataset member's spec and the datasets behind each frame DFO computed, and a recipe each dataset it starts from. It sends one `GET /datasets/heads` naming each spec once, sorted, at most 64. A recipe that starts from a frame DFO computed raises `InvalidRequestError` before any request, since such a frame has no stored head; check the ref it came from instead.
+
+`now.heads` maps each spec id to its stored version, or None when a stored read would not serve one: no version stored, a version too old to serve, a revoked version, or a spec DFO has not registered. `now.changed_since(built)` lists the spec ids whose version differs from the one `built` records, a None on either side included. Save the check taken before the build's reads, and take one again after them; when the two differ, read again, so the saved check names the versions the build read.
+
+The check is read-only. DFO learns of newer source data from stored reads and imports, so a reading nobody fetched stays on its old version until someone reads it. Shared caches may answer a repeated check for up to five minutes.
+
 ### When a version is gone
 
 The server keeps a version's file for 30 days, then rebuilds it from stored data where it can. `data.held_until` gives the earliest date any member can still be fetched without being pinned, and `data.pinned` is True when every member is kept without a limit. The client's cache keeps its own copy, so a version you fetched once loads from disk. When neither can supply a version, `dfo.fetch(ref)` raises `VersionUnavailableError`. Fetch the newest version and keep that:

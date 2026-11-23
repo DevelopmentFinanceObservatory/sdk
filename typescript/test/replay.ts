@@ -61,7 +61,17 @@ export type Step =
   | { op: "mint"; spec: Spec; layout?: Layout; party_totals?: boolean }
   | { op: "operation"; operation_id: string; layout?: Layout }
   | { op: "result" }
-  | { op: "analysis"; tree: Json; latest?: boolean | "stored"; include?: string[] };
+  | { op: "analysis"; tree: Json; latest?: boolean | "stored"; include?: string[] }
+  | { op: "stored_versions"; targets: StoredTargetJson[]; built?: unknown };
+
+/** One target of a stored-versions step: a spec, a ref as JSON, or a recipe tree. */
+export type StoredTargetJson = { spec: Spec } | { ref: unknown } | { tree: Json };
+
+/** A stored-versions check: one head per spec, sorted, and with `built` the specs changed. */
+export type StoredVersionsSummary = StepSummary & {
+  heads: { spec_id: string; content_version: string | null }[];
+  changed?: string[];
+};
 
 export type Exchange = {
   request: { method: string; path?: string; origin_path?: string; url?: string; json?: Json };
@@ -139,6 +149,7 @@ export type Outcome =
   | { operation: StepSummary & Json }
   | { newest_version: StepSummary & { content_version: string | null } }
   | { analysis: AnalysisSummary }
+  | { stored_versions: StoredVersionsSummary }
   | { error: ErrorSummary };
 
 const scenarioUrl = (file: string): URL =>

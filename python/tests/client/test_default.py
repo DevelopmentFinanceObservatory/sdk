@@ -72,6 +72,7 @@ def parameters(function: Callable[..., Any]) -> list[inspect.Parameter]:
         (dfo.snapshot, Client.snapshot),
         (dfo.unshare, Client.unshare),
         (dfo.history, Client.history),
+        (dfo.stored_versions, Client.stored_versions),
         *(
             (getattr(dfo.cards, kind), getattr(Cards, kind))
             for kind in ("line", "bar", "table", "stat", "source")
