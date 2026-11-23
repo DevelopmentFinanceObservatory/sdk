@@ -257,8 +257,10 @@ export function specIds(targets: unknown): string[] {
   return [...found].sort(compareCodePoints);
 }
 
+/** Whether `value` stands for a spec: a plain object with a `spec_id`, which `storedId`
+ *  checks. */
 const isSpec = (value: unknown): value is Spec =>
-  isRecord(value) && !(value instanceof Recipe) && typeof value["spec_id"] === "string";
+  isRecord(value) && !(value instanceof Recipe) && Object.hasOwn(value, "spec_id");
 
 const shown = (value: unknown): string =>
   value === null ? "null" : typeof value === "object" ? value.constructor.name : typeof value;
@@ -268,23 +270,34 @@ function idsOf(target: unknown): string[] {
   if (target instanceof DatasetRef) return refIds(target);
   if (target instanceof Dataset) return refIds(target.ref);
   if (target instanceof Recipe) {
-    return recipeRoots(target).flatMap((node) => {
-      if (Object.hasOwn(node, "ref")) return refIds(loadRef(node["ref"], "/ref"));
-      const specId = String(node["spec_id"]);
-      if (OPS_ID.test(specId)) {
-        throw refusal(
-          `The recipe ${String(target)} reads ${specId}, a frame DFO computed, which holds no ` +
-            "stored head; check the DatasetRef it came from, whose derived member names the " +
-            "datasets it read.",
-        );
-      }
-      return [specId];
-    });
+    return recipeRoots(target).flatMap((node) =>
+      Object.hasOwn(node, "ref")
+        ? refIds(loadRef(node["ref"], "/ref"))
+        : [storedId(node["spec_id"], `The recipe ${String(target)}`)],
+    );
   }
-  if (isSpec(target)) return [target.spec_id];
+  if (isSpec(target)) return [storedId(target.spec_id, "A spec")];
   throw refusal(
     `storedVersions takes specs, DatasetRefs, Datasets and Recipes, not ${shown(target)}.`,
   );
+}
+
+/**
+ * `specId` when it names a spec, which holds a stored head.
+ *
+ * @throws {InvalidRequestError} `specId` names a frame DFO computed, or is not a spec id
+ *   (`invalid_argument`).
+ */
+function storedId(specId: unknown, reader: string): string {
+  if (typeof specId === "string" && SPEC_ID.test(specId)) return specId;
+  if (typeof specId === "string" && OPS_ID.test(specId)) {
+    throw refusal(
+      `${reader} reads ${specId}, a frame DFO computed, which holds no stored head; check the ` +
+        "DatasetRef it came from, whose derived member names the datasets it read.",
+    );
+  }
+  const shownId = specId === undefined ? "no spec id" : JSON.stringify(specId);
+  throw refusal(`${reader} reads ${shownId}, which is not a spec id (spec_…).`);
 }
 
 function refIds(ref: DatasetRef): string[] {

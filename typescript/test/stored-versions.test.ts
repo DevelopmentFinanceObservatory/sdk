@@ -5,12 +5,13 @@ import { readFile } from "node:fs/promises";
 import { describe, test } from "node:test";
 
 import { Ajv2020 } from "ajv/dist/2020.js";
+import { parquetWriteBuffer } from "hyparquet-writer";
 
 import { ContractError, InvalidRequestError } from "../src/core/errors.ts";
 import { DatasetRef, FormatError } from "../src/core/ref.ts";
 import type { Spec } from "../src/core/ref.ts";
 import { Dataset } from "../src/datasets/dataset.ts";
-import { recipe } from "../src/datasets/recipe.ts";
+import { recipe, recipeOverTree } from "../src/datasets/recipe.ts";
 import { readHeads, specIds, StoredVersions } from "../src/datasets/stored-versions.ts";
 import { contractJson } from "./support.ts";
 
@@ -19,6 +20,18 @@ const B = `spec_${"b".repeat(32)}`;
 const C = `spec_${"c".repeat(32)}`;
 const V1 = `cv_${"1".repeat(32)}`;
 const V2 = `cv_${"2".repeat(32)}`;
+const OPS = `ops_${"a".repeat(32)}`;
+
+/** The text both clients write for `{A: V1, B: null}`, byte for byte; the Python test pins the
+ *  same string. */
+const SAVED_TEXT =
+  '{"format_version":1,"heads":[' +
+  '{"spec_id":"spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",' +
+  '"content_version":"cv_11111111111111111111111111111111"},' +
+  '{"spec_id":"spec_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","content_version":null}]}';
+
+/** The 32-hex spec id of `index`. */
+const numbered = (index: number): string => `spec_${index.toString(16).padStart(32, "0")}`;
 
 const spec = (specId: string): Spec => ({
   spec_id: specId,
@@ -49,6 +62,10 @@ test("toJSON writes the saved form sorted, and fromJSON reads it back", async ()
   );
   assert.ok(StoredVersions.fromJSON(JSON.stringify(found)).equals(found));
   assert.equal(String(found), "StoredVersions(2 specs, 1 with a stored version)");
+});
+
+test("JSON.stringify writes the text both clients write", () => {
+  assert.equal(JSON.stringify(check({ [B]: null, [A]: V1 })), SAVED_TEXT);
 });
 
 describe("changedSince names each spec whose head differs", () => {
@@ -142,8 +159,67 @@ test("a recipe of several readings reads each member", async () => {
 test("a Dataset names the specs its ref names", async () => {
   const bytes = await readFile(new URL("data/saved-typescript.parquet", import.meta.url));
   const data = await Dataset.fromBytes(new Uint8Array(bytes));
-  assert.ok(data.ref.members.length > 0);
-  assert.deepEqual(specIds([data]), specIds([data.ref]));
+  const expected = [
+    "spec_7a02b6facd2dc17b5d0d7c35c11bf5d2",
+    "spec_b5673e60c045b10f8beeed2ce50dbd18",
+  ];
+  assert.deepEqual(specIds([data]), expected);
+  assert.deepEqual(specIds([data.ref]), expected);
+});
+
+test("a Dataset that names no version is refused", async () => {
+  const { metadata } = await contractJson<{ metadata: Record<string, string> }>(
+    "saved-files/saved-minimal.json",
+  );
+  const bytes = parquetWriteBuffer({
+    columnData: [{ name: "value", data: [] }],
+    schema: [
+      { name: "root", num_children: 1 },
+      { name: "value", type: "INT64", repetition_type: "OPTIONAL" },
+    ],
+    kvMetadata: Object.entries(metadata).map(([key, value]) => ({ key, value })),
+  });
+  const data = await Dataset.fromBytes(new Uint8Array(bytes));
+  assert.throws(
+    () => specIds([data]),
+    (error) => error instanceof InvalidRequestError && error.code === "ref_unavailable",
+  );
+});
+
+test("a derived member names its roots", async () => {
+  assert.deepEqual(specIds([await exampleRef("ref-derived-member")]), [
+    "spec_cb5baa4161de718f18583060674dbca6",
+  ]);
+});
+
+test("a check names 64 specs and refuses 65", () => {
+  const specs = Array.from({ length: 65 }, (_, index) => spec(numbered(index)));
+  assert.equal(specIds(specs.slice(0, 64)).length, 64);
+  assert.throws(
+    () => specIds(specs),
+    (error) => error instanceof InvalidRequestError && error.code === "invalid_argument",
+  );
+});
+
+describe("a target that names no spec id is refused", () => {
+  const cases: [string, unknown][] = [
+    ["spec, bad id", spec("spec_A")],
+    ["spec, ops id", spec(OPS)],
+    ["recipe, bad id", recipe(spec("spec_A")).aggregate()],
+    ["root, null id", recipeOverTree({ spec_id: null })],
+    ["root, no id", recipeOverTree({ rendering: {} })],
+  ];
+  for (const [name, target] of cases) {
+    test(name, () => {
+      assert.throws(
+        () => specIds([target]),
+        (error) =>
+          error instanceof InvalidRequestError &&
+          error.code === "invalid_argument" &&
+          !/undefined/.test(error.message),
+      );
+    });
+  }
 });
 
 describe("specIds refuses what is not an array of targets", () => {

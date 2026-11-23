@@ -2,6 +2,8 @@
 beyond what the contract's `stored-versions-*` scenarios replay."""
 
 import json
+from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import jsonschema
@@ -11,15 +13,26 @@ from dfo._core.errors import ContractError, InvalidRequestError
 from dfo._core.refs import DatasetRef
 from dfo._core.types import FormatError, Spec
 from dfo._datasets.bundle import load as load_saved
-from dfo._datasets.recipe import recipe
+from dfo._datasets.recipe import Recipe, _Root, recipe
 from dfo._datasets.stored_versions import StoredVersions, read_heads, spec_ids
 from tests._data import CONTRACT, DATA
+from tests.datasets.test_bundle import CSV_BUNDLE, extracted
 
 A = "spec_" + "a" * 32
 B = "spec_" + "b" * 32
 C = "spec_" + "c" * 32
 V1 = "cv_" + "1" * 32
 V2 = "cv_" + "2" * 32
+OPS = "ops_" + "a" * 32
+
+# The text both clients write for `{A: V1, B: None}`, byte for byte; the
+# TypeScript test pins the same string.
+SAVED_TEXT = (
+    '{"format_version":1,"heads":['
+    '{"spec_id":"spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
+    '"content_version":"cv_11111111111111111111111111111111"},'
+    '{"spec_id":"spec_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","content_version":null}]}'
+)
 
 
 def _spec(spec_id: str) -> Spec:
@@ -40,6 +53,35 @@ def test_to_json_writes_the_saved_form_sorted_and_reads_back() -> None:
     assert StoredVersions.from_json(text) == found
     assert StoredVersions.from_json(json.loads(text)) == found
     assert hash(StoredVersions.from_json(text.encode())) == hash(found)
+    assert StoredVersions.from_json(MappingProxyType(json.loads(text))) == found
+
+
+def test_to_json_writes_the_text_both_clients_write() -> None:
+    assert StoredVersions({B: None, A: V1}).to_json() == SAVED_TEXT
+
+
+@pytest.mark.parametrize(
+    "heads",
+    [
+        {},
+        {f"spec_{index:032x}": None for index in range(65)},
+        {"spec_A": V1},
+        {OPS: None},
+        {A: "ocv_" + "1" * 32},
+        {A: 1},
+        [(A, V1)],
+    ],
+    ids=["empty", "65", "bad-id", "ops-id", "bad-version", "number", "not-mapping"],
+)
+def test_the_constructor_refuses_heads_from_json_would_refuse(heads: Any) -> None:
+    with pytest.raises(InvalidRequestError) as caught:
+        StoredVersions(heads)
+    assert caught.value.code == "invalid_argument"
+
+
+def test_the_constructor_takes_64_heads() -> None:
+    heads = {f"spec_{index:032x}": None for index in range(64)}
+    assert len(StoredVersions(heads).heads) == 64
 
 
 def test_the_repr_counts_the_specs_and_the_stored_versions() -> None:
@@ -142,8 +184,49 @@ def test_a_recipe_of_several_readings_reads_each_member() -> None:
 
 def test_a_dataset_names_the_specs_its_ref_names() -> None:
     data = load_saved(DATA / "saved-python.parquet")
-    assert data.ref.members
-    assert spec_ids([data]) == spec_ids([data.ref])
+    expected = [
+        "spec_7a02b6facd2dc17b5d0d7c35c11bf5d2",
+        "spec_b5673e60c045b10f8beeed2ce50dbd18",
+    ]
+    assert spec_ids([data]) == expected
+    assert spec_ids([data.ref]) == expected
+
+
+def test_a_dataset_that_names_no_version_is_refused(tmp_path: Path) -> None:
+    data = load_saved(extracted(CSV_BUNDLE, tmp_path / "bundle"))
+    with pytest.raises(InvalidRequestError) as caught:
+        spec_ids([data])
+    assert caught.value.code == "ref_unavailable"
+
+
+def test_a_derived_member_names_its_roots() -> None:
+    ref = _example_ref("ref-derived-member")
+    assert spec_ids([ref]) == ["spec_cb5baa4161de718f18583060674dbca6"]
+
+
+def test_a_check_names_64_specs_and_refuses_65() -> None:
+    specs = [_spec(f"spec_{index:032x}") for index in range(65)]
+    assert len(spec_ids(specs[:64])) == 64
+    with pytest.raises(InvalidRequestError) as caught:
+        spec_ids(specs)
+    assert caught.value.code == "invalid_argument"
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        _spec("spec_A"),
+        _spec(OPS),
+        recipe(_spec("spec_A")).aggregate(),
+        Recipe(_Root({"spec_id": None}, "none")),
+        Recipe(_Root({"rendering": {}}, "nothing")),
+    ],
+    ids=["spec-bad-id", "spec-ops-id", "recipe-bad-id", "root-null-id", "root-no-id"],
+)
+def test_a_target_that_names_no_spec_id_is_refused(target: Any) -> None:
+    with pytest.raises(InvalidRequestError) as caught:
+        spec_ids([target])
+    assert caught.value.code == "invalid_argument"
 
 
 @pytest.mark.parametrize(

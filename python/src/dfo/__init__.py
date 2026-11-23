@@ -43,7 +43,7 @@ from dfo._core.refs import DatasetRef
 from dfo._core.types import Spec
 from dfo._datasets.bundle import load
 from dfo._datasets.dataset import Dataset, Provenance
-from dfo._datasets.stored_versions import StoredVersions
+from dfo._datasets.stored_versions import StoredTarget, StoredVersions
 from dfo._sync._client.client import Client
 from dfo._sync._search.answer import Answer
 from dfo._version import __version__
@@ -56,6 +56,7 @@ __all__ = [
     "DatasetRef",
     "Provenance",
     "Spec",
+    "StoredTarget",
     "StoredVersions",
     "__version__",
     "analysis",

@@ -62,12 +62,31 @@ class StoredVersions:
     Attributes:
         heads: Each spec id the check named, sorted, with its stored version
             (`cv_…`) or None.
+
+    Raises:
+        InvalidRequestError: `heads` is not a mapping of 1 to 64 spec ids
+            (`spec_…`) to a dataset version (`cv_…`) or None
+            (`invalid_argument`).
     """
 
     heads: Mapping[str, str | None]
 
     def __post_init__(self) -> None:
-        heads = MappingProxyType(dict(sorted(self.heads.items())))
+        given = self.heads
+        if not isinstance(given, Mapping) or not 1 <= len(given) <= MAX_SPECS:
+            raise _refusal(
+                f"StoredVersions takes a mapping of 1 to {MAX_SPECS} spec ids to "
+                "their versions"
+            )
+        for spec_id, version in given.items():
+            if not matches(SPEC_ID, spec_id):
+                raise _refusal(f"StoredVersions names {spec_id!r}, not a spec id")
+            if version is not None and not matches(CONTENT_VERSION, version):
+                raise _refusal(
+                    f"StoredVersions gives {spec_id} the version {version!r}, "
+                    "neither a dataset version nor None"
+                )
+        heads = MappingProxyType(dict(sorted(given.items())))
         object.__setattr__(self, "heads", heads)
 
     @override
@@ -121,8 +140,9 @@ class StoredVersions:
 
     def to_json(self) -> str:
         """The check as JSON text, `{format_version, heads}`, each head
-        `{spec_id, content_version}` sorted by spec id, which
-        `StoredVersions.from_json` reads back in any DFO client."""
+        `{spec_id, content_version}` sorted by spec id, with no whitespace,
+        the bytes `JSON.stringify` writes for the same check in TypeScript,
+        which `StoredVersions.from_json` reads back in any DFO client."""
         return json.dumps(
             {
                 "format_version": FORMAT_VERSION,
@@ -130,13 +150,14 @@ class StoredVersions:
                     {"spec_id": spec_id, "content_version": version}
                     for spec_id, version in self.heads.items()
                 ],
-            }
+            },
+            separators=(",", ":"),
         )
 
     @classmethod
     def from_json(cls, value: str | bytes | Mapping[str, Any], /) -> "StoredVersions":
         """Read a check any DFO client saved, from its JSON text, as str or
-        bytes, or from the object `json.loads` gives for it. The TypeScript
+        bytes, or from a mapping such as the object `json.loads` gives for it. The TypeScript
         client's `StoredVersions.fromJSON` takes the text or the parsed value
         too.
 
@@ -147,9 +168,10 @@ class StoredVersions:
                 or holds a spec id or version that is neither `spec_…` nor
                 `cv_…` (`format_invalid`), with the pointer of the fault.
         """
-        record = (
-            decode(value) if isinstance(value, str | bytes) else object_at(value, "")
-        )
+        if isinstance(value, str | bytes):
+            record = decode(value)
+        else:
+            record = object_at(dict(value) if isinstance(value, Mapping) else value, "")
         check_keys(record, "", required=("format_version", "heads"))
         version = record["format_version"]
         if version != FORMAT_VERSION or isinstance(version, bool):
@@ -166,7 +188,9 @@ class StoredVersions:
         heads: dict[str, str | None] = {}
         for index, entry in enumerate(entries):
             pointer = f"/heads/{index}"
-            head = object_at(entry, pointer)
+            head = object_at(
+                dict(entry) if isinstance(entry, Mapping) else entry, pointer
+            )
             check_keys(head, pointer, required=("spec_id", "content_version"))
             spec_id, content_version = head["spec_id"], head["content_version"]
             if not matches(SPEC_ID, spec_id):
@@ -223,7 +247,7 @@ def spec_ids(targets: object) -> list[str]:
 def _read_ids(target: object) -> Iterator[str]:
     """The spec ids one target reads."""
     if isinstance(target, Spec):
-        yield target.spec_id
+        yield _stored_id(target.spec_id, f"The Spec {target!r}")
     elif isinstance(target, DatasetRef):
         yield from _ref_ids(target)
     elif isinstance(target, Dataset):
@@ -232,19 +256,31 @@ def _read_ids(target: object) -> Iterator[str]:
         for node in root_nodes(target):
             if "ref" in node:
                 yield from _ref_ids(load_ref(node["ref"], "/ref"))
-            elif matches(OPS_ID, spec_id := node.get("spec_id")):
-                raise _refusal(
-                    f"The recipe {target!r} reads {spec_id}, a frame DFO computed, "
-                    "which holds no stored head; check the DatasetRef it came "
-                    "from, whose derived member names the datasets it read"
-                )
             else:
-                yield str(spec_id)
+                yield _stored_id(node.get("spec_id"), f"The recipe {target!r}")
     else:
         raise _refusal(
             "stored_versions takes Specs, DatasetRefs, Datasets and Recipes, not "
             f"{type(target).__name__}"
         )
+
+
+def _stored_id(spec_id: object, reader: str) -> str:
+    """`spec_id` when it names a spec, which holds a stored head.
+
+    Raises:
+        InvalidRequestError: `spec_id` names a frame DFO computed, or is not a
+            spec id (`invalid_argument`).
+    """
+    if matches(SPEC_ID, spec_id):
+        return str(spec_id)
+    if matches(OPS_ID, spec_id):
+        raise _refusal(
+            f"{reader} reads {spec_id}, a frame DFO computed, which holds no stored "
+            "head; check the DatasetRef it came from, whose derived member names "
+            "the datasets it read"
+        )
+    raise _refusal(f"{reader} reads {spec_id!r}, which is not a spec id (spec_…)")
 
 
 def _ref_ids(ref: DatasetRef) -> Iterator[str]:
