@@ -14,6 +14,9 @@ import { Dataset } from "../src/datasets/dataset.ts";
 import { analyse } from "../src/datasets/analysis.ts";
 import type { Analysed } from "../src/datasets/analysis.ts";
 import { newestVersion } from "../src/datasets/resolve.ts";
+import { recipeOverTree } from "../src/datasets/recipe.ts";
+import { StoredVersions } from "../src/datasets/stored-versions.ts";
+import type { StoredTarget } from "../src/datasets/stored-versions.ts";
 import type { FetchOptions, Narrowing } from "../src/datasets/fetch.ts";
 import type { LongBuild } from "../src/datasets/operation.ts";
 import { DatasetRef } from "../src/core/ref.ts";
@@ -24,7 +27,7 @@ import { DataWarning, DfoWarning, forgetEmittedWarnings } from "../src/core/warn
 import { mint, resume } from "./builds.ts";
 import type { StartedBuild } from "./builds.ts";
 import { recordedBaseUrl, replay, REPLAY_BASE_URLS, scenarios } from "./replay.ts";
-import type { LongBuildSummary, Outcome, Scenario, Step } from "./replay.ts";
+import type { LongBuildSummary, Outcome, Scenario, Step, StoredTargetJson } from "./replay.ts";
 
 const all = await scenarios();
 
@@ -34,7 +37,17 @@ type NewestVersion = { readonly newestVersion: string | null };
 /** An `analysis` step's ready answer, as the client read it. */
 type AnalysisReached = { readonly analysed: Analysed };
 
-type Reached = Answer | Dataset | StartedBuild | NewestVersion | AnalysisReached;
+/** A `stored_versions` step's check, and the specs changed since its `built`, if it has one. */
+type StoredReached = { readonly stored: StoredVersions; readonly changed?: string[] };
+
+type Reached = Answer | Dataset | StartedBuild | NewestVersion | AnalysisReached | StoredReached;
+
+/** A stored-versions target as the client takes it: a tree as a recipe that sends it. */
+function storedTarget(target: StoredTargetJson): StoredTarget {
+  if ("spec" in target) return target.spec;
+  if ("ref" in target) return DatasetRef.fromJSON(target.ref);
+  return recipeOverTree(target.tree);
+}
 
 const isStartedBuild = (reached: Reached | undefined): reached is StartedBuild =>
   reached !== undefined && "poller" in reached;
@@ -123,6 +136,12 @@ async function run(
         ...(step.include === undefined ? {} : { include: step.include }),
       };
       return { analysed: await analyse(transport, body, { deadline: Infinity }) };
+    }
+    // The step's `built` is an earlier check's saved form, read back as a page reads it.
+    case "stored_versions": {
+      const stored = await client.storedVersions(step.targets.map(storedTarget));
+      if (step.built === undefined) return { stored };
+      return { stored, changed: stored.changedSince(StoredVersions.fromJSON(step.built)) };
     }
     default:
       assert.fail(`the replay does not know the step ${JSON.stringify(step)}`);
@@ -353,6 +372,18 @@ async function checkOutcome(
         ...(freshness === undefined ? {} : { freshness }),
         ...(manifest === undefined ? {} : { left_out_series: leftOutSeries(manifest) }),
       },
+      observed,
+    );
+    return;
+  }
+  if ("stored_versions" in expected) {
+    assert.ok("stored" in reached, `${name}: gave stored versions`);
+    const { stored, changed } = reached;
+    assert.deepEqual(changed, expected.stored_versions.changed, `${name}: changed`);
+    checkMembers(
+      name,
+      expected.stored_versions,
+      { heads: stored.toJSON().heads, changed },
       observed,
     );
     return;

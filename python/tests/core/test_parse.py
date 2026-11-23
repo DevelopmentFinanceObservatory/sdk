@@ -29,6 +29,7 @@ from dfo._core.types import (
     UnsupportedPart,
 )
 from dfo._datasets import analysis as _analysis
+from dfo._datasets import stored_versions as _stored_versions
 from dfo._generated import strict as _strict
 from tests._data import CONTRACT, load
 
@@ -819,6 +820,10 @@ def test_scenario_bodies_parse(
         _analysis._summed(json_body)
         if "manifest" in json_body:
             _analysis._embedded_manifest(json_body, member)
+    elif path.startswith(f"{_stored_versions.HEADS_PATH}?"):
+        # A stored-versions check, read for the specs its query names.
+        asked = [pair.split("=")[1] for pair in path.split("?")[1].split("&")]
+        assert _stored_versions.read_heads(json_body, asked, None).heads
     elif path.split("?", maxsplit=1)[0].endswith("/versions"):
         # The versions page the newest-version lookup reads.
         assert all(isinstance(v["content_version"], str) for v in json_body["versions"])

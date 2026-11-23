@@ -55,6 +55,11 @@ export type {
   ProvenanceJson,
   SummedReading,
 } from "./datasets/dataset.ts";
+export type {
+  StoredTarget,
+  StoredVersionsJson,
+  StoredVersionsOptions,
+} from "./datasets/stored-versions.ts";
 export { Analysis } from "./datasets/analysis.ts";
 export type { RunOptions } from "./datasets/analysis.ts";
 export { Cards } from "./datasets/cards.ts";

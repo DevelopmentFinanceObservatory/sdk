@@ -550,6 +550,7 @@ describe(`the journey against ${baseUrl}`, { concurrency: false }, () => {
         "dataset-ref.schema.json",
         "saved-file.schema.json",
         "scenario.schema.json",
+        "stored-versions.schema.json",
       ]) {
         ajv.addSchema(await contractJson(name));
       }

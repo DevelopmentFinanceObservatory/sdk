@@ -501,6 +501,23 @@ def stored_tree(chain: Recipe) -> dict[str, Any]:
     return _wire(chain._tree, stored=True)
 
 
+def root_nodes(chain: Recipe) -> list[Mapping[str, Any]]:
+    """The node each root of `chain` sends, `data` before `other`, step by
+    step from the start: a Spec root, a dataset version, a frame DFO computed,
+    or `{ref}` for several readings."""
+    roots: list[Mapping[str, Any]] = []
+    pending: list[_Node] = [chain._tree]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, _Root):
+            roots.append(node.node)
+            continue
+        if node.other is not None:
+            pending.append(node.other)
+        pending.append(node.data)
+    return roots
+
+
 def _wire(node: _Node, *, stored: bool = False) -> dict[str, Any]:
     """The tree `node` sends, a deep copy, so a change to it leaves the recipe as
     it was; with `stored`, each dataset-version root as a Spec root."""

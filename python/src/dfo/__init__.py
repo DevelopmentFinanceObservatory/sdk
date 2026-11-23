@@ -14,6 +14,9 @@ each.
 `dfo.share(cards, latest=...)` publishes cards from `dfo.cards` as a link that
 follows new data or stays fixed; `dfo.snapshot`, `dfo.unshare` and
 `dfo.history` fix it, take it down and list what it served.
+`dfo.stored_versions(targets)` asks in one request which version DFO would
+serve each spec from its stored head, a `StoredVersions` whose
+`changed_since` names the specs that moved since a build saved an earlier one.
 
 The task modules hold the rest: `dfo.analysis` DFO's operations and recipes,
 `dfo.cards` the charts, tables and numbers DFO draws,
@@ -32,6 +35,7 @@ from dfo._client.default import (
     search,
     share,
     snapshot,
+    stored_versions,
     unshare,
 )
 from dfo._core.periods import latest_year
@@ -39,6 +43,7 @@ from dfo._core.refs import DatasetRef
 from dfo._core.types import Spec
 from dfo._datasets.bundle import load
 from dfo._datasets.dataset import Dataset, Provenance
+from dfo._datasets.stored_versions import StoredTarget, StoredVersions
 from dfo._sync._client.client import Client
 from dfo._sync._search.answer import Answer
 from dfo._version import __version__
@@ -51,6 +56,8 @@ __all__ = [
     "DatasetRef",
     "Provenance",
     "Spec",
+    "StoredTarget",
+    "StoredVersions",
     "__version__",
     "analysis",
     "auth",
@@ -67,6 +74,7 @@ __all__ = [
     "search",
     "share",
     "snapshot",
+    "stored_versions",
     "types",
     "unshare",
 ]

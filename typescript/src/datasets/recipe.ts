@@ -539,6 +539,43 @@ export function storedTree(chain: Recipe): Record<string, unknown> {
   return wire(treeOf(chain), true);
 }
 
+/** The node each root of `chain` sends, `data` before `other`, step by step from the start: a
+ *  spec root, a dataset version, a frame DFO computed, or `{ref}` for several readings. */
+export function recipeRoots(chain: Recipe): Readonly<Record<string, unknown>>[] {
+  const roots: Readonly<Record<string, unknown>>[] = [];
+  const pending: TreeNode[] = [treeOf(chain)];
+  for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+    if (node.kind === "root") {
+      roots.push(node.node);
+      continue;
+    }
+    if (node.other !== undefined) pending.push(node.other);
+    pending.push(node.data);
+  }
+  return roots;
+}
+
+/** A recipe that sends `tree` as it stands, for the contract replay, whose scenarios hold
+ *  recipes as the trees they send. */
+export function recipeOverTree(tree: Readonly<Record<string, unknown>>): Recipe {
+  const nodeOver = (value: Readonly<Record<string, unknown>>): TreeNode => {
+    if (!Object.hasOwn(value, "verb")) {
+      return root({ ...value }, typeof value["spec_id"] === "string" ? value["spec_id"] : "ref");
+    }
+    const inputs = value["inputs"] as Record<string, Record<string, unknown>>;
+    const other = inputs["other"];
+    return Object.freeze({
+      kind: "step",
+      verb: String(value["verb"]),
+      arguments: Object.freeze({ ...(value["arguments"] as Record<string, unknown>) }),
+      data: nodeOver(inputs["data"]!),
+      other: other === undefined ? undefined : nodeOver(other),
+      call: "",
+    });
+  };
+  return makeRecipe(nodeOver(tree));
+}
+
 /** The chain that makes `node`, as it was called: `recipe(spec_…).rank({ … })`. */
 function callText(node: TreeNode): string {
   if (node.kind === "root") return `recipe(${node.name})`;

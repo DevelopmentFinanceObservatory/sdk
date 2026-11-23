@@ -4,7 +4,8 @@
 A client asks Search what a question means (`search`), builds datasets (`fetch`),
 runs DFO's operations (`analysis`, and `fetch` of a recipe), pins versions
 (`pin`) and links to their files (`file_url`), stores cards DFO draws (`cards`),
-publishes them as links (`share`, `snapshot`, `unshare`, `history`), and looks up
+publishes them as links (`share`, `snapshot`, `unshare`, `history`), checks
+which stored versions DFO would serve (`stored_versions`), and looks up
 names, codes and Search's catalogue (`lookup`). `request` reaches any route the
 client does not wrap. The client owns its connection pool: `with_options`
 returns a copy that shares the pool and the cache, and only the client that
@@ -26,7 +27,7 @@ from dfo._core.refs import (
     Member,
     RefMember,
 )
-from dfo._core.refusals import caller_refusal
+from dfo._core.refusals import caller_refusal, trace_id_of
 from dfo._core.timeouts import (
     CLIENT_TIMEOUT,
     FROM_ENVIRONMENT,
@@ -35,11 +36,18 @@ from dfo._core.timeouts import (
     MaxRetriesArgument,
 )
 from dfo._core.types import Layout, PriceBasis, Spec, Window
-from dfo._datasets.build import Entities
+from dfo._datasets.build import Entities, response_json
 from dfo._datasets.cache import Cache
 from dfo._datasets.dataset import Dataset
 from dfo._datasets.publication import Card, Moment, Served, Share, ShareTarget
 from dfo._datasets.recipe import Recipe
+from dfo._datasets.stored_versions import (
+    HEADS_PATH,
+    StoredTarget,
+    StoredVersions,
+    read_heads,
+    spec_ids,
+)
 from dfo._http.hooks import HeaderProvider
 from dfo._sync._datasets.analysis import Analysis
 from dfo._sync._datasets.cards import Cards
@@ -688,6 +696,55 @@ class Client:
         return share_history(
             transport, share, deadline=transport.deadline(transport.timeout)
         )
+
+    def stored_versions(
+        self,
+        targets: Sequence[StoredTarget],
+        /,
+        *,
+        timeout: CallTimeout = CLIENT_TIMEOUT,
+    ) -> StoredVersions:
+        """Ask DFO, in one request, which version a `latest="stored"` read of
+        each spec would serve now, to learn whether it holds newer data than a
+        build recorded.
+
+        Save the result's `to_json()` with what you built. Later, check the
+        same targets again and re-read only the specs
+        `check.changed_since(StoredVersions.from_json(saved))` names. The
+        check is read-only, and DFO learns of newer source data from stored
+        reads and imports, never from the check. Edge caches may answer a
+        repeated check for up to five minutes.
+
+        Args:
+            targets: The Specs, DatasetRefs, Datasets and Recipes to check. A
+                Spec names its own spec; a ref, or a Dataset by its ref, each
+                dataset member's spec and each derived member's roots; a
+                recipe each root's. Each spec is asked once, at most 64.
+            timeout: The longest the call takes, retries included, in seconds.
+                None waits without a bound. Left out, the client's `timeout`
+                applies, else each attempt's alone.
+
+        Raises:
+            InvalidRequestError: `targets` is not a list of Specs, DatasetRefs,
+                Datasets and Recipes, names no spec or more than 64, or a
+                recipe root reads a frame DFO computed, which holds no stored
+                head (`invalid_argument`); a Dataset names no version, as a
+                website bundle opened from a folder does not
+                (`ref_unavailable`). No request is sent.
+            ContractError: The answer leaves out a spec, names one the request
+                did not, or holds a version this client cannot read
+                (`contract_violation`).
+        """
+        asked = spec_ids(targets)
+        transport = self._session.transport
+        response = transport.request(
+            "GET",
+            HEADS_PATH,
+            params={"spec_id": asked},
+            deadline=transport.deadline(transport.call_timeout(timeout)),
+        )
+        body = response_json(response)
+        return read_heads(body, asked, trace_id_of(response, body))
 
     def request(
         self,
