@@ -222,6 +222,20 @@ describe("refusals", () => {
     }
   }
 
+  test("retry a caller_over_share refusal after its Retry-After, then raise ServerError", async () => {
+    const { sleep, waits } = recordingSleep();
+    const refused = () =>
+      problem({ code: "caller_over_share", status: 429, retryable: true }, { "retry-after": "3" });
+    const { fetch, seen } = mockFetch(refused(), refused(), refused());
+    const error = await transport({ fetch, sleep })
+      .request({ path: "/x" })
+      .catch((e: unknown) => e);
+    assert.ok(error instanceof ServerError);
+    assert.equal(error.code, "caller_over_share");
+    assert.deepEqual(waits, [3000, 3000]);
+    assert.equal(seen.length, 3);
+  });
+
   test("back off without Retry-After and give up after maxRetries", async () => {
     const { sleep, waits } = recordingSleep();
     const refusal = problem({ code: "upstream_error", status: 502, retryable: true });

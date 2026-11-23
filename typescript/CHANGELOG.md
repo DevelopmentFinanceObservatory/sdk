@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- The client contract adds the refusal code `caller_over_share`, a retryable 429 on `datasets.analysis` that says the caller already has its share of analysis requests in flight on the instance that answered. Its action is `report`, so the client raises `ServerError` once its retries, which wait out `Retry-After`, run out.
+
 ## [0.7.0] - 2026-11-22
 
 ### Changed
