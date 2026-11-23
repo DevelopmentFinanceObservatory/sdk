@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-23
+
 ### Added
 
 - `client.storedVersions(targets, { signal, timeout })` asks DFO in one `GET /datasets/heads` which version a `latest: "stored"` read of each spec would serve now, and returns a `StoredVersions`, exported from the package root. Targets are specs, DatasetRefs, Datasets and Recipes: a spec names its own spec, a ref, or a Dataset by its ref, each dataset member's spec and each derived member's roots, and a recipe each root's. The query names each spec once, sorted by code point, so two checks of the same specs send the same URL. Targets that name no spec or more than 64, or a recipe root that reads a frame DFO computed, throw `InvalidRequestError` (`invalid_argument`) before any request. An answer that is not an object with a `heads` list, names a spec the request did not or names one twice, leaves out an asked spec, or holds a `content_version` that is neither null nor a `cv_` version throws `ContractError` (`contract_violation`) with the response's trace id. `StoredVersions.heads` maps each spec id to its version or null, `changedSince(built)` gives the sorted spec ids whose version differs from an earlier check's or that it does not list, `toJSON()` writes the saved form `stored-versions.schema.json` gives, and `StoredVersions.fromJSON` reads it back, throwing `FormatError` (`format_invalid`) for a record that breaks it. A spec, or a recipe root, whose id is not a `spec_` id throws `InvalidRequestError` (`invalid_argument`) before any request. `@developmentfinance/client/types` exports `StoredTarget`, `StoredVersionsJson` and `StoredVersionsOptions`.
