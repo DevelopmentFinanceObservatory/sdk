@@ -230,7 +230,7 @@ wheels = [
 
 [[package]]
 name = "development-finance"
-version = "0.7.0"
+version = "0.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpcore2", marker = "sys_platform != 'emscripten'" },
