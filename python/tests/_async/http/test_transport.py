@@ -865,8 +865,18 @@ async def test_a_passed_deadline_raises_a_timeout_error(
             RateLimitError,
             [7.0, 7.0],
         ),
+        (
+            problem(
+                429,
+                code="caller_over_share",
+                retryable=True,
+                headers={"Retry-After": "3"},
+            ),
+            ServerError,
+            [3.0, 3.0],
+        ),
     ],
-    ids=["rate-limited-with-retry-after"],
+    ids=["rate-limited-with-retry-after", "caller-over-share-with-retry-after"],
 )
 async def test_a_refusal_that_repeats_raises_once_the_retries_run_out(
     refusal: httpx2.Response, error: type[Exception], sleeps: list[float]

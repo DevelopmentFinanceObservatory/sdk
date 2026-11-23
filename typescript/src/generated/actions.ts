@@ -30,6 +30,7 @@ export const CODE_ACTIONS = {
   binding_invalid: "fix_request",
   binding_mismatch: "ask_data_question",
   breakdown_label_ambiguous: "fix_request",
+  caller_over_share: "report",
   capability_unavailable: "fix_request",
   children_anchor_ambiguous: "fix_request",
   children_anchor_required: "fix_request",
