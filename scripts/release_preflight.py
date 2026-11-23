@@ -54,7 +54,7 @@ from collections.abc import Callable, Mapping
 import httpx2
 import pyarrow as pa
 import pyarrow.parquet as pq
-from dfo import Client
+from dfo import Client, __version__
 from dfo._core.refs import Member
 from dfo._datasets.build import file_params
 from dfo._datasets.resolve import selector_path
@@ -306,6 +306,16 @@ def describe(kept: Mapping[str, set[str]]) -> str:
     )
 
 
+def request_headers(token: str | None) -> dict[str, str]:
+    """The headers on every request to production. The User-Agent names this
+    job and the SDK version being released, so the API's logs can tell the
+    release check from outside users."""
+    headers = {"User-Agent": f"dfo-release-check/{__version__}"}
+    if token:
+        headers["X-Serverless-Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -314,7 +324,7 @@ def main() -> int:
     )
     arguments = parser.parse_args()
     token = os.environ.get("DFO_E2E_ID_TOKEN")
-    headers = {"X-Serverless-Authorization": f"Bearer {token}"} if token else {}
+    headers = request_headers(token)
     # api_key=False skips DFO_API_KEY and the credentials file, so the run is
     # anonymous on every machine.
     with Client(

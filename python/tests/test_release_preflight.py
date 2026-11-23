@@ -9,7 +9,10 @@ from release_preflight import (
     PreflightError,
     check_rank_per,
     on_origin,
+    request_headers,
 )
+
+import dfo
 
 TOKEN = {"X-Serverless-Authorization": "Bearer id-token"}
 
@@ -39,6 +42,24 @@ def test_a_redirect_off_the_api_origin_carries_no_id_token() -> None:
         ("https://api.example/api/datasets/spec_a/cv_a/file", "Bearer id-token"),
         ("https://storage.example/file?sig=1", None),
     ]
+
+
+def test_every_request_names_the_release_check_and_the_sdk_version() -> None:
+    seen: list[str | None] = []
+
+    def answer(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request.headers.get("User-Agent"))
+        return httpx2.Response(200)
+
+    expected = f"dfo-release-check/{dfo.__version__}"
+    for token in (None, "id-token"):
+        headers = request_headers(token)
+        assert headers["User-Agent"] == expected
+        with httpx2.Client(
+            transport=httpx2.MockTransport(answer), headers=headers
+        ) as http:
+            http.get("https://api.example/api")
+    assert seen == [expected, expected]
 
 
 def frame(totals: dict[str, dict[str, float]]) -> pa.Table:
