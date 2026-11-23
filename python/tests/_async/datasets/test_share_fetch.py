@@ -197,7 +197,7 @@ def stored_version(
     ]
 
 
-FILES = f"{ORIGIN}/api/datasets/{POSTED_ID}/{VERSION}/files/sha256:f4026e80af4b8683d3bb86645ab3aca83dff75cd03fdd4c73ec54ba638922104"
+FILES = f"{ORIGIN}/api/datasets/{POSTED_ID}/{VERSION}/files/sha256:4fd0900fc89929efc791ce0facd386812bc434dba338694a66fffac8621494ad"
 
 
 def stored_version_calls() -> list[str]:
@@ -249,7 +249,7 @@ async def test_a_share_fetch_reads_the_exact_version_its_slot_shows_now(
     assert (member.spec.spec_id, member.content_version, member.digest) == (
         POSTED_ID,
         VERSION,
-        "sha256:f4026e80af4b8683d3bb86645ab3aca83dff75cd03fdd4c73ec54ba638922104",
+        "sha256:4fd0900fc89929efc791ce0facd386812bc434dba338694a66fffac8621494ad",
     )
     assert (member.rendering.layout, member.rendering.without_party_totals) == (
         "frame",
@@ -260,7 +260,7 @@ async def test_a_share_fetch_reads_the_exact_version_its_slot_shows_now(
     assert any(f"{shown}{day_text(day)}" in repr(data) for day in (before, after))
 
 
-FRAME_DIGEST = "sha256:f4026e80af4b8683d3bb86645ab3aca83dff75cd03fdd4c73ec54ba638922104"
+FRAME_DIGEST = "sha256:4fd0900fc89929efc791ce0facd386812bc434dba338694a66fffac8621494ad"
 
 
 def long_only_manifest(*, long_digest: str | None = None) -> dict[str, Any]:

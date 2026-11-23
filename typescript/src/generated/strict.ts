@@ -10,6 +10,11 @@ export const STRICT_SCHEMAS = {
     required: { status: "string", candidates: "object" },
     children: { candidates: { ref: "CandidateSet" } },
   },
+  DatasetHead: { required: { spec_id: "string" }, children: {} },
+  DatasetHeads: {
+    required: { heads: "array" },
+    children: { heads: { items: { ref: "DatasetHead" } } },
+  },
   DefinitePart: {
     required: { status: "string", spec: "object" },
     children: { spec: { ref: "Spec" } },

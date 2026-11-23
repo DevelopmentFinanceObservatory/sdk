@@ -38,6 +38,9 @@ class AnalysisPendingBody(TypedDict):
     operations: list[str]
 
 
+type Include1 = None
+
+
 class AppliedDefaultModel(TypedDict):
     pointer: str
     detail: str
@@ -96,6 +99,7 @@ class BindingUnbound(TypedDict):
 class BreadthDim(TypedDict):
     label: str
     count: int
+    residual_count: NotRequired[int | None]
 
 
 class BundleOptionModel(TypedDict):
@@ -257,6 +261,15 @@ class DataBuilds(TypedDict):
     origin_catalogue: NotRequired[str | None]
     coverage_index: NotRequired[str | None]
     code_index: NotRequired[str | None]
+
+
+class DatasetHead(TypedDict):
+    spec_id: str
+    content_version: str | None
+
+
+class DatasetHeads(TypedDict):
+    heads: list[DatasetHead]
 
 
 class DateRange(TypedDict):
@@ -587,10 +600,14 @@ class GraphRef(TypedDict):
 type ByItem = str
 
 
+type Code = str
+
+
 class GroupbyOptions(TypedDict):
     by: list[ByItem]
     op: Literal["sum"]
     levels: NotRequired[dict[str, int] | None]
+    codes: NotRequired[dict[str, list[Code]] | None]
 
 
 class GroupbyOptionsModel(TypedDict):
@@ -694,7 +711,13 @@ class IdentityWindowRange(TypedDict):
     end_year: NotRequired[int | None]
 
 
+type Included = Literal["manifest", "summary"]
+
+
 type JsonValue = Any
+
+
+type Latest = bool | Literal["stored"]
 
 
 class LeftOut(TypedDict):
@@ -965,6 +988,11 @@ class PivotOptions(TypedDict):
     columns: str
 
 
+class PriceBasisRoute(TypedDict):
+    prices: Literal["current", "constant"]
+    via: Literal["served", "alternative", "unit_request"]
+
+
 class PriceBasisWords(TypedDict):
     prices: Literal["current", "constant"]
     base_year: int | None
@@ -1125,6 +1153,12 @@ class ResolvedQualifier(TypedDict):
     held_by: NotRequired[list[GraphRef]]
 
 
+class ResolvedRootBody(TypedDict):
+    spec_id: str
+    content_version: str
+    freshness: Literal["current", "pending", "stale"]
+
+
 class ResolvedScope(TypedDict):
     axis: Literal["observationAbout", "origin", "destination"]
     members: list[ResolvedEntity]
@@ -1177,6 +1211,7 @@ type RoleAxis = Literal["origin", "destination"]
 class RoleAxisFact(TypedDict):
     role: RoleAxis
     member_count: int | None
+    residual_count: NotRequired[int | None]
     members_available: bool
     holds_multilaterals: NotRequired[bool | None]
 
@@ -1896,21 +1931,7 @@ class AidCounts(TypedDict):
     years: YearRange | None
 
 
-class AnalysisReady(TypedDict):
-    status: NotRequired[Literal["ready"]]
-    ref: dict[str, JsonValue]
-    frame_content_version: str
-    output_digest: str
-    summary: dict[str, JsonValue]
-    rows: int
-    role_keys: list[str]
-    stat_var_count: int
-    exclusions: list[dict[str, JsonValue]]
-    time: dict[str, JsonValue]
-    execution_identity: dict[str, str]
-    resolved_periods: list[dict[str, JsonValue]]
-    derived_roots: NotRequired[list[RootVersion]]
-    stat_vars_summed: NotRequired[list[StatVarsSummed]]
+type Include = list[Included]
 
 
 class AnalysisVerified(TypedDict):
@@ -2502,6 +2523,8 @@ class ResolvedFacet(TypedDict):
     account: NotRequired[FlowAccount | None]
     selection: NotRequired[Literal["per_series"] | None]
     refs: NotRequired[list[str] | None]
+    prices: NotRequired[list[Literal["current", "constant"]] | None]
+    stated_prices: NotRequired[list[Literal["current", "constant"]] | None]
     request_basis: NotRequired[
         dict[str, Literal["bound", "declared_default", "fallback"]] | None
     ]
@@ -2687,6 +2710,7 @@ class SourceBlock(TypedDict):
     next_data_refresh_date: str | None
     earliest_observation_date: str | None
     latest_observation_date: str | None
+    partial_observation_date: str | None
     freshness: Freshness
     data_commons: GraphApiOriginModelsDataCommonsRef | None
     documentation: str
@@ -3036,7 +3060,7 @@ class ProblemDetails(TypedDict):
 class AnchorRequest(TypedDict):
     roots: list[SpecRoot | DatasetRoot]
     populations: list[dict[str, JsonValue]]
-    latest: NotRequired[bool]
+    latest: NotRequired[Latest]
 
 
 class Availability(TypedDict):
@@ -3794,6 +3818,25 @@ class SearchModelsRequestResolveRequest(TypedDict):
     response_options: NotRequired[ResolveOptions | None]
 
 
+class AnalysisReady(TypedDict):
+    status: NotRequired[Literal["ready"]]
+    ref: dict[str, JsonValue]
+    frame_content_version: str
+    output_digest: str
+    summary: NotRequired[dict[str, JsonValue] | None]
+    rows: int
+    role_keys: list[str]
+    stat_var_count: int
+    exclusions: list[dict[str, JsonValue]]
+    time: dict[str, JsonValue]
+    execution_identity: dict[str, str]
+    resolved_periods: list[dict[str, JsonValue]]
+    derived_roots: NotRequired[list[RootVersion]]
+    stat_vars_summed: NotRequired[list[StatVarsSummed]]
+    resolved_roots: NotRequired[list[ResolvedRootBody] | None]
+    manifest: NotRequired[DerivedManifest | None]
+
+
 OptionsResponse = TypedDict(
     "OptionsResponse",
     {
@@ -3806,11 +3849,12 @@ OptionsResponse = TypedDict(
 
 
 class AnalysisRequest(TypedDict):
+    verify: NotRequired[bool]
     tree: StepNode | DerivedRoot
-    latest: NotRequired[bool]
+    latest: NotRequired[Latest]
+    include: NotRequired[Include | Include1]
     rolling: NotRequired[Literal["tree"] | None]
     anchor_roots: NotRequired[list[SpecRoot | DatasetRoot] | None]
-    verify: NotRequired[bool]
 
 
 class CandidateSet(TypedDict):
@@ -3980,6 +4024,7 @@ class ResolvedSpec(TypedDict):
     open_axis_facts: NotRequired[list[OpenConstraintAxisFact] | None]
     role_axis_facts: NotRequired[list[RoleAxisFact] | None]
     unit_conversion: NotRequired[UnitConversion | None]
+    price_bases: NotRequired[list[PriceBasisRoute] | None]
     scope_choices: NotRequired[PartScope | None]
 
 

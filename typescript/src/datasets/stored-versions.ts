@@ -22,6 +22,9 @@ import {
   SPEC_ID,
 } from "../core/ref.ts";
 import type { Spec } from "../core/ref.ts";
+import { checkStrict } from "../core/strict.ts";
+import { describing } from "../core/trace.ts";
+import type { DatasetHeads } from "../wire.ts";
 import type { Transport } from "../http/transport.ts";
 import { Dataset } from "./dataset.ts";
 import type { Wait } from "./operation.ts";
@@ -313,51 +316,48 @@ const refusal = (detail: string): InvalidRequestError =>
  * The check `GET /datasets/heads` answered for the specs `asked`, each entry read by its
  * `spec_id` whatever the order.
  *
- * @throws {ContractError} The body is not an object with a `heads` list, an entry names a spec
- *   the request did not or names one twice, an asked spec has no entry, or an entry lacks
- *   `content_version` or holds one that is neither null nor a `cv_` version
- *   (`contract_violation`).
+ * @throws {ContractError} The body is not an object with a `heads` list, an entry is not an
+ *   object with a `spec_id` string, names a spec the request did not or names one twice, an
+ *   asked spec has no entry, or an entry lacks `content_version` or holds one that is neither
+ *   null nor a `cv_` version (`contract_violation`).
  */
 export function readHeads(
   body: unknown,
   asked: readonly string[],
   traceId: string | null,
 ): StoredVersions {
-  const entries = isRecord(body) ? body["heads"] : undefined;
-  if (!Array.isArray(entries)) throw violation("/heads", "is not a list", traceId);
-  const wanted = new Set(asked);
-  const heads: Record<string, string | null> = {};
-  for (const [index, entry] of (entries as unknown[]).entries()) {
-    const head = isRecord(entry) ? entry : {};
-    const specId = head["spec_id"];
-    if (typeof specId !== "string" || !wanted.has(specId)) {
-      throw violation(`/heads/${index}/spec_id`, "names no spec the request named", traceId);
+  return describing(traceId, () => {
+    checkStrict("DatasetHeads", body);
+    // checkStrict has proved `heads` is a list of objects, each with a `spec_id` string.
+    const entries = (body as DatasetHeads).heads;
+    const wanted = new Set(asked);
+    const heads: Record<string, string | null> = {};
+    for (const [index, head] of entries.entries()) {
+      const specId = head.spec_id;
+      if (!wanted.has(specId)) {
+        throw violation(`/heads/${index}/spec_id`, "names no spec the request named");
+      }
+      if (Object.hasOwn(heads, specId)) {
+        throw violation(`/heads/${index}/spec_id`, "repeats a spec");
+      }
+      const version: unknown = head.content_version;
+      if (
+        !Object.hasOwn(head, "content_version") ||
+        (version !== null && (typeof version !== "string" || !CONTENT_VERSION.test(version)))
+      ) {
+        throw violation(`/heads/${index}/content_version`, "is neither null nor a dataset version");
+      }
+      heads[specId] = version;
     }
-    if (Object.hasOwn(heads, specId)) {
-      throw violation(`/heads/${index}/spec_id`, "repeats a spec", traceId);
-    }
-    const version = head["content_version"];
-    if (
-      !Object.hasOwn(head, "content_version") ||
-      (version !== null && (typeof version !== "string" || !CONTENT_VERSION.test(version)))
-    ) {
-      throw violation(
-        `/heads/${index}/content_version`,
-        "is neither null nor a dataset version",
-        traceId,
-      );
-    }
-    heads[specId] = version;
-  }
-  const missing = asked.filter((specId) => !Object.hasOwn(heads, specId));
-  if (missing.length > 0) throw violation("/heads", `leaves out ${missing.join(", ")}`, traceId);
-  return storedVersionsOf(heads);
+    const missing = asked.filter((specId) => !Object.hasOwn(heads, specId));
+    if (missing.length > 0) throw violation("/heads", `leaves out ${missing.join(", ")}`);
+    return storedVersionsOf(heads);
+  });
 }
 
-function violation(pointer: string, fault: string, traceId: string | null): DfoError {
+function violation(pointer: string, fault: string): DfoError {
   return clientError("contract_violation", {
     detail: `${ROUTE} answered heads whose ${pointer} ${fault}.`,
     pointer,
-    traceId,
   });
 }

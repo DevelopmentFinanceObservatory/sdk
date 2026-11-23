@@ -29,7 +29,7 @@ const SHARE_URL = `https://site.example/s/${SHARE_ID}`;
 const SLOT_2_CARD = "cmp_ced1680e050bfd9b4226a4e6";
 const POSTED_ID = "spec_774d6c001a6250aa67ca676ab067895e";
 const VERSION = "cv_b92d94774702c7f05f2075d0b03dd756";
-const FRAME_DIGEST = "sha256:f4026e80af4b8683d3bb86645ab3aca83dff75cd03fdd4c73ec54ba638922104";
+const FRAME_DIGEST = "sha256:4fd0900fc89929efc791ce0facd386812bc434dba338694a66fffac8621494ad";
 const TITLE = "Malaria grants by year";
 
 type Handler = Parameters<typeof mockFetch>[number];

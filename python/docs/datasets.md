@@ -266,8 +266,6 @@ print(plain.members[0].content_version)
 
 `dfo.fetch(ref, latest="stored")` reads the version DFO stores as the newest of each member's spec, in the member's rendering, and builds nothing when DFO holds one it can serve:
 
-<!-- docs-check: skip: needs the stored-version read, which the dev API does not serve yet -->
-
 ```python
 import dfo
 
@@ -290,7 +288,7 @@ The fetch sends two GETs per member: the spec's manifest at `GET /datasets/{spec
 
 `dfo.stored_versions(targets)` asks, in one request, which version a `latest="stored"` read of each spec would serve now. A build saves the answer beside what it built, and a later run reads again only when DFO holds something newer:
 
-<!-- docs-check: skip: needs GET /datasets/heads, which the dev API does not serve yet -->
+<!-- docs-check: skip: reads ethiopia.heads.json, the check an earlier build saved, which no block on this page writes -->
 
 ```python
 from pathlib import Path

@@ -237,6 +237,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/datasets/heads": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Heads */
+    get: operations["datasets_read_heads"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/datasets/{id}": {
     parameters: {
       query?: never;
@@ -388,6 +405,27 @@ export interface paths {
      *     series its steps left out for missing data.
      */
     get: operations["datasets_get_derived"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/datasets/derived/{id}/{content_version}/files/{digest}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get Derived Link
+     * @description Redirect to the derived member's file its ref names by digest, cacheable for as
+     *     long as the signed URL and the frame's hold allow.
+     */
+    get: operations["datasets_get_derived_link"];
     put?: never;
     post?: never;
     delete?: never;
@@ -1515,7 +1553,8 @@ export interface components {
     };
     /**
      * AnalysisReady
-     * @description The stored frame of a computed tree.
+     * @description The stored frame of a computed tree. A request without `include` and `latest:
+     *     "stored"` receives the body it always has, `summary` included.
      */
     AnalysisReady: {
       /**
@@ -1537,11 +1576,11 @@ export interface components {
       output_digest: string;
       /**
        * Summary
-       * @description the facts of the tree's top step: the verb, its canonical parameters, the result's shape and exclusions, and the engine result's own fields
+       * @description the facts of the tree's top step: the verb, its canonical parameters, the result's shape and exclusions, and the engine result's own fields. Absent when the request states `include` without `summary`
        */
-      summary: {
+      summary?: {
         [key: string]: components["schemas"]["JsonValue"];
-      };
+      } | null;
       /** Rows */
       rows: number;
       /** Role Keys */
@@ -1577,38 +1616,51 @@ export interface components {
        * @description each root read summed over its StatVars, with how many it summed; a root that states no groupby, holds several StatVars and is read under steps that name no stat_var is summed by the service itself, keeping the summable axes the steps name
        */
       stat_vars_summed?: components["schemas"]["StatVarsSummed"][];
+      /**
+       * Resolved Roots
+       * @description for a `latest: "stored"` request alone: each dataset its roots read, once, in the order the tree first reaches it, with the version its stored head names and that head's freshness, stated for this request
+       */
+      resolved_roots?: components["schemas"]["ResolvedRootBody"][] | null;
+      /** @description for a request whose `include` names `manifest` alone: the derived manifest of the ref's member as `GET /api/datasets/derived/{spec_id}/{content_version}` answers it now */
+      manifest?: components["schemas"]["DerivedManifest"] | null;
     };
     /**
      * AnalysisRequest
-     * @description `POST /api/datasets/analysis`: the tree to compute, and whether its roots follow their
-     *     datasets' newest versions. A `tree` that is a derived root alone computes that frame's
-     *     stored recipe again, so `latest` reads it on its datasets' newest versions under the
-     *     recipe's own ids. `rolling` `"tree"` takes the populations and the latest period of every
-     *     rolling overlay a derived root's recipe holds from the whole tree, so derived rolling inputs
-     *     are computed again under one latest period. Left out, each keeps its stored populations and
-     *     periods. `verify` computes the tree again at the versions it names, past any stored answer,
-     *     and stores nothing (`verify_analysis`). It reads pinned versions only, so it refuses
-     *     `latest` and a Spec root, which reads its dataset's newest version.
+     * @description `POST /api/datasets/analysis`: the tree to compute, and how its roots pick their
+     *     versions (`latest`). A `tree` that is a derived root alone computes that frame's stored
+     *     recipe again, so `latest` reads it on its datasets' newest versions under the recipe's own
+     *     ids. `rolling` `"tree"` takes the populations and the latest period of every rolling
+     *     overlay a derived root's recipe holds from the whole tree, so derived rolling inputs are
+     *     computed again under one latest period. Left out, each keeps its stored populations and
+     *     periods. `include` names the optional members of the 200 (`doors.analysis.AnalysisReady`).
+     *     `verify` computes the tree again at the versions it names, past any stored answer, and
+     *     stores nothing (`verify_analysis`). It reads pinned versions only, so it refuses `latest`,
+     *     `include` and a Spec root, which reads its dataset's newest version.
      */
     AnalysisRequest: {
-      /** Tree */
-      tree: components["schemas"]["StepNode"] | components["schemas"]["DerivedRoot"];
-      /**
-       * Latest
-       * @default false
-       */
-      latest?: boolean;
-      /** Rolling */
-      rolling?: "tree" | null;
-      /** Anchor Roots */
-      anchor_roots?:
-        (components["schemas"]["SpecRoot"] | components["schemas"]["DatasetRoot"])[] | null;
       /**
        * Verify
        * @description compute the tree again at the versions it names and compare its frame with the one stored under its pair, storing nothing; first-party callers only
        * @default false
        */
       verify?: boolean;
+      /** Tree */
+      tree: components["schemas"]["StepNode"] | components["schemas"]["DerivedRoot"];
+      /**
+       * @description false reads each root at the version it names; true at its dataset's current version, rebuilt when its head is stale; "stored" at the version its dataset's stored head names, from records alone, answering 202 pending with the queued rebuild when the dataset has no servable head
+       * @default false
+       */
+      latest?: components["schemas"]["Latest"];
+      /**
+       * Include
+       * @description the optional members of the 200: `manifest`, the derived manifest of the answer's pair, and `summary`, which a request that states `include` receives only when it names it
+       */
+      include?: components["schemas"]["Included"][] | null;
+      /** Rolling */
+      rolling?: "tree" | null;
+      /** Anchor Roots */
+      anchor_roots?:
+        (components["schemas"]["SpecRoot"] | components["schemas"]["DatasetRoot"])[] | null;
     };
     /**
      * AnalysisVerified
@@ -1695,10 +1747,10 @@ export interface components {
         [key: string]: components["schemas"]["JsonValue"];
       }[];
       /**
-       * Latest
+       * @description as the analysis request's: false, true or "stored"
        * @default false
        */
-      latest?: boolean;
+      latest?: components["schemas"]["Latest"];
     };
     /**
      * AppliedDefaultModel
@@ -2038,6 +2090,11 @@ export interface components {
        * @description e.g. 36, 22, 3
        */
       count: number;
+      /**
+       * Residual Count
+       * @description on an open role's dimension, how many of `count` are residual members (party_kind residual), counted as RoleAxisFact.residual_count counts them, so count minus residual_count counts the countable parties. Absent on every other dimension and where the role holds no residual member
+       */
+      residual_count?: number | null;
     };
     /** BundleOptionModel */
     BundleOptionModel: {
@@ -3640,6 +3697,24 @@ export interface components {
        */
       readonly licence_type?: string | null;
     };
+    /** DatasetHead */
+    DatasetHead: {
+      /** Spec Id */
+      spec_id: string;
+      /**
+       * Content Version
+       * @description the version a `latest: "stored"` read of the spec would serve from its stored head now. Null when that read would not serve from the head: no head, a head keyed on a replaced import, a head past the serve-stale ceiling, a revoked version, or a spec DFO has not registered
+       */
+      content_version: string | null;
+    };
+    /** DatasetHeads */
+    DatasetHeads: {
+      /**
+       * Heads
+       * @description one entry per asked spec, in query order
+       */
+      heads: components["schemas"]["DatasetHead"][];
+    };
     /** DatasetNode */
     DatasetNode: {
       /**
@@ -3791,7 +3866,7 @@ export interface components {
       spec_id: string;
       /**
        * Enrichment Stamp
-       * @description the digest of the party kinds, classes and whole-total markers the answering code index holds, the one a file rendered now carries (`ArtifactEntryModel.enrichment_stamp`). A frame naming a file that asks for a party-kind column adds it to its name, so a frame named under another stamp does not match
+       * @description the digest of the party kinds, classes and whole-total markers the answering code index holds, the one a file rendered now carries (`ArtifactEntryModel.enrichment_stamp`). An analysis root frame naming a file that asks for a party-kind column adds it to its name beside the render format, so a frame named under another stamp or format does not match
        */
       enrichment_stamp: string;
       /**
@@ -5312,6 +5387,25 @@ export interface components {
      *     depth 0 is the root codes. Each key must also appear in `by`, and must
      *     be one of the capabilities document's `groupby_level_axes`
      *     (`datasets_api.render.check_options_supported`).
+     *
+     *     `codes` sums, for each code system it names, only the rows whose code,
+     *     after any `levels` roll-up, is one of the listed code dcids. Each kept
+     *     axis is a key of the sum, so a listed group's rows and total are those of
+     *     the same group with no selection. The checks before the folds read every
+     *     row (decode gaps, StatVar collision, provenance), and the folds'
+     *     preconditions read the selected groups alone, so a fault in a group the
+     *     selection leaves out refuses nothing.
+     *     Each key must appear in `by`, which must leave out `stat_var`, and must be a
+     *     summable code system (`datasets_api.render.check_options_supported`). The
+     *     lists are held sorted and each code once, so two requests listing the same
+     *     codes are one rendering. Absent, every row is summed and `codes` is left out
+     *     of the dump, so the options, record and frame name equal those of a groupby
+     *     that never states it. Each code must be a dcid of its code system's codes,
+     *     and with `levels` a code at or above that depth
+     *     (`datasets_api.render.check_options_supported`). A list holds at most
+     *     `MAX_GROUPBY_CODES_PER_AXIS` codes, each at most `MAX_GROUPBY_CODE_LENGTH`
+     *     characters, refused as the request is parsed. A key the frame does not
+     *     decode refuses when it is rendered (`datasets_api.render._decoded_selection`).
      */
     GroupbyOptions: {
       /** By */
@@ -5327,6 +5421,13 @@ export interface components {
        */
       levels?: {
         [key: string]: number;
+      } | null;
+      /**
+       * Codes
+       * @description code system -> code dcids: keep only the rows whose code on that kept axis, after any levels roll-up, is listed, before the sum; by must leave out stat_var
+       */
+      codes?: {
+        [key: string]: string[];
       } | null;
     };
     /**
@@ -5791,7 +5892,9 @@ export interface components {
        */
       end_year?: number | null;
     };
+    Included: ("manifest" | "summary") | (string & {});
     JsonValue: unknown;
+    Latest: boolean | "stored";
     /**
      * LedgerStep
      * @description One switch: the entry it replaced and the entry it applied.
@@ -7693,6 +7796,23 @@ export interface components {
       place_other: components["schemas"]["PlaceBlock"];
     };
     /**
+     * PriceBasisRoute
+     * @description One price basis a part can serve and the route to it (see
+     *     ResolvedSpec.price_bases).
+     */
+    PriceBasisRoute: {
+      /**
+       * Prices
+       * @description the price basis
+       */
+      prices: ("current" | "constant") | (string & {});
+      /**
+       * Via
+       * @description how to reach it: 'served', the Spec as built serves it; 'alternative', resubmit the definition of the 'unit' entry of alternative_measures at this basis; 'unit_request', post a facets.unit request at this basis, which unit_conversion converts
+       */
+      via: ("served" | "alternative" | "unit_request") | (string & {});
+    };
+    /**
      * GraphPriceBasis
      * @description Current or constant prices, with the base year of constant prices when known.
      */
@@ -8649,6 +8769,16 @@ export interface components {
        */
       refs?: string[] | null;
       /**
+       * Prices
+       * @description unit axis only, alongside ref or selection: the price bases the served units are in, 'current' before 'constant', one per distinct basis over every carried series. Under a unit request it is the request's prices. Otherwise each series' unit reads as a unit request matches it natively, under its own StatVar's measurementQualifier, so one unit under StatVars in both bases lists both: a unit the unit registry prices states its own (a chained one constant), any other currency unit is in the prices its StatVar's measurementQualifier states (Nominal current, RealValue constant), else current prices, and a PPP or international-dollar unit is in the prices a priced measurementQualifier states. [] when no served unit is money; absent where a carried series names no unit, where the graph read of a unit's currency failed, or off the unit axis
+       */
+      prices?: (("current" | "constant") | (string & {}))[] | null;
+      /**
+       * Stated Prices
+       * @description unit axis only, alongside prices: the bases in prices the data states, in the same order. A unit the unit registry prices, a priced measurementQualifier or a unit request states its basis. A basis in prices and not here is inferred: a currency unit with no priced measurementQualifier read as current prices. A basis is stated only where every served unit in it states it. Absent where prices is
+       */
+      stated_prices?: (("current" | "constant") | (string & {}))[] | null;
+      /**
        * Request Basis
        * @description per-member basis (currency/prices/base_year) for a unit axis bound through the request form; present only on the unit axis, alongside either ref/label or selection
        */
@@ -8803,6 +8933,19 @@ export interface components {
        * @description on an unavailable term, the datasets whose table of the answer's measure records the term's codes, each by its provenance and label; empty otherwise
        */
       held_by?: components["schemas"]["GraphRef"][];
+    };
+    /**
+     * ResolvedRootBody
+     * @description A dataset a `latest: "stored"` request's roots read: the version its stored head
+     *     names and the freshness the head GET states for it.
+     */
+    ResolvedRootBody: {
+      /** Spec Id */
+      spec_id: string;
+      /** Content Version */
+      content_version: string;
+      /** Freshness */
+      freshness: ("current" | "pending" | "stale") | (string & {});
     };
     /**
      * ResolvedScope
@@ -9007,6 +9150,11 @@ export interface components {
       role_axis_facts?: components["schemas"]["RoleAxisFact"][] | null;
       /** @description the currencies and price bases a unit request can convert this answer to. Null when the served members' unit is no currency, no conversion recipe converts them (a stock, a series not in nominal prices, or a provenance that declares no recipe), the recipe's tables lack the native currency's rate in a served year, so nothing converts, or no conversion catalogue is loaded, which the part's unit_conversion_unavailable warning states. Never a member of BaseIdentity, never hashed. */
       unit_conversion?: components["schemas"]["UnitConversion"] | null;
+      /**
+       * Price Bases
+       * @description the price bases this part can serve, each with the route to it: 'served', a basis the Spec serves as built (the unit facet's prices, which under a bound unit request are the request's); 'alternative', the basis of a 'unit' entry of alternative_measures, reached by resubmitting that entry's definition; 'unit_request', a basis a currency of unit_conversion converts at least one served year to, reached by posting a facets.unit request at that basis. Routes come in that order, 'current' before 'constant' within each, and a route to a basis the Spec already serves is left out. A basis reached only by unit request shows the years unit_conversion states for it. [] when the served units are no money, whatever unit options the part has. A part with no unit option and no conversion recipe lists its served basis alone. Absent where a basis is unknown, so the list would understate: while no conversion catalogue is loaded (unit_conversion_unavailable), on a Spec beside the answer, such as a flagged match or a nearest-real suggestion, which states no conversion offer, and where the unit facet states no prices. Never a member of BaseIdentity, never hashed.
+       */
+      price_bases?: components["schemas"]["PriceBasisRoute"][] | null;
       /** @description how the part this Spec answers was counted: one ScopeChoice per axis a declared rule or the request settled (sector, region, measure basis, provider scope), with its options and their availability, the explicit and carried entries applied, and the identity they compile to (see PartScope). To switch an option, post base.identity as identity on a dataset_resubmit identity entry, with entries as scope_entries, the entry on the switched axis replaced by the switch: one entry per axis. Empty choices when no axis was settled but the part is served from a composite, which compiled.identity and compiled.components name (a DAC2a ranking read to its bilateral destinations). None when no axis was settled, no composite serves the part and no scope entries were posted. Never a member of BaseIdentity, never hashed. */
       scope_choices?: components["schemas"]["PartScope"] | null;
     };
@@ -9324,9 +9472,14 @@ export interface components {
       role: components["schemas"]["RoleAxis"];
       /**
        * Member Count
-       * @description how many entities this axis' open scope resolves to, leaving out the group totals the code index declares beside their members (party_kind total), as the default download leaves them out; a scope of totals alone counts them all. None when the count could not be established without a read this response chose not to make (e.g. a discovered opposite axis whose own role index was omitted after a cap trip); the fact still publishes in that case, naming the axis as open with an explicit unknown rather than staying silent about it
+       * @description how many entities this axis' open scope resolves to, leaving out the group totals the code index declares beside their members (party_kind total), as the default download leaves them out; a scope of totals alone counts them all. It includes the residual members residual_count counts, whose rows the download's frame keeps, so it is the number of members on the frame's column for the axis, and member_count minus residual_count counts the countable parties. None when the count could not be established without a read this response chose not to make (e.g. a discovered opposite axis whose own role index was omitted after a cap trip); the fact still publishes in that case, naming the axis as open with an explicit unknown rather than staying silent about it
        */
       member_count: number | null;
+      /**
+       * Residual Count
+       * @description how many members of this axis' open scope hold figures no single party does (party_kind residual, such as the DAC's 'Africa, unallocated by country'), counted in member_count, whose rows the download's frame keeps. Absent where the scope holds none, and where member_count is None
+       */
+      residual_count?: number | null;
       /**
        * Members Available
        * @description whether the member list this count summarises is itself known and could be enumerated (e.g. through entity_options or the options door), not just counted. False exactly when member_count is None
@@ -11077,6 +11230,11 @@ export interface components {
        * @description the latestObservationDate arc's value
        */
       latest_observation_date: string | null;
+      /**
+       * Partial Observation Date
+       * @description the partialObservationDate arc's value: the period for which the import holds only part of the source's data, null when the import marks none
+       */
+      partial_observation_date: string | null;
       freshness: components["schemas"]["Freshness"];
       /** @description the Data Commons serving this provenance, from the origin catalogue; null for a provenance the catalogue does not admit, a Dataset, or a Source */
       data_commons: components["schemas"]["graph_api__origin_models__DataCommonsRef"] | null;
@@ -12757,7 +12915,7 @@ export interface components {
       enrichment_fields: string[];
       /**
        * Decode Code Systems
-       * @description code systems the packaged code index declares, sorted. Decoding is always on when a rendered frame's StatVars declare one of these -- there is no opt-out. Long output writes each as a {code_system} column (the StatVar's code in that system) and a {code_system}_label column (its label); pivot output, frame-layout output (layout: "frame"), groupby.by and the columns option name it stat_var_{code_system}, the label column
+       * @description code systems the packaged code index declares, sorted. Decoding is always on when a rendered frame's StatVars declare one of these -- there is no opt-out. Long output writes each as a {code_system} column (the StatVar's code in that system) and a {code_system}_label column (its label); pivot output, frame-layout output (layout: "frame"), groupby.by and the columns option name it stat_var_{code_system}, a column of code dcids
        */
       decode_code_systems: string[];
       /**
@@ -14030,6 +14188,46 @@ export interface operations {
       };
     };
   };
+  datasets_read_heads: {
+    parameters: {
+      query?: {
+        spec_id?: string[] | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DatasetHeads"];
+        };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
   datasets_get_definition: {
     parameters: {
       query?: never;
@@ -14393,6 +14591,48 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["DerivedManifest"];
         };
+      };
+      /** @description the request body or parameters failed validation (request_invalid) */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description any non-2xx response uses this envelope */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  datasets_get_derived_link: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+        content_version: string;
+        digest: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description a redirect to the artifact's bytes */
+      302: {
+        headers: {
+          /** @description a GET URL signed for at most five minutes */
+          Location?: string;
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description the request body or parameters failed validation (request_invalid) */
       400: {
@@ -16786,6 +17026,8 @@ export type CreateReplyResponse = components["schemas"]["CreateReplyResponse"];
 export type CreateShareBody = components["schemas"]["CreateShareBody"];
 export type DataBuilds = components["schemas"]["DataBuilds"];
 export type DatasetEntry = components["schemas"]["DatasetEntry"];
+export type DatasetHead = components["schemas"]["DatasetHead"];
+export type DatasetHeads = components["schemas"]["DatasetHeads"];
 export type DatasetNode = components["schemas"]["DatasetNode"];
 export type DatasetResubmitInput = components["schemas"]["DatasetResubmitInput"];
 export type DatasetRoot = components["schemas"]["DatasetRoot"];
@@ -16879,7 +17121,9 @@ export type IdentityUnitRequest = components["schemas"]["IdentityUnitRequest"];
 export type IdentityWindowAll = components["schemas"]["IdentityWindowAll"];
 export type IdentityWindowLatest = components["schemas"]["IdentityWindowLatest"];
 export type IdentityWindowRange = components["schemas"]["IdentityWindowRange"];
+export type Included = components["schemas"]["Included"];
 export type JsonValue = components["schemas"]["JsonValue"];
+export type Latest = components["schemas"]["Latest"];
 export type LedgerStep = components["schemas"]["LedgerStep"];
 export type LeftOut = components["schemas"]["LeftOut"];
 export type LeftOutSeriesBody = components["schemas"]["LeftOutSeriesBody"];
@@ -16949,6 +17193,7 @@ export type PivotOptions = components["schemas"]["PivotOptions"];
 export type PlaceBlock = components["schemas"]["PlaceBlock"];
 export type PlaceCounts = components["schemas"]["PlaceCounts"];
 export type PlaceOtherNode = components["schemas"]["PlaceOtherNode"];
+export type PriceBasisRoute = components["schemas"]["PriceBasisRoute"];
 export type PriceBasisWords = components["schemas"]["PriceBasisWords"];
 export type Projection = components["schemas"]["Projection"];
 export type ProjectionCount = components["schemas"]["ProjectionCount"];
@@ -16988,6 +17233,7 @@ export type ResolvedEntity = components["schemas"]["ResolvedEntity"];
 export type ResolvedFacet = components["schemas"]["ResolvedFacet"];
 export type ResolvedFilter = components["schemas"]["ResolvedFilter"];
 export type ResolvedQualifier = components["schemas"]["ResolvedQualifier"];
+export type ResolvedRootBody = components["schemas"]["ResolvedRootBody"];
 export type ResolvedScope = components["schemas"]["ResolvedScope"];
 export type ResolvedSpec = components["schemas"]["ResolvedSpec"];
 export type ResolvedStatVars = components["schemas"]["ResolvedStatVars"];
