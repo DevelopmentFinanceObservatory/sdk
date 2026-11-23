@@ -243,9 +243,10 @@ def test_spec_ids_refuses_what_is_not_a_list_of_targets(targets: object) -> None
 @pytest.mark.parametrize(
     ("body", "pointer"),
     [
-        ([], "/heads"),
+        ([], ""),
         ({"heads": {}}, "/heads"),
-        ({"heads": ["x"]}, "/heads/0/spec_id"),
+        ({"heads": ["x"]}, "/heads/0"),
+        ({"heads": [{"spec_id": 1, "content_version": None}]}, "/heads/0/spec_id"),
         ({"heads": [{"spec_id": C, "content_version": None}]}, "/heads/0/spec_id"),
         (
             {
@@ -264,6 +265,7 @@ def test_spec_ids_refuses_what_is_not_a_list_of_targets(targets: object) -> None
         "not-object",
         "not-list",
         "not-entry",
+        "spec-id-not-string",
         "not-asked",
         "repeated",
         "no-version",

@@ -15,11 +15,13 @@ import json
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, override
+from typing import Any, cast, override
 
-from dfo._core.codes import CONTRACT_VIOLATION, INVALID_ARGUMENT
+from dfo._core.codes import INVALID_ARGUMENT
 from dfo._core.errors import ContractError, InvalidRequestError, client_error
+from dfo._core.parse import require, violation
 from dfo._core.refs import OPS_ID, DatasetRef, DerivedRefMember, load_ref
+from dfo._core.refusals import describing
 from dfo._core.types import (
     CONTENT_VERSION,
     SPEC_ID,
@@ -32,6 +34,7 @@ from dfo._core.types import (
 )
 from dfo._datasets.dataset import Dataset
 from dfo._datasets.recipe import Recipe, root_nodes
+from dfo._generated.wire import DatasetHead, DatasetHeads
 
 HEADS_PATH = "/datasets/heads"
 """The route that answers each spec's stored head."""
@@ -303,44 +306,40 @@ def read_heads(
 
     Raises:
         ContractError: The body is not an object with a `heads` list, an entry
-            names a spec the request did not or names one twice, an asked spec
-            has no entry, or an entry lacks `content_version` or holds one that
-            is neither null nor a `cv_` version (`contract_violation`).
+            is not an object with a `spec_id` string, names a spec the request
+            did not or names one twice, an asked spec has no entry, or an entry
+            lacks `content_version` or holds one that is neither null nor a
+            `cv_` version (`contract_violation`).
     """
-    entries = body.get("heads") if isinstance(body, Mapping) else None
-    if not isinstance(entries, list):
-        raise _violation("/heads", "is not a list", trace_id)
-    wanted = set(asked)
-    heads: dict[str, str | None] = {}
-    for index, entry in enumerate(entries):
-        head = entry if isinstance(entry, Mapping) else {}
-        spec_id = head.get("spec_id")
-        if not isinstance(spec_id, str) or spec_id not in wanted:
-            raise _violation(
-                f"/heads/{index}/spec_id", "names no spec the request named", trace_id
-            )
-        if spec_id in heads:
-            raise _violation(f"/heads/{index}/spec_id", "repeats a spec", trace_id)
-        version = head.get("content_version")
-        if "content_version" not in head or not (
-            version is None or matches(CONTENT_VERSION, version)
-        ):
-            raise _violation(
-                f"/heads/{index}/content_version",
-                "is neither null nor a dataset version",
-                trace_id,
-            )
-        heads[spec_id] = version
-    if missing := [spec_id for spec_id in asked if spec_id not in heads]:
-        raise _violation("/heads", f"leaves out {', '.join(missing)}", trace_id)
+    with describing(trace_id):
+        answer = cast(DatasetHeads, require(body, "DatasetHeads"))
+        wanted = set(asked)
+        heads: dict[str, str | None] = {}
+        for index, entry in enumerate(answer["heads"]):
+            pointer = f"/heads/{index}"
+            head = cast(DatasetHead, require(entry, "DatasetHead", pointer))
+            spec_id = head["spec_id"]
+            if spec_id not in wanted:
+                raise _violation(
+                    f"{pointer}/spec_id", "names no spec the request named"
+                )
+            if spec_id in heads:
+                raise _violation(f"{pointer}/spec_id", "repeats a spec")
+            version = head.get("content_version")
+            if "content_version" not in head or not (
+                version is None or matches(CONTENT_VERSION, version)
+            ):
+                raise _violation(
+                    f"{pointer}/content_version",
+                    "is neither null nor a dataset version",
+                )
+            heads[spec_id] = version
+        if missing := [spec_id for spec_id in asked if spec_id not in heads]:
+            raise _violation("/heads", f"leaves out {', '.join(missing)}")
     return StoredVersions(heads)
 
 
-def _violation(pointer: str, fault: str, trace_id: str | None) -> ContractError:
-    error = client_error(
-        CONTRACT_VIOLATION,
-        f"{_ROUTE} answered heads whose {pointer} {fault}",
-        trace_id=trace_id,
+def _violation(pointer: str, fault: str) -> ContractError:
+    return violation(
+        f"{_ROUTE} answered heads whose {pointer} {fault}", pointer=pointer
     )
-    error.pointer = pointer
-    return error

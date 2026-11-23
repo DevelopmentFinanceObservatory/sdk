@@ -63,6 +63,21 @@ def operation_resource() -> dict[str, Any]:
     }
 
 
+def stored_heads() -> dict[str, Any]:
+    """The answer the recorded `stored-versions` check received."""
+    record = json.loads((CONTRACT / "scenarios" / "stored-versions.json").read_text())
+    return record["exchanges"][0]["response"]["json"]
+
+
+def read_stored_heads(body: object) -> object:
+    """`read_heads` of the recorded check, asked for the two specs it named."""
+    asked = [
+        "spec_4ee93359df630c2c67388714e7630aae",
+        "spec_c9f9d816838bf8da08a3de2849783273",
+    ]
+    return _stored_versions.read_heads(body, asked, None)
+
+
 def test_definite_answer_reads_its_spec_and_sentence() -> None:
     answer = load("search-1.json")
     (part,) = parse_parts(answer)
@@ -340,6 +355,8 @@ STRICT_SITES: dict[str, tuple[Callable[[], Any], tuple[str | int, ...], Reader]]
     ),
     "OperationResource": (operation_resource, (), check_operation),
     "OperationEnvelope": (operation_resource, ("operation",), check_operation),
+    "DatasetHeads": (stored_heads, (), read_stored_heads),
+    "DatasetHead": (stored_heads, ("heads", 0), read_stored_heads),
 }
 
 

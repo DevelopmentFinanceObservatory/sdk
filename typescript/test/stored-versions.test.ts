@@ -241,9 +241,14 @@ describe("specIds refuses what is not an array of targets", () => {
 
 describe("readHeads refuses an answer it cannot read", () => {
   const cases: [string, unknown, string][] = [
-    ["not an object", [], "/heads"],
+    ["not an object", [], ""],
     ["not a list", { heads: {} }, "/heads"],
-    ["not an entry", { heads: ["x"] }, "/heads/0/spec_id"],
+    ["not an entry", { heads: ["x"] }, "/heads/0"],
+    [
+      "spec id not a string",
+      { heads: [{ spec_id: 1, content_version: null }] },
+      "/heads/0/spec_id",
+    ],
     ["not asked", { heads: [{ spec_id: C, content_version: null }] }, "/heads/0/spec_id"],
     [
       "repeated",

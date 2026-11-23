@@ -81,8 +81,6 @@ To move the page to newer data, run the data step again with `client.fetch(Datas
 
 A page that commits a ref, as in [Open on a frozen snapshot](#open-on-a-frozen-snapshot), reads the newest version DFO stores of the same readings with `latest: "stored"`:
 
-<!-- docs-check: skip: needs the stored-version read, which the dev API does not serve yet -->
-
 ```ts
 // In the page
 import { Client, DatasetRef } from "@developmentfinance/client";
@@ -105,8 +103,6 @@ The fetch sends two GETs per member: the spec's manifest at `GET /api/v1/dataset
 `data.freshness` is null when the API states no value or one this client does not know. DFO serves a stored version younger than 7 days at once and checks for newer data in the background, so a reading nobody opened in that time can be up to 7 days behind for its first reader. A version older than 7 days is rebuilt on read. The call waits, polling the build at `/api/v1/datasets/operations/{operation_id}`, and a version it waited for is `current`. The gateway and the browser cache the manifest read for up to two minutes (60 seconds at the CDN plus 60 seconds in the browser), so a page can lag by that much more. `data.ref` names the versions read, and leaves the freshness out, as a saved file does.
 
 The gateway sends no CORS headers on the operation route, so on a page served from any origin but `https://developmentfinance.org` the poll fails. Read the committed ref then:
-
-<!-- docs-check: skip: needs the stored-version read, which the dev API does not serve yet -->
 
 ```ts
 // In the page
@@ -239,8 +235,6 @@ Each reading is one binary file in the repository, and new data reaches the page
 
 A page built from saved data can ask, in one request, whether DFO holds newer versions than the build read, and read again only then. The build records `client.storedVersions` for the readings it saved:
 
-<!-- docs-check: skip: needs GET /datasets/heads, which the dev API does not serve yet -->
-
 ```ts
 // fetch-data.mts
 import { Client, DatasetRef } from "@developmentfinance/client";
@@ -257,7 +251,7 @@ await writeFile("public/data/kenya-oda.heads.json", JSON.stringify(check));
 
 The page checks the same readings and fetches only the ones that moved:
 
-<!-- docs-check: skip: needs GET /datasets/heads, which the dev API does not serve yet -->
+<!-- docs-check: skip: imports the heads file the build saves under public/data, which only the served page reads as ./data; the previous block runs the same check -->
 
 ```ts
 // In the page

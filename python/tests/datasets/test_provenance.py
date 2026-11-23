@@ -171,7 +171,7 @@ def test_each_member_carries_its_own_retention() -> None:
     record = json.loads(_saved().provenance.to_json())
     assert [(m["pinned"], m["held_until"]) for m in record["members"]] == [
         (False, "2026-11-18"),
-        (False, "2026-11-19"),
+        (False, "2026-12-23"),
     ]
     assert (record["pinned"], record["held_until"]) == (False, "2026-11-18")
 

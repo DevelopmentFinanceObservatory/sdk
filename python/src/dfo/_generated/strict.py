@@ -25,6 +25,8 @@ type StrictSchema = Literal[
     "ArtifactEntryModel",
     "OperationResource",
     "OperationEnvelope",
+    "DatasetHeads",
+    "DatasetHead",
 ]
 type JsonType = Literal["string", "integer", "array", "object"]
 
@@ -57,6 +59,8 @@ REQUIRED: Final[Mapping[StrictSchema, tuple[tuple[str, JsonType], ...]]] = {
     ),
     "OperationResource": (("operation", "object"),),
     "OperationEnvelope": (("operation_id", "string"), ("status", "string")),
+    "DatasetHeads": (("heads", "array"),),
+    "DatasetHead": (("spec_id", "string"),),
 }
 
 RESOLUTION_KIND: Final = "resolution"
