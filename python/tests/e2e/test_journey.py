@@ -120,8 +120,11 @@ def _artifact(manifest: Mapping[str, Any], digest: str) -> Mapping[str, Any]:
 
     It matches the Parquet rendering on format, bundle and layout, and its digest is
     the downloaded file's. A cut that leaves no row out lists the one file twice,
-    under the plain rendering and with `without_party_totals: true`, so any other
-    artifact of that digest may differ in that flag alone.
+    under the plain rendering and with `without_party_totals: true`. A spec with no
+    pivot renders the same bytes under an older data layout, and the manifest keeps
+    that entry listed. Any other artifact of that digest may differ in the cut flag
+    and in a numeric layout version; the caller checks that the picked layout is the
+    one fetched.
     """
     rendering = rendering_for("long", party_totals=False)
     picked = pick_artifact(manifest, rendering)
@@ -131,6 +134,8 @@ def _artifact(manifest: Mapping[str, Any], digest: str) -> Mapping[str, Any]:
     def kind(artifact: Mapping[str, Any]) -> dict[str, Any]:
         selectors = dict(artifact["rendering"])
         selectors.pop("without_party_totals", None)
+        if isinstance(selectors.get("layout"), int):
+            del selectors["layout"]
         return selectors
 
     for other in manifest["artifacts"]:
