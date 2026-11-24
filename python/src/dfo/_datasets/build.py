@@ -930,8 +930,9 @@ def pick_artifact(
 ) -> Wire | None:
     """The artifact a manifest lists for `rendering`, with `digest` when given.
 
-    Artifacts match on `Rendering.matches`, so the first artifact of the
-    selector's format, bundle and layout is the one.
+    Artifacts match on `Rendering.matches`: format, bundle, and whether the
+    layout is the frame. The first match is the one, so of a file listed under
+    several integer layouts, the layout listed first.
     """
     for artifact in manifest["artifacts"]:
         if digest is not None and artifact["artifact_digest"] != digest:
