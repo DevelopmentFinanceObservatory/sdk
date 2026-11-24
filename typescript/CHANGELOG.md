@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-24
+
 ### Changed
 
 - The contract follows spec-kit `6d53be1`, whose served document is captured from dfo-apis `ce82b43`. It re-records 39 scenarios at that commit, among them `stored-versions`, a check recorded against dev. The wire types in `@developmentfinance/client/wire` follow it: they add `DatasetHeads` and `DatasetHead`, `Latest`, `Included`, `ResolvedRootBody` and `PriceBasisRoute`; `AnalysisRequest` gains `include` and takes `latest: "stored"`, and `AnalysisReady` gains `manifest` and `resolved_roots` and makes `summary` optional; `GroupbyOptions` gains `codes`, `BreadthDim` and `RoleAxisFact` gain `residual_count`, `ResolvedFacet` gains `prices` and `stated_prices`, `ResolvedSpec` gains `price_bases`, and `SourceBlock` gains the required `partial_observation_date`. `DatasetHeads.heads` and `DatasetHead.spec_id` are strict members.
