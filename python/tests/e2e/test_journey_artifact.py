@@ -2,6 +2,7 @@
 recorded. That manifest lists the fetched file under layout 5 first and under
 layout 4 after it, in the plain rendering and the party-totals cut."""
 
+import copy
 import json
 from collections.abc import Callable
 from typing import Any
@@ -38,8 +39,30 @@ def _boolean_layout(artifacts: list[dict[str, Any]], digest: str) -> None:
     _layout_4(artifacts, digest)["rendering"]["layout"] = True
 
 
-def test_the_pick_is_the_newest_layout_of_the_fetched_file() -> None:
+def _as_recorded(artifacts: list[dict[str, Any]], digest: str) -> None:
+    pass
+
+
+def _projected_file_first(artifacts: list[dict[str, Any]], digest: str) -> None:
+    """A long file of the same version minted with `columns`, listed first."""
+    projected = copy.deepcopy(artifacts[0])
+    other = "sha256:" + "0" * 64
+    projected["url"] = projected["url"].replace(projected["artifact_digest"], other)
+    projected["artifact_digest"] = other
+    projected["rendering"]["columns"] = ["value"]
+    artifacts.insert(0, projected)
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [_as_recorded, _projected_file_first],
+    ids=["as recorded", "projected first"],
+)
+def test_the_pick_is_the_newest_layout_of_the_fetched_file(
+    edit: Callable[[list[dict[str, Any]], str], None],
+) -> None:
     manifest, digest = _recorded()
+    edit(manifest["artifacts"], digest)
     picked = _artifact(manifest, digest)
     assert (picked["artifact_digest"], picked["rendering"]["layout"]) == (digest, 5)
 

@@ -118,8 +118,10 @@ def _snapshot(client: Client, member: Member) -> dict[str, Any]:
 def _artifact(manifest: Mapping[str, Any], digest: str) -> Mapping[str, Any]:
     """The artifact a default long-layout fetch picks, checked against the contract.
 
-    `pick_artifact` takes the first artifact whose format and bundle are the fetch's
-    and whose layout is not the frame, and its digest must be the downloaded file's.
+    `pick_artifact` takes the first artifact with the downloaded file's digest whose
+    format and bundle are the fetch's and whose layout is not the frame. The version
+    can list other long files first, such as one minted with `columns`, in an order
+    that follows the digest.
     The snapshot route lists a file once for each rendering and data layout that
     holds its bytes: the plain rendering, the party-totals cut when the cut leaves
     no row out, and each older integer layout whose file is the same. So every
@@ -130,9 +132,8 @@ def _artifact(manifest: Mapping[str, Any], digest: str) -> Mapping[str, Any]:
     against it.
     """
     rendering = rendering_for("long", party_totals=False)
-    picked = pick_artifact(manifest, rendering)
-    assert picked is not None, "the manifest lists no artifact of the fetch's rendering"
-    assert picked["artifact_digest"] == digest
+    picked = pick_artifact(manifest, rendering, digest=digest)
+    assert picked is not None, f"the manifest lists no long artifact {digest}"
 
     def kind(artifact: Mapping[str, Any]) -> dict[str, Any]:
         selectors = dict(artifact["rendering"])
