@@ -736,24 +736,24 @@ def store(
 def _merge_artifacts(
     prior: Sequence[Wire], downloaded: Sequence[Wire], /
 ) -> list[Wire]:
-    """Keep same-version artifact records distinct by digest and rendering.
+    """Same-version artifact records, distinct by digest and rendering, with the
+    `downloaded` ones first in the order the server listed them.
 
-    Two renderings are one when they agree on every member other than the cut's
-    spellings and `party_totals_cut` reads the same cut from both, so an artifact
-    re-served in the other spelling is one entry. `prior` is a stored
-    manifest's list, whose entries the cache checked carry both members.
+    Readers take the first entry that matches, so an offline read finds an
+    artifact under the layout the server last listed it with, ahead of the
+    entry an older listing left. Two renderings are one when they agree on
+    every member other than the cut's spellings and `party_totals_cut` reads
+    the same cut from both, so an artifact re-served in the other spelling is
+    one entry, in the spelling last served. `prior` is a stored manifest's
+    list, whose entries the cache checked carry both members.
     """
-    artifacts = list(prior)
-    artifacts.extend(
-        artifact
-        for artifact in downloaded
-        if not any(
-            artifact["artifact_digest"] == seen["artifact_digest"]
-            and _rendering_key(artifact["rendering"])
-            == _rendering_key(seen["rendering"])
-            for seen in artifacts
-        )
-    )
+    artifacts: list[Wire] = []
+    keys: set[tuple[object, ...]] = set()
+    for artifact in (*downloaded, *prior):
+        key = (artifact["artifact_digest"], *_rendering_key(artifact["rendering"]))
+        if key not in keys:
+            keys.add(key)
+            artifacts.append(artifact)
     return artifacts
 
 

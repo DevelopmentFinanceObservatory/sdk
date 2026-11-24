@@ -41,7 +41,7 @@ from dfo._core.types import DefinitePart, Departure, FormatError, Rendering, Spe
 from dfo._datasets.build import Reading
 from dfo._datasets.bundle import load as load_saved
 from dfo._datasets.cache import Cache, file_entry, manifest_entry, sha256_digest
-from dfo._datasets.dataset import FetchedMember, build_dataset
+from dfo._datasets.dataset import FetchedMember, _layout_version, build_dataset
 from dfo._datasets.fetch import fetch_members
 from dfo._datasets.resolve import fetch
 from dfo._http.transport import AsyncTransport
@@ -2399,7 +2399,7 @@ async def test_exact_refs_merge_projected_and_plain_artifacts_for_offline_spec(
         assert restored.members[0].data == DATA
         stored = cache.get_manifest(POSTED_ID, NARROWED_CV, LONG)
         assert stored is not None
-        assert stored["artifacts"] == body["artifacts"][1:]
+        assert stored["artifacts"] == [body["artifacts"][2], body["artifacts"][1]]
 
         monkeypatch.setenv("DFO_OFFLINE", "1")
         restored = await fetch(transport, DatasetRef((projected_member,)), cache=cache)
@@ -2460,7 +2460,7 @@ async def test_same_version_projected_download_keeps_a_plain_cached_artifact(
         assert stored is not None
         assert stored["prepared_at"] == later["prepared_at"]
         assert stored["retention"] == later["retention"]
-        assert stored["artifacts"] == [plain["artifacts"][1], later["artifacts"][2]]
+        assert stored["artifacts"] == [later["artifacts"][2], plain["artifacts"][1]]
 
         monkeypatch.setenv("DFO_OFFLINE", "1")
         restored = await fetch(transport, spec(SENTENCE), cache=cache)
@@ -2499,6 +2499,48 @@ async def test_same_bytes_under_two_renderings_keep_the_plain_offline_artifact(
         monkeypatch.setenv("DFO_OFFLINE", "1")
         restored = await fetch(transport, spec(SENTENCE), cache=cache)
     assert restored.members[0].data == DATA
+
+
+# After a layout bump the server lists one file under its new layout first and
+# its old layout after. A cache filled before the bump lists the file under the
+# old layout alone, and an offline read reports the layout the server served last.
+async def test_offline_reads_report_the_layout_last_served(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    before = manifest(POSTED_ID, layout=4)
+    after = manifest(POSTED_ID, layout=5)
+    after["artifacts"].append(copy.deepcopy(before["artifacts"][1]))
+    member = RefMember(
+        parts=(),
+        sentence=SENTENCE,
+        spec=Spec(POSTED_ID, after["definition"], SENTENCE),
+        content_version=NARROWED_CV,
+        digest=sha256_digest(DATA),
+        rendering=LONG,
+    )
+    cache = FakeCache()
+    server = Server(
+        json_response(200, before),
+        redirect(),
+        parquet(),
+        json_response(200, after),
+    )
+    async with make(server) as transport:
+        await fetch(transport, spec(SENTENCE), cache=cache)
+        await fetch(transport, spec(SENTENCE), cache=cache)
+        stored = cache.get_manifest(POSTED_ID, NARROWED_CV, LONG)
+        assert stored is not None
+        assert stored["artifacts"] == after["artifacts"][1:]
+
+        monkeypatch.setenv("DFO_OFFLINE", "1")
+        offline = [
+            await fetch(transport, spec(SENTENCE), cache=cache),
+            await fetch(transport, DatasetRef((member,)), cache=cache),
+        ]
+    assert [_layout_version(read.members[0], "long") for read in offline] == [
+        "5",
+        "5",
+    ]
 
 
 async def test_a_ref_digest_listed_under_another_rendering_raises_before_download() -> (

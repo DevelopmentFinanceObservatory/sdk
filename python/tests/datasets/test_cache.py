@@ -335,7 +335,7 @@ def test_concurrent_stores_into_one_manifest_keep_both_artifacts(
     monkeypatch.undo()
     merged = cache.get_manifest(SPEC_ID, CV_OLD, LONG)
     assert merged is not None
-    assert merged["artifacts"] == [body["artifacts"][1], body["artifacts"][2]]
+    assert merged["artifacts"] == [body["artifacts"][2], body["artifacts"][1]]
 
 
 @pytest.mark.parametrize(
@@ -356,7 +356,7 @@ def test_an_artifact_served_again_in_another_cut_spelling_is_one_entry(
     store(cache, again, CUT, digest, CUT_DATA)
     merged = cache.get_manifest(SPEC_ID, CV_OLD, CUT)
     assert merged is not None
-    assert merged["artifacts"] == [first["artifacts"][2]]
+    assert merged["artifacts"] == [again["artifacts"][2]]
 
 
 def _without_definition(body: dict[str, Any]) -> None:
