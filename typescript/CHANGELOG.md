@@ -6,9 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-24
+
 ### Changed
 
-- The contract follows spec-kit `6d53be1`, whose served document is captured from dfo-apis `ce82b43`. It re-records 39 scenarios at that commit, among them `stored-versions`, a check recorded against dev. The wire types in `@developmentfinance/client/wire` follow it: they add `DatasetHeads` and `DatasetHead`, `Latest`, `Included`, `ResolvedRootBody` and `PriceBasisRoute`; `AnalysisRequest` gains `include` and takes `latest: "stored"`, and `AnalysisReady` gains `manifest` and `resolved_roots` and makes `summary` optional; `GroupbyOptions` gains `codes`, `BreadthDim` and `RoleAxisFact` gain `residual_count`, `ResolvedFacet` gains `prices` and `stated_prices`, `ResolvedSpec` gains `price_bases`, and `SourceBlock` gains the required `partial_observation_date`. `DatasetHeads.heads` and `DatasetHead.spec_id` are strict members.
+- The contract follows spec-kit `6d53be1`, whose served document is captured from dfo-apis `ce82b43`. It re-records 39 scenarios at that commit, among them `stored-versions`, a check recorded against dev. The wire types in `@developmentfinance/client/wire` follow it: they add `DatasetHeads` and `DatasetHead`, `Latest`, `Included`, `ResolvedRootBody` and `PriceBasisRoute`; `AnalysisRequest` gains `include`, `AnalysisRequest` and `AnchorRequest` take `latest: "stored"` through `Latest`, and `AnalysisReady` gains `manifest` and `resolved_roots` and makes `summary` optional; `GroupbyOptions` gains `codes`, `BreadthDim` and `RoleAxisFact` gain `residual_count`, `ResolvedFacet` gains `prices` and `stated_prices`, `ResolvedSpec` gains `price_bases`, and `SourceBlock` gains the required `partial_observation_date`. `paths` gains `/api/datasets/heads`, operation `datasets_read_heads`, and the derived file route `/api/datasets/derived/{id}/{content_version}/files/{digest}`, operation `datasets_get_derived_link`. `DatasetHeads.heads` and `DatasetHead.spec_id` are strict members.
 - `client.storedVersions` checks the answer as `DatasetHeads`, its `heads` and each entry's `spec_id` as the strict members the contract lists. A body that is not an object throws `ContractError` (`contract_violation`) at the pointer `""` where it threw at `/heads`, and an entry that is not an object at `/heads/0` where it threw at `/heads/0/spec_id`. The other refusals keep their pointers.
 
 ## [0.8.0] - 2026-11-23

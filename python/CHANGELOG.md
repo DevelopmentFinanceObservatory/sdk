@@ -6,10 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-24
+
 ### Changed
 
 - The contract follows spec-kit `6d53be1`, whose served document is captured from dfo-apis `ce82b43` and adds the `DatasetHeads` and `DatasetHead` schemas of `GET /datasets/heads`, with `DatasetHeads.heads` and `DatasetHead.spec_id` strict members. It re-records 39 scenarios at that commit, among them `stored-versions`, a check recorded against dev.
 - `dfo.stored_versions` checks the answer's `heads` and each entry's `spec_id` as the strict members the contract lists. A body that is not an object raises `ContractError` (`contract_violation`) at the pointer `""` where it raised at `/heads`, and an entry that is not an object at `/heads/0` where it raised at `/heads/0/spec_id`. The other refusals keep their pointers.
+
+### Fixed
+
+- A fetch puts the artifacts the server lists for the file it read ahead of those the cache already held for the version. Offline reads take the first entry that matches, so `DFO_OFFLINE=1` reports `layout_version` and writes `dfo.dataset` with the layout the server last listed. Before, a cache filled before a layout change kept the file's old entry first, and an offline fetch reported layout `4` where the online fetch had reported `5`.
 
 ## [0.8.0] - 2026-11-23
 
