@@ -118,24 +118,41 @@ def _snapshot(client: Client, member: Member) -> dict[str, Any]:
 def _artifact(manifest: Mapping[str, Any], digest: str) -> Mapping[str, Any]:
     """The artifact a default long-layout fetch picks, checked against the contract.
 
-    It matches the Parquet rendering on format, bundle and layout, and its digest is
-    the downloaded file's. A cut that leaves no row out lists the one file twice,
-    under the plain rendering and with `without_party_totals: true`, so any other
-    artifact of that digest may differ in that flag alone.
+    `pick_artifact` takes the first artifact with the downloaded file's digest whose
+    format and bundle are the fetch's and whose layout is not the frame. The version
+    can list other long files first, such as one minted with `columns`, in an order
+    that follows the digest.
+    The snapshot route lists a file once for each rendering and data layout that
+    holds its bytes: the plain rendering, the party-totals cut when the cut leaves
+    no row out, and each older integer layout whose file is the same. So every
+    artifact of that digest may differ from the pick in the cut flag and the
+    integer layout alone. The route lists the current layout first, so the pick
+    holds the highest integer layout listed for the digest, and
+    `test_02_fetch_reads_back_by_ref_and_offline` checks `dataset.layout_version`
+    against it.
     """
     rendering = rendering_for("long", party_totals=False)
-    picked = pick_artifact(manifest, rendering)
-    assert picked is not None, "the manifest lists no artifact of the fetch's rendering"
-    assert picked["artifact_digest"] == digest
+    picked = pick_artifact(manifest, rendering, digest=digest)
+    assert picked is not None, f"the manifest lists no long artifact {digest}"
 
     def kind(artifact: Mapping[str, Any]) -> dict[str, Any]:
         selectors = dict(artifact["rendering"])
         selectors.pop("without_party_totals", None)
+        if type(selectors.get("layout")) is int:
+            del selectors["layout"]
         return selectors
 
-    for other in manifest["artifacts"]:
-        if other["artifact_digest"] == digest:
-            assert kind(other) == kind(picked), f"{digest} is listed in two renderings"
+    same_file = [a for a in manifest["artifacts"] if a["artifact_digest"] == digest]
+    for other in same_file:
+        assert kind(other) == kind(picked), f"{digest} is listed in two renderings"
+    layouts = [
+        layout
+        for other in same_file
+        if type(layout := other["rendering"].get("layout")) is int
+    ]
+    assert picked["rendering"].get("layout") == max(layouts, default=None), (
+        f"{digest} is listed under layouts {layouts}, an older one first"
+    )
     return picked
 
 
